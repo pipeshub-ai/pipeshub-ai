@@ -397,7 +397,10 @@ def _trailing_rows_cut(
         mine = [g for g, r in zip(grid, row_of) if r == keep - 1]
         texts = [str(v) for g in mine for v in g if v is not None and str(v).strip()]
         row_top = min(c[1] for c in cells)
-        below = row_top >= box[3] - 1 and not any(o[1] - 1 <= row_top + 1 <= o[3] and o is not box for o in others)
+        row_x0, row_x1 = min(c[0] for c in cells), max(c[2] for c in cells)
+        below = row_top >= box[3] - 1 and not any(
+            o[1] - 1 <= row_top + 1 <= o[3] and o[0] < row_x1 and o[2] > row_x0 and o is not box for o in others
+        )
         if below:
             pass
         elif len(cells) == 1 and len(texts) == 1 and (cells[0][2] - cells[0][0]) >= 0.9 * width and NOTES.match(texts[0]):
@@ -551,6 +554,9 @@ def decide_box(
     # a ruled table inside another one (a shaded cell the finder boxes) is part of that table, not a second table
     lattices = [t for t in lattices if not any(o is not t and ola._overlap_ratio(_bbox(t), _bbox(o)) >= GROUP_INSIDE and ola._overlap_ratio(_bbox(o), _bbox(t)) < GROUP_INSIDE for o in lattices)]
     inside = [t for t in lattices if ola._overlap_ratio(_bbox(t), box) >= GROUP_INSIDE]
+    if len(inside) >= 2 and any(id(t) in claimed for t in inside):
+        # a table of the group is another box's decision; the rest keep their legacy regions
+        return Decision(box, "none", reason="a table of the group is used by another box")
     if len(inside) >= 2:
         parts = [ruled_table(t, words, vrules, _bbox(t), (), hrules) for t in inside]
         if all(r is not None for r, _, _ in parts):
