@@ -528,6 +528,11 @@ secure_secret_key() { # args: hardened(true|false); reads and may set SECRET_KEY
 # --reconfigure to preserve secrets that were already used to initialise
 # database volumes — regenerating them would break authentication.
 
+# The PostgreSQL password rule of postgres/pg-entrypoint.sh (check_password); tests/installer_test.sh pins the two together.
+pg_password_ok() {
+  [[ "$1" != *[!A-Za-z0-9._~-]* ]]
+}
+
 get_existing_val() {
   local key="$1" default="$2" val=""
   if [[ -f "$ENV_FILE" ]]; then
@@ -1456,6 +1461,11 @@ if $FLAG_UNINSTALL; then
   docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down -v --remove-orphans
   success "PipesHub stopped and all data volumes removed (project ${PROJECT_NAME})."
   exit 0
+fi
+
+# An exported metrics password is saved to .env when .env has none: refuse one the server would refuse, before anything is written.
+if [[ -n "${PG_MONITOR_PASSWORD:-}" && -z "$(get_existing_val PG_MONITOR_PASSWORD "")" ]] && ! pg_password_ok "$PG_MONITOR_PASSWORD"; then
+  die "PG_MONITOR_PASSWORD may contain only letters, digits and . _ ~ - (it goes into connection URLs). Change or unset the exported value."
 fi
 
 # ==============================================================================

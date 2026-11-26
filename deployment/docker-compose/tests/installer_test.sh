@@ -651,7 +651,24 @@ check ".env writer lists all ten PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\
   printf "$base" >"$work/.env"
   (cd "$work" && PG_MONITOR_PASSWORD=exportedmonitor bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
   check_exact "--reconfigure takes the exported monitoring password" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "PG_MONITOR_PASSWORD=exportedmonitor"
+  # A value the server would refuse at start is refused here first, before .env changes, and never echoed.
+  for mode in "" --reconfigure; do
+    printf "$base" >"$work/.env"; cp "$work/.env" "$work/env.before"
+    status=0
+    out="$(cd "$work" && PG_MONITOR_PASSWORD='bad@pw:/x' bash ./install.sh $mode --yes --print-env-only 2>&1)" || status=$?
+    [[ $status -ne 0 ]] && pass "a bad exported monitoring password is refused ${mode:-on reuse}" || fail "a bad exported monitoring password is refused ${mode:-on reuse}"
+    check "the refusal names the variable and the rule ${mode:-on reuse}" "$out" "PG_MONITOR_PASSWORD may contain only letters, digits and . _ ~ -"
+    [[ "$out" != *'bad@pw'* ]] && pass "the refusal does not print the value ${mode:-on reuse}" || fail "the refusal does not print the value ${mode:-on reuse}"
+    cmp -s "$work/.env" "$work/env.before" && pass ".env is unchanged after the refusal ${mode:-on reuse}" || fail ".env is unchanged after the refusal ${mode:-on reuse}"
+  done
+  printf "$base" >"$work/.env"
+  (cd "$work" && PG_MONITOR_PASSWORD='a.b_c~d-E9' bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
+  check_exact "an exported password using every allowed character is kept" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "PG_MONITOR_PASSWORD=a.b_c~d-E9"
 )
+# The installer checks exported PostgreSQL passwords with the server's own rule: both files must hold the same character class.
+_rule_installer="$(extract_fn pg_password_ok "$INNER_INSTALLER" | grep -oE '\*\[![^]]*\]\*')"
+_rule_server="$(extract_fn check_password <(sed 's/^  //' "$COMPOSE_DIR/postgres/pg-entrypoint.sh") | grep -oE '\*\[![^]]*\]\*')"
+check_exact "the installer and the PostgreSQL entrypoint use one password rule" "$_rule_installer|$_rule_server" '*[!A-Za-z0-9._~-]*|*[!A-Za-z0-9._~-]*'
 
 # When docker needs root the installer runs itself again through sudo, which resets the environment: every setting the installer
 # reads must be named in --preserve-env, or a fresh install falls back to the default stores. The recording sudo acts like one with
