@@ -399,8 +399,10 @@ CHAIN_ROWS = """/* pipeshub:kg.chain_rows */ SELECT r.sk, r.id, r.kind, r.parent
     WHERE r.org_id = $1 AND r.coll = ANY('{2,3}'::smallint[]) AND r.id = ANY($2::text[])"""
 CHAIN_BY_SK = "/* pipeshub:kg.chain_by_sk */ SELECT r.sk, r.kind, r.parent_sk, r.deleted, r.alien FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[])"
 # The ids and collections of the nodes ``$2`` (sks) as three arrays in one row: the root's chain-top read asks it for every grant of the viewer (``KhBrowseMixin._kh_root_tops``).
-KEYS_OF = """/* pipeshub:kg.keys_of */ SELECT coalesce(array_agg(sk), '{}') AS sks, coalesce(array_agg(coll), '{}') AS colls, coalesce(array_agg(id), '{}') AS ids
-    FROM kg.node_keys WHERE org_id = $1 AND sk = ANY($2::bigint[])"""
+# Each key a seek of node_keys' unique sk index (under reader.seeks, whatever the statistics).
+KEYS_OF = """/* pipeshub:kg.keys_of */ SELECT coalesce(array_agg(k.sk), '{}') AS sks, coalesce(array_agg(k.coll), '{}') AS colls, coalesce(array_agg(k.id), '{}') AS ids
+    FROM unnest($2::bigint[]) AS q(sk)
+    CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.node_keys n WHERE n.org_id = $1 AND n.sk >= q.sk ORDER BY n.sk LIMIT 1) s WHERE s.sk = q.sk OFFSET 0) k"""
 APP_KEY = "/* pipeshub:kg.app_key */ SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = $2"
 # The groups that hold a record among ids ``$2`` (as its group or by a group link) that could be a chain-top: read once per request by key from the grants.
 HELD_ANY = """/* pipeshub:kg.listing_held_any */ SELECT DISTINCT g.sk FROM kg.records c

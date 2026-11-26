@@ -24,6 +24,7 @@ from app.services.graph_db.postgres.kg import grant_marks
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.model import CODE_COLL
+from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.kh_listing import (
     ADMIT_CHUNK,
     ANY_GROUP,
@@ -532,9 +533,10 @@ class KhBrowseMixin(PgBase):
 
         async def read(tx: Tx) -> tuple[int, list[Any], dict[int, str], dict[int, int], set[int], set[int]]:
             app_sk = await tx.fetchval(kgl.APP_KEY, org, app_id)
-            by_judges = list(await tx.fetch(grant_marks.ROOT_CHAIN, org, slow, app_sk)) if slow else []
-            refs = {s for r in by_judges for s in r["judges"]} | {s for sk in fast for s in (top.parents[sk], group_of[sk])}
-            k = await tx.fetchrow(kgl.KEYS_OF, org, sorted(refs | set(fast)))
+            async with seeks(tx):
+                by_judges = list(await tx.fetch(grant_marks.ROOT_CHAIN, org, slow, app_sk)) if slow else []
+                refs = {s for r in by_judges for s in r["judges"]} | {s for sk in fast for s in (top.parents[sk], group_of[sk])}
+                k = await tx.fetchrow(kgl.KEYS_OF, org, sorted(refs | set(fast)))
             keys = dict(zip(k["sks"], k["ids"], strict=True))
             colls = dict(zip(k["sks"], k["colls"], strict=True))
             held = [s for s in refs if colls.get(s) == 2]

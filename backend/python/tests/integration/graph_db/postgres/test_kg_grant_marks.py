@@ -5,6 +5,7 @@ makes it; a mark its rows no longer give fails the verify; an older copy is fill
 for every viewer, the same rows and arrows as one that hands the walk every grant (the walk's own input), and hands the walk only the grants that can be chain-tops."""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -13,12 +14,18 @@ from app.services.graph_db.postgres import kh_browse, kh_listing
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import grant_marks
 from app.services.graph_db.postgres.kg import listing as kgl
+from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
+from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.kg.verify import verify_app
+from tests.support import plan_gate
 
 from .pg_support import new_org
 from .test_kg_derivation import ctx, edge
+from .test_kg_first_drain import RESTORE as DRAIN_RESTORE
+from .test_kg_first_drain import _not_seeks, no_stats  # noqa: F401  (no_stats: the fixture)
+from .test_kg_first_drain import _world as _drain_world
 from .test_kg_read import _admin, flip
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
@@ -193,11 +200,7 @@ async def test_an_older_copy_is_filled_in_place_and_served_again(pg_provider, pg
     await _world(p, pg_db, org)
     want = await _marks(pg_db, org)
     await _admin("UPDATE kg.scope_members SET parent_held = false, node_group = NULL, node_parent = NULL WHERE org_id = $1", org)
-    await _admin("ALTER TABLE kg.projection_state NO FORCE ROW LEVEL SECURITY")
-    try:
-        await _admin(f"UPDATE kg.projection_state SET code_epoch = {bf.MARKS_FROM} WHERE org_id = $1", org)
-    finally:
-        await _admin("ALTER TABLE kg.projection_state FORCE ROW LEVEL SECURITY")
+    await _admin(f"UPDATE kg.projection_state SET code_epoch = {bf.MARKS_FROM} WHERE org_id = $1", org)
     mode, more = await bf.fill_grant_marks(pg_db, org, "app1", page=2)
     assert (mode, more) == ("enforce", None)
     assert await _marks(pg_db, org) == want
@@ -215,11 +218,7 @@ async def test_a_copy_of_epoch_12_has_its_parents_filled_in_place_and_is_served_
     want = await _parents(pg_db, org)
     assert any(want.values())
     await _admin("UPDATE kg.scope_members SET node_parent = NULL WHERE org_id = $1", org)
-    await _admin("ALTER TABLE kg.projection_state NO FORCE ROW LEVEL SECURITY")
-    try:
-        await _admin(f"UPDATE kg.projection_state SET code_epoch = {bf.PARENTS_FROM} WHERE org_id = $1", org)
-    finally:
-        await _admin("ALTER TABLE kg.projection_state FORCE ROW LEVEL SECURITY")
+    await _admin(f"UPDATE kg.projection_state SET code_epoch = {bf.PARENTS_FROM} WHERE org_id = $1", org)
     assert await bf.fill_grant_marks(pg_db, org, "app1") == (None, None)      # not a copy of epoch 10: the earlier fill leaves it alone
     assert await bf.fill_grant_parents(pg_db, org, "app1", page=2) == ("enforce", None)
     assert await _parents(pg_db, org) == want
@@ -374,3 +373,39 @@ async def test_a_root_too_wide_to_hold_lists_what_one_held_whole_lists(pg_provid
     monkeypatch.setattr(kgl, "browse_once_sql", spy)
     assert {u: await pages(u) for u in VIEWERS} == held
     assert once                                                                   # the wide root read its children once
+
+
+async def test_the_roots_chain_top_reads_are_seeks_with_no_statistics_and_analysed(pg_provider, pg_db, no_stats) -> None:  # noqa: F811 (the fixture)
+    """EXPLAIN gate, as the first drain's (test_kg_first_drain): on its world (5,000 files, each held alone by u2), kg's statistics cleared and then analysed, the root's read of the
+    rows behind the grants whose node_parent is not set (``ROOT_CHAIN``, under reader.seeks as the browse runs it) reads kg.records and kg.links only by their key's index, bounded
+    by the org and the key, a folder's rows at most per probe; the keys of the grants' nodes (``KEYS_OF``) are a seek each; and the viewer's candidate grants (``CANDIDATES``, as kg.hierarchy profiles it) are one range of the chain-top
+    index per principal."""
+    p, org = pg_provider, new_org()
+    await _drain_world(p, org)
+    assert (await flip(pg_db, org))[0] == 1
+
+    async def keys(tx) -> tuple[int, list[int]]:
+        app = await tx.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        return app, [r["sk"] for r in await tx.fetch("SELECT sk FROM kg.records WHERE org_id = $1 AND coll = 3 AND NOT folder ORDER BY sk", org)][::25]
+    with ctx(org):
+        app, sks = await pg_db.run(keys)
+    for state in ("no statistics", "analysed"):
+        await (no_stats() if state == "no statistics" else _admin(DRAIN_RESTORE))
+
+        async def go(tx) -> tuple[int, dict, dict]:
+            async with seeks(tx):
+                n = len(await tx.fetch(grant_marks.ROOT_CHAIN, org, sks, app))
+                chain = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.ROOT_CHAIN, org, sks, app)
+                keyed = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + kgl.KEYS_OF, org, sks)
+            await tx.fetchval(kg_read.PROFILE)
+            cands = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.CANDIDATES, org, "u2", app)
+            return n, *((json.loads(x) if isinstance(x, str) else x)[0] for x in (chain, keyed, cands))
+        with ctx(org):
+            n, chain, keyed, cands = await pg_db.run(go, custom_plan=True)
+        assert n > 0, f"{state}: the read found nothing, so the gate judged no probe"
+        assert not (bad := _not_seeks(chain)), f"{state} root chain: not a seek per key: {bad}"
+        # the keys of the grants' nodes (KEYS_OF): a seek of node_keys' unique sk index per key, one row each
+        nk = [(n.get("Index Name"), n.get("Index Cond", ""), n.get("Actual Rows", 0)) for n in plan_gate.scans(keyed, ("node_keys",))]
+        assert nk and all(i == "node_keys_org_id_sk_key" and "org_id = " in c and "sk >= " in c and r <= 1 for i, c, r in nk), f"{state} keys: {nk}"
+        members = [b for node in plan_gate.scans(cands, ("scope_members",)) for b in plan_gate.bounds(node)]
+        assert members and all(i == "scope_members_tops" and "org_id = " in c and "principal_sk >= " in c and "app_sk = " in c for i, c in members), f"{state} candidates: {members}"

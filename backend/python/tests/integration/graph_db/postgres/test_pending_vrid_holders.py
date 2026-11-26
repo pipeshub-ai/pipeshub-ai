@@ -91,6 +91,7 @@ async def test_the_pending_write_is_a_compare_and_set(pg_provider, org, org_ctx)
         assert "pendingVirtualRecordId" not in await pg_provider.get_document("a", "records")
 
 
+@pytest.mark.pg_table_lock           # drops and builds an index of graph.nodes
 async def test_the_holder_lookups_use_an_index_on_each_arm(org) -> None:
     """With enough rows that a scan would lose, the single and the batch lookup plan to index scans on both arms, never a sequential scan.
 

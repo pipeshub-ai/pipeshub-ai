@@ -20,49 +20,65 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.kg.writers import KgWriter
 
 if TYPE_CHECKING:
     from app.core.db import Tx
 
 CHUNK = 5000
-# The marks a grant row ``m`` should carry, from the rows of its node and of the node's parents.
+# The marks a grant row ``m`` should carry, from the rows of its node and of the node's parents. Every lookup by key is a seek (as kg.hierarchy, under reader.seeks): a range on
+# the key ordered as only the key's own index returns it (a unique key's first row at or after it, kept only when it is the key). With ``k = m.k`` any index on the org answers
+# too: in a new install's first drain (no statistics, the rows written by the same unit) the planner read each grant's node by records_pkey bounded on the org alone and its
+# parents by records_app, once per grant row, and the unit ran into the statement timeout on every retry.
 _WANT = """LEFT JOIN LATERAL (SELECT
-      EXISTS (SELECT 1 FROM (SELECT r.parent_sk AS sk UNION ALL SELECT l.parent_sk FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = r.sk AND l.kind = 1) p
-          JOIN kg.records pr ON pr.org_id = $1 AND pr.sk = p.sk
-          JOIN kg.scope_members q ON q.org_id = $1 AND q.principal_sk = m.principal_sk AND q.node_sk = pr.sk AND q.gtype = m.gtype
-        WHERE pr.kind IN (2, 3) AND pr.app_sk = r.app_sk AND NOT pr.deleted AND NOT pr.placeholder AND NOT pr.alien AND coalesce(pr.rule, 'OPEN') = 'OPEN') AS held,
+      EXISTS (SELECT 1 FROM (SELECT r.parent_sk AS sk UNION ALL (SELECT l.parent_sk FROM kg.links l WHERE l.org_id = $1
+            AND (l.child_sk, l.kind) >= (r.sk, 1) AND (l.child_sk, l.kind) <= (r.sk, 1) ORDER BY l.child_sk, l.kind)) p
+          CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk >= p.sk ORDER BY k.sk LIMIT 1) s WHERE s.sk = p.sk OFFSET 0) pr
+        WHERE pr.kind IN (2, 3) AND pr.app_sk = r.app_sk AND NOT pr.deleted AND NOT pr.placeholder AND NOT pr.alien AND coalesce(pr.rule, 'OPEN') = 'OPEN'
+          AND EXISTS (SELECT 1 FROM (SELECT k.principal_sk, k.node_sk, k.gtype FROM kg.scope_members k WHERE k.org_id = $1 AND (k.principal_sk, k.node_sk, k.gtype) >= (m.principal_sk, pr.sk, m.gtype)
+              ORDER BY k.principal_sk, k.node_sk, k.gtype LIMIT 1) q WHERE q.principal_sk = m.principal_sk AND q.node_sk = pr.sk AND q.gtype = m.gtype)) AS held,
       g.grp,
       CASE WHEN g.grp IS NOT NULL AND r.parent_sk IS NOT NULL AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND coalesce(r.rule, 'OPEN') = 'OPEN'
-        AND NOT EXISTS (SELECT 1 FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = r.sk AND l.kind = 1) THEN r.parent_sk END AS par
-    FROM kg.records r
-    CROSS JOIN LATERAL (SELECT CASE WHEN r.kind = 3 AND NOT EXISTS (SELECT 1 FROM kg.links l WHERE l.org_id = $1 AND l.child_sk = r.sk AND l.kind = 2) THEN r.group_sk END AS grp) g WHERE r.org_id = $1 AND r.sk = m.node_sk AND r.kind IN (2, 3) AND r.app_sk = m.app_sk) x ON true"""
+        AND NOT EXISTS (SELECT 1 FROM (SELECT l.child_sk, l.kind FROM kg.links l WHERE l.org_id = $1 AND (l.child_sk, l.kind) >= (r.sk, 1) ORDER BY l.child_sk, l.kind LIMIT 1) l
+          WHERE l.child_sk = r.sk AND l.kind = 1) THEN r.parent_sk END AS par
+    FROM (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk >= m.node_sk ORDER BY k.sk LIMIT 1) s WHERE s.sk = m.node_sk OFFSET 0) r
+    CROSS JOIN LATERAL (SELECT CASE WHEN r.kind = 3 AND NOT EXISTS (SELECT 1 FROM (SELECT l.child_sk, l.kind FROM kg.links l WHERE l.org_id = $1 AND (l.child_sk, l.kind) >= (r.sk, 2)
+        ORDER BY l.child_sk, l.kind LIMIT 1) l WHERE l.child_sk = r.sk AND l.kind = 2) THEN r.group_sk END AS grp) g
+    WHERE r.kind IN (2, 3) AND r.app_sk = m.app_sk) x ON true"""
 _COLS = ("m.principal_sk, m.node_sk, m.gtype, m.parent_held, m.node_group, m.node_parent, coalesce(x.held, false) AS want_held, x.grp AS want_group, "
          "x.par AS want_parent")
-# The grants on the nodes $2.
-ON_NODES = f"/* pipeshub:kg.grant_marks_on */ SELECT {_COLS} FROM kg.scope_members m {_WANT} WHERE m.org_id = $1 AND m.node_sk = ANY($2::bigint[])"
+# The grants on the nodes $2 (distinct), a seek of scope_members_by_node per node.
+ON_NODES = f"""/* pipeshub:kg.grant_marks_on */ SELECT {_COLS} FROM unnest($2::bigint[]) AS n(sk)
+    CROSS JOIN LATERAL (SELECT * FROM kg.scope_members m WHERE m.org_id = $1 AND m.node_sk >= n.sk AND m.node_sk <= n.sk ORDER BY m.node_sk) m {_WANT}"""
 # The connector $2's grants after the key ($3, $4, $5), $6 of them in key order: a page of the fill and of the verify.
 BY_APP = f"""/* pipeshub:kg.grant_marks_by_app */ SELECT {_COLS} FROM (SELECT * FROM kg.scope_members m WHERE m.org_id = $1 AND m.app_sk = $2
       AND (m.app_sk, m.node_sk, m.principal_sk, m.gtype) > ($2, $3, $4, $5) ORDER BY m.app_sk, m.node_sk, m.principal_sk, m.gtype LIMIT $6) m {_WANT}
     ORDER BY m.node_sk, m.principal_sk, m.gtype"""
 # The hierarchy children of the nodes $2, of the parent's own connector, that hold a grant: their parent_held reads the parents' rows and grants. A child of another connector
 # reads nothing of this parent (parent_held counts a parent of the node's own connector only), and its grants are written under that connector's lock alone.
-CHILDREN = """/* pipeshub:kg.grant_marks_children */ SELECT c.sk FROM (SELECT r.sk, r.app_sk, r.parent_sk AS parent FROM kg.records r WHERE r.org_id = $1 AND r.parent_sk = ANY($2::bigint[])
-      UNION SELECT l.child_sk, x.app_sk, l.parent_sk FROM kg.links l JOIN kg.records x ON x.org_id = l.org_id AND x.sk = l.child_sk
-        WHERE l.org_id = $1 AND l.parent_sk = ANY($2::bigint[]) AND l.kind = 1) c
-    JOIN kg.records p ON p.org_id = $1 AND p.sk = c.parent AND p.app_sk = c.app_sk
-    WHERE EXISTS (SELECT 1 FROM kg.scope_members m WHERE m.org_id = $1 AND m.node_sk = c.sk)"""
+CHILDREN = """/* pipeshub:kg.grant_marks_children */ SELECT c.sk FROM unnest($2::bigint[]) AS q(sk)
+    CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk >= q.sk ORDER BY k.sk LIMIT 1) s WHERE s.sk = q.sk OFFSET 0) p
+    CROSS JOIN LATERAL ((SELECT r.sk, r.app_sk FROM kg.records r WHERE r.org_id = $1 AND r.parent_sk >= p.sk AND r.parent_sk <= p.sk ORDER BY r.parent_sk, r.sk)
+      UNION ALL (SELECT x.sk, x.app_sk FROM (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND (l.parent_sk, l.kind) >= (p.sk, 1) AND (l.parent_sk, l.kind) <= (p.sk, 1)
+          ORDER BY l.parent_sk, l.kind, l.child_sk) l
+        CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk >= l.child_sk ORDER BY k.sk LIMIT 1) s WHERE s.sk = l.child_sk OFFSET 0) x)) c
+    WHERE c.app_sk = p.app_sk
+      AND EXISTS (SELECT 1 FROM (SELECT m.node_sk FROM kg.scope_members m WHERE m.org_id = $1 AND m.node_sk >= c.sk ORDER BY m.node_sk LIMIT 1) m WHERE m.node_sk = c.sk)"""
 # What of a node's own row a mark reads (of the node, or of it as a parent), before a projection writes the row.
 HELD = "/* pipeshub:kg.grant_marks_held */ SELECT sk, kind, app_sk, group_sk, deleted, placeholder, alien, rule FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])"
 MARKED = ("kind", "app_sk", "group_sk", "deleted", "placeholder", "alien", "rule")
 # The viewer's grants of the connector $3 that may be chain-tops (no parent the same principal holds covers them), with each node's group and parent marks: the grants of every principal
-# the viewer holds in it (kg.principal_closure: the user, their groups, roles, teams and organisation, and the source accounts linked in the connector with theirs).
+# the viewer holds in it (kg.principal_closure: the user, their groups, roles, teams and organisation, and the source accounts linked in the connector with theirs). Each
+# principal's range of scope_members_tops, in its order (as kg.hierarchy profiles it, sorts off): with no statistics the planner read the connector's grants by
+# scope_members_by_app once per principal.
 # One row of three arrays: a viewer can hold tens of thousands of grants, and as a row each they took longer to decode than to read (as ``read.LITERALS``).
 CANDIDATES = """/* pipeshub:kg.chain_top_grants */ SELECT coalesce(array_agg(m.node_sk), '{}') AS sks, coalesce(array_agg(m.node_group), '{}') AS grps,
       coalesce(array_agg(m.node_parent), '{}') AS pars FROM kg.node_keys u
     JOIN kg.principal_closure c ON c.org_id = u.org_id AND c.user_sk = u.sk AND c.app_sk IN (0, $3)
-    CROSS JOIN LATERAL (SELECT m.node_sk, m.node_group, m.node_parent FROM kg.scope_members m WHERE m.org_id = $1 AND m.principal_sk = c.principal_sk AND m.app_sk = $3
-        AND NOT m.parent_held AND m.gtype <> '@uar' OFFSET 0) m
+    CROSS JOIN LATERAL (SELECT m.node_sk, m.node_group, m.node_parent FROM kg.scope_members m WHERE m.org_id = $1
+        AND m.principal_sk >= c.principal_sk AND m.principal_sk <= c.principal_sk AND m.app_sk = $3 AND NOT m.parent_held AND m.gtype <> '@uar'
+        ORDER BY m.principal_sk, m.app_sk, m.node_sk OFFSET 0) m
     WHERE u.org_id = $1 AND u.coll = 4 AND u.id = $2"""
 # The granted rows of the connector ``$3`` among ids ``$2`` that a browse may list as chain-tops (``kg.listing.CHAIN_GRANTED``), for a connector kg serves: kg's copy of the
 # rule is then the graph's (a row written without its rule takes the connector off the readers), so no graph row is read.
@@ -73,17 +89,19 @@ CHAIN_GRANTED = """/* pipeshub:kg.chain_granted_kg */ SELECT r.sk, r.id, r.kind,
 # The root's chain-top inputs (``KhBrowseMixin._kh_root_tops``), what ``kh_browse._chain_nodes`` hands the walk: of the grants' nodes ``$2`` (sks) of the connector ``$3``, the rows a
 # browse may list as chain-tops (as :data:`CHAIN_GRANTED`), by the nodes the walk asks the access check about for them (``judges``: the hierarchy parents a browse opens,
 # the App included, and the own groups: a record's group and group links, a group's parent groups), one row per set of judges with the rows' keys and ids. Each node by its
-# key in a subquery of its own (a seek per node whatever the statistics) and its links in one range of links_child; the judges' keys once each.
+# key (a seek, under reader.seeks, whatever the statistics: as the drain's marks are read) and its links in one range of links_child; the judges' keys once each.
 ROOT_CHAIN = """/* pipeshub:kg.root_chain */ WITH c AS MATERIALIZED (SELECT r.sk, r.id, r.kind, r.parent_sk, r.group_sk, l.hier, l.grp
-      FROM unnest($2::bigint[]) AS q(sk) CROSS JOIN LATERAL (SELECT * FROM kg.records x WHERE x.org_id = $1 AND x.sk = q.sk LIMIT 1) r
+      FROM unnest($2::bigint[]) AS q(sk)
+      CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records x WHERE x.org_id = $1 AND x.sk >= q.sk ORDER BY x.sk LIMIT 1) s WHERE s.sk = q.sk OFFSET 0) r
       CROSS JOIN LATERAL (SELECT coalesce(array_agg(k.parent_sk) FILTER (WHERE k.kind = 1), '{}') AS hier, coalesce(array_agg(k.parent_sk) FILTER (WHERE k.kind = 2), '{}') AS grp
-          FROM kg.links k WHERE k.org_id = $1 AND k.child_sk = r.sk AND k.kind IN (1, 2)) l
+          FROM (SELECT k.parent_sk, k.kind FROM kg.links k WHERE k.org_id = $1 AND k.child_sk >= r.sk AND k.child_sk <= r.sk AND k.kind IN (1, 2)
+              ORDER BY k.child_sk, k.kind) k) l
       WHERE r.app_sk = $3 AND r.coll = ANY('{2,3}'::smallint[]) AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND coalesce(r.rule, 'OPEN') = 'OPEN'),
     e AS MATERIALIZED (SELECT c.sk, x.ref, x.parent FROM c CROSS JOIN LATERAL (SELECT h, true FROM unnest(c.parent_sk || c.hier) AS h
         UNION ALL SELECT o, false FROM unnest(CASE WHEN c.kind = 2 THEN c.parent_sk || c.hier ELSE c.group_sk || c.grp END) AS o) AS x(ref, parent) WHERE x.ref IS NOT NULL),
     k AS MATERIALIZED (SELECT k.sk, k.coll, coalesce(g.alien, false) AS alien FROM (SELECT DISTINCT ref FROM e) q
-      CROSS JOIN LATERAL (SELECT * FROM kg.node_keys n WHERE n.org_id = $1 AND n.sk = q.ref LIMIT 1) k
-      LEFT JOIN LATERAL (SELECT x.alien FROM kg.records x WHERE x.org_id = $1 AND x.sk = k.sk AND k.coll = 2 LIMIT 1) g ON true),
+      CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.node_keys n WHERE n.org_id = $1 AND n.sk >= q.ref ORDER BY n.sk LIMIT 1) s WHERE s.sk = q.ref OFFSET 0) k
+      LEFT JOIN LATERAL (SELECT s.alien FROM (SELECT * FROM kg.records x WHERE x.org_id = $1 AND x.sk >= k.sk ORDER BY x.sk LIMIT 1) s WHERE s.sk = k.sk AND k.coll = 2 OFFSET 0) g ON true),
     j AS (SELECT e.sk, array_agg(DISTINCT e.ref ORDER BY e.ref) AS judges FROM e JOIN k ON k.sk = e.ref
       WHERE CASE WHEN e.parent THEN NOT k.alien ELSE k.coll = 2 AND e.ref <> e.sk END GROUP BY e.sk)
   SELECT coalesce(j.judges, '{}') AS judges, array_agg(c.sk) AS sks, array_agg(c.id) AS ids FROM c LEFT JOIN j ON j.sk = c.sk GROUP BY 1"""
@@ -119,11 +137,13 @@ async def refresh(tx: Tx, org: str, nodes: set[int], parents: set[int]) -> int:
     every = set(nodes)
     ps = sorted(parents)
     for i in range(0, len(ps), CHUNK):
-        every |= {r["sk"] for r in await tx.fetch(CHILDREN, org, ps[i:i + CHUNK])}
+        async with seeks(tx):
+            every |= {r["sk"] for r in await tx.fetch(CHILDREN, org, ps[i:i + CHUNK])}
     sks = sorted(every)
     rows = []
     for i in range(0, len(sks), CHUNK):
-        rows += await tx.fetch(ON_NODES, org, sks[i:i + CHUNK])
+        async with seeks(tx):
+            rows += await tx.fetch(ON_NODES, org, sks[i:i + CHUNK])
     return await _write(tx, rows)
 
 
