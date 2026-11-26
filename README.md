@@ -50,7 +50,7 @@
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> is an open-source platform for connecting AI applications to the knowledge stored across your company's business systems.
 
-Connect 30+ sources, among them Slack, Google Drive, GitHub, Microsoft 365 and Notion, and let agents act in about 20 apps through built-in integrations and in any app with an MCP server: 29 are in the [catalog](https://docs.pipeshub.com/agent-guide/mcp-servers), including Zapier's, which reaches thousands of apps. Search across them and get answers with citations, filtered by what each person is allowed to see — or give that same context to your own agents, workflows and MCP clients.
+Connect 30+ sources, among them Slack, Google Drive, GitHub, Microsoft 365 and Notion, and let agents act in about 20 apps through built-in integrations and in any app with an MCP server: 35+ are in the [catalog](https://docs.pipeshub.com/agent-guide/mcp-servers), including Zapier's, which reaches thousands of apps. Search across them and get answers with citations, filtered by what each person is allowed to see — or give that same context to your own agents, workflows and MCP clients.
 
 > [!TIP]
 > Deploy with a single command:
@@ -70,7 +70,7 @@ PipesHub builds a **unified context layer** across documents, conversations, str
 
 ```mermaid
 flowchart LR
-  subgraph Sources["50+ connectors"]
+  subgraph Sources["30+ indexed sources"]
     S1["Drive · SharePoint · Box · S3"]
     S2["Slack · Gmail · Outlook"]
     S3["Jira · Confluence · Notion · GitHub"]
@@ -111,7 +111,7 @@ Every tool call is filtered by the asking user's permissions, and every answer c
 | **What the agent sees first** | A few text chunks | Each record's name, location, metadata and summary, plus the blocks that matched |
 | **How it digs further** | It can't: one retrieval per question | Hybrid search, `grep`/`find` over records, folder navigation and knowledge-graph lookups, in a loop |
 | **Structure** | Lost at chunking | Every source becomes Blocks: sections, tables with rows and cells, threads, code, SQL tables with their schema |
-| **Permissions** | Often approximated at index time | Checked against the source system's permissions for the requesting user, on every tool call |
+| **Permissions** | Often approximated at index time | Checked against the permissions synced from each source, for the requesting user, on every tool call |
 | **Citations** | Per chunk, if any | Per block: the page, table cell, row, slide or line, with invented citations removed |
 
 ## Benchmarks
@@ -168,7 +168,7 @@ Want the same retrieval inside your own code, or behind a search box for your te
 
 **Connected to your systems**
 
-- 🔌 **Enterprise Connectors:** 30+ indexed sources with scheduled incremental sync, plus file upload to knowledge bases; agent actions in about 20 apps, plus any app with an MCP server ([29 in the catalog](https://docs.pipeshub.com/agent-guide/mcp-servers), including Zapier).
+- 🔌 **Enterprise Connectors:** 30+ indexed sources with scheduled incremental sync, plus file upload to knowledge bases; agent actions in about 20 apps, plus any app with an MCP server ([35+ in the catalog](https://docs.pipeshub.com/agent-guide/mcp-servers), including Zapier).
 - 🕸️ **Knowledge Graph Retrieval:** Graph-backed retrieval that captures relationships across enterprise data.
 - 🎙️ **Multimodal Support:** Image, diagram, and scanned-file understanding plus voice-based interaction.
 
