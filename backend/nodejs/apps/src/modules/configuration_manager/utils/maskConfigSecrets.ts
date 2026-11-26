@@ -208,14 +208,26 @@ function normalizeDestination(value: unknown): string {
   try {
     const url = new URL(text);
     // origin is the string "null" for non-special schemes, so use protocol and host.
-    // URL lower-cases both and drops a default port. Userinfo and the query can
-    // route a request elsewhere (a proxy's target parameter), so they count too.
+    // URL lower-cases both and drops a default port; a trailing dot names the
+    // same host. Userinfo and the query can route a request elsewhere (a
+    // proxy's target parameter), so they count too.
     const userinfo =
       url.username || url.password ? `${url.username}:${url.password}@` : '';
-    return `${url.protocol}//${userinfo}${url.host}${url.pathname.replace(/\/+$/, '')}${url.search}`;
+    const host =
+      url.hostname.replace(/\.$/, '') + (url.port ? `:${url.port}` : '');
+    return `${url.protocol}//${userinfo}${host}${url.pathname.replace(/\/+$/, '')}${url.search}`;
   } catch {
-    return text;
+    // A bare host name (an SMTP host) has no scheme, and host names ignore case.
+    return text.replace(/\.$/, '').toLowerCase();
   }
+}
+
+/** True when `incoming` names a different destination than `existing`. */
+export function destinationValueChanged(
+  incoming: unknown,
+  existing: unknown,
+): boolean {
+  return normalizeDestination(incoming) !== normalizeDestination(existing);
 }
 
 /**
@@ -394,6 +406,55 @@ export function mergeAiModelCredentials<T extends Record<string, unknown>>(
  */
 
 export const SMTP_SECRET_KEYS = ['host', 'username', 'fromEmail', 'password'] as const;
+
+/**
+ * True when a form that sends a masked username or password back would, once
+ * those are restored, deliver them to a different host or port. The port also
+ * picks TLS (465 is implicit TLS), so a new port could send the login in clear.
+ */
+export function smtpHostMovedWithSavedLogin(
+  incoming: Record<string, unknown>,
+  existing: Record<string, unknown>,
+): boolean {
+  return (
+    ((incoming['host'] !== CONFIG_SECRET_PLACEHOLDER &&
+      destinationValueChanged(incoming['host'], existing['host'])) ||
+      Number(incoming['port'] ?? 0) !== Number(existing['port'] ?? 0)) &&
+    (incoming['username'] === CONFIG_SECRET_PLACEHOLDER ||
+      incoming['password'] === CONFIG_SECRET_PLACEHOLDER)
+  );
+}
+
+/** Where a provider sends requests when no `baseUrl` is saved. */
+const WEB_SEARCH_DEFAULT_BASE_URLS: Record<string, string> = {
+  firecrawl: 'https://api.firecrawl.dev',
+};
+
+/**
+ * True when the saved API key is kept (the form sent the placeholder back) while
+ * the provider or its `baseUrl` changes. A masked or unchanged `baseUrl` is not a
+ * move, and a blank one means the provider's default.
+ */
+export function webSearchBaseUrlMovedWithSavedKey(
+  incoming: Record<string, unknown>,
+  existing: Record<string, unknown>,
+  incomingProvider?: unknown,
+  existingProvider?: unknown,
+): boolean {
+  return (
+    incoming['apiKey'] === CONFIG_SECRET_PLACEHOLDER &&
+    typeof existing['apiKey'] === 'string' &&
+    existing['apiKey'] !== '' &&
+    ((incoming['baseUrl'] !== CONFIG_SECRET_PLACEHOLDER &&
+      destinationValueChanged(
+        incoming['baseUrl'] ||
+          WEB_SEARCH_DEFAULT_BASE_URLS[String(incomingProvider)],
+        existing['baseUrl'] ||
+          WEB_SEARCH_DEFAULT_BASE_URLS[String(existingProvider)],
+      )) ||
+      incomingProvider !== existingProvider)
+  );
+}
 
 
 export function maskSmtpConfig<T extends Record<string, unknown>>(config: T): T {

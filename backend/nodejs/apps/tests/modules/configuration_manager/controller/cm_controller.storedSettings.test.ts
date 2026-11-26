@@ -412,6 +412,102 @@ describe('Configuration manager stored settings', () => {
       expect(stored().providers[0]?.configuration.apiKey).to.equal('serper-real-key');
     });
 
+    describe('a saved key and a changed server address', () => {
+      const searx = {
+        provider: 'searxng',
+        providerKey: 'key-searx',
+        configuration: {
+          apiKey: 'searx-real-key',
+          baseUrl: 'https://search.example.com',
+        },
+        isDefault: false,
+      };
+      const update = (configuration: Record<string, unknown>) =>
+        run(updateWebSearchProvider(store(), appConfig), {
+          params: { providerKey: 'key-searx' },
+          body: { provider: 'searxng', configuration },
+        });
+
+      beforeEach(() =>
+        kv.values.set(configPaths.webSearch, seal({ providers: [searx] })),
+      );
+
+      it('refuses a new address that would receive the saved key, before any health check', async () => {
+        const { res } = await update({
+          apiKey: CONFIG_SECRET_PLACEHOLDER,
+          baseUrl: 'https://collect.attacker.test',
+        });
+
+        expect(res.statusCode).to.equal(400);
+        expect(res.body).to.deep.equal({
+          status: 'error',
+          error_code: 'credential_reentry_required',
+          message: 'Enter the credentials again to use this new endpoint.',
+        });
+        expect(healthChecks).to.have.length(0);
+        expect(stored().providers[0]?.configuration).to.deep.equal(
+          searx.configuration,
+        );
+      });
+
+      it('refuses dropping the address, which would send the key to the provider default', async () => {
+        const { res } = await update({ apiKey: CONFIG_SECRET_PLACEHOLDER });
+
+        expect(res.statusCode).to.equal(400);
+      });
+
+      it('refuses a different provider that would receive the saved key', async () => {
+        const { res } = await run(updateWebSearchProvider(store(), appConfig), {
+          params: { providerKey: 'key-searx' },
+          body: {
+            provider: 'firecrawl',
+            configuration: {
+              apiKey: CONFIG_SECRET_PLACEHOLDER,
+              baseUrl: 'https://search.example.com',
+            },
+          },
+        });
+
+        expect(res.statusCode).to.equal(400);
+        expect(res.body).to.have.property(
+          'error_code',
+          'credential_reentry_required',
+        );
+        expect(healthChecks).to.have.length(0);
+      });
+
+      it('accepts a new address when the key is typed again', async () => {
+        const { res } = await update({
+          apiKey: 'typed-again',
+          baseUrl: 'https://collect.attacker.test',
+        });
+
+        expect(res.statusCode).to.equal(200);
+        expect(healthChecks[0]?.configuration.apiKey).to.equal('typed-again');
+      });
+
+      it('keeps the saved key for the same address, however it is written', async () => {
+        const { res } = await update({
+          apiKey: CONFIG_SECRET_PLACEHOLDER,
+          baseUrl: 'HTTPS://Search.Example.com/',
+        });
+
+        expect(res.statusCode).to.equal(200);
+        expect(healthChecks[0]?.configuration.apiKey).to.equal(
+          'searx-real-key',
+        );
+      });
+
+      it('treats a masked address as unchanged', async () => {
+        const { res } = await update({
+          apiKey: CONFIG_SECRET_PLACEHOLDER,
+          baseUrl: CONFIG_SECRET_PLACEHOLDER,
+        });
+
+        expect(res.statusCode).to.equal(200);
+      });
+    });
+
     it('does not save an update that lost a race with another write', async () => {
       const original = seal({ providers: [serper] });
       kv.values.set(configPaths.webSearch, original);

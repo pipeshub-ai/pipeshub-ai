@@ -1234,7 +1234,7 @@ class TestConnectorAuthValidation:
         assert exc_info.value.detail == "Password is required."
 
     async def test_a_stored_secret_counts(self) -> None:
-        result, registry = await self._save(self.SMB_AUTH, {"connectorScope": "team", "password": "kept"})
+        result, registry = await self._save(self.SMB_AUTH, {**self.SMB_AUTH, "connectorScope": "team", "password": "kept"})
 
         assert result["config"]["auth"]["password"] == REDACTED_PLACEHOLDER
         assert self.config_service.set_config.await_args.args[1]["auth"]["password"] == "kept"

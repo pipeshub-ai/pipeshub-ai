@@ -126,6 +126,9 @@ import {
   SMTP_SECRET_KEYS,
   maskSmtpConfig,
   mergeSmtpConfigPlaceholders,
+  smtpHostMovedWithSavedLogin,
+  webSearchBaseUrlMovedWithSavedKey,
+  CREDENTIAL_REENTRY_REQUIRED,
   stripAiModelsStoredConfig,
   stripAiModelSecrets,
   mergeAiModelCredentials,
@@ -550,6 +553,10 @@ export const createSmtpConfig =
         ? await getParsedSmtpConfig(keyValueStoreService)
         : await getParsedSmtpConfig(keyValueStoreService).catch(() => null);
       if (hasPlaceholder && existing) {
+        if (smtpHostMovedWithSavedLogin(smtpConfig, existing)) {
+          res.status(HTTP_STATUS.BAD_REQUEST).json(CREDENTIAL_REENTRY_REQUIRED);
+          return;
+        }
         smtpConfig = mergeSmtpConfigPlaceholders(smtpConfig, existing);
       }
       // Editing the settings must not quietly turn email back on.
@@ -5033,6 +5040,23 @@ export const updateWebSearchProvider =
           status: 'error',
           message: `Provider with key '${providerKey}' not found`,
         });
+        return;
+      }
+
+      // A saved key must not follow a changed server address.
+      const savedProvider = targetProvider as {
+        configuration?: Record<string, unknown>;
+        provider?: unknown;
+      };
+      if (
+        webSearchBaseUrlMovedWithSavedKey(
+          configuration as Record<string, unknown>,
+          savedProvider.configuration ?? {},
+          provider,
+          savedProvider.provider,
+        )
+      ) {
+        res.status(400).json(CREDENTIAL_REENTRY_REQUIRED);
         return;
       }
 

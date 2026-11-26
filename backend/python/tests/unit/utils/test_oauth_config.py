@@ -1186,3 +1186,97 @@ class TestApplyTenantToMicrosoftOAuthUrl:
         from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
 
         assert _apply_tenant_to_microsoft_oauth_url is apply_tenant_to_microsoft_oauth_url
+
+
+class TestKeptSecretFollowsNewAddress:
+    def test_a_blank_address_sent_over_a_blank_stored_one_is_no_move(self) -> None:
+        from app.utils.oauth_config import kept_secret_follows_new_address
+
+        fields = [{"name": "port", "defaultValue": "445"}]
+        assert kept_secret_follows_new_address({"port": ""}, {"password": "x", "port": ""}, {"password"}, fields) is False
+
+    def test_a_new_address_over_a_blank_stored_one_is_a_move(self) -> None:
+        from app.utils.oauth_config import kept_secret_follows_new_address
+
+        fields = [{"name": "port", "defaultValue": "445"}]
+        assert kept_secret_follows_new_address({"port": "1445"}, {"password": "x", "port": ""}, {"password"}, fields) is True
+
+
+class TestReusesSecretForEveryHostField:
+    SAVED = {
+        "clientSecret": "s",
+        "instance_url": "https://acme.my.salesforce.com",
+        "loginUrl": "https://acme.my.salesforce.com",
+        "subdomain": "acme",
+    }
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("instance_url", "https://collector.example"),
+            ("loginUrl", "https://collector.example"),
+            ("subdomain", "other"),
+        ],
+    )
+    def test_moved_host_field_needs_the_secret_again(self, field, value) -> None:
+        from app.utils.oauth_config import reuses_secret_for_new_destination
+
+        assert reuses_secret_for_new_destination({**self.SAVED, "clientSecret": "", field: value}, self.SAVED) is True
+        typed = {**self.SAVED, "clientSecret": "typed", field: value}
+        assert reuses_secret_for_new_destination(typed, self.SAVED) is False
+
+    def test_unchanged_host_fields_pass(self) -> None:
+        from app.utils.oauth_config import reuses_secret_for_new_destination
+
+        assert reuses_secret_for_new_destination({**self.SAVED, "clientSecret": ""}, self.SAVED) is False
+
+    def test_every_rule_setting_is_a_host_field(self) -> None:
+        from app.utils.oauth_config import _OAUTH_URL_RULES, is_destination_field
+
+        assert _OAUTH_URL_RULES
+        for rule in _OAUTH_URL_RULES.values():
+            assert all(is_destination_field(name) for name in rule.settings)
+
+
+class TestDestinationSpelling:
+    @pytest.mark.parametrize(
+        "same",
+        ["https://login.acme.test:443/oauth/", "HTTPS://Login.Acme.Test./oauth", "https://login.acme.test/oauth"],
+    )
+    def test_a_default_port_or_trailing_dot_is_the_same_address(self, same) -> None:
+        from app.utils.oauth_config import destination_changed
+
+        assert destination_changed(same, "https://login.acme.test/oauth") is False
+
+    @pytest.mark.parametrize(
+        "moved",
+        [
+            "https://login.acme.test:8443/oauth", "http://login.acme.test/oauth", "https://user@login.acme.test/oauth",
+            "https://login.acme.test/oauth?target=collect.test", "https://login.acme.test/OAuth",
+        ],
+    )
+    def test_another_port_scheme_or_user_is_a_move(self, moved) -> None:
+        from app.utils.oauth_config import destination_changed
+
+        assert destination_changed(moved, "https://login.acme.test/oauth") is True
+
+    def test_a_pre_filled_or_blank_default_is_no_move(self) -> None:
+        from app.utils.oauth_config import reuses_secret_for_new_destination
+
+        default = {"tokenUrl": "https://login.acme.test/token"}
+        saved = {"clientSecret": "s", "tokenUrl": ""}
+        assert reuses_secret_for_new_destination({"tokenUrl": "https://login.acme.test/token"}, saved, default) is False
+        saved_default = {"clientSecret": "s", "tokenUrl": "https://login.acme.test/token"}
+        assert reuses_secret_for_new_destination({"tokenUrl": ""}, saved_default, default) is False
+        assert reuses_secret_for_new_destination({"tokenUrl": "https://collect.test/token"}, saved, default) is True
+
+    @pytest.mark.parametrize(("field", "stored", "sent"), [("verifySsl", True, False), ("useSsl", True, False), ("sslCa", "pem-a", "pem-b")])
+    def test_weakening_tls_is_a_move(self, field, stored, sent) -> None:
+        from app.utils.oauth_config import (
+            kept_secret_follows_new_address,
+            reuses_secret_for_new_destination,
+        )
+
+        assert kept_secret_follows_new_address({field: sent}, {"password": "x", field: stored}, {"password"}) is True
+        assert kept_secret_follows_new_address({field: stored}, {"password": "x", field: stored}, {"password"}) is False
+        assert reuses_secret_for_new_destination({field: sent}, {"clientSecret": "s", field: stored}) is True

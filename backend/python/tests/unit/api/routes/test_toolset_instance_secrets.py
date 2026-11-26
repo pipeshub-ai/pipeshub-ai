@@ -20,6 +20,8 @@ from tests.unit.api.routes.test_toolsets import (
 if TYPE_CHECKING:
     from types import ModuleType
 
+    from tests.support.in_memory_config import InMemoryConfigService
+
 MASK = "********"
 SECRET = "s3cret"
 
@@ -107,6 +109,141 @@ class TestKeepStoredSecrets:
         assert toolsets._keep_stored_secrets({"clientSecret": MASK}, None) == {}
 
 
+class TestSavedSecretStaysOnItsAddress:
+    URLS = {"baseUrl"}
+    STORED = {"baseUrl": "https://jira.example.com", "apiToken": SECRET}
+
+    def test_new_address_with_a_masked_secret_is_refused(self, toolsets: ModuleType) -> None:
+        with pytest.raises(HTTPException) as exc:
+            toolsets._keep_stored_secrets({"baseUrl": "https://collect.example.net", "apiToken": MASK}, self.STORED, self.URLS)
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail == "Enter the credentials again to use this new endpoint."
+
+    def test_new_address_with_the_secret_typed_again_is_saved(self, toolsets: ModuleType) -> None:
+        merged = toolsets._keep_stored_secrets(
+            {"baseUrl": "https://other.example.net", "apiToken": "typed"}, self.STORED, self.URLS
+        )
+
+        assert merged == {"baseUrl": "https://other.example.net", "apiToken": "typed"}
+
+    def test_same_address_keeps_the_saved_secret_however_it_is_written(self, toolsets: ModuleType) -> None:
+        merged = toolsets._keep_stored_secrets(
+            {"baseUrl": "HTTPS://Jira.Example.com/", "apiToken": MASK}, self.STORED, self.URLS
+        )
+
+        assert merged["apiToken"] == SECRET
+
+    def test_masked_address_counts_as_unchanged(self, toolsets: ModuleType) -> None:
+        merged = toolsets._keep_stored_secrets({"baseUrl": MASK, "apiToken": MASK}, self.STORED, self.URLS)
+
+        assert merged == self.STORED
+
+
+class TestSavedSecretStaysOnItsAddressThroughTheSavePaths:
+    """The same rule, run through the org and personal save handlers."""
+
+    FIELDS = [
+        {"name": "host", "fieldType": "TEXT"},
+        {"name": "port", "fieldType": "NUMBER"},
+        {"name": "password", "fieldType": "PASSWORD"},
+    ]
+    STORED = {"host": "db.example.com", "port": 5432, "password": SECRET}
+
+    def _request(self, auth: dict) -> MagicMock:
+        request = MagicMock()
+        request.state.user = {"userId": "u1", "orgId": "o1"}
+        request.body = AsyncMock(return_value=json.dumps({"authConfig": auth}).encode())
+        return request
+
+    @staticmethod
+    def _store(toolsets: ModuleType, instance: dict) -> InMemoryConfigService:
+        """A real store holding the instance: the route may save through set_config or a read-modify-write."""
+        from tests.support.in_memory_config import InMemoryConfigService
+
+        store = InMemoryConfigService()
+        store.values[toolsets._get_instances_path("o1")] = [dict(instance)]
+        return store
+
+    async def _org_update(self, toolsets: ModuleType, auth: dict) -> dict:
+        instance = {"_id": "i1", "orgId": "o1", "toolsetType": "mariadb", "authType": "BASIC_AUTH",
+                    "instanceName": "db", "auth": dict(self.STORED)}
+        config_service = self._store(toolsets, instance)
+        with (
+            patch.object(toolsets, "_get_user_context", return_value={"user_id": "u1", "org_id": "o1"}),
+            patch.object(toolsets.toolset_store, "get_personal_instance", AsyncMock(return_value=None)),
+            patch.object(toolsets, "_check_user_is_admin", AsyncMock(return_value=True)),
+            patch.object(toolsets, "_load_instances_for_mutation", AsyncMock(return_value=[instance])),
+            patch.object(toolsets, "_declared_schema_fields", return_value=self.FIELDS),
+        ):
+            await toolsets.update_toolset_instance("i1", self._request(auth), config_service=config_service)
+        return config_service.values[toolsets._get_instances_path("o1")][0]
+
+    @pytest.mark.parametrize("auth", [
+        {"host": "evil.example.net", "port": 5432, "password": MASK},
+        {"host": "db.example.com", "port": 9999, "password": MASK},
+    ], ids=["host", "port"])
+    async def test_org_update_refuses_a_moved_server_with_the_masked_secret(self, toolsets: ModuleType, auth: dict) -> None:
+        with pytest.raises(HTTPException) as exc:
+            await self._org_update(toolsets, auth)
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail == "Enter the credentials again to use this new endpoint."
+
+    async def test_org_update_accepts_a_moved_server_when_the_secret_is_typed_again(self, toolsets: ModuleType) -> None:
+        instance = await self._org_update(toolsets, {"host": "new.example.com", "port": 5432, "password": "typed"})
+
+        assert instance["auth"] == {"host": "new.example.com", "port": 5432, "password": "typed"}
+
+    async def test_org_update_keeps_the_secret_for_the_same_server(self, toolsets: ModuleType) -> None:
+        instance = await self._org_update(toolsets, {"host": "DB.example.com", "port": "5432", "password": MASK})
+
+        assert instance["auth"]["password"] == SECRET
+
+    @pytest.mark.parametrize(("port", "refused"), [("445", False), ("9999", True)])
+    async def test_org_update_treats_the_schema_default_as_no_change_when_none_is_stored(
+        self, toolsets: ModuleType, port: str, refused: bool
+    ) -> None:
+        fields = [{"name": "port", "fieldType": "NUMBER", "defaultValue": "445"}, {"name": "password", "fieldType": "PASSWORD"}]
+        instance = {"_id": "i1", "orgId": "o1", "toolsetType": "smb", "authType": "BASIC_AUTH",
+                    "instanceName": "s", "auth": {"password": SECRET}}
+        with (
+            patch.object(toolsets, "_get_user_context", return_value={"user_id": "u1", "org_id": "o1"}),
+            patch.object(toolsets.toolset_store, "get_personal_instance", AsyncMock(return_value=None)),
+            patch.object(toolsets, "_check_user_is_admin", AsyncMock(return_value=True)),
+            patch.object(toolsets, "_load_instances_for_mutation", AsyncMock(return_value=[instance])),
+            patch.object(toolsets, "_declared_schema_fields", return_value=fields),
+        ):
+            config_service = self._store(toolsets, instance)
+            call = toolsets.update_toolset_instance(
+                "i1", self._request({"port": port, "password": MASK}), config_service=config_service
+            )
+            if refused:
+                with pytest.raises(HTTPException):
+                    await call
+            else:
+                await call
+                saved = config_service.values[toolsets._get_instances_path("o1")][0]
+                assert saved["auth"] == {"port": "445", "password": SECRET}
+
+    async def test_personal_update_refuses_a_moved_server_with_the_masked_secret(self, toolsets: ModuleType) -> None:
+        instance = {"_id": "i1", "orgId": "o1", "createdBy": "u1", "toolsetType": "zendesk", "authType": "API_TOKEN",
+                    "instanceName": "z", "scope": "personal", "auth": {"subdomain": "acme", "apiToken": SECRET}}
+        fields = [{"name": "subdomain", "fieldType": "TEXT"}, {"name": "apiToken", "fieldType": "PASSWORD"}]
+        validated = AsyncMock()
+        with (
+            patch.object(toolsets, "_declared_schema_fields", return_value=fields),
+            patch.object(toolsets, "_validated_personal_settings", validated),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await toolsets._update_personal_instance(
+                    self._request({"subdomain": "evil", "apiToken": MASK}), instance, MagicMock()
+                )
+
+        assert exc.value.status_code == 400
+        validated.assert_not_awaited()
+
+
 class TestOAuthConfigSave:
     async def _save(
         self, toolsets: ModuleType, auth_config: dict, stored: list[dict], oauth_config_id: str | None
@@ -146,6 +283,48 @@ class TestOAuthConfigSave:
 
         assert exc.value.status_code == 400
         assert stored == []
+
+    @pytest.mark.parametrize("key", ["tokenUrl", "authorizeUrl", "instanceUrl"])
+    async def test_new_address_with_the_saved_secret_is_refused(self, toolsets: ModuleType, key: str) -> None:
+        stored = [{"_id": "cfg", "orgId": "o1", "config": {"clientId": "id", "clientSecret": SECRET, key: "https://a.example.com/x"}}]
+
+        with pytest.raises(HTTPException) as exc:
+            await self._save(toolsets, {"clientId": "id", "clientSecret": MASK, key: "https://collect.example.net/x"}, stored, "cfg")
+
+        assert exc.value.status_code == 400
+        assert "Enter the credentials again" in exc.value.detail
+        assert stored[0]["config"][key] == "https://a.example.com/x"
+
+    async def test_new_address_with_the_secret_typed_again_is_saved(self, toolsets: ModuleType) -> None:
+        stored = [{"_id": "cfg", "orgId": "o1", "config": {"clientSecret": SECRET, "tokenUrl": "https://a.example.com/t"}}]
+
+        await self._save(toolsets, {"clientSecret": "typed", "tokenUrl": "https://b.example.com/t"}, stored, "cfg")
+
+        assert stored[0]["config"] == {"clientSecret": "typed", "tokenUrl": "https://b.example.com/t"}
+
+    async def test_another_spelling_of_the_secret_does_not_stand_in_for_the_saved_one(self, toolsets: ModuleType) -> None:
+        stored = [{"_id": "cfg", "orgId": "o1", "config": {"clientSecret": SECRET, "tokenUrl": "https://a.example.com/t"}}]
+
+        with pytest.raises(HTTPException):
+            await self._save(toolsets, {"client_secret": "decoy", "tokenUrl": "https://collect.example.net/x"}, stored, "cfg")
+
+    async def test_an_unchanged_registry_default_is_not_a_change(self, toolsets: ModuleType) -> None:
+        stored = [{"_id": "cfg", "orgId": "o1", "config": {"clientSecret": SECRET}}]
+        registry_default = MagicMock(authorize_url="https://auth.example.com/a", token_url="https://auth.example.com/t")
+
+        with patch.object(toolsets, "_get_oauth_config_from_registry", return_value=registry_default):
+            await self._save(toolsets, {"clientSecret": MASK, "tokenUrl": "https://auth.example.com/t"}, stored, "cfg")
+            with pytest.raises(HTTPException):
+                await self._save(toolsets, {"clientSecret": MASK, "tokenUrl": "https://collect.example.net/t"}, stored, "cfg")
+
+        assert stored[0]["config"]["clientSecret"] == SECRET
+
+    async def test_same_address_keeps_the_saved_secret(self, toolsets: ModuleType) -> None:
+        stored = [{"_id": "cfg", "orgId": "o1", "config": {"clientSecret": SECRET, "tokenUrl": "https://a.example.com/t"}}]
+
+        await self._save(toolsets, {"clientSecret": MASK, "tokenUrl": "https://A.example.com/t/"}, stored, "cfg")
+
+        assert stored[0]["config"]["clientSecret"] == SECRET
 
 
 class TestListInstances:
@@ -357,3 +536,4 @@ class TestUpdateOAuthAppSaveFailure:
 
         assert exc.value.status_code == 500
         config_service.set_config.assert_not_called()
+

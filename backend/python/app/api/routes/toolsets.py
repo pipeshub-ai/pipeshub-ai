@@ -81,10 +81,15 @@ from app.services.notification.types import (
     NotificationType,
 )
 from app.utils.oauth_config import (
+    CREDENTIAL_REENTRY_MESSAGE,
     apply_tenant_to_microsoft_oauth_url as _apply_tenant_to_microsoft_oauth_url,
     check_salesforce_login_url_setting,
+    address_moved,
     extract_oauth_error_message,
     get_oauth_config,
+    is_destination_field,
+    reuses_secret_for_new_destination,
+    schema_field_defaults,
 )
 from app.utils import error_class
 from app.utils.credential_refresh_log import token_endpoint_error_class
@@ -315,15 +320,32 @@ def _instance_for_response(
     return safe
 
 
-def _keep_stored_secrets(incoming: dict[str, Any], stored: dict[str, Any] | None) -> dict[str, Any]:
-    """A client echoing back a masked value must not overwrite the stored secret."""
+def _keep_stored_secrets(
+    incoming: dict[str, Any],
+    stored: dict[str, Any] | None,
+    url_fields: frozenset[str] | set[str] = frozenset(),
+    defaults: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """A client echoing back a masked value must not overwrite the stored secret.
+
+    A stored secret is not carried to a changed address: when ``url_fields`` names an
+    address that differs from the stored one, every masked secret must be typed again.
+    """
     stored = stored or {}
     merged: dict[str, Any] = {}
+    restored = False
     for key, value in incoming.items():
         if not is_redacted_placeholder(value):
             merged[key] = value
         elif key in stored:
             merged[key] = stored[key]
+            restored = restored or key not in url_fields
+    if restored and any(
+        key in merged and key in incoming and not is_redacted_placeholder(incoming[key])
+        and address_moved(merged[key], stored.get(key), (defaults or {}).get(key))
+        for key in url_fields
+    ):
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=CREDENTIAL_REENTRY_MESSAGE)
     return merged
 
 
@@ -490,6 +512,28 @@ def _declared_schema_fields(request: Request, toolset_type: str, auth_type: str)
     auth_meta = _get_toolset_metadata(_get_registry(request), toolset_type).get("config", {}).get("auth", {})
     schema = (auth_meta.get("schemas") or {}).get((auth_type or "").upper()) or auth_meta.get("schema") or {}
     return [field for field in schema.get("fields", []) if isinstance(field, dict) and field.get("name")]
+
+
+def _declared_url_fields(request: Request, toolset_type: str, auth_type: str) -> set[str]:
+    """Names of the address fields the toolset declares for the auth type."""
+    return {
+        field["name"]
+        for field in _declared_schema_fields(request, toolset_type, auth_type)
+        if str(field.get("fieldType") or "").upper() == "URL"
+    }
+
+
+def _declared_destination_fields(request: Request, toolset_type: str, auth_type: str) -> set[str]:
+    """Names of the declared fields that choose which server the credentials are sent to."""
+    return {
+        field["name"]
+        for field in _declared_schema_fields(request, toolset_type, auth_type)
+        if is_destination_field(field["name"], field.get("fieldType"))
+    }
+
+
+def _declared_field_defaults(request: Request, toolset_type: str, auth_type: str) -> dict[str, Any]:
+    return schema_field_defaults(_declared_schema_fields(request, toolset_type, auth_type))
 
 
 def _declared_auth_fields(request: Request, instance: dict[str, Any]) -> set[str]:
@@ -912,6 +956,18 @@ async def _create_or_update_toolset_oauth_config(
                 if cfg.get("_id") == oauth_config_id and cfg.get("orgId") == org_id:
                     if "config" not in cfg:
                         cfg["config"] = {}
+                    typed = {k: v for k, v in auth_config.items() if not is_redacted_placeholder(v)}
+                    try:
+                        registry_urls = _get_oauth_config_from_registry(toolset_type, registry)
+                        tenant = str(typed.get("tenantId") or "").strip()
+                        defaults = {
+                            "authorizeUrl": _apply_tenant_to_microsoft_oauth_url(registry_urls.authorize_url, tenant),
+                            "tokenUrl": _apply_tenant_to_microsoft_oauth_url(registry_urls.token_url, tenant),
+                        }
+                    except Exception:
+                        defaults = {}
+                    if reuses_secret_for_new_destination(typed, cfg["config"], defaults):
+                        raise InvalidAuthConfigError(CREDENTIAL_REENTRY_MESSAGE)
                     # Enrich with infrastructure fields
                     enriched = await _prepare_toolset_auth_config(
                         auth_config, toolset_type, registry, config_service, base_url
@@ -1304,11 +1360,7 @@ async def _validated_personal_settings(
             status_code=HttpStatusCode.BAD_REQUEST.value,
             detail="Enter the client ID and client secret of your own OAuth app.",
         )
-    url_fields = {
-        field["name"]
-        for field in _declared_schema_fields(request, toolset_type, auth_type)
-        if str(field.get("fieldType") or "").upper() == "URL"
-    }
+    url_fields = _declared_url_fields(request, toolset_type, auth_type)
     try:
         settings = toolset_store.with_url_schemes(settings, url_fields & set(settings))
         await toolset_store.assert_public_addresses(settings)
@@ -1761,7 +1813,8 @@ async def _update_personal_instance(
         stored = instance.get("auth") or {}
         incoming = _validate_dict(value=body.get("authConfig"), field_name="authConfig", allow_empty=True)
         settings = await _validated_personal_settings(
-            request, toolset_type, auth_type, _keep_stored_secrets(incoming, stored)
+            request, toolset_type, auth_type,
+            _keep_stored_secrets(incoming, stored, _declared_destination_fields(request, toolset_type, auth_type), _declared_field_defaults(request, toolset_type, auth_type)),
         )
         oauth_client_changed = auth_type == "OAUTH" and any(
             settings.get(key) != stored.get(key) for key in ("clientId", "clientSecret", "tenantId")
@@ -1903,7 +1956,10 @@ async def update_toolset_instance(
         auth_config = _validate_dict(
             value=body.get("authConfig"), field_name="authConfig", allow_empty=True
         )
-        instance["auth"] = _keep_stored_secrets(auth_config, instance.get("auth"))
+        instance["auth"] = _keep_stored_secrets(
+            auth_config, instance.get("auth"), _declared_destination_fields(request, toolset_type, auth_type),
+            _declared_field_defaults(request, toolset_type, auth_type),
+        )
 
     # Recalculate inheritedFromOrgId server-side when oauth config linkage changed.
     if oauth_credentials_changed and instance.get("oauthConfigId"):

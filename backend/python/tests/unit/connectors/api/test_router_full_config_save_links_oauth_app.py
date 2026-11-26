@@ -700,7 +700,9 @@ class TestNewProviderUrlsForTheNamedServiceNowApp:
         store = _linked_servicenow_store(top_level)
 
         await _save(
-            store, {"auth": {"oauthConfigId": "sn-app", **NEW_SN_URLS}}, connector_type="ServiceNow"
+            store,
+            {"auth": {"oauthConfigId": "sn-app", **NEW_SN_URLS, "clientSecret": "typed-secret"}},
+            connector_type="ServiceNow",
         )
 
         def check() -> None:
@@ -718,6 +720,30 @@ class TestNewProviderUrlsForTheNamedServiceNowApp:
         await _save(store, {"auth": sent["auth"]}, connector_type="ServiceNow")
 
         check()
+
+
+@pytest.mark.asyncio
+class TestRetypingTheSecretOfTheNamedApp:
+    URLS = {"oauthConfigId": "sn-app", **NEW_SN_URLS}
+
+    async def _save(self, secret: str | None) -> InMemoryConfigService:
+        store = _linked_servicenow_store(SN_URLS)
+        auth = {**self.URLS, **({} if secret is None else {"clientSecret": secret})}
+        await _save(store, {"auth": auth}, connector_type="ServiceNow")
+        return store
+
+    async def test_the_same_secret_typed_again_moves_the_urls(self) -> None:
+        store = await self._save("sn-secret")
+
+        (app,) = store.values[SERVICENOW_APPS_PATH]
+        assert app["config"]["tokenUrl"] == NEW_SN_URLS["tokenUrl"]
+        assert app["config"]["clientSecret"] == "sn-secret"
+
+    @pytest.mark.parametrize("secret", [None, router_module.REDACTED_PLACEHOLDER], ids=["absent", "masked"])
+    async def test_an_absent_or_masked_secret_does_not(self, secret: str | None) -> None:
+        with pytest.raises(HTTPException) as caught:
+            await self._save(secret)
+        assert caught.value.status_code == 400
 
 
 FOREIGN_APP = {
@@ -794,9 +820,18 @@ class TestAnAppTheCallerDoesNotOwnKeepsItsClientIdAndSecret:
         assert "app-secret" not in json.dumps(store.values)
         assert "app-client" not in json.dumps(store.values)
 
-    async def test_an_app_the_caller_owns_is_unaffected(self) -> None:
+    async def test_an_app_the_caller_owns_needs_its_secret_typed_for_a_new_address(self) -> None:
         owned = {**FOREIGN_APP, "orgId": ORG_ID, "_resolved_from": "own"}
-        store = await self._save_linked_to_foreign_app({**self.NEW_URL}, owned)
+        with pytest.raises(HTTPException) as caught:
+            await self._save_linked_to_foreign_app({**self.NEW_URL}, owned)
+
+        assert caught.value.status_code == 400
+        assert "credentials again" in caught.value.detail
+
+    async def test_an_app_the_caller_owns_takes_a_new_address_with_a_typed_secret(self) -> None:
+        owned = {**FOREIGN_APP, "orgId": ORG_ID, "_resolved_from": "own"}
+        store = await self._save_linked_to_foreign_app({**self.NEW_URL, "clientSecret": "typed-secret"}, owned)
 
         (new_app,) = store.values[SERVICENOW_APPS_PATH]
-        assert new_app["config"]["clientSecret"] == "app-secret"
+        assert new_app["config"]["clientSecret"] == "typed-secret"
+        assert new_app["config"]["instanceUrl"] == self.NEW_URL["instanceUrl"]
