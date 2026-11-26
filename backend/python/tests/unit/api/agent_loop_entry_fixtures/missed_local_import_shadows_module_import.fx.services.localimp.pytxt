@@ -1,0 +1,11 @@
+from fx.api.routes.chatbot import askAIStream as invoke
+
+
+async def job(request):
+    return await invoke(request)
+
+
+def unrelated():
+    from json import dumps as invoke
+
+    return invoke({})

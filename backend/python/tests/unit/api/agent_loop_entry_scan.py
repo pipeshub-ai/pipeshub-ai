@@ -95,15 +95,17 @@ _BLOCKS = (
 )
 
 
-def _imports(tree: ast.Module, module: str, known: set[str]) -> dict[str, str]:
-    """Local name -> dotted target: a module ('a.b') or a member ('a.b:name')."""
+def _imports(tree: ast.Module, module: str, known: set[str]) -> dict[str, set[str]]:
+    """Local name -> every dotted target it is imported as anywhere in the module: a module
+    ('a.b') or a member ('a.b:name'). A name imported differently in two scopes keeps both, so
+    a function-local import never hides what the module-level one means elsewhere."""
     # A package's `__init__` is named after the package, so `from . import x` there means the package itself.
     is_package = any(other.startswith(f"{module}.") for other in known)
-    mapping: dict[str, str] = {}
+    mapping: dict[str, set[str]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                mapping[(alias.asname or alias.name).split(".")[0]] = (
+                mapping.setdefault((alias.asname or alias.name).split(".")[0], set()).add(
                     alias.name if alias.asname else alias.name.split(".")[0]
                 )
         elif isinstance(node, ast.ImportFrom):
@@ -117,7 +119,7 @@ def _imports(tree: ast.Module, module: str, known: set[str]) -> dict[str, str]:
                 )
             for alias in node.names:
                 local = alias.asname or alias.name
-                mapping[local] = (
+                mapping.setdefault(local, set()).add(
                     f"{base}.{alias.name}"
                     if f"{base}.{alias.name}" in known
                     else f"{base}:{alias.name}"
@@ -207,9 +209,26 @@ def _getattr_constant(node: ast.AST) -> ast.AST | None:
     return None
 
 
+def _called_at_import(resolver: "_Resolver", node: ast.AST) -> set[str]:
+    """Targets of the calls in ``node`` that run when it is evaluated (none inside a lambda)."""
+    refs: set[str] = set()
+    pending = [node]
+    while pending:
+        child = pending.pop()
+        if isinstance(child, ast.Lambda):
+            continue
+        if isinstance(child, ast.Call):
+            refs |= resolver.targets(child.func)
+            name = _dotted(child.func)
+            if name and name[-1] in SEEDS:
+                refs.add(f"seed:{name[-1]}")
+        pending.extend(ast.iter_child_nodes(child))
+    return refs
+
+
 class _Resolver:
     def __init__(
-        self, module: str, local: set[str], imports: dict[str, str], known: set[str]
+        self, module: str, local: set[str], imports: dict[str, set[str]], known: set[str]
     ) -> None:
         self.module, self.local, self.imports, self.known = (
             module,
@@ -228,9 +247,9 @@ class _Resolver:
             return self._members_of(self.module, [*cls.split("."), *rest])
         if head in self.local:
             return self._members_of(self.module, [head, *rest])
-        target = self.imports.get(head)
-        if not target:
-            return set()
+        return set().union(*(self._target(target, rest) for target in self.imports.get(head, ())))
+
+    def _target(self, target: str, rest: list[str]) -> set[str]:
         if ":" in target:
             owner, name = target.split(":", 1)
             return self._members_of(owner, [name, *rest])
@@ -288,10 +307,11 @@ def build_graph(sources: dict[str, str | bytes]) -> Graph:
         resolver = _Resolver(
             module, local | bound, _imports(tree, module, known), known
         )
-        for name, target in resolver.imports.items():
-            if ":" in target and f"{module}:{name}" != target:
-                graph.aliases.add(f"{module}:{name}")
-                graph.references.setdefault(f"{module}:{name}", set()).add(target)
+        for name, targets in resolver.imports.items():
+            for target in targets:
+                if ":" in target and f"{module}:{name}" != target:
+                    graph.aliases.add(f"{module}:{name}")
+                    graph.references.setdefault(f"{module}:{name}", set()).add(target)
         for node in assigns:
             if node.value is None:
                 continue
@@ -303,6 +323,13 @@ def build_graph(sources: dict[str, str | bytes]) -> Graph:
                     key = f"{module}:{target.id}"
                     graph.aliases.add(key)
                     graph.references.setdefault(key, set()).update(refs - {key})
+            # A call in the initializer runs at import (`r = asyncio.run(entry(...))`), unlike
+            # an alias, `partial(f)` or a lambda body: what it calls is a module-level entry.
+            executed = _called_at_import(resolver, node.value)
+            if executed:
+                key = f"{module}:{MODULE_LEVEL}"
+                graph.functions.add(key)
+                graph.references.setdefault(key, set()).update(executed)
         if exprs:
             # Top-level statements run at import, with no request: a loop reference there is an entry.
             key = f"{module}:{MODULE_LEVEL}"

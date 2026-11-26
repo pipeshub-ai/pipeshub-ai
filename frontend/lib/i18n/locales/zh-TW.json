@@ -5919,7 +5919,7 @@
     "identitySearchesAs": "已綁定至 {{identity}}",
     "identityCreator": "無服務帳戶",
     "identityBoundUnknown": "某個服務帳號",
-    "identityTooltip": "管理員為此代理程式綁定的服務帳戶。它不會改變人們看到的內容：每個回答只使用提問者自己有權讀取的內容。在服務帳戶授權可用之前，此綁定不會生效。",
+    "identityTooltip": "管理員為此代理程式綁定的服務帳戶。每個回答只使用提問者自己有權讀取的內容。服務代理程式只有綁定到服務帳戶後才能使用集合。",
     "identityDialogTitle": "以此身分檢索知識",
     "identityDialogBody": "這裡記錄管理員為此代理程式選擇的服務帳戶。目前不影響回答：無論由誰建立，每個人只能看到自己有權讀取的該代理程式來源內容。",
     "identityChoose": "選擇",

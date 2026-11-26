@@ -5870,7 +5870,7 @@
     "identitySearchesAs": "Gebunden an {{identity}}",
     "identityCreator": "kein Servicekonto",
     "identityBoundUnknown": "ein Dienstkonto",
-    "identityTooltip": "Das Servicekonto, an das ein Administrator diesen Agenten gebunden hat. Es ändert nicht, was Personen sehen: Jede Antwort nutzt nur, was die fragende Person lesen darf. Die Bindung hat keine Wirkung, bis Servicekonto-Freigaben verfügbar sind.",
+    "identityTooltip": "Das Servicekonto, an das ein Administrator diesen Agenten gebunden hat. Jede Antwort nutzt nur, was die fragende Person lesen darf. Ein Service-Agent kann Sammlungen erst nutzen, wenn er an ein Servicekonto gebunden ist.",
     "identityDialogTitle": "Wissen durchsuchen als",
     "identityDialogBody": "Hier wird festgehalten, welches Servicekonto ein Administrator für diesen Agenten gewählt hat. Es wirkt sich noch nicht auf Antworten aus: Jede Person sieht nur, was sie in den Quellen des Agenten lesen darf, unabhängig vom Ersteller.",
     "identityChoose": "Auswählen",

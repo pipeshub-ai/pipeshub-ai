@@ -6130,7 +6130,7 @@
     "identitySearchesAs": "Vázán na {{identity}}",
     "identityCreator": "žádný servisní účet",
     "identityBoundUnknown": "servisní účet",
-    "identityTooltip": "Servisní účet, na který tohoto agenta navázal administrátor. Nemění to, co lidé vidí: každá odpověď využívá jen to, co smí číst ten, kdo se ptá. Dokud nebudou k dispozici oprávnění servisních účtů, nemá vazba žádný účinek.",
+    "identityTooltip": "Servisní účet, na který tohoto agenta navázal administrátor. Každá odpověď využívá jen to, co smí číst ten, kdo se ptá. Servisní agent může používat kolekce až po navázání na servisní účet.",
     "identityDialogTitle": "Prohledávat znalosti jako",
     "identityDialogBody": "Zde se eviduje, který servisní účet pro tohoto agenta zvolil administrátor. Na odpovědi to zatím nemá vliv: každý vidí jen to, co smí číst ve zdrojích agenta, bez ohledu na to, kdo jej vytvořil.",
     "identityChoose": "Zvolit",

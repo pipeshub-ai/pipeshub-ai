@@ -157,10 +157,16 @@ async def test_every_agent_uses_the_persons_credentials(agent: dict[str, Any]) -
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("actor", [{**ACTOR, "kind": "service"}, {**ACTOR, "isActive": False}], ids=["service", "removed"])
-async def test_the_built_in_assistant_is_refused_an_actor_who_is_not_a_live_person(actor: dict[str, Any]) -> None:
+@pytest.mark.parametrize(
+    "actor",
+    [{**ACTOR, "kind": "service"}, {**ACTOR, "isActive": False}, None, RuntimeError("graph down")],
+    ids=["service", "removed", "no-record", "read-failed"],
+)
+async def test_the_built_in_assistant_is_refused_an_actor_who_is_not_a_live_person(actor: object) -> None:
     services = w.Services()
-    services.graph.get_user_by_user_id = AsyncMock(return_value=actor)
+    services.graph.get_user_by_user_id = (
+        AsyncMock(side_effect=actor) if isinstance(actor, Exception) else AsyncMock(return_value=actor)
+    )
     run = RunContext.from_claim(claim(pinned_spec(tool_ids=[]))).model_copy(update={"chat": MagicMock(), "agent": None})
     with pytest.raises(RunRefused) as refused:
         await build_chat_environment(run, services, MagicMock())

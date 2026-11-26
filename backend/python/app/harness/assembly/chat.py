@@ -56,6 +56,7 @@ async def build_chat_environment(
         enrich_chat_identity,
         prepare_chat_state,
     )
+    from app.api.middlewares.identified_caller import UNIDENTIFIED_CALLER_DETAIL
     from app.api.routes.agent import _require_live_person
     from app.api.routes.chatbot import (
         DEFAULT_CONTEXT_LENGTH,
@@ -83,12 +84,14 @@ async def build_chat_environment(
         services.entity_vector_store(run.org_id),
         return_exceptions=True,
     )
-    if isinstance(user_doc, dict):
-        try:
-            _require_live_person(user_doc)
-        except HTTPException as exc:
-            raise RunRefused("identity_unavailable", str(exc.detail)) from exc
-    email = user_doc.get("email") if isinstance(user_doc, dict) else None
+    # No record (removed, disabled, not a person) or a failed read: the run has no live person to act as.
+    if not isinstance(user_doc, dict):
+        raise RunRefused("identity_unavailable", UNIDENTIFIED_CALLER_DETAIL)
+    try:
+        _require_live_person(user_doc)
+    except HTTPException as exc:
+        raise RunRefused("identity_unavailable", str(exc.detail)) from exc
+    email = user_doc.get("email")
     user_info: dict[str, Any] = {
         "userId": run.actor_id,
         "orgId": run.org_id,

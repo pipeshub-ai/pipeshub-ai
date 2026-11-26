@@ -378,6 +378,10 @@ def test_the_unmodified_fixture_tree_is_clean_when_its_routes_are_guarded() -> N
             "fx.services.runner_job:job",
         ),
         (("missed_self_method_dispatch",), "fx.services.selfcall:nightly"),
+        # a function-local import of the same name does not hide the module-level one
+        (("missed_local_import_shadows_module_import",), "fx.services.localimp:job"),
+        # a call in a module-level assignment runs at import
+        (("missed_module_level_assigned_call",), f"fx.services.initcall:{MODULE_LEVEL}"),
         # a route registered by a module-level statement, with a lambda calling the handler
         (
             ("missed_module_level_add_api_route_lambda",),
@@ -424,6 +428,8 @@ def test_every_fixture_file_is_used() -> None:
         "missed_reexport_module",
         "missed_reexport_caller",
         "missed_dotted_import",
+        "missed_local_import_shadows_module_import",
+        "missed_module_level_assigned_call",
         "missed_assigned_alias",
         "missed_package_init_relative_import",
         "control_definition_shadows_an_import",

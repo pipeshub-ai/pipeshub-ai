@@ -5944,7 +5944,7 @@
     "identitySearchesAs": "Vinculado a {{identity}}",
     "identityCreator": "ninguna cuenta de servicio",
     "identityBoundUnknown": "una cuenta de servicio",
-    "identityTooltip": "La cuenta de servicio a la que un administrador vinculó este agente. No cambia lo que ve cada persona: cada respuesta usa solo lo que la persona que pregunta puede leer. La vinculación no tiene efecto hasta que haya permisos para cuentas de servicio.",
+    "identityTooltip": "La cuenta de servicio a la que un administrador vinculó este agente. Cada respuesta usa solo lo que la persona que pregunta puede leer. Un agente de servicio solo puede usar colecciones cuando está vinculado a una cuenta de servicio.",
     "identityDialogTitle": "Buscar en el conocimiento como",
     "identityDialogBody": "Esto registra qué cuenta de servicio eligió un administrador para este agente. Todavía no afecta a las respuestas: cada persona ve solo lo que puede leer en las fuentes del agente, sin importar quién lo creó.",
     "identityChoose": "Elegir",

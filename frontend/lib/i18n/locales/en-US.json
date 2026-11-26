@@ -5960,7 +5960,7 @@
     "identitySearchesAs": "Bound to {{identity}}",
     "identityCreator": "no service account",
     "identityBoundUnknown": "a service account",
-    "identityTooltip": "The service account an administrator bound this agent to. It does not change what people see: every answer uses only what the person asking can read. The binding has no effect until service-account grants are available.",
+    "identityTooltip": "The service account an administrator bound this agent to. Every answer uses only what the person asking can read. A service agent can use collections only after it is bound to a service account.",
     "identityDialogTitle": "Search knowledge as",
     "identityDialogBody": "This records which service account an administrator chose for this agent. It has no effect on answers yet: each person sees only what they can read in the agent's sources, whoever created it.",
     "identityChoose": "Choose",

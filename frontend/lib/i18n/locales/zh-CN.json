@@ -5919,7 +5919,7 @@
     "identitySearchesAs": "已绑定到 {{identity}}",
     "identityCreator": "无服务账户",
     "identityBoundUnknown": "某个服务账号",
-    "identityTooltip": "管理员为此智能体绑定的服务账户。它不会改变人们看到的内容：每个回答只使用提问者自己有权读取的内容。在服务账户授权可用之前，此绑定不起作用。",
+    "identityTooltip": "管理员为此智能体绑定的服务账户。每个回答只使用提问者自己有权读取的内容。服务智能体只有绑定到服务账户后才能使用集合。",
     "identityDialogTitle": "以此身份检索知识",
     "identityDialogBody": "这里记录管理员为此智能体选择的服务账户。它目前不影响回答：无论由谁创建，每个人只能看到自己有权读取的该智能体来源内容。",
     "identityChoose": "选择",
