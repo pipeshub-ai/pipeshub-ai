@@ -31,6 +31,7 @@ class World:
         self.by_hop = set(by_hop)      # children the check's walk from the App admits through the start (a subset of admitted)
         self.refused_stubs = set(refused_stubs)      # stubs a browse of would refuse to open (the rest open by the walk from the App)
         self.checked: list[set[str]] = []
+        self.counted: dict[str, int] = {}      # a start's edge count, where it differs from its children (they changed in between)
         self.walked: list[str] = []
 
 
@@ -40,10 +41,13 @@ def _provider(world: World) -> Neo4jProvider:
 
     async def kh_query(query: str, parameters: dict[str, Any] | None = None, txn_id: str | None = None) -> list[dict]:
         ids = (parameters or {}).get("ids") or []
+        if "-[kh_d:NODE_RELATION]->() WHERE" in query:
+            start = parameters["start_id"]
+            return [{"n": world.counted.get(start, len(world.children.get(start, [])))}]
         if "kh_c:Record|RecordGroup" in query:
-            per_parent = parameters["per_parent"]
+            per_parent, stubs_only = parameters["per_parent"], "kh_c <> kh_p AND coalesce(kh_c.isPlaceholder, false)" in query
             return [{"parent": i, "id": c, "stub": stub, "hidden": hidden, "isGroup": c in world.groups}
-                    for i in ids for c, stub, hidden in sorted(world.children.get(i, []))[:per_parent]]
+                    for i in ids for c, stub, hidden in sorted(world.children.get(i, [])) if stub or not stubs_only][:per_parent]
         if "RETURN g.id AS id" in query:
             return [{"id": i} for i in ids if i in world.groups]
         if "RETURN start.id AS id" in query:
@@ -73,8 +77,10 @@ ACCESS = {"gated_app_ids": ["A"], "grantee_ids": ["u"], "by_connector": {"A": []
 
 
 async def _listed(world: World, start: str = "N", placed: list[str] | None = None) -> list[str]:
-    return await _provider(world)._kh_split_listed(start, app_id="A", org_id="o", access=ACCESS, placed=placed or [], transaction=None,
-                                                    memo={})
+    listed, wide = await _provider(world)._kh_split_listed(start, app_id="A", org_id="o", access=ACCESS, placed=placed or [], transaction=None,
+                                                            memo={})
+    assert not wide
+    return listed
 
 
 async def _lists(world: World, ids: list[str]) -> set[str]:
@@ -153,16 +159,37 @@ async def test_one_request_asks_about_a_row_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_start_with_more_children_than_the_bound_is_left_to_legacy() -> None:
-    world = World({"N": [(f"c{i}", False, False) for i in range(4)], "M": [(f"d{i}", False, False) for i in range(3)]},
-                  admitted={"c0", "d0"})
+async def test_a_start_with_more_children_than_the_bound_leaves_them_to_the_page_windows() -> None:
+    """A wide start lists only its stubs and chain-tops before the page: its other children are read with the page, a window at a time
+    (`_kh_split_window`), so deciding it asks the check about none of them. A start with more stubs than the split browse reads is left
+    to legacy."""
+    world = World({"N": [*((f"c{i}", False, False) for i in range(4)), ("s", True, False)], "s": [("r", False, False)],
+                   "M": [(f"d{i}", False, False) for i in range(3)], "W": [(f"t{i}", True, False) for i in range(5)]},
+                  admitted={"c0", "d0", "r"})
     p = _provider(world)
+    p._KH_SPLIT_START_MAX = 3
+    kw = {"app_id": "A", "org_id": "o", "access": ACCESS, "placed": ["top"], "transaction": None, "memo": {}}
+    assert await p._kh_split_listed("N", **kw) == (["s", "top"], True)
+    assert {"c0", "c1", "c2", "c3"}.isdisjoint(set().union(*world.checked))      # the wide start's children were asked nothing
+    world.checked.clear()
+    assert await p._kh_split_listed("M", **kw) == (["d0", "top"], False)
+    assert world.checked == [{"d0", "d1", "d2"}]
     p._KH_SPLIT_MAX_CHILDREN = 3
-    kw = {"app_id": "A", "org_id": "o", "access": ACCESS, "placed": [], "transaction": None, "memo": {}}
     with pytest.raises(_KhSplitUndecided):
-        await p._kh_split_listed("N", **kw)
-    assert await p._kh_split_listed("M", **kw) == ["d0"]
-    assert world.checked == [{"d0", "d1", "d2"}]      # the wide start asked the check nothing
+        await p._kh_split_listed("W", **kw)
+
+
+@pytest.mark.asyncio
+async def test_a_start_that_grew_past_the_bound_after_its_count_is_read_in_windows() -> None:
+    """A sync adds children between the count and the read: the read holds one past the bound, so the start is wide after all. Deciding the
+    children it read would leave out those past them."""
+    world = World({"N": [*((f"c{i}", False, False) for i in range(5)), ("s", True, False)], "s": [("r", False, False)]},
+                  admitted={"c4", "r"})
+    world.counted["N"] = 3
+    p = _provider(world)
+    p._KH_SPLIT_START_MAX = 3
+    kw = {"app_id": "A", "org_id": "o", "access": ACCESS, "placed": [], "transaction": None, "memo": {}}
+    assert await p._kh_split_listed("N", **kw) == (["s"], True)
 
 
 @pytest.mark.asyncio

@@ -55,8 +55,9 @@ GRANTED = """/* pipeshub:kg.stamp_granted */ SELECT DISTINCT e.to_coll AS coll, 
     CROSS JOIN LATERAL (SELECT e.to_coll, e.to_id, e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'permission'
       AND e.to_id >= k.i AND e.to_id <= k.i ORDER BY e.to_id OFFSET 0) e
     WHERE EXISTS (SELECT 1 FROM graph.nodes p WHERE p.org_id = $1 AND p.coll = e.from_coll AND p.id = e.from_id AND p.coll = ANY($3::text[]) OFFSET 0)"""
+# One seek of records_id per asked node (under seeks): as a join the planner with no statistics of the rows a first drain wrote hashed the org's records for every batch.
 KG_GRANTED = """/* pipeshub:kg.stamp_kg_granted */ SELECT r.coll, r.id, r.granted FROM unnest($2::smallint[], $3::text[]) AS k(c, i)
-    JOIN kg.records r ON r.org_id = $1 AND r.coll = k.c AND r.id = k.i
+    CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records x WHERE x.org_id = $1 AND x.coll = k.c AND x.id >= k.i ORDER BY x.id LIMIT 1) s WHERE s.id = k.i OFFSET 0) r
     JOIN kg.projection_state s ON s.org_id = $1 AND s.app_sk = r.app_sk AND s.mode IN ('shadow', 'enforce') AND s.code_epoch = $4"""
 
 
@@ -130,7 +131,9 @@ async def nodes(tx: Tx, org: str, keys: Iterable[str]) -> dict[str, StampNode]:
             groups.setdefault(member, []).append(nk("recordGroups", r["target"]))
     granted = {nk(r["coll"], r["node"]) for r in rows[3]}
     asked = sorted((COLL_CODE[split(k)[0]], split(k)[1]) for k in found if split(k)[0] != "apps")
-    kg_granted = {nk(CODE_COLL[r["coll"]], r["id"]): r["granted"] for r in await tx.fetch(KG_GRANTED, org, [c for c, _ in asked], [i for _, i in asked], CODE_EPOCH)}
+    async with seeks(tx):
+        held = await tx.fetch(KG_GRANTED, org, [c for c, _ in asked], [i for _, i in asked], CODE_EPOCH)
+    kg_granted = {nk(CODE_COLL[r["coll"]], r["id"]): r["granted"] for r in held}
     out: dict[str, StampNode] = {}
     for key, r in found.items():
         kind = KIND[r["coll"]]
