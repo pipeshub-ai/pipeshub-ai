@@ -1,3 +1,4 @@
+import { historyLabel } from '../../../../src/libs/repositories/agent-harness/history-source/mongo'
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
@@ -12,9 +13,11 @@ const BODY = { query: 'And the roadmap?', runId: 'client-run-1', clientMessageId
 const chatPath = (kind: Kind): RegExp => (kind === 'chat' ? /\/api\/v1\/chat$/ : /\/agent\/agent-1\/chat$/)
 
 /** The payload Python got before the turn pipeline, with the client's run id forwarded. */
-const legacyPayload = (kind: Kind, conversationId: string, history: unknown[]) => ({
+// As main sends a follow-up: its history, and what that history read (FG2).
+const legacyPayload = (kind: Kind, conversationId: string, history: unknown[], label: unknown) => ({
   query: 'And the roadmap?',
   previousConversations: history,
+  historyLabel: label,
   filters: {},
   attachments: [],
   modelKey: null,
@@ -40,6 +43,7 @@ describe('by default a follow-up behaves as before', () => {
     it(`${kind} stream: same frames, same payload except the stored author fields, no lease, no run id`, async () => {
       const w = turnWorld(SOLO)
       const priorHistory = formatPreviousConversations(w.rows(kind) as never)
+      const priorLabel = historyLabel(w.rows(kind) as never)
 
       const turn = await w.start('A', kind, 'stream', BODY)
       w.s.ai.send('TEXT_MESSAGE_CONTENT', { runId: 'run-root', messageId: 'm1', delta: 'Roadmap.' })
@@ -48,7 +52,7 @@ describe('by default a follow-up behaves as before', () => {
 
       expect(turn.lease).to.equal(undefined)
       const payload = w.s.ai.streamCalls[0]!.body
-      expect(payload).to.deep.equal({ ...legacyPayload(kind, w.s.ids[kind], priorHistory), protocol: 'agui' })
+      expect(payload).to.deep.equal({ ...legacyPayload(kind, w.s.ids[kind], priorHistory, priorLabel), protocol: 'agui' })
       expect(turn.res.headers).to.not.have.property('x-run-id')
       const events = turn.res.events()
       expect(events.map((e) => e.event)).to.deep.equal(['CUSTOM', 'TEXT_MESSAGE_CONTENT', 'TEXT_MESSAGE_CONTENT', 'RUN_FINISHED'])
@@ -70,12 +74,13 @@ describe('by default a follow-up behaves as before', () => {
       const w = turnWorld(SOLO)
       w.s.ai.reply(chatPath(kind), 200, { answer: 'Roadmap.', citations: [], confidence: 'High' })
       const priorHistory = formatPreviousConversations(w.rows(kind) as never)
+      const priorLabel = historyLabel(w.rows(kind) as never)
 
       const turn = await w.start('A', kind, 'plain', BODY)
 
       expect(turn.error).to.equal(undefined)
       const sent = w.s.ai.calls.find((c) => chatPath(kind).test(c.url))!
-      expect(sent.body).to.deep.equal(legacyPayload(kind, w.s.ids[kind], priorHistory))
+      expect(sent.body).to.deep.equal(legacyPayload(kind, w.s.ids[kind], priorHistory, priorLabel))
       expect(turn.res.headers).to.not.have.property('x-run-id')
       expect(w.rows(kind).at(-1)).to.not.have.any.keys('runId')
       expect(w.session(kind).activeRun ?? null).to.equal(null)

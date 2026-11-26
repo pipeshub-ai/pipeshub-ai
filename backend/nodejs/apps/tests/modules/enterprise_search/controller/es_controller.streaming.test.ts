@@ -343,7 +343,7 @@ describe('es_controller streaming answers', () => {
         }
       })
 
-      it('any other classified failure stores no code', async () => {
+      it('any other classified failure stores its code for the web app to word (ERR-UX)', async () => {
         const run = await startStream(flow)
 
         run.ai.send('RUN_FINISHED', {
@@ -355,7 +355,8 @@ describe('es_controller streaming answers', () => {
         await settle()
 
         expect(run.answer()?.messageType).to.equal('error')
-        expect(run.answer()?.errorCode).to.equal(undefined)
+        // Not a refusal only an admin can lift: the web app still offers Try again.
+        expect(run.answer()?.errorCode).to.equal('rate_limit')
       })
 
       it('reports an interrupted answer when the AI stream ends without a final answer', async () => {

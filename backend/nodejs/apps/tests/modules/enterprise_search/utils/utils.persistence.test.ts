@@ -135,7 +135,7 @@ describe('user_query authorship', () => {
   it('carries only the author fields it was given, and nothing for a legacy caller', () => {
     const author = new mongoose.Types.ObjectId()
     const plain = buildUserQueryMessage('q')
-    const stamped = buildUserQueryMessage('q', undefined, 'quick', undefined, { authorUserId: author, clientMessageId: 'k', filesShared: false, runId: undefined })
+    const stamped = buildUserQueryMessage('q', undefined, 'quick', undefined, undefined, { authorUserId: author, clientMessageId: 'k', filesShared: false, runId: undefined })
     expect(plain).to.not.have.any.keys('authorUserId', 'clientMessageId', 'filesShared', 'shareToolResults', 'runId')
     expect(stamped).to.include({ authorUserId: author, clientMessageId: 'k', filesShared: false })
     expect(stamped).to.not.have.any.keys('runId', 'shareToolResults')
