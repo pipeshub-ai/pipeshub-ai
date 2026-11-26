@@ -98,7 +98,7 @@ AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
 _SIGN_IN_REFUSED = (
     "GitHub refused this connector's sign-in and it could not be refreshed. "
-    "Reconnect it from the connector's settings."
+    "Reconnect it, or replace its token, in the connector's settings."
 )
 
 
@@ -420,13 +420,17 @@ class GitHubTeamsConnector(BaseConnector):
                 )
         except Exception as e:
             self.logger.error("Error in GitHub Teams sync: %s", e, exc_info=True)
-            if self.runtime.sign_in_refused is True:
-                await self._tell_to_reconnect()
-                raise ConnectorInitError(_SIGN_IN_REFUSED) from e
+            await self._stop_if_sign_in_refused(e)
             raise
 
+    async def _stop_if_sign_in_refused(self, error: Exception) -> None:
+        """Raise the reconnect error, after telling the owner, when GitHub refused this run's sign-in."""
+        if self.runtime.sign_in_refused is True:
+            await self._tell_to_reconnect()
+            raise ConnectorInitError(_SIGN_IN_REFUSED) from error
+
     async def _tell_to_reconnect(self) -> None:
-        self.logger.error("GitHub Teams sync stopped: GitHub refused the sign-in and it could not be refreshed")
+        self.logger.error("GitHub sync stopped: GitHub refused the sign-in and it could not be refreshed")
         try:
             await self.notify(
                 type=NotificationType.CONNECTOR_AUTH_ERROR,

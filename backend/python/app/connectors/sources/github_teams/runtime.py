@@ -22,9 +22,11 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.token_service.oauth_service import RefreshTokenInvalidError
 from app.connectors.core.base.error.stream_errors import extract_source_status
 from app.sources.client.github.github import GitHubResponse
 from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
@@ -48,6 +50,19 @@ from .constants import (
 
 if TYPE_CHECKING:
     from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
+
+
+class RefreshOutcome(str, Enum):
+    """How an on-demand token refresh ended. Only the two refusals mean the owner must act."""
+
+    REFRESHED = "refreshed"
+    CANNOT_REFRESH = "cannot_refresh"  # an API token, or no refresh token stored
+    REJECTED = "rejected"  # GitHub rejected the refresh token
+    UNAVAILABLE = "unavailable"  # the refresh could not be tried or failed for a passing reason
+
+    @property
+    def refused(self) -> bool:
+        return self in (RefreshOutcome.CANNOT_REFRESH, RefreshOutcome.REJECTED)
 
 
 class RuntimeHelper:
@@ -177,12 +192,15 @@ class RuntimeHelper:
         except Exception as e:
             self.logger.warning("Could not refresh GitHub token: %s", e)
 
-    async def force_refresh_oauth_token(self) -> bool:
+    async def force_refresh_oauth_token(self) -> RefreshOutcome:
         """Trigger an OAuth refresh via the central ``TokenRefreshService`` and sync
         the SDK with the rotated access token.
 
         Used reactively when a GitHub API call returns 401, so we do not wait
         for the background refresher to catch up. No-op for ``API_TOKEN`` auth.
+        Returns why it did not refresh, so a passing failure (the refresh service
+        down, the config unreadable, GitHub's token endpoint failing) is not
+        taken for a sign-in the owner has to repair.
         """
         c = self.c
         try:
@@ -190,36 +208,41 @@ class RuntimeHelper:
                 startup_service,
             )
 
-            refresh_service = startup_service.get_token_refresh_service()
-            if not refresh_service:
-                self.logger.error("Token refresh service unavailable; cannot refresh GitHub token.")
-                return False
-
             config_path = f"/services/connectors/{c.connector_id}/config"
             config = await c.config_service.get_config(config_path)
             if not config:
                 self.logger.error("Connector config not found; cannot refresh GitHub token.")
-                return False
+                return RefreshOutcome.UNAVAILABLE
 
+            # Read before the refresh service: an API token or a missing refresh token cannot be refreshed
+            # whether or not the service is running.
             auth_config = config.get("auth", {}) or {}
             if auth_config.get("authType", "OAUTH") == "API_TOKEN":
                 self.logger.debug("API_TOKEN auth does not use OAuth refresh.")
-                return False
+                return RefreshOutcome.CANNOT_REFRESH
 
             refresh_token = (config.get("credentials") or {}).get("refresh_token")
             if not refresh_token:
                 self.logger.error("No refresh token in connector config; cannot refresh GitHub token.")
-                return False
+                return RefreshOutcome.CANNOT_REFRESH
+
+            refresh_service = startup_service.get_token_refresh_service()
+            if not refresh_service:
+                self.logger.error("Token refresh service unavailable; cannot refresh GitHub token.")
+                return RefreshOutcome.UNAVAILABLE
 
             connector_type = (
                 c.connector_name.value if hasattr(c.connector_name, "value") else str(c.connector_name)
             )
             await refresh_service.refresh_now(c.connector_id, connector_type, refresh_token)
             await self.refresh_token_if_needed()
-            return True
+            return RefreshOutcome.REFRESHED
+        except RefreshTokenInvalidError as e:
+            log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
+            return RefreshOutcome.REJECTED
         except Exception as e:
             log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
-            return False
+            return RefreshOutcome.UNAVAILABLE
 
     # ------------------------------------------------------------------
     # Core invocation
@@ -344,13 +367,15 @@ class RuntimeHelper:
         for attempt in range(1, _GITHUB_MAX_RETRIES + 1):
             if self._is_auth_error(response):
                 if refreshed:
-                    self.sign_in_refused = True
+                    self._note_sign_in_refused(label, response, "a refreshed token was refused too")
+                    return response
+                self.logger.info("GitHub op %s returned auth error; refreshing OAuth token and retrying.", label)
+                outcome = await self.force_refresh_oauth_token()
+                if outcome is not RefreshOutcome.REFRESHED:
+                    if outcome.refused:
+                        self._note_sign_in_refused(label, response, f"the token could not be refreshed ({outcome.value})")
                     return response
                 refreshed = True
-                self.logger.info("GitHub op %s returned auth error; refreshing OAuth token and retrying.", label)
-                if not await self.force_refresh_oauth_token():
-                    self.sign_in_refused = True
-                    return response
             elif self._is_rate_limited(response):
                 wait = self._rate_limit_wait_seconds(response)
                 reason = response.api_message or response.exception_type
@@ -397,10 +422,18 @@ class RuntimeHelper:
 
             response = await self._execute_github_op(op, timeout=_github_timeout, op_label=label)
 
-        # The last attempt was the one made after a token refresh.
-        if self._is_auth_error(response):
-            self.sign_in_refused = True
+        # A 401 counts as refused only once a refreshed token was tried and refused too.
+        if refreshed and self._is_auth_error(response):
+            self._note_sign_in_refused(label, response, "a refreshed token was refused too")
         return response
+
+    def _note_sign_in_refused(self, label: str, response: GitHubResponse, why: str) -> None:
+        self.sign_in_refused = True
+        self.logger.error(
+            "GitHub refused the sign-in on %s (%s: %s); %s. The token may be revoked, expired or wrong, "
+            "or the OAuth app removed.",
+            label, response.status_code, response.api_message or response.error, why,
+        )
 
     # ------------------------------------------------------------------
     # Search API — separate rate-limit pool

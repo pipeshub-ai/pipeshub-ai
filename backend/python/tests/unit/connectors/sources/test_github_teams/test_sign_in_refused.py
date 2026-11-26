@@ -8,6 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.core.base.token_service.oauth_service import (
+    RefreshTokenInvalidError,
+)
+from app.connectors.sources.github.connector import GithubConnector
 from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 from app.connectors.sources.github_teams.constants import _GITHUB_MAX_RETRIES
 from app.connectors.sources.github_teams.runtime import RuntimeHelper
@@ -32,21 +36,61 @@ def _runtime(config: dict) -> tuple[MagicMock, RuntimeHelper]:
     return c, RuntimeHelper(c)
 
 
-async def _call(runtime: RuntimeHelper, *answers: GitHubResponse) -> GitHubResponse:
-    with patch(
-        "app.connectors.core.base.token_service.startup_service.startup_service.get_token_refresh_service",
-        return_value=MagicMock(refresh_now=AsyncMock()),
-    ):
+_SERVICE = "app.connectors.core.base.token_service.startup_service.startup_service.get_token_refresh_service"
+
+
+async def _call(runtime: RuntimeHelper, *answers: GitHubResponse, service: object = None) -> GitHubResponse:
+    with patch(_SERVICE, return_value=MagicMock(refresh_now=AsyncMock()) if service is None else service):
         return await runtime.ds_call(AsyncMock(side_effect=answers, __name__="op"))
 
 
-async def test_a_refusal_with_no_refresh_token_is_remembered_and_an_error() -> None:
-    c, runtime = _runtime({"auth": {"authType": "OAUTH"}, "credentials": {}})
+def _logged(c: MagicMock) -> str:
+    return " ".join(str(call.args) for call in c.logger.error.call_args_list)
+
+
+@pytest.mark.parametrize("config", [
+    {"auth": {"authType": "OAUTH"}, "credentials": {}},
+    {"auth": {"authType": "API_TOKEN"}, "credentials": {}},
+])
+async def test_a_refusal_that_cannot_be_refreshed_is_remembered_and_logged_with_githubs_reason(config: dict) -> None:
+    c, runtime = _runtime(config)
 
     await _call(runtime, REFUSED)
 
     assert runtime.sign_in_refused is True
-    c.logger.error.assert_called_once()
+    assert "401 Bad credentials" in _logged(c) and "revoked, expired or wrong" in _logged(c)
+
+
+async def test_a_refused_api_token_is_refused_even_without_the_refresh_service() -> None:
+    """Found by the GitHub simulator, which runs no refresh service: an API token is never refreshed anyway."""
+    _c, runtime = _runtime({"auth": {"authType": "API_TOKEN"}, "credentials": {}})
+    await _call(runtime, REFUSED, service=False)
+    assert runtime.sign_in_refused is True
+
+
+async def test_a_rejected_refresh_token_is_a_refused_sign_in() -> None:
+    _c, runtime = _runtime({"auth": {"authType": "OAUTH"}, "credentials": {"refresh_token": "r"}})
+    rejected = MagicMock(refresh_now=AsyncMock(side_effect=RefreshTokenInvalidError("invalid_grant")))
+    await _call(runtime, REFUSED, service=rejected)
+    assert runtime.sign_in_refused is True
+
+
+@pytest.mark.parametrize("service", [
+    False,  # the refresh service is not running
+    MagicMock(refresh_now=AsyncMock(side_effect=ConnectionError("token endpoint unreachable"))),
+    MagicMock(refresh_now=AsyncMock(side_effect=RuntimeError("502 from GitHub's token endpoint"))),
+], ids=["service-unavailable", "network-error", "token-endpoint-5xx"])
+async def test_a_refresh_that_fails_for_a_passing_reason_is_not_a_refused_sign_in(service: object) -> None:
+    _c, runtime = _runtime({"auth": {"authType": "OAUTH"}, "credentials": {"refresh_token": "r"}})
+    answer = await _call(runtime, REFUSED, service=service)
+    assert answer is REFUSED
+    assert runtime.sign_in_refused is False
+
+
+async def test_an_unreadable_config_is_not_a_refused_sign_in() -> None:
+    _c, runtime = _runtime({})
+    await _call(runtime, REFUSED)
+    assert runtime.sign_in_refused is False
 
 
 async def test_a_refusal_after_a_refresh_is_remembered() -> None:
@@ -79,6 +123,7 @@ def _sync(error: Exception | None, *, refused: bool) -> MagicMock:
     c = make_mock_connector()
     c.notify = AsyncMock()
     c._tell_to_reconnect = lambda: GitHubTeamsConnector._tell_to_reconnect(c)
+    c._stop_if_sign_in_refused = lambda e: GitHubTeamsConnector._stop_if_sign_in_refused(c, e)
     c.repos.timestamps.cancel = AsyncMock()
     c.runtime.refresh_token_if_needed = AsyncMock()
     c.runtime.sign_in_refused = True  # left by an earlier run
@@ -128,6 +173,44 @@ async def test_a_notice_that_cannot_be_sent_does_not_hide_the_reason() -> None:
     c.notify = AsyncMock(side_effect=RuntimeError("broker down"))
     with pytest.raises(ConnectorInitError, match="Reconnect"):
         await _run(c)
+
+
+async def test_the_message_also_fits_a_connector_signed_in_with_a_token() -> None:
+    c = _sync(RuntimeError("x"), refused=True)
+    with pytest.raises(ConnectorInitError, match="replace its token"):
+        await _run(c)
+
+
+def _personal_sync(*, refused: bool) -> MagicMock:
+    c = make_mock_connector()
+    c.notify = AsyncMock()
+    c._tell_to_reconnect = lambda: GitHubTeamsConnector._tell_to_reconnect(c)
+    c._stop_if_sign_in_refused = lambda e: GitHubTeamsConnector._stop_if_sign_in_refused(c, e)
+    c.repos.timestamps.cancel = AsyncMock()
+    c.runtime.refresh_token_if_needed = AsyncMock()
+    c.runtime.sign_in_refused = True  # left by an earlier run
+    c.creator_email = "owner@example.com"
+    c.ensure_creator_user_app_relation = AsyncMock()
+
+    async def repos() -> None:
+        assert c.runtime.sign_in_refused is False, "each run starts afresh"
+        c.runtime.sign_in_refused = refused
+        raise RuntimeError("no repository could be listed")
+
+    c.projects.sync_all_repos = repos
+    return c
+
+
+@pytest.mark.parametrize("refused", [True, False])
+async def test_the_personal_connector_tells_the_owner_to_reconnect_only_on_a_refused_sign_in(refused: bool) -> None:
+    c = _personal_sync(refused=refused)
+    with patch("app.connectors.sources.github.connector.load_connector_filters", AsyncMock(return_value=({}, {}))):
+        with pytest.raises(ConnectorInitError if refused else RuntimeError, match="Reconnect" if refused else "listed"):
+            await GithubConnector.run_sync(c)
+    if refused:
+        assert c.notify.await_args.kwargs["type"] is NotificationType.CONNECTOR_AUTH_ERROR
+    else:
+        c.notify.assert_not_awaited()
 
 
 async def test_a_run_that_works_again_is_not_judged_by_the_last_one() -> None:
