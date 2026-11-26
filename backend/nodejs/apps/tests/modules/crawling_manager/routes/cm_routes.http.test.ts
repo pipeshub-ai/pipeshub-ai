@@ -29,6 +29,8 @@ import {
   errorMessage,
 } from '../../tokens_manager/routes/connectors-http-harness'
 import { FakeCrawlingQueue, FakeJob, FakeQueueStore, schedulerOver } from '../fake-crawling-queue'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const JWT_SECRET = 'connectors-http-test-jwt-secret'
 const SCOPED_JWT_SECRET = 'connectors-http-test-scoped-secret'
@@ -101,6 +103,9 @@ const query = <T>(value: T): Query<T> => {
 }
 
 describe('Crawling manager over HTTP', () => {
+  beforeEach(() => registerAppUpstreams(config))
+  afterEach(() => registerUpstreams({}))
+
   const backend = new FakeBackend()
   const tokens = new AuthTokenService(JWT_SECRET, SCOPED_JWT_SECRET)
   const oauthGrants = new Map<string, { userId: string; orgId: string; scope: string }>()

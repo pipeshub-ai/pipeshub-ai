@@ -279,3 +279,72 @@ def test_a_good_model_timeout_is_the_same_in_the_service_and_the_client(monkeypa
     ts.set_supervisor(None)
     assert ts.get_supervisor().model_timeout_ceiling == 45.5 == flow.model_timeout_s()
     ts.set_supervisor(None)
+
+
+def test_an_image_whose_header_is_too_large_is_refused_before_it_is_decoded(monkeypatch) -> None:
+    import struct
+    import zlib
+
+    from app.services.docling import table_structure_child as child
+
+    def png_header(w: int, h: int) -> bytes:
+        ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+        return b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + ihdr + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr))
+
+    def no_decode(*_a, **_k) -> None:
+        raise AssertionError("decoded")
+
+    monkeypatch.setattr(cv2, "imdecode", no_decode)
+    for blob in (png_header(32000, 32000), png_header(16000, 16000), b"GIF89a" + b"\0" * 40):
+        with pytest.raises(ValueError, match="bad image"):
+            child._decode_png(blob)
+    monkeypatch.undo()
+    small = cv2.imencode(".png", np.zeros((8, 6, 3), np.uint8))[1].tobytes()
+    assert child._decode_png(small).shape == (8, 6, 3)
+
+
+async def test_a_child_that_stops_reading_its_input_times_out_and_is_killed() -> None:
+    s = supervisor(model_timeout_ceiling=1.0)
+    stuck = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(60)", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+    )
+    s._proc = stuck
+    try:
+        big = b"\0" * (4 * 1024 * 1024)  # far more than a pipe holds: the write cannot drain
+        r = await asyncio.wait_for(s.run_unlocked(spec("a"), big), 20)
+        assert r == {"status": "error", "err": "timeout"}
+        assert not alive(stuck.pid) or stuck.returncode is not None
+    finally:
+        if stuck.returncode is None:
+            stuck.kill()
+            await stuck.wait()
+        await s.shutdown()
+
+
+async def test_the_model_starts_before_the_permit_is_taken_and_within_the_callers_deadline() -> None:
+    import contextlib
+
+    def slow_weights(_mode: str) -> str:
+        time.sleep(3.0)  # a slow download of the weights
+        return "unused"
+
+    s = supervisor(weights_dir=slow_weights)
+    permits: list[float] = []
+
+    @contextlib.asynccontextmanager
+    async def acquire(wait_s: float):  # noqa: ANN202
+        permits.append(wait_s)
+        yield
+
+    meta = ts.TableRequestMeta.model_validate({"v": 1, "tables": [
+        {"id": "p1:b0", "image": "c0", "scale_factor": 1.0, "page_w": 100.0, "page_h": 100.0, "table_bbox": [0, 0, 8, 6], "cap": 10,
+         "tokens": [{"id": 0, "bbox": [0, 0, 1, 1], "text": "x"}]},
+    ]})
+    try:
+        t0 = time.monotonic()
+        results, refused = await ts.run_tables(meta, {"c0": PNG}, s, acquire, deadline=time.monotonic() + 1.0)
+        assert (results, refused) == ([], "deadline")
+        assert permits == []  # no permit is held while the model starts
+        assert time.monotonic() - t0 < 2.5  # the caller's deadline bounds the wait, not the download
+    finally:
+        await s.shutdown()

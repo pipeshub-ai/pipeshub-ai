@@ -211,6 +211,20 @@ def build_connector_cleanup_events(
     return events
 
 
+def build_gone_connector_cleanup_events(
+    *, org_id: str, connector_id: str, connector_name: str | None,
+) -> list[dict[str, Any]]:
+    """What a delete owes when its cascade's answer was lost (or a rival delete took the connector first) and the
+    connector reads as gone. The answer's ids went with it, and the connector-scoped events need none of them: the
+    purge finds the points by their own ``connectorIds`` and the entity store recovers the groups from its points.
+    Points that carry no membership arrays (a KB migrated from the legacy layout, or any connector, whose backfill
+    has not finished or gave up) are not reached; their ids were in the lost answer."""
+    return build_connector_cleanup_events(
+        org_id=org_id, connector_id=connector_id, vector_membership_backfilled=True,
+        connector_name=connector_name, record_group_ids=None,
+    )
+
+
 def _event(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "eventType": event_type,

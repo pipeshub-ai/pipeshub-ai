@@ -62,14 +62,22 @@ function stamped(row: NewNotification, now: Date): NewNotification {
 export class MongoNotificationRepository implements NotificationRepository {
   async insert(row: NewNotification): Promise<NotificationRow> {
     const doc = prepareNotification(row);
-    // a row with no time of its own is stored exactly as it always was: the schema stamps both times
-    if (doc.visibleAt === undefined && doc.createdAt === undefined)
+    // a row with no time and no id of its own is stored exactly as it always was (one with an id is idempotent by it, in insertMany): the schema stamps both times
+    if (
+      doc._id === undefined &&
+      doc.visibleAt === undefined &&
+      doc.createdAt === undefined
+    )
       return rowOf(await Notifications.create(doc));
     return (await this.insertMany([row]))[0] as NotificationRow;
   }
 
   async insertMany(rows: NewNotification[]): Promise<NotificationRow[]> {
     const now = new Date();
+    // every row is checked before any is written, so a refused row leaves the others unstored
+    const docs = rows.map((r) => stamped(r, now));
+    // the schema's own checks (required fields, enums) run on every document here: create() would otherwise store the first row of a batch and refuse a later one
+    for (const d of docs) await new Notifications(d).validate();
     const out = new Array<NotificationRow>(rows.length);
     const fresh: number[] = [];
     for (const [i, r] of rows.entries()) {
@@ -81,7 +89,9 @@ export class MongoNotificationRepository implements NotificationRepository {
       try {
         out[i] = rowOf(
           (
-            await Notifications.create([stamped(r, now)], { timestamps: false })
+            await Notifications.create([docs[i] as NewNotification], {
+              timestamps: false,
+            })
           )[0],
         );
       } catch (e) {
@@ -96,7 +106,7 @@ export class MongoNotificationRepository implements NotificationRepository {
     }
     if (fresh.length > 0) {
       const saved = await Notifications.create(
-        fresh.map((i) => stamped(rows[i] as NewNotification, now)),
+        fresh.map((i) => docs[i] as NewNotification),
         { timestamps: false },
       );
       for (const [j, i] of fresh.entries()) out[i] = rowOf(saved[j]);
@@ -194,5 +204,30 @@ export class MongoNotificationRepository implements NotificationRepository {
       { returnDocument: 'after' },
     ).lean();
     return doc ? rowOf(doc) : null;
+  }
+
+  async eraseForConversation(
+    orgId: string,
+    conversationId: string,
+  ): Promise<number> {
+    if (!mongoose.Types.ObjectId.isValid(orgId)) return 0;
+    const deleted = await Notifications.deleteMany(
+      { orgId: oid(orgId), 'payload.conversationId': conversationId },
+      { writeConcern: { w: 'majority' } },
+    );
+    return deleted.deletedCount;
+  }
+
+  async eraseForOrg(orgId: string, limit: number): Promise<number> {
+    if (!mongoose.Types.ObjectId.isValid(orgId) || limit <= 0) return 0;
+    const batch = await Notifications.find({ orgId: oid(orgId) }, { _id: 1 })
+      .limit(limit)
+      .lean<Array<{ _id: mongoose.Types.ObjectId }>>();
+    if (batch.length === 0) return 0;
+    const deleted = await Notifications.deleteMany(
+      { _id: { $in: batch.map((row) => row._id) }, orgId: oid(orgId) },
+      { writeConcern: { w: 'majority' } },
+    );
+    return deleted.deletedCount;
   }
 }

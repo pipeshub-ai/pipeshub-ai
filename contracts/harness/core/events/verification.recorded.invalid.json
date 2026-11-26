@@ -1,0 +1,117 @@
+[
+  {
+    "description": "writer allowlist: only a worker writes verification.recorded",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 21,
+      "runId": "run_1",
+      "type": "verification.recorded",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-31T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "status": "verified",
+        "round": 1,
+        "continuing": false,
+        "checks": [
+          {
+            "kind": "file",
+            "target": "out/report.pdf",
+            "passed": true
+          }
+        ]
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "an unknown status",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 21,
+      "runId": "run_1",
+      "type": "verification.recorded",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-31T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "status": "maybe",
+        "round": 1,
+        "continuing": false,
+        "checks": [
+          {
+            "kind": "file",
+            "target": "out/report.pdf",
+            "passed": true
+          }
+        ]
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "a verification names its checks",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 21,
+      "runId": "run_1",
+      "type": "verification.recorded",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-31T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "status": "verified",
+        "round": 1,
+        "continuing": false,
+        "checks": []
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "a check carries no output",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 21,
+      "runId": "run_1",
+      "type": "verification.recorded",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-31T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "status": "verified",
+        "round": 1,
+        "continuing": false,
+        "checks": [
+          {
+            "kind": "file",
+            "target": "out/report.pdf",
+            "passed": true,
+            "output": "x"
+          }
+        ]
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  }
+]

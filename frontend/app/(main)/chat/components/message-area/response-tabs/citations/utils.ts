@@ -63,6 +63,7 @@ export function getConnectorConfig(connector: string, instanceName?: string): Co
   let label = connector ? titleCaseConnectorKey(connector) : i18n.t('filter.source');
   if (isCollections) label = i18n.t('nav.collections');
   if (isLocalFs) label = i18n.t('connectorTypes.localFs');
+  if (resolved === 'repository') label = i18n.t('connectorTypes.repository');
   return {
     label,
     sourceLabel: namedSource(instanceName, isCollections) || label,
@@ -73,6 +74,29 @@ export function getConnectorConfig(connector: string, instanceName?: string): Co
 // ---------------------------------------------------------------------------
 // Build citation maps from the *complete* response (CitationApiResponse[])
 // ---------------------------------------------------------------------------
+
+/**
+ * A citation of a source the shared viewer cannot read now. It keeps its
+ * `[N]` so the answer's markers still line up, and is left out of the
+ * Sources list: there is no record to group it under.
+ */
+function unavailableCitation(citationId: string, chunkIndex: number): CitationData {
+  return {
+    citationId,
+    content: '',
+    chunkIndex,
+    recordId: '',
+    recordName: '',
+    connector: '',
+    recordType: '',
+    mimeType: '',
+    extension: '',
+    previewRenderable: false,
+    hideWeburl: true,
+    citationType: '',
+    unavailable: true,
+  };
+}
 
 export function buildCitationMapsFromApi(
   rawCitations: CitationApiResponse[]
@@ -85,6 +109,13 @@ export function buildCitationMapsFromApi(
   for (const raw of rawCitations) {
     const citationId = raw.citationId;
     const data = raw.citationData;
+    if (data?.unavailable) {
+      if (typeof data.chunkIndex === 'number') {
+        citations[citationId] = unavailableCitation(citationId, data.chunkIndex);
+        citationsOrder[data.chunkIndex] = citationId;
+      }
+      continue;
+    }
     if (!data) continue;
 
     const metadata = data.metadata;
@@ -140,6 +171,13 @@ export function buildCitationMapsFromStreaming(
 
   for (const raw of rawCitations) {
     const tempId = `streaming-${raw.chunkIndex}`;
+    if (raw.unavailable) {
+      if (typeof raw.chunkIndex === 'number') {
+        citations[tempId] = unavailableCitation(tempId, raw.chunkIndex);
+        citationsOrder[raw.chunkIndex] = tempId;
+      }
+      continue;
+    }
     const metadata = raw.metadata;
     if (!metadata) continue;
 

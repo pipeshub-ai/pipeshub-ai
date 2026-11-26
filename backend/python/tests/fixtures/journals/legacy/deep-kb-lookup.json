@@ -1,0 +1,397 @@
+{
+  "format": "pipeshub.harness.recording/v1",
+  "manifest": {
+    "scenario": "deep-kb-lookup",
+    "source": "legacy",
+    "harness": "legacy-agent-loop",
+    "model": "scripted-model",
+    "scrub_version": "1"
+  },
+  "inputs": {
+    "route": "agent",
+    "chat_mode": "deep",
+    "query": "How many days of paid leave do I get?",
+    "fixtures": {
+      "knowledge": [
+        {
+          "id": "kb-leave",
+          "title": "Leave policy",
+          "text": "Full-time employees get 25 days of paid leave per calendar year."
+        }
+      ],
+      "tickets": [],
+      "slack": {},
+      "emails": [],
+      "files": [],
+      "web": {}
+    }
+  },
+  "steps": [
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 2,
+        "last_user": "user query : How many days of paid leave do I get?",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [
+          "task_complete"
+        ],
+        "digest": "344217bef51c9e0f"
+      },
+      "response": {
+        "text": "Find how many days of paid leave the user gets.",
+        "reasoning": "",
+        "tool_calls": [],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "end_turn"
+      },
+      "error": null
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 3,
+        "last_user": "Phase 1 -- PLAN: decompose this goal into single-domain phases by calling create_plan with a structured `steps` array. Each step must have:\n- `id`: short stable identifier (e.g. 'fetch_jira')\n- `description`: clear, self-contained goal for the sub-agent\n- `domain`: which domain handles this step\n- `tool_names`: tool names from Available Domains below (use exact tool names or group names)\n- `depend",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [
+          "create_plan",
+          "critique_plan",
+          "spawn_agent",
+          "verify_result"
+        ],
+        "digest": "bb419fb568fb4b53"
+      },
+      "response": {
+        "text": "",
+        "reasoning": "",
+        "tool_calls": [
+          {
+            "id": "plan-1",
+            "name": "create_plan",
+            "args": {
+              "steps": [
+                {
+                  "id": "lookup",
+                  "description": "Search the knowledge base for the leave policy and report the number of days",
+                  "domain": "knowledge"
+                }
+              ]
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "tool_use"
+      },
+      "error": null
+    },
+    {
+      "kind": "tool",
+      "call_id": "plan-1",
+      "name": "create_plan",
+      "args": {
+        "steps": [
+          {
+            "id": "lookup",
+            "description": "Search the knowledge base for the leave policy and report the number of days",
+            "domain": "knowledge"
+          }
+        ]
+      },
+      "status": "succeeded",
+      "result": {
+        "plan": "1. **lookup** — Search the knowledge base for the leave policy and report the number of days",
+        "confidence": "medium"
+      },
+      "error": null,
+      "sources": []
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 6,
+        "last_user": "Phase 1 -- VALIDATE: you called create_plan but did not call critique_plan. You MUST call critique_plan on the plan before it can be dispatched.",
+        "last_tool": "create_plan",
+        "last_tool_status": "succeeded",
+        "tools": [
+          "create_plan",
+          "critique_plan",
+          "spawn_agent",
+          "verify_result"
+        ],
+        "digest": "712c0b8af570ea12"
+      },
+      "response": {
+        "text": "",
+        "reasoning": "",
+        "tool_calls": [
+          {
+            "id": "critique-1",
+            "name": "critique_plan",
+            "args": {}
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "tool_use"
+      },
+      "error": null
+    },
+    {
+      "kind": "tool",
+      "call_id": "critique-1",
+      "name": "critique_plan",
+      "args": {},
+      "status": "succeeded",
+      "result": {
+        "passed": true,
+        "confidence": "high",
+        "issues": [],
+        "summary": "ok"
+      },
+      "error": null,
+      "sources": []
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 1,
+        "last_user": "Evaluate the following execution plan for the goal: 'Find how many days of paid leave the user gets.'\n\nPlan:\n  (none)\n\nAssess feasibility, completeness, and correctness. For a MULTI-STEP plan, specifically check for scope OVERLAP (two steps that would redundantly fetch or analyze the same data — wasteful and produces conflicting/duplicate output) and scope GAPS (an aspect of the goal no step actua",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [],
+        "digest": "a51f24b786f8aeda"
+      },
+      "response": {
+        "text": "{\"passed\": true, \"confidence\": \"high\", \"summary\": \"ok\", \"issues\": []}",
+        "reasoning": "",
+        "tool_calls": [],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "end_turn"
+      },
+      "error": null
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 2,
+        "last_user": "## The user's request (verbatim, for context: work only on your delegated task)\n\nHow many days of paid leave do I get?\n\n## Your delegated task\n\nSearch the knowledge base for the leave policy and report the number of days",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [
+          "call_tool",
+          "create_plan",
+          "critique_plan",
+          "fetch_tools",
+          "knowledgegraph__fetch_record",
+          "list_toolsets",
+          "retrieve_artifact_content",
+          "search_tools",
+          "spawn_agent",
+          "verify_result"
+        ],
+        "digest": "3e3252e03e1e39d2"
+      },
+      "response": {
+        "text": "",
+        "reasoning": "",
+        "tool_calls": [
+          {
+            "id": "call-1",
+            "name": "knowledge__search",
+            "args": {
+              "query": "paid leave"
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "tool_use"
+      },
+      "error": null
+    },
+    {
+      "kind": "tool",
+      "call_id": "call-1",
+      "name": "knowledge__search",
+      "args": {
+        "query": "paid leave"
+      },
+      "status": "succeeded",
+      "result": "{\"results\": [{\"id\": \"kb-leave\", \"title\": \"Leave policy\", \"text\": \"Full-time employees get 25 days of paid leave per calendar year.\"}]}",
+      "error": null,
+      "sources": []
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 4,
+        "last_user": "## The user's request (verbatim, for context: work only on your delegated task)\n\nHow many days of paid leave do I get?\n\n## Your delegated task\n\nSearch the knowledge base for the leave policy and report the number of days",
+        "last_tool": "knowledge__search",
+        "last_tool_status": "succeeded",
+        "tools": [
+          "call_tool",
+          "create_plan",
+          "critique_plan",
+          "fetch_tools",
+          "knowledgegraph__fetch_record",
+          "list_toolsets",
+          "retrieve_artifact_content",
+          "search_tools",
+          "spawn_agent",
+          "verify_result"
+        ],
+        "digest": "2b02a77f28cd41bd"
+      },
+      "response": {
+        "text": "Full-time employees get 25 days of paid leave per calendar year.",
+        "reasoning": "",
+        "tool_calls": [],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "end_turn"
+      },
+      "error": null
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 11,
+        "last_user": "Phase 3 -- VERIFY: synthesize the sub-agents' results into a candidate final answer, then call verify_result with it before replying. If verify_result fails, spawn additional sub-agents or revise your synthesis and call verify_result again.",
+        "last_tool": "spawn_agent",
+        "last_tool_status": "succeeded",
+        "tools": [
+          "create_plan",
+          "critique_plan",
+          "spawn_agent",
+          "verify_result"
+        ],
+        "digest": "527347c9a14ca183"
+      },
+      "response": {
+        "text": "",
+        "reasoning": "",
+        "tool_calls": [
+          {
+            "id": "verify-1",
+            "name": "verify_result",
+            "args": {
+              "result": "25 days of paid leave per year."
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "tool_use"
+      },
+      "error": null
+    },
+    {
+      "kind": "tool",
+      "call_id": "verify-1",
+      "name": "verify_result",
+      "args": {
+        "result": "25 days of paid leave per year."
+      },
+      "status": "succeeded",
+      "result": {
+        "passed": true,
+        "confidence": "high",
+        "issues": [],
+        "summary": "ok"
+      },
+      "error": null,
+      "sources": []
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 1,
+        "last_user": "Evaluate whether the agent result meets the goal.\n\nGoal: 'Find how many days of paid leave the user gets.'\nSuccess criteria:\n  (none specified)\n\nAgent output: \nSuccess flag: True\nError: none\n\nAssess whether the result genuinely satisfies the goal and criteria.",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [],
+        "digest": "9eadd091378a6e54"
+      },
+      "response": {
+        "text": "{\"passed\": true, \"confidence\": \"high\", \"summary\": \"ok\", \"issues\": []}",
+        "reasoning": "",
+        "tool_calls": [],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "end_turn"
+      },
+      "error": null
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 13,
+        "last_user": "Phase 3 -- VERIFY: synthesize the sub-agents' results into a candidate final answer, then call verify_result with it before replying. If verify_result fails, spawn additional sub-agents or revise your synthesis and call verify_result again.",
+        "last_tool": "verify_result",
+        "last_tool_status": "succeeded",
+        "tools": [
+          "create_plan",
+          "critique_plan",
+          "spawn_agent",
+          "verify_result"
+        ],
+        "digest": "07e8a71728c549dd"
+      },
+      "response": {
+        "text": "You get 25 days of paid leave per calendar year.",
+        "reasoning": "",
+        "tool_calls": [],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "end_turn"
+      },
+      "error": null
+    }
+  ],
+  "effects": [],
+  "final": {
+    "answer": "You get 25 days of paid leave per calendar year.",
+    "status": "completed"
+  }
+}

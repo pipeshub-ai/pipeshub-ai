@@ -1,0 +1,279 @@
+{
+ "scenario": "u3_parent_with_engine_child",
+ "query": "Analyse the Q3 numbers with a code task",
+ "runId": "run-u3-parent",
+ "sessionId": "ses-u3",
+ "events": [
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-u3",
+   "streamId": "ses-u3",
+   "seq": 1,
+   "runId": "run-u3-parent",
+   "type": "run.admitted",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-10-04T12:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "runKind": "interactive",
+    "principalRef": "p_user"
+   }
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-u3",
+   "streamId": "ses-u3",
+   "seq": 2,
+   "runId": "run-u3-parent",
+   "type": "run.claimed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-10-04T12:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "attempt": 1,
+    "fence": 1,
+    "leaseMs": 60000
+   }
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-u3",
+   "streamId": "ses-u3",
+   "seq": 3,
+   "runId": "run-u3-parent",
+   "attemptId": "run-u3-parent.a1",
+   "fence": 1,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-10-04T12:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "user",
+    "textRef": {
+     "ref": "inline:IkFuYWx5c2UgdGhlIFEzIG51bWJlcnMgd2l0aCBhIGNvZGUgdGFzayI=",
+     "hash": "sha256:a78b72b612bcd3758a22bdfb6593e6c34e5585b70e827f137863beaf3d7f0a6a",
+     "size": 41
+    },
+    "isFinal": false
+   }
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-u3",
+   "streamId": "ses-u3",
+   "seq": 4,
+   "runId": "run-u3-parent",
+   "attemptId": "run-u3-parent.a1",
+   "fence": 1,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-10-04T12:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   }
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-u3",
+   "streamId": "ses-u3",
+   "seq": 5,
+   "runId": "run-u3-parent",
+   "attemptId": "run-u3-parent.a1",
+   "fence": 1,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-10-04T12:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiSGFuZGluZyB0aGlzIHRvIGEgY29kZSB0YXNrLiIsInRvb2xDYWxscyI6W3siYXJncyI6eyJnb2FsIjoiQW5hbHlzZSBpbi9xMy5jc3YifSwiaWQiOiJjYWxsLWN0IiwibmFtZSI6ImNvZGVfdGFzayJ9XX0=",
+     "hash": "sha256:2650657db6ab714eceac84bedf876cf5d0734e5baf2c0b6d8407a2ca867af0d7",
+     "size": 125
+    },
+    "toolCalls": [
+     {
+      "callId": "call-ct",
+      "modelName": "code_task",
+      "argsDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+     }
+    ],
+    "usage": {
+     "inputTokens": 300,
+     "outputTokens": 20
+    },
+    "provider": "p",
+    "transport": "t"
+   }
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-u3",
+   "streamId": "ses-u3",
+   "seq": 6,
+   "runId": "run-u3-parent",
+   "type": "child.spawned",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-10-04T12:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "childRunId": "run-u3-child",
+    "invocationId": "t1.0",
+    "taskId": "analysis",
+    "grantDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+   }
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-u3",
+   "streamId": "ses-u3",
+   "seq": 7,
+   "runId": "run-u3-parent",
+   "type": "child.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-10-04T12:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "childRunId": "run-u3-child",
+    "resultRef": {
+     "ref": "inline:e30=",
+     "hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+     "size": 2
+    },
+    "labels": {
+     "integrity": "internal"
+    },
+    "outcome": "answered"
+   }
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-u3",
+   "streamId": "ses-u3",
+   "seq": 8,
+   "runId": "run-u3-parent",
+   "attemptId": "run-u3-parent.a1",
+   "fence": 1,
+   "type": "tool.outcome",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-10-04T12:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "status": "ok",
+    "resultRef": {
+     "ref": "inline:eyJjb250ZW50IjoiYW5hbHlzaXMuY3N2IHdyaXR0ZW4ifQ==",
+     "hash": "sha256:22b011bb985faee546c08e04f2afc93658fffcc479b97311ae876b3199233db9",
+     "size": 34
+    },
+    "labels": {
+     "integrity": "internal"
+    }
+   }
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-u3",
+   "streamId": "ses-u3",
+   "seq": 9,
+   "runId": "run-u3-parent",
+   "attemptId": "run-u3-parent.a1",
+   "fence": 1,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-10-04T12:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 2
+   }
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-u3",
+   "streamId": "ses-u3",
+   "seq": 10,
+   "runId": "run-u3-parent",
+   "attemptId": "run-u3-parent.a1",
+   "fence": 1,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-10-04T12:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiRG9uZTogdGhlIGVuZ2luZSB3cm90ZSB0aGUgYW5hbHlzaXMuIiwidG9vbENhbGxzIjpbXX0=",
+     "hash": "sha256:bb9a4d1a600419bb0200c9601a7339aa53dd2038466b9bb8e3285ec66b2eec61",
+     "size": 62
+    },
+    "toolCalls": [],
+    "usage": {
+     "inputTokens": 400,
+     "outputTokens": 12
+    },
+    "provider": "p",
+    "transport": "t"
+   }
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-u3",
+   "streamId": "ses-u3",
+   "seq": 11,
+   "runId": "run-u3-parent",
+   "attemptId": "run-u3-parent.a1",
+   "fence": 1,
+   "type": "x.pipeshub.answer.finalized",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-10-04T12:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "outcome": "answered",
+    "answer": "Done: the engine wrote the analysis.",
+    "partTexts": [
+     "Handing this to a code task.",
+     "Done: the engine wrote the analysis."
+    ],
+    "citations": []
+   }
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-u3",
+   "streamId": "ses-u3",
+   "seq": 12,
+   "runId": "run-u3-parent",
+   "type": "run.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-10-04T12:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "outcome": "answered"
+   }
+  }
+ ],
+ "live": []
+}

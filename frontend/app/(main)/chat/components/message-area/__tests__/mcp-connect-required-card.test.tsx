@@ -22,6 +22,7 @@ vi.mock('../../../runtime', () => ({ buildStreamChatRequestForSlot: chat.buildSt
 vi.mock('../../../store', () => ({ useChatStore: { getState: () => ({ activeSlotId: 'slot-1' }) } }));
 
 import { McpConnectRequiredCard } from '../mcp-connect-required-card';
+import { SECRET_FIELD_MASK_CLASS } from '@/app/components/ui/secret-text-field';
 
 const QUESTION = 'Open issues assigned to me?';
 
@@ -124,7 +125,7 @@ describe('McpConnectRequiredCard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
     expect(await screen.findByText('Authenticate with Exa')).toBeTruthy();
-    fireEvent.change(document.querySelector('input[type="password"]')!, { target: { value: 'exa_key' } });
+    fireEvent.change(document.querySelector<HTMLInputElement>(`.${SECRET_FIELD_MASK_CLASS} input`)!, { target: { value: 'exa_key' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(screen.getByText('Connected')).toBeTruthy());

@@ -230,12 +230,17 @@ class TableSupervisor:
         self._seq += 1
         frame_id = self._seq
         raw = json.dumps({"op": "predict", "id": frame_id, "spec": spec}, separators=(",", ":"), sort_keys=True).encode()
-        try:
+        async def send_and_read() -> tuple[dict[str, Any], bytes] | None:
+            assert proc.stdin is not None and proc.stdout is not None
             proc.stdin.write(struct.pack(">II", len(raw), len(png)) + raw + png)
             await proc.stdin.drain()
+            return await _aread_frame(proc.stdout)
+
+        # One timeout for the request and its answer: a child that stops reading blocks the write's drain.
+        try:
+            frame = await asyncio.wait_for(send_and_read(), timeout_s)
         except (BrokenPipeError, ConnectionResetError):
             return None
-        frame = await asyncio.wait_for(_aread_frame(proc.stdout), timeout_s)
         if frame is None:
             return None
         if frame[0].get("id") != frame_id:
@@ -259,6 +264,24 @@ class TableSupervisor:
         """The result dict of one table (``status`` ok, cap_hit or error), taking its turn. Never raises for a model failure."""
         async with self.turn():
             return await self.run_unlocked(spec, png)
+
+    async def prepare(self, timeout_s: float) -> str | None:
+        """Start the child, when none is running, for a caller that holds the turn but no permit yet: a start (the weights
+        download and the model load) must not hold a permit. ``deadline`` when it cannot start within *timeout_s*, the
+        reason when it cannot start at all, else ``None``."""
+        if self._proc is not None and self._proc.returncode is None:
+            return None
+        self._proc = None
+        try:
+            # shortcut: a weights download under way runs on in its thread past the timeout (the next start finds the
+            # files cached); stop it too if the download moves to a cancellable client.
+            await asyncio.wait_for(self._start(), max(0.0, timeout_s))
+        except TimeoutError:
+            await self._kill()
+            return "deadline"
+        except ChildUnavailable as exc:
+            return exc.reason
+        return None
 
     async def run_unlocked(self, spec: dict[str, Any], png: bytes) -> dict[str, Any]:
         """As ``run_table`` for a caller that already holds the turn. A cancelled table kills the child: its late answer
@@ -371,8 +394,13 @@ async def run_tables(
             try:
                 async with supervisor.turn(deadline - time.monotonic()):
                     remaining = deadline - time.monotonic()
-                    if remaining < spec.cap * START_ESTIMATE_PER_STEP_S:
+                    not_started = None if remaining < spec.cap * START_ESTIMATE_PER_STEP_S else await supervisor.prepare(remaining)
+                    remaining = deadline - time.monotonic()
+                    if remaining < spec.cap * START_ESTIMATE_PER_STEP_S or not_started == "deadline":
                         stop = "deadline"
+                    elif not_started is not None:
+                        results.append(TableResult(id=spec.id, status="error", err=not_started))
+                        continue
                     else:
                         async with acquire(remaining):
                             try:

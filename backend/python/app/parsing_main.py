@@ -292,6 +292,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     config_service = app_container.config_service()
     app_logger = app_container.logger()
+    from app.modules.indexing.replay_set import check_main_redis_eviction_policy
+
+    await check_main_redis_eviction_policy(config_service, app_logger, "parsing")
 
     app.state.parser_registry = _build_registry(config_service, app_logger)
 

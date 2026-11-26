@@ -28,6 +28,8 @@ import pytest
 from helper.admin_route_conditional_table import (
     ADMIN,
     CONDITIONAL_ROUTES,
+    GATEWAY,
+    HARNESS_OFF,
     MEMBER,
     Case,
     ConditionalRoute,
@@ -84,6 +86,13 @@ def world(
         made.close()
 
 
+@pytest.fixture(scope="module")
+def harness_on(world: World) -> bool:
+    """Whether this stack serves the agent harness: off, its namespace answers one 404 before any route."""
+    reply = send("GET", f"{world.url(GATEWAY)}/api/v1/agent-harness/admin/dependencies", world.token(ADMIN))
+    return not (reply.status == 404 and HARNESS_OFF in reply.text)
+
+
 @pytest.fixture
 def no_leftovers(world: World) -> Iterator[None]:
     yield
@@ -130,8 +139,10 @@ def _shown(reply: Reply) -> str:
 
 @pytest.mark.parametrize("route, case", ALL_CASES)
 def test_the_route_enforces_its_rule(
-    route: ConditionalRoute, case: Case, world: World, no_leftovers: None
+    route: ConditionalRoute, case: Case, world: World, harness_on: bool, no_leftovers: None
 ) -> None:
+    if route.needs_harness and not harness_on:
+        pytest.skip("The agent harness is off on this stack, so it serves no such route")
     reply, used = _ask(world, route, case)
     if route.handler in TOOL_RULES_HANDLERS and reply.status == 404 and ORG_TOOL_RULES_OFF in reply.text:
         pytest.skip("Organization tool rules are off in this edition, so there is no rule to check")

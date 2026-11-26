@@ -40,6 +40,7 @@ from app.connectors.services.storage_release import (
 from app.connectors.services.trash_purge import load_purge_settings
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
+    build_gone_connector_cleanup_events,
     build_stored_document_cleanup_events,
     log_cleanup_publish_failure,
 )
@@ -47,6 +48,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.core.org_context import current_org_id
 from app.connectors.sources.localKB.handlers.delete_lease import hold_delete_lease
 from app.connectors.sources.localKB.push.contract import is_pushed_revision
+from app.harness.knowledge.service import KnowledgePublications, container_id
 from app.models.entities import FileRecord, RecordType, SourcePerson
 from app.models.source_dates import (
     UPLOAD_SOURCE_CREATED_FIELD,
@@ -120,8 +122,10 @@ TRASH_NEEDS_EDIT_ACCESS_REASON = (
 )
 DEFAULT_TRASH_PAGE_SIZE = 25
 MAX_TRASH_PAGE_SIZE = 100
+# A listing's total counts this many items at most and says so (``totalCapped``), as the knowledge hub's does: past it, "10,000+".
+TOTAL_CAP = 10_000
 # The trash list counts this many delete batches at most, and page numbers reach no further; nextCursor goes on.
-TRASH_TOTAL_CAP = 10_000
+TRASH_TOTAL_CAP = TOTAL_CAP
 MAX_TRASH_CURSOR_LENGTH = 1024
 PAGE_BEYOND_LIMIT = "PAGE_BEYOND_LIMIT"
 TRASH_PAGE_BEYOND_LIMIT_REASON = (
@@ -210,7 +214,6 @@ KB_METHOD_CLASS: dict[str, Literal["write", "read", "exempt"]] = {
     "list_user_knowledge_bases": "read",
     "list_trash": "read",
     "list_kb_permissions": "read",
-    "list_kb_records": "read",
     "get_kb_children": "read",
     "get_folder_children": "read",
     "create_knowledge_base": "exempt",
@@ -252,6 +255,14 @@ def _mutation_succeeded(result: object) -> bool:
     return bool(result)
 
 
+def _deleted() -> dict:
+    return {
+        "success": True,
+        "reason": "Knowledge base and all contents deleted successfully",
+        "code": 200,
+    }
+
+
 def _people_gone() -> dict:
     return {
         "success": False,
@@ -281,6 +292,13 @@ def _provider_refusal_code(result: object) -> Optional[int]:
     except (KeyError, TypeError, ValueError):
         return None
     return code if _CLIENT_ERROR_MIN <= code < _SERVER_ERROR_MIN else None
+
+
+def _children_pagination(page: int, limit: int, total: int) -> dict:
+    """The pagination of a collection's or a folder's listing: the total and the pages stop at ``TOTAL_CAP`` (``totalCapped``); whether a next page exists is the exact answer."""
+    shown = min(total, TOTAL_CAP)
+    pages = (shown + limit - 1) // limit
+    return {"page": page, "limit": limit, "totalItems": shown, "totalPages": pages, "hasNext": page * limit < total, "hasPrev": page > 1, "totalCapped": total > TOTAL_CAP}
 
 
 def _browse_failure(result: object, missing: str, action: str) -> dict:
@@ -1269,7 +1287,37 @@ class KnowledgeBaseService:
                 # Whether or not it finished, the cascade may have removed the members' access.
                 await notify_principals_changed(org_id)
 
-            if not result or not result.get("success"):
+            if result and result.get("success"):
+                # Vector cleanup for every record at once (one connector-scoped
+                # event normally, chunked id lists for a KB whose points predate the
+                # membership arrays), then the entity cleanup, which the indexing
+                # service runs and retries.
+                events = build_connector_cleanup_events(
+                    org_id=org_id,
+                    connector_id=kb_id,
+                    vector_membership_backfilled=result.get(
+                        "vector_membership_backfilled", False
+                    ),
+                    vector_membership_backfill_exhausted=result.get(
+                        "vector_membership_backfill_exhausted", False
+                    ),
+                    connector_name=result.get("connector_name"),
+                    # None (the graph did not say) reaches the entity cleanup as None.
+                    record_group_ids=result.get("record_group_ids"),
+                    virtual_record_ids=result.get("virtual_record_ids", []),
+                )
+            # "Could not confirm", not "still there": a rival delete finished the KB first, or the store
+            # applied the delete and its answer was lost. Every store removes the app last, after checking
+            # nothing of the KB remains, so a KB that reads as gone is deleted; its cleanup events go out as
+            # after a confirmed delete, built without the lost answer.
+            elif await self.graph_provider.get_document(
+                kb_id, CollectionNames.APPS.value, raise_on_error=True
+            ) is None:
+                self.logger.warning("Knowledge base %s is already deleted from the graph", kb_id)
+                events = build_gone_connector_cleanup_events(
+                    org_id=org_id, connector_id=kb_id, connector_name=Connectors.KNOWLEDGE_BASE.value,
+                )
+            else:
                 # the provider's "error" can be exception text, so it stays in the log
                 self.logger.warning(
                     "⚠️ Failed to delete knowledge base %s: %s",
@@ -1280,25 +1328,6 @@ class KnowledgeBaseService:
                     "reason": action_failed("delete this knowledge base"),
                     "code": 500,
                 }
-
-            # Vector cleanup for every record at once (one connector-scoped
-            # event normally, chunked id lists for a KB whose points predate the
-            # membership arrays), then the entity cleanup, which the indexing
-            # service runs and retries.
-            events = build_connector_cleanup_events(
-                org_id=org_id,
-                connector_id=kb_id,
-                vector_membership_backfilled=result.get(
-                    "vector_membership_backfilled", False
-                ),
-                vector_membership_backfill_exhausted=result.get(
-                    "vector_membership_backfill_exhausted", False
-                ),
-                connector_name=result.get("connector_name"),
-                # None (the graph did not say) reaches the entity cleanup as None.
-                record_group_ids=result.get("record_group_ids"),
-                virtual_record_ids=result.get("virtual_record_ids", []),
-            )
             published = 0
             for event in events:
                 try:
@@ -1312,11 +1341,8 @@ class KnowledgeBaseService:
                     f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
                 )
             await free_lane_of_deleted_connector(self.logger, kb_id)
-            return {
-                "success": True,
-                "reason": "Knowledge base and all contents deleted successfully",
-                "code": 200,
-            }
+            await self._erase_publications(org_id, kb_id)
+            return _deleted()
 
     def _start_storage_cleanup(self, org_id: str, kb_id: str) -> None:
         # Fire-and-forget: etcd config + blob storage cleanup runs in the
@@ -1329,6 +1355,15 @@ class KnowledgeBaseService:
         _BACKGROUND_TASKS.add(task)
         task.add_done_callback(_BACKGROUND_TASKS.discard)
 
+    async def _erase_publications(self, org_id: str, kb_id: str) -> None:
+        """A deleted knowledge base takes its publications with it (P2.13, C-14 rule), flag on or off. A failure
+        here leaves orphans that grant nothing (their container is gone) and are pruned at the next read."""
+        try:
+            await KnowledgePublications(self.graph_provider, self.config_service).erase_container(
+                org_id, container_id("kb", kb_id)
+            )
+        except Exception as e:
+            self.logger.warning("publications.erase_failed errorType=%s choice=prune_on_read", type(e).__name__)
     async def _schedule_upload_removal(
         self,
         kb_id: str,
@@ -1540,7 +1575,7 @@ class KnowledgeBaseService:
                     kb_id,
                     parent_folder_id,
                     "create a folder in it",
-                    f"Parent folder {parent_folder_id} not found in KB {kb_id}",
+                    "The parent folder was not found in this knowledge base.",
                 )
 
             if await self._exceeds_folder_depth(parent_folder_id, 1):
@@ -1898,6 +1933,9 @@ class KnowledgeBaseService:
                 received_at = epoch_ms(file_metadata.get("receivedAt")) or timestamp
                 record.source_timestamp_origin = upload_origin(record.source_updated_at, received_at).value
                 record.external_revision_id = str(timestamp)
+                size = file_metadata.get("size")
+                if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+                    record.size_in_bytes = size
                 await processor.on_record_content_update(record)
             else:
                 # Metadata-only (rename): persists records.recordName + files.name, no event.
@@ -3136,99 +3174,6 @@ class KnowledgeBaseService:
                 "code": 500
             }
 
-    async def list_kb_records(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        page: int = 1,
-        limit: int = 20,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        date_from: Optional[int] = None,
-        date_to: Optional[int] = None,
-        sort_by: str = "createdAtTimestamp",
-        sort_order: str = "desc",
-    ) -> Dict:
-        """
-        List all records in a specific KB (including all folders and direct records), with filters.
-        The underlying provider filters results to only records the user has access to.
-        Service-level permission enforcement is intentionally NOT applied here — doing so
-        would change the historical API contract (empty list → 403) and break callers that
-        rely on receiving an empty result when the user has no access to a particular KB.
-        """
-        try:
-            user = await get_caller_user(self.graph_provider, user_id, raise_on_error=True)
-            if not user:
-                self.logger.warning(f"⚠️ User not found for user_id: {user_id}")
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found for user_id: {user_id}"
-                }
-            user_key = user.get('id') or user.get('_key')
-
-            skip = (page - 1) * limit
-            sort_order = sort_order.lower() if sort_order.lower() in ["asc", "desc"] else "desc"
-            sort_by = sort_by if sort_by in [
-                "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus"
-            ] else "createdAtTimestamp"
-
-            records, total_count, available_filters = await self.graph_provider.list_kb_records(
-                kb_id=kb_id,
-                user_id=user_key,
-                org_id=org_id,
-                skip=skip,
-                limit=limit,
-                search=search,
-                record_types=record_types,
-                origins=origins,
-                connectors=connectors,
-                indexing_status=indexing_status,
-                date_from=date_from,
-                date_to=date_to,
-                sort_by=sort_by,
-                sort_order=sort_order,
-            )
-
-            total_pages = (total_count + limit - 1) // limit
-
-            applied_filters = {
-                k: v for k, v in {
-                    "search": search,
-                    "recordTypes": record_types,
-                    "origins": origins,
-                    "connectors": connectors,
-                    "indexingStatus": indexing_status,
-                    "dateRange": {"from": date_from, "to": date_to} if date_from or date_to else None,
-                }.items() if v
-            }
-
-            return {
-                "records": records,
-                "pagination": {
-                    "page": page,
-                    "limit": limit,
-                    "totalCount": total_count,
-                    "totalPages": total_pages,
-                },
-                "filters": {
-                    "applied": applied_filters,
-                    "available": available_filters,
-                }
-            }
-        except Exception as e:
-            self.logger.error(f"❌ Failed to list KB records: {str(e)}")
-            return {
-                "records": [],
-                "pagination": {"page": page, "limit": limit, "totalCount": 0, "totalPages": 0},
-                "filters": {"applied": {}, "available": {}},
-                "error": action_failed("load these files"),
-            }
-
     async def get_kb_children(
         self,
         kb_id: str,
@@ -3290,9 +3235,6 @@ class KnowledgeBaseService:
                     )
                 return self._error_response(failure["code"], failure["reason"])
 
-            # Add pagination metadata
-            total_items = result.get("totalCount", 0)
-            total_pages = (total_items + limit - 1) // limit
 
             # Add user context
             result["userPermission"] = {
@@ -3304,14 +3246,7 @@ class KnowledgeBaseService:
                 "canManagePermissions": user_role in ["OWNER"]
             }
 
-            result["pagination"] = {
-                "page": page,
-                "limit": limit,
-                "totalItems": total_items,
-                "totalPages": total_pages,
-                "hasNext": page < total_pages,
-                "hasPrev": page > 1
-            }
+            result["pagination"] = _children_pagination(page, limit, result.get("totalCount", 0))
 
             result["filters"] = {
                 "applied": {
@@ -3408,9 +3343,6 @@ class KnowledgeBaseService:
                     )
                 return self._error_response(failure["code"], failure["reason"])
 
-            # Add pagination metadata
-            total_items = result.get("totalCount", 0)
-            total_pages = (total_items + limit - 1) // limit
 
             # Add user context
             result["userPermission"] = {
@@ -3422,14 +3354,7 @@ class KnowledgeBaseService:
                 "canManagePermissions": user_role in ["OWNER"]
             }
 
-            result["pagination"] = {
-                "page": page,
-                "limit": limit,
-                "totalItems": total_items,
-                "totalPages": total_pages,
-                "hasNext": page < total_pages,
-                "hasPrev": page > 1
-            }
+            result["pagination"] = _children_pagination(page, limit, result.get("totalCount", 0))
 
             result["filters"] = {
                 "applied": {
@@ -3758,7 +3683,7 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"Record {record_id} not found in KB {kb_id}",
+                    "reason": "The record was not found in this knowledge base.",
                 }
             self.logger.info(f"KB context: {kb_context}")
 

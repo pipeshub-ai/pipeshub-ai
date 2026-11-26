@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import asyncio
+import contextvars
 import inspect
 import logging
 from pathlib import Path
@@ -1263,7 +1264,7 @@ class BoxSDKMethodDiscoverer:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: {method_call})
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: {method_call})
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=str(e))"""
@@ -1423,7 +1424,8 @@ class {class_name}:
         try:
             client = self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.folders.get_folder_by_id("0")
+                None,
+                contextvars.copy_context().run, lambda: client.folders.get_folder_by_id("0")
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
@@ -1434,7 +1436,8 @@ class {class_name}:
         try:
             client = self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.folders.get_folder_by_id(folder_id)
+                None,
+                contextvars.copy_context().run, lambda: client.folders.get_folder_by_id(folder_id)
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
@@ -1445,7 +1448,8 @@ class {class_name}:
         try:
             client = self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.files.get_file_by_id(file_id)
+                None,
+                contextvars.copy_context().run, lambda: client.files.get_file_by_id(file_id)
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
@@ -1456,7 +1460,8 @@ class {class_name}:
         try:
             client = self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.users.get_user_me()
+                None,
+                contextvars.copy_context().run, lambda: client.users.get_user_me()
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
@@ -1468,7 +1473,8 @@ class {class_name}:
         try:
             client = self._get_client()
             user = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.users.get_user_me()
+                None,
+                contextvars.copy_context().run, lambda: client.users.get_user_me()
             )
             return BoxResponse(success=True, data={"enterprise": getattr(user, 'enterprise', None)})
         except Exception as e:

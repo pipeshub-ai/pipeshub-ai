@@ -335,7 +335,7 @@ describe('configuration_manager/validator/validators', () => {
       if (result.success) {
         expect(result.data.body.configuration.modelFriendlyName).to.equal(undefined)
         expect(result.data.body.configuration.apiKey).to.equal('sk')
-        expect(result.data.body.models[0].modelFriendlyName).to.equal('Bee')
+        expect(result.data.body.models[0]!.modelFriendlyName).to.equal('Bee')
       }
     })
 
@@ -374,8 +374,8 @@ describe('configuration_manager/validator/validators', () => {
       const result = configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: 'extreme' })
       expect(result.success).to.be.false
       if (!result.success) {
-        expect(result.error.issues[0].path).to.deep.equal(['defaultReasoningEffort'])
-        expect(result.error.issues[0].message).to.equal(
+        expect(result.error.issues[0]!.path).to.deep.equal(['defaultReasoningEffort'])
+        expect(result.error.issues[0]!.message).to.equal(
           'Default reasoning effort must be low, medium, high or max. Leave it empty to use the platform default.',
         )
       }

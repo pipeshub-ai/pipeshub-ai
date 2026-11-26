@@ -1,4 +1,4 @@
-"""Reading the caller's user and org records so that an outage is not reported as a miss."""
+"""Reading the caller's user and org records, and the records a route serves, so that an outage is not reported as a miss."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.core import org_context
+from app.utils import error_class
 from app.utils.jwt import mint_service_token
 from app.utils.logger import create_logger
 from app.utils.user_messages import DATABASE_UNREACHABLE
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from app.config.configuration_service import ConfigurationService
+    from app.models.entities import Record
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 _logger = create_logger(__name__)
@@ -106,18 +108,63 @@ async def get_user_or_503(graph_provider: IGraphDBProvider, user_id: str | None)
     try:
         return await get_caller_user(graph_provider, user_id, raise_on_error=True)
     except Exception as e:
-        raise _database_unreachable() from e
+        raise _database_unreachable(e) from e
 
 
 async def get_org_or_503(graph_provider: IGraphDBProvider, org_id: str) -> dict[str, Any] | None:
     """The org's record, or None when there is none; a failed read is a 503."""
+    return await get_document_or_503(graph_provider, org_id, CollectionNames.ORGS.value)
+
+
+async def get_document_or_503(graph_provider: IGraphDBProvider, key: str, collection: str) -> dict[str, Any] | None:
+    """The document, or None when there is none; a failed read is a 503."""
     try:
-        return await graph_provider.get_document(org_id, CollectionNames.ORGS.value, raise_on_error=True)
+        return await graph_provider.get_document(key, collection, raise_on_error=True)
     except Exception as e:
-        raise _database_unreachable() from e
+        raise _database_unreachable(e) from e
 
 
-def _database_unreachable() -> HTTPException:
+async def get_record_or_503(graph_provider: IGraphDBProvider, record_id: str) -> Record | None:
+    """The typed record, or None when there is none or it will not build; a failed read is a 503."""
+    try:
+        return await graph_provider.get_record_by_id(record_id, raise_on_error=True)
+    except Exception as e:
+        raise _database_unreachable(e) from e
+
+
+async def check_record_access_or_503(
+    graph_provider: IGraphDBProvider, user_id: str, org_id: str, record_id: str
+) -> dict[str, Any] | None:
+    """The record's access details, or None when the user may not open it; a failed read is a 503.
+
+    Like its siblings it answers every exception with 503, a bug of ours included; the cause is kept, text-hidden, for the
+    request log.
+    """
+    try:
+        return await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
+    except Exception as e:
+        raise _database_unreachable(e) from e
+
+
+def raise_if_unavailable(cause: BaseException) -> None:
+    """Raise the 503 (with Retry-After) for a failure the store could not answer just now (``error_class.retry_later``), so
+    the web app asks again by itself; any other failure returns, for the caller's own 500."""
+    if error_class.retry_later(cause):
+        raise _database_unreachable(cause) from cause
+
+
+async def await_or_503[T](op: Awaitable[T]) -> T:
+    """``op``'s result; a failure the store could not answer just now is :func:`raise_if_unavailable`'s 503, any
+    other is raised as is, for the route's own 500."""
+    try:
+        return await op
+    except Exception as e:
+        raise_if_unavailable(e)
+        raise
+
+
+def _database_unreachable(cause: BaseException) -> HTTPException:
+    error_class.mark_error(cause, hide_text=True)  # a driver's text can quote what was sent (an email, a value)
     return HTTPException(
         status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
         detail=DATABASE_UNREACHABLE,

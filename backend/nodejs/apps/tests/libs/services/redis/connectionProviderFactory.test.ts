@@ -1,5 +1,6 @@
 import { expect } from 'chai';
 import type { Redis } from 'ioredis';
+import sinon from 'sinon';
 
 import { createIoredisCapture } from '../../../helpers/mock-ioredis-capture';
 import {
@@ -12,9 +13,12 @@ import {
 } from '../../../../src/libs/services/redis/connectionProvider.interface';
 import {
   RedisConnectionProviderFactory,
+  checkRedisEvictionPolicy,
   getRedisProvider,
   resetRedisProviderRegistry,
 } from '../../../../src/libs/services/redis/connectionProviderFactory';
+import { NoRedisProvider } from '../../../../src/libs/services/redis/noRedisProvider';
+import { Logger } from '../../../../src/libs/services/logger.service';
 
 // Intentionally not a static `import` of `fakeRedisProviderModule` -- this
 // suite tests that `ensureProviderModuleLoaded()` itself is what triggers
@@ -24,7 +28,9 @@ import {
 // `tests/fixtures/fakeRedisProviderModule.ts`.
 const FIXTURE_MODE = 'fake-fixture';
 
-function config(overrides: Partial<RedisConnectionConfig> = {}): RedisConnectionConfig {
+function config(
+  overrides: Partial<RedisConnectionConfig> = {},
+): RedisConnectionConfig {
   return { ...redisConnectionConfigFromEnv(), host: 'h', db: 0, ...overrides };
 }
 
@@ -39,16 +45,34 @@ class FakeProvider implements IRedisConnectionProvider {
     return this.config.keyNamespace;
   }
   constructor(public readonly config: RedisConnectionConfig) {}
-  getClient(): RedisClient { return {} as RedisClient; }
-  createClient(): RedisClient { return {} as RedisClient; }
-  createPubSubClient(): Redis { return {} as Redis; }
+  getClient(): RedisClient {
+    return {} as RedisClient;
+  }
+  createClient(): RedisClient {
+    return {} as RedisClient;
+  }
+  createPubSubClient(): Redis {
+    return {} as Redis;
+  }
   async prepare(): Promise<void> {}
-  release(): void { /* no-op */ }
-  async *scanKeys(): AsyncIterable<string> { /* empty */ }
-  async loadScript(): Promise<string> { return 'sha'; }
-  keySlot(): number { return 0; }
-  connectionUrl(): string { return 'redis://fake'; }
-  async ping(): Promise<boolean> { return true; }
+  release(): void {
+    /* no-op */
+  }
+  async *scanKeys(): AsyncIterable<string> {
+    /* empty */
+  }
+  async loadScript(): Promise<string> {
+    return 'sha';
+  }
+  keySlot(): number {
+    return 0;
+  }
+  connectionUrl(): string {
+    return 'redis://fake';
+  }
+  async ping(): Promise<boolean> {
+    return true;
+  }
   async close(): Promise<void> {}
 }
 
@@ -197,9 +221,8 @@ describe('RedisConnectionProviderFactory', () => {
       // effect to land in the shared registry, exactly as an EE
       // `REDIS_PROVIDER_MODULE=@pipeshub-ee/redis-memorydb-provider` would.
       process.env.REDIS_MODE = FIXTURE_MODE;
-      process.env.REDIS_PROVIDER_MODULE = require.resolve(
-        '../../../fixtures/fakeRedisProviderModule',
-      );
+      process.env.REDIS_PROVIDER_MODULE =
+        require.resolve('../../../fixtures/fakeRedisProviderModule');
 
       await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
 
@@ -219,9 +242,8 @@ describe('RedisConnectionProviderFactory', () => {
         (c) => new FakeProvider(c),
       );
       process.env.REDIS_MODE = 'fake';
-      process.env.REDIS_PROVIDER_MODULE = require.resolve(
-        '../../../fixtures/fakeRedisProviderModule',
-      );
+      process.env.REDIS_PROVIDER_MODULE =
+        require.resolve('../../../fixtures/fakeRedisProviderModule');
 
       await RedisConnectionProviderFactory.ensureProviderModuleLoaded();
 
@@ -236,7 +258,9 @@ describe('credentials over unverified TLS', () => {
   // TLS with verification off is encrypted but *unauthenticated*: a MITM can
   // present any cert, terminate the session, and harvest the password. The
   // guard lives in the factory so an EE-registered provider is covered too.
-  const withTls = (over: Partial<RedisConnectionConfig>): RedisConnectionConfig => ({
+  const withTls = (
+    over: Partial<RedisConnectionConfig>,
+  ): RedisConnectionConfig => ({
     host: 'localhost',
     port: 6379,
     tls: true,
@@ -309,5 +333,186 @@ describe('credentials over unverified TLS', () => {
         'standalone',
       ),
     ).to.not.throw();
+  });
+});
+
+describe('checkRedisEvictionPolicy', () => {
+  function providerWithInfo(
+    info: () => Promise<string>,
+  ): IRedisConnectionProvider {
+    const provider = new FakeProvider(config());
+    provider.getClient = () => ({ info }) as unknown as RedisClient;
+    return provider;
+  }
+  const memory = (policy: string) => async () =>
+    `# Memory\r\nused_memory:1\r\nmaxmemory_policy:${policy}\r\n`;
+
+  for (const policy of [
+    'allkeys-lru',
+    'allkeys-lfu',
+    'allkeys-random',
+    'ALLKEYS-LRU',
+  ]) {
+    it(`refuses ${policy}: the key-value store and streams have no TTL`, async () => {
+      let thrown: Error | undefined;
+      try {
+        await checkRedisEvictionPolicy(providerWithInfo(memory(policy)));
+      } catch (error) {
+        thrown = error as Error;
+      }
+      expect(thrown?.message).to.match(/REDIS_CACHE_URL/);
+    });
+  }
+
+  for (const policy of ['noeviction', 'volatile-lru', 'volatile-ttl']) {
+    it(`starts with ${policy}`, async () => {
+      await checkRedisEvictionPolicy(providerWithInfo(memory(policy)));
+    });
+  }
+
+  it('starts when INFO cannot be read (managed Redis, Redis down)', async () => {
+    await checkRedisEvictionPolicy(
+      providerWithInfo(async () => {
+        throw new Error('NOPERM');
+      }),
+    );
+  });
+
+  for (const [policies, refused] of [
+    [['noeviction', 'allkeys-lru'], true],
+    [['allkeys-lru', 'noeviction'], true],
+    [['noeviction', 'volatile-lru'], false],
+  ] as const) {
+    it(`checks every cluster primary: ${policies.join(' + ')}`, async () => {
+      // An untargeted INFO on a cluster client reads one node; a primary with allkeys-* elsewhere would pass.
+      const asked: string[] = [];
+      const provider = new FakeProvider(config());
+      (provider as { isCluster: boolean }).isCluster = true;
+      // Like ioredis' Cluster: `nodes()` is the cached topology, empty until the cluster has connected.
+      const cluster = {
+        status: 'wait',
+        ping: async () => {
+          cluster.status = 'ready';
+          return 'PONG';
+        },
+        info: async () => {
+          throw new Error('untargeted INFO');
+        },
+        nodes: () =>
+          cluster.status !== 'ready'
+            ? []
+            : policies.map((policy) => ({
+                info: async () => {
+                  asked.push(policy);
+                  return `maxmemory_policy:${policy}\r\n`;
+                },
+              })),
+      };
+      provider.getClient = () => cluster as unknown as RedisClient;
+      let thrown: Error | undefined;
+      try {
+        await checkRedisEvictionPolicy(provider);
+      } catch (error) {
+        thrown = error as Error;
+      }
+      expect(Boolean(thrown)).to.equal(refused);
+      expect(asked).to.have.length(policies.length);
+    });
+  }
+
+  for (const [answers, refused] of [
+    [['allkeys-lru', null], true],
+    [[null, 'allkeys-lru'], true],
+    [['noeviction', null], false],
+  ] as const) {
+    it(`one unreadable primary does not hide another: ${answers.map((a) => a ?? 'error').join(' + ')}`, async () => {
+      // null: this primary fails INFO.
+      const provider = new FakeProvider(config());
+      (provider as { isCluster: boolean }).isCluster = true;
+      provider.getClient = () =>
+        ({
+          status: 'ready',
+          ping: async () => 'PONG',
+          nodes: () =>
+            answers.map((answer) => ({
+              info: async () => {
+                if (answer === null) throw new Error('primary down');
+                return `maxmemory_policy:${answer}\r\n`;
+              },
+            })),
+        }) as unknown as RedisClient;
+      const warn = sinon.spy(Logger.prototype, 'warn');
+      let thrown: Error | undefined;
+      try {
+        await checkRedisEvictionPolicy(provider);
+      } catch (error) {
+        thrown = error as Error;
+      } finally {
+        warn.restore();
+      }
+      expect(Boolean(thrown)).to.equal(refused);
+      expect(warn.calledWith('Redis eviction policy not read')).to.equal(true);
+    });
+  }
+
+  it('a primary that never answers does not discard an allkeys answer', async () => {
+    const provider = new FakeProvider(config());
+    (provider as { isCluster: boolean }).isCluster = true;
+    provider.getClient = () =>
+      ({
+        status: 'ready',
+        ping: async () => 'PONG',
+        nodes: () => [
+          { info: async () => 'maxmemory_policy:allkeys-lru\r\n' },
+          { info: () => new Promise(() => {}) }, // never answers
+        ],
+      }) as unknown as RedisClient;
+    let thrown: Error | undefined;
+    try {
+      await checkRedisEvictionPolicy(provider, 20);
+    } catch (error) {
+      thrown = error as Error;
+    }
+    expect(thrown?.message).to.match(/allkeys-lru/);
+  });
+
+  it('does not wait out a cluster that never becomes ready', async () => {
+    const provider = new FakeProvider(config());
+    (provider as { isCluster: boolean }).isCluster = true;
+    provider.getClient = () =>
+      ({
+        status: 'connecting',
+        ping: () => new Promise(() => {}), // every endpoint down
+        nodes: () => [],
+      }) as unknown as RedisClient;
+    const warn = sinon.spy(Logger.prototype, 'warn');
+    try {
+      await checkRedisEvictionPolicy(provider, 20);
+      expect(warn.calledWith('Redis eviction policy not read')).to.equal(true);
+    } finally {
+      warn.restore();
+    }
+  });
+
+  it('treats a cluster that reports no primaries as unreadable, not safe', async () => {
+    const provider = new FakeProvider(config());
+    (provider as { isCluster: boolean }).isCluster = true;
+    provider.getClient = () =>
+      ({
+        status: 'ready',
+        ping: async () => 'PONG',
+        nodes: () => [],
+      }) as unknown as RedisClient;
+    const warn = sinon.spy(Logger.prototype, 'warn');
+    try {
+      await checkRedisEvictionPolicy(provider);
+      expect(warn.calledWith('Redis eviction policy not read')).to.equal(true);
+    } finally {
+      warn.restore();
+    }
+  });
+
+  it('skips a deployment with no Redis server', async () => {
+    await checkRedisEvictionPolicy(new NoRedisProvider(config(), 'postgres'));
   });
 });

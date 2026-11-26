@@ -1,3 +1,5 @@
+import type { AgentGates } from './agent-gates';
+import type { AgentEnvironment } from './agent-environment';
 import type {
   Conversation,
   ConversationMessage,
@@ -9,6 +11,7 @@ import type {
   SharedWithEntry,
   ConversationsListResponse,
 } from '@/chat/types';
+import type { ExecutionStatus, RunOutcome } from '@/lib/contracts/harness/generated/ext/pipeshub/enums';
 
 /**
  * GET /api/v1/agents — pagination envelope (`pagination` object).
@@ -111,6 +114,15 @@ export interface AgentConfiguredModel {
   /** The model's own default effort, when the admin stored one. */
   defaultReasoningEffort?: ReasoningEffort;
 }
+
+/** A configured model an agent names for a sub-agent role (MA1). */
+export interface RoleModelRef {
+  modelKey: string;
+  modelName: string;
+  provider: string;
+}
+
+export type RoleModels = Record<string, RoleModelRef>;
 
 /** Tool definition nested under `toolsets[].tools[]`. */
 export interface AgentToolDefinition {
@@ -221,6 +233,63 @@ export interface AgentDetail {
   defaultReasoningEffort?: ReasoningEffort | null;
   /** When false, the agent system prompt omits user name/email/org. Defaults to true. */
   sendUserContext?: boolean;
+  /** Present when the agent runs on an engine (E4a): its narrowing of the org's engine profile. */
+  engineProfile?: Record<string, unknown> | null;
+  /** MA1: the model a sub-agent runs on, by role key; `default` is every role without its own. */
+  roleModels?: RoleModels;
+  /** Sub-agents a run of the agent may start (P6.1); absent: its mode decides. 0: it starts none, and a Deep turn runs as an ordinary one. */
+  maxChildren?: number;
+  /** G-04/G-05: the agent's own plan approval and checks, held to every run of it ("Safety and checks"). */
+  gates?: AgentGates | null;
+  /** C20.18: the agent's environment for its coding-engine work ("Environment"). */
+  environment?: AgentEnvironment | null;
+  /** OWD-14: the agent's published versions; absent when they could not be read. The agent itself is the draft. */
+  versioning?: AgentVersioning;
+}
+
+// ── Published versions (OWD-14) ─────────────────────────────────
+
+export interface AgentVersioning {
+  /** The version chats run. */
+  latestVersion: number;
+  latestDigest: string;
+  /** The saved draft differs from the latest version. */
+  unpublishedChanges: boolean;
+}
+
+/** `migration`: version 1 of an agent made before versions existed (GA-01). */
+export type AgentVersionSource = 'publish' | 'rollback' | 'migration';
+
+export interface AgentVersionSummary {
+  agentKey: string;
+  version: number;
+  digest: string;
+  source: AgentVersionSource;
+  /** User id; null for the migration's version 1. */
+  publishedBy: string | null;
+  publishedAtTimestamp: number;
+  /** The older version a rollback published again. */
+  rolledBackFrom: number | null;
+  note: string | null;
+}
+
+/** One version with the definition it froze (the agent document's fields, minus its identity). */
+export interface AgentVersionDetail extends AgentVersionSummary {
+  definition: Record<string, unknown>;
+}
+
+/** GET /api/v1/agents/:agentKey/versions — newest first. */
+export interface AgentVersionsList extends AgentVersioning {
+  versions: AgentVersionSummary[];
+}
+
+/** POST …/versions and …/versions/:n/rollback. */
+export interface AgentVersionPublished {
+  version: AgentVersionSummary;
+  /** False when nothing changed and the latest version is answered. */
+  created: boolean;
+  /** Rollback only: the saved draft had unpublished changes, which the rollback discarded. */
+  discardedUnpublishedChanges?: boolean;
 }
 
 // ── Builder catalog rows (tool list + KB) ───────────────────────
@@ -360,6 +429,9 @@ export interface GetAgentResult {
 /** Normalized result of {@link AgentsApi.getKnowledgeBasesForBuilder}. */
 export interface KnowledgeBasesForBuilderResult {
   knowledgeBases: KnowledgeBaseForBuilder[];
+  hasNext?: boolean;
+  /** How many collections match, when the server says. */
+  total?: number | null;
 }
 
 /** POST /api/v1/agents/create — response envelope. */
@@ -372,13 +444,17 @@ export interface CreateAgentApiResponse {
  */
 export interface UpdateAgentApiResponse {
   agent?: AgentDetail;
+  /** `partial_success`: the edit was saved but publishing it failed, so it stays a draft. */
   status?: string;
   message?: string;
+  /** The version this save published; null for a draft save or a failed publish. */
+  version?: AgentVersionSummary | null;
 }
 
 /** GET /api/v1/knowledgeBase/ — list envelope (builder). */
 export interface KnowledgeBaseListApiResponse {
   knowledgeBases?: KnowledgeBaseForBuilder[];
+  pagination?: { page?: number; limit?: number; totalCount?: number; totalPages?: number; hasNext?: boolean };
 }
 
 // ── Agent-scoped conversations (same routes under /agents/:id) ─
@@ -402,6 +478,8 @@ export interface AgentConversationDetailApi {
   access: { isOwner: boolean; accessLevel: string };
   /** Optional: present when the API returns paginated messages. */
   pagination?: ConversationPagination;
+  /** Durable sessions only: the run still in flight, or `null`. */
+  activeRunId?: string | null;
 }
 
 export interface AgentConversationDetailApiResponse {
@@ -420,4 +498,113 @@ export interface AgentConversationsListResult {
   conversations: Conversation[];
   sharedConversations: Conversation[];
   pagination: ConversationsListResponse['pagination'];
+}
+
+export type AgentRunStatus = ExecutionStatus;
+
+export interface AgentHarnessObjectRef {
+  objectId: string;
+  contentHash: string;
+  sizeBytes: number;
+}
+
+export interface AgentHarnessRun {
+  runId: string;
+  sessionId: string;
+  agentKey?: string;
+  /** The published agent version the run ran (OWD-14); absent for the assistant and runs from before versions. */
+  agentVersion?: number;
+  /** Harness major pinned at admission; a later rollout change never moves the run. */
+  harnessMajor: number;
+  profile: 'inline' | 'dispatched';
+  status: AgentRunStatus;
+  outcome: RunOutcome | null;
+  revision: number;
+  absoluteDeadlineAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AgentHarnessRunInput {
+  query: string;
+  recordIds: string[];
+  filters: Record<string, unknown>;
+  appliedFilters?: Record<string, unknown>;
+  attachments: Array<Record<string, unknown>>;
+  tools?: string[];
+  agentCapabilities?: {
+    internalSearch: boolean;
+    webSearch: boolean;
+    deepSearch?: boolean;
+  };
+  model: {
+    modelKey?: string;
+    modelName?: string;
+    modelProvider?: string;
+    modelFriendlyName?: string;
+    reasoningEffort?: string;
+    chatMode: string;
+  };
+  timezone?: string;
+  currentTime?: string;
+  /** Present only on server-owned run snapshots returned to authorized callers. */
+  previousConversations?: Array<Record<string, unknown>>;
+}
+
+export interface AgentRunAdmissionInput {
+  query: string;
+  idempotencyKey: string;
+  /** Only add it to the running task; never start a run (409 RUN_NOT_ACTIVE when none runs). */
+  steer?: boolean;
+  /** Regenerate (UX3): replace the conversation's last answer, asking its question again. */
+  regenerate?: { messageId: string };
+  deadlineMs?: number;
+  recordIds?: string[];
+  filters?: Record<string, unknown>;
+  appliedFilters?: Record<string, unknown>;
+  attachments?: Array<{
+    recordId: string;
+    recordName?: string;
+    mimeType?: string;
+    extension?: string;
+    virtualRecordId?: string;
+    source?: 'upload' | 'paste-text';
+  }>;
+  tools?: string[];
+  agentCapabilities?: {
+    internalSearch: boolean;
+    webSearch: boolean;
+    deepSearch?: boolean;
+  };
+  modelKey?: string;
+  modelName?: string;
+  modelProvider?: string;
+  modelFriendlyName?: string;
+  reasoningEffort?: string;
+  chatMode?: string;
+  timezone?: string;
+  currentTime?: string;
+}
+
+export interface AgentRunAdmission {
+  sessionId: string;
+  userMessageKey: string;
+  run: AgentHarnessRun;
+  firstEventSeq: number;
+  lastEventSeq: number;
+  created: boolean;
+  /** The message joined the session's running task (steering): `run` is that run. */
+  queued?: { messageSeq: number };
+  /**
+   * Someone else's task is running in this shared conversation: the message
+   * waits and becomes the sender's own run (`runId`) when that task ends.
+   */
+  nextRun?: { id: string; runId: string; position: number };
+}
+
+export interface AgentRunControlReceipt {
+  commandId: string;
+  run: AgentHarnessRun;
+  firstEventSeq: number | null;
+  lastEventSeq: number | null;
 }

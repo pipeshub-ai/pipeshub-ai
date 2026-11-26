@@ -10,6 +10,7 @@ import pytest
 from app.connectors.sources.localKB.push import contract as C
 from app.connectors.sources.localKB.push import structure as S
 from app.connectors.sources.localKB.push.contract import PushRefusal
+from tests.support.cpu_budget import thread_cpu
 
 from .bodies import TEXT, cells_body, envelope, raw, schema_names
 
@@ -354,14 +355,13 @@ def unclosed_quote_backslash(n: int) -> bytes:
 
 
 def cpu_of(body: bytes) -> tuple[float, PushRefusal | None]:
-    # This thread's CPU only, so other threads left in the test process do not count.
-    start = time.thread_time()
-    try:
-        S.structure_pass(body, NAMES)
-        refusal = None
-    except PushRefusal as r:
-        refusal = r
-    return time.thread_time() - start, refusal
+    refusal = None
+    with thread_cpu() as cpu:
+        try:
+            S.structure_pass(body, NAMES)
+        except PushRefusal as r:
+            refusal = r
+    return cpu.seconds, refusal
 
 
 def fastest_cpu(body: bytes, runs: int = 3) -> float:

@@ -131,6 +131,7 @@ def parse_pdf_layout(pdf_bytes: bytes, spool_dir: str | None = None, model_cfg=N
     # The rasteriser reads the file by path.
     tmp_path: str | None = None
     emitter = None
+    collector = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf", prefix="pipeshub_pdf_") as tmp:
             tmp_path = tmp.name
@@ -168,12 +169,13 @@ def parse_pdf_layout(pdf_bytes: bytes, spool_dir: str | None = None, model_cfg=N
                         regions=regions,
                     )
                 )
-        if collector is not None:
-            collector.close()
         return pages
     finally:
         if emitter is not None:
             emitter.finish()
+        # The collector holds the rendered document open: close it on a failed parse too (the worker outlives it).
+        if collector is not None:
+            collector.close()
         if tmp_path is not None:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)

@@ -62,6 +62,7 @@ from app.services.vector_db.pgvector.errors import (
     OrgRequired,
     PgVectorError,
     PgVectorUnsupportedError,
+    SearchBusy,
     SpaceMismatch,
     classify_pg_search_error,
 )
@@ -71,6 +72,7 @@ from app.services.vector_db.pgvector.sampler import Sample, Sampler
 from app.services.vector_db.pgvector.scope import (
     ambient_or_required,
     ambient_org,
+    current_statement_timeout_ms,
     org_scope,
     require_org,
 )
@@ -79,6 +81,7 @@ from app.services.vector_db.pgvector.visibility import Scope, scope_of
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from datetime import datetime
 
     from app.config.configuration_service import ConfigurationService
@@ -325,7 +328,10 @@ class PgVectorService(IVectorDBService):
         space = await catalog.active_space(org, real_time=True) if org else None
         if space is None:
             return VectorCollectionInfo(name=collection_name, exists=True)
-        points = await db.run(lambda tx: reads.count(tx, org, row.collection_id, space.space_id), custom_plan=True)
+        points = await db.run(
+            lambda tx: reads.count(tx, org, row.collection_id, space.space_id),
+            custom_plan=True, timeout_ms=current_statement_timeout_ms(),
+        )
         return VectorCollectionInfo(
             name=collection_name, exists=True, dense_dimension=space.dim, points_count=points
         )
@@ -385,7 +391,9 @@ class PgVectorService(IVectorDBService):
         if any(s.role == "active" for s in spaces):
             # The org's space is another model's or dimension: while the org holds no point it takes the space this write defines,
             # named as a first write names it (the database decides; a point that exists or lands meanwhile makes it refuse).
-            await catalog.replace_empty_space(org, model or UNKNOWN_MODEL, dim)
+            observed_empty_at = time.time()
+            if await catalog.replace_empty_space(org, model or UNKNOWN_MODEL, dim):
+                await self._announce_space_replaced(org, model, observed_empty_at)
             # Whatever the answer, read the spaces again: a concurrent writer of this very model may have won the replacement.
             catalog.forget(org=org)
             found = _match(await catalog.org_spaces(org), dim, model)
@@ -403,6 +411,20 @@ class PgVectorService(IVectorDBService):
                 f"the organisation's embedding space is {space.effective_model} with dimension {space.dim}, not {model or 'unnamed'}-model vectors of dimension {dim}"
             )
         return found
+
+    def add_space_replaced_listener(self, listener: Callable[[str, str | None, float], Awaitable[object]]) -> None:
+        """Call ``listener(org, model, observed_empty_at)`` after an org's empty space was replaced by a write's own.
+
+        The holder of the configuration store (not this provider) uses it to drop a pin that described the old space.
+        """
+        self.__dict__.setdefault("_space_replaced_listeners", []).append(listener)
+
+    async def _announce_space_replaced(self, org: str, model: str | None, observed_empty_at: float) -> None:
+        for listener in self.__dict__.get("_space_replaced_listeners", []):
+            try:
+                await listener(org, model, observed_empty_at)
+            except Exception:  # a pin that could not be checked is claimed or refused by the write that follows
+                logger.warning("a space-replaced listener failed", exc_info=True)
 
     @staticmethod
     async def _claim_name(catalog: Catalog, org: str, space: OrgSpace, model: str | None) -> OrgSpace:
@@ -498,7 +520,10 @@ class PgVectorService(IVectorDBService):
             if space is None:
                 return 0
             compiled = compile_filter(count_filter, first_param=4)
-            return int(await db.run(lambda tx: reads.count_filtered(tx, org, coll.collection_id, space.space_id, compiled), custom_plan=True))
+            return int(await db.run(
+                lambda tx: reads.count_filtered(tx, org, coll.collection_id, space.space_id, compiled),
+                custom_plan=True, timeout_ms=current_statement_timeout_ms(),
+            ))
 
     async def retrieve_points(self, collection_name: str, ids: list[str]) -> list[VectorPoint]:
         """The points with these ids in the request's org, in the order asked; ids that name no point (or are no UUID) are left out.
@@ -553,7 +578,7 @@ class PgVectorService(IVectorDBService):
         searched; an empty accessible list in the filter finds nothing. The requests of a call run a few at a time. A leg that cannot run
         in its tier is answered by the bounded exact path, counted, logged and flagged on every result (``SearchResult.degraded``).
         A leg is ``min(2 * limit, 2000)`` rows (the lexical leg at most 1,000). A lexical leg that runs out of time or fails answers nothing and
-        flags the result. The legs run as separate statements, one unit of work each."""
+        flags the result. An answer that is empty because no leg could run raises :class:`SearchBusy`, never an empty list. The legs run as separate statements, one unit of work each."""
         coll = await self._assert_connected()[1].require_collection(collection_name)
         gate = asyncio.Semaphore(self._cfg.search.request_concurrency)
 
@@ -606,14 +631,18 @@ class PgVectorService(IVectorDBService):
                     t.cancel()
                 await asyncio.gather(*legs, return_exceptions=True)
                 raise
-            dense_rows, degraded = answers[0]
-            rows = [[pid for _, pid in dense_rows]]
-            if sparse is not None:
-                rows.append([pid for _, pid in answers[1][0]])
-                degraded = degraded or answers[1][1]
-            if degraded:
-                degraded_notice.note(degraded)          # the provider contract: an empty answer is flagged too
+            rows = [[pid for _, pid in leg_rows] for leg_rows, _ in answers]
+            # the provider contract: an empty answer is flagged too. Every leg's reason is noted: an exact dense leg (quantization, complete) must not hide a
+            # word search that ran out of time beside it. The hits carry the first one.
+            reasons = [reason for _, reason in answers if reason]
+            for reason in reasons:
+                degraded_notice.note(reason)
+            degraded = reasons[0] if reasons else None
             ranked = fusion.rrf(rows, req.limit)
+            # The dense leg sees every candidate, so its empty answer is complete (the lexical leg's only when there is no dense query).
+            # Empty because that leg could not run is not "nothing matched": busy, which the search retry answers as a timeout.
+            if not ranked and (answers[0][1] == "overload" if req.dense_query is not None else answers[-1][1] in ("timeout", "error")):
+                raise SearchBusy("the search could not run within its budget; try again")
             if not req.with_payload:
                 return [SearchResult(id=pid, score=score, degraded=degraded) for pid, score in ranked]
             points = {p.id: p for p in await db.run(

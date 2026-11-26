@@ -11,11 +11,13 @@ import {
   findMergeTargetToolsetNode,
   getToolsetSidebarStatus,
   groupToolsetsByType,
-  normalizeToolsetTypeKey,
+  isToolsetTypeConflict,
   type ToolsetTypeKeyFlowNode,
 } from '../sidebar-toolset-utils';
+import { selectInstanceToolIds, useToolIdentityStore } from '@/app/(main)/toolsets/api/tool-identity';
 import { normalizePaletteLabel } from '../display-utils';
 import { SidebarCategoryRow } from './sidebar-category-row';
+import { CapabilityBadge, type Grantable } from './capability-badge';
 import { SidebarToolDragRow } from './sidebar-draggable-row';
 import { UserToolsetConfigDialog } from './user-toolset-config-dialog';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
@@ -24,6 +26,8 @@ import { AgentBuilderWebSearchSection } from './sidebar-web-search-section';
 import type { UseWebSearchConfigResult } from '../hooks/use-web-search-config';
 import { useSearchAwareExpanded } from '../sidebar-expand-utils';
 import { filterToolsetTools } from '../sidebar-utils';
+import { PaletteShowMore } from './palette-show-more';
+import type { BuilderCatalogPaging } from '../hooks/use-agent-builder-data';
 import { isApiToolsetRow } from '../api-toolset-attachments';
 import { usableByServiceAccount } from '../../../workspace/api-toolsets/toolset-form';
 import type { AgentWebSearchAttachment } from '../types';
@@ -52,11 +56,11 @@ function getToolsetPaletteRowState(
   isServiceAccount: boolean,
   onStructureDragBlocked: () => void,
   onDuplicate: () => void,
-  onUnconfigured: () => void
+  onUnconfigured: () => void,
+  instanceScoped: boolean
 ) {
   const needsConfiguration = !ts.isConfigured || !ts.isAuthenticated;
-  const normalizedType = normalizeToolsetTypeKey(ts.toolsetType || ts.name || '');
-  const dup = activeToolsetTypeKeys.has(normalizedType);
+  const dup = isToolsetTypeConflict(activeToolsetTypeKeys, ts.toolsetType || ts.name || '', ts.instanceId, instanceScoped);
   const dragPayload = buildToolsetDragPayload(ts);
   const dragBlocked = structureLocked || needsConfiguration || dup;
   const dragType = dragBlocked ? undefined : dragPayload['application/reactflow'];
@@ -115,6 +119,8 @@ function ToolDragRow(props: {
 
 export function AgentBuilderToolsetsSection(props: {
   toolsets: BuilderSidebarToolset[];
+  /** The actions catalog's paging (R30-LAT-FU-1); absent: `toolsets` is all there is. */
+  paging?: BuilderCatalogPaging;
   /** Palette-wide search query, applied on top of this section's own server-side search. */
   search?: string;
   /** Web search config loaded by the sidebar, handed to the web search group. */
@@ -140,11 +146,14 @@ export function AgentBuilderToolsetsSection(props: {
   onPaletteStructureDragBlocked?: () => void;
   /** Web-search provider currently attached to the agent (null if none). */
   webSearchAttached: AgentWebSearchAttachment | null;
+  /** What a run of this (saved) agent could use, by installation id; null: no badges. */
+  grantable?: Grantable | null;
   /** Shared with the org or a service account: personal actions can't go on it. */
   agentShared?: boolean;
 }) {
   const {
     toolsets,
+    paging,
     search = '',
     loading,
     refreshToolsets,
@@ -158,10 +167,12 @@ export function AgentBuilderToolsetsSection(props: {
     orgCredentialUiLocked = false,
     onPaletteStructureDragBlocked,
     webSearchAttached,
+    grantable = null,
     agentShared = false,
   } = props;
 
   const { t } = useTranslation();
+  const instanceScoped = useToolIdentityStore(selectInstanceToolIds);
   const [searchInput, setSearchInput] = useState('');
   const searching = search.trim() !== '';
   const { isOpen, toggle: onAppToggle } = useSearchAwareExpanded(searching);
@@ -235,7 +246,7 @@ export function AgentBuilderToolsetsSection(props: {
           isFromRegistry,
           forceShowConfigureIcon: true,
           configureUseKeyIcon: false,
-          configureIconColor: 'var(--slate-10)',
+          configureIconColor: 'var(--slate-11)',
           configureTooltip: t('agentBuilder.notConfiguredTooltip'),
         };
       }
@@ -458,12 +469,16 @@ export function AgentBuilderToolsetsSection(props: {
                           isServiceAccount,
                           notifyRowLocked,
                           () => handleDuplicateDrag(ts),
-                          () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
+                          () => handleUnconfiguredDrag(ts, ui.isFromRegistry),
+                          instanceScoped
                         );
 
                         const toolsetNameForMerge = ts.toolsetType || ts.name || '';
-                        const dupType = activeToolsetTypeKeys.has(
-                          normalizeToolsetTypeKey(toolsetNameForMerge)
+                        const dupType = isToolsetTypeConflict(
+                          activeToolsetTypeKeys,
+                          toolsetNameForMerge,
+                          ts.instanceId,
+                          instanceScoped
                         );
                         const mergeTarget = findMergeTargetToolsetNode(
                           toolsetMergeCheckNodes,
@@ -494,6 +509,11 @@ export function AgentBuilderToolsetsSection(props: {
                             configureUseKeyIcon={ui.configureUseKeyIcon}
                             configureIconColor={ui.configureIconColor}
                             toolsetStatus={getToolsetSidebarStatus(ts)}
+                            badge={
+                              grantable === null || !ts.instanceId ? null : (
+                                <CapabilityBadge item={grantable.get(ts.instanceId)} />
+                              )
+                            }
                           >
                             {shownTools.map((tool) => (
                               <ToolDragRow
@@ -517,36 +537,14 @@ export function AgentBuilderToolsetsSection(props: {
                   </Box>
                 );
               })}
-              {!searching && typeEntries.length > TOOLSET_SHOW_MORE_LIMIT && (
-                <button
-                  type="button"
-                  aria-expanded={showAllToolsets}
-                  onClick={() => setShowAllToolsets((v) => !v)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    width: '100%',
-                    gap: 4,
-                    padding: '6px 8px',
-                    cursor: 'pointer',
-                    userSelect: 'none',
-                    borderRadius: 'var(--radius-1)',
-                    border: 'none',
-                    background: 'none',
-                    fontFamily: 'inherit',
-                  }}
-                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--olive-a3)'; }}
-                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
-                >
-                  <MaterialIcon
-                    name={showAllToolsets ? 'expand_less' : 'expand_more'}
-                    size={16}
-                    color="var(--accent-9)"
-                  />
-                  <Text size="1" weight="medium" style={{ color: 'var(--accent-9)' }}>
-                    {showAllToolsets ? t('agentBuilder.showLess') : `${t('agentBuilder.showMore')} (${typeEntries.length - TOOLSET_SHOW_MORE_LIMIT})`}
-                  </Text>
-                </button>
+              {!searching && (
+                <PaletteShowMore
+                  expanded={showAllToolsets}
+                  read={typeEntries.length}
+                  visible={visibleEntries.length}
+                  paging={paging}
+                  onToggle={setShowAllToolsets}
+                />
               )}
               </>
             );

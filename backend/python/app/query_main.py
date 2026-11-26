@@ -1,8 +1,9 @@
 import asyncio
+import gc
 import logging
 import os
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -11,7 +12,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+import app.utils.runtime_threads
 from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_log import (
     install_request_logging,
@@ -33,16 +34,29 @@ from app.edition_config import (
 from app.services.model_identity.principal import service_principal
 from app.services.model_identity.runtime import call_scope
 from app.services.model_identity.workload import Workload
+from app.utils.env_flags import (
+    AGENT_HARNESS_WORKER_ENABLED,
+    env_flag,
+    validate_env_flags,
+)
 from app.utils.log_redaction import log_safe_validation_errors
 from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
+from app.agent_loop_lib import composition as agent_loop_composition  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.code_graph import router as code_graph_router  # noqa: E402 - after set_service_suffix(), like the imports around it
+from app.api.routes.control_plane_drivers import router as control_plane_drivers_router  # noqa: E402
+from app.api.routes.entity_tools import router as entity_tools_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.graph_view import router as graph_view_router  # noqa: E402
+from app.api.routes.harness import router as harness_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.health import router as health_router
+from app.api.routes.knowledge_publications import (  # noqa: E402 - after set_service_suffix(), like the imports around it
+    router as knowledge_publications_router,
+)
 from app.api.routes.knowledge_search import router as knowledge_search_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.openai_models import router as openai_models_router
+from app.api.routes.record_access import router as record_access_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
@@ -69,6 +83,10 @@ from app.utils.user_lookup import (  # noqa: E402 - after set_service_suffix(), 
 from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
 
+# The legacy chat path binds its kernel seams here, not as a side effect of
+# whichever module happens to import app.agent_loop_lib first. Durable runs
+# never read these: RunDriver scopes each attempt to its own bindings.
+agent_loop_composition.install()
 # Stop at load on a store setting this edition does not run.
 check_runtime_settings()
 
@@ -187,6 +205,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mark_process_non_dumpable()
     install_log_redaction()
 
+    # A malformed harness flag stops the service here, not on the first request that reads it.
+    validate_env_flags()
     # Before anything builds a pool or semaphore off a per-process budget.
     set_process_worker_count(configured_worker_count())
 
@@ -199,12 +219,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.debug("🚀 Starting retrieval application")
 
     await configure_envelope(app_container.config_service())
+    from app.modules.indexing.replay_set import check_main_redis_eviction_policy
 
-    from app.agents.actions.storage_search.storage_search import (
-        sweep_orphan_views_at_startup,
-    )
-
-    await sweep_orphan_views_at_startup(app_container.config_service())
+    await check_main_redis_eviction_policy(app_container.config_service(), logger, "query")
 
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
@@ -218,6 +235,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Fallback: if not set during initialization, resolve it now
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
+
+    from app.agents.actions.storage_search.storage_search import (
+        sweep_orphan_views_at_startup,
+    )
+
+    # Reads every org's storage settings, so not while requests wait.
+    app.state.orphan_view_sweep_task = spawn_detached(
+        sweep_orphan_views_at_startup(app_container.config_service(), graph_provider), name="orphan-view-sweep"
+    )
 
     # Chat attachments parse PDFs in parse workers sized from this governor, so
     # one slow or huge file costs only its own upload: a worker can be killed on
@@ -311,15 +337,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # instead of being checked on every agent request.
         try:
             from app.agents.agent_loop.skills_wiring import skills_enabled
-            from app.services.featureflag.platform_settings import is_skills_enabled
 
-            if skills_enabled() and await is_skills_enabled(container.config_service()):
+            if skills_enabled():
                 from app.agents.agent_loop.skills.manager_factory import (
                     reconcile_builtin_skills_for_orgs,
                 )
 
                 app.state.skills_seed_task = asyncio.create_task(
-                    reconcile_builtin_skills_for_orgs(graph_provider)
+                    reconcile_builtin_skills_for_orgs(graph_provider, container.config_service())
                 )
         except Exception as e:
             logger.warning(f"Builtin skill seeding not scheduled at startup (requests will retry): {e}")
@@ -390,6 +415,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         try:
             settings = await EnvSandboxSettingsLoader().load(SandboxContext())
+            # Size the code sandbox ceiling from the machine in the background;
+            # runs use the minimum until it is known.
+            from app.agent_loop_lib.sandbox.capacity import get_sandbox_capacity
+
+            get_sandbox_capacity().start_sizing()
+            # The live limit samples the machine in every worker; the governor
+            # builds it for the modes that have a reading.
+            from app.agent_loop_lib.sandbox.governor import get_default_governor
+            from app.agent_loop_lib.sandbox.live_limit import get_live_limit
+
+            get_default_governor()
+            live_limit = get_live_limit()
+            if live_limit is not None:
+                live_limit.start()
             registry = build_default_registry(
                 shared_config=SharedSandboxConfig(max_lifetime_s=settings.max_lifetime_s),
                 backend_options=settings.backend_options,
@@ -423,6 +462,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.sandbox_warmup_task = spawn_detached(_warmup_coding_sandbox())
 
+    # The code-execution tools leave each run's files in a temp folder for the artifact upload; this removes them
+    # once they are older than ARTIFACT_TEMP_TTL_HOURS (CLEANUP-2).
+    from app.sandbox.artifact_cleanup import start_cleanup_task, stop_cleanup_task
+
+    start_cleanup_task()
+
+    # Admin alerts when code runs keep waiting for a sandbox; one worker of
+    # the container evaluates, the others wait to take over.
+    from app.services.sandbox_alerts.loop import graph_org_ids, run_sandbox_alert_loop
+
+    app.state.sandbox_alert_task = spawn_detached(
+        run_sandbox_alert_loop(app_container.config_service(), logger, org_ids=graph_org_ids(graph_provider)),
+    )
+
     # Initialize toolset registry for agent tool execution.
     # auto_discover_toolsets() imports ~20 heavy SDK modules (Google, Microsoft,
     # Slack, …) synchronously. Offload to a worker thread so the event loop
@@ -448,17 +501,54 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.mcp_registry = mcp_registry
     logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
 
+    # The MCP admission policy's background work, once per process (none where no admin approves MCP tools).
+    from app.harness.mcp_hub.tool_admission import mcp_tool_admission
+    from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+    _ = mcp_tool_admission().start(app_container.config_service(), app.state, at_ms=get_epoch_timestamp_in_ms())
+
+    from app.harness.inline import drain_on_termination
+
+    drain_on_termination(app.state)
+    # Each answer allocates and drops many short-lived objects; a gen-0 threshold
+    # of 10,000 (default 700) makes young collections rarer while generations 1
+    # and 2 keep their default ratios.
+    gc.set_threshold(10_000, 10, 10)
+
     yield
     # Shutdown
     logger.info("🔄 Shutting down application")
 
+    from app.harness.inline import InlineClaimer
+
+    inline_claimer = getattr(app.state, "harness_inline", None)
+    if isinstance(inline_claimer, InlineClaimer):
+        # Running inline attempts yield at their next boundary (drain).
+        await inline_claimer.aclose()
+
+    from app.harness.mcp_hub.hub import process_mcp_hub
+    from app.harness.mcp_runner.process import process_mcp_runner
+
+    try:
+        # Pooled sessions first: a pooled STDIO session holds its runner open.
+        await process_mcp_hub.aclose()
+    except Exception as e:
+        logger.error(f"Error closing pooled MCP sessions: {type(e).__name__}")
+    try:
+        await process_mcp_runner.aclose()
+    except Exception as e:
+        logger.error(f"Error stopping MCP runners: {type(e).__name__}")
+
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
+
+    stop_cleanup_task()
 
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
         "lexical_reconcile_task", "entity_store_warmup_task", "skills_seed_task",
+        "sandbox_alert_task", "orphan_view_sweep_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():
@@ -467,6 +557,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await warmup_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+    try:
+        from app.agent_loop_lib.sandbox.live_limit import get_live_limit
+
+        live_limit = get_live_limit()
+        if live_limit is not None:
+            await live_limit.stop()
+    except Exception as e:
+        logger.error(f"Error stopping the sandbox live limit: {e}")
+
+    try:
+        from app.agent_loop_lib.sandbox.load_ledger import peek_default_load_ledger
+
+        load_ledger = peek_default_load_ledger()
+        if load_ledger is not None:
+            await asyncio.to_thread(load_ledger.close)
+    except Exception as e:
+        logger.error(f"Error flushing the sandbox load ledger: {e}")
 
     # Stop all message consumers
     try:
@@ -537,22 +645,40 @@ app = FastAPI(
 )
 configure_app(app, "query")
 
-EXCLUDE_PATHS = ["/health"]  # Exclude health endpoint from authentication for monitoring purposes
+# /health for monitoring; /api/v1/harness authenticates with the worker credential itself.
+EXCLUDE_PATHS = ["/health", "/api/v1/harness/"]
 
 
-@app.middleware("http")
-async def authenticate_requests(request: Request, call_next) -> JSONResponse:
-    # Check if path should be excluded from authentication
-    if any(request.url.path.startswith(path) for path in EXCLUDE_PATHS):
-        return await call_next(request)
+class AuthenticateRequests:
+    """Authenticates every request outside EXCLUDE_PATHS.
 
-    try:
-        authenticated_request = await authMiddleware(request)
-    except HTTPException as exc:
-        mark_request_failure(request, exc)
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    # A route's exception is logged and answered by http.request.end (request_log).
-    return await call_next(authenticated_request)
+    Plain ASGI rather than ``@app.middleware("http")``: ``BaseHTTPMiddleware``
+    pushes every chunk of a streamed answer through an anyio memory stream.
+    A route's exception is logged and answered by http.request.end (request_log).
+    """
+
+    def __init__(self, app: Callable[..., Awaitable[None]]) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        if any(request.url.path.startswith(path) for path in EXCLUDE_PATHS):
+            await self.app(scope, receive, send)
+            return
+        try:
+            # request.state lives in the scope, so the route sees what auth set.
+            await authMiddleware(request)
+        except HTTPException as exc:
+            mark_request_failure(request, exc)
+            await JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(AuthenticateRequests)
 
 
 # Trace context and the request line — outside auth, so both see every request.
@@ -598,6 +724,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
 app.include_router(knowledge_search_router, prefix="/api/v1")
+app.include_router(entity_tools_router, prefix="/api/v1")
 app.include_router(records_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")
@@ -608,6 +735,12 @@ app.include_router(code_graph_router, prefix="/api/v1")
 app.include_router(graph_view_router, prefix="/api/v1")
 # These routes call whatever provider URL the body names, so only admins may reach them.
 app.include_router(health_router, prefix="/api/v1", dependencies=[Depends(require_admin_caller)])
+# The in-process claimer of durable runs exists only with the agent harness switched on (ADR-OPS-06).
+if env_flag(AGENT_HARNESS_WORKER_ENABLED):
+    app.include_router(harness_router, prefix="/api/v1/harness")
+app.include_router(record_access_router, prefix="/api/v1")
+app.include_router(control_plane_drivers_router, prefix="/api/v1/control-plane/drivers")
+app.include_router(knowledge_publications_router, prefix="/api/v1")
 app.include_router(ai_models_registry_router, prefix="/api/v1")
 # OpenAI clients call ``{base}/models``. Base may be ``{origin}/v1`` or the
 # query service's ``{origin}/api/v1``.

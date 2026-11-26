@@ -148,3 +148,20 @@ async def test_a_cap_reaches_the_gate() -> None:
         queue_wait_warn_seconds=0.01, gate_timeout_seconds=0.05, cap=2,
     )
     assert admitted and gate.in_use == 2
+
+
+@pytest.mark.asyncio
+async def test_gate_timeout_shorter_than_warn_window_is_not_admitted() -> None:
+    """The gate gives up inside the warn window: the caller must get False (429), not True."""
+    ticks = iter(range(0, 10_000, 10))  # every clock read advances 10 s, so a 5 s timeout is already spent
+    registry = LimitRegistry(Limits(values=dict.fromkeys(Pool, 1)))
+    gate = AdmissionGate(Pool.HEAVY_PARSE, registry, clock=lambda: float(next(ticks)))
+    assert await gate.acquire(cost=1)
+
+    admitted = await acquire_gate_with_backpressure(
+        gate, 1, ParseTier.HEAVY, "m-short", logger=_LOGGER, log_prefix="test",
+        queue_wait_warn_seconds=60.0, gate_timeout_seconds=5.0,
+    )
+
+    assert admitted is False
+    assert gate.in_use == 1

@@ -240,3 +240,20 @@ async def test_a_request_queued_for_the_model_holds_no_permit(tmp_path) -> None:
     assert r1.status_code == 200 and r2.status_code == 200
     assert peak["v"] <= 1, f"{peak['v']} permits held while one table can run"
     assert got is True  # the conversion's acquire was admitted while a table ran
+
+
+async def test_an_image_part_is_read_no_further_than_the_byte_limit(wired) -> None:
+    from starlette.datastructures import UploadFile
+
+    sizes: list[int] = []
+    real_read = UploadFile.read
+
+    async def read(self, size: int = -1) -> bytes:
+        sizes.append(size)
+        return await real_read(self, size)
+
+    big = b"\x00" * (mod.MAX_IMAGE_BYTES + 10)
+    with patch.object(UploadFile, "read", read):
+        r = await post(1, files={"c0": ("c0.png", big, "image/png")})
+    assert r.status_code == 422
+    assert sizes and all(0 < s <= mod.MAX_IMAGE_BYTES + 1 for s in sizes)

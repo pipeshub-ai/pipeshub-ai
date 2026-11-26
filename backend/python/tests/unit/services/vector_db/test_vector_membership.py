@@ -262,8 +262,12 @@ class TestVectorPointPayloadContext:
 class TestVectorStoreWritesMembership:
     @pytest.mark.asyncio
     async def test_unique_index_writes_both_arrays(self):
+        import logging
+
         from langchain_core.documents import Document
 
+        from app.config.configuration_service import ConfigurationService
+        from app.config.providers.in_memory_store import InMemoryKeyValueStore
         from app.modules.transformers.vectorstore import VectorStore
         from app.services.vector_db.membership import set_membership_context
         from app.services.vector_db.models import VectorDBCapabilities
@@ -273,7 +277,8 @@ class TestVectorStoreWritesMembership:
         mock_vdb.get_service_name = MagicMock(return_value="mock")
         vs = VectorStore(
             logger=MagicMock(),
-            config_service=AsyncMock(),
+            # every writer reads the epoch of its collection (the ids of its points depend on it)
+            config_service=ConfigurationService(logging.getLogger("m"), InMemoryKeyValueStore(logging.getLogger("m"))),
             graph_provider=AsyncMock(),
             collection_registry=_make_collection_registry(),
             vector_db_service=mock_vdb,

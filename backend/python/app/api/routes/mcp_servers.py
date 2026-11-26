@@ -14,6 +14,7 @@ values at rest exactly like the toolsets/connectors credential paths.
 """
 import asyncio
 import logging
+import unicodedata
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -23,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.agents.agent_loop import tool_approvals
+from app.agents.capability_sync import sync_capabilities
 from app.agents.constants.mcp_server_constants import (
     SIGN_IN_STATE_TTL_SECONDS,
     get_mcp_credentials_path,
@@ -41,7 +43,7 @@ from app.agents.mcp import logo as mcp_logo
 from app.agents.mcp import oauth_client as oauth_client_module
 from app.agents.mcp import service as mcp_service
 from app.agents.mcp import token_refresh as mcp_token_refresh
-from app.agents.mcp.client import MCPConnectionError
+from app.agents.mcp.client import MCPConnectionError, typed_refusal
 from app.agents.mcp.discovery import cached_tools_for_owner, discover_tools_for_owner
 from app.agents.mcp.errors import MCPUrlBlockedError, insufficient_scope
 from app.agents.mcp.failure import (
@@ -54,6 +56,7 @@ from app.agents.mcp.failure import (
 from app.agents.mcp.models import (
     DiscoveredOAuthMetadata,
     MCPAuthMode,
+    MCPCategory,
     MCPServerInstanceConfig,
     MCPServerLogoPayload,
     MCPTransport,
@@ -62,6 +65,7 @@ from app.agents.mcp.models import (
 )
 from app.agents.mcp.naming import assign_namespaces
 from app.agents.mcp.registry import MCPRegistry
+from app.agents.mcp.runner_fields import DECLARED_EGRESS_HOSTS
 from app.agents.mcp.service import template_connection_fields
 from app.agents.mcp.url_guard import (
     MCPUrlPolicy,
@@ -80,10 +84,11 @@ from app.api.middlewares.request_log import (
 from app.config.configuration_service import (
     ConfigurationService,
     delete_config_confirmed,
+    delete_config_or_raise,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
-from app.core.org_context import current_org_id
+from app.core.org_context import current_org_id, org_of
 from app.edition_config import (
     build_schedule_refresh_kwargs,
     can_reveal_secrets,
@@ -94,21 +99,23 @@ from app.edition_config import (
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
 )
+from app.harness.credentials.legacy_records import legacy_records
+from app.harness.mcp_hub.settings import hub_enabled
+from app.harness.mcp_runner.settings import runners_enabled
 from app.utils import error_class
 from app.utils.concurrency import gather_with_concurrency
-from app.utils.credential_refresh_log import (
-    EVENT_DEAUTHENTICATE_FAILED,
-    log_deauthenticated,
-)
 from app.utils.desktop_state import (
     mark_desktop_state,
     strip_desktop_state,
 )
 from app.utils.env_utils import env_int
-from app.utils.logging_fields import log_event
 from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import await_or_503
 from app.utils.user_messages import action_failed
+from harness_core.mcp_hub.errors import MCPHubRefused
+from harness_core.sandbox.mcp_runner.errors import MCPRunnerRefused
+from harness_core.sandbox.mcp_runner.policy import parse_egress_host
 
 logger = logging.getLogger(__name__)
 DEFAULT_ENDPOINTS_PATH = "/services/endpoints"
@@ -350,12 +357,78 @@ def _dcr_client_fits(record: dict[str, Any], redirect_uri: str) -> bool:
 _load_org_instances = load_mcp_instances
 _get_org_instance = get_mcp_instance_resolved
 
+
+async def _visible_instances(
+    config_service: ConfigurationService, org_id: str, user_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """The instances the caller sees; a store that cannot be read is 503 naming it, never an empty list (CPD-7 FB-3)."""
+    try:
+        return await resolve_mcp_instances_with_inheritance(config_service, org_id, user_id)
+    except mcp_service.MCPInstancesUnavailable as exc:
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+            detail={"reasonCode": exc.reason_code, "message": "MCP servers can't be reached right now. Try again later."},
+        ) from exc
+
+
+async def _require_org_instance(
+    instance_id: str, config_service: ConfigurationService, user_context: dict[str, Any]
+) -> dict[str, Any]:
+    """The instance as the caller sees it; another org's answers 404 like a missing one."""
+    instance = await _get_org_instance(instance_id, config_service, current_org_id(), user_context["user_id"])
+    if not instance:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
+    return instance
+
 MAX_PERSONAL_INSTANCES_ENV = "MCP_MAX_PERSONAL_INSTANCES"
 DEFAULT_MAX_PERSONAL_INSTANCES = 25
 
 
 def _max_personal_instances() -> int:
     return env_int(MAX_PERSONAL_INSTANCES_ENV, DEFAULT_MAX_PERSONAL_INSTANCES, lo=0)
+
+
+def _name_key(name: object) -> str:
+    """How two names compare: case, runs of spaces and look-alike Unicode forms (full-width
+    letters, ligatures) don't tell servers apart to a reader. The form mirrors this in
+    `server-names.ts`."""
+    return " ".join(unicodedata.normalize("NFKC", str(name or "")).split()).casefold()
+
+
+async def _refuse_taken_name(
+    config_service: ConfigurationService,
+    name: str,
+    *,
+    scope: str,
+    org_id: str,
+    user_id: str,
+    instance_id: Optional[str] = None,
+) -> None:
+    """People pick servers by name, so no two in one list share a name, whatever their type.
+
+    A personal server is checked against what its owner sees (the org's servers and their own);
+    an org server against the org's only, since administrators never see personal servers.
+    shortcut: check-then-write, so two saves at the same instant can both pass; closing that
+    needs a unique key in the store.
+    """
+    # Every record or none: a list missing the one that holds the name would let it through.
+    try:
+        if scope == mcp_service.SCOPE_PERSONAL:
+            seen = await mcp_service.load_visible_instances(config_service, org_id, user_id, strict=True)
+        else:
+            seen = await mcp_service.load_org_instances(config_service, org_id, strict=True)
+    except Exception as exc:
+        logger.warning("Couldn't read the MCP servers to check a name", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+            detail="Couldn't check whether another MCP server already has this name. Try again.",
+        ) from exc
+    key = _name_key(name)
+    if key and any(i.get("_id") != instance_id and _name_key(i.get("name")) == key for i in seen):
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=f'An MCP server named "{" ".join(name.split())}" already exists. Choose another name.',
+        )
 
 
 async def _require_manage_access(
@@ -400,11 +473,25 @@ def _bad_request(detail: str) -> HTTPException:
     return HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=detail)
 
 
+def _check_declared_egress(payload: MCPServerInstanceConfig) -> None:
+    """The hosts a custom STDIO server's runner may reach, in the runner's own syntax; no other server declares any."""
+    if not payload.egress_hosts:
+        return
+    if payload.type_id or payload.transport != MCPTransport.STDIO:
+        raise _bad_request("Only a custom STDIO server lists the hosts it reaches.")
+    try:
+        for host in payload.egress_hosts:
+            parse_egress_host(host)
+    except MCPRunnerRefused as e:
+        raise _bad_request(str(e)) from e
+
+
 def _validate_instance_config(payload: MCPServerInstanceConfig, registry: MCPRegistry) -> None:
     """Cross-field validation the Pydantic model alone can't express, plus the STDIO
     launch policy (`app.agents.mcp.stdio_policy`). Shared by create and update."""
     if payload.use_admin_auth and payload.auth_mode not in (MCPAuthMode.API_TOKEN, MCPAuthMode.HEADERS):
         raise _bad_request("A shared admin credential applies only to API token or header sign-in.")
+    _check_declared_egress(payload)
     if payload.type_id:
         template = registry.get_template(payload.type_id)
         if not template:
@@ -510,11 +597,17 @@ def _build_instance_record(
             "args": list(payload.args or []),
             "requiredEnv": list(payload.required_env or []),
             "optionalEnv": [],
+            DECLARED_EGRESS_HOSTS: [h.strip() for h in payload.egress_hosts],
             "url": payload.url,
             "authorizationUrl": payload.authorization_url,
             "tokenUrl": payload.token_url,
             "scopes": list(payload.scopes or []),
         })
+    # Per-server settings an edition extension writes on its own routes (runner, boundary): an instance edit keeps
+    # them, so no edit form can mark a server as inside the organization on the side.
+    for kept in ("egressHosts", "runnerImage", "insideOrganization", "insideOrganizationSetBy", "insideOrganizationSetAt"):
+        if existing and kept in existing:
+            record[kept] = existing[kept]
     return record
 
 
@@ -542,23 +635,43 @@ async def list_catalog(
     request: Request,
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
-    search: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None, max_length=200),
+    category: Optional[MCPCategory] = Query(default=None),
 ) -> dict[str, Any]:
     _get_user_context(request)
     registry = _get_mcp_registry(request)
 
-    from app.agents.mcp.catalog import paginate, search_templates
+    from app.agents.mcp.catalog import paginate, rank_templates
 
-    templates = search_templates(registry.list_templates(), search)
-    page_items, total = paginate(templates, page, limit)
+    matches = rank_templates(registry.list_templates(), search, category.value if category else None)
+    page_items, total = paginate(matches, page, limit)
 
     return {
-        "templates": [t.model_dump(by_alias=True) for t in page_items],
+        # `matchedCapability` says which job a search matched, so the UI can show why.
+        "templates": [
+            {**m.template.model_dump(by_alias=True), **({"matchedCapability": m.capability} if m.capability else {})}
+            for m in page_items
+        ],
         "total": total,
         "page": page,
         "limit": limit,
         "customStdioAllowed": stdio_policy.custom_stdio_allowed(),
     }
+
+
+@router.get("/popular", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
+async def list_popular_servers(request: Request, limit: int = Query(default=6, ge=1, le=50)) -> dict[str, Any]:
+    """The organization's servers people signed in to, most used first: counts only, never who.
+
+    Servers people reach through one shared credential, or with no sign-in, keep no per-person
+    record, so they aren't ranked here.
+    """
+    user_context = _get_user_context(request)
+    config_service = _get_config_service(request)
+    # Only the servers this person can see: an edition may keep an admin server from some members.
+    visible = await resolve_mcp_instances_with_inheritance(config_service, current_org_id(), user_context["user_id"])
+    rows = await mcp_service.popular_org_servers(config_service, visible)
+    return {"servers": rows[:limit]}
 
 
 @router.get("/catalog/{type_id}", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
@@ -567,7 +680,7 @@ async def get_catalog_template(request: Request, type_id: str) -> dict[str, Any]
     registry = _get_mcp_registry(request)
     template = registry.get_template(type_id)
     if not template:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Unknown MCP server type: {type_id}")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Unknown MCP server type.")
     return template.model_dump(by_alias=True)
 
 
@@ -585,7 +698,7 @@ async def list_instances(request: Request) -> dict[str, Any]:
     if not is_admin:
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can list MCP server instances.")
 
-    instances = await resolve_mcp_instances_with_inheritance(config_service, user_context["org_id"])
+    instances = await _visible_instances(config_service, current_org_id())
 
     async def _mark_oauth_client_config(instance: dict[str, Any]) -> None:
         instance["scope"] = mcp_service.instance_scope(instance)
@@ -603,7 +716,7 @@ async def list_instances(request: Request) -> dict[str, Any]:
 
 # What a member sees of an org server is enough to connect to it and use it; how to reach it
 # stays with administrators, because a URL or argument can carry a credential.
-_ADMIN_ONLY_CONNECTION_FIELDS = frozenset({"url", "command", "args", "authorizationUrl", "tokenUrl", "scopes"})
+_ADMIN_ONLY_CONNECTION_FIELDS = frozenset({"url", "command", "args", "authorizationUrl", "tokenUrl", "scopes", DECLARED_EGRESS_HOSTS})
 
 
 def _without_connection_details(instance: dict[str, Any]) -> dict[str, Any]:
@@ -621,6 +734,7 @@ async def create_instance(
 ) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
+    org_id = user_context["org_id"]
     if payload.scope not in (None, mcp_service.SCOPE_ORG, mcp_service.SCOPE_PERSONAL):
         raise _bad_request("scope must be 'org' or 'personal'.")
     # Only administrators create org-wide instances; everyone else's are their own. A request
@@ -637,16 +751,19 @@ async def create_instance(
     _refuse_replaced_template(payload, registry)
     if scope == mcp_service.SCOPE_PERSONAL:
         _validate_personal_instance(payload)
-        existing = await mcp_service.load_user_instances(config_service, user_context["org_id"], user_context["user_id"])
+        existing = await mcp_service.load_user_instances(config_service, org_id, user_context["user_id"])
         if len(existing) >= _max_personal_instances():
             raise HTTPException(
                 status_code=HttpStatusCode.CONFLICT.value,
                 detail=f"You can have at most {_max_personal_instances()} personal MCP servers. Remove one first.",
             )
+    await _refuse_taken_name(
+        config_service, payload.name, scope=scope, org_id=org_id, user_id=user_context["user_id"],
+    )
 
     instance_id = str(uuid.uuid4())
     record = _build_instance_record(
-        payload, instance_id, user_context["org_id"], user_context["user_id"], registry, scope=scope,
+        payload, instance_id, org_id, user_context["user_id"], registry, scope=scope,
     )
     _assert_instance_urls_allowed(record)
 
@@ -654,6 +771,7 @@ async def create_instance(
     if not success:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to create MCP server instance.")
 
+    await sync_capabilities(config_service, current_org_id())
     return record
 
 
@@ -683,7 +801,8 @@ async def update_instance(
 ) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
-    existing = await _get_org_instance(instance_id, config_service, user_context["org_id"], user_context["user_id"])
+    org_id = user_context["org_id"]
+    existing = await _get_org_instance(instance_id, config_service, org_id, user_context["user_id"])
     if not existing:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
     await _require_manage_access(existing, user_context, request, config_service, "update")
@@ -698,23 +817,31 @@ async def update_instance(
     scope = mcp_service.instance_scope(existing)
     if scope == mcp_service.SCOPE_PERSONAL:
         _validate_personal_instance(payload)
+    # Only a new name is checked, so a server that already shares its name can still be edited.
+    if _name_key(payload.name) != _name_key(existing.get("name")):
+        await _refuse_taken_name(
+            config_service, payload.name, scope=scope,
+            org_id=org_id, user_id=user_context["user_id"], instance_id=instance_id,
+        )
     record = _build_instance_record(
-        payload, instance_id, user_context["org_id"], user_context["user_id"], registry, existing=existing, scope=scope,
+        payload, instance_id, org_id, user_context["user_id"], registry, existing=existing, scope=scope,
     )
     _assert_instance_urls_allowed(record)
 
     # Stored tokens, env values and refresh tokens were given for the old target; sending
     # them to a new URL, token endpoint or program would hand them to someone else. Purged
-    # before the new target is saved, so no request can pair the two.
+    # before the new target is saved, so no request can pair the two; a purge that cannot be
+    # confirmed leaves the old target in place (503 for an outage, 500 otherwise).
     credentials_reset = _connection_target_changed(existing, record)
     if credentials_reset:
-        await _purge_instance_credentials(config_service, instance_id)
+        await await_or_503(_purge_instance_credentials(config_service, instance_id))
     else:
         credentials_reset = await _settle_shared_credential(config_service, existing, record)
 
     success = await config_service.set_config(mcp_service.instance_record_path(record), record)
     if not success:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update MCP server instance.")
+    await sync_capabilities(config_service, current_org_id())
     return {**record, "credentialsReset": credentials_reset}
 
 
@@ -738,19 +865,27 @@ async def _settle_shared_credential(
         return False
     shared_path = get_mcp_credentials_path(record["_id"], mcp_service.SHARED_CREDENTIAL_OWNER)
     removed = isinstance(await config_service.get_config(shared_path, default=None, use_cache=False), dict)
-    await config_service.delete_config(shared_path)
+    await await_or_503(legacy_records(config_service).remove(
+        "mcp", org_of(record) or "", record["_id"], mcp_service.SHARED_CREDENTIAL_OWNER,
+    ))
     return removed and shared_before
 
 
-_CONNECTION_TARGET_FIELDS = ("typeId", "transport", "url", "command", "args", "authMode", "tokenUrl")
+# The runner hands a STDIO server's secrets to every host it may reach, so a new host is a new target too.
+_CONNECTION_TARGET_FIELDS = (
+    "typeId", "transport", "url", "command", "args", "authMode", "tokenUrl", DECLARED_EGRESS_HOSTS,
+)
 
 
 def _connection_target_changed(existing: dict[str, Any], record: dict[str, Any]) -> bool:
     fields = _CONNECTION_TARGET_FIELDS
     if not record.get("isCustom") and existing.get("typeId") == record.get("typeId"):
         # Same catalog type: runtime connects to the template's target whatever the stored copy
-        # says, so a copy that trails a release moves no credential. A new auth mode does.
-        fields = ("authMode",)
+        # says, so a copy that trails a release moves no credential. A new auth mode does, and so
+        # does a new URL when the template lets the admin type it (Okta).
+        # The global registry, like `instance_config_from_dict`: both must agree on whether `url` is locked.
+        template = mcp_service.catalog_template(record.get("typeId"))
+        fields = ("authMode", "url") if template and template.url_editable is True else ("authMode",)
     # `or None` so an older record's missing key and a new empty list compare equal.
     return any((existing.get(field) or None) != (record.get(field) or None) for field in fields)
 
@@ -800,7 +935,11 @@ async def delete_instance(request: Request, instance_id: str) -> dict[str, Any]:
     if not await delete_config_confirmed(config_service, mcp_service.instance_record_path(instance)):
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete MCP server instance.")
     await mcp_lifecycle.delete_instance_data(config_service, instance)
+    from app.harness.mcp_hub.tool_admission import mcp_tool_admission
 
+    await mcp_tool_admission().forget(config_service, instance_id)
+
+    await sync_capabilities(config_service, current_org_id())
     return {"success": True, "_id": instance_id}
 
 
@@ -1013,7 +1152,7 @@ async def authenticate_instance(
     owner_id = mcp_service.credential_owner_id(instance, user_id)
     record = _build_credential_record(instance, payload, owner_id, org_id)
 
-    success = await config_service.set_config(get_mcp_credentials_path(instance_id, owner_id), record)
+    success = await legacy_records(config_service).save("mcp", org_id, instance_id, owner_id, record, user_id=user_id)
     if not success:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save credentials.")
     return {"success": True, "isAuthenticated": True}
@@ -1051,12 +1190,14 @@ async def remove_credentials(request: Request, instance_id: str) -> dict[str, An
     await _assert_admin_owns_shared_credential(instance, user_context, request, config_service)
 
     cred_path = await _shared_aware_credential_path(instance, user_id, config_service)
-    await config_service.delete_config(cred_path)
+    await await_or_503(legacy_records(config_service).remove(
+        "mcp", current_org_id(), instance_id, cred_path.rsplit("/", 1)[-1], user_id=user_id
+    ))
     if instance.get("authMode") == MCPAuthMode.OAUTH.value:
         # Mirrors `reauthenticate_instance` — only the legacy per-owner DCR client is this
         # caller's alone to clear; the shared per-instance DCR client survives for other
         # authenticated users/agents on this instance.
-        await config_service.delete_config(get_mcp_dcr_client_path(instance_id, user_id))
+        await await_or_503(delete_config_or_raise(config_service, get_mcp_dcr_client_path(instance_id, user_id)))
 
     from app.connectors.core.base.token_service.startup_service import startup_service
 
@@ -1107,11 +1248,13 @@ async def reauthenticate_instance(request: Request, instance_id: str) -> dict[st
     await _assert_admin_owns_shared_credential(instance, user_context, request, config_service)
 
     cred_path = await _shared_aware_credential_path(instance, user_id, config_service)
-    await config_service.delete_config(cred_path)
+    await await_or_503(legacy_records(config_service).remove(
+        "mcp", current_org_id(), instance_id, cred_path.rsplit("/", 1)[-1], user_id=user_id
+    ))
     # Only the legacy per-owner DCR client is this caller's alone to clear — the shared
     # per-instance client (if this instance uses one) is relied on by every other
     # authenticated user/agent and must survive a single caller's reauthenticate.
-    await config_service.delete_config(get_mcp_dcr_client_path(instance_id, user_id))
+    await await_or_503(delete_config_or_raise(config_service, get_mcp_dcr_client_path(instance_id, user_id)))
 
     from app.connectors.core.base.token_service.startup_service import startup_service
 
@@ -1591,6 +1734,13 @@ _EXCHANGE_REFUSALS: dict[str, str] = {
 }
 
 
+# The provider answered, but with a token we can't use: every new attempt gets the same answer.
+_MALFORMED_TOKEN_MESSAGE = (
+    "The sign-in provider sent an invalid token, so connecting again won't help. "
+    "Ask your administrator to check this server's OAuth app with the provider."
+)
+
+
 def _token_exchange_failure_message(error_code: Optional[str], *, registered_client: bool) -> str:
     """What the sign-in window says when the provider refuses the code exchange.
     `registered_client`: PipesHub's own registration or client document, which the next sign-in
@@ -1761,7 +1911,10 @@ async def handle_oauth_callback(
         return _callback_failure(request, {
             "success": False,
             "error": "token_exchange_failed",
-            "errorMessage": _token_exchange_failure_message(e.error_code, registered_client=is_dcr or metadata_document),
+            "errorMessage": (
+                _MALFORMED_TOKEN_MESSAGE if isinstance(e, oauth_client_module.MCPMalformedTokenError)
+                else _token_exchange_failure_message(e.error_code, registered_client=is_dcr or metadata_document)
+            ),
         }, e, error_class=mcp_error_class(e))
     tokens = tokens.model_copy(update={"client_id": client_id})
 
@@ -1776,7 +1929,7 @@ async def handle_oauth_callback(
         "updatedAt": now_ms,
         "connectedAt": now_ms,
     }
-    if not await config_service.set_config(get_mcp_credentials_path(instance_id, user_id), record):
+    if not await legacy_records(config_service).save("mcp", org_id, instance_id, user_id, record, user_id=user_id):
         return _callback_failure(request, {
             "success": False,
             "error": "credentials_not_saved",
@@ -1809,16 +1962,25 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
     if not await _get_org_instance(instance_id, config_service, user_context["org_id"], user_context["user_id"]):
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
-    rejected: oauth_client_module.MCPRefreshTokenInvalidError | None = None
     try:
-        await mcp_token_refresh.refresh_credential_record(instance_id, user_id, config_service)
+        await mcp_token_refresh.refresh_credential_record(
+            instance_id, user_id, config_service, org_id=current_org_id()
+        )
     except mcp_token_refresh.MCPTokenRefreshError as e:
         # Covers "no credential record", "no refresh token", "no tokenUrl", and "no
         # resolvable OAuth client" — all mean the caller must re-authenticate or an admin
         # must configure OAuth, not that the token endpoint itself rejected anything.
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e
     except oauth_client_module.MCPRefreshTokenInvalidError as e:
-        rejected = e
+        # The shared refresh counts the rejection toward signing the credential out (token_refresh).
+        # Both `MCPRefreshTokenInvalidError` and `MCPOAuthError` embed the token endpoint's
+        # raw response body (see `oauth_client._post_token_request`): kept off the line.
+        # Not 401: that means the caller's own PipesHub session ended, and the app signs them out.
+        raise _hand_over_mcp_failure(
+            request, e, status=HttpStatusCode.CONFLICT.value,
+            detail="The refresh token was rejected by the OAuth provider. Please reconnect this MCP server.",
+            reason=classify_mcp_failure(e).value,
+        ) from e
     except oauth_client_module.MCPOAuthError as e:
         raise _hand_over_mcp_failure(
             request, e, status=HttpStatusCode.BAD_GATEWAY.value,
@@ -1826,35 +1988,7 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
             reason=classify_mcp_failure(e).value,
         ) from e
 
-    if rejected is not None:
-        # After the except: a store error in the write must not carry the provider's answer as its context.
-        await _deauthenticate_rejected(config_service, instance_id, user_id)
-        # Both `MCPRefreshTokenInvalidError` and `MCPOAuthError` embed the token endpoint's
-        # raw response body (see `oauth_client._post_token_request`): kept off the line.
-        # Not 401: that means the caller's own PipesHub session ended, and the app signs them out.
-        raise _hand_over_mcp_failure(
-            request, rejected, status=HttpStatusCode.CONFLICT.value,
-            detail="The refresh token was rejected by the OAuth provider. Please reconnect this MCP server.",
-            reason=classify_mcp_failure(rejected).value,
-        ) from rejected
-
     return {"success": True}
-
-
-async def _deauthenticate_rejected(config_service: ConfigurationService, instance_id: str, user_id: str) -> None:
-    """The provider rejected the refresh token: sign the credential out, and say whether that was saved."""
-    cred_path = get_mcp_credentials_path(instance_id, user_id)
-    record = await config_service.get_config(cred_path, default=None, use_cache=False)
-    updated = False
-    if isinstance(record, dict):
-        record["isAuthenticated"] = False
-        updated = await config_service.set_config(cred_path, record)
-    with mcp_token_refresh.credential_scope(instance_id, user_id):
-        if updated:
-            log_deauthenticated(logger, reason="refresh_token_invalid", strikes=1, path="route")
-        else:
-            log_event(logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure",
-                      reason="not_updated" if isinstance(record, dict) else "not_found")
 
 
 @router.get(
@@ -1986,6 +2120,31 @@ class _ListingDiscovery:
             yield min(LISTING_DISCOVERY_BUDGET_SECONDS, remaining) if remaining >= LISTING_DISCOVERY_MIN_SECONDS else 0
 
 
+def _discovery_error(error: BaseException) -> str:
+    """A runner's (P5.10) or the hub's (P2.8) typed refusal by its reason code, anything else as the client reported it."""
+    refused = typed_refusal(error)
+    if refused is None:
+        return str(error)
+    owner = "MCP runner" if isinstance(refused, MCPRunnerRefused) else "MCP hub"
+    return f"{owner} refused: {refused.reason_code}"
+
+
+async def _listed_tools(config_service: ConfigurationService, instance_id: str, tools: list[Any]) -> list[dict[str, Any]]:
+    """The tools as the builder shows them: with `MCP_HUB` on, each one's approval where the build's admission policy
+    has one to show (D-MCP-5), so a tool it holds is not offered as attachable."""
+    from app.harness.mcp_hub.tool_admission import mcp_tool_admission
+
+    listed = [t.model_dump(by_alias=True) for t in tools]
+    if hub_enabled():
+        admission = mcp_tool_admission()
+        if await admission.requires_admin_approval(current_org_id(), config_service):
+            standing = await admission.standing(config_service, instance_id, tools)
+            if standing is not None:
+                for entry, approval in zip(listed, standing, strict=True):
+                    entry["approval"] = approval
+    return listed
+
+
 def _report_listing_timeout(entry: dict[str, Any], *, cut_by_deadline: bool) -> None:
     entry["toolsTimedOut"] = True
     entry["toolsErrorCode"] = "timeout"
@@ -2027,7 +2186,7 @@ async def _discover_listing_tools(
         cached = None
     if cached is not None:
         tools, discovered_at = cached
-        entry["tools"] = [t.model_dump(by_alias=True) for t in tools]
+        entry["tools"] = await _listed_tools(config_service, instance["_id"], tools)
         entry["toolsCachedAt"] = int(discovered_at * 1000)
         return
     async with discovery.slot() as budget:
@@ -2040,10 +2199,14 @@ async def _discover_listing_tools(
                 discover_tools_for_owner(instance, effective_auth, credential_owner, config_service, namespace=namespace),
                 timeout=budget,
             )
-            entry["tools"] = [t.model_dump(by_alias=True) for t in tools]
+            entry["tools"] = await _listed_tools(config_service, instance["_id"], tools)
         except asyncio.TimeoutError as e:
             _report_listing_timeout(entry, cut_by_deadline=budget < LISTING_DISCOVERY_BUDGET_SECONDS)
             _log_listing_failure(instance, e, MCPFailureReason.TIMEOUT)
+        except (MCPRunnerRefused, MCPHubRefused) as e:
+            # The runner or the hub logged its typed refusal once; the entry names its reason code.
+            entry["toolsErrorCode"] = "refused"
+            entry["toolsError"] = _discovery_error(e)
         except MCPConnectionError as e:
             reason = _failure_reason(instance, e)
             entry["toolsErrorCode"] = reason.value
@@ -2123,7 +2286,7 @@ async def get_my_mcp_servers(
     user_context = _get_user_context(request)
     user_id = user_context["user_id"]
 
-    instances = await resolve_mcp_instances_with_inheritance(config_service, user_context["org_id"], user_context["user_id"])
+    instances = await _visible_instances(config_service, current_org_id(), user_context["user_id"])
     is_admin = await _check_user_is_admin(user_id, request, config_service)
     # The names chat uses for these same instances (see `get_authenticated_mcp_servers`), so a
     # tool picked here names exactly one instance.
@@ -2136,7 +2299,18 @@ async def get_my_mcp_servers(
         )
         for i in instances
     ])
-    return {"instances": list(entries)}
+    # The browser cannot read these deployment flags; the admin's page shows tool approval and the runner editor from them.
+    # The hub's harness default follows the org's harness (ADR-OPS-08), so an org with it off reads what an install
+    # with the switch off answers, even where an admin turned tool approval on while it was on.
+    from app.harness.mcp_hub.tool_admission import requires_admin_approval
+    from app.services.featureflag.platform_settings import is_agent_harness_on
+
+    hub = hub_enabled(harness=await is_agent_harness_on(config_service))
+    return {
+        "instances": list(entries), "mcpHub": hub, "mcpStdioRunners": runners_enabled(),
+        # D-MCP-5: whether a harness run uses only the tools an admin approved (an edition's setting; never in OSS).
+        "mcpToolApproval": hub and await requires_admin_approval(current_org_id(), config_service),
+    }
 
 
 @router.get(
@@ -2159,7 +2333,11 @@ async def get_instance_tools(request: Request, instance_id: str, *, cached: bool
         raise HTTPException(status_code=HttpStatusCode.CONFLICT.value, detail="Not authenticated for this MCP server instance.")
 
     try:
-        visible = await resolve_mcp_instances_with_inheritance(config_service, user_context["org_id"], user_id)
+        try:
+            visible = await resolve_mcp_instances_with_inheritance(config_service, current_org_id(), user_id)
+        except mcp_service.MCPInstancesUnavailable:
+            # The listing only names the tools; the instance itself was read above.
+            visible = []
         namespace = assign_namespaces(visible).get(instance_id)
         owner_id = mcp_service.credential_owner_id(instance, user_id)
         hit = (
@@ -2168,9 +2346,18 @@ async def get_instance_tools(request: Request, instance_id: str, *, cached: bool
         )
         if hit is not None:
             cached_tools, discovered_at = hit
-            return {"tools": [t.model_dump(by_alias=True) for t in cached_tools], "syncedAt": int(discovered_at * 1000)}
+            return {
+                "tools": await _listed_tools(config_service, instance_id, cached_tools),
+                "syncedAt": int(discovered_at * 1000),
+            }
         # Live (Refresh, or nothing cached), and what it finds replaces the cached tools.
         tools, _ = await discover_tools_for_owner(instance, effective_auth, owner_id, config_service, namespace=namespace)
+    except (MCPRunnerRefused, MCPHubRefused) as e:
+        # A typed refusal names its reason code; the runner or the hub logged it once.
+        raise _hand_over_mcp_failure(
+            request, e, status=HttpStatusCode.BAD_GATEWAY.value, detail=_discovery_error(e), reason="refused",
+            error_class="forbidden",
+        ) from e
     except MCPConnectionError as e:
         reason = _failure_reason(instance, e)
         if reason in SIGN_IN_FAILURES:
@@ -2180,9 +2367,10 @@ async def get_instance_tools(request: Request, instance_id: str, *, cached: bool
                 detail=_SIGN_IN_WITHOUT_AUTH if _asks_for_sign_in_without_auth(instance, e) else _REAUTH_REQUIRED,
                 reason=reason.value,
             ) from e
+        # A typed refusal names its reason code; anything else gets fixed text, never the exception's (#3819).
+        detail = _discovery_error(e) if typed_refusal(e) is not None else action_failed("load this MCP server's tools")
         raise _hand_over_mcp_failure(
-            request, e, status=HttpStatusCode.BAD_GATEWAY.value, detail=action_failed("load this MCP server's tools"),
-            reason=reason.value,
+            request, e, status=HttpStatusCode.BAD_GATEWAY.value, detail=detail, reason=reason.value,
         ) from e
     except (mcp_token_refresh.MCPTokenRefreshError, oauth_client_module.MCPOAuthError) as e:
         reason = classify_mcp_failure(e)
@@ -2195,7 +2383,7 @@ async def get_instance_tools(request: Request, instance_id: str, *, cached: bool
             reason=reason.value,
         ) from e
 
-    return {"tools": [t.model_dump(by_alias=True) for t in tools], "syncedAt": get_epoch_timestamp_in_ms()}
+    return {"tools": await _listed_tools(config_service, instance_id, tools), "syncedAt": get_epoch_timestamp_in_ms()}
 
 
 # ============================================================================
@@ -2240,7 +2428,7 @@ async def get_agent_mcp_servers(
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
 
-    instances = await resolve_mcp_instances_with_inheritance(config_service, user_context["org_id"])
+    instances = await _visible_instances(config_service, current_org_id())
     is_admin = await _check_user_is_admin(user_context["user_id"], request, config_service)
     namespaces = assign_namespaces(instances)
     discovery = _ListingDiscovery()
@@ -2282,7 +2470,9 @@ async def authenticate_agent_instance(
     record = _build_credential_record(instance, payload, agent_key, org_id)
     record["agentKey"] = agent_key
 
-    success = await config_service.set_config(get_mcp_credentials_path(instance_id, agent_key), record)
+    success = await legacy_records(config_service).save(
+        "mcp", org_id, instance_id, agent_key, record, user_id=user_context["user_id"]
+    )
     if not success:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save agent credentials.")
     return {"success": True, "isAuthenticated": True}
@@ -2317,7 +2507,9 @@ async def remove_agent_instance_credentials(request: Request, agent_key: str, in
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
     cred_path = get_mcp_credentials_path(instance_id, agent_key)
-    await config_service.delete_config(cred_path)
+    await await_or_503(legacy_records(config_service).remove(
+        "mcp", current_org_id(), instance_id, agent_key, user_id=user_context["user_id"]
+    ))
 
     from app.connectors.core.base.token_service.startup_service import startup_service
 
@@ -2343,10 +2535,12 @@ async def reauthenticate_agent_instance(request: Request, agent_key: str, instan
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
     cred_path = get_mcp_credentials_path(instance_id, agent_key)
-    await config_service.delete_config(cred_path)
+    await await_or_503(legacy_records(config_service).remove(
+        "mcp", current_org_id(), instance_id, agent_key, user_id=user_context["user_id"]
+    ))
     # See per-user reauthenticate_instance above — only the legacy per-owner DCR client is
     # this agent's alone to clear; the shared per-instance client must survive.
-    await config_service.delete_config(get_mcp_dcr_client_path(instance_id, agent_key))
+    await await_or_503(delete_config_or_raise(config_service, get_mcp_dcr_client_path(instance_id, agent_key)))
 
     from app.connectors.core.base.token_service.startup_service import startup_service
 
@@ -2441,3 +2635,15 @@ async def update_my_tool_rules(request: Request, instance_id: str, payload: Tool
     ):
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save the tool rules.")
     return {"tools": payload.tools}
+
+
+# Shared with `mcp_hub.py` (P2.8), so both route modules use one admin gate and one way to read an instance and
+# the caller's credential.
+check_user_is_admin = _check_user_is_admin
+get_config_service = _get_config_service
+require_org_instance = _require_org_instance
+get_user_context = _get_user_context
+require_mcp_enabled = _require_mcp_enabled
+resolve_effective_user_auth = _resolve_effective_user_auth
+instance_config_model_from_dict = _instance_config_model_from_dict
+credentials_to_discovery_dict = _credentials_to_discovery_dict

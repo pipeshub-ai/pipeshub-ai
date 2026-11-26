@@ -2,7 +2,8 @@ name: postgres-image
 
 # The opt-in PostgreSQL + PgBouncer image of the Compose `postgres` profile, built for 17 and 18 and exercised through docker-compose.yml:
 # the entrypoint's volume-layout guard, the data volume across down/up, the role layout with PgBouncer authentication, and the
-# repository's own migration and security-surface check (backend/db) against a fresh database made by the image.
+# repository's own migration and security-surface check (backend/db) against a fresh database made by the image, and the backup and
+# point-in-time restore drill of docker-compose.postgres-backup.yml.
 # Everything runs in containers (the bases are Debian bookworm images pinned by digest), so the runner needs only Docker and Compose:
 # ubuntu-latest (26.04) is enough. Unlike docstore-migrate.yml this job installs no MongoDB or PGDG packages from the host.
 on:
@@ -13,10 +14,20 @@ on:
       - 'deployment/docker-compose/postgres/**'
       - 'deployment/docker-compose/docker-compose.yml'
       - 'deployment/docker-compose/docker-compose.postgres-docstore.yml'
+      - 'deployment/docker-compose/docker-compose.postgres-backup.yml'
+      - 'deployment/docker-compose/pgbackrest.env.example'
+      - 'deployment/docker-compose/scripts/pg-restore.sh'
+      - 'deployment/docker-compose/scripts/pg-restore-reach.pl'
+      - 'deployment/docker-compose/tests/pg_backup_schedule_test.sh'
+      - 'deployment/docker-compose/docker-compose.postgres-only.yml'
       - 'backend/db/**'
       - 'deployment/docker-compose/tests/pg_entrypoint_layout_test.sh'
+      - 'deployment/docker-compose/tests/pg_restore_reach_test.sh'
       - 'deployment/docker-compose/tests/postgres_*_test.sh'
       - 'deployment/docker-compose/tests/pg_roles_script_test.sh'
+      - 'deployment/docker-compose/docker-compose.monitoring.yml'
+      - 'deployment/docker-compose/docker-compose.monitoring-postgres.yml'
+      - 'deployment/monitoring/prometheus/**'
       - '.github/workflows/postgres-image.yml'
   workflow_dispatch:
 
@@ -30,7 +41,7 @@ concurrency:
 jobs:
   postgres-image:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,8 +51,17 @@ jobs:
       - name: Role script refuses an empty or failed verifier
         run: bash deployment/docker-compose/tests/pg_roles_script_test.sh
 
+      - name: Backup schedule picks full and incremental backups from the repository
+        run: bash deployment/docker-compose/tests/pg_backup_schedule_test.sh
+
       - name: Entrypoint volume-layout guard
         run: bash deployment/docker-compose/tests/pg_entrypoint_layout_test.sh
+
+      - name: Restore refuses a target the archived WAL cannot reach
+        run: bash deployment/docker-compose/tests/pg_restore_reach_test.sh
+
+      - name: PostgreSQL alert rules parse, fire on synthetic series and load in Prometheus
+        run: bash deployment/docker-compose/tests/postgres_alert_rules_test.sh
 
       - name: Default stack is unchanged without the profile
         working-directory: deployment/docker-compose
@@ -70,6 +90,9 @@ jobs:
       - name: Migration job and the document-store override
         run: bash deployment/docker-compose/tests/postgres_migrate_test.sh
 
+      - name: The PostgreSQL-only override starts no other store
+        run: bash deployment/docker-compose/tests/postgres_only_test.sh
+
       - name: Server and pooler under the Helm chart's pod restrictions
         run: bash deployment/docker-compose/tests/postgres_nonroot_test.sh
 
@@ -78,3 +101,6 @@ jobs:
 
       - name: A failed role setup is retried and recovers once the cause clears
         run: bash deployment/docker-compose/tests/postgres_role_recovery_test.sh
+
+      - name: Backup and point-in-time restore drill
+        run: bash deployment/docker-compose/tests/postgres_backup_restore_test.sh

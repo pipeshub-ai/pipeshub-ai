@@ -26,12 +26,8 @@ from app.modules.retrieval.entity_permissions import (
     EntitySearchTimedOut,
 )
 from app.modules.retrieval.title_hits import UnindexedMatch
-from tests.support.provider_errors import (
-    MARK,
-    assert_text_free,
-    failure_line,
-    openai_error,
-)
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import MARK, SENTINELS, openai_error
 
 CONTENT_TEXT = "Enterprise pricing strategy 2026"
 STORE = object()
@@ -110,7 +106,8 @@ class _Rendering:
             self.lookup.return_value = self.titles or []
         enter(patch(f"{mod}.find_unindexed_matches", self.lookup))
         if self.max_chars is not None:
-            enter(patch(f"{mod}.search_max_chars", return_value=self.max_chars))
+            # The search's size comes from its response-format budget (search_budget.py) on this line.
+            enter(patch("app.agents.actions.knowledge_graph.ops.search_budget.search_max_chars", return_value=self.max_chars))
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -297,9 +294,9 @@ async def test_a_failed_title_lookup_is_one_text_free_line(caplog, error, error_
         found = await search_mod._unindexed_title_matches(state, "quarterly planning", None, logging.getLogger("f24b.kg"))
 
     assert found is None
-    failure_line(caplog.records, "title_lookup.failed", error_class, level)
+    failure_line(caplog.records, "title_lookup.failed", error_class, level, *SENTINELS)
     if level == logging.ERROR:
         (line,) = [r for r in caplog.records if r.getMessage() == "title_lookup.failed"]
         assert "KeyError: <message omitted>" in line.exc_text
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)
 

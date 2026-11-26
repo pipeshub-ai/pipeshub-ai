@@ -1,0 +1,32 @@
+[
+  {
+    "description": "every value says which layer set it",
+    "instance": {
+      "schemaVersion": 1,
+      "dimensions": {
+        "models.primary": {
+          "value": "a",
+          "ceilings": []
+        }
+      }
+    }
+  },
+  {
+    "description": "a ceiling names a layer",
+    "instance": {
+      "schemaVersion": 1,
+      "dimensions": {
+        "models.routes": {
+          "value": [],
+          "setBy": "org",
+          "ceilings": [
+            {
+              "layer": "galaxy",
+              "value": []
+            }
+          ]
+        }
+      }
+    }
+  }
+]

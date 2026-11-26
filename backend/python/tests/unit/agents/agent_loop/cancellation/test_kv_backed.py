@@ -17,6 +17,7 @@ from app.agents.agent_loop.cancellation import kv_backed as kv_backed_module
 from app.agents.agent_loop.cancellation.kv_backed import KVBackedRunCancellationRegistry
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.utils import logging_fields
+from tests.support.settle import settle
 
 
 def _owner(
@@ -49,7 +50,7 @@ class _FakeKVStore:
 
 @pytest.fixture(autouse=True)
 def _fast_poll(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The real 1s poll interval would make the watcher tests below slow
+    """The real 2s poll interval would make the watcher tests below slow
     (or flaky under load); every test in this module gets a fast one."""
     monkeypatch.setattr(kv_backed_module, "_POLL_INTERVAL_SECONDS", 0.01)
 
@@ -128,6 +129,34 @@ class TestCrossProcessCancel:
 
             await asyncio.wait_for(token.wait(), timeout=2.0)
             assert token.is_cancelled is True
+        finally:
+            await owner_registry.unregister("run-1")
+
+    async def test_a_cross_process_cancel_stops_a_running_sandbox_call(self) -> None:
+        from app.agent_loop_lib.sandbox.manager import (
+            SandboxCallStopped,
+            SandboxManager,
+        )
+
+        store = _FakeKVStore()
+        owner_registry = KVBackedRunCancellationRegistry(store)
+        other_registry = KVBackedRunCancellationRegistry(store)
+        token = CancellationToken()
+        await owner_registry.register("run-1", token, _owner())
+        manager = SandboxManager(stop_token=token)
+        running = asyncio.Event()
+
+        async def sandbox_call() -> str:
+            running.set()
+            await asyncio.sleep(60)
+            return "ran"
+
+        try:
+            call = asyncio.ensure_future(manager.unless_stopped(sandbox_call, tool="run_code"))
+            await running.wait()
+            assert await other_registry.cancel("run-1", _owner()) == "cancelled"
+            with pytest.raises(SandboxCallStopped):
+                await settle(call)
         finally:
             await owner_registry.unregister("run-1")
 

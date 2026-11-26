@@ -59,9 +59,19 @@ def test_not_table_boxes_are_not_eligible(spool) -> None:
 
 
 def test_past_the_byte_cap_boxes_are_spool_full(spool) -> None:
-    col = spool_tables(spool, 5, byte_cap=1)  # the first crop alone passes the cap
-    reasons = [r["reason"] for r in read_index(spool)]
-    assert reasons == ["none"] + ["spool_full"] * 4 and col.sent == 1
+    col = spool_tables(spool, 5, byte_cap=1)  # no crop fits
+    assert [r["reason"] for r in read_index(spool)] == ["spool_full"] * 5 and col.sent == 0
+
+
+def test_a_crop_that_would_pass_the_byte_cap_is_not_written(spool, tmp_path) -> None:
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    one = spool_tables(str(probe), 1)
+    cap = one.bytes + 1  # room for one job, index line included
+    col = spool_tables(spool, 5, byte_cap=cap)
+    assert [r["reason"] for r in read_index(spool)] == ["none"] + ["spool_full"] * 4 and col.sent == 1
+    pngs = sum(os.path.getsize(os.path.join(spool, f)) for f in os.listdir(spool) if f.endswith(".png"))
+    assert pngs + os.path.getsize(os.path.join(spool, flow.INDEX_FILE)) == col.bytes  # every byte written is charged
 
 
 def test_prefiltered_and_ceiling_boxes_make_no_crop(spool) -> None:

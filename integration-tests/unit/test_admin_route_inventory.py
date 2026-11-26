@@ -34,6 +34,7 @@ from helper.admin_route_table import (
     PYTHON_CONDITIONAL_ADMIN,
 )
 from helper.admin_routes import (
+    NODE_SRC,
     admin_routes_in_file,
     discover_admin_routes,
     discover_python_admin_handlers,
@@ -229,6 +230,18 @@ def test_a_router_mounted_outside_app_ts_is_found(tmp_path: Path) -> None:
     }
 
 
+def test_a_router_handed_through_a_switch_is_found_at_its_prefix(tmp_path: Path) -> None:
+    _write(tmp_path, "app.ts", """
+        export const SWITCHED_PREFIX = '/api/v1/switched';
+        this.app.use(
+          SWITCHED_PREFIX,
+          whenHarnessSwitchedOn(createSwitchedRouter(this.container)),
+        );
+        this.app.use('/api/v1/twice', wrap(other(createNestedRouter(container))));
+    """)
+    assert router_mounts(tmp_path) == {"createSwitchedRouter": {"/api/v1/switched"}}
+
+
 def _conditional_rows() -> dict[str, ConditionalRoute]:
     return {route.handler: route for route in CONDITIONAL_ROUTES}
 
@@ -250,13 +263,19 @@ def test_every_conditional_admin_handler_has_live_cases() -> None:
 
 
 def test_each_conditional_row_calls_the_route_its_handler_serves() -> None:
-    """The gateway may serve a handler under a longer path; the end of it must match."""
+    """The gateway may serve a handler under a longer path; the end of it must match. A
+    row the gateway serves under another path names the one it forwards to, which the
+    gateway's source must call."""
     served = discover_python_admin_handlers()
+    node_source = "\n".join(path.read_text(encoding="utf-8") for path in NODE_SRC.rglob("*.ts"))
     wrong = []
     for handler, route in _conditional_rows().items():
         method, _, path = served[handler].partition(" ")
         ending = re.sub(r"\\\{\w+\\\}", "[^/]+", re.escape(path.removeprefix("/api/v1"))) + "$"
-        called = re.sub(r"\{\w+\}", "x", route.path)
+        called = re.sub(r"\{\w+\}", "x", route.forwards_to or route.path)
+        forwarded = route.forwards_to.split("{", 1)[0].rstrip("/")
+        if forwarded and forwarded not in node_source:
+            wrong.append(f"{handler}: the gateway's source never calls {forwarded}")
         if route.method != method or not re.search(ending, called):
             wrong.append(f"{handler} serves {served[handler]}; its row calls {route.id}")
     assert not wrong, "Rows that call a different route than the handler they name:\n  " + "\n  ".join(wrong)

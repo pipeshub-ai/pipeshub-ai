@@ -1,0 +1,150 @@
+[
+  {
+    "description": "an outcome the chat does not know",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 4,
+      "runId": "run_2",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-18T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.context.compacted",
+      "data": {
+        "trigger": "user",
+        "executor": "loop",
+        "outcome": "partial",
+        "beforeTokens": 148000,
+        "afterTokens": 19000,
+        "userMessagesKept": true,
+        "focus": "the travel policy numbers"
+      }
+    }
+  },
+  {
+    "description": "a trigger that is neither the person nor auto",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 4,
+      "runId": "run_2",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-18T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.context.compacted",
+      "data": {
+        "trigger": "scheduled",
+        "executor": "loop",
+        "outcome": "compacted",
+        "beforeTokens": 148000,
+        "afterTokens": 19000,
+        "userMessagesKept": true,
+        "focus": "the travel policy numbers"
+      }
+    }
+  },
+  {
+    "description": "a negative token count",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 4,
+      "runId": "run_2",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-18T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.context.compacted",
+      "data": {
+        "trigger": "user",
+        "executor": "loop",
+        "outcome": "compacted",
+        "beforeTokens": -1,
+        "afterTokens": 19000,
+        "userMessagesKept": true,
+        "focus": "the travel policy numbers"
+      }
+    }
+  },
+  {
+    "description": "no token counts at all",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 4,
+      "runId": "run_2",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-18T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.context.compacted",
+      "data": {
+        "trigger": "user",
+        "executor": "loop",
+        "outcome": "compacted",
+        "userMessagesKept": true,
+        "focus": "the travel policy numbers"
+      }
+    }
+  },
+  {
+    "description": "a focus longer than the composer sends",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 4,
+      "runId": "run_2",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-18T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.context.compacted",
+      "data": {
+        "trigger": "user",
+        "executor": "loop",
+        "outcome": "compacted",
+        "beforeTokens": 148000,
+        "afterTokens": 19000,
+        "userMessagesKept": true,
+        "focus": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    }
+  },
+  {
+    "description": "written by Node: only the run that compacted knows the counts",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 4,
+      "runId": "run_2",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-18T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.context.compacted",
+      "data": {
+        "trigger": "user",
+        "executor": "loop",
+        "outcome": "compacted",
+        "beforeTokens": 148000,
+        "afterTokens": 19000,
+        "userMessagesKept": true,
+        "focus": "the travel policy numbers"
+      }
+    }
+  }
+]

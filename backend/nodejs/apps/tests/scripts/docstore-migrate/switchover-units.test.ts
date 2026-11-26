@@ -1,5 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
+import { Client } from 'pg'
+import sinon from 'sinon'
 import { STORE_READ_TIMEOUT_MS, storeEpochOnFreshConnection, catchUp, changedIds, onlineStart, precheck, reportFailures, unfreeze } from '../../../src/scripts/docstore-migrate/online'
 import { MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping'
 import { outboxTableId } from '../../../src/scripts/docstore-migrate/mapping/content'
@@ -139,11 +141,16 @@ describe('online verify helpers', () => {
   })
 
   it('a store that cannot be reached is an error at once (the cut then treats its state as unknown), and the test hook fails the read', async () => {
-    const t = Date.now()
+    const connect = sinon.spy(Client.prototype, 'connect')
     let err: Error | undefined
-    await storeEpochOnFreshConnection({ cfg: { pgMigrateUrl: 'postgresql://nobody@127.0.0.1:1/none' } } as never, false).catch((e: Error) => (err = e))
-    expect(err, 'a closed port').to.not.equal(undefined)
-    expect(Date.now() - t).to.be.lessThan(STORE_READ_TIMEOUT_MS)
+    try {
+      await storeEpochOnFreshConnection({ cfg: { pgMigrateUrl: 'postgresql://nobody@127.0.0.1:1/none' } } as never, false).catch((e: Error) => (err = e))
+    } finally {
+      connect.restore()
+    }
+    // Refused on the one attempt, not retried until the connection time limit runs out.
+    expect((err as NodeJS.ErrnoException | undefined)?.code, 'a closed port').to.equal('ECONNREFUSED')
+    expect(connect.callCount).to.equal(1)
     let hooked: Error | undefined
     await storeEpochOnFreshConnection({ cfg: { pgMigrateUrl: 'x' } } as never, true).catch((e: Error) => (hooked = e))
     expect(hooked?.message).to.contain('cannot be read')

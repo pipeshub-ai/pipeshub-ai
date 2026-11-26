@@ -33,6 +33,7 @@ from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.hooks.attachment_resolver import resolve_attachments_for_goal
 from app.agents.agent_loop.image_guard import cap_images
 from app.utils.chat_helpers import image_dict_to_part
+from tests.support.record_access import InMemoryRecordAccess
 
 
 def _png(width: int, height: int, color: tuple[int, int, int]) -> str:
@@ -57,7 +58,7 @@ def _context(provider: str) -> AgentContext:
     blob.get_record_from_storage = AsyncMock(return_value=record)
     graph = MagicMock()
     graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
-    graph.check_record_access_with_details = AsyncMock(return_value={"id": "rec-1"})
+    InMemoryRecordAccess().readable("user", "org", "rec-1").serve(graph)
     return AgentContext(
         org_id="org", user_id="user", user_email="user@example.com", conversation_id="c",
         llm_provider=provider, is_multimodal_llm=True, blob_store=blob, graph_provider=graph,

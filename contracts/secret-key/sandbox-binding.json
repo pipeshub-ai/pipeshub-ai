@@ -1,0 +1,57 @@
+{
+  "comment": "R38IDENT-FU-7 (ADR-CRED-01 D6): the sandbox broker's binding proof both languages must agree on (app/harness/sandbox/binding_proof.py, domain/sandbox-binding.ts). The keys are test values, not secrets.",
+  "brokerComponentKey": "57edc2846d35be64cee5a3154429fce5723c57f195c878cb46cda81cd274a3bc",
+  "brokerBindingKey": "48efd26dee4733609b8e9305cd3ac395fb94f6473b5a39b2bd5fcd3dcedda038",
+  "ringSecret": "b0f3c1e6a9d24857c3e1f0a6b5d4c3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6",
+  "ringBindingKey": "24d043ddc01bfbfb4b268daba131326695d42ce58a234bbfb638a8efa90e706c",
+  "cases": [
+    {
+      "orgId": "org-1",
+      "runId": "run-1",
+      "attemptId": "run-1.a1",
+      "message": "70697065736875622073616e64626f782062696e64696e67207631000000056f72672d310000000572756e2d310000000872756e2d312e6131",
+      "brokerProof": "v1.g8pfRgcSvuP1p4PG6QBASII8EFimtUdGC_fXNsJM4Zk",
+      "ringProof": "v1.RzPYYq-ycFrBTbFz3uVyqZsipevTtvXPezoX0dA_cq8"
+    },
+    {
+      "orgId": "org-1",
+      "runId": "run-1",
+      "attemptId": "run-1.a2",
+      "message": "70697065736875622073616e64626f782062696e64696e67207631000000056f72672d310000000572756e2d310000000872756e2d312e6132",
+      "brokerProof": "v1.sSA4pffLYhkcrnmlJmBRr_7dGVjmv143oW2NsojxqD8",
+      "ringProof": "v1.746nxFrFtYICGH1KJFyPng-OC_i9pOwdbMBpqNZpM2I"
+    },
+    {
+      "orgId": "org-2",
+      "runId": "run-1",
+      "attemptId": "run-1.a1",
+      "message": "70697065736875622073616e64626f782062696e64696e67207631000000056f72672d320000000572756e2d310000000872756e2d312e6131",
+      "brokerProof": "v1.yxu0ZowstU2Q2qc2wGHz8byIlnPgMl7x9lBkGLoUybc",
+      "ringProof": "v1.GWdR9uHtGOKgTfRlEKn69cmsSomyZU7F0Q7_UqptYeo"
+    },
+    {
+      "orgId": "o",
+      "runId": "rg-1run-1",
+      "attemptId": "a",
+      "message": "70697065736875622073616e64626f782062696e64696e67207631000000016f0000000972672d3172756e2d310000000161",
+      "brokerProof": "v1.-rgKF7i2zcSBk_mJ6KwaDgJpfs4kkkqTfxBwKmNqO74",
+      "ringProof": "v1.yW31GRjdgY_4vIYiQDihELRx6xLNGd8Z5_KONxBzNFk"
+    },
+    {
+      "orgId": "orgé",
+      "runId": "run/1",
+      "attemptId": "ü ",
+      "message": "70697065736875622073616e64626f782062696e64696e67207631000000056f7267c3a90000000572756e2f3100000005c3bce280a8",
+      "brokerProof": "v1.PxrPPwle-vNW6jBWMJPsVrfvylhqX-Nw_BdjcGvWIpA",
+      "ringProof": "v1.Aeh1NJx31JN3uI_7R9yEl4PstX9FmXhi59NMQ5ZPErA"
+    },
+    {
+      "orgId": "",
+      "runId": "",
+      "attemptId": "",
+      "message": "70697065736875622073616e64626f782062696e64696e67207631000000000000000000000000",
+      "brokerProof": "v1.Y6cobcayq1IJ_I_RW2-bJO-_J6ibCvnaqbFEt_x22J0",
+      "ringProof": "v1.yod6qblqbkc9W7m-2gs6rIatwdpXK__QBjXb0UJGezI"
+    }
+  ]
+}

@@ -1,0 +1,137 @@
+[
+  {
+    "description": "writer allowlist: only node writes egress.allowed",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 11,
+      "runId": "run_1",
+      "type": "egress.allowed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-27T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "audit",
+      "data": {
+        "host": "api.github.com",
+        "via": "intercepted",
+        "attemptId": "att_1"
+      }
+    }
+  },
+  {
+    "description": "a host with a path",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 11,
+      "runId": "run_1",
+      "type": "egress.allowed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-27T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "host": "api.github.com/p?d=secret",
+        "via": "intercepted",
+        "attemptId": "att_1"
+      }
+    }
+  },
+  {
+    "description": "an unknown route",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 11,
+      "runId": "run_1",
+      "type": "egress.allowed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-27T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "host": "api.github.com",
+        "via": "smtp",
+        "attemptId": "att_1"
+      }
+    }
+  },
+  {
+    "description": "a URL beside the host",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 11,
+      "runId": "run_1",
+      "type": "egress.allowed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-27T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "host": "api.github.com",
+        "via": "intercepted",
+        "attemptId": "att_1",
+        "url": "https://api.github.com/x"
+      }
+    }
+  },
+  {
+    "description": "a site's path carries no query",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 11,
+      "runId": "run_1",
+      "type": "egress.allowed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-27T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "host": "github.com",
+        "via": "intercepted",
+        "site": {
+          "path": "/x?token=1",
+          "access": "read",
+          "use": "read"
+        }
+      }
+    }
+  },
+  {
+    "description": "a site's access is read, read-write or host-level",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 11,
+      "runId": "run_1",
+      "type": "egress.allowed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-27T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "host": "github.com",
+        "via": "intercepted",
+        "site": {
+          "path": "/x",
+          "access": "write",
+          "use": "read"
+        }
+      }
+    }
+  }
+]

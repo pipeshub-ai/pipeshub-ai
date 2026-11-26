@@ -9,6 +9,7 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { BetaBadge } from '@/app/components/ui/beta-badge';
 import { WorkspaceHeaderIconButton } from '../../../components';
 import type { SkillMetadata } from '../types';
+import type { SkillsPageAction } from './skills-page-extras';
 import { SkillCard } from './skill-card';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
@@ -26,6 +27,8 @@ interface SkillPageLayoutProps {
   /** Set when the list request failed; shown with a retry instead of the empty state. */
   error?: string | null;
   pendingCandidateCount: number;
+  /** An action the build adds to the header (`useSkillsPageAction`); a badge of 0 hides it. */
+  extraAction?: Pick<SkillsPageAction, 'label' | 'icon' | 'badge' | 'onSelect'> | null;
   onCreateSkill: () => void;
   onImportSkill: () => void;
   onOpenCandidates: () => void;
@@ -43,6 +46,7 @@ export function SkillPageLayout({
   isLoading,
   error = null,
   pendingCandidateCount,
+  extraAction = null,
   onCreateSkill,
   onImportSkill,
   onOpenCandidates,
@@ -102,6 +106,9 @@ export function SkillPageLayout({
                   ...(pendingCandidateCount > 0
                     ? [{ label: t('workspace.skills.reviewCandidates'), icon: 'auto_awesome', onSelect: onOpenCandidates }]
                     : []),
+                  ...(extraAction && extraAction.badge > 0
+                    ? [{ label: extraAction.label, icon: extraAction.icon, onSelect: extraAction.onSelect }]
+                    : []),
                   { label: t('workspace.skills.importSkill'), icon: 'download', onSelect: onImportSkill },
                   { label: t('action.refresh'), icon: 'refresh', onSelect: onRefresh },
                   {
@@ -115,6 +122,9 @@ export function SkillPageLayout({
           ) : (
             <>
               <CandidatesButton count={pendingCandidateCount} onClick={onOpenCandidates} />
+              {extraAction && extraAction.badge > 0 && (
+                <PillButton icon={extraAction.icon} label={extraAction.label} onClick={extraAction.onSelect} badge={extraAction.badge} />
+              )}
               <ImportButton onClick={onImportSkill} />
               <CreateSkillButton onClick={onCreateSkill} />
               <WorkspaceHeaderIconButton icon="refresh" onClick={onRefresh} aria-label={t('action.refresh')} />
@@ -135,7 +145,7 @@ export function SkillPageLayout({
             style={{ width: '100%' }}
           >
             <TextField.Slot>
-              <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+              <MaterialIcon name="search" size={16} color="var(--gray-11)" />
             </TextField.Slot>
           </TextField.Root>
         </Box>
@@ -163,7 +173,7 @@ export function SkillPageLayout({
         </Flex>
       ) : error && skills.length === 0 ? (
         <Flex direction="column" align="center" justify="center" gap="3" style={{ width: '100%', flex: 1, paddingTop: 80 }}>
-          <MaterialIcon name="error_outline" size={48} color="var(--gray-9)" />
+          <MaterialIcon name="error_outline" size={48} color="var(--gray-11)" />
           <Text size="2" style={{ color: 'var(--red-11)', textAlign: 'center' }}>
             {error}
           </Text>
@@ -175,7 +185,7 @@ export function SkillPageLayout({
         <EmptyState onCreate={onCreateSkill} onImport={onImportSkill} />
       ) : filtered.length === 0 ? (
         <Flex align="center" justify="center" style={{ width: '100%', flex: 1 }}>
-          <Text size="2" style={{ color: 'var(--gray-10)' }}>{t('workspace.skills.noResults')}</Text>
+          <Text size="2" style={{ color: 'var(--gray-11)' }}>{t('workspace.skills.noResults')}</Text>
         </Flex>
       ) : (
         <Grid columns={{ initial: '1', sm: '2', md: '3', lg: '4' }} gap="4" style={{ width: '100%' }}>
@@ -307,7 +317,7 @@ function EmptyState({ onCreate, onImport }: { onCreate: () => void; onImport: ()
   const { t } = useTranslation();
   return (
     <Flex direction="column" align="center" justify="center" gap="3" style={{ width: '100%', flex: 1, paddingTop: 80 }}>
-      <MaterialIcon name="psychology" size={48} color="var(--gray-9)" />
+      <MaterialIcon name="psychology" size={48} color="var(--gray-11)" />
       <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
         {t('workspace.skills.emptyTitle')}
       </Text>

@@ -24,13 +24,15 @@ from app.connectors.core.base.connector.connector_service import (
     dispose_connector,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
-from app.connectors.core.base.data_processor.data_source_entities_processor import unless_synced_since
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    unless_synced_since,
+)
+from app.connectors.core.base.data_processor.storage_cleanup import (
+    StorageCleanupHelper,
+)
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.sources.local_repo.cleanup import remove_mirror
-from app.connectors.sources.local_repo.store import LOCAL_REPO_CONNECTOR_NAME
-from app.connectors.core.sync.sync_dispatcher import SyncSpec
 from app.connectors.core.sync.sync_coordinator import (
     Admission,
     SyncCoordinator,
@@ -39,26 +41,31 @@ from app.connectors.core.sync.sync_coordinator import (
     get_coordinator,
     stop_wait_sec,
 )
+from app.connectors.core.sync.sync_dispatcher import SyncSpec
 from app.connectors.core.sync.sync_runner import (
     drain_queued_syncs,
     resumes_interrupted_full_sync,
     run_sync_task,
 )
 from app.connectors.core.sync.task_manager import reindex_task_manager
-from app.connectors.core.base.data_processor.storage_cleanup import (
-    StorageCleanupHelper,
+from app.connectors.services.connector_intents import (
+    exists_in_any_org,
+    held_by_another_org,
 )
 from app.connectors.services.entity_cleanup_intents import record_pending_entity_cleanup
 from app.connectors.services.late_write_sweep import record_pending_late_write_sweep
-from app.connectors.services.reindex_force import forced_by_user
+from app.connectors.services.reindex_force import forced_by_user, user_forced_intent_id
 from app.connectors.services.storage_release import (
     record_pending_storage_release,
     release_connector_storage,
 )
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
+    build_gone_connector_cleanup_events,
     log_cleanup_publish_failure,
 )
+from app.connectors.sources.local_repo.cleanup import remove_mirror
+from app.connectors.sources.local_repo.store import LOCAL_REPO_CONNECTOR_NAME
 from app.containers.connector import ConnectorAppContainer
 from app.core.org_context import spawn_detached
 from app.edition_services import (
@@ -66,10 +73,12 @@ from app.edition_services import (
     sync_executor_enabled,
 )
 from app.exceptions.non_retryable import NonRetryableError
-from app.models.entities import FileRecord
+from app.models.entities import FileRecord, Record
+from app.modules.indexing import refresh_intent
 from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_state_rev
 from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.vector_membership_queries import can_use_membership_cleanup
 from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
 from app.utils.logging_fields import log_event, log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -939,12 +948,14 @@ class EventService:
                 try:
                     # Delete sync points
                     self.logger.info(f"Full sync requested - deleting sync points for connector {connector_id}")
+                    sync_points_reset = False
                     try:
                         deleted_count, success = await self.graph_provider.delete_sync_points_by_connector_id(
                             connector_id=connector_id
                         )
                         if success:
                             self.logger.info(f"Successfully deleted {deleted_count} sync points for connector {connector_id}")
+                            sync_points_reset = True
                         else:
                             self.logger.warning(f"Failed to delete sync points for connector {connector_id}, continuing with sync")
                     except Exception as sync_point_error:
@@ -978,6 +989,7 @@ class EventService:
                                 connector_name=connector_name,
                                 org_id=org_id,
                             ),
+                            sync_points_reset=sync_points_reset,
                         ),
                     )
 
@@ -1500,6 +1512,11 @@ class EventService:
         # republished: that would run two pipelines against the same
         # virtualRecordId. Everything else, including AUTO_INDEX_OFF, is fair game.
         exclude_statuses = [ProgressStatus.IN_PROGRESS.value]
+        # A Force reindex that stores its request on the record (``REFRESH_INTENT_WRITE``) also meets the records
+        # that are running now: they are not published (that would start a second pipeline on one virtual record) but
+        # keep the request, which the run's own end serves (see ``refresh_intent``).
+        intent_id = user_forced_intent_id() if refresh_intent.write_enabled() and not stages else None
+        fetch_exclude = [] if intent_id else exclude_statuses
         if stages and RETRYABLE_STAGES[stages[0]] is None:
             await self._rerun_stage_by_state(
                 connector, connector_id, org_id, user_key, stages,
@@ -1521,7 +1538,7 @@ class EventService:
                     limit=batch_size,
                     status_filters=status_filters,
                     after_key=after_key,
-                    exclude_statuses=exclude_statuses,
+                    exclude_statuses=fetch_exclude,
                 )
             elif record_group_id is not None:
                 # Mode 2: Reindex records in a record group
@@ -1534,7 +1551,7 @@ class EventService:
                     limit=batch_size,
                     status_filters=status_filters,
                     after_key=after_key,
-                    exclude_statuses=exclude_statuses,
+                    exclude_statuses=fetch_exclude,
                 )
             else:
                 # Mode 3: Reindex by status
@@ -1544,7 +1561,7 @@ class EventService:
                     status_filters=status_filters,
                     limit=batch_size,
                     after_key=after_key,
-                    exclude_statuses=exclude_statuses,
+                    exclude_statuses=fetch_exclude,
                     is_placeholder=False,
                     status_field=status_field.value,
                 )
@@ -1604,15 +1621,14 @@ class EventService:
             # reindex is an explicit user action, so clear that in memory too.
             # A folder has nothing to index: indexing marks it COMPLETED, and some
             # connectors never publish it at all, so NOT_STARTED would stick forever.
-            for record in records:
-                record.indexing_status = (
-                    ProgressStatus.COMPLETED.value if _is_folder(record)
-                    else ProgressStatus.NOT_STARTED.value
-                )
-            for status in (ProgressStatus.NOT_STARTED.value, ProgressStatus.COMPLETED.value):
-                ids = [r.id for r in records if r.id and r.indexing_status == status]
-                if ids:
-                    await self.graph_provider.update_indexing_status_for_record_ids(ids, status)
+            if intent_id:
+                records, kept = await EventService._keep_request_of_running_records(self, records, intent_id)
+                total_processed += kept
+                if not records:
+                    if fetched_count < batch_size:
+                        break
+                    continue
+            await EventService._clear_status_before_publish(self, records, intent_id)
 
             async with unless_synced_since(self.graph_provider, connector_id) as stamp:
                 try:
@@ -1635,6 +1651,56 @@ class EventService:
                 break
 
         self.logger.info(f"Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
+
+    async def _clear_status_before_publish(self, records: list[Record], intent_id: str | None) -> None:
+        """Set the batch's records NOT_STARTED (a folder COMPLETED) before the connector publishes them.
+
+        With ``intent_id`` (a Force reindex that stores its request) the request is written in the same statement as the
+        NOT_STARTED status, before the publish: a publish that fails, or a message that is lost, leaves the record
+        NOT_STARTED with the request on it, and the sweeps re-send it as that refresh.
+        """
+        for record in records:
+            record.indexing_status = (
+                ProgressStatus.COMPLETED.value if _is_folder(record)
+                else ProgressStatus.NOT_STARTED.value
+            )
+        for status in (ProgressStatus.NOT_STARTED.value, ProgressStatus.COMPLETED.value):
+            ids = [r.id for r in records if r.id and r.indexing_status == status]
+            if not ids:
+                continue
+            if intent_id and status == ProgressStatus.NOT_STARTED.value:
+                await self.graph_provider.update_indexing_status_for_record_ids(
+                    ids, status, fields=refresh_intent.intent_fields(intent_id, get_epoch_timestamp_in_ms()),
+                )
+            else:
+                await self.graph_provider.update_indexing_status_for_record_ids(ids, status)
+
+    async def _keep_request_of_running_records(
+        self, records: list[Record], intent_id: str,
+    ) -> tuple[list[Record], int]:
+        """Store a Force reindex's request on each record that is IN_PROGRESS, and return the records still to publish.
+
+        A running record is not published (a second pipeline would start on its virtual record) and its status is not
+        written: the request is the two intent fields and nothing else, and the run's own end serves it with a refresh.
+        The status is read again after the write. A record whose run ended in between is handed back to the ordinary
+        path (the run's end reads the intent after its terminal write, this read follows the intent write, so at least
+        one side sees the other; both may, and a second event of one id is a no-op once the first has run).
+        """
+        running = {r.id for r in records if r.id and r.indexing_status == ProgressStatus.IN_PROGRESS.value}
+        if not running:
+            return records, 0
+        await self.graph_provider.update_record_fields_for_ids(
+            sorted(running), refresh_intent.intent_fields(intent_id, get_epoch_timestamp_in_ms()),
+        )
+        ended: set[str] = set()
+        for record_id in sorted(running):
+            doc = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value, raise_on_error=True)
+            if doc is not None and doc.get("indexingStatus") != ProgressStatus.IN_PROGRESS.value:
+                ended.add(record_id)
+        kept = running - ended
+        if kept:
+            self.logger.info("Kept the Force reindex request of %d record(s) that are running; each is refreshed when its run ends", len(kept))
+        return [r for r in records if r.id not in kept], len(kept)
 
     async def _rerun_stage_by_state(
         self,
@@ -1707,6 +1773,28 @@ class EventService:
         finally:
             await cleanup_helper.close()
 
+    async def _send_cleanup_events(self, connector_id: str, events: list[dict[str, Any]]) -> None:
+        """Publish a deleted connector's vector-cleanup events (failures logged, never raised), then free its lane."""
+        published = 0
+        for event in events:
+            try:
+                await self.app_container.messaging_producer.send_message(
+                    topic="record-events",
+                    message=event,
+                )
+                published += 1
+            except Exception as kafka_err:
+                log_cleanup_publish_failure(
+                    self.logger, event, f"connector {connector_id}", kafka_err
+                )
+        if events:
+            level = self.logger.info if published == len(events) else self.logger.error
+            level(
+                f"Published {published}/{len(events)} vector-cleanup event(s) "
+                f"for connector {connector_id}"
+            )
+        await free_lane_of_deleted_connector(self.logger, connector_id)
+
     async def _handle_delete(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """
         Handle the async connector deletion event.
@@ -1728,6 +1816,7 @@ class EventService:
 
         graph_deleted = False
         owner_id: str | None = None
+        current: dict | None = None
         try:
             # Stop any sync before deleting the data underneath it.
             #
@@ -1743,12 +1832,24 @@ class EventService:
             # request back; that event would then arrive for a connector whose
             # rows are gone, fail to build, and be redelivered forever. The stop
             # endpoint clears it first for exactly this reason.
+            # Before anything is stopped, recorded or deleted: not every store scopes this read by org.
+            # Read again once when it fails; a second failure fails the delete, whose connector could be anyone's.
+            try:
+                current = await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                )
+            except Exception as read_err:
+                self.logger.warning("Connector %s not read before its delete: %s", connector_id, type(read_err).__name__)
+                current = await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                )
+            elsewhere = current is None and await exists_in_any_org(self.graph_provider, connector_id)
+            if elsewhere or (current and held_by_another_org(current, org_id)):
+                self.logger.error("Connector delete refused: the connector is another org's | org=%s connector=%s", org_id, connector_id)
+                return False
             try:
                 # Only when set: a failed delete reverts and keeps this doc, and
                 # main's strict Arango app schema rejects the field on rollback.
-                current = await self.graph_provider.get_document(
-                    connector_id, CollectionNames.APPS.value
-                )
                 owner_id = (current or {}).get("createdBy")
                 if (current or {}).get(ConnectorStateKeys.PENDING_RESYNC):
                     await self.graph_provider.update_node(
@@ -1824,6 +1925,12 @@ class EventService:
                         f"Connector {connector_id} is already deleted from the graph; "
                         f"its storage release stays pending"
                     )
+                    if current is not None and not can_use_membership_cleanup(current):
+                        self.logger.error("Connector predates the membership arrays; its untagged embeddings may persist")
+                    # None on a redelivery whose first delivery removed the app: only a collection name, the purge spans them all.
+                    await self._send_cleanup_events(connector_id, build_gone_connector_cleanup_events(
+                        org_id=org_id, connector_id=connector_id, connector_name=(current or {}).get("type"),
+                    ))
                     return True
                 if result.get("partial"):
                     # Part of it is gone and the app's grants with it: reverting the status would show an active connector nobody can open.
@@ -1861,25 +1968,7 @@ class EventService:
                 record_group_ids=result.get("record_group_ids"),
                 virtual_record_ids=result.get("virtual_record_ids", []),
             )
-            published = 0
-            for event in events:
-                try:
-                    await self.app_container.messaging_producer.send_message(
-                        topic="record-events",
-                        message=event,
-                    )
-                    published += 1
-                except Exception as kafka_err:
-                    log_cleanup_publish_failure(
-                        self.logger, event, f"connector {connector_id}", kafka_err
-                    )
-            if events:
-                level = self.logger.info if published == len(events) else self.logger.error
-                level(
-                    f"Published {published}/{len(events)} vector-cleanup event(s) "
-                    f"for connector {connector_id}"
-                )
-            await free_lane_of_deleted_connector(self.logger, connector_id)
+            await self._send_cleanup_events(connector_id, events)
 
             # Shared content is handed over before the connector's storage goes,
             # and its credentials go with it; an unfinished release keeps its
@@ -1908,10 +1997,11 @@ class EventService:
                 # An upsert would recreate a connector that is already gone
                 # (MERGE on Neo4j), and the reconciler would then treat its owed
                 # storage release as a reverted delete.
-                if await self.graph_provider.get_document(
+                app = await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value, raise_on_error=True
-                ) is None:
-                    self.logger.warning(f"Connector {connector_id} is not in the graph; nothing to revert")
+                )
+                if app is None or held_by_another_org(app, org_id):
+                    self.logger.warning(f"Connector {connector_id} is not in this org's graph; nothing to revert")
                     return False
                 await self.graph_provider.batch_upsert_nodes(
                     [{

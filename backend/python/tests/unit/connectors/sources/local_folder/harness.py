@@ -75,11 +75,15 @@ class Graph:
         self.perms = []
         self.deleted = []
         self.new_calls = []
+        self.kept = []
 
     async def on_new_records(self, batch):
         self.new_calls.append([r.external_record_id for r, _ in batch])
         for rec, _ in batch:
             self.records[rec.external_record_id] = rec
+
+    def note_kept_records(self, connector_id, record_ids):
+        self.kept.extend(record_ids)
 
     async def get_record_by_external_id(self, connector_id, ext):
         return self.records.get(ext)
@@ -138,3 +142,37 @@ def make_connector(root, sync=None):
     c = RootedConnector(MagicMock(), graph, MagicMock(), cfg, "c1", "personal", "u1")
     c.record_sync_point = FakeSyncPoint()
     return c, graph, sync
+
+
+async def full_sync_unlinks(c, graph) -> set[str]:
+    """Run ``c`` as a full sync and return the external ids the sync runner unlinks after it.
+
+    As in production: the sync points are deleted first (``event_service``), the processor notes each record the run writes or keeps
+    (``on_new_records``, ``note_kept_records``), and once the run returns every stored record it did not note loses its links, unless
+    ``full_sync_coverage()`` says the run did not read everything. Records the connector deleted itself are not counted.
+    """
+    c.record_sync_point.doc = {}
+    before = set(graph.records)
+    seen: set[str] = set()
+    write = graph.on_new_records
+
+    async def on_new_records(batch):
+        seen.update(r.external_record_id for r, _ in batch)
+        await write(batch)
+
+    def note_kept_records(connector_id, record_ids):
+        graph.kept.extend(record_ids)
+        by_id = {r.id: ext for ext, r in graph.records.items()}
+        seen.update(by_id[i] for i in record_ids if i in by_id)
+
+    graph.on_new_records = on_new_records
+    graph.note_kept_records = note_kept_records
+    try:
+        await c.run_sync()
+    finally:
+        graph.on_new_records = write
+        del graph.note_kept_records
+    coverage = c.full_sync_coverage()
+    if not coverage.complete or not coverage.lists_everything:
+        return set()
+    return {ext for ext in before if ext in graph.records and ext not in seen}

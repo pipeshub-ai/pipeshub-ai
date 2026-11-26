@@ -20,21 +20,24 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 
-@pytest.fixture
-async def loop_errors() -> AsyncIterator[list[str]]:
-    """What the loop's exception handler reports, e.g. "exception was never retrieved"."""
-    errors: list[str] = []
-    loop = asyncio.get_running_loop()
-    loop.set_exception_handler(lambda _loop, ctx: errors.append(ctx["message"]))
-    yield errors
-    loop.set_exception_handler(None)
-
-
 async def _until_retrieved() -> None:
     for _ in range(5):
         await asyncio.sleep(0)
     gc.collect()
     await asyncio.sleep(0)
+
+
+@pytest.fixture
+async def loop_errors() -> AsyncIterator[list[str]]:
+    """What the loop's exception handler reports, e.g. "exception was never retrieved"."""
+    errors: list[str] = []
+    # Garbage an earlier test in this worker left can schedule work on this loop from a finaliser
+    # (a client closing itself); collect it and let that work finish before listening.
+    await _until_retrieved()
+    loop = asyncio.get_running_loop()
+    loop.set_exception_handler(lambda _loop, ctx: errors.append(ctx["message"]))
+    yield errors
+    loop.set_exception_handler(None)
 
 
 class TestNotCancelled:

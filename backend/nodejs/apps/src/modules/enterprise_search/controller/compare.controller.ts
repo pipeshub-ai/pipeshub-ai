@@ -24,6 +24,7 @@ import {
   type ArtifactCopier,
 } from '../utils/fork-artifacts';
 import { MAX_COMPARE_MODELS } from '../utils/chat-compare-feature';
+import { envFlag } from '../../../libs/utils/env-flags';
 import {
   copyBranchTurnArtifacts,
   createCompareBranch,
@@ -32,9 +33,7 @@ import {
 } from '../utils/fork-conversation';
 
 const repo = (): ConversationRepository => getConversationRepository();
-const unitOfWork = createUnitOfWork(
-  process.env.REPLICA_SET_AVAILABLE === 'true',
-);
+const unitOfWork = createUnitOfWork(envFlag('REPLICA_SET_AVAILABLE'));
 const CHAT_SCOPE = { kind: 'chat' } as const;
 
 /** Branches one question may have next to the conversation itself. */

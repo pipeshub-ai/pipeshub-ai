@@ -585,7 +585,20 @@ def test_a_caption_line_is_never_folded_into_a_table_read_by_the_order_of_eviden
         assert gate(legacy_table, caption)  # the legacy flow folds it in
         assert not gate(evidence_table, caption) and not gate(caption, evidence_table)
         assert not gate(evidence_table, above)  # nor any text ending above the table: the header is read from the grid
-        assert gate(evidence_table, body)  # other text is not affected
+        assert gate(legacy_table, body)
+        assert not gate(evidence_table, body)  # nor text starting below it: the grid already ends where the table does
+        inside = _region(LayoutRegionType.TEXT, (60.0, 350.0, 100.0, 360.0), "Value")
+        assert gate(evidence_table, inside)  # text inside the table is not affected
+
+
+def test_a_note_below_a_table_read_by_the_order_of_evidence_stays_a_sibling() -> None:
+    table = ola.LayoutRegion(type=LayoutRegionType.TABLE, bbox=(60.0, 300.0, 420.0, 400.0), text="a b",
+                             table_grid=[["a", "b"], ["c", "d"]], from_evidence=True, table_q=0.9)
+    note = _region(LayoutRegionType.TEXT, (60.0, 401.0, 160.0, 409.0), "Values are examples.")
+    out = ola._resolve_overlaps([table, note])
+    assert len(out) == 2
+    kept = next(r for r in out if r.type == LayoutRegionType.TABLE)
+    assert kept.table_grid == [["a", "b"], ["c", "d"]] and kept.bbox == (60.0, 300.0, 420.0, 400.0)
 
 
 def _key_spans_rows_with_row_rules_right_of_it(c: canvas.Canvas) -> None:
@@ -644,3 +657,61 @@ def test_a_title_line_set_in_the_header_band_is_not_a_header_label(monkeypatch) 
         assert [r[0] for r in ts[0].table_grid[1:]] == ["Row0", "Row1", "Row2"]
     finally:
         pdf.close()
+
+
+def test_a_header_row_read_as_several_grid_rows_keeps_its_grid_and_drops_no_title() -> None:
+    # Row 0 read as a header band plus its first line (row_of [0, 0, ...]): the title check does not apply.
+    grid = [["Year", "2012"], ["Total", "2,647"], ["Other", "1"]]
+    assert tr.drop_title_line(None, grid, [0, 0, 1], []) == (grid, [])  # type: ignore[arg-type]
+
+
+def test_notes_is_a_whole_word() -> None:
+    assert tr.NOTES.match("NOTE: values") and tr.NOTES.match("Notes: values") and tr.NOTES.match("NOTES")
+    assert not tr.NOTES.match("Notebook models")
+
+
+def test_a_bridging_rule_joins_every_span_it_touches() -> None:
+    assert tr._merge([[100.0, 300.0, 340.0], [100.0, 360.0, 400.0], [102.0, 335.0, 365.0]]) == [[100.0, 300.0, 400.0]]
+    assert tr._merge([[100.0, 300.0, 340.0], [100.0, 360.0, 400.0]]) == [[100.0, 300.0, 340.0], [100.0, 360.0, 400.0]]
+
+
+@pytest.mark.parametrize(("other", "rows"), [((500.0, 390.0, 580.0, 430.0), 5), ((60.0, 395.0, 420.0, 430.0), 6)])
+def test_only_a_box_over_the_trailing_row_keeps_it_in_the_table(other, rows) -> None:
+    # the model box ends above the last row; a box beside it does not keep the row, one over it does
+    pdf, page = page_of(lambda c: grid_table(c, 60, 300, XS, ROWS))
+    try:
+        t = max(page.find_tables(), key=lambda t: t.bbox[3] - t.bbox[1])
+        h, v = tr.page_rules(page)
+        box = (60.0, 300.0, 420.0, 400.0)
+        region, _, why = tr.ruled_table(t, page.extract_words(), v, box, [box, other], h)
+        assert region is not None, why
+        assert len(region.table_grid) == rows
+    finally:
+        pdf.close()
+
+
+def test_a_group_box_never_reuses_a_table_another_box_took() -> None:
+    def draw(c) -> None:
+        grid_table(c, 60, 300, XS, ROWS[:4])
+        grid_table(c, 60, 400, XS, ROWS[:4])
+
+    pdf, page = page_of(draw)
+    try:
+        exact = (60.0, 300.0, 420.0, 380.0)
+        group = (60.0, 300.0, 420.0, 480.0)
+        decisions = tr.reconcile(page, page.extract_words(), [group, exact])
+        first = [r for d in decisions for r in d.tables if ola._iou(r.bbox, exact) > 0.8]
+        assert len(first) == 1
+    finally:
+        pdf.close()
+
+
+def test_a_not_table_box_drops_only_the_legacy_tables_it_mostly_covers() -> None:
+    from app.modules.parsers.pdf.opencv_layout_analyzer import LayoutRegion
+
+    # the box covers 30 % of the first table (and the table 75 % of the box): the table stays
+    beside = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(50, 0, 150, 100), table_grid=[["a", "b"], ["c", "d"]])
+    inside = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(41, 2, 79, 98), table_grid=[["e", "f"], ["g", "h"]])
+    d = tr.Decision((40, 0, 80, 100), "not_table", not_table="list")
+    out, suppressed = tr.apply([beside, inside], [d])
+    assert beside in out and inside not in out and suppressed == [(40, 0, 80, 100)]

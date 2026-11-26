@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.artifact.published.schema.json",
+  "title": "PipeshubArtifactPublishedEvent",
+  "description": "Registry write completed for a publication intent.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.artifact.published"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubArtifactPublishedData"
+    }
+  },
+  "$defs": {
+    "PipeshubArtifactPublishedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intentId",
+        "artifactId",
+        "publishedVersion"
+      ],
+      "properties": {
+        "intentId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "artifactId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "publishedVersion": {
+          "$ref": "../../../core/common.schema.json#/$defs/PosInt"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "x.pipeshub.artifact.published",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "intentId": "pi_1",
+        "artifactId": "art_1",
+        "publishedVersion": 1
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

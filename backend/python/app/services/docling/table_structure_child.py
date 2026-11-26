@@ -27,6 +27,8 @@ _FRAME = struct.Struct(">II")
 MAX_HEADER_BYTES = 8 * 1024 * 1024
 MAX_BLOB_BYTES = 16 * 1024 * 1024
 MAX_IMAGE_SIDE = 16384
+MAX_IMAGE_PIXELS = 64 * 1024 * 1024  # a crop is resized to the model's page height first, so real ones are far smaller
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 WEIGHT_SUFFIXES = (".safetensors", ".pt", ".pth", ".bin")
 DEFAULT_FACTORY = "app.services.docling.table_structure_child:build_runner"
 
@@ -166,6 +168,12 @@ def _decode_png(blob: bytes) -> np.ndarray:
     import cv2
     import numpy as np
 
+    # The size is read from the PNG header first: a small file can decode to gigabytes.
+    if len(blob) < 24 or not blob.startswith(_PNG_SIGNATURE) or blob[12:16] != b"IHDR":
+        raise ValueError("bad image")
+    w, h = struct.unpack(">II", blob[16:24])
+    if w > MAX_IMAGE_SIDE or h > MAX_IMAGE_SIDE or w * h > MAX_IMAGE_PIXELS:
+        raise ValueError("bad image")
     img = cv2.imdecode(np.frombuffer(blob, np.uint8), cv2.IMREAD_COLOR)
     if img is None or img.shape[0] > MAX_IMAGE_SIDE or img.shape[1] > MAX_IMAGE_SIDE:
         raise ValueError("bad image")

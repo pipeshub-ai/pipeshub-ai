@@ -19,7 +19,13 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from app.agent_loop_lib.core.messages import AssistantMessage, Message, ToolCall
+from app.agent_loop_lib.core.messages import (
+    AssistantMessage,
+    Message,
+    TextPart,
+    ThinkingPart,
+    ToolCall,
+)
 from app.agent_loop_lib.core.responses import (
     ModelResponse,
     StopReason,
@@ -30,6 +36,7 @@ from app.agent_loop_lib.core.streaming import (
     StreamCompleteEvent,
     StreamEvent,
     TextDeltaEvent,
+    ThinkingDeltaEvent,
 )
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
@@ -46,6 +53,7 @@ class ScriptedStep:
     delay: float = 0.0
     text_chunks: list[str] | None = None
     stop_reason: StopReason = StopReason.END_TURN
+    reasoning_chunks: list[str] | None = None
 
 
 class ScriptedTransport(LLMTransport):
@@ -134,6 +142,9 @@ class ScriptedTransport(LLMTransport):
         response = await self.complete(
             messages, tools=tools, system=system, model=model, system_blocks=system_blocks, tool_choice=tool_choice,
         )
+        if peeked is not None and peeked.reasoning_chunks:
+            for chunk in peeked.reasoning_chunks:
+                yield ThinkingDeltaEvent(delta=chunk)
         if peeked is not None and peeked.text_chunks:
             for chunk in peeked.text_chunks:
                 yield TextDeltaEvent(delta=chunk)
@@ -171,6 +182,20 @@ class ScriptedTransport(LLMTransport):
             message=AssistantMessage(content="".join(chunks)),
             usage=usage,
             text_chunks=list(chunks),
+        ))
+        return self
+
+    def add_reasoned_text(
+        self, reasoning: list[str], chunks: list[str], usage: TokenUsage | None = None
+    ) -> "ScriptedTransport":
+        """A reasoning model's answer: thinking deltas first, then the text."""
+        self._script.append(ScriptedStep(
+            message=AssistantMessage(content=[
+                ThinkingPart(thinking="".join(reasoning)), TextPart(text="".join(chunks)),
+            ]),
+            usage=usage,
+            text_chunks=list(chunks),
+            reasoning_chunks=list(reasoning),
         ))
         return self
 
