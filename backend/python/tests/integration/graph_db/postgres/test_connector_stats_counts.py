@@ -365,3 +365,24 @@ async def test_a_page_of_the_first_count_reads_its_records_by_key_with_no_statis
                 pytest.fail(f"{state}: a read past the page: {big}")
     finally:
         await _admin(RESTORE_GRAPH)
+
+
+async def test_the_drop_of_a_new_install_log_is_one_batch_a_unit_and_no_app_is_counted_before_it_ends(w: World, pg_db, monkeypatch) -> None:
+    """A unit drops one batch of the log (a bounded unit, and the org's lock held that long), however much is logged or keeps being logged; a pass that ends on a full
+    batch counts no app yet, so no app is counted while dropped rows are left to recount a record at a time. When the log is gone, the counts are the walk's."""
+    await world(w, pg_db)
+    logged = await pg_db.run(lambda tx: tx.fetchval("SELECT count(*) FROM graph.stats_changes WHERE org_id = $1", w.org))
+    assert logged > 4, logged
+    monkeypatch.setattr(connector_stats, "DROP_ROWS", 2)
+    monkeypatch.setattr(connector_stats, "UNITS_PER_PASS", 1)
+    assert await connector_stats.drain(pg_db, w.org) == 2
+    assert await pg_db.run(lambda tx: tx.fetchval("SELECT count(*) FROM graph.stats_changes WHERE org_id = $1", w.org)) == logged - 2
+    passes = 0
+    while await pg_db.run(lambda tx: tx.fetchval("SELECT count(*) FROM graph.stats_changes WHERE org_id = $1", w.org)):
+        assert await connector_stats.run(pg_db, w.org) == 2
+        assert await kept(w, APP) is None and await kept(w, KB_APP) is None
+        passes += 1
+        assert passes <= logged, "the drop did not end"
+    await settle(w, pg_db)
+    for app in (APP, KB_APP):
+        assert await kept(w, app) == await walk(w, app), app

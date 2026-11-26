@@ -143,10 +143,8 @@ async def drain(db: KernelDB, org: str) -> int:
             # Nothing is read from the counts, and the first count (seed) has not started: every page of it reads the graph after this unit commits (it takes the same
             # lock), so the log, every row of a new install's or a restore's whole graph, names nothing that count will miss. Once it has started, a record written
             # behind its page is counted only through the log, which is then recounted.
-            n = 0
-            while (k := await tx.fetchval(DROP, org, DROP_ROWS)) == DROP_ROWS:
-                n += k
-            return n + k
+            # One batch a unit, so a unit (and the lock) stays bounded; run does not count an app while a full batch says more is left.
+            return await tx.fetchval(DROP, org, DROP_ROWS)
         rows = await tx.fetch(PENDING, org, LOG_ROWS)
         if not rows:
             return 0
@@ -195,7 +193,7 @@ async def seed(db: KernelDB, org: str, app_id: str) -> bool:
 async def run(db: KernelDB, org: str, *, stop: asyncio.Event | None = None) -> int:
     """One pass over an org: drain its log (at most ``UNITS_PER_PASS`` units), then at most as many units of counting whole an app not counted yet. The log rows and
     units done."""
-    done = 0
+    done = n = 0
     for _ in range(UNITS_PER_PASS):
         if stop is not None and stop.is_set():
             return done
@@ -203,6 +201,8 @@ async def run(db: KernelDB, org: str, *, stop: asyncio.Event | None = None) -> i
         done += n
         if n < LOG_ROWS:
             break
+    if n >= DROP_ROWS:
+        return done             # the log is being dropped and more may be left: an app counted now would have the rest recounted, a record at a time
     for _ in range(UNITS_PER_PASS):
         if stop is not None and stop.is_set():
             break
