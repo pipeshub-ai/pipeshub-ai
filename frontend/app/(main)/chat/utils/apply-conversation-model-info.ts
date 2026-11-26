@@ -102,6 +102,22 @@ function buildModelOverrideFromInfoAndCatalog(
   return modelInfoToOverride(modelInfo);
 }
 
+/**
+ * The label a message shows for its model: the configured display name from any loaded catalog
+ * (matched by key and model), else what the message stored. Older messages stored the raw model
+ * name as their display name, so the catalog wins when it knows the model.
+ */
+export function modelDisplayLabel(
+  modelInfo: ModelInfo | undefined,
+  models: AvailableLlmModel[]
+): string {
+  if (!modelInfo) return '';
+  const k = modelInfo.modelKey?.trim();
+  const n = modelInfo.modelName?.trim();
+  const found = k && n ? models.find((m) => m.modelKey === k && m.modelName === n) : undefined;
+  return found?.modelFriendlyName?.trim() || modelInfo.modelFriendlyName?.trim() || modelInfo.modelName || '';
+}
+
 /** When the catalog is already loaded, detect conversation models removed from the org/agent list. */
 function isConversationModelInCatalog(
   modelInfo: ModelInfo,
@@ -143,11 +159,6 @@ function applyModeAndStrategy(
 
   if (mode === 'web-search') {
     store.setQueryMode('web-search');
-    return;
-  }
-
-  if (mode === 'image') {
-    store.setQueryMode('image');
     return;
   }
 

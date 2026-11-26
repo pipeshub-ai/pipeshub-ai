@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from app.api.routes import toolsets as routes
 from app.config.constants.service import OAuthScopes
-from app.containers.connector import ConnectorAppContainer
+from app.edition_containers import ConnectorAppContainer
 from tests.support.in_memory_config import InMemoryConfigService
 
 if TYPE_CHECKING:

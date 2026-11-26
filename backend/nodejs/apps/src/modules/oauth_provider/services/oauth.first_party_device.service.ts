@@ -76,8 +76,8 @@ export class FirstPartyDeviceAppService {
     try {
       const app = await this.createApp(orgId, allowedScopes)
       this.logger.info('First-party device app created', {
-        clientId: app.clientId,
-        orgId,
+        client_id: app.clientId,
+        org_id: orgId,
       })
       return app.clientId
     } catch (error) {
@@ -131,19 +131,32 @@ export class FirstPartyDeviceAppService {
     try {
       await getOAuthAppRepository().addAllowedScopes(app._id, missing);
       this.logger.info('First-party device app gained new preset scopes', {
-        clientId: app.clientId,
+        client_id: app.clientId,
         scopes: missing,
       });
     } catch (error) {
       // Discovery must keep working; the next call retries the update.
       this.logger.warn('First-party device app scope update failed', {
-        clientId: app.clientId,
+        client_id: app.clientId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
   }
 
-  private resolveScopes(): string[] {
+  /**
+   * The scopes a token of this app may carry now. The agent app's stored list only ever grows
+   * (`addNewPresetScopes`), so a narrower MCP_SCOPES since it was created binds every grant here.
+   */
+  capScopes(app: OAuthAppDto): string[] {
+    if (app.clientId !== FIRST_PARTY_DEVICE_CLIENT_ID) {
+      return app.allowedScopes;
+    }
+    const cap = new Set(this.resolveScopes());
+    return app.allowedScopes.filter((s) => cap.has(s));
+  }
+
+  /** The agent preset a member may hold, under the current MCP_SCOPES. */
+  resolveScopes(): string[] {
     const mcp = new Set(this.appConfig.mcpScopes || [])
     const memberAllowed = new Set(
       this.scopeValidatorService.getAllowedScopeNamesForRole(false),

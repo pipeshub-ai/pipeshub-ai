@@ -1,3 +1,4 @@
+import type { TurnLabel } from '../../agent-harness/domain/turn-labels';
 import { ProjectDto } from '../../projects/types/project.interfaces';
 import { applyProjectScope } from './project-context';
 
@@ -103,6 +104,8 @@ export type ChatTarget =
 export interface AiChatTurnContext {
   conversationId?: string;
   previousConversations: unknown[];
+  /** What `previousConversations` read (FG2): today's loop decides its flow guard from it; absent is unknown. */
+  historyLabel?: TurnLabel;
   /** Set on the turn that creates the conversation; follow-ups drop `recordIds`. */
   isNewConversation: boolean;
   project?: ProjectDto;
@@ -143,6 +146,9 @@ export const buildAiChatRequest = (
   const payload: Record<string, unknown> = {
     query: body.query,
     previousConversations: context.previousConversations,
+    ...(context.historyLabel !== undefined
+      ? { historyLabel: context.historyLabel }
+      : {}),
     ...(context.isNewConversation ? { recordIds: body.recordIds || [] } : {}),
     filters: body.filters || {},
     attachments: body.attachments || [],

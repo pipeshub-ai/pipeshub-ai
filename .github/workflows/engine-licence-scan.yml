@@ -1,0 +1,95 @@
+name: Engine Licence Scan
+
+# The engine upgrade gate (PROJECT-PLAN rule 8, D29): scripts/engines/licence_scan.py on every engine release
+# pinned in backend/python/harness_engines/allowlist.json, as the gate runs it, never with
+# --allow-unverified-signature. cosign is installed here because developer hosts usually have no sigstore
+# verifier; a published bundle that is not verified fails the scan. The tools image layer (E0b) needs the
+# locally built images and is scanned with deployment/sandbox-images/opencode/tools/scan.sh, not here.
+on:
+  pull_request:
+    paths:
+      - 'scripts/engines/**'
+      - 'backend/python/harness_engines/allowlist.json'
+      - 'backend/python/tests/unit/harness_engines/fixtures/licence/**'
+      - 'deployment/sandbox-images/**'
+      - '.github/workflows/engine-licence-scan.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-licence-scan-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Licence scan (${{ matrix.engine }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [codex, opencode]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Download the pinned release asset and its signature bundle
+        env:
+          ENGINE: ${{ matrix.engine }}
+        run: |
+          mkdir -p scan
+          python3 - <<'EOF' > scan/pin.env
+          import json, os
+          entry = next(e for e in json.load(open("backend/python/harness_engines/allowlist.json"))["engines"] if e["kind"] == os.environ["ENGINE"])
+          asset = entry["asset"]
+          print(f"VERSION={entry['version']}")
+          print(f"ASSET={asset['name']}")
+          print(f"URL={asset['url']}")
+          print(f"SHA256={asset['sha256']}")
+          EOF
+          . scan/pin.env
+          curl -fsSL -o "scan/$ASSET" "$URL"
+          base=${URL%/*}
+          stem=${ASSET%.tar.gz}
+          for name in "$ASSET.sigstore" "$stem.sigstore" "$ASSET.sigstore.json" "$stem.sigstore.json"; do
+            if curl -fsSL -o "scan/$name" "$base/$name"; then echo "BUNDLE=scan/$name" >> scan/pin.env; break; fi
+            rm -f "scan/$name"
+          done
+          cat scan/pin.env
+
+      - name: Scan as the upgrade gate runs it
+        env:
+          ENGINE: ${{ matrix.engine }}
+        run: |
+          . scan/pin.env
+          set -- "$ENGINE" "$VERSION" --asset "scan/$ASSET" --out scan/out
+          if [ -n "${BUNDLE:-}" ]; then set -- "$@" --signature-bundle "$BUNDLE"; fi
+          if [ "$ENGINE" = codex ]; then
+            # The cargo tree of codex-app-server for x86_64-unknown-linux-musl at the tag (R5): no cargo needed.
+            python3 scripts/engines/licence_scan.py "$@" --sha256 "$SHA256" \
+              --deps "backend/python/tests/unit/harness_engines/fixtures/licence/codex-rust-v$VERSION.cargo-tree.txt"
+          else
+            python3 scripts/engines/licence_scan.py "$@" --sha256 "$SHA256" --network
+          fi
+
+      - name: Upload the scan report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: engine-licence-scan-${{ matrix.engine }}
+          path: scan/out
+          if-no-files-found: warn

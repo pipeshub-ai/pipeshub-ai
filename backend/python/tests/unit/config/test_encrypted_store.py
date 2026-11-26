@@ -350,7 +350,7 @@ class TestCreateEtcdStore:
     def test_missing_etcd_url_raises(self):
         """Missing ETCD_URL should raise ValueError."""
         env_vars = {
-            "SECRET_KEY": "test-secret",
+            "SECRET_KEY": "9caf06bb4436cdbfa20af9121a626bc1093c4f54b31c0fa937957856135345b6",
             "KV_STORE_TYPE": "etcd",
             # No ETCD_URL
         }
@@ -401,7 +401,7 @@ class TestCreateRedisStore:
             factory_cls.create_store.return_value = AsyncMock(client=MagicMock())
 
             mock_getenv.side_effect = lambda key, default=None: {
-                "SECRET_KEY": "secret",
+                "SECRET_KEY": "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b",
                 "KV_STORE_TYPE": "redis",
                 "REDIS_HOST": "redis-host",
                 "REDIS_PORT": "6380",

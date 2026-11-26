@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field  # type: ignore
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.address_guard import AddressGuardAdapter
 from app.sources.client.iclient import IClient
-from app.utils.oauth_config import resolve_instance_url
+from app.utils.oauth_config import oauth_app_public_only, resolve_instance_url
 
 # Hard ceiling (seconds) on a single ``Retry-After`` wait inside python-gitlab.
 # python-gitlab's per-request rate-limit handling calls ``time.sleep(Retry-After)``
@@ -157,7 +157,7 @@ class _TokenSafeSession(requests.Session):
         super().rebuild_auth(prepared_request, response)
 
 
-def _secure_session(logger: logging.Logger | None = None) -> requests.Session:
+def _secure_session(logger: logging.Logger | None = None, *, allow_private: bool | None = None) -> requests.Session:
     """A session that never carries the GitLab token off its server or onto plain http,
     and never reaches an address the deployment forbids (see ``AddressGuardAdapter``).
 
@@ -173,7 +173,7 @@ def _secure_session(logger: logging.Logger | None = None) -> requests.Session:
 
     session = _TokenSafeSession()
     session.hooks["response"].append(refuse_insecure_redirect)
-    guard = AddressGuardAdapter()
+    guard = AddressGuardAdapter(allow_private=allow_private)
     session.mount("http://", guard)
     session.mount("https://", guard)
     return session
@@ -192,8 +192,13 @@ class GitLabClientViaToken:
         auth_type: str = "OAUTH",
         max_retry_after_seconds: int | None = None,
         logger: logging.Logger | None = None,
+        *,
+        allow_private: bool | None = None,
     ) -> None:
         self.token = token
+        # False holds every call to public addresses (a person's own GitLab instance URL);
+        # None keeps the deployment's rule.
+        self.allow_private = allow_private
         self.url = url or "https://gitlab.com"
         self.timeout = timeout
         self.api_version = api_version
@@ -236,7 +241,7 @@ class GitLabClientViaToken:
         # existing config surface but ignore them at construction time.
 
         kwargs["per_page"] = _GITLAB_PER_PAGE
-        kwargs["session"] = _secure_session(self._logger)
+        kwargs["session"] = _secure_session(self._logger, allow_private=self.allow_private)
         self._sdk = gitlab.Gitlab(**kwargs)
         self._install_retry_after_cap(self._sdk)
         return self._sdk
@@ -361,6 +366,10 @@ class GitLabClient(IClient):
     def get_client(self) -> GitLabClientViaToken:
         return self.client
 
+    @property
+    def allow_private(self) -> bool | None:
+        return self.client.allow_private
+
     def get_sdk(self) -> Gitlab:
         return self.client.get_sdk()
 
@@ -416,6 +425,8 @@ class GitLabClient(IClient):
             logger=logger,
         )
         timeout = auth_config.get("timeout", 60)
+        # A person's own connector reaches public addresses only, unless an org app vouches for the host.
+        allow_private = False if await oauth_app_public_only(auth_config, config_service, logger) else None
 
         # Let python-gitlab retry transient 5xx (500/502/503/504/52x) with
         # exponential backoff. Without this, every transient GitLab blip
@@ -440,6 +451,7 @@ class GitLabClient(IClient):
                 retry_transient_errors=True,
                 auth_type="API_TOKEN",
                 logger=logger,
+                allow_private=allow_private,
             )
             client.create_client()
         elif auth_type == "OAUTH":
@@ -457,6 +469,7 @@ class GitLabClient(IClient):
                 retry_transient_errors=True,
                 auth_type="OAUTH",
                 logger=logger,
+                allow_private=allow_private,
             )
             client.create_client()
         else:

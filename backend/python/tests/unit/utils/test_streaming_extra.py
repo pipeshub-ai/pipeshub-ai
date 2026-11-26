@@ -1,7 +1,6 @@
 """Additional unit tests for app.utils.streaming targeting uncovered branches."""
 
 import logging
-import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -998,11 +997,6 @@ class TestCallAiterLlmStreamSimpleWebSearchSkipsReflection:
 class TestOpikConfigureImportFailure:
     def test_configure_exception_sets_tracer_none(self, monkeypatch):
         import importlib
-        import sys
-
-        opik_mod = types.ModuleType("opik")
-        integrations = types.ModuleType("opik.integrations")
-        langchain_int = types.ModuleType("opik.integrations.langchain")
 
         attempts = []
 
@@ -1010,8 +1004,7 @@ class TestOpikConfigureImportFailure:
             attempts.append(1)
             raise RuntimeError("opik unavailable")
 
-        langchain_int.OpikTracer = _failing_opik_tracer
-
+        import app.agent_loop_lib.transport.opik_langchain as opik_langchain
         import app.utils.opik as opik_helpers
         import app.utils.streaming as sm
 
@@ -1019,9 +1012,7 @@ class TestOpikConfigureImportFailure:
         with monkeypatch.context() as m:
             m.setenv("OPIK_API_KEY", "test-key")
             m.setenv("OPIK_WORKSPACE", "test-ws")
-            m.setitem(sys.modules, "opik", opik_mod)
-            m.setitem(sys.modules, "opik.integrations", integrations)
-            m.setitem(sys.modules, "opik.integrations.langchain", langchain_int)
+            m.setattr(opik_langchain, "TextFreeOpikTracer", _failing_opik_tracer)
             importlib.reload(opik_helpers)  # app.utils.opik builds the tracer; streaming only re-reads it
             importlib.reload(sm)
             assert attempts == [1]

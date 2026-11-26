@@ -133,7 +133,7 @@ describe('user-session.utils', () => {
       ])
 
       expect(refusals).to.deep.equal(['Session expired, please login again', null])
-      const filter = activities.firstCall.args[0] as any
+      const filter = (activities.firstCall.args as unknown[])[0] as any
       expect(filter.createdAt.$gte.getTime()).to.equal(iat * 1000)
     })
   })

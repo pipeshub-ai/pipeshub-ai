@@ -26,11 +26,13 @@ spec:
         {{- include "pipeshub-ai.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: arango
     spec:
+      # Store pods never call the Kubernetes API: no service-account token to steal (SEC-D-10).
+      automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.arango.podSecurityContext | nindent 8 }}
       containers:
         - name: arango
-          image: "{{ .Values.arango.image.repository }}:{{ .Values.arango.image.tag }}"
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.arango.image "global" .Values.global) | quote }}
           imagePullPolicy: {{ .Values.arango.image.pullPolicy }}
           ports:
             - containerPort: 8529

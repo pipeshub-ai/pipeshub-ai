@@ -17,7 +17,6 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
-from app.agent_loop_lib.core.usage_source import current_llm_usage_source
 from app.services.model_identity import metrics
 from app.services.model_identity.principal import Principal, service_principal
 from app.services.model_identity.settings import (
@@ -25,6 +24,7 @@ from app.services.model_identity.settings import (
     IdentityGovernancePolicy,
 )
 from app.services.model_identity.workload import Workload, WorkloadClass, workload_class
+from harness_core.kernel.core.usage_source import current_llm_usage_source
 
 if TYPE_CHECKING:
     from app.services.model_identity.groups import GroupsHandle

@@ -197,7 +197,7 @@ describe('ChatKbFiltersMigration', () => {
       expect(result).to.deep.equal({ conversationsUpdated: 1, messagesUpdated: 1, errored: 0 });
       expect(mockDoc.markModified.calledWith('messages')).to.equal(true);
       expect(kv.set.calledWith(configPaths.chatKbFiltersMigration, 'true')).to.equal(true);
-      expect(mockDoc.messages[0].appliedFilters.apps[0].nodeType).to.equal('app');
+      expect(mockDoc.messages[0]!.appliedFilters.apps[0]!.nodeType).to.equal('app');
     });
 
     it('moves multiple stale entries from kb to apps', async () => {
@@ -226,8 +226,8 @@ describe('ChatKbFiltersMigration', () => {
       const m = new ChatKbFiltersMigration(makeLogger() as any, kv as any, 'aes-256-gcm', 'a'.repeat(64));
       await m.run();
 
-      expect(mockDoc.messages[0].appliedFilters.kb).to.have.lengthOf(1);
-      expect(mockDoc.messages[0].appliedFilters.apps).to.have.lengthOf(3);
+      expect(mockDoc.messages[0]!.appliedFilters.kb).to.have.lengthOf(1);
+      expect(mockDoc.messages[0]!.appliedFilters.apps).to.have.lengthOf(3);
     });
 
     it('skips conversations with no stale KB filters', async () => {
@@ -370,8 +370,8 @@ describe('ChatKbFiltersMigration', () => {
       const m = new ChatKbFiltersMigration(makeLogger() as any, kv as any, 'aes-256-gcm', 'a'.repeat(64));
       await m.run();
 
-      expect(mockDoc.messages[0].appliedFilters.apps).to.have.lengthOf(1);
-      expect(mockDoc.messages[0].appliedFilters.apps[0].nodeType).to.equal('app');
+      expect(mockDoc.messages[0]!.appliedFilters.apps).to.have.lengthOf(1);
+      expect(mockDoc.messages[0]!.appliedFilters.apps![0].nodeType).to.equal('app');
     });
   });
 });

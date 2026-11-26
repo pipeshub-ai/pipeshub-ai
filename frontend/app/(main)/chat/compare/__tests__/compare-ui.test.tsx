@@ -5,7 +5,7 @@ import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import { fakeApi } from '@/lib/api/__tests__/fake-api';
 import { installMemoryStorage, jwtExpiringIn } from '@/lib/api/__tests__/sse-response';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import type { AskUserQuestionPayload, AvailableLlmModel, ChatSlot } from '../../types';
 
 installMemoryStorage();
@@ -133,7 +133,7 @@ const useButtons = () => screen.queryAllByRole('button', { name: /^Use the answe
 
 beforeEach(() => {
   installBrowserShims();
-  useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'r' });
+  useAuthStore.setState({ accessToken: jwtExpiringIn(3600) });
   vi.mocked(streamMessageForSlot).mockReset();
   vi.mocked(cancelStreamForSlot).mockReset();
   useCompareStore.setState({ enabled: false, models: [], turns: {} });
@@ -147,7 +147,7 @@ afterEach(() => {
 });
 
 describe('Compare toggle availability', () => {
-  const setup = (over: { flag?: boolean; models?: typeof A[]; mode?: 'agent' | 'chat' | 'web-search' | 'image' } = {}) => {
+  const setup = (over: { flag?: boolean; models?: typeof A[]; mode?: 'agent' | 'chat' | 'web-search' } = {}) => {
     useFeatureFlagsStore.setState({ flags: { ENABLE_CHAT_COMPARE: over.flag ?? true } });
     const chat = useChatStore.getState();
     chat.setAvailableModelsForCtx(ASSISTANT_CTX, (over.models ?? [A, B]).map(llm));
@@ -165,7 +165,6 @@ describe('Compare toggle availability', () => {
   it.each([
     ['the flag is off', { flag: false }, ASSISTANT_CTX],
     ['only one model is configured', { models: [A] }, ASSISTANT_CTX],
-    ['image mode is selected', { mode: 'image' as const }, ASSISTANT_CTX],
     ['the chat belongs to a saved agent', {}, 'agent-123'],
   ])('is not offered when %s', (_name, over, ctx) => {
     setup(over);

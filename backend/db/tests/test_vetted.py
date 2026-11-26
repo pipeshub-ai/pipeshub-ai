@@ -1000,6 +1000,15 @@ def test_any_reviewed_sysfuncs_line_of_a_major_passes_and_nothing_else_is_relaxe
     assert surface.diff({"sysfuncs@17 count=2 md5=b"}, reviewed) == [("50 surface: missing", "role x")]
 
 
+def test_an_optional_line_may_be_live_or_not_and_relaxes_nothing_else():
+    opt = "role m login=true"
+    expected = {"? " + opt, "role x"}
+    assert surface.diff({"role x"}, expected) == []                                 # the opt-in role is not there: nothing is missing
+    assert surface.diff({"role x", opt}, expected) == []                            # it is there, exactly as reviewed
+    assert surface.diff({"role x", "role m login=true super=true"}, expected) == [("50 surface: unexpected", "role m login=true super=true")]
+    assert surface.diff({opt}, expected) == [("50 surface: missing", "role x")]
+
+
 def test_an_allowlist_can_remove_a_line_of_the_base_state(tmp_path):
     f = tmp_path / "allowlist.yaml"
     f.write_text('surface:\n  - "new line"\nremove:\n  - "old line"\n')

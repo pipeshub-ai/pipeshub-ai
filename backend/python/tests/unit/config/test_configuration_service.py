@@ -1469,3 +1469,21 @@ class TestWatchWorkerMigrationFlag:
 
         underlying.get_key.assert_awaited_once_with("/migrations/etcd_to_redis")
         assert svc.clear_cache.call_count == 1
+
+
+class TestComponentSubscription:
+    """R38IDENT-FU-9: on the sandbox plane the change subscription names the component's own keys, which is all its
+    etcd role (and its Redis ACL user) may read."""
+
+    def test_a_component_subscribes_to_its_own_document_only(self) -> None:
+        store = AsyncMock()
+        store.store = None
+        store.subscribe_changes = AsyncMock(return_value="handle-1")
+        svc = _build_service(store, kv_store_type="etcd")
+        svc._component_keys = frozenset({"/services/agentHarness/components/sandboxBroker"})
+        svc.clear_cache = MagicMock()
+        svc._start_watch()
+        svc.watch_thread.join(timeout=10)
+        store.subscribe_changes.assert_awaited_once_with(
+            svc._invalidation_callback, keys=frozenset({"/services/agentHarness/components/sandboxBroker"})
+        )

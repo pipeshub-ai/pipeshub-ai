@@ -1,0 +1,544 @@
+[
+  {
+    "description": "a gateway token's audience is not a resolved turn's",
+    "instance": {
+      "iss": "pipeshub-node/agent-harness",
+      "aud": "pipeshub-query/model-gateway",
+      "iat": 1791840000,
+      "exp": 1791840060,
+      "ver": 1,
+      "org": "o1",
+      "sub": "u3",
+      "agent": "a7",
+      "cid": "665f1c2e9b1d4a0012ab34cd",
+      "pin": {
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "head": 1042,
+        "routing": {
+          "path": "legacy",
+          "reason": "project_scope"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p-9",
+          "agentOwner": "u1"
+        }
+      },
+      "stages": {
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": false,
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true
+      },
+      "flow": [
+        {
+          "level": "ask",
+          "above": "public"
+        }
+      ],
+      "access": {
+        "run": true
+      },
+      "bindings": [
+        {
+          "installation": "inst_01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+          "owner": "user:u3",
+          "ref": "bnd_01J9ZZZZZZZZZZZZZZZZZZZZZZ"
+        }
+      ]
+    }
+  },
+  {
+    "description": "another issuer",
+    "instance": {
+      "iss": "pipeshub-node/other",
+      "aud": "pipeshub-query/resolved-turn",
+      "iat": 1791840000,
+      "exp": 1791840060,
+      "ver": 1,
+      "org": "o1",
+      "sub": "u3",
+      "agent": "a7",
+      "cid": "665f1c2e9b1d4a0012ab34cd",
+      "pin": {
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "head": 1042,
+        "routing": {
+          "path": "legacy",
+          "reason": "project_scope"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p-9",
+          "agentOwner": "u1"
+        }
+      },
+      "stages": {
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": false,
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true
+      },
+      "flow": [
+        {
+          "level": "ask",
+          "above": "public"
+        }
+      ],
+      "access": {
+        "run": true
+      },
+      "bindings": [
+        {
+          "installation": "inst_01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+          "owner": "user:u3",
+          "ref": "bnd_01J9ZZZZZZZZZZZZZZZZZZZZZZ"
+        }
+      ]
+    }
+  },
+  {
+    "description": "a version the contract does not know",
+    "instance": {
+      "iss": "pipeshub-node/agent-harness",
+      "aud": "pipeshub-query/resolved-turn",
+      "iat": 1791840000,
+      "exp": 1791840060,
+      "ver": 2,
+      "org": "o1",
+      "sub": "u3",
+      "agent": "a7",
+      "cid": "665f1c2e9b1d4a0012ab34cd",
+      "pin": {
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "head": 1042,
+        "routing": {
+          "path": "legacy",
+          "reason": "project_scope"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p-9",
+          "agentOwner": "u1"
+        }
+      },
+      "stages": {
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": false,
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true
+      },
+      "flow": [
+        {
+          "level": "ask",
+          "above": "public"
+        }
+      ],
+      "access": {
+        "run": true
+      },
+      "bindings": [
+        {
+          "installation": "inst_01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+          "owner": "user:u3",
+          "ref": "bnd_01J9ZZZZZZZZZZZZZZZZZZZZZZ"
+        }
+      ]
+    }
+  },
+  {
+    "description": "the conversation is always named",
+    "instance": {
+      "iss": "pipeshub-node/agent-harness",
+      "aud": "pipeshub-query/resolved-turn",
+      "iat": 1791840000,
+      "exp": 1791840060,
+      "ver": 1,
+      "org": "o1",
+      "sub": "u3",
+      "agent": "a7",
+      "pin": {
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "head": 1042,
+        "routing": {
+          "path": "legacy",
+          "reason": "project_scope"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p-9",
+          "agentOwner": "u1"
+        }
+      },
+      "stages": {
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": false,
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true
+      },
+      "flow": [
+        {
+          "level": "ask",
+          "above": "public"
+        }
+      ],
+      "access": {
+        "run": true
+      },
+      "bindings": [
+        {
+          "installation": "inst_01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+          "owner": "user:u3",
+          "ref": "bnd_01J9ZZZZZZZZZZZZZZZZZZZZZZ"
+        }
+      ]
+    }
+  },
+  {
+    "description": "the agent is named or null, never absent",
+    "instance": {
+      "iss": "pipeshub-node/agent-harness",
+      "aud": "pipeshub-query/resolved-turn",
+      "iat": 1791840000,
+      "exp": 1791840060,
+      "ver": 1,
+      "org": "o1",
+      "sub": "u3",
+      "cid": "665f1c2e9b1d4a0012ab34cd",
+      "pin": {
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "head": 1042,
+        "routing": {
+          "path": "legacy",
+          "reason": "project_scope"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p-9",
+          "agentOwner": "u1"
+        }
+      },
+      "stages": {
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": false,
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true
+      },
+      "flow": [
+        {
+          "level": "ask",
+          "above": "public"
+        }
+      ],
+      "access": {
+        "run": true
+      },
+      "bindings": [
+        {
+          "installation": "inst_01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+          "owner": "user:u3",
+          "ref": "bnd_01J9ZZZZZZZZZZZZZZZZZZZZZZ"
+        }
+      ]
+    }
+  },
+  {
+    "description": "a stage is a switch",
+    "instance": {
+      "iss": "pipeshub-node/agent-harness",
+      "aud": "pipeshub-query/resolved-turn",
+      "iat": 1791840000,
+      "exp": 1791840060,
+      "ver": 1,
+      "org": "o1",
+      "sub": "u3",
+      "agent": "a7",
+      "cid": "665f1c2e9b1d4a0012ab34cd",
+      "pin": {
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "head": 1042,
+        "routing": {
+          "path": "legacy",
+          "reason": "project_scope"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p-9",
+          "agentOwner": "u1"
+        }
+      },
+      "stages": {
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": "on",
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true
+      },
+      "flow": [
+        {
+          "level": "ask",
+          "above": "public"
+        }
+      ],
+      "access": {
+        "run": true
+      },
+      "bindings": [
+        {
+          "installation": "inst_01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+          "owner": "user:u3",
+          "ref": "bnd_01J9ZZZZZZZZZZZZZZZZZZZZZZ"
+        }
+      ]
+    }
+  },
+  {
+    "description": "a flow rule names its threshold",
+    "instance": {
+      "iss": "pipeshub-node/agent-harness",
+      "aud": "pipeshub-query/resolved-turn",
+      "iat": 1791840000,
+      "exp": 1791840060,
+      "ver": 1,
+      "org": "o1",
+      "sub": "u3",
+      "agent": "a7",
+      "cid": "665f1c2e9b1d4a0012ab34cd",
+      "pin": {
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "head": 1042,
+        "routing": {
+          "path": "legacy",
+          "reason": "project_scope"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p-9",
+          "agentOwner": "u1"
+        }
+      },
+      "stages": {
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": false,
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true
+      },
+      "flow": [
+        {
+          "level": "ask"
+        }
+      ],
+      "access": {
+        "run": true
+      },
+      "bindings": [
+        {
+          "installation": "inst_01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+          "owner": "user:u3",
+          "ref": "bnd_01J9ZZZZZZZZZZZZZZZZZZZZZZ"
+        }
+      ]
+    }
+  },
+  {
+    "description": "access is present only when it grants",
+    "instance": {
+      "iss": "pipeshub-node/agent-harness",
+      "aud": "pipeshub-query/resolved-turn",
+      "iat": 1791840000,
+      "exp": 1791840060,
+      "ver": 1,
+      "org": "o1",
+      "sub": "u3",
+      "agent": "a7",
+      "cid": "665f1c2e9b1d4a0012ab34cd",
+      "pin": {
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "head": 1042,
+        "routing": {
+          "path": "legacy",
+          "reason": "project_scope"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p-9",
+          "agentOwner": "u1"
+        }
+      },
+      "stages": {
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": false,
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true
+      },
+      "flow": [
+        {
+          "level": "ask",
+          "above": "public"
+        }
+      ],
+      "access": {
+        "run": false
+      },
+      "bindings": [
+        {
+          "installation": "inst_01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+          "owner": "user:u3",
+          "ref": "bnd_01J9ZZZZZZZZZZZZZZZZZZZZZZ"
+        }
+      ]
+    }
+  },
+  {
+    "description": "a binding travels by reference, never with its secret",
+    "instance": {
+      "iss": "pipeshub-node/agent-harness",
+      "aud": "pipeshub-query/resolved-turn",
+      "iat": 1791840000,
+      "exp": 1791840060,
+      "ver": 1,
+      "org": "o1",
+      "sub": "u3",
+      "agent": "a7",
+      "cid": "665f1c2e9b1d4a0012ab34cd",
+      "pin": {
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "head": 1042,
+        "routing": {
+          "path": "legacy",
+          "reason": "project_scope"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p-9",
+          "agentOwner": "u1"
+        }
+      },
+      "stages": {
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": false,
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true
+      },
+      "flow": [
+        {
+          "level": "ask",
+          "above": "public"
+        }
+      ],
+      "access": {
+        "run": true
+      },
+      "bindings": [
+        {
+          "installation": "inst_01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+          "owner": "user:u3",
+          "ref": "bnd_01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+          "secret": "sk-live-0000"
+        }
+      ]
+    }
+  },
+  {
+    "description": "the pin is summarised, not carried",
+    "instance": {
+      "iss": "pipeshub-node/agent-harness",
+      "aud": "pipeshub-query/resolved-turn",
+      "iat": 1791840000,
+      "exp": 1791840060,
+      "ver": 1,
+      "org": "o1",
+      "sub": "u3",
+      "agent": "a7",
+      "cid": "665f1c2e9b1d4a0012ab34cd",
+      "pin": {
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "head": 1042,
+        "routing": {
+          "path": "legacy",
+          "reason": "project_scope"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p-9",
+          "agentOwner": "u1"
+        },
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        }
+      },
+      "stages": {
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": false,
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true
+      },
+      "flow": [
+        {
+          "level": "ask",
+          "above": "public"
+        }
+      ],
+      "access": {
+        "run": true
+      },
+      "bindings": [
+        {
+          "installation": "inst_01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+          "owner": "user:u3",
+          "ref": "bnd_01J9ZZZZZZZZZZZZZZZZZZZZZZ"
+        }
+      ]
+    }
+  },
+  {
+    "description": "no claim the contract does not name",
+    "instance": {
+      "iss": "pipeshub-node/agent-harness",
+      "aud": "pipeshub-query/resolved-turn",
+      "iat": 1791840000,
+      "exp": 1791840060,
+      "ver": 1,
+      "org": "o1",
+      "sub": "u3",
+      "agent": "a7",
+      "cid": "665f1c2e9b1d4a0012ab34cd",
+      "pin": {
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "head": 1042,
+        "routing": {
+          "path": "legacy",
+          "reason": "project_scope"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p-9",
+          "agentOwner": "u1"
+        }
+      },
+      "stages": {
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": false,
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true
+      },
+      "flow": [
+        {
+          "level": "ask",
+          "above": "public"
+        }
+      ],
+      "access": {
+        "run": true
+      },
+      "bindings": [
+        {
+          "installation": "inst_01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+          "owner": "user:u3",
+          "ref": "bnd_01J9ZZZZZZZZZZZZZZZZZZZZZZ"
+        }
+      ],
+      "email": "u3@example.com"
+    }
+  }
+]

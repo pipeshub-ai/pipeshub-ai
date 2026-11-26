@@ -18,10 +18,10 @@ const FILES_LIST_LIMIT = 100;
 
 const INDEX_STATUS_COLOR: Record<string, string> = {
   COMPLETED: 'var(--emerald-11)',
-  IN_PROGRESS: 'var(--amber-9)',
-  QUEUED: 'var(--blue-9)',
-  FAILED: 'var(--red-9)',
-  FILE_TYPE_NOT_SUPPORTED: 'var(--red-9)',
+  IN_PROGRESS: 'var(--amber-11)',
+  QUEUED: 'var(--blue-11)',
+  FAILED: 'var(--red-11)',
+  FILE_TYPE_NOT_SUPPORTED: 'var(--red-11)',
   PASSWORD_PROTECTED: 'var(--amber-11)',
 };
 
@@ -65,7 +65,7 @@ function IndexStatusMark({ status }: { status: string }) {
         <MaterialIcon
           name={getIndexStatusIcon(status)}
           size={14}
-          color={INDEX_STATUS_COLOR[status] ?? 'var(--slate-10)'}
+          color={INDEX_STATUS_COLOR[status] ?? 'var(--slate-11)'}
         />
       </span>
     </Tooltip>
@@ -173,7 +173,7 @@ export function FilesCard({
   return (
     <Flex direction="column" gap="2">
       <Flex align="center" justify="between">
-        <Text size="1" style={{ color: 'var(--slate-10)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>
           {t('chat.projects.workspace.filesSubtitle', {
             defaultValue: 'Files here are searched only within this project.',
           })}
@@ -210,11 +210,11 @@ export function FilesCard({
           {t('chat.projects.workspace.failedToLoadFiles', { defaultValue: 'Failed to load files' })}
         </Text>
       ) : isLoading ? (
-        <Text size="2" style={{ color: 'var(--slate-10)' }}>
+        <Text size="2" style={{ color: 'var(--slate-11)' }}>
           {t('common.loading', { defaultValue: 'Loading…' })}
         </Text>
       ) : items.length === 0 ? (
-        <Text size="2" style={{ color: 'var(--slate-10)' }}>
+        <Text size="2" style={{ color: 'var(--slate-11)' }}>
           {t('chat.projects.workspace.noFiles')}
         </Text>
       ) : (
@@ -248,7 +248,7 @@ export function FilesCard({
                   <IndexStatusMark status={item.indexingStatus} />
                 )}
                 {typeof item.sizeInBytes === 'number' && (
-                  <Text size="1" style={{ color: 'var(--slate-10)', flexShrink: 0 }}>
+                  <Text size="1" style={{ color: 'var(--slate-11)', flexShrink: 0 }}>
                     {formatFileSize(item.sizeInBytes)}
                   </Text>
                 )}
@@ -270,7 +270,7 @@ export function FilesCard({
                     opacity: deletingId === item.id ? 0.5 : 1,
                   }}
                 >
-                  <MaterialIcon name="close" size={14} color="var(--slate-10)" />
+                  <MaterialIcon name="close" size={14} color="var(--slate-11)" />
                 </button>
               )}
             </Flex>

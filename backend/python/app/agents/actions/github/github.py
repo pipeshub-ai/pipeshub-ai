@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.sign_in_rejected import note_sign_in_rejected
 from app.agents.actions.util.tool_summaries import (
     args_template,
     entity_summary,
@@ -22,6 +23,7 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -103,6 +105,7 @@ def _github_error_message(response: GitHubResponse, action: str) -> str:
     if status is None:
         return f"Could not {action} because GitHub could not be reached. Try again in a moment."
     if status == HTTPStatus.UNAUTHORIZED:
+        note_sign_in_rejected()
         return f"Could not {action}: GitHub did not accept the saved sign-in.{said} {_RECONNECT_STEP}"
     if status == HTTPStatus.FORBIDDEN:
         return (
@@ -447,7 +450,7 @@ class SearchRepositoriesInput(BaseModel):
 # Toolset registration
 # ---------------------------------------------------------------------------
 
-@ToolsetBuilder("GitHub")\
+@ToolsetBuilder("GitHub", provider=ToolProvider.CONNECTOR)\
     .in_group("Development")\
     .with_description("GitHub integration for repository management, issues, and pull requests")\
     .with_category(ToolsetCategory.APP)\
@@ -591,7 +594,7 @@ class GitHub:
             ToolParameter(name="description", type=ParameterType.STRING, description="Short description of the repository. Optional. Omit if user did not provide; do not ask.", required=False),
             ToolParameter(name="auto_init", type=ParameterType.BOOLEAN, description="Initialize with a README. Default True. Do not ask the user if not specified.", required=False),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template('Creating GitHub repository "{name}"', "name"),
         result_summary=entity_summary(lambda e: f"Created repository: {_github_repo_label(e)}"),
     )
@@ -630,7 +633,7 @@ class GitHub:
             ToolParameter(name="owner", type=ParameterType.STRING, description="Repository owner (username or org). For 'my' repo call get_owner(owner='me') first and use the returned 'login' here.", required=True),
             ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching GitHub repository {owner}/{repo}", "owner", "repo"),
         result_summary=entity_summary(lambda e: f"Fetched repository: {_github_repo_label(e)}"),
     )
@@ -658,7 +661,7 @@ class GitHub:
             ToolParameter(name="owner", type=ParameterType.STRING, description="GitHub username or organization login. Use 'me' only here to get the authenticated user's profile (returns login for use in other tools).", required=True),
             ToolParameter(name="owner_type", type=ParameterType.STRING, description="Type of owner: 'user' for a user account, 'organization' for an org", required=False),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching GitHub profile for {owner}", "owner"),
         result_summary=entity_summary(lambda e: f"Fetched profile: {_github_owner_label(e)}"),
     )
@@ -695,7 +698,7 @@ class GitHub:
             ToolParameter(name="per_page", type=ParameterType.INTEGER, description="Number of repos per page. Default 10 when omitted; max 50.", required=False),
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number (1-based). Default 1 when omitted.", required=False),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Listing GitHub repositories for {user}", "user"),
         result_summary=list_summary(("data",), _github_repo_label, "repository"),
     )
@@ -743,7 +746,7 @@ class GitHub:
             ToolParameter(name="assignees", type=ParameterType.ARRAY, description="GitHub usernames to assign", required=False),
             ToolParameter(name="labels", type=ParameterType.ARRAY, description="Label names to apply", required=False),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Creating GitHub issue in {owner}/{repo}", "owner", "repo"),
         result_summary=entity_summary(lambda e: f"Created issue: {_github_issue_label(e)}"),
     )
@@ -791,7 +794,7 @@ class GitHub:
             ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
             ToolParameter(name="number", type=ParameterType.INTEGER, description="Issue number", required=True),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching GitHub issue {owner}/{repo}#{number}", "owner", "repo", "number"),
         result_summary=entity_summary(lambda e: f"Fetched issue: {_github_issue_label(e)}"),
     )
@@ -823,7 +826,7 @@ class GitHub:
             ToolParameter(name="per_page", type=ParameterType.INTEGER, description="Issues per page (default 10, max 50).", required=False),
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number (1-based).", required=False),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Listing issues in {owner}/{repo}", "owner", "repo"),
         result_summary=list_summary(("data",), _github_issue_label, "issue"),
     )
@@ -872,7 +875,7 @@ class GitHub:
             ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
             ToolParameter(name="number", type=ParameterType.INTEGER, description="Issue number to close", required=True),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Closing GitHub issue {owner}/{repo}#{number}", "owner", "repo", "number"),
         result_summary=entity_summary(lambda e: f"Closed issue: {_github_issue_label(e)}"),
     )
@@ -905,7 +908,7 @@ class GitHub:
             ToolParameter(name="assignees", type=ParameterType.ARRAY, description="Replace assignees with these usernames (omit to leave unchanged)", required=False),
             ToolParameter(name="labels", type=ParameterType.ARRAY, description="Replace labels with these names (omit to leave unchanged; pass [] to remove every label)", required=False),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Updating GitHub issue {owner}/{repo}#{number}", "owner", "repo", "number"),
         result_summary=entity_summary(lambda e: f"Updated issue: {_github_issue_label(e)}"),
     )
@@ -975,7 +978,7 @@ class GitHub:
             ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
             ToolParameter(name="number", type=ParameterType.INTEGER, description="Issue number", required=True),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Listing comments on {owner}/{repo}#{number}", "owner", "repo", "number"),
         result_summary=list_summary(("data",), _github_comment_label, "comment"),
     )
@@ -1002,7 +1005,7 @@ class GitHub:
             ToolParameter(name="number", type=ParameterType.INTEGER, description="Issue number", required=True),
             ToolParameter(name="comment_id", type=ParameterType.INTEGER, description="Comment ID (from list_issue_comments)", required=True),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template(
             "Fetching comment {comment_id} on {owner}/{repo}#{number}", "owner", "repo", "number", "comment_id"
         ),
@@ -1032,7 +1035,7 @@ class GitHub:
             ToolParameter(name="number", type=ParameterType.INTEGER, description="Issue number", required=True),
             ToolParameter(name="body", type=ParameterType.STRING, description="Comment text (Markdown supported)", required=True),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Commenting on {owner}/{repo}#{number}", "owner", "repo", "number"),
         result_summary=entity_summary(lambda e: f"Comment added: {_github_comment_label(e)}"),
     )
@@ -1069,7 +1072,7 @@ class GitHub:
             ToolParameter(name="body", type=ParameterType.STRING, description="Pull request description", required=False),
             ToolParameter(name="draft", type=ParameterType.BOOLEAN, description="Whether to create as a draft PR", required=False),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Creating pull request in {owner}/{repo}", "owner", "repo"),
         result_summary=entity_summary(lambda e: f"Created PR: {_github_pr_label(e)}"),
     )
@@ -1118,7 +1121,7 @@ class GitHub:
             ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
             ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number", required=True),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching pull request {owner}/{repo}#{number}", "owner", "repo", "number"),
         result_summary=entity_summary(lambda e: f"Fetched PR: {_github_pr_label(e)}", path=("data", "pr")),
     )
@@ -1168,7 +1171,7 @@ class GitHub:
             ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
             ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number", required=True),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching commits for {owner}/{repo}#{number}", "owner", "repo", "number"),
         result_summary=list_summary(("data",), _github_commit_label, "commit"),
     )
@@ -1235,7 +1238,7 @@ class GitHub:
             ToolParameter(name="max_diff_lines", type=ParameterType.INTEGER, description="Truncate diffs longer than this to prevent context overflow", required=False),
             ToolParameter(name="context_lines", type=ParameterType.INTEGER, description="Number of context lines around changes (1=minimal, 3=standard, 10=verbose)", required=False),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching file changes for {owner}/{repo}#{number}", "owner", "repo", "number"),
         result_summary=list_summary(("data",), _github_file_change_label, "file"),
     )
@@ -1289,7 +1292,7 @@ class GitHub:
             ToolParameter(name="per_page", type=ParameterType.INTEGER, description="PRs per page (default 10, max 50).", required=False),
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number (1-based).", required=False),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Listing pull requests in {owner}/{repo}", "owner", "repo"),
         result_summary=list_summary(("data",), _github_pr_label, "pull request"),
     )
@@ -1342,7 +1345,7 @@ class GitHub:
             ToolParameter(name="merge_method", type=ParameterType.STRING, description="Merge method: 'merge', 'squash', or 'rebase'", required=False),
             ToolParameter(name="sha", type=ParameterType.STRING, description="Head commit SHA the PR must still be at (from get_pull_request); GitHub refuses the merge if the PR changed since", required=False),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Merging pull request {owner}/{repo}#{number}", "owner", "repo", "number"),
         result_summary=entity_summary(
             lambda e: "Pull request merged" if e.get("merged") else f"Merge result: {e.get('message', 'unknown')}"
@@ -1391,7 +1394,7 @@ class GitHub:
             ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
             ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number", required=True),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching reviews on {owner}/{repo}#{number}", "owner", "repo", "number"),
         result_summary=list_summary(("data",), _github_review_label, "review"),
     )
@@ -1421,7 +1424,7 @@ class GitHub:
             ToolParameter(name="event", type=ParameterType.STRING, description="Review outcome: APPROVE, REQUEST_CHANGES, or COMMENT (general comment without approve/changes). Default COMMENT.", required=False),
             ToolParameter(name="body", type=ParameterType.STRING, description="Review summary text (optional for APPROVE; recommended for REQUEST_CHANGES or COMMENT)", required=False),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Submitting review on {owner}/{repo}#{number}", "owner", "repo", "number"),
         result_summary=entity_summary(lambda e: f"Review submitted: {e.get('state') or '?'}"),
     )
@@ -1458,7 +1461,7 @@ class GitHub:
             ToolParameter(name="repo", type=ParameterType.STRING, description="Repository name", required=True),
             ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number", required=True),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Listing review comments on {owner}/{repo}#{number}", "owner", "repo", "number"),
         result_summary=list_summary(("data",), _github_comment_label, "comment"),
     )
@@ -1492,7 +1495,7 @@ class GitHub:
             ToolParameter(name="line", type=ParameterType.INTEGER, description="Line number in the file", required=False),
             ToolParameter(name="side", type=ParameterType.STRING, description="'LEFT' or 'RIGHT' for diff side", required=False),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Adding review comment on {owner}/{repo}#{number}", "owner", "repo", "number"),
         result_summary=entity_summary(lambda e: f"Review comment added: {_github_comment_label(e)}"),
     )
@@ -1547,7 +1550,7 @@ class GitHub:
             ToolParameter(name="per_page", type=ParameterType.INTEGER, description="Results per page. Default 10 when omitted; max 50.", required=False),
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number (1-based). Default 1 when omitted.", required=False),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="search")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="search"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching GitHub repositories: "{query}"', "query"),
         result_summary=list_summary(("data",), _github_repo_label, "repository"),
     )

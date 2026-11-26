@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/input.queued.schema.json",
+  "title": "InputQueuedEvent",
+  "description": "Steering input queued for a running run: a message the user sent while it ran (REPORT D19).",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "input.queued"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/InputQueuedData"
+    }
+  },
+  "$defs": {
+    "InputQueuedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "messageSeq"
+      ],
+      "properties": {
+        "messageSeq": {
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        },
+        "textRef": {
+          "$ref": "../common.schema.json#/$defs/ContentRef",
+          "description": "The message text, inline in its ref, so the projector reads it and the worker renders it at the boundary that consumes it. An event over the journal's inline bound is claim-checked whole."
+        },
+        "attachments": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "$ref": "#/$defs/InputAttachment"
+          },
+          "description": "Files the user attached to the message, by reference: chat attachments already stored and authorized for the user at admission. The worker gives them to the model at the boundary that consumes the message, as a new turn with them would."
+        },
+        "recordIds": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/RecordRef"
+          },
+          "description": "Records the message names, by id, authorized for the user at admission."
+        },
+        "by": {
+          "$ref": "../common.schema.json#/$defs/PrincipalRef",
+          "description": "Who sent the message: Node's principal for the actor of the verified credential, never a client-supplied id (SS1). Absent on messages queued before SS1. A worker must advertise steering_by to fold it."
+        }
+      }
+    },
+    "InputAttachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recordId"
+      ],
+      "description": "A stored chat attachment as the chat request names it.",
+      "properties": {
+        "recordId": {
+          "$ref": "#/$defs/RecordRef"
+        },
+        "virtualRecordId": {
+          "$ref": "#/$defs/RecordRef"
+        },
+        "recordName": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "mimeType": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "extension": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "source": {
+          "enum": [
+            "upload",
+            "paste-text"
+          ]
+        }
+      }
+    },
+    "RecordRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "input.queued",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "messageSeq": 12,
+        "textRef": {
+          "ref": "inline:aGk",
+          "hash": "sha256:8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4",
+          "size": 2
+        },
+        "attachments": [
+          {
+            "recordId": "rec_1",
+            "virtualRecordId": "vr_1",
+            "recordName": "q4.pdf",
+            "mimeType": "application/pdf"
+          }
+        ],
+        "by": "p_u42"
+      }
+    }
+  ]
+}

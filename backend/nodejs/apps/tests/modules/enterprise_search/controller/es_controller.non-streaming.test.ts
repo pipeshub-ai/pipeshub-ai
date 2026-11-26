@@ -12,7 +12,8 @@ import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { CONVERSATION_ID_HEADER } from '../../../../src/modules/enterprise_search/utils/non-streaming-chat'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
-import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { setUserRepository } from '../../../../src/libs/repositories/user'
+import { setSlackIdentityLinksForTests } from '../../../../src/modules/configuration_manager/slack-identity/slack-linked-account'
 import {
   FakeAIBackend,
   FakeSSEResponse,
@@ -573,43 +574,65 @@ describe('es_controller non-streaming chat routes', () => {
   })
 
   describe('internal (scoped-token) callers', () => {
+    const slackToken = { configId: 'cfg-1', slackTeamId: 'T0HOME', slackUserId: 'U0BOT' }
+    let linkedUserId: string | null
     beforeEach(() => {
       sinon.stub(Org, 'find').returns({
         limit: () => ({ lean: () => ({ exec: async () => [{ _id: ORG }] }) }),
       } as never)
+      linkedUserId = null
+      setSlackIdentityLinksForTests({
+        find: async (orgId: string) => (linkedUserId && orgId === String(ORG) ? { orgId: String(ORG), userId: linkedUserId } : null),
+        revoke: async () => undefined,
+      } as never)
+      setUserRepository({
+        getLive: async (orgId: string, id: string) =>
+          id === linkedUserId ? { _id: id, orgId, email: 'bot-user@example.com', fullName: 'Bot User' } : null,
+        getAccountState: async () => ({ kind: 'human' }),
+      } as never)
+    })
+    afterEach(() => {
+      setSlackIdentityLinksForTests(undefined)
+      setUserRepository()
     })
 
-    it('are resolved to their user and re-signed before the AI call', async () => {
-      const userId = oid()
-      sinon.stub(Users, 'findOne').resolves({
-        _id: userId,
-        orgId: ORG,
-        email: 'bot-user@example.com',
-        fullName: 'Bot User',
-        slug: 'bot-user',
-      } as never)
+    it('are resolved to the account the Slack person linked and re-signed before the AI call', async () => {
+      const userId = String(oid())
+      linkedUserId = userId
       const create = flows[0]!
 
       const r = await run(create, (ai) => ai.reply(exactPath('/api/v1/chat'), 200, answer('hi')), {
-        req: { user: undefined, tokenPayload: { email: 'bot-user@example.com' }, headers: { authorization: 'Bearer scoped' } },
+        req: { user: undefined, tokenPayload: { ...slackToken, email: 'someone-else@example.com' }, headers: { authorization: 'Bearer scoped' } },
       })
 
       expect(r.next.called, String(r.error()?.message)).to.be.false
-      expect(String(r.conversation().userId)).to.equal(String(userId))
+      expect(String(r.conversation().userId)).to.equal(userId)
       const token = r.ai.calls[0]!.headers.authorization!.replace('Bearer ', '')
       expect(token).not.to.equal('scoped')
-      expect((jwt.decode(token) as { userId: string }).userId).to.equal(String(userId))
+      expect(jwt.decode(token) as Record<string, unknown>).to.include({ userId, email: 'bot-user@example.com' })
     })
 
-    it('with no matching user are a 404 and nothing is written', async () => {
-      sinon.stub(Users, 'findOne').resolves(null)
+    it('with no linked account are a 401 and nothing is written', async () => {
       const create = flows[0]!
 
       const r = await run(create, () => undefined, {
-        req: { user: undefined, tokenPayload: { email: 'nobody@example.com' } },
+        req: { user: undefined, tokenPayload: { ...slackToken, email: 'nobody@example.com' } },
       })
 
-      expect(r.error()?.statusCode).to.equal(404)
+      expect(r.error()?.statusCode).to.equal(401)
+      expect(r.store.writes).to.deep.equal([])
+    })
+
+    // BOTTOKEN-1: a token that names no Slack bot configuration is not the bot's, whatever email it carries.
+    it('naming no Slack bot configuration are a 401 and nothing is written, even for a linked person', async () => {
+      linkedUserId = String(oid())
+      const create = flows[0]!
+
+      const r = await run(create, () => undefined, {
+        req: { user: undefined, tokenPayload: { email: 'bot-user@example.com', slackTeamId: 'T0HOME', slackUserId: 'U0BOT' } },
+      })
+
+      expect(r.error()?.statusCode).to.equal(401)
       expect(r.store.writes).to.deep.equal([])
     })
   })

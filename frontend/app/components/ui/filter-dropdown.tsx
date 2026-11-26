@@ -516,7 +516,7 @@ export function FilterDropdown({
               onChange={(e) => handleSearchChange(e.target.value)}
             >
               <TextField.Slot>
-                <MaterialIcon name="search" size={14} color="var(--slate-9)" />
+                <MaterialIcon name="search" size={14} color="var(--slate-11)" />
               </TextField.Slot>
             </TextField.Root>
           </Box>
@@ -642,13 +642,13 @@ export function FilterDropdown({
           {isLoadingMore && (
             <Flex align="center" justify="center" gap="2" style={{ padding: '8px' }}>
               <Spinner size={12} />
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 {t('filterDropdown.loadingMore')}
               </Text>
             </Flex>
           )}
           {filteredOptions.length === 0 && !isLoadingMore && !isLoadingOptions && (
-            <Text size="2" style={{ color: 'var(--slate-9)', padding: '8px' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)', padding: '8px' }}>
               {emptyMessage || t('message.noResults')}
             </Text>
           )}

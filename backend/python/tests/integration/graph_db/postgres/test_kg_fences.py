@@ -813,3 +813,145 @@ async def test_a_worker_with_a_skewed_clock_neither_steals_a_live_claim_nor_bloc
     await asyncio.sleep(0.1)
     again = await restamp.claim(pg_db, org, "w3", stale_ms=10)                  # so the job can be taken over once it is stale
     assert again is not None
+
+
+# ---- a grant that leaves its node granted (kg_0021) -------------------------------------------------------------------------------------------------------------------
+
+IDS = ["F", *[f"r{i:02d}" for i in range(12)]]
+U2 = ("users", "u2")
+
+
+async def served_fat(p, pg_db, org: str) -> None:
+    """``fat`` with a second user u2 of the connector who holds no grant, copied, verified and enforced."""
+    await fat(p, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "u2", "orgId": org, "email": "v@example.com"}], "users")
+        await p.batch_create_edges([edge("u2", "users", "app1", "apps")], "userAppRelation")
+    assert (await flip(pg_db, org))[0] == 1
+
+
+async def answers(p, org: str, user: str, switch: str | None) -> set[str]:
+    with _switch(switch), ctx(org):
+        access = await p.get_knowledge_hub_access_v3(user, org)
+        return {r["id"] for r in await p._kh_v3_accessible_rows(user, org, IDS, [], access=access, transaction=None)}
+
+
+async def kg_walks(p, pg_db, org: str, user: str) -> list[str]:
+    """The records the reader hands to the walk for ``user`` instead of deciding them from their stamps."""
+    with ctx(org):
+        access = await p.get_knowledge_hub_access_v3(user, org)
+    return sorted((await _decide(pg_db, org, IDS, access)).walk)
+
+
+def stamped(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Every projection's stamping from here on: what it stamped (``keys``) and what it hid (``hidden``)."""
+    from app.services.graph_db.postgres.kg import project as kg_project
+    seen: list = []
+    real = kg_project.stamp
+
+    async def spy(*args: object, **kwargs: object) -> object:
+        st = await real(*args, **kwargs)
+        seen.append(st)
+        return st
+    monkeypatch.setattr(kg_project, "stamp", spy)
+    return seen
+
+
+async def test_a_grant_on_a_node_that_stays_granted_restamps_that_node_alone_and_its_connector_keeps_answering_from_kg(pg_db, monkeypatch) -> None:
+    """F is granted to u1. Sharing F with u2 too, and taking it back, leaves F granted: no stamp below F can change, so F alone is restamped in the writer's unit, nothing is
+    hidden or queued, every record of the connector is still decided from its stamp, and u2's answer is the walk's at every step (the share opens all thirteen, the revoke none)."""
+    p, org = prov(pg_db), new_org()
+    await served_fat(p, pg_db, org)
+    assert await answers(p, org, "u2", None) == await answers(p, org, "u2", "0") == set()
+    seen = stamped(monkeypatch)
+    for change, want in ((add_edge, set(IDS)), (delete_edge, set())):
+        seen.clear()
+        await change(p, org, U2, ("records", "F"), "permission", type="USER", role="READER")
+        await drain_org(pg_db, org)
+        assert await jobs(pg_db, org) == [] and await marks(p, org) == 0, change.__name__
+        assert {k for st in seen for k in st.keys} == {("records", "F")} and sum(st.hidden for st in seen) == 0, change.__name__
+        assert await kg_walks(p, pg_db, org, "u2") == []
+        assert await answers(p, org, "u2", None) == await answers(p, org, "u2", "0") == want, change.__name__
+        assert await answers(p, org, "u1", None) == set(IDS)
+        assert await dry_diffs(p, org, "app1") == []
+
+
+async def test_a_grant_change_on_a_connector_kg_has_not_verified_restamps_what_is_below_as_before(pg_db, monkeypatch) -> None:
+    """Below a copy that is not verified the stamps were compiled from the graph, and kg's rows may differ from it with nothing in the log: a grant change there restamps everything
+    below the node."""
+    p, org = prov(pg_db), new_org()
+    await fat(p, org)
+    await drain_org(pg_db, org)
+    await add_edge(p, org, U2, ("records", "F"), "permission", type="USER", role="READER")
+    await drain_org(pg_db, org)
+    assert [j.kind for j in await jobs(pg_db, org)] == ["rows"] and await marks(p, org) == 12
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await dry_diffs(p, org, "app1") == []
+
+
+async def test_taking_away_the_last_grant_on_a_node_still_restamps_everything_below_it(pg_db) -> None:
+    """The revoke that flips F to not granted outdates the twelve stamps below it: they are hidden in the same unit and restamped by the worker, and u1 loses them at once."""
+    p, org = prov(pg_db), new_org()
+    await served_fat(p, pg_db, org)
+    await delete_edge(p, org, ("users", "u1"), ("records", "F"), "permission", type="USER")
+    await drain_org(pg_db, org)
+    assert [j.kind for j in await jobs(pg_db, org)] == ["rows"] and await marks(p, org) == 12
+    assert await no_stale_visible(p, pg_db, org) == {f"r{i:02d}" for i in range(12)}
+    assert await answers(p, org, "u1", None) == await answers(p, org, "u1", "0") == set()
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await marks(p, org) == 0 and await dry_diffs(p, org, "app1") == []
+    assert await answers(p, org, "u1", None) == set()
+
+
+async def test_a_stamp_compiled_while_a_grant_change_waits_in_the_log_reads_kgs_flag_so_the_node_alone_is_restamped_when_it_comes(pg_db) -> None:
+    """A-B-A: u1's grant, F's only one, goes and comes back; in between, before the drain, the connector is restamped page by page. Those stamps are compiled with kg's flag
+    (still granted), not the graph's (not granted), so when the drain finds F granted as kg held it and restamps F alone, no stamp below F is left outdated."""
+    p, org = prov(pg_db), new_org()
+    await served_fat(p, pg_db, org)
+    await delete_edge(p, org, ("users", "u1"), ("records", "F"), "permission", type="USER")
+    assert await bf.restamp_app(pg_db, org, "app1") > 0
+    await add_edge(p, org, ("users", "u1"), ("records", "F"), "permission", type="USER", role="READER")
+    await drain_org(pg_db, org)
+    assert await jobs(pg_db, org) == [] and await marks(p, org) == 0
+    assert await dry_diffs(p, org, "app1") == []
+    assert await answers(p, org, "u1", None) == await answers(p, org, "u1", "0") == set(IDS)
+
+
+async def test_a_node_whose_flag_a_childs_projection_flips_first_has_everything_below_it_restamped(pg_db) -> None:
+    """u1's grant, F's only one, goes, and a new record c is put under F; c's rows are drained first, and with them F's row (its leaf flag) is rewritten from the graph, so kg's
+    flag flips there. Everything below F is restamped then, and F's own grant change, drained next, finds the flag as kg holds it and restamps F alone."""
+    p, org = prov(pg_db), new_org()
+    await served_fat(p, pg_db, org)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "c", "recordName": "c", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", "accessRule": "OPEN"}], "records")
+        await p.batch_create_edges([edge("F", "records", "c", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+        await p.batch_create_edges([edge("c", "records", "F", "records")], "inheritPermissions")
+        await p.batch_create_edges([edge("c", "records", "app1", "apps")], "belongsTo")
+    await delete_edge(p, org, ("users", "u1"), ("records", "F"), "permission", type="USER")
+    while True:                                                                  # a page of one row: c's node first, F's grant last
+        with ctx(org):
+            if not await drainer.drain(pg_db, org, limit=1):
+                break
+        await no_stale_visible(p, pg_db, org)
+    assert await marks(p, org) >= 12
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
+    assert await answers(p, org, "u1", None) == await answers(p, org, "u1", "0") == set()
+
+
+async def test_a_change_of_a_node_waiting_behind_a_grant_change_on_it_is_not_taken_with_the_grant(pg_db) -> None:
+    """u2's grant on F, then F narrowed, both committed before a drain of one row: the page projects the grant (F stays granted, F alone is restamped), and the narrowing behind it
+    names F too. It is not acknowledged with the page, since what is below F was not restamped: the next page takes it and hides the twelve records below F."""
+    p, org = prov(pg_db), new_org()
+    await served_fat(p, pg_db, org)
+    await add_edge(p, org, U2, ("records", "F"), "permission", type="USER", role="READER")
+    await narrow(p, org)
+    with ctx(org):
+        assert await drainer.drain(pg_db, org, limit=1) == 1
+    assert await drainer.lag(pg_db, org) == 1
+    await drain_org(pg_db, org)
+    assert await marks(p, org) == 12 and await no_stale_visible(p, pg_db, org) == {f"r{i:02d}" for i in range(12)}
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await dry_diffs(p, org, "app1") == []
+    for user in ("u1", "u2"):
+        assert await answers(p, org, user, None) == await answers(p, org, user, "0"), user

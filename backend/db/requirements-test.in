@@ -1,0 +1,3 @@
+-r requirements.txt
+# The migration tests (tests/) run under pytest.
+pytest

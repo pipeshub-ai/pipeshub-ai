@@ -7,6 +7,7 @@ from app.agent_loop_lib.modules.providers.skills.base import (
     SkillCandidate,
     SkillFilter,
     SkillMetadata,
+    SkillProvenance,
     SkillReferentialUsage,
     SkillStatus,
     SkillVersionInfo,
@@ -71,7 +72,7 @@ class SkillWriter(ABC):
     @abstractmethod
     async def create_skill(
         self, name: str, content: str, category: str | None = None, subcategory: str | None = None,
-        resources: dict[str, str] | None = None,
+        resources: dict[str, str] | None = None, *, provenance: SkillProvenance | None = None,
     ) -> SkillMetadata:
         """Create a new skill from a full SKILL.md `content` string (YAML
         frontmatter + Markdown body) under `category`/`subcategory` (both
@@ -83,7 +84,8 @@ class SkillWriter(ABC):
         today's behavior. Raises `SkillFormatError` on spec violations
         (including an invalid resource path — see
         `SkillValidator.validate_resource_path`), `RegistryError` if a
-        skill with this name already exists."""
+        skill with this name already exists. `provenance`: the run whose model wrote `content`, for a store
+        that records it (`GraphSkillStore`); the label also travels in the content itself."""
 
     @abstractmethod
     async def update_skill(

@@ -42,6 +42,7 @@ from app.connectors.core.sync.sync_coordinator import SyncCoordinator, SyncLease
 from app.core.org_context import for_org, spawn_detached
 from app.core.org_jobs import for_each_org
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.rate_budget import RatePriority, budget_scope
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils import error_class
 from app.utils.logging_fields import bind_log_fields, log_event, reset_log_fields
@@ -247,10 +248,10 @@ async def _finalize(
 
     ``full_sync_cut_short``: a full sync that stopped before it finished — a
     restart, a stop, a crash in ``run_sync`` — or whose removal of what it did
-    not see failed. Its prep already deleted the connector's sync points, and the
-    links of whatever it did not see are only removed once a full sync runs to
-    the end. The flag that asks for one goes in the same write as IDLE: the
-    connector is never seen IDLE without it.
+    not see failed or was skipped because its prep could not reset the sync
+    points. The links of whatever it did not see are only removed once a full
+    sync runs to the end. The flag that asks for one goes in the same write as
+    IDLE: the connector is never seen IDLE without it.
 
     ``full_sync_still_requested``: the run was cut short by this service
     shutting down, not by a person stopping it or by the sync failing. The
@@ -806,6 +807,7 @@ async def run_sync_task(
     coordinator: SyncCoordinator | None = None,
     close_connector: bool = False,
     resync_spec: object | None = None,
+    sync_points_reset: bool = True,
 ) -> None:
     start = time.monotonic()
     stopped = False
@@ -889,10 +891,12 @@ async def run_sync_task(
             error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="clear_pending_resync")
         incomplete: IncompleteSyncError | None = None
         try:
-            if lease is None:
-                await _run_sync_alone(connector, connector_id)
-            else:
-                await _run_until_aborted(connector, lease)
+            # Sync spends the vendor budget its org's agents share, behind their interactive calls (G-31).
+            with budget_scope(getattr(connector, "rate_budget", None), RatePriority.SYNC):
+                if lease is None:
+                    await _run_sync_alone(connector, connector_id)
+                else:
+                    await _run_until_aborted(connector, lease)
         except IncompleteSyncError as exc:
             # It ran to the end and kept what it could not read as stored, so the removal below is still safe;
             # the run fails after it.
@@ -903,9 +907,14 @@ async def run_sync_task(
         if seen is not None and not (
             lease is not None and (lease.stop_requested.is_set() or lease.lost.is_set())
         ):
-            unlink_failed = not await _unlink_what_full_sync_missed(
-                connector, connector_id, graph_provider, logger, seen
-            )
+            if sync_points_reset:
+                unlink_failed = not await _unlink_what_full_sync_missed(
+                    connector, connector_id, graph_provider, logger, seen
+                )
+            else:
+                logger.warning(
+                    "Full sync could not reset the connector's sync points; nothing it did not see is unlinked, and a full sync is owed"
+                )
         if incomplete is not None:
             raise incomplete
     except asyncio.CancelledError:
@@ -941,7 +950,9 @@ async def run_sync_task(
         # raising, so `finished` alone would call that run complete.
         # A failed unlink owes one too: what the sync did not see is
         # still linked, revoked access included.
-        full_sync_cut_short = full_sync and (not finished or stopped or unlink_failed or lease_lost)
+        full_sync_cut_short = full_sync and (
+            not finished or stopped or unlink_failed or lease_lost or not sync_points_reset
+        )
         stop_cause = _stop_cause(lease, coordinator, lost=lease_lost) if outcome is SyncRunOutcome.STOPPED else None
         end_fields: dict[str, Any] = {
             "sync_type": sync_type,

@@ -32,6 +32,7 @@ import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
 import type { AgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import type { ProjectSummary } from './project-types';
+import type { AgentGates } from '@/app/(main)/agents/agent-gates';
 
 // ── localStorage helpers for agent capabilities ──────────────────────
 
@@ -78,6 +79,28 @@ function lsSetAgentCapabilities(caps: AgentCapabilities, agentId?: string): void
     localStorage.setItem(key, JSON.stringify(caps));
   } catch {
     // Storage unavailable — silently ignore
+  }
+}
+
+const LS_NEW_HARNESS_KEY = 'pipeshub-new-agent-harness';
+
+/** The "New agent harness" switch (CTL-7): on unless this browser remembers it off; on when storage is unavailable. */
+export function lsGetNewHarness(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    return localStorage.getItem(LS_NEW_HARNESS_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+function lsSetNewHarness(enabled: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (enabled) localStorage.removeItem(LS_NEW_HARNESS_KEY);
+    else localStorage.setItem(LS_NEW_HARNESS_KEY, 'false');
+  } catch {
+    // Storage unavailable: the switch holds for this page only.
   }
 }
 
@@ -128,6 +151,14 @@ export interface ScopedCollectionRow {
 }
 
 /** Composer allow-list derived from a project's settings (see `useProjectScopeHydration`). */
+/** A coding engine chosen with `/engine` before a chat's first message (CMDUI2). */
+export interface PendingCodingEngine {
+  /** The agent whose new chat it was chosen in; null for the assistant. */
+  agentId: string | null;
+  /** An engine kind or `none`. */
+  engine: string;
+}
+
 export interface ProjectChatScope {
   projectId: string;
   connectors: ScopedConnectorRow[];
@@ -156,6 +187,8 @@ export interface ChatPreviewFile {
    */
   blob?: Blob;
   type: string;
+  /** The original file's type when `type` is a conversion of it (a PPTX previewed as PDF): the header badge shows this. */
+  sourceType?: string;
   size?: number;
   isLoading?: boolean;
   error?: string;
@@ -342,9 +375,12 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     pendingCollections: [],
     artifacts: [],
     pendingAskUserQuestion: null,
+    pendingApprovals: [],
     abortController: null,
     runId: null,
     stopping: false,
+    durableRun: null,
+    routePending: false,
     messagePagination: null,
     rawMessages: null,
     forkedFrom: null,
@@ -357,6 +393,36 @@ function createDefaultSlot(convId: string | null): ChatSlot {
 
 /** Whose saved unread chats are in memory; null until the first hydrate. */
 let unreadOwnerId: string | null = null;
+
+/** Main-chat slots list in Your chats; an agent's or a project's chat lists in its own sidebar. */
+function listsInYourChats(slot: ChatSlot): boolean {
+  return !slot.threadAgentId && !slot.projectId;
+}
+
+/** This tab is still answering in the chat, or has not settled its first turn: the server may not list it yet. */
+function isLiveSlot(slot: ChatSlot): boolean {
+  return slot.isTemp || slot.isStreaming || slot.stopping || slot.durableRun != null;
+}
+
+/**
+ * A server page of Your chats plus the rows of chats still running here that it does not hold. The page can be
+ * older than the chat (fetched before its row existed) or cut it off by its limit; dropping the row would hide a
+ * running chat until its answer ends.
+ */
+function withLiveConversations(
+  page: Conversation[],
+  current: Conversation[],
+  slots: Record<string, ChatSlot>,
+): Conversation[] {
+  const listed = new Set(page.map((c) => c.id));
+  const live = new Set(
+    Object.values(slots)
+      .filter((slot) => slot.convId && listsInYourChats(slot) && isLiveSlot(slot))
+      .map((slot) => slot.convId as string),
+  );
+  const kept = current.filter((c) => live.has(c.id) && !listed.has(c.id));
+  return kept.length === 0 ? page : orderPinnedFirst([...kept, ...page]);
+}
 
 function withoutId(ids: Set<string>, id: string): Set<string> {
   if (!ids.has(id)) return ids;
@@ -478,6 +544,18 @@ interface ChatState {
   agentContextDisplayName: string | null;
   /** Whether the current scoped agent was configured with a web search provider. */
   agentHasWebSearch: boolean;
+  /** The current scoped agent has an engine profile, so it runs only on the agent harness (CTL-7). */
+  agentNeedsHarness: boolean;
+  /** The engines the agent's profile lists (SLASH3 `/engine`). */
+  agentEngines: string[];
+  /** G-04/G-05: the plan approval and checks the scoped agent holds every run to; null: none. */
+  agentGates: AgentGates | null;
+  /**
+   * `/engine` in a new chat (CMDUI2): the engine its first message asks for, for the assistant (`agentId` null) or
+   * one agent. Held in this page only: a reload drops it, and the server saves it when the chat is created.
+   */
+  pendingCodingEngine: PendingCodingEngine | null;
+  setPendingCodingEngine: (choice: PendingCodingEngine | null) => void;
   /** MongoDB user ID of the agent creator from GET agent `createdBy` */
   agentContextCreatedBy: string | null;
   /** Access flags (canEdit / showViewAgent / …) for the agent in context — drives the chat header menu */
@@ -606,8 +684,16 @@ interface ChatState {
   invalidateConversation: (convId: string) => void;
 
   // ── Sidebar actions ──
-  /** Replaces Recents (owned + shared, page 1) with a server response. */
+  /**
+   * Replaces Recents (owned + shared, page 1) with a server response, keeping the chats this tab is still
+   * answering in that the page does not hold (it may predate them).
+   */
   setSidebarLists: (lists: SidebarConversationLists) => void;
+  /**
+   * A new chat's id arrived (`connected`): the slot follows it (still temp until the answer settles) and Your chats
+   * lists it from now on, so every rail shows a running chat whatever it refetches meanwhile.
+   */
+  connectNewConversation: (slotId: string, convId: string, title: string | null) => void;
   setIsConversationsLoading: (loading: boolean) => void;
   setConversationsError: (error: string | null) => void;
   toggleMoreChatsPanel: (sectionType: 'shared' | 'your') => void;
@@ -697,6 +783,12 @@ interface ChatState {
     deprecatedToolNames: string[];
     /** Whether the agent was built with a web search provider. */
     hasWebSearch?: boolean;
+    /** The agent has an engine profile (CTL-7). */
+    needsHarness?: boolean;
+    /** The engines its profile lists: `/engine` chooses among them when there are several (SLASH3 SD5). */
+    engines?: string[];
+    /** Its own run gates (plan approval, checks). */
+    gates?: AgentGates | null;
   } | null) => void;
   setAgentKnowledgeScope: (scope: ChatKnowledgeFilters | null) => void;
   /**
@@ -785,6 +877,8 @@ interface ChatState {
   setNewChatDefaultModel: (model: import('./types').ModelOverride | null) => void;
   /** Update universal agent mode capability toggles and persist to localStorage. */
   setAgentCapabilities: (caps: Partial<import('./types').AgentCapabilities>) => void;
+  /** The "New agent harness" switch (CTL-7), persisted to localStorage. */
+  setNewHarness: (enabled: boolean) => void;
   /**
    * Per-scoped-agent capability overrides (keyed by agentId).
    * Allows temporarily disabling a capability the agent has configured.
@@ -873,6 +967,10 @@ const initialState = {
   agentKnowledgeScope: null as ChatKnowledgeFilters | null,
   agentContextDisplayName: null as string | null,
   agentHasWebSearch: false,
+  agentNeedsHarness: false,
+  agentEngines: [],
+  agentGates: null,
+  pendingCodingEngine: null as PendingCodingEngine | null,
   agentContextCreatedBy: null as string | null,
   agentContextAccess: null as AgentSidebarRowMenuAccess | null,
   agentDeprecatedToolNames: [] as string[],
@@ -920,6 +1018,7 @@ const initialState = {
       kb: [] as string[],
     },
     agentCapabilities: lsGetAgentCapabilities(),
+    newHarness: lsGetNewHarness(),
     selectedModels: {} as Record<string, import('./types').ModelOverride | null>,
     defaultModels: {} as Record<string, import('./types').ModelOverride | null>,
     availableModels: {} as Record<string, { models: import('./types').AvailableLlmModel[]; fetchedAt: number }>,
@@ -995,10 +1094,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => {
       const existing = state.slots[slotId];
       if (!existing) return state;
+      // Live approval cards belong to the run the slot follows: a new run, or its end, drops them (UXINT-0 R6).
+      const runChanged = 'durableRun' in patch && patch.durableRun?.runId !== existing.durableRun?.runId;
       return {
         slots: {
           ...state.slots,
-          [slotId]: { ...existing, ...patch },
+          [slotId]: {
+            ...existing,
+            ...(runChanged ? { pendingApprovals: [], interactionWaiting: null, queuedSteers: [] } : {}),
+            ...patch,
+          },
         },
       };
     });
@@ -1098,17 +1203,44 @@ export const useChatStore = create<ChatState>((set, get) => ({
     return null;
   },
 
-  clearActiveSlot: () => set({ activeSlotId: null }),
+  setPendingCodingEngine: (choice) => set({ pendingCodingEngine: choice }),
+
+  // Leaving for another new chat lets a held `/engine` choice go with the chat it was made in.
+  clearActiveSlot: () => set({ activeSlotId: null, pendingCodingEngine: null }),
 
   // ── Sidebar actions ──────────────────────────────────────────────
 
   setSidebarLists: ({ owned, shared, excludeProjectChats }) =>
-    set({
-      conversations: owned.conversations,
+    set((state) => ({
+      conversations: withLiveConversations(owned.conversations, state.conversations, state.slots),
       sharedConversations: shared.conversations,
       pagination: owned.pagination,
       sharedPagination: shared.pagination,
       sidebarListsExcludeProjectChats: excludeProjectChats,
+    })),
+
+  connectNewConversation: (slotId, convId, title) =>
+    set((state) => {
+      const slot = state.slots[slotId];
+      if (!slot) return state;
+      const slots = { ...state.slots, [slotId]: { ...slot, convId, isTemp: true } };
+      const pending = state.pendingConversations[slotId];
+      const pendingConversations =
+        pending && title ? { ...state.pendingConversations, [slotId]: { ...pending, title } } : state.pendingConversations;
+      if (!listsInYourChats(slot) || state.conversations.some((c) => c.id === convId)) {
+        return { slots, pendingConversations };
+      }
+      const now = new Date().toISOString();
+      const row: Conversation = {
+        id: convId,
+        title: title ?? '',
+        createdAt: now,
+        updatedAt: now,
+        isShared: false,
+        isOwner: true,
+        sharedWith: [],
+      };
+      return { slots, pendingConversations, conversations: orderPinnedFirst([row, ...state.conversations]) };
     }),
 
   setIsConversationsLoading: (loading) => set({ isConversationsLoading: loading }),
@@ -1235,6 +1367,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             agentKnowledgeDefaults: payload.knowledgeDefaults,
             agentDeprecatedToolNames: payload.deprecatedToolNames,
             agentHasWebSearch: payload.hasWebSearch ?? false,
+            agentNeedsHarness: payload.needsHarness ?? false,
+            agentEngines: payload.engines ?? [],
+            agentGates: payload.gates ?? null,
             agentKnowledgeScope: null,
             agentStreamTools: null,
             collectionNamesCache: (() => {
@@ -1265,6 +1400,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             agentKnowledgeDefaults: { apps: [], kb: [] },
             agentDeprecatedToolNames: [],
             agentHasWebSearch: false,
+            agentNeedsHarness: false,
+            agentEngines: [],
+            agentGates: null,
             agentKnowledgeScope: null,
             agentStreamTools: null,
           }
@@ -1708,6 +1846,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     },
   })),
 
+  setNewHarness: (enabled) => set((state) => {
+    lsSetNewHarness(enabled);
+    return { settings: { ...state.settings, newHarness: enabled } };
+  }),
   setNewChatDefaultModel: (model) => set((state) => ({
     settings: { ...state.settings, newChatDefaultModel: model },
   })),

@@ -28,6 +28,7 @@ from app.exceptions.indexing_exceptions import (
 )
 from app.modules.indexing import keep_old_copy
 from app.modules.indexing.stray_sweep import BLOCK_ID_FIELD, sweep_max_points
+from app.modules.pipeline import parser_identity
 from app.services.cache.invalidation_hooks import notify_record_vrid_moved
 from app.services.graph_db.common.record_visibility import (
     PENDING_VIRTUAL_RECORD_ID,
@@ -376,6 +377,9 @@ class SwapCommitter:
         if me.get("virtualRecordId") != swap.new_vrid:
             return  # a later run moved the record on: the copy it committed is retired, and twins are not moved onto it
         gate = asyncio.Semaphore(TWIN_CONCURRENCY)
+        # With the identity written, only a twin shown to hold the same parser's copy moves (see below); the committer's own
+        # identity must be known for this very commit, or the twins are moved as before and their own identity goes stale.
+        committer_identity = parser_identity.known_identity(me) if parser_identity.identity_write_enabled() else None
 
         async def one(key: str) -> bool:
             async with gate:
@@ -396,19 +400,33 @@ class SwapCommitter:
                 fence = leaving_vrid(graph, key, swap.old_vrid, self.logger) if scope_fields_enabled() else contextlib.nullcontext()
                 identity = {k: me[k] for k in _TWIN_IDENTITY if me.get(k) is not None}
                 before = {k: twin.get(k) for k in _TWIN_IDENTITY}
+                conditions = [Cond("virtualRecordId", EQ, swap.old_vrid), Cond("md5Checksum", EQ, twin["md5Checksum"]),
+                              Cond("indexingStatus", EQ, ProgressStatus.COMPLETED.value),
+                              Cond(PENDING_VIRTUAL_RECORD_ID, "is_null")]
+                parser_fields: dict[str, Any] = {}
+                if committer_identity is not None:
+                    # Only a twin whose own identity is known and equals the committer's holds a copy this one replaces. Its
+                    # identity is written with its own timestamp (the move does not touch it), and the write refuses a twin that
+                    # was re-indexed since it was read.
+                    twin_identity = parser_identity.known_identity(twin)
+                    if twin_identity is None or parser_identity.key_of(twin_identity) != parser_identity.key_of(committer_identity):
+                        return False
+                    parser_fields = parser_identity.indexed_parser_fields(
+                        committer_identity, parser_identity.source_for_copy(me.get(parser_identity.IDENTITY_SOURCE_FIELD)),
+                        at=twin["lastIndexTimestamp"], vrid=swap.new_vrid,
+                    )
+                    conditions.append(Cond("lastIndexTimestamp", EQ, twin["lastIndexTimestamp"]))
+                before.update({k: twin.get(k) for k in parser_fields})
                 async with fence:
                     moved = await graph.update_node_fields_if(
-                        key, _RECORDS, {"virtualRecordId": swap.new_vrid, **identity},
-                        [Cond("virtualRecordId", EQ, swap.old_vrid), Cond("md5Checksum", EQ, twin["md5Checksum"]),
-                         Cond("indexingStatus", EQ, ProgressStatus.COMPLETED.value),
-                         Cond(PENDING_VIRTUAL_RECORD_ID, "is_null")],
+                        key, _RECORDS, {"virtualRecordId": swap.new_vrid, **identity, **parser_fields}, conditions,
                     )
                 if moved and ((await graph.get_document(record.id, _RECORDS)) or {}).get("virtualRecordId") != swap.new_vrid:
                     # The record moved on while this twin was moved (its copy is retired and may go): the twin goes back to the old copy.
                     await graph.update_node_fields_if(
                         key, _RECORDS, {"virtualRecordId": swap.old_vrid, **{k: v for k, v in before.items() if v is not None}},
                         [Cond("virtualRecordId", EQ, swap.new_vrid), Cond("indexingStatus", EQ, ProgressStatus.COMPLETED.value)],
-                        unset=[k for k in identity if before[k] is None],  # the identity the move copied goes with it
+                        unset=[k for k in (*identity, *parser_fields) if before[k] is None],  # what the move copied goes with it
                     )
                     return False
                 if moved:

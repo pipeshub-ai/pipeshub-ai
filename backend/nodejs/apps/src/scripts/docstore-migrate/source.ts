@@ -12,6 +12,7 @@ import {
   stripNulCounted,
 } from './canonical';
 import type { CollectionMapping } from './mapping/types';
+import { fieldCarrier } from './mapping';
 
 export class SourceReport {
   nul = new Map<string, number>();
@@ -90,7 +91,25 @@ export function prepareSource(
   for (const t of m.transforms ?? []) if (t.apply(doc)) rep.bump(t.name);
   for (const d of m.dropped ?? [])
     if (deletePath(doc, d.path)) rep.bump(`dropped ${d.path}`);
+  // a carried path is compared by its carrier; preflight refuses a move while a document holds a held path, and one written after
+  // it is reported here, never passed silently
+  for (const h of m.held ?? []) {
+    const by = fieldCarrier(m.collection, h.path);
+    if (deletePath(doc, h.path))
+      rep.bump(
+        by ? `carried ${h.path} (by ${by})` : `held ${h.path} (not copied)`,
+      );
+  }
   for (const f of m.fields) {
+    // the decoder leaves a column equal to its default out, so a document that stores the default (an emptied array, a reset flag) reads the same
+    if (
+      f.absentWhen !== undefined &&
+      hasPath(doc, f.path) &&
+      JSON.stringify(getPath(doc, f.path)) === JSON.stringify(f.absentWhen)
+    ) {
+      deletePath(doc, f.path);
+      rep.bump(`${f.path} equal to its default read as absent`);
+    }
     if (f.readAbsentAs !== undefined && !hasPath(doc, f.path)) {
       setPath(doc, f.path, f.readAbsentAs);
       rep.bump(`absent ${f.path} read as ${JSON.stringify(f.readAbsentAs)}`);

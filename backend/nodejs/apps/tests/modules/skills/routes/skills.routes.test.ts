@@ -24,6 +24,7 @@ function makeContainer(overrides: Record<string, any> = {}) {
       if (key === 'AuthMiddleware') return mockAuthMiddleware
       return undefined
     }),
+    isBound: () => false,
   }
   return { container, mockAuthMiddleware, mockAppConfig }
 }
@@ -67,6 +68,7 @@ const WRITE_ROUTES: Array<[string, string]> = [
   ['post', '/'],
   ['put', '/:name'],
   ['patch', '/:name/body'],
+  ['post', '/:name/rename'],
   ['post', '/:name/deprecate'],
   ['post', '/:name/disable'],
   ['post', '/:name/enable'],
@@ -88,6 +90,13 @@ describe('skills/routes/skills.routes', () => {
         const route = findRoute(router, path, method)
         expect(route, `${method.toUpperCase()} ${path} should be registered`).to.exist
       }
+    })
+
+    it('serves no admin review of imported skills: an import is trusted once the content scanner passes it', () => {
+      const { container } = makeContainer()
+      const router = createSkillsRouter(container)
+      expect(findRoute(router, '/reviews/pending', 'get')).to.equal(undefined)
+      expect(findRoute(router, '/:name/review', 'post')).to.equal(undefined)
     })
 
     it('every route should have authenticate + scope-check + handler middleware', () => {

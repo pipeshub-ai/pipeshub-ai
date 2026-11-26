@@ -129,7 +129,8 @@ async def test_a_non_member_pages_to_the_last_readable_record(world: World) -> N
 
 
 @pytest.mark.parametrize(("edge", "role", "toward"), [("AUTHORED_BY", "author", "person"), ("CREATED_BY", "creator", "person"), ("LAST_MODIFIED_BY", "editor", "person"),
-                                                      ("OWNED_BY", "owner", "person"), ("MENTIONED_IN", "mentioned", "record")])
+                                                      ("OWNED_BY", "owner", "person"), ("SHARED_WITH", "shared_with", "person"),
+                                                      ("MENTIONED_IN", "mentioned", "record")])
 async def test_each_role_edge_is_walked_from_a_person_start_as_from_a_member(world: World, edge: str, role: str, toward: str) -> None:
     await world.nodes("records", done("role-p", 5), done("role-u", 4))
     for k in ("role-p", "role-u"):

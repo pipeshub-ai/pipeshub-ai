@@ -2,7 +2,8 @@ import { test, expect } from '../fixtures/api-context.fixture';
 import { ensureSmtpConfigured } from '../helpers/smtp.helper';
 import { deleteUserByEmail } from '../helpers/members.helper';
 
-test.describe('Users Invite', () => {
+// @disposable (WP-71): needs SMTP, which only a stack made for the run may be given; it cannot be removed again.
+test.describe('Users Invite', { tag: '@disposable' }, () => {
   test.beforeEach(async ({ page, apiContext }) => {
     // The Invite button stays disabled until SMTP is configured. Relying on
     // another suite to have configured it made these tests pass or fail

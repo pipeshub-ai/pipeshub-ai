@@ -1,0 +1,38 @@
+[
+  {
+    "description": "a code outside the control plane's namespace",
+    "instance": {"code": "AGENT_HARNESS_ENGINE_PROFILE_WIDENING", "status": 403, "message": "m", "retryable": false}
+  },
+  {
+    "description": "a success status",
+    "instance": {"code": "CP_FORBIDDEN", "status": 200, "message": "m", "retryable": false}
+  },
+  {
+    "description": "an absolute remediation link",
+    "instance": {"code": "CP_CREDENTIAL_MISSING", "status": 409, "message": "m", "retryable": false, "remediation": {"action": "connect_account", "actor": "self", "href": "https://evil.example/connect"}}
+  },
+  {
+    "description": "a protocol-relative remediation link",
+    "instance": {"code": "CP_CREDENTIAL_MISSING", "status": 409, "message": "m", "retryable": false, "remediation": {"action": "connect_account", "actor": "self", "href": "//evil.example/connect"}}
+  },
+  {
+    "description": "an unknown remediation actor",
+    "instance": {"code": "CP_FORBIDDEN", "status": 403, "message": "m", "retryable": false, "remediation": {"action": "ask", "actor": "anyone"}}
+  },
+  {
+    "description": "a subject naming content instead of ids",
+    "instance": {"code": "CP_NOT_GRANTED", "status": 409, "message": "m", "retryable": false, "subject": {"toolArgs": "{}"}}
+  },
+  {
+    "description": "an item ref without a version",
+    "instance": {"code": "CP_NOT_INSTALLED", "status": 409, "message": "m", "retryable": false, "subject": {"item": "mcp:pipeshub/linear"}}
+  },
+  {
+    "description": "an unknown layer",
+    "instance": {"code": "CP_WIDENING", "status": 422, "message": "m", "retryable": false, "layer": "galaxy"}
+  },
+  {
+    "description": "an empty message",
+    "instance": {"code": "CP_STALE", "status": 409, "message": "", "retryable": true}
+  }
+]

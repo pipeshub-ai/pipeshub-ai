@@ -1,0 +1,300 @@
+name: Harness Performance
+
+# SLO #2 (docs/agent-harness-v2/SLO.md): the durable agent route's non-model
+# latency against the legacy route, on one stack, in one job. Uses a scripted
+# model inside the benchmark, so it needs no provider secrets. The stack is the
+# shipped `eval` profile plus the harness overlay, the profile SLO #2 is stated
+# for. `harness-latency` gates every other latency row (QA-22,
+# integration-tests/perf/slo_gates.py) on the fault-stack rig. Weekly, and on a
+# published release, where a failed gate is a release blocker. `harness-soak` is
+# SLO #19 / PF-14: 24 h of mixed load at 60% of the capacity model's N = 16 on
+# the same rig, then what is left (runs, leases, outbox) and how much Node's and
+# the worker's resident set and open files grew. On a release and on demand.
+on:
+  release:
+    types: [published]
+  # Wednesday 21:00 UTC: clear of the indexing (Saturday) and query (Sunday) runs.
+  schedule:
+    - cron: '0 21 * * 3'
+  workflow_dispatch:
+    inputs:
+      samples:
+        description: 'Recorded turns per route'
+        required: true
+        default: '200'
+      soak_minutes:
+        description: 'Soak length in minutes (SLO #19 is 1440); 0 skips the soak'
+        required: true
+        default: '1440'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-harness
+  cancel-in-progress: false
+
+env:
+  PIPESHUB_BASE_URL: http://localhost:3000
+  PERF_LABEL: ci-eval-redis-4cpu
+  COMPOSE_PROJECT: perf-harness
+  # Routed through env (never interpolated into the shell) so dispatch input
+  # cannot inject; validated as an integer before use.
+  SAMPLES_INPUT: ${{ github.event.inputs.samples || '200' }}
+  SOAK_MINUTES_INPUT: ${{ github.event.inputs.soak_minutes || '1440' }}
+
+jobs:
+  harness-overhead:
+    name: Durable vs legacy route (short-turn)
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        run: |
+          if ! [[ "$SAMPLES_INPUT" =~ ^[0-9]+$ ]] || [ "$SAMPLES_INPUT" -lt 1 ]; then
+            echo "samples must be a whole number above 0, got '$SAMPLES_INPUT'"
+            exit 1
+          fi
+
+      - name: Build the app image
+        run: |
+          docker pull pipeshubai/pipeshub-ai-base:python-deps || true
+          docker pull pipeshubai/pipeshub-ai-base:runtime || true
+          docker build -t pipeshubai/pipeshub-ai:perf-harness .
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Install integration-test dependencies
+        working-directory: integration-tests
+        run: |
+          uv sync --locked
+
+      - name: Start the eval stack with the harness processes
+        working-directory: deployment/docker-compose
+        env:
+          PIPESHUB_DEPLOY_TYPE: eval
+          PIPESHUB_VERSION: perf-harness
+          PIPESHUB_IMAGE_SOURCE: prebuilt
+          PIPESHUB_NO_PULL: '1'
+          PIPESHUB_PORT: '3000'
+          PIPESHUB_PROJECT: ${{ env.COMPOSE_PROJECT }}
+        run: |
+          ./install.sh --yes --print-env-only
+          docker compose -f docker-compose.yml -f docker-compose.agent-harness.yml -p "$COMPOSE_PROJECT" up -d
+
+      # The slim image downloads its embedding model on first start.
+      - name: Wait for the stack
+        run: |
+          deadline=$((SECONDS + 900))
+          until curl -sf "${PIPESHUB_BASE_URL}/api/v1/health/services" | grep -q '"status":"healthy"'; do
+            if [ "$SECONDS" -ge "$deadline" ]; then echo "Services not healthy after 900s"; exit 1; fi
+            sleep 10
+          done
+
+      - name: Run the benchmark
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          mkdir -p reports/perf
+          # A throwaway admin for a throwaway stack; never printed.
+          PASSWORD="Perf-$(openssl rand -hex 12)-Aa1!"
+          python perf/bench_harness.py \
+            --base-url "$PIPESHUB_BASE_URL" \
+            --email perf-harness@example.com --password "$PASSWORD" --bootstrap \
+            --samples "$SAMPLES_INPUT" --label "$PERF_LABEL" \
+            --container "${COMPOSE_PROJECT}-pipeshub-ai-1" \
+            --output reports/perf/harness-short-turn.json \
+            --summary reports/perf/summary.md \
+            --fail-on-gate
+
+      # Week-to-week drift of either route; the SLO gate itself is the step above.
+      - name: Compare with baseline
+        if: ${{ !cancelled() }}
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          if [ ! -s reports/perf/harness-short-turn.json ]; then
+            echo "The benchmark wrote no result; see the step above and the docker logs artifact."
+            exit 1
+          fi
+          python perf/compare.py \
+            --baseline "perf/baselines/${PERF_LABEL}-harness-short-turn.json" \
+            --current reports/perf/harness-short-turn.json \
+            --summary reports/perf/summary.md
+
+      - name: Write job summary
+        if: ${{ !cancelled() && hashFiles('integration-tests/reports/perf/summary.md') != '' }}
+        run: cat integration-tests/reports/perf/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dump docker logs
+        if: failure()
+        working-directory: deployment/docker-compose
+        run: |
+          mkdir -p ../../integration-tests/reports/perf/docker-logs
+          docker compose -p "$COMPOSE_PROJECT" logs --no-color --timestamps \
+            > ../../integration-tests/reports/perf/docker-logs/stack.log 2>&1 || true
+
+      - name: Upload benchmark result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-harness-${{ github.run_id }}
+          path: integration-tests/reports/perf/
+          if-no-files-found: ignore
+
+      - name: Tear down services
+        if: always()
+        working-directory: deployment/docker-compose
+        run: docker compose -p "$COMPOSE_PROJECT" down -v
+
+  harness-latency:
+    name: Latency gates per mode (fault-stack rig)
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        run: |
+          if ! [[ "$SAMPLES_INPUT" =~ ^[0-9]+$ ]] || [ "$SAMPLES_INPUT" -lt 1 ]; then
+            echo "samples must be a whole number above 0, got '$SAMPLES_INPUT'"
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci --ignore-scripts
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        working-directory: backend/python
+        run: |
+          requirements/install.sh dev --project . --editable
+
+      # SLO #17 starts sandboxes from the Compose-selected image.
+      - name: Build the sandbox image
+        run: docker compose --file deployment/docker-compose/docker-compose.yml build sandbox-image
+
+      # The rig brings up the fault compose project (replica set, Redis) itself.
+      - name: Run the rig profiles
+        working-directory: integration-tests
+        env:
+          SANDBOX_TEST_IMAGE: pipeshubai/pipeshub-sandbox:local
+        run: |
+          mkdir -p reports/perf
+          python perf/bench_harness.py --profile rig --samples "$SAMPLES_INPUT" \
+            --label "$PERF_LABEL" --rig-out reports/perf/rig \
+            --output reports/perf/harness-latency.json \
+            --summary reports/perf/latency-summary.md \
+            --fail-on-gate
+
+      - name: Write job summary
+        if: ${{ !cancelled() && hashFiles('integration-tests/reports/perf/latency-summary.md') != '' }}
+        run: cat integration-tests/reports/perf/latency-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Logs carry ids, counts and timings only.
+      - name: Upload results and process logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-harness-latency-${{ github.run_id }}
+          path: integration-tests/reports/perf/
+          if-no-files-found: ignore
+
+  harness-soak:
+    name: 24 h soak, nothing left (SLO #19)
+    if: github.event_name != 'schedule'
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    # The soak, its two lease lengths of drain, set-up and teardown.
+    timeout-minutes: 1560
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        run: |
+          if ! [[ "$SOAK_MINUTES_INPUT" =~ ^[0-9]+$ ]]; then
+            echo "soak_minutes must be a whole number, got '$SOAK_MINUTES_INPUT'"
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        if: env.SOAK_MINUTES_INPUT != '0'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install Node dependencies
+        if: env.SOAK_MINUTES_INPUT != '0'
+        working-directory: backend/nodejs/apps
+        run: npm ci --ignore-scripts
+
+      - name: Set up Python 3.12
+        if: env.SOAK_MINUTES_INPUT != '0'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        if: env.SOAK_MINUTES_INPUT != '0'
+        working-directory: backend/python
+        run: |
+          requirements/install.sh dev --project . --editable
+
+      # The rig brings up the fault compose project (replica set, Redis) itself.
+      - name: Run the soak
+        if: env.SOAK_MINUTES_INPUT != '0'
+        working-directory: integration-tests
+        run: |
+          mkdir -p reports/perf
+          SOAK_MINUTES="$SOAK_MINUTES_INPUT"
+          python perf/bench_harness.py --profile soak --soak-minutes "$SOAK_MINUTES" \
+            --label "$PERF_LABEL" --rig-out reports/perf/soak \
+            --output reports/perf/harness-soak.json \
+            --summary reports/perf/soak-summary.md \
+            --fail-on-gate
+
+      - name: Write job summary
+        if: ${{ !cancelled() && hashFiles('integration-tests/reports/perf/soak-summary.md') != '' }}
+        run: cat integration-tests/reports/perf/soak-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Logs carry ids, counts and timings only.
+      - name: Upload results and process logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-harness-soak-${{ github.run_id }}
+          path: integration-tests/reports/perf/
+          if-no-files-found: ignore

@@ -325,5 +325,6 @@ class TestAgentRun:
         result = await agent.run(Goal(description="q"))
 
         assert result.success is False
-        assert classify_error(result.error or "")[0] == "content_filter"
+        assert classify_error(result.error_detail or "")[0] == "content_filter"
+        assert result.error == "LLM call failed: internal: content_filter (TransportError)"
         assert len(transport.calls) == 1
