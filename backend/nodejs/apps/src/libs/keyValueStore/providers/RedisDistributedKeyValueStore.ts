@@ -147,6 +147,11 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
     return this.scanPrefixed(`${this.namespacedPrefix}*`);
   }
 
+  /** True when the key has an expiry (a rewrite through compareAndSet would drop it). */
+  async hasExpiry(key: string): Promise<boolean> {
+    return (await this.client.pttl(this.buildKey(key))) >= 0;
+  }
+
   async watchKey(key: string, callback: (value: T | null) => void): Promise<void> {
     // Redis doesn't have native watch support like etcd, so this
     // implementation uses in-memory callbacks that are triggered on
