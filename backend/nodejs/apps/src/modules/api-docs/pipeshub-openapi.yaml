@@ -36015,6 +36015,8 @@ paths:
         - With a bearer refresh token and `x-pipeshub-session: cookie`, the token is also set as
           the session cookie (how the web app moves a refresh token it kept in `localStorage`)
         - A refused cookie (`401`) is cleared in the answer
+        - Any 4xx other than `429` is a refusal (`400` locked account, `401`, `403`): sign in again.
+          A `5xx` or `429` is no verdict: keep the session and retry (the web app does)
         - Returns a new access token and basic user information
         - The request body and query string are not read
 
@@ -36039,7 +36041,8 @@ paths:
 
         - Call this endpoint before the access token expires
         - Store the new access token and continue using it for authenticated requests
-        - If refresh fails with 401, redirect user to login flow
+        - If the refresh is refused (any 4xx other than `429`), redirect the user to the login flow;
+          after a `5xx` or `429`, keep the session and retry later
       operationId: refreshToken
       x-pipeshub-sdk: true
       security:
@@ -36093,6 +36096,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: |
+            Too many requests from this address (the app-wide limiter runs before authentication, so it
+            is counted per IP). It says nothing about the session: keep it and retry after
+            `error.retryAfter` seconds (the same value as the `Retry-After` header, which CORS does not
+            expose to a browser on another origin).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
         '500':
           description: |
             Internal server error.
@@ -71421,7 +71434,9 @@ paths:
         arguments, auth mode or token URL), every stored credential for the instance is
         removed first and the response has `credentialsReset: true`: the old credentials were
         given for the old target. A catalog server's target is its template's, so for one only
-        a change of auth mode or catalog type counts.
+        a change of auth mode or catalog type counts, and of URL when the template lets it be
+        typed (Okta). When a credential can't be confirmed removed, nothing is saved: a store
+        that kept it or could not answer gives 503 with `Retry-After`, any other failure 500.
       operationId: updateMcpInstance
       security:
         - bearerAuth: []
@@ -71512,9 +71527,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: |
-            Switching `useAdminAuth` removes the shared admin credential first, and the config store kept it or could
-            not answer: the instance was not changed. Retry after `Retry-After` seconds. The body's detail is "We
-            couldn't reach PipesHub's database just now. Please try again in a few seconds."
+            A new connection target (URL, token URL, transport, command, args, auth mode, egress hosts or type; for a
+            catalog server whose template lets the URL be typed, such as Okta, its URL) removes every stored credential
+            of the instance first, and switching `useAdminAuth` removes the shared admin credential first. The config
+            store kept one of them or could not answer: the instance was not changed, though some credentials may
+            already be removed. Retry after `Retry-After` seconds. The body's detail is "We couldn't reach PipesHub's
+            database just now. Please try again in a few seconds."
           headers:
             Retry-After:
               description: Seconds to wait before retrying (5).

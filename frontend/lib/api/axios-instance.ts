@@ -1,9 +1,10 @@
 import axios, { AxiosError, InternalAxiosRequestConfig, isAxiosError } from 'axios';
 import { useAuthStore, logoutAndRedirect } from '@/config';
-import { extractApiErrorMessage, processError, ProcessedError } from './api-error';
+import { busyMessage, ErrorType, extractApiErrorMessage, processError, ProcessedError } from './api-error';
 import { showErrorToast } from './error-toast';
 import {
   refreshOrSignOut,
+  sessionOver,
   isTokenExpired,
   isRefreshInProgress,
   REFRESH_TOKEN_ENDPOINT,
@@ -39,6 +40,26 @@ const sessionEnded = (config: { sessionCurrent?: () => boolean } | undefined): b
  * garbage collected.
  */
 const dropped = (): Promise<never> => new Promise<never>(() => {});
+
+/** The refresh got no answer: the request was not retried, and nothing says the session is over. */
+const sessionServiceBusy = (error: AxiosError): ProcessedError => ({
+  type: ErrorType.SERVER_ERROR,
+  statusCode: 503,
+  message: busyMessage(),
+  originalError: error,
+});
+
+function rejectShown(
+  processedError: ProcessedError,
+  config: { suppressErrorToast?: boolean | ((error: ProcessedError) => boolean) } | undefined,
+): Promise<never> {
+  const suppress = config?.suppressErrorToast;
+  const suppressed = typeof suppress === 'function' ? suppress(processedError) : suppress;
+  if (!suppressed) {
+    showErrorToast(processedError);
+  }
+  return Promise.reject(processedError);
+}
 
 // Default to '' (same origin). A single sentinel avoids `"undefined"` leaking
 // into template-built URLs when `NEXT_PUBLIC_API_BASE_URL` is unset.
@@ -98,10 +119,12 @@ apiClient.interceptors.request.use(
     let accessToken = headerToken ?? storeToken;
 
     if (accessToken && isTokenExpired(accessToken)) {
-      // Not refreshed means this session is over (signed out now, or earlier), so the
-      // request is dropped: none of its handlers may write into the reset stores.
-      if ((await refreshOrSignOut()) !== 'refreshed') return dropped();
-      accessToken = useAuthStore.getState().accessToken;
+      // A session that is over (signed out now, or earlier) drops the request: none of its
+      // handlers may write into the reset stores.
+      const outcome = await refreshOrSignOut();
+      if (sessionOver(outcome)) return dropped();
+      // No answer: send with the token we have and let the server decide.
+      if (outcome === 'refreshed') accessToken = useAuthStore.getState().accessToken;
     }
 
     if (accessToken) {
@@ -157,7 +180,9 @@ apiClient.interceptors.response.use(
 
       // If a refresh is already running (timer or another 401), this just
       // awaits the existing promise; otherwise it kicks off a new one.
-      if ((await refreshOrSignOut()) !== 'refreshed') return dropped();
+      const outcome = await refreshOrSignOut();
+      if (outcome === 'unreachable') return rejectShown(sessionServiceBusy(error), originalRequest);
+      if (outcome !== 'refreshed') return dropped();
       const newToken = useAuthStore.getState().accessToken;
       if (newToken) {
         originalRequest.headers.Authorization = `Bearer ${newToken}`;
@@ -165,16 +190,7 @@ apiClient.interceptors.response.use(
       return apiClient(originalRequest);
     }
 
-    const processedError = processError(error);
-
-    const suppress = originalRequest.suppressErrorToast;
-    const suppressed =
-      typeof suppress === 'function' ? suppress(processedError) : suppress;
-    if (!suppressed) {
-      showErrorToast(processedError);
-    }
-
-    return Promise.reject(processedError);
+    return rejectShown(processError(error), originalRequest);
   },
 );
 
