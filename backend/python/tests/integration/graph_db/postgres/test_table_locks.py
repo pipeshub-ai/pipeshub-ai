@@ -44,36 +44,42 @@ def _marked(node: ast.AST) -> bool:
     return any(isinstance(d, ast.Attribute) and d.attr == "pg_table_lock" for d in ast.walk(node))
 
 
+def _self_attrs(node: ast.AST) -> set[str]:
+    """The attributes a method reads off ``self`` or ``cls``."""
+    return {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id in ("self", "cls")}
+
+
 def unmarked_database_wide_tests(modules: dict[str, str], conftests: list[str]) -> list[str]:
     """``module::test`` (``module::Class::test`` for a method) of each test in ``modules`` (module name: source) that does something database-wide
-    (``DATABASE_WIDE``) itself, or through a function, fixture, class or constant it uses, and is not marked ``pg_table_lock`` (on the function, its class or the
-    module's ``pytestmark``). A name is looked up as pytest finds a fixture: in the test's module (or what it imports from the folder), then in ``conftests``,
-    nearest first."""
-    defs: dict[tuple[str, str], ast.AST] = {}
+    (``DATABASE_WIDE``) itself, or through a function, fixture, class, method or constant it uses, and is not marked ``pg_table_lock`` (on the function, its class
+    or the module's ``pytestmark``). A name is looked up as pytest finds a fixture: in the test's module (or what it imports from the folder), then in
+    ``conftests``, nearest first; ``self.x`` and ``cls.x`` in a method are the class's own ``x`` or a folder base class's. "Uses" is reachability: every node that
+    reaches a database-wide statement, found from those statements backwards, so a cycle or the order of the modules cannot change the answer."""
+    defs: dict[tuple[str, str], tuple[ast.AST, str | None]] = {}       # (module, name or Class.method): the node and its class
     imports: dict[tuple[str, str], tuple[str, str]] = {}
-    tests: list[tuple[str, str, ast.AST, bool]] = []
+    tests: list[tuple[str, str, tuple[str, str], bool]] = []
     for mod, source in modules.items():
         tree = ast.parse(source)
         module_marked = any(isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "pytestmark" for t in n.targets) and _marked(n.value) for n in tree.body)
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                defs[(mod, node.name)] = node
-                if mod in conftests:
-                    continue
-                if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
-                    marked = module_marked or any(_marked(d) for d in node.decorator_list)
-                    tests += [(mod, f"{node.name}::{m.name}", m, marked or any(_marked(d) for d in m.decorator_list)) for m in node.body
-                              if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name.startswith("test_")]
-                elif node.name.startswith("test_"):
-                    tests.append((mod, node.name, node, module_marked or any(_marked(d) for d in node.decorator_list)))
+                defs[(mod, node.name)] = (node, None)
+                if isinstance(node, ast.ClassDef):
+                    class_marked = module_marked or any(_marked(d) for d in node.decorator_list)
+                    for m in node.body:
+                        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            defs[(mod, f"{node.name}.{m.name}")] = (m, node.name)
+                            if mod not in conftests and node.name.startswith("Test") and m.name.startswith("test_"):
+                                tests.append((mod, f"{node.name}::{m.name}", (mod, f"{node.name}.{m.name}"), class_marked or any(_marked(d) for d in m.decorator_list)))
+                elif mod not in conftests and node.name.startswith("test_"):
+                    tests.append((mod, node.name, (mod, node.name), module_marked or any(_marked(d) for d in node.decorator_list)))
             elif isinstance(node, ast.Assign):
                 for t in node.targets:
                     if isinstance(t, ast.Name):
-                        defs[(mod, t.id)] = node
+                        defs[(mod, t.id)] = (node, None)
             elif isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
                 for a in node.names:
                     imports[(mod, a.asname or a.name)] = (node.module, a.name)
-    seen: dict[tuple[str, str], bool] = {}
 
     def resolve(mod: str, name: str) -> tuple[str, str] | None:
         for key in ((mod, name), imports.get((mod, name)), *((c, name) for c in conftests)):
@@ -81,17 +87,33 @@ def unmarked_database_wide_tests(modules: dict[str, str], conftests: list[str]) 
                 return key
         return None
 
-    def wide(node: ast.AST, mod: str) -> bool:
-        return any(DATABASE_WIDE.search(x) for x in _strings(node)) or any(named(mod, n) for n in _names(node))
+    def member(cls: tuple[str, str], attr: str, seen: frozenset = frozenset()) -> tuple[str, str] | None:
+        """``attr`` of the class ``cls`` or of the first folder base class that has it."""
+        if (key := (cls[0], f"{cls[1]}.{attr}")) in defs:
+            return key
+        for base in defs[cls][0].bases:
+            if (isinstance(base, ast.Name) and (b := resolve(cls[0], base.id)) and b not in seen and isinstance(defs[b][0], ast.ClassDef)
+                    and (found := member(b, attr, seen | {cls}))):
+                return found
+        return None
 
-    def named(mod: str, name: str) -> bool:
-        key = resolve(mod, name)
-        if key is None or key in seen:
-            return bool(key and seen[key])
-        seen[key] = False                                   # a cycle adds nothing
-        seen[key] = wide(defs[key], key[0])
-        return seen[key]
-    return [f"{mod}::{name}" for mod, name, node, marked in tests if not marked and wide(node, mod)]
+    callers: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    hits = []
+    for key, (node, cls) in defs.items():
+        if any(DATABASE_WIDE.search(x) for x in _strings(node)):
+            hits.append(key)
+        uses = {resolve(key[0], n) for n in _names(node)}
+        if cls is not None:
+            uses |= {member((key[0], cls), a) for a in _self_attrs(node)}
+        for used in uses - {None}:
+            callers.setdefault(used, set()).add(key)
+    wide, todo = set(hits), list(hits)
+    while todo:
+        for caller in callers.get(todo.pop(), ()):
+            if caller not in wide:
+                wide.add(caller)
+                todo.append(caller)
+    return [f"{mod}::{name}" for mod, name, key, marked in tests if not marked and key in wide]
 
 
 def _folder() -> tuple[dict[str, str], list[str]]:
@@ -123,6 +145,22 @@ def test_the_guard_finds_class_methods_and_conftest_fixtures_and_honours_marks_a
         "test_c": f"import pytest\npytestmark = [pytest.mark.integration, pytest.mark.pg_table_lock]\ndef test_three():\n    run({analyze})\n",
     }
     assert sorted(unmarked_database_wide_tests(modules, ["conftest"])) == ["test_a::TestPlans::test_one", "test_a::test_uses_the_conftest_fixture"]
+
+
+def test_the_guard_follows_self_attributes_to_the_class_and_its_bases() -> None:
+    modules = {"test_a": 'class Base:\n    def analyze(self):\n        run("ANALYZE kg.records")\n'
+                         'class TestPlans(Base):\n    def prepare(self):\n        self.analyze()\n    def test_one(self):\n        self.prepare()\n'
+                         '    def test_two(self):\n        self.other()\n    def other(self):\n        pass\n'}
+    assert unmarked_database_wide_tests(modules, []) == ["test_a::TestPlans::test_one"]
+
+
+def test_the_guard_is_reachability_whatever_the_cycles_and_the_order() -> None:
+    """a and b call each other and only b reaches the statement: the tests of both are flagged, whichever is looked at first."""
+    helpers = 'def a():\n    b()\ndef b():\n    a()\n    c()\ndef c():\n    run("ANALYZE kg.records")\n'
+    first, second = "def test_by_b():\n    b()\n", "def test_by_a():\n    a()\n"
+    for tests in ((first, second), (second, first)):
+        modules = {"test_x": helpers + tests[0] + tests[1]}
+        assert sorted(unmarked_database_wide_tests(modules, [])) == ["test_x::test_by_a", "test_x::test_by_b"]
 
 
 async def _other_may_take(shared: bool) -> bool:
