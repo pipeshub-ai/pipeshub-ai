@@ -52,3 +52,10 @@ def extra_node_collections() -> dict[str, tuple[tuple[str, ...], ...]]:
     ``id`` constraint per collection, which keeps ``MERGE`` an index seek, and each declared index; a node keeps its
     key as ``id`` there, so a declared ``_key`` is indexed as ``id``). Here there are none."""
     return {}
+
+
+def kv_key_org(key: str) -> str | None:
+    """The org a key-value entry belongs to, or ``None`` for an entry of the whole install. Tools that copy or rewrite entries
+    outside a request (``app.scripts.kv_redis_to_postgres``) bind this org for each entry's writes. This build's keys belong to
+    the whole install, so none."""
+    return None
