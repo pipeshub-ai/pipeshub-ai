@@ -1,5 +1,6 @@
-import { forOrg } from '../../../libs/context/orgContext';
+import { forOrg, getCurrentOrgId } from '../../../libs/context/orgContext';
 import { getOrgRepository } from '../../../libs/repositories/org';
+import { Logger } from '../../../libs/services/logger.service';
 import { findOrgAdminUserIds } from '../../user_management/services/user-admin.service';
 
 /** One organisation whose admins receive an installation-wide alert. */
@@ -11,17 +12,40 @@ export interface PlatformRecipientOrg {
 /**
  * Who receives alerts about the whole installation rather than one
  * organisation (such as the code sandbox load alerts): the admins of the
- * installation's organisation. Empty when there is no organisation yet or it
- * has no admins.
+ * installation's organisation. Their numbers cover the whole installation, so
+ * they go out only while exactly one organisation is live: with several (an
+ * organisation restored next to a newer one, say) the first one found could
+ * be any of them, and nobody is told. Empty too when there is no organisation
+ * yet or it has no admins.
  */
 export async function resolvePlatformAdminRecipients(): Promise<
   PlatformRecipientOrg[]
 > {
-  const org = await getOrgRepository().getFirstLive();
-  if (!org) return [];
-  const orgId = org._id;
+  const { count, oldestId: orgId } = await getOrgRepository().liveSummary();
+  if (count > 1) warnSeveralLiveOnce();
+  if (count !== 1 || !orgId) return [];
+  // A signed copy of an alert is delivered inside the organisation it names: another one's copy gets nothing, and the
+  // installation's organisation is never bound inside it.
+  const bound = getCurrentOrgId();
+  if (bound !== undefined && bound !== orgId) return [];
   const userIds = await forOrg(orgId, 'platform-alert-recipients', () =>
     findOrgAdminUserIds(orgId),
   );
   return userIds.length ? [{ orgId, userIds }] : [];
+}
+
+let warnedSeveralLive = false;
+
+/** Once per process, naming no organisation: an operator has to learn why the alerts stopped. */
+function warnSeveralLiveOnce(): void {
+  if (warnedSeveralLive) return;
+  warnedSeveralLive = true;
+  Logger.getInstance({ service: 'platform-alert-recipients' }).warn(
+    'Installation alerts are not delivered: more than one organisation is live',
+  );
+}
+
+/** Test hook: the next call with several live organisations warns again. */
+export function resetPlatformRecipientWarnings(): void {
+  warnedSeveralLive = false;
 }
