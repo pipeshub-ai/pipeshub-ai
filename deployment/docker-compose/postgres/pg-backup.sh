@@ -117,8 +117,11 @@ attempted() { echo "$(date +%s) $1" > "$state/attempt"; refresh_metrics; }   # 1
 srv=""
 serve_metrics() {   # (re)started when it is not running, so a crashed server comes back within a minute
   [ -n "${PG_BACKUP_METRICS_PORT:-}" ] || return 0
-  if [ -z "$srv" ] || ! kill -0 "$srv" 2>/dev/null; then "$metrics_pl" serve "$PG_BACKUP_METRICS_PORT" "$metrics" 9>&- & srv=$!; fi
+  if [ -z "$srv" ] || ! kill -0 "$srv" 2>/dev/null; then "$metrics_pl" serve "$PG_BACKUP_METRICS_PORT" "$metrics" "$gaps" 9>&- & srv=$!; fi
 }
+# the server goes with the scheduler, so a restart never finds the port taken by the previous one
+trap '[ -z "$srv" ] || kill "$srv" 2>/dev/null' EXIT
+trap 'exit 143' TERM INT
 
 # "<seconds since newest full> <seconds since newest backup>" from the repository; a missing backup counts as infinitely old.
 ages() {
@@ -136,7 +139,8 @@ ages() {
     printf "%d %d\n", $full ? $now - $full : 1e15, $any ? $now - $any : 1e15;' < "$state/info.new"
 }
 
-mkdir -p "$state"; : > "$state/info.new"; refresh_metrics; serve_metrics
+mkdir -p "$state"; [ -s "$state/started" ] || date +%s > "$state/started"
+: > "$state/info.new"; refresh_metrics; serve_metrics
 until pgbackrest stanza-create && pgbackrest check; do
   : > "$state/info.new"; refresh_metrics
   rm -f "$ok"; echo "pg-backup: the stanza could not be created or checked; retrying in ${retry_s}s" >&2; sleep "$retry_s"
@@ -165,6 +169,7 @@ while :; do
     # at most a minute, so a gap is noticed within one
     left=$(( incr_s - since_any )); sleep $(( left > 60 ? 60 : left )); continue
   fi
+  refresh_metrics   # before a backup that can run for hours: a drop noticed since the last read is published now
   echo "pg-backup: starting a $type backup"
   # the first backup of a new repository can take hours: healthy while it runs, unless WAL was dropped
   if [ "${since_any:-0}" -ge "$full_s" ] && [ "${since_full:-0}" -ge 1000000000000000 ] && [ -z "$(drops)" ]; then touch "$ok"; fi

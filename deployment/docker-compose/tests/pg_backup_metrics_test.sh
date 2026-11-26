@@ -54,21 +54,27 @@ check "never readable: down, and no backup series" "$(metric pipeshub_pg_backup_
 printf '[{"name":"pipeshub","status":{"code":2,"message":"no valid backups"},"backup":[]}]' > "$work/new.json"; write "$work/new.json"
 check "a new repository without backups is up" "$(metric pipeshub_pg_backup_repository_up)" 1
 
+check "no scheduler start recorded: no start series" "$(metric pipeshub_pg_backup_scheduler_start_timestamp_seconds)" ""
+echo 1793000000 > "$work/state/started"
 echo "1794200000 0" > "$work/state/attempt"; : > "$work/gaps/000000010000000000000015"; : > "$work/gaps/000000010000000000000016"
 write "$here/tests/fixtures/pgbackrest-info.json"
 check "the last attempt failed" "$(metric pipeshub_pg_backup_last_attempt_success)" 0
 check "when it ended" "$(metric pipeshub_pg_backup_last_attempt_timestamp_seconds)" 1794200000
 check "two dropped WAL segments" "$(metric pipeshub_pg_backup_wal_gap_segments)" 2
+check "the scheduler's first start" "$(metric pipeshub_pg_backup_scheduler_start_timestamp_seconds)" 1793000000
 check "the file is the Prometheus text format: each series has HELP and TYPE" \
-  "$(grep -c '^# TYPE' "$work/m.prom"):$(grep -c '^# HELP' "$work/m.prom")" "7:7"
+  "$(grep -c '^# TYPE' "$work/m.prom"):$(grep -c '^# HELP' "$work/m.prom")" "8:8"
 
 # serve: a free port, the file at /metrics; a client that never sends a request is dropped after 5 s
 port="$(perl -MIO::Socket::INET -e 'print IO::Socket::INET->new(Listen => 1, LocalPort => 0)->sockport')"
-perl "$here/postgres/pg-backup-metrics.pl" serve "$port" "$work/m.prom" & srv=$!
+perl "$here/postgres/pg-backup-metrics.pl" serve "$port" "$work/m.prom" "$work/gaps" & srv=$!
 get() { exec 3<>"/dev/tcp/127.0.0.1/$port"; printf 'GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n' >&3; cat <&3; exec 3<&-; }
 for _ in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && break; sleep 0.1; done
 check "serve: 200 with the file" "$(get | head -1 | tr -d '\r')" "HTTP/1.1 200 OK"
 check "serve: the body is the file" "$(get | grep -c '^pipeshub_pg_backup_repository_up 1')" 1
+: > "$work/gaps/000000010000000000000017"
+check "serve: a drop since the file was written is counted at once" "$(get | grep -E '^pipeshub_pg_backup_wal_gap_segments ' | tr -d '\r')" "pipeshub_pg_backup_wal_gap_segments 3"
+check "serve: the file itself is unchanged (the scheduler rewrites it)" "$(metric pipeshub_pg_backup_wal_gap_segments)" 2
 exec 4<>"/dev/tcp/127.0.0.1/$port"   # silent client
 t0=$(date +%s); out="$(get | head -1 | tr -d '\r')"; took=$(( $(date +%s) - t0 ))
 exec 4<&-

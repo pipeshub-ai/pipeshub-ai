@@ -348,6 +348,21 @@ groups:
           description: >-
             The newest backup of any type of {{ $labels.stanza }} in repository {{ $labels.repo }} is
             {{ $value | humanize }} times PG_BACKUP_INCR_HOURS old. Backups have stopped.
+      - alert: PgBackupNoFullBackup
+        # Before the first full backup there is no backup time to age, so PgBackupTooOld cannot fire: measure from the scheduler's first
+        # start instead (pg-backup.sh records it once). The first full backup of a large database takes hours, well inside 1.5 schedules.
+        expr: >-
+          (time() - pipeshub_pg_backup_scheduler_start_timestamp_seconds)
+          / on (instance, job) pipeshub_pg_backup_schedule_seconds{type="full"} > 1.5
+          unless on (instance, job) pipeshub_pg_backup_last_success_timestamp_seconds{type="full"}
+        labels:
+          severity: critical
+        annotations:
+          summary: No full backup has completed since the backup service started
+          description: >-
+            pg-backup on {{ $labels.instance }} started {{ $value | humanize }} times PG_BACKUP_FULL_DAYS ago and the repository
+            holds no full backup: nothing can be restored. Read the pg-backup service's log; the first full backup may be
+            failing or still running.
       - alert: PgBackupFailing
         # The scheduler retries every PG_BACKUP_RETRY_SECS (300 by default): 15 minutes is about three failed tries.
         expr: pipeshub_pg_backup_last_attempt_success == 0

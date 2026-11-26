@@ -361,3 +361,30 @@ tests:
             exp_annotations:
               summary: "A PostgreSQL replica is not streaming WAL from its primary"
               description: "The replica restarting has had no streaming WAL receiver for 5 minutes: it falls behind while the primary commits, though its replication lag can still read 0. Check primary_conninfo, the network and the primary's replication slots."
+
+  - name: first full backup never completes
+    interval: 1m
+    input_series:
+      # promtool's clock starts at 0: a scheduler started at 600 - k * schedule has run k full schedules at 10m
+      - series: 'pipeshub_pg_backup_scheduler_start_timestamp_seconds{instance="new", job="pg-backup"}'
+        values: '-86400x10'
+      - series: 'pipeshub_pg_backup_scheduler_start_timestamp_seconds{instance="stuck", job="pg-backup"}'
+        values: '-1209000x10'
+      - series: 'pipeshub_pg_backup_scheduler_start_timestamp_seconds{instance="done", job="pg-backup"}'
+        values: '-1209000x10'
+      - series: 'pipeshub_pg_backup_last_success_timestamp_seconds{instance="done", job="pg-backup", stanza="pipeshub", repo="1", type="full"}'
+        values: '-3600x10'
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="new", job="pg-backup", type="full"}'
+        values: '604800x10'
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="stuck", job="pg-backup", type="full"}'
+        values: '604800x10'
+      - series: 'pipeshub_pg_backup_schedule_seconds{instance="done", job="pg-backup", type="full"}'
+        values: '604800x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: PgBackupNoFullBackup
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: stuck, job: pg-backup}
+            exp_annotations:
+              summary: "No full backup has completed since the backup service started"
+              description: "pg-backup on stuck started 2 times PG_BACKUP_FULL_DAYS ago and the repository holds no full backup: nothing can be restored. Read the pg-backup service's log; the first full backup may be failing or still running."
