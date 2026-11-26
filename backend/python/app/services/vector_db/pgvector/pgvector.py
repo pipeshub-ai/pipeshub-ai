@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import time
 import uuid
+import weakref
 from typing import TYPE_CHECKING
 
 import asyncpg
@@ -101,6 +102,20 @@ _CAPABILITIES = VectorDBCapabilities(
 MAX_SEARCH_LIMIT = 1000   # results one request asks for at most; a leg is twice that many rows, as the prefetch of the other providers
 _MAX_LEG = 2 * MAX_SEARCH_LIMIT
 MAX_SCROLL_LIMIT = 10_000   # rows one scroll page returns at most: the ceiling the other backends have (OpenSearch caps a page at 10,000)
+# The legs of a search run together, a pooled connection each. Per database and event loop (each loop has its own pool, and providers built
+# per call share one database), at most pool_max // 2 searches run their legs at once: the others wait here, before their budgets start,
+# instead of running out of time waiting for a connection inside them (which answered busy or degraded under load).
+_LEG_GATES: weakref.WeakKeyDictionary[KernelDB, weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]] = weakref.WeakKeyDictionary()
+
+
+def _leg_gate(db: KernelDB) -> asyncio.Semaphore:
+    loops = _LEG_GATES.setdefault(db, weakref.WeakKeyDictionary())
+    loop = asyncio.get_running_loop()
+    if (gate := loops.get(loop)) is None:
+        gate = loops[loop] = asyncio.Semaphore(max(1, db.cfg.pool_max // 2))
+    return gate
+
+
 UNKNOWN_MODEL = "unknown"      # the model name of a space adopted from points that do not name theirs
 
 
@@ -613,24 +628,25 @@ class PgVectorService(IVectorDBService):
         cfg = self._cfg.search
         with org_scope(org):
             if scope.apps is not None and cfg.eliminate_all_apps:
-                scope = scope.narrowed_to(await self._sizer.connectors(org, coll.collection_id))
+                scope = scope.narrowed_to(await self._sizer.connectors(org, coll.collection_id, scope.apps))
             space = await catalog.active_space(org)
             if space is None:
                 return []
             if req.dense_query is not None and len(req.dense_query) != space.dim:
                 raise SpaceMismatch(f"the query has {len(req.dense_query)} dimensions; the organisation's embedding space has {space.dim}")
             leg = min(max(2 * req.limit, 1), _MAX_LEG)
-            legs = [org_context.spawn_in_request(self._dense(coll, req, org, space, scope, leg), name="pgvector-dense-leg")]
-            if sparse is not None:
-                legs.append(org_context.spawn_in_request(
-                    lexical.search(db, org, coll.collection_id, sparse, scope, min(leg, lexical.MAX_LEG), cfg), name="pgvector-lexical-leg"))
-            try:
-                answers = list(await asyncio.gather(*legs))
-            except BaseException:
-                for t in legs:               # a leg failed (or the request was cancelled): the other stops instead of finishing in the background
-                    t.cancel()
-                await asyncio.gather(*legs, return_exceptions=True)
-                raise
+            async with _leg_gate(db):
+                legs = [org_context.spawn_in_request(self._dense(coll, req, org, space, scope, leg), name="pgvector-dense-leg")]
+                if sparse is not None:
+                    legs.append(org_context.spawn_in_request(
+                        lexical.search(db, org, coll.collection_id, sparse, scope, min(leg, lexical.MAX_LEG), cfg), name="pgvector-lexical-leg"))
+                try:
+                    answers = list(await asyncio.gather(*legs))
+                except BaseException:
+                    for t in legs:               # a leg failed (or the request was cancelled): the other stops instead of finishing in the background
+                        t.cancel()
+                    await asyncio.gather(*legs, return_exceptions=True)
+                    raise
             rows = [[pid for _, pid in leg_rows] for leg_rows, _ in answers]
             # the provider contract: an empty answer is flagged too. Every leg's reason is noted: an exact dense leg (quantization, complete) must not hide a
             # word search that ran out of time beside it. The hits carry the first one.

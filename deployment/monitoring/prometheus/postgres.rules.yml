@@ -247,6 +247,19 @@ groups:
           description: >-
             {{ $labels.schemaname }}.{{ $labels.relname }} has {{ $value | humanize }} dead rows, over 30% of the
             table, for an hour. Check for long transactions holding them back and the table's last_autovacuum.
+      - alert: PostgresSearchFoldBehind
+        # The fold worker (python -m db.maintain fold --watch) compacts the term-frequency and point-count deltas that indexing writes.
+        # Every word search sums the unfolded deltas of its terms, so search gets slower as they pile up: a million rows means the worker
+        # is not running or not keeping up (one pass folds up to ten million rows per org).
+        expr: pg_stat_user_tables_n_live_tup{schemaname="retrieval", relname=~"lexical_term_delta|lexical_df_delta.*"} > 1e6
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Search term-frequency deltas are not being folded
+          description: >-
+            retrieval.{{ $labels.relname }} holds {{ $value | humanize }} unfolded rows for 30 minutes, and every word search
+            reads them. Check that the fold worker (db.maintain fold --watch) is running and that its log shows passes.
       - alert: PostgresAutovacuumRunningLong
         expr: time() - pg_stat_activity_autovacuum_timestamp_seconds > 6 * 3600
         labels:
