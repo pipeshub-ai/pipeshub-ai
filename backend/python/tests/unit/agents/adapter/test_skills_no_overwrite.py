@@ -816,3 +816,36 @@ class TestACreateWhoseEdgesFailIsUndone:
         await owner.create_skill(_NAME, _OWNER_MD)
         assert graph._col("agentSkills")[_KEY]["createdBy"] == "user-a"
         assert {e["type"] for e in graph._edges["agentSkillRelation"]} == {"requires", "related"}
+
+
+class _OthersWriteBeforeTheSnapshot(FakeGraphProvider):
+    """As the store is about to archive the version it read, `interleave` runs: other writes that land first."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.interleave = None
+
+    async def batch_upsert_nodes(self, nodes: list[dict[str, Any]], collection: str, *args: object, **kwargs: object) -> bool:
+        if collection == "agentSkillVersions" and self.interleave is not None:
+            interleave, self.interleave = self.interleave, None
+            await interleave()
+        return await super().batch_upsert_nodes(nodes, collection, *args, **kwargs)
+
+
+class TestAWriteThatLosesItsCommitArchivesNothingOverTheWinner:
+    async def test_the_version_keeps_the_state_the_successful_write_superseded(self) -> None:
+        graph = _OthersWriteBeforeTheSnapshot()
+        loser = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
+        await loser.create_skill(_NAME, _OTHER_MD, resources={"notes.md": "X"})
+        winner = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
+
+        async def resource_write_then_an_edit() -> None:
+            await winner.write_resource(_NAME, "notes.md", "Y")  # same version 1.0.0, new state
+            await winner.update_skill(_NAME, _OTHER_MD.replace("entirely", "by the winner"))
+
+        graph.interleave = resource_write_then_an_edit
+        with pytest.raises(SkillConflictError):
+            await loser.update_skill(_NAME, _OTHER_MD.replace("entirely", "by the loser"))
+
+        assert (await loser.content_files(_NAME, "1.0.0"))["notes.md"] == "Y"
+        assert [v.version for v in await loser.list_versions(_NAME)] == ["1.0.0"]

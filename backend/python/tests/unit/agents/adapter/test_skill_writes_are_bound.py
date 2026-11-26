@@ -32,7 +32,7 @@ BOUND = {
 }
 ALLOWED = {
     ("_snapshot_revision", "batch_upsert_nodes"):
-        "a revision doc in agentSkillVersions, keyed by skill, generation and version; never a skill doc",
+        "a revision doc in agentSkillVersions, keyed by skill, generation, version and archived state; never a skill doc",
     ("_create_owner_permission_edge", "batch_create_edges"):
         "runs only after create_node_if_absent created the skill in this call",
     ("_sync_relation_edges", "delete_edges_from"):

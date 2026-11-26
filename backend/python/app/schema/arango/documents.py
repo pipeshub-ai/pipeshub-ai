@@ -2010,6 +2010,9 @@ agent_skill_versions_schema = {
             "summary": {"type": "string", "default": ""},
             "updatedBy": {"type": ["string", "null"]},
             "generation": {"type": "string"},  # the generation of the skill this revises
+            # The archived state's own updatedAtTimestamp: of two rows for one version, the later state is the
+            # one a committed write superseded (a write that lost its conditional commit archived an older one).
+            "stateUpdatedAtTimestamp": {"type": "number"},
             "createdAtTimestamp": {"type": "number"},
         },
         "required": ["orgId", "skillKey", "name", "version", "content", "createdAtTimestamp"],
