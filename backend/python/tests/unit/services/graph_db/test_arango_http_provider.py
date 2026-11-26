@@ -1387,6 +1387,17 @@ class TestEnsureSchema:
         seeded.assert_awaited_once()      # the rest of the schema is still ensured
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("collection", ["agentSkills", "agentSkillVersions"])
+    async def test_a_skills_schema_not_applied_fails_the_ensure(self, connected_provider, collection) -> None:
+        """An older skills schema refuses the fields a newer one adds; the caller retries, nothing else re-applies it."""
+        connected_provider.http_client.apps_guard = None
+        connected_provider.http_client.has_collection = AsyncMock(return_value=True)
+        connected_provider.http_client.has_graph = AsyncMock(return_value=True)
+        connected_provider.http_client.update_collection_schema = AsyncMock(side_effect=lambda name, schema: name != collection)
+        with patch.object(connected_provider, "_ensure_departments_seed", new_callable=AsyncMock):
+            assert await connected_provider.ensure_schema() is False
+
+    @pytest.mark.asyncio
     async def test_an_apps_collection_not_created_fails_the_ensure(self, connected_provider) -> None:
         from app.config.constants.arangodb import CollectionNames
 

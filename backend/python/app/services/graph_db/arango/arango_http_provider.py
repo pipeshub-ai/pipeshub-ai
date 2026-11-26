@@ -1408,7 +1408,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 schema_by_collection[col_name] = col_schema
 
             # 1. Create all collections (node + edge)
-            apps_schema_applied = True
+            required_schemas_applied = True
+            # Reported to the caller when not applied (it retries): an older schema refuses every write of the
+            # fields a newer one adds, and nothing else applies these later.
+            reported = {
+                CollectionNames.APPS.value, CollectionNames.AGENT_SKILLS.value, CollectionNames.AGENT_SKILL_VERSIONS.value,
+            }
             edge_collection_names = {ed["edge_collection"] for ed in EDGE_DEFINITIONS}
             for name in [*(col.value for col in CollectionNames), *extra_node_collections()]:
                 is_edge = name in edge_collection_names
@@ -1418,7 +1423,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         name, edge=is_edge, schema=col_schema
                     ):
                         self.logger.warning(f"Failed to create collection '{name}', continuing")
-                        apps_schema_applied = apps_schema_applied and name != CollectionNames.APPS.value
+                        required_schemas_applied = required_schemas_applied and name not in reported
                         continue
                     # A create that lost the race to another process answers 409, which counts as created: that
                     # process's schema may be older, so the schema is applied as to any existing collection.
@@ -1432,9 +1437,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         "The schema of collection '%s' was not updated; documents carrying fields "
                         "the previous schema does not list will be refused until it is", name,
                     )
-                    # Reported to the caller for apps: an older apps schema refuses every write to an app
+                    # Reported to the caller for `reported`: e.g. an older apps schema refuses every write to an app
                     # document, and a sync whose start is refused does not run (`run_sync_task`).
-                    apps_schema_applied = apps_schema_applied and name != CollectionNames.APPS.value
+                    required_schemas_applied = required_schemas_applied and name not in reported
 
             # 2. Create knowledge graph if it doesn't exist
             has_knowledge = await self.http_client.has_graph(GraphNames.KNOWLEDGE_GRAPH.value)
@@ -1463,9 +1468,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             await self._ensure_departments_seed()
 
             self.start_record_schema_poll()
-            if apps_schema_applied:
+            if required_schemas_applied:
                 self.logger.info("✅ ArangoDB schema ensured successfully")
-            return apps_schema_applied
+            return required_schemas_applied
 
         except Exception as e:
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="ensure_schema")
