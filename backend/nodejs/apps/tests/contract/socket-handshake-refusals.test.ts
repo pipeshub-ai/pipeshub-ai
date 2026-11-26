@@ -53,7 +53,7 @@ async function connectAnswer(base: string, auth: object): Promise<string> {
     body: `40${JSON.stringify(auth)}`,
   });
   expect(posted.status).to.equal(200);
-  return (await (await fetch(url(sid))).text()).split('\x1e')[0];
+  return (await (await fetch(url(sid))).text()).split('\x1e')[0] ?? '';
 }
 
 async function notificationRefusals(): Promise<Record<string, Refusal>> {
@@ -149,7 +149,7 @@ describe('Socket handshake refusals (contract with the web and desktop socket cl
 
   it('marks a session that cannot be checked as retryable, with its code, on both gateways', () => {
     for (const gateway of [actual.notification, actual.desktopProxy]) {
-      expect(gateway.sessionCheckUnavailable.data).to.deep.equal({
+      expect(gateway.sessionCheckUnavailable?.data).to.deep.equal({
         code: 'SESSION_CHECK_UNAVAILABLE',
         retryable: true,
       });
