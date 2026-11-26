@@ -497,6 +497,8 @@ async def _execute_mariadb_query(
     query: str,
     config_service: "ConfigurationService",
     connector_instance_id: Optional[str] = None,
+    *,
+    public_only: bool = True,
 ) -> Dict[str, Any]:
     """Execute a query against MariaDB.
     
@@ -504,6 +506,7 @@ async def _execute_mariadb_query(
         query: SQL query to execute
         config_service: Configuration service
         connector_instance_id: Optional connector instance ID
+        public_only: Connect to public addresses only (a personal connector)
         
     Returns:
         Dict with 'ok', 'columns', 'rows' or 'error'
@@ -516,6 +519,7 @@ async def _execute_mariadb_query(
             logger=logger,
             config_service=config_service,
             connector_instance_id=connector_instance_id,
+            public_only=public_only,
         )
 
         client = client_builder.get_client()
@@ -675,6 +679,7 @@ async def _execute_query_impl(
             query=query,
             config_service=config_service,
             connector_instance_id=connector_instance_id,
+            public_only=public_only,
         )
     else:
         return {

@@ -9,6 +9,7 @@ MariaDB Connector/Python: https://mariadb.com/docs/connectors/mariadb-connector-
 
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import os
 import tempfile
@@ -23,7 +24,11 @@ from app.config.configuration_service import ConfigurationService
 from app.core.org_context import spawn_in_request
 from app.sources.client.http.send_ambiguity import note_dbapi_failure
 from app.sources.client.iclient import IClient
-from app.utils.url_fetcher import HostCheckError, vetted_addresses
+from app.utils.url_fetcher import (
+    HostCheckError,
+    public_address_refusal,
+    vetted_addresses,
+)
 
 logger = logging.getLogger(__name__)
 # Seconds a read-only agent query may run before the server stops it.
@@ -97,6 +102,22 @@ def _fail_fast(factory: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitabl
     return connect
 
 
+# Shown to the person setting up a personal connector with a CA certificate.
+PERSONAL_TLS_NEEDS_ADDRESS = (
+    "A personal MariaDB connection that verifies the server's certificate must use the "
+    "server's IP address, not its name, and the certificate must cover that address. "
+    "Ask an administrator to set up a team connector to connect by name."
+)
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False
+    return True
+
+
 class MariaDBClient:
     """MariaDB client for async database connections.
 
@@ -113,6 +134,8 @@ class MariaDBClient:
         ssl_ca_pem: CA bundle as PEM text (optional); written to a private
             temp file for the driver, which takes only a path
         charset: Character set (default: utf8mb4)
+        public_only: connect to public addresses only (a personal connector);
+            a Unix socket path is refused
 
     With a CA, TLS is on with certificate and hostname checks. Every connect
     vets the host first: without TLS the vetted address is dialled;
@@ -131,6 +154,8 @@ class MariaDBClient:
         charset: str = "utf8mb4",
         pool_acquire_timeout: float = 60.0,
         ssl_ca_pem: str | None = None,
+        *,
+        public_only: bool = False,
     ) -> None:
         if mariadb is None:
             raise ImportError(
@@ -154,6 +179,7 @@ class MariaDBClient:
         self.timeout = timeout
         self.ssl_ca = ssl_ca
         self.ssl_ca_pem = ssl_ca_pem
+        self.public_only = public_only
         self._ca_file: str | None = None
         self.charset = charset
         self._max_pool_size = _DEFAULT_MAX_POOL_SIZE
@@ -224,7 +250,12 @@ class MariaDBClient:
         other (``charset`` among them; utf8mb4 is its default).
         Raises HostCheckError before anything is dialled when the host is refused.
         """
-        addresses = await vetted_addresses(self.host, lookup_timeout_s=float(self.timeout))
+        if self.public_only and self.host.startswith("/"):
+            # A socket on this server is never a public address.
+            raise HostCheckError(public_address_refusal(self.host))
+        addresses = await vetted_addresses(
+            self.host, lookup_timeout_s=float(self.timeout), public_only=self.public_only
+        )
         ca_file = self.ssl_ca or self._write_ca_file()
         kwargs: dict[str, Any] = {
             "port": self.port,
@@ -235,7 +266,11 @@ class MariaDBClient:
         if self.host.startswith("/"):
             kwargs["unix_socket"] = self.host
         elif ca_file or not addresses:
-            # With TLS the certificate names the host, so the name is dialled.
+            # With TLS the certificate names the host, so the name is dialled, and the
+            # driver looks it up again on every connection. A personal connector must
+            # reach only the address checked above, so it may not dial a name.
+            if self.public_only and not _is_ip_literal(self.host):
+                raise HostCheckError(PERSONAL_TLS_NEEDS_ADDRESS)
             kwargs["host"] = self.host
         else:
             ipv4 = [a for a in addresses if a.version == 4]
@@ -703,6 +738,10 @@ class MariaDBConfig(BaseModel):
         description="Seconds a caller will wait for a free pool connection",
         gt=0,
     )
+    public_only: bool = Field(
+        default=False,
+        description="Connect to public addresses only (a personal connector)",
+    )
 
     def create_client(self) -> MariaDBClient:
         """Create a MariaDB client."""
@@ -717,6 +756,7 @@ class MariaDBConfig(BaseModel):
             charset=self.charset,
             pool_acquire_timeout=self.pool_acquire_timeout,
             ssl_ca_pem=self.ssl_ca_pem,
+            public_only=self.public_only,
         )
 
 
@@ -771,8 +811,13 @@ class MariaDBClientBuilder(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         connector_instance_id: str | None = None,
+        *,
+        public_only: bool = False,
     ) -> "MariaDBClientBuilder":
-        """Build MariaDBClientBuilder using configuration service."""
+        """Build MariaDBClientBuilder using configuration service.
+
+        ``public_only``: connect to public addresses only (a personal connector).
+        """
         try:
             logger.debug(
                 f"🔧 [MariaDBClientBuilder] build_from_services called with "
@@ -799,6 +844,7 @@ class MariaDBClientBuilder(IClient):
                 timeout=config.timeout,
                 ssl_ca=config.auth.ssl_ca,
                 ssl_ca_pem=config.auth.ssl_ca_pem or None,
+                public_only=public_only,
             )
 
             db_part = f"/{config.auth.database}" if config.auth.database else ""
