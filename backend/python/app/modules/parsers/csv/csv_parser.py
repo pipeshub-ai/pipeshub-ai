@@ -50,11 +50,14 @@ from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 from app.utils.table_enrichment import (
     MAX_KEYED_ROWS,
+    PlainRowText,
     RetryBudget,
     describe_row_dicts,
     fallback_table_summary,
     gather_or_cancel,
+    stored_row_texts,
 )
+from app.utils.table_row_memory import with_row_digest
 
 logger = create_logger("csv_parser")
 
@@ -964,51 +967,54 @@ class CSVParser:
             column_headers = list(csv_result[0].keys())
 
             if use_llm_for_rows:
-                # Use LLM for row descriptions
+                # Use LLM for row descriptions; on an update a row the stored version had keeps its text and is not sent.
+                digests, row_texts = await stored_row_texts(csv_result)
+                pending = [i for i, text in enumerate(row_texts) if text is None]
                 row_batch_size = table_row_batch_size()
-                batches = []
-                for i in range(0, len(csv_result), row_batch_size):
-                    batch = csv_result[i : i + row_batch_size]
-                    batches.append((i, batch))
+                batches = [pending[i : i + row_batch_size] for i in range(0, len(pending), row_batch_size)]
                 table_retry_budget = RetryBudget.for_batches(len(batches))
 
-                max_concurrent_batches = min(MAX_CONCURRENT_BATCHES, len(batches))
-                batch_results = []
+                max_concurrent_batches = max(1, min(MAX_CONCURRENT_BATCHES, len(batches)))
 
                 for i in range(0, len(batches), max_concurrent_batches):
                     current_batches = batches[i:i + max_concurrent_batches]
-
-                    batch_tasks = []
-                    for start_idx, batch in current_batches:
-                        task = self.get_rows_text(llm, batch, table_summary, retry_budget=table_retry_budget)
-                        batch_tasks.append((start_idx, batch, task))
-
                     # A stop (or any failure) in one batch cancels and awaits the others: no call completes after it.
-                    task_results = await gather_or_cancel(*[task for _, _, task in batch_tasks])
-
-                    for j, (start_idx, batch, _) in enumerate(batch_tasks):
-                        row_texts = task_results[j]
-                        batch_results.append((start_idx, batch, row_texts))
+                    task_results = await gather_or_cancel(*[
+                        self.get_rows_text(llm, [csv_result[j] for j in batch], table_summary, retry_budget=table_retry_budget)
+                        for batch in current_batches
+                    ])
+                    for batch, texts in zip(current_batches, task_results):
+                        for j, text in zip(batch, texts):
+                            row_texts[j] = text
+                if len(pending) < len(csv_result):
+                    logger.info(
+                        "Table rows: %d kept from the stored version, %d described", len(csv_result) - len(pending), len(pending)
+                    )
+                # A row whose text is plain fallback gets no digest: the next update describes it again.
+                described = [
+                    digest if text is not None and not isinstance(text, PlainRowText) else None
+                    for digest, text in zip(digests, row_texts)
+                ]
 
                 # Create blocks for this table
-                for start_idx, batch, row_texts in batch_results:
-                    for idx, (row, row_text) in enumerate(zip(batch, row_texts), start=start_idx):
-                        block_index = len(blocks)
-                        actual_row_number = line_numbers[idx] if idx < len(line_numbers) else idx + 1
+                for idx, row_text in enumerate(row_texts):
+                    if row_text is None:
+                        continue
+                    block_index = len(blocks)
+                    actual_row_number = line_numbers[idx] if idx < len(line_numbers) else idx + 1
 
-                        blocks.append(
-                            Block(
-                                index=block_index,
-                                type=BlockType.TABLE_ROW,
-                                format=DataFormat.JSON,
-                                data={
-                                    "row_natural_language_text": row_text,
-                                    "row_number": actual_row_number,
-                                },
-                                parent_index=table_group_index,
-                            )
+                    blocks.append(
+                        Block(
+                            index=block_index,
+                            type=BlockType.TABLE_ROW,
+                            format=DataFormat.JSON,
+                            data=with_row_digest(
+                                {"row_natural_language_text": row_text, "row_number": actual_row_number}, described, idx
+                            ),
+                            parent_index=table_group_index,
                         )
-                        table_row_block_indices.append(block_index)
+                    )
+                    table_row_block_indices.append(block_index)
             else:
                 # Use simple format for rows (skip LLM): configuration, counted apart from degraded rows
                 note_rows_over_budget(len(csv_result))

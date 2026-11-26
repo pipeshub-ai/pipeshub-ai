@@ -76,10 +76,13 @@ from app.utils.streaming import (
     invoke_with_structured_output_and_reflection,
 )
 from app.utils.table_enrichment import (
+    PlainRowText,
     RetryBudget,
     describe_row_dicts,
     fallback_table_summary,
+    stored_row_texts,
 )
+from app.utils.table_row_memory import with_row_digest
 from app.utils.user_errors import EXCEL_TOO_LARGE, UNREADABLE_FILE
 
 __all__ = ["ExcelParser", "get_cell_background_color", "get_cell_font_color"]
@@ -1749,13 +1752,16 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 # Process rows in batches (INDEXING_TABLE_ROW_BATCH_SIZE, default 50) in parallel using LLM
                 batch_size = table_row_batch_size()
 
-                # Create batches
-                batches = []
-                for i in range(0, len(table["data"]), batch_size):
-                    batch = table["data"][i : i + batch_size]
-                    batches.append((i, batch))  # Store start index and batch data
+                # On an update a row the stored version had keeps its text and is not sent.
+                table_rows = table["data"]
+                digests, row_texts = await stored_row_texts(
+                    [{cell["header"]: cell["value"] for cell in row} for row in table_rows]
+                )
+                self._output.charge_text(*(text for text in row_texts if text is not None))
+                pending = [i for i, text in enumerate(row_texts) if text is None]
+                batches = [pending[i : i + batch_size] for i in range(0, len(pending), batch_size)]
 
-                self.logger.info(f"Processing {len(table['data'])} rows in {len(batches)} batches of {batch_size}")
+                self.logger.info(f"Processing {len(pending)} rows in {len(batches)} batches of {batch_size}")
                 table_retry_budget = RetryBudget.for_batches(len(batches))
 
                 # Limit parallel processing to at most 10 concurrent batches
@@ -1775,37 +1781,43 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
                 # Create throttled tasks for all batches
                 batch_tasks = []
-                for start_idx, batch in batches:
-                    task = spawn_in_request(limited_get_rows_text(batch))
-                    batch_tasks.append((start_idx, batch, task))
+                for batch in batches:
+                    task = spawn_in_request(limited_get_rows_text([table_rows[j] for j in batch]))
+                    batch_tasks.append((batch, task))
 
                 # Wait for all batches to complete (max 10 running concurrently). A refusal by the
                 # output budget (or any failure) stops the batches still running.
                 try:
-                    task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
+                    task_results = await asyncio.gather(*[task for _, task in batch_tasks])
                 except BaseException:
-                    for _, _, task in batch_tasks:
+                    for _, task in batch_tasks:
                         task.cancel()
                     # Wait for them: no task is pending, and no call completes, once the error leaves.
-                    await asyncio.gather(*[task for _, _, task in batch_tasks], return_exceptions=True)
+                    await asyncio.gather(*[task for _, task in batch_tasks], return_exceptions=True)
                     raise
                 self.logger.info(f"Completed processing {len(batch_tasks)} batches with LLM")
+                for (batch, _), texts in zip(batch_tasks, task_results):
+                    for j, text in zip(batch, texts):
+                        row_texts[j] = text
+                if len(pending) < len(table_rows):
+                    self.logger.info(
+                        "Table rows: %d kept from the stored version, %d described",
+                        len(table_rows) - len(pending), len(pending),
+                    )
 
-                # Combine results with their metadata and process
-                for i, (_start_idx, batch, _) in enumerate(batch_tasks):
-                    row_texts = task_results[i]
-
-                    # Add processed rows to results
-                    for row, row_text in zip(batch, row_texts):
-                        if row:
-                            self._output.charge(_ROW_DICT_BASE_BYTES + _ROW_DICT_CELL_BYTES * len(row))
-                            processed_rows.append(
-                                {
-                                    "raw_data": {cell["header"]: cell["value"] for cell in row},
-                                    "natural_language_text": row_text,
-                                    "row_num": row[0]["row"],  # Include row number
-                                }
-                            )
+                # Add processed rows to results
+                for row, row_text, digest in zip(table_rows, row_texts, digests):
+                    if row and row_text is not None:
+                        self._output.charge(_ROW_DICT_BASE_BYTES + _ROW_DICT_CELL_BYTES * len(row))
+                        processed_rows.append(
+                            {
+                                "raw_data": {cell["header"]: cell["value"] for cell in row},
+                                "natural_language_text": row_text,
+                                "row_num": row[0]["row"],  # Include row number
+                                # A row whose text is plain fallback gets no digest: the next update describes it again.
+                                "row_digest": None if isinstance(row_text, PlainRowText) else digest,
+                            }
+                        )
             else:
                 self.logger.info(f"Using simple format for row processing (exceeded threshold of {threshold})")
                 note_rows_over_budget(len(table["data"]))
@@ -1936,14 +1948,18 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                             index=block_index,
                             type=BlockType.TABLE_ROW,
                             format=DataFormat.JSON,
-                            data={
-                                "row_natural_language_text": row.get("natural_language_text", ""),
-                                "row_number": int(row.get("row_num") or (i + 1)),
-                                "row_end_number": int(row.get("row_end_num") or row.get("row_num") or (i + 1)),
-                                "row_count": int(row.get("row_count") or 1),
-                                "sheet_number": sheet_idx,
-                                "sheet_name": sheet_name,
-                            },
+                            data=with_row_digest(
+                                {
+                                    "row_natural_language_text": row.get("natural_language_text", ""),
+                                    "row_number": int(row.get("row_num") or (i + 1)),
+                                    "row_end_number": int(row.get("row_end_num") or row.get("row_num") or (i + 1)),
+                                    "row_count": int(row.get("row_count") or 1),
+                                    "sheet_number": sheet_idx,
+                                    "sheet_name": sheet_name,
+                                },
+                                [row.get("row_digest")],
+                                0,
+                            ),
                             parent_index=table_group_index,
                         )
                     )
