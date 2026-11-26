@@ -40,43 +40,89 @@ def _names(node: ast.AST) -> set[str]:
     return out
 
 
-def unmarked_database_wide_tests(folder: Path) -> list[str]:
-    """``file::test`` of each test of ``folder`` that does something database-wide (``DATABASE_WIDE``) itself, or through a function, fixture, class or constant of
-    the folder it uses, and is not marked ``pg_table_lock``."""
+def _marked(node: ast.AST) -> bool:
+    return any(isinstance(d, ast.Attribute) and d.attr == "pg_table_lock" for d in ast.walk(node))
+
+
+def unmarked_database_wide_tests(modules: dict[str, str], conftests: list[str]) -> list[str]:
+    """``module::test`` (``module::Class::test`` for a method) of each test in ``modules`` (module name: source) that does something database-wide
+    (``DATABASE_WIDE``) itself, or through a function, fixture, class or constant it uses, and is not marked ``pg_table_lock`` (on the function, its class or the
+    module's ``pytestmark``). A name is looked up as pytest finds a fixture: in the test's module (or what it imports from the folder), then in ``conftests``,
+    nearest first."""
     defs: dict[tuple[str, str], ast.AST] = {}
     imports: dict[tuple[str, str], tuple[str, str]] = {}
-    tests = []
-    for path in sorted(folder.glob("*.py")):
-        tree = ast.parse(path.read_text())
+    tests: list[tuple[str, str, ast.AST, bool]] = []
+    for mod, source in modules.items():
+        tree = ast.parse(source)
+        module_marked = any(isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "pytestmark" for t in n.targets) and _marked(n.value) for n in tree.body)
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                defs[(path.stem, node.name)] = node
-                if node.name.startswith("test_") and path.name != Path(__file__).name:
-                    tests.append((path, node))
+                defs[(mod, node.name)] = node
+                if mod in conftests:
+                    continue
+                if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+                    marked = module_marked or any(_marked(d) for d in node.decorator_list)
+                    tests += [(mod, f"{node.name}::{m.name}", m, marked or any(_marked(d) for d in m.decorator_list)) for m in node.body
+                              if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name.startswith("test_")]
+                elif node.name.startswith("test_"):
+                    tests.append((mod, node.name, node, module_marked or any(_marked(d) for d in node.decorator_list)))
             elif isinstance(node, ast.Assign):
                 for t in node.targets:
                     if isinstance(t, ast.Name):
-                        defs[(path.stem, t.id)] = node
+                        defs[(mod, t.id)] = node
             elif isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
                 for a in node.names:
-                    imports[(path.stem, a.asname or a.name)] = (node.module, a.name)
+                    imports[(mod, a.asname or a.name)] = (node.module, a.name)
     seen: dict[tuple[str, str], bool] = {}
 
-    def wide(key: tuple[str, str]) -> bool:
-        key = imports.get(key, key)
-        if key in seen or key not in defs:
-            return seen.get(key, False)
+    def resolve(mod: str, name: str) -> tuple[str, str] | None:
+        for key in ((mod, name), imports.get((mod, name)), *((c, name) for c in conftests)):
+            if key in defs:
+                return key
+        return None
+
+    def wide(node: ast.AST, mod: str) -> bool:
+        return any(DATABASE_WIDE.search(x) for x in _strings(node)) or any(named(mod, n) for n in _names(node))
+
+    def named(mod: str, name: str) -> bool:
+        key = resolve(mod, name)
+        if key is None or key in seen:
+            return bool(key and seen[key])
         seen[key] = False                                   # a cycle adds nothing
-        node = defs[key]
-        seen[key] = any(DATABASE_WIDE.search(x) for x in _strings(node)) or any(wide((key[0], n)) for n in _names(node))
+        seen[key] = wide(defs[key], key[0])
         return seen[key]
-    return [f"{path.name}::{node.name}" for path, node in tests
-            if wide((path.stem, node.name)) and "pg_table_lock" not in {d.attr for d in node.decorator_list if isinstance(d, ast.Attribute)}]
+    return [f"{mod}::{name}" for mod, name, node, marked in tests if not marked and wide(node, mod)]
+
+
+def _folder() -> tuple[dict[str, str], list[str]]:
+    """This folder's modules (this one left out: its patterns are not statements) and the conftest chain above them, up to ``tests``."""
+    here = Path(__file__).parent
+    modules = {p.stem: p.read_text() for p in sorted(here.glob("*.py")) if p.name != Path(__file__).name}
+    conftests = ["conftest"]
+    for parent in here.parents:
+        if parent.name == "python" or not (parent / "conftest.py").exists():
+            break
+        modules[str(parent / "conftest")] = (parent / "conftest.py").read_text()
+        conftests.append(str(parent / "conftest"))
+    return modules, conftests
 
 
 def test_every_test_that_changes_the_whole_database_runs_alone() -> None:
-    unmarked = unmarked_database_wide_tests(Path(__file__).parent)
+    unmarked = unmarked_database_wide_tests(*_folder())
     assert unmarked == [], f"mark these @pytest.mark.pg_table_lock: {unmarked}"
+
+
+def test_the_guard_finds_class_methods_and_conftest_fixtures_and_honours_marks_and_overrides() -> None:
+    analyze, alter = '"ANALYZE kg.records"', '"ALTER TABLE kg.records SET (autovacuum_enabled = false)"'
+    modules = {
+        "conftest": f"import pytest\n@pytest.fixture\ndef settings_off():\n    run({alter})\n",
+        "test_a": f"import pytest\nclass TestPlans:\n    def test_one(self):\n        run({analyze})\n"
+                  f"@pytest.mark.pg_table_lock\nclass TestMarked:\n    def test_two(self):\n        run({analyze})\n"
+                  "def test_uses_the_conftest_fixture(settings_off):\n    pass\n",
+        "test_b": "import pytest\n@pytest.fixture\ndef settings_off():\n    return None\ndef test_uses_its_own_fixture(settings_off):\n    pass\n",
+        "test_c": f"import pytest\npytestmark = [pytest.mark.integration, pytest.mark.pg_table_lock]\ndef test_three():\n    run({analyze})\n",
+    }
+    assert sorted(unmarked_database_wide_tests(modules, ["conftest"])) == ["test_a::TestPlans::test_one", "test_a::test_uses_the_conftest_fixture"]
 
 
 async def _other_may_take(shared: bool) -> bool:
