@@ -57,4 +57,16 @@ describe('PostgresDistributedKeyValueStore org binding', () => {
     await useEveryOperation('/services/aiModels')
     expect(units.every((u) => u.preOrg === true)).to.equal(true)
   })
+
+  it('keeps the notify and health units unbound even when the hook claims every key', async () => {
+    sinon.stub(edition, 'kvKeyBindsOrg').returns(true)
+    const units = fakeRuntime()
+    const s = new PostgresDistributedKeyValueStore<unknown>((v) => Buffer.from(JSON.stringify(v)), (b) => JSON.parse(b.toString()))
+    await s.getAllKeys()
+    expect(units).to.deep.equal([{ write: false }])         // '' is a listing prefix: the hook decides it
+    units.length = 0
+    await s.publishCacheInvalidation(`${ORG}/services/aiModels`)
+    expect(await s.healthCheck()).to.equal(true)
+    expect(units).to.deep.equal([{ preOrg: true, write: true }, { preOrg: true, write: false }])
+  })
 })

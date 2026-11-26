@@ -33,13 +33,17 @@ export class PostgresDistributedKeyValueStore<
     private readonly deserializer: (buffer: Buffer) => T,
   ) {}
 
-  /** `key` (for a listing, its prefix) decides the org the unit binds: the ambient one when the edition says the key is its, else none. */
+  /**
+   * `key` (for a listing, its prefix) decides the org the unit binds: the ambient one when the edition says the key is its, else none.
+   * `null` is a unit that touches no entry (notify, health): always unbound, whatever the edition claims.
+   */
   private async unit<R>(
     write: boolean,
-    key: string,
+    key: string | null,
     fn: (tx: Tx) => Promise<R>,
   ): Promise<R> {
-    const opts = kvKeyBindsOrg(key) ? { write } : { preOrg: true, write };
+    const opts =
+      key !== null && kvKeyBindsOrg(key) ? { write } : { preOrg: true, write };
     return ensurePgRuntime().withUow(opts, async (tx) => {
       const out = await fn(tx);
       if (write && Date.now() - this.lastPurge > PURGE_EVERY_MS) {
@@ -179,7 +183,7 @@ export class PostgresDistributedKeyValueStore<
     const payload =
       Buffer.byteLength(key) <= MAX_NOTIFY_PAYLOAD ? key : CLEAR_ALL;
     try {
-      await this.unit(true, '', (tx) =>
+      await this.unit(true, null, (tx) =>
         tx.query(
           `/* pipeshub:kv.notify */ SELECT pg_notify('${KV_CHANNEL}', $1)`,
           [payload],
@@ -211,7 +215,7 @@ export class PostgresDistributedKeyValueStore<
 
   async healthCheck(): Promise<boolean> {
     try {
-      await this.unit(false, '', (tx) =>
+      await this.unit(false, null, (tx) =>
         tx.query(
           '/* pipeshub:kv.health */ SELECT 1 FROM platform.kv_entries WHERE false',
         ),
