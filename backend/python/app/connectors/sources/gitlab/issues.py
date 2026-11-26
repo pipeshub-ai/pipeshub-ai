@@ -42,6 +42,7 @@ from app.utils.time_conversion import datetime_to_epoch_ms, parse_timestamp, str
 from app.models.blocks import wire_block_group_parent_children
 
 from .common.utils import parse_item_id_from_url
+from .projects import project_reader_ids
 from .models import GitlabLiterals, RecordUpdate
 
 # Work items split across two ACL groups: GitLab hides confidential issues from
@@ -298,6 +299,17 @@ class IssuesSync:
             if isinstance(person, dict) and person.get("id") is not None
             and (person.get("state") or "active") == "active"
         )
+        # The exception sits on top of reading the project: an author removed from it, or one
+        # who filed it while the project was public, reads nothing there on GitLab. The grant
+        # is direct, so it would outlive the project membership it depends on.
+        readers = await self._project_readers(issue.project_id)
+        if readers is None:
+            self.logger.warning(
+                "Members of project %s unreadable; confidential issue %s gets no author or assignee grant",
+                issue.project_id, getattr(issue, "iid", issue.id),
+            )
+            return []
+        candidates = [user_id for user_id in candidates if user_id in readers]
 
         permissions: list[Permission] = []
         seen: set[int] = set()
@@ -314,6 +326,17 @@ class IssuesSync:
             if permission:
                 permissions.append(permission)
         return permissions
+
+    async def _project_readers(self, project_id: int | str) -> set[int] | None:
+        """This run's reader ids of the project; read now when a reindex comes outside a sync. None if unknown."""
+        c = self.c
+        readers = c._project_reader_ids.get(int(project_id))
+        if readers is not None:
+            return readers
+        res = await c.runtime.ds_call(c.data_source.list_project_members_all, project_id=int(project_id), get_all=True)
+        if not res.success or not res.data:
+            return None
+        return project_reader_ids(res.data)
 
     # ------------------------------------------------------------------
     # Record persistence + checkpoint advancement

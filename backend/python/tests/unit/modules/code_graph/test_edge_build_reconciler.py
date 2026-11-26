@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.core import org_context
 from app.modules.code_graph import edge_build_reconciler
 from app.modules.code_graph.build_state import sync_point_key_for
 from tests.unit.modules.code_graph.sync_point_fakes import FakeSyncPoints
@@ -26,8 +27,15 @@ def _row(record_group_id: str, requested_at: int | None, org_id: str = "org-1") 
 
 
 def _graph_provider(rows: list[dict]) -> MagicMock:
+    """The rows' orgs, and each org's rows read under that org, as PostgreSQL serves them."""
     provider = MagicMock()
-    provider.get_nodes_by_filters = AsyncMock(return_value=rows)
+    orgs = sorted({r["orgId"] for r in rows if r.get("orgId")})
+    provider.get_all_orgs = AsyncMock(return_value=[{"_key": o} for o in orgs])
+
+    async def by_filters(*, collection, filters, **_) -> list[dict]:
+        assert filters["orgId"] == org_context.current_org_id()
+        return [r for r in rows if r.get("orgId") == filters["orgId"]]
+    provider.get_nodes_by_filters = AsyncMock(side_effect=by_filters)
     return provider
 
 
@@ -55,6 +63,7 @@ async def test_stale_pending_repo_is_handed_to_the_event_service() -> None:
     assert query["collection"] == CollectionNames.SYNC_POINTS.value
     assert query["filters"] == {
         "syncDataPointType": "codeEdgeBuild",
+        "orgId": "org-1",
         "edgeBuildPending": True,
     }
 
@@ -246,3 +255,19 @@ async def test_disabled_code_graph_runs_no_sweep(monkeypatch) -> None:
     monkeypatch.setattr(edge_build_reconciler, "reconcile_once", sweeps)
     await edge_build_reconciler.reconcile_forever(MagicMock(), MagicMock(), MagicMock())
     sweeps.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_each_build_starts_inside_its_repos_org() -> None:
+    provider = _graph_provider([_row("repo-1", STALE_MS), _row("repo-2", STALE_MS, org_id="org-2")])
+    service = _event_service()
+    bound: list[tuple[str, str]] = []
+
+    async def start_build(org_id: str, connector_id: str, record_group_id: str) -> bool:
+        bound.append((record_group_id, org_context.current_org_id()))
+        return True
+
+    service.start_build = start_build
+    await edge_build_reconciler.reconcile_once(provider, service, MagicMock(), now_ms=NOW_MS)
+
+    assert sorted(bound) == [("repo-1", "org-1"), ("repo-2", "org-2")]

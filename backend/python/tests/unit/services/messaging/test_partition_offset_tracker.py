@@ -110,18 +110,31 @@ class TestRevoke:
         tracker.track(tp, 5)
         assert tracker.mark_done(tp, 5) == 6
 
+    def test_r16_kafka_1_a_late_completion_on_a_revoked_partition_commits_nothing(self) -> None:
+        """A delivery still in flight when its partition was revoked finishes later, after the next poll: its
+        watermark was cleared with the revoke, so folding its offset into high-water-seen would commit past
+        every offset the new owner has not read yet (the gate's flake on b0ac68e117 committed 505 over 450)."""
+        tracker = PartitionOffsetTracker()
+        tp = _tp()
+        for offset in (49, 50, 500):
+            tracker.track(tp, offset)
+        tracker.revoke(tp)
+        assert tracker.mark_done(tp, 500) is None
+        assert tracker.mark_redeliver(tp, 49) is None
+        # Assigned again: tracking starts afresh from what is read; an old delivery never commits past it.
+        tracker.track(tp, 50)
+        # A late completion of an offset this owner never read commits nothing (main #5357).
+        assert tracker.mark_done(tp, 49) is None
+        assert tracker.mark_done(tp, 50) == 51
+
     def test_revoke_of_untracked_partition_is_noop(self):
         tracker = PartitionOffsetTracker()
         tracker.revoke(_tp())  # must not raise
 
 
 class TestMarkDoneWithoutPriorTrack:
-    def test_mark_done_without_track_still_advances(self):
-        """Defensive: even if track() was skipped, mark_done must not raise
-        and should still fold the offset into high-water-seen."""
-        tracker = PartitionOffsetTracker()
-        tp = _tp()
-        assert tracker.mark_done(tp, 0) == 1
+    def test_mark_done_without_track_commits_nothing(self) -> None:
+        assert PartitionOffsetTracker().mark_done(_tp(), 0) is None
 
     def test_untracked_resolution_is_logged_as_an_error(self):
         """Resolving an offset the watermark never saw enter the buffer is
@@ -138,6 +151,48 @@ class TestMarkDoneWithoutPriorTrack:
         tracker.track(tp, 7)
         tracker.mark_done(tp, 7)
         assert not logger.error.called
+
+
+class TestJobThatOutlivesARebalance:
+    """Offset 8 was running when a rebalance wiped the partition, and 1..7 have
+    not been re-read. Its result must not commit past them."""
+
+    def _revoked_with_8_running(self) -> tuple[PartitionOffsetTracker, TopicPartition]:
+        tracker = PartitionOffsetTracker()
+        tp = _tp()
+        for offset in range(9):
+            tracker.track(tp, offset)
+        tracker.mark_done(tp, 0)
+        tracker.mark_dispatched(tp, 8)
+        tracker.revoke(tp)
+        return tracker, tp
+
+    def test_finishing_commits_nothing(self) -> None:
+        tracker, tp = self._revoked_with_8_running()
+        assert tracker.mark_done(tp, 8) is None
+
+    def test_handing_back_commits_nothing_and_leaves_no_floor(self) -> None:
+        tracker, tp = self._revoked_with_8_running()
+        assert tracker.mark_redeliver(tp, 8) is None
+
+        tracker.track(tp, 1)
+        assert tracker.mark_done(tp, 1) == 2
+
+    def test_it_cannot_carry_a_later_commit_past_what_is_still_unread(self) -> None:
+        tracker, tp = self._revoked_with_8_running()
+        for offset in (1, 2, 3):
+            tracker.track(tp, offset)
+        tracker.mark_done(tp, 8)
+
+        assert [tracker.mark_done(tp, offset) for offset in (1, 2, 3)] == [2, 3, 4]
+
+    def test_the_re_read_delivery_still_commits_normally(self) -> None:
+        tracker, tp = self._revoked_with_8_running()
+        tracker.mark_done(tp, 8)
+        for offset in range(1, 9):
+            tracker.track(tp, offset)
+
+        assert [tracker.mark_done(tp, offset) for offset in range(1, 9)] == list(range(2, 10))
 
 
 class TestRedeliverFloor:

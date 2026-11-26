@@ -64,6 +64,56 @@ Připojte Slack, Google Drive, GitHub, Microsoft 365, Notion a více než 50 dal
   <strong><a href="https://youtu.be/VgyND38QZ7w">▶ Podívejte se na 2½minutové demo</a></strong>: Claude Code odpovídá ze systémů Jira, Slack, GitHub a Drive s respektováním oprávnění každého uživatele
 </p>
 
+### Jak PipesHub funguje
+
+PipesHub vytváří **jednotnou kontextovou vrstvu** nad dokumenty, konverzacemi, strukturovanými daty, wiki, tikety a kódem. Konektory synchronizují každý zdroj včetně jeho oprávnění. Indexační pipeline obsah zpracuje, rozdělí na části, vytvoří embeddingy a propojí záznamy, lidi a entity ve znalostním grafu.
+
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
+Na otázky odpovídá **agentní smyčka**, nikoli jediný průchod „vyhledat a vygenerovat“. Agent plánuje, volá nástroje, čte výsledky a pokračuje, dokud nemá důkazy:
+
+- **Hybridní vyhledávání** — sémantické vyhledávání i vyhledávání podle klíčových slov, aby našel význam i přesné výrazy.
+- **Grep / vyhledávání vzorů** — přesné identifikátory, chybové zprávy, klíče tiketů a symboly v kódu.
+- **Procházení znalostního grafu** — sleduje vazby mezi dokumenty, lidmi, tikety, pull requesty a vlákny.
+- **Čtení dokumentů** — otevře celý zdroj, místo aby spoléhal na jediný nalezený úsek.
+
+Každé volání nástroje je filtrováno podle oprávnění uživatele, který se ptá, a každá odpověď cituje bloky, ze kterých pochází.
+
+| | RAG s top-k úryvky | PipesHub |
+| --- | --- | --- |
+| **Co agent vidí nejdřív** | Několik textových úryvků | Název, umístění, metadata a shrnutí každého záznamu a k tomu bloky, které odpovídají dotazu |
+| **Jak se dostane hlouběji** | Nedostane: jedno vyhledání na otázku | Hybridní vyhledávání, `grep`/`find` nad záznamy, procházení složek a dotazy do znalostního grafu, ve smyčce |
+| **Struktura** | Ztracena při dělení na úryvky | Každý zdroj se stane Bloky: sekce, tabulky s řádky a buňkami, vlákna, kód, SQL tabulky s jejich schématem |
+| **Oprávnění** | Často jen přibližně při indexaci | Kontrolována vůči oprávněním zdrojového systému pro uživatele, který se ptá, při každém volání nástroje |
+| **Citace** | Na úryvek, pokud vůbec | Na blok: stránka, buňka tabulky, řádek, snímek nebo řádek kódu; vymyšlené citace se odstraní |
+
 ## Co můžete s PipesHub vytvořit?
 
 PipesHub nejen používejte — stavějte na něm.

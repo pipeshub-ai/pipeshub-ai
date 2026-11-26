@@ -2,7 +2,7 @@
 
 import { useTranslation } from 'react-i18next';
 
-import { Flex, IconButton, Text, Tooltip } from '@radix-ui/themes';
+import { Flex, IconButton, Text, Tooltip, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
@@ -13,6 +13,7 @@ import { useUserStore } from '@/lib/store/user-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { BrandMark } from '@/config';
+import { useChatStore } from '@/chat/store';
 
 /** A count you check rather than a place you browse to, so it rides the bar with its number on the glyph. */
 function InboxButton() {
@@ -105,6 +106,8 @@ export function SidebarHeaderActions() {
 export function ChatSidebarHeader() {
   const { t } = useTranslation();
   const profile = useUserStore((s) => s.profile);
+  const isMobile = useIsMobile();
+  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
 
   const avatar = (
     <UserAvatar
@@ -120,10 +123,32 @@ export function ChatSidebarHeader() {
 
   return (
     <Flex align="center" justify="between" gap="2" style={{ height: '100%', padding: 'var(--space-4)' }}>
-      <BrandMark size={HEADER_ELEMENT_SIZE} color="var(--accent-11)" />
+      <Link
+        href="/chat/"
+        onClick={(e) => {
+          // A modified click opens Home elsewhere; this tab keeps its search.
+          if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+          if (isMobile) closeMobileSidebar();
+          // Search results share /chat/ with the new-chat page, so the link alone would leave them open.
+          const chat = useChatStore.getState();
+          if (chat.settings.mode === 'search') {
+            chat.setMode('chat');
+            chat.clearSearchResults();
+          }
+        }}
+        className="touch-hit"
+        aria-label={t('nav.home')}
+        style={{ lineHeight: 0, display: 'inline-flex' }}
+      >
+        <BrandMark size={HEADER_ELEMENT_SIZE} color="var(--accent-11)" />
+      </Link>
       <Flex align="center" gap="1">
-        <Link href="/workspace/profile/" className="touch-hit" aria-label={t('common.openProfile')} style={{ textDecoration: 'none', lineHeight: 0, display: 'inline-flex' }}>
-          {avatar}
+        {/* The name comes from the words, not aria-label: an aria-label lacking the avatar's initials fails WCAG 2.5.3. */}
+        <Link href="/workspace/profile/" className="touch-hit" style={{ textDecoration: 'none', lineHeight: 0, display: 'inline-flex' }}>
+          <span aria-hidden style={{ display: 'inline-flex' }}>
+            {avatar}
+          </span>
+          <VisuallyHidden>{t('common.openProfile')}</VisuallyHidden>
         </Link>
         <SidebarHeaderActions />
       </Flex>

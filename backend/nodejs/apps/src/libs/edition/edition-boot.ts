@@ -16,6 +16,8 @@ export interface EditionCspSources {
 export interface EditionContainers {
   entityManager?: Container;
   auth?: Container;
+  mcpServers?: Container;
+  skills?: Container;
 }
 
 /**
@@ -25,8 +27,10 @@ export interface EditionContainers {
 export interface EditionBoot {
   /** Extra broker topics created with the required ones. */
   topics: TopicDefinition[];
-  /** Added to the built-in lists when STRICT_MODE turns the CSP on. */
+  /** Added to the built-in source lists of the pages' CSP (ADR-WEB-01). */
   cspSources: EditionCspSources;
+  /** The edition's consent and decision pages: never framed, like the sign-in pages (UNFRAMEABLE_PAGE_PATHS). */
+  unframeablePaths: string[];
   initialize(
     configurationManagerConfig: ConfigurationManagerConfig,
     appConfig: AppConfig,
@@ -35,6 +39,8 @@ export interface EditionBoot {
   mountRawRoutes(app: Express): void;
   mountRoutes(app: Express, containers: EditionContainers): void;
   startWorkers(logger: Logger): void;
+  /** Extra Markdown sections for `/auth.md`, after the built-in ways in; `origin` is the instance's. */
+  authMdSections(origin: string): string[];
   /** After the HTTP server listens. */
   afterListen(logger: Logger, containers: EditionContainers): Promise<void>;
   stop(logger: Logger, containers: EditionContainers): Promise<void>;
@@ -44,10 +50,12 @@ export interface EditionBoot {
 export const noopEditionBoot: EditionBoot = {
   topics: [],
   cspSources: { connectSrc: [], scriptSrc: [], frameSrc: [] },
+  unframeablePaths: [],
   initialize: async () => {},
   mountRawRoutes: () => {},
   mountRoutes: () => {},
   startWorkers: () => {},
+  authMdSections: () => [],
   afterListen: async () => {},
   stop: async () => {},
   dispose: async () => {},

@@ -1,0 +1,58 @@
+- id: KB-S-01
+  title: Knowledge base with a team grant; team members read every file and folder, others nothing
+  source: permission model doc, container rule (KB)
+  rule: container
+  world: golden/kb_support
+  expect:
+    verdicts:
+      mia: {file:refunds: admit, file:shipping: admit, folder:faq: admit}
+      nate: {file:refunds: admit, file:shipping: admit}
+      olu: {file:refunds: deny, file:shipping: deny, folder:faq: deny, kb: deny}
+  tags: [kb, "cell:container/kb-team-grant", "cell:container/gated", "cell:container/not-gated"]
+- id: KB-C-01
+  title: Member added to the team; Olu reads the whole KB at once
+  source: permission model doc, container rule
+  rule: container
+  world: golden/kb_support
+  mutation: {kind: member_added, node: t:support, ref: olu}
+  expect:
+    before: {olu: {file:refunds: deny}}
+    verdicts:
+      olu: {file:refunds: admit, file:shipping: admit}
+    index_writes: 0
+  tags: [kb, "cell:container/member-change"]
+- id: KB-C-02
+  title: Member removed from the team; Nate loses the KB
+  source: permission model doc, container rule
+  rule: container
+  world: golden/kb_support
+  mutation: {kind: member_removed, node: t:support, ref: nate}
+  expect:
+    before: {nate: {file:refunds: admit}}
+    verdicts:
+      nate: {file:refunds: deny, file:shipping: deny}
+      mia: {file:refunds: admit}
+    index_writes: 0
+  tags: [kb, "cell:container/member-change", narrowing]
+- id: KB-C-03
+  title: Team removed from the KB; nobody is gated in any more
+  source: permission model doc, container rule
+  rule: container
+  world: golden/kb_support
+  mutation: {kind: grant_removed, node: kb, ref: t:support}
+  expect:
+    verdicts:
+      mia: {file:refunds: deny, file:shipping: deny}
+    index_writes: 0
+  tags: [kb, "cell:container/visibility-change", narrowing]
+- id: KB-C-04
+  title: File deleted; only that file goes
+  source: permission model doc, container rule
+  rule: container
+  world: golden/kb_support
+  mutation: {kind: deleted, node: file:refunds}
+  expect:
+    verdicts:
+      mia: {file:refunds: deny, file:shipping: admit}
+    index_writes: delete
+  tags: [kb, "cell:container/delete", narrowing]

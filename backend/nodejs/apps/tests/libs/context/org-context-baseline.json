@@ -3,6 +3,7 @@
   "app.ts": 2,
   "libs/services/outbox/outbox.dispatcher.ts": 1,
   "libs/services/telemetry/telemetry.service.ts": 1,
+  "libs/services/ttl-sweeper.service.ts": 1,
   "modules/crawling_manager/services/connector_schedule_sweep.ts": 1,
   "modules/crawling_manager/services/crawling_worker.ts": 1,
   "modules/desktop_proxy/socket/desktop-proxy.gateway.ts": 1,
@@ -14,7 +15,7 @@
  },
  "direct_org_reads": {
   "modules/artifacts/services/conversation-artifacts.service.ts": 1,
-  "modules/auth/controller/userAccount.controller.ts": 7,
+  "modules/auth/controller/userAccount.controller.ts": 8,
   "modules/auth/middlewares/userAuthentication.middleware.ts": 1,
   "modules/auth/routes/orgAuthConfig.routes.ts": 1,
   "modules/configuration_manager/controller/cm_controller.ts": 3,

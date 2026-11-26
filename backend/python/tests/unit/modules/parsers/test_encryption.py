@@ -1,16 +1,18 @@
 """Finding out from the file itself that it needs a password."""
 from __future__ import annotations
 
+import ast
 import struct
-import time
+from pathlib import Path
 
 import pypdfium2
 import pytest
 
 from app.exceptions.indexing_exceptions import PasswordProtectedError
+from app.modules.parsers import encryption as encryption_module
 from app.modules.parsers.encryption import (
     has_encrypted_package,
-    pdfium_password_error,
+    open_pdfium_document,
     raise_if_password_protected_office,
     raise_if_pdf_needs_password,
 )
@@ -18,6 +20,7 @@ from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
 )
+from tests.support.cpu_budget import thread_cpu
 from tests.support.office_samples import (
     ENCRYPTED_BY_EXTENSION,
     ENCRYPTED_MACRO_BY_EXTENSION,
@@ -26,6 +29,7 @@ from tests.support.office_samples import (
     cfbf,
 )
 from tests.support.pdf_samples import (
+    no_pages_pdf,
     owner_password_pdf,
     password_protected_pdf,
     text_pdf,
@@ -37,6 +41,30 @@ OOXML_MIME = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
+
+
+# A damaged container is read for a bounded number of header fields (at most 64 directory sectors and
+# 8 index sectors, a few fields each), whatever the file claims. Counting the reads checks that bound
+# without timing it.
+MAX_FIELD_READS = 200
+
+
+def _field_reads(monkeypatch: pytest.MonkeyPatch, content: bytes) -> int:
+    reads = 0
+
+    class Counting:
+        def __getattr__(self, name: str) -> object:
+            return getattr(struct, name)
+
+        def unpack_from(self, *args: object) -> tuple:
+            nonlocal reads
+            reads += 1
+            return struct.unpack_from(*args)
+
+    monkeypatch.setattr(encryption_module, "struct", Counting())
+    has_encrypted_package(content)
+    return reads
+
 
 
 class TestOoxml:
@@ -107,10 +135,10 @@ class TestMalformedContainers:
         for cut in (7, 100, 511, 512, 700, len(good) - 1):
             assert has_encrypted_package(good[:cut]) in (True, False)
 
-    def test_a_directory_chain_that_loops(self) -> None:
-        started = time.monotonic()
-        assert not has_encrypted_package(cfbf(["x"] * 30 + ["EncryptedPackage"], directory_loops=True))
-        assert time.monotonic() - started < 0.5
+    def test_a_directory_chain_that_loops(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        looping = cfbf(["x"] * 30 + ["EncryptedPackage"], directory_loops=True)
+        assert not has_encrypted_package(looping)
+        assert _field_reads(monkeypatch, looping) < MAX_FIELD_READS
 
     @pytest.mark.parametrize(
         "offset, fmt, value",
@@ -129,12 +157,10 @@ class TestMalformedContainers:
         assert not has_encrypted_package(bytes(damaged))
 
     @pytest.mark.parametrize("first", [0, 1, 0xFFFFFFFE])
-    def test_a_difat_chain_that_never_ends_is_bounded(self, first: int) -> None:
+    def test_a_difat_chain_that_never_ends_is_bounded(self, first: int, monkeypatch: pytest.MonkeyPatch) -> None:
         damaged = bytearray(cfbf(["EncryptionInfo"]))
         struct.pack_into("<II", damaged, 68, first, 0xFFFFFFFF)
-        started = time.monotonic()
-        has_encrypted_package(bytes(damaged))
-        assert time.monotonic() - started < 0.5
+        assert _field_reads(monkeypatch, bytes(damaged)) < MAX_FIELD_READS
 
     def test_random_bytes_behind_the_magic(self) -> None:
         import random
@@ -159,11 +185,12 @@ class TestMalformedContainers:
         full = cfbf(["EncryptionInfo", "EncryptedPackage"]) + b"\xAB" * (50 * 1024 * 1024)
         has_encrypted_package(full)
 
-        started = time.perf_counter()
-        for _ in range(20):
-            assert has_encrypted_package(full)
-        per_call_ms = (time.perf_counter() - started) / 20 * 1000
+        with thread_cpu() as cpu:
+            for _ in range(20):
+                assert has_encrypted_package(full)
+        per_call_ms = cpu.seconds / 20 * 1000
 
+        # Microseconds when only the header and directory are read; a copy or scan of the 50 MB is milliseconds.
         assert per_call_ms < 5, f"{per_call_ms:.2f} ms per 50 MB file"
 
 
@@ -185,15 +212,91 @@ class TestPdf:
 
     def test_the_decision_is_pdfiums_status_not_its_wording(self) -> None:
         # A different error whose text says "password" is not a password error.
-        assert not pdfium_password_error(pypdfium2.PdfiumError("Failed to load document (password mentioned)"))
-        assert not pdfium_password_error(RuntimeError("Incorrect password error"))
+        is_password = encryption_module._pdfium_password_error
+        assert not is_password(pypdfium2.PdfiumError("Failed to load document (password mentioned)"))
+        assert not is_password(RuntimeError("Incorrect password error"))
 
     def test_an_error_without_pdfiums_code_is_not_a_password_even_after_a_password_failure(self) -> None:
         # pdfium's last-error state still says "password" here; an exception that carries no code must not read it.
+        is_password = encryption_module._pdfium_password_error
         with pytest.raises(pypdfium2.PdfiumError):
             pypdfium2.PdfDocument(password_protected_pdf())
-        assert not pdfium_password_error(pypdfium2.PdfiumError("Failed to load document"))
+        assert not is_password(pypdfium2.PdfiumError("Failed to load document"))
         try:
             pypdfium2.PdfDocument(password_protected_pdf())
         except pypdfium2.PdfiumError as exc:
-            assert pdfium_password_error(exc)
+            assert is_password(exc)
+
+
+class TestOpenPdfiumDocument:
+    def test_a_locked_file_is_refused_as_password_protected(self) -> None:
+        with pytest.raises(PasswordProtectedError) as raised:
+            open_pdfium_document(password_protected_pdf())
+
+        assert isinstance(raised.value.__cause__, pypdfium2.PdfiumError)
+
+    def test_a_load_that_fails_without_an_error_is_not_read_as_a_password_after_a_locked_file(self) -> None:
+        with pytest.raises(PasswordProtectedError):
+            open_pdfium_document(password_protected_pdf())
+
+        with pytest.raises(pypdfium2.PdfiumError) as broken:
+            open_pdfium_document(no_pages_pdf())
+
+        assert not isinstance(broken.value, PasswordProtectedError)
+
+    def test_the_right_password_opens_a_locked_file(self) -> None:
+        open_pdfium_document(password_protected_pdf(), password="secret").close()
+
+    def test_a_good_file_opens(self) -> None:
+        open_pdfium_document(text_pdf()).close()
+
+
+class TestPdfiumErrorCodesAreReadInOnePlace:
+    """pdfium's error code is only trustworthy right after the reset in ``open_pdfium_document``."""
+
+    ALLOWED = Path("app/modules/parsers/encryption.py")
+    NAMES = {"err_code", "FPDF_ERR_PASSWORD", "FPDF_GetLastError", "_pdfium_password_error"}
+
+    @classmethod
+    def _error_code_reads(cls, source: str) -> list[tuple[int, str]]:
+        found = []
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Attribute):
+                name = node.attr
+            elif isinstance(node, ast.Name):
+                name = node.id
+            elif isinstance(node, ast.alias):
+                name = node.name.rsplit(".", 1)[-1]
+            else:
+                continue
+            if name in cls.NAMES:
+                found.append((getattr(node, "lineno", 0), name))
+        return found
+
+    def test_no_other_module_reads_pdfiums_error_code(self) -> None:
+        offenders = [
+            f"{path}:{line}: {name}"
+            for path in sorted(Path("app").rglob("*.py"))
+            if path != self.ALLOWED
+            for line, name in self._error_code_reads(path.read_text(encoding="utf-8-sig"))
+        ]
+
+        assert offenders == [], "classify pdfium failures with open_pdfium_document instead:\n" + "\n".join(offenders)
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "def f(e):\n    return e.err_code == 4\n",
+            "import pypdfium2.raw as r\ndef f(e):\n    return r.FPDF_GetLastError() == r.FPDF_ERR_PASSWORD\n",
+            "from pypdfium2.raw import FPDF_ERR_PASSWORD\n",
+            "from app.modules.parsers.encryption import _pdfium_password_error\n",
+        ],
+        ids=["err_code", "last error", "imported constant", "private classifier"],
+    )
+    def test_the_scan_finds_a_raw_classification(self, source: str) -> None:
+        assert self._error_code_reads(source)
+
+    def test_the_scan_passes_code_that_uses_the_helper(self) -> None:
+        source = "from app.modules.parsers.encryption import open_pdfium_document\nopen_pdfium_document(b'')\n"
+
+        assert self._error_code_reads(source) == []

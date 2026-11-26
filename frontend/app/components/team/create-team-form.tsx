@@ -11,6 +11,7 @@ import React, {
 import { Box, Flex, Text, Badge, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
+import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import {
   FormField,
   SearchableCheckboxDropdown,
@@ -202,10 +203,14 @@ export const CreateTeamForm = forwardRef<CreateTeamFormHandle, CreateTeamFormPro
         });
 
         onCreated(newTeam);
-      } catch {
+      } catch (error) {
         addToast({
           variant: 'error',
           title: t('workspace.teams.create.errorGeneric', 'Failed to create team'),
+          description: getUserFacingErrorMessage(
+            error,
+            t('workspace.teams.create.errorDescription', 'Could not create the team. Please try again.')
+          ),
           duration: 5000,
         });
       } finally {
@@ -240,75 +245,81 @@ export const CreateTeamForm = forwardRef<CreateTeamFormHandle, CreateTeamFormPro
       >
         {/* Team Name */}
         <FormField label={t('workspace.teams.create.nameLabel', 'Team Name')}>
-          <input
-            type="text"
-            value={teamName}
-            onChange={(e) => setTeamName(e.target.value)}
-            placeholder={t(
-              'workspace.teams.create.namePlaceholder',
-              'e.g. Product Engineering'
-            )}
-            style={{
-              width: '100%',
-              height: 'var(--space-8)',
-              padding: '6px 8px',
-              backgroundColor: 'var(--color-surface)',
-              border: '1px solid var(--slate-a5)',
-              borderRadius: 'var(--radius-2)',
-              fontSize: 14,
-              lineHeight: '20px',
-              fontFamily: 'var(--default-font-family)',
-              color: 'var(--slate-12)',
-              outline: 'none',
-              boxSizing: 'border-box',
-            }}
-            onFocus={(e) => {
-              e.currentTarget.style.border = '2px solid var(--accent-8)';
-              e.currentTarget.style.padding = '5px 7px';
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.border = '1px solid var(--slate-a5)';
-              e.currentTarget.style.padding = '6px 8px';
-            }}
-          />
+          {(control) => (
+            <input
+              {...control}
+              type="text"
+              value={teamName}
+              onChange={(e) => setTeamName(e.target.value)}
+              placeholder={t(
+                'workspace.teams.create.namePlaceholder',
+                'e.g. Product Engineering'
+              )}
+              style={{
+                width: '100%',
+                height: 'var(--space-8)',
+                padding: '6px 8px',
+                backgroundColor: 'var(--color-surface)',
+                border: '1px solid var(--slate-a5)',
+                borderRadius: 'var(--radius-2)',
+                fontSize: 14,
+                lineHeight: '20px',
+                fontFamily: 'var(--default-font-family)',
+                color: 'var(--slate-12)',
+                outline: 'none',
+                boxSizing: 'border-box',
+              }}
+              onFocus={(e) => {
+                e.currentTarget.style.border = '2px solid var(--accent-8)';
+                e.currentTarget.style.padding = '5px 7px';
+              }}
+              onBlur={(e) => {
+                e.currentTarget.style.border = '1px solid var(--slate-a5)';
+                e.currentTarget.style.padding = '6px 8px';
+              }}
+            />
+          )}
         </FormField>
 
         {/* Team Description */}
         <FormField
           label={t('workspace.teams.create.descriptionLabel', 'Team Description')}
         >
-          <textarea
-            value={teamDescription}
-            onChange={(e) => setTeamDescription(e.target.value)}
-            placeholder={t(
-              'workspace.teams.create.descriptionPlaceholder',
-              'Describe the purpose of this team'
-            )}
-            rows={4}
-            style={{
-              width: '100%',
-              minHeight: 88,
-              padding: 'var(--space-2)',
-              backgroundColor: 'var(--color-surface)',
-              border: '1px solid var(--slate-a5)',
-              borderRadius: 'var(--radius-2)',
-              fontSize: 14,
-              lineHeight: '20px',
-              fontFamily: 'var(--default-font-family)',
-              color: 'var(--slate-12)',
-              outline: 'none',
-              boxSizing: 'border-box',
-              resize: 'vertical',
-            }}
-            onFocus={(e) => {
-              e.currentTarget.style.border = '2px solid var(--accent-8)';
-              e.currentTarget.style.padding = '7px';
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.border = '1px solid var(--slate-a5)';
-              e.currentTarget.style.padding = '8px';
-            }}
-          />
+          {(control) => (
+            <textarea
+              {...control}
+              value={teamDescription}
+              onChange={(e) => setTeamDescription(e.target.value)}
+              placeholder={t(
+                'workspace.teams.create.descriptionPlaceholder',
+                'Describe the purpose of this team'
+              )}
+              rows={4}
+              style={{
+                width: '100%',
+                minHeight: 88,
+                padding: 'var(--space-2)',
+                backgroundColor: 'var(--color-surface)',
+                border: '1px solid var(--slate-a5)',
+                borderRadius: 'var(--radius-2)',
+                fontSize: 14,
+                lineHeight: '20px',
+                fontFamily: 'var(--default-font-family)',
+                color: 'var(--slate-12)',
+                outline: 'none',
+                boxSizing: 'border-box',
+                resize: 'vertical',
+              }}
+              onFocus={(e) => {
+                e.currentTarget.style.border = '2px solid var(--accent-8)';
+                e.currentTarget.style.padding = '7px';
+              }}
+              onBlur={(e) => {
+                e.currentTarget.style.border = '1px solid var(--slate-a5)';
+                e.currentTarget.style.padding = '8px';
+              }}
+            />
+          )}
         </FormField>
 
         {/* Add Members */}

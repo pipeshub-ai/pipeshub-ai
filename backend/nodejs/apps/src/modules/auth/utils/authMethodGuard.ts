@@ -3,7 +3,7 @@ import {
   ForbiddenError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
-import { AuthMethodType } from '../schema/orgAuthConfiguration.schema';
+import { AuthMethodType } from '../types/auth-method';
 
 export interface IOrgAuthConfigLike {
   authSteps: Array<{

@@ -8,7 +8,6 @@ from typing_extensions import TypedDict
 
 from app.config.configuration_service import ConfigurationService
 from app.modules.code_graph.connectors import agent_knowledge_has_code_connector
-from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import (
@@ -18,6 +17,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.utils.chat_helpers import CitationRefMapper
 from app.utils.execute_query import agent_knowledge_has_sql_connector
 from app.utils.fetch_slack_thread import agent_knowledge_has_slack_connector
+from harness_core.effects.flow import FlowRule
 
 # Default persona when the UI does not supply systemPrompt (keep in sync with API defaults).
 DEFAULT_AGENT_SYSTEM_PROMPT = "You are an enterprise questions answering expert"
@@ -51,7 +51,7 @@ class ChatState(TypedDict):
 
     retrieval_service: RetrievalService
     graph_provider: IGraphDBProvider
-    reranker_service: RerankerService
+    reranker_service: object | None  # unused; always None
     config_service: ConfigurationService
     entity_vector_store: Any | None  # EntityVectorStore, optional for graceful degradation
 
@@ -100,8 +100,10 @@ class ChatState(TypedDict):
     instructions: str | None  # Agent-specific instructions for the LLM
     custom_instructions: str | None  # Org-level Chat Assistant / Universal Agent Mode instructions
     project_instructions: str | None  # Author-set instructions from a linked Project (Node ProjectService)
+    project_tools_selected: bool  # A project chat whose tools are the ones enabled on the project
     timezone: str | None  # User's timezone (e.g., "America/New_York")
     current_time: str | None  # Current time in user's timezone (ISO 8601)
+    locale: str | None  # G-52: the person's locale (BCP 47), which sets the answer's language
     apps: list[str] | None  # List of app IDs to search in (extracted from knowledge array)
     kb: list[str] | None  # List of KB app IDs to search in (extracted from knowledge array)
     agent_knowledge: list[dict[str, Any]] | None
@@ -112,6 +114,7 @@ class ChatState(TypedDict):
     tools: list[str] | None  # List of tool names to enable for this agent
     web_search_config: dict[str, Any] | None  # Runtime web_search tool config (provider + configuration payload)
     deep_research: bool  # Deep research on: research method in the prompt, more turns, a larger web budget
+    web_search_unset: bool  # The org has no web search provider: the prompt tells the model so
     output_file_path: str | None  # Optional file path for saving responses
     tool_to_connector_map: dict[str, str] | None  # Mapping from app_name (tool) to connector instance ID
 
@@ -181,6 +184,16 @@ class ChatState(TypedDict):
     # retrieval still uses the agent creator's userId in state (set in agent routes) for
     # graph ACL; user_info may still carry the real caller's name/email for LLM context.
     is_service_account: bool
+    # Whose stored connections the tools use (`{instanceId}/{owner}`): the user, or the
+    # service-account agent (SS2: a handle is never issued for anyone else's).
+    credential_owner: str | None
+    # The Agent Builder agent the turn runs as (its id); None for plain chat and Universal Agent Mode. Today's loop
+    # reads that agent's approval rules with it (FG2).
+    agent_key: str | None
+    # The conversation history's confidentiality label as Node joined it (FG2); None: unknown.
+    history_label: dict[str, Any] | None
+    # The turn's flow rules as Node resolved them (CPD-10, ``X-PipesHub-Resolved``); None: read per request.
+    resolved_flow_rules: tuple[FlowRule, ...] | None
 
     # Placeholder agent flag: when True, knowledge retrieval uses all configured connectors/KBs
     is_placeholder_agent: bool
@@ -190,7 +203,7 @@ class ChatState(TypedDict):
     known_record_ids: set[str] | None  # Record IDs the model has been shown — see remember_record_ids()
     known_record_names: dict[str, str] | None  # The same ids with their names, in the order shown (latest last)
     retrieved_by: dict[str, Any] | None  # Which layer found each record — see modules/retrieval/provenance.py
-    usage_ledger: Any | None  # Opt-in per-request LLM usage — see agents/agent_loop/protocol/run_usage.py
+    usage_ledger: Any | None  # Per-request LLM usage — see agents/agent_loop/protocol/run_usage.py
     record_label_to_uuid_map: dict[str, str] | None  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
     qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Any | None  # BlobStorage instance for processing results
@@ -209,6 +222,7 @@ class ChatState(TypedDict):
     keyword_search_budget: str | None
     record_id_shortener: Any | None  # Lazily created by the first knowledge tool call, only when enabled above
     attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)
+    attachment_record_ids: list[str] | None  # The attachments' virtual record ids the user may read (set by chat modes; also in filters["kb"])
     resolved_attachment_blocks: list | None  # Pre-resolved image_url blocks for multimodal LLM injection; populated on first LLM call
 
     # Reflection and retry fields (for intelligent error recovery)
@@ -232,7 +246,6 @@ class ChatState(TypedDict):
     has_ui_client: bool  # True when the client can show and answer a question card; gates UI-only tools like ask_user_question
     # Per-tool approvals (`app/agents/agent_loop/tool_approvals.py`).
     client_name: str | None
-    agent_key: str | None
     is_assistant_chat: bool
     chat_streaming: bool
     tool_approval: dict[str, Any] | None
@@ -392,11 +405,16 @@ def _build_web_search_tool_config(chat_query: dict[str, Any]) -> dict[str, Any] 
         configuration = resolved_config.get("configuration", {})
         if provider:
             others = resolved_config.get("providers")
+            from app.web.config import image_settings
+
             return {
                 "provider": provider,
                 "configuration": configuration if isinstance(configuration, dict) else {},
                 # The other stored providers: search fallbacks and page readers (`app.web.config`).
                 "providers": [p for p in others if isinstance(p, dict)] if isinstance(others, list) else [],
+                # "Send images to LLM": agent runs build their tools from this dict, not from the
+                # resolved config chat mode keeps, so without it they never send images.
+                "settings": image_settings(resolved_config.get("settings")),
             }
 
 
@@ -520,7 +538,7 @@ _CARD_CLIENTS = frozenset({"pipeshub-ai", "slack"})
 
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, has_code_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
+                        reranker_service: object | None, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, has_code_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -547,8 +565,10 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     # its own prompt section, never merged into system_prompt/instructions,
     # so it never touches a real Agent Builder agent's identity.
     project_instructions = chat_query.get("projectInstructions")
+    project_tools_selected = bool(chat_query.get("projectToolsSelected"))
     timezone = chat_query.get("timezone")
     current_time = chat_query.get("currentTime")
+    locale = chat_query.get("locale")
     output_file_path = chat_query.get("outputFilePath")
 
     # Get toolsets and knowledge from the new graph-based format
@@ -626,6 +646,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "user_email": user_info.get("userEmail", ""),
         "send_user_info": user_info.get("sendUserInfo", True),
         "conversation_id": chat_query.get("conversationId"),
+        "harness_run_id": chat_query.get("harnessRunId"),
+        "harness_checkpoint_store": chat_query.get("harnessCheckpointStore"),
+        "virtual_filesystem": chat_query.get("harnessVirtualFileSystem"),
         "llm": llm,
         "logger": logger,
         "retrieval_service": retrieval_service,
@@ -641,8 +664,10 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "instructions": instructions,
         "custom_instructions": custom_instructions,
         "project_instructions": project_instructions,
+        "project_tools_selected": project_tools_selected,
         "timezone": timezone,
         "current_time": current_time,
+        "locale": locale,
         "apps": apps,  # Extracted from knowledge connector IDs
         "kb": kb,
         "agent_knowledge": agent_knowledge,
@@ -654,6 +679,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "web_search_config": _build_web_search_tool_config(chat_query),
         # Applies only with web search on; AgentContext.from_chat_state checks that.
         "deep_research": bool(chat_query.get("deepResearch")),
+        "web_search_unset": bool(chat_query.get("webSearchUnset")),
         "output_file_path": output_file_path,
         "tool_to_connector_map": None,  # Deprecated - use tool_to_toolset_map
 
@@ -704,6 +730,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
 
         # Service account flag
         "is_service_account": bool(chat_query.get("is_service_account", False)),
+        "credential_owner": chat_query.get("credentialOwner"),
+        "history_label": chat_query.get("historyLabel"),
+        "resolved_flow_rules": chat_query.get("resolvedFlowRules"),
         "is_placeholder_agent": bool(
             chat_query.get("isPlaceholderAgent", False)
         ),

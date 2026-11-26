@@ -1,13 +1,23 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Set
-from pydantic import BaseModel
+
+from pydantic import BaseModel, Field
+
 from app.models.entities import Record
+from app.modules.pipeline import parser_identity as _parser_identity
+
 
 class ReconciliationContext(BaseModel):
     """Context for reconciliation-based incremental indexing."""
     new_metadata: Dict[str, Any] = {}
     blocks_to_index_ids: Optional[Set[str]] = None  # None means index all
     block_ids_to_delete: Optional[Set[str]] = None  # None means delete none
+    # old block id -> new block id, for blocks whose content is unchanged but whose stored points carry ids of another
+    # scheme: their points are moved to the new id with the stored vectors, not embedded again
+    rekey_ids: dict[str, str] | None = None
+    # The ids (as the stored metadata names them, so the old ids of a record being re-keyed) of the blocks that had a point when the
+    # record was last indexed; None for a record indexed before that was recorded.
+    recorded_points: set[str] | None = None
 
 #: ``TransformContext.settings`` key: the record is handed to the pipeline
 #: stages once indexed, so the indexed write also marks extraction QUEUED (the
@@ -15,9 +25,26 @@ class ReconciliationContext(BaseModel):
 #: indexed with an extractionStatus that looks final, and a duplicate would copy it.
 ENRICHMENT_FOLLOWS = "enrichment_follows"
 
+#: ``TransformContext.settings`` key, set by the indexed write in place of
+#: ``ENRICHMENT_FOLLOWS`` when classification waits for the record's first use:
+#: extraction is marked NOT_STARTED and the classify stage is not dispatched.
+ENRICHMENT_DEFERRED = "enrichment_deferred"
+
+#: Record field written with that NOT_STARTED, so a hand-off lost to a crash is
+#: told apart from a cut-short enrichment or an older record, which are final.
+EXTRACTION_DEFERRED_FIELD = "extractionDeferred"
+
 #: ``TransformContext.settings`` key: seconds the image-description pass may
 #: take before the remaining images are stored undescribed. Unset means no limit.
 IMAGE_DESCRIPTION_BUDGET_S = "image_description_budget_s"
+
+#: ``TransformContext.settings`` key: the run is a parse-now run, so once the content is stored the record is marked
+#: ``parseNowStatus=STORED`` (see ``app.modules.indexing.parse_now_marker``).
+PARSE_NOW = "parse_now"
+
+#: ``TransformContext.settings`` key: store the content and mark it, nothing else. No vectors, no entity points, no
+#: reconciliation metadata, no status on the record, no hand-off to the pipeline stages.
+STORE_ONLY = "store_only"
 
 
 class TransformContext(BaseModel):
@@ -31,6 +58,12 @@ class TransformContext(BaseModel):
     entity_resolution: Optional[Any] = None
     # Set when extraction was skipped by configuration (not failed), e.g. no LLM configured.
     extraction_skip_reason: str | None = None
+    # The lastIndexTimestamp the record's COMPLETED write stored; None until that write succeeds.
+    indexed_at_ms: int | None = None
+    # The parser the run recorded in its COMPLETED write ("inproc:txt@1"): set from the event's labels when the run starts and
+    # carried here; None when it is not tracked. Never recomputed at write time from the graph.
+    parser_identity: str | None = Field(default_factory=_parser_identity.run_identity)
+    parser_identity_source: str = _parser_identity.SOURCE_PARSED
 
 class Transformer(ABC):
     @abstractmethod

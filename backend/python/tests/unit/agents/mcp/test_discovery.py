@@ -1,4 +1,5 @@
 """Unit tests for app.agents.mcp.discovery."""
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -266,3 +267,25 @@ class TestDiscoverTools:
         with patch("app.agents.mcp.discovery.MCPClientManager", return_value=mock_manager):
             with pytest.raises(MCPConnectionError, match="unreachable"):
                 await discover_tools(config, {})
+
+
+async def test_a_401_then_refresh_is_a_debug_line_naming_the_server(caplog: pytest.LogCaptureFixture) -> None:
+    """The refresh's own `credential_refresh.end` (INFO) says it happened; this line adds nothing at INFO."""
+    from app.agents.mcp import discovery
+    from app.agents.mcp.errors import MCPHttpStatusError
+    from app.agents.mcp.models import OAuthTokens
+    from app.utils.logger import log_record_fields
+
+    instance = {"_id": "inst-1", "orgId": "org-1", "createdBy": "user-1", "name": "Server", "transport": "streamable_http",
+                "url": "https://mcp.example.com/mcp", "authMode": MCPAuthMode.OAUTH.value}
+    auth = {"isAuthenticated": True, "oauthTokens": {"accessToken": "at-old"}}
+    listing = ToolListing(tools=[], instructions=None)
+    caplog.set_level(logging.DEBUG, logger="app.agents.mcp.discovery")
+    with patch.object(discovery, "discover_tool_listing", new=AsyncMock(side_effect=[MCPHttpStatusError(401), listing])), \
+         patch.object(discovery, "refresh_credential_record", new=AsyncMock(return_value=OAuthTokens(access_token="at-new"))):
+        await discovery._discover_listing_for_owner(instance, auth, "user-1", MagicMock())
+
+    [line] = [r for r in caplog.records if r.name == "app.agents.mcp.discovery"]
+    assert line.levelno == logging.DEBUG
+    assert "refreshing the token once" in line.getMessage() and "inst-1" not in line.getMessage()
+    assert log_record_fields(line)["mcp_server_id"] == "inst-1"

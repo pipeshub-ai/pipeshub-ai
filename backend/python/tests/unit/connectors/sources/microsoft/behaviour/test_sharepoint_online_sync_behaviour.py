@@ -7,14 +7,18 @@ databases are in-memory fakes.
 """
 
 import asyncio
+import json
 import logging
 import sys
+from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 from azure.identity.aio import ClientSecretCredential
+from kiota_serialization_json.json_parse_node_factory import JsonParseNodeFactory
 from ms_graph_fakes import (
     GRAPH,
     FakeCheckpointStore,
@@ -27,6 +31,7 @@ from ms_graph_fakes import (
     page,
 )
 from msgraph import GraphServiceClient
+from msgraph.generated.models.list_item import ListItem
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 from sharepoint_behaviour_fakes import (
     DRIVE_ID,
@@ -65,12 +70,20 @@ from sharepoint_behaviour_fakes import (
     user_grant,
 )
 
+from app.config.constants.arangodb import AppStatus, CollectionNames
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
+from app.connectors.core.sync import sync_runner
+from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
+from app.connectors.core.sync.sync_runner import run_sync_task
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
     SharePointRecordType,
+)
+from app.connectors.sources.microsoft.sharepoint_online.container_tracker import (
+    ContainerTracker,
 )
 from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
     SharePointSyncIncomplete,
@@ -80,6 +93,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     SharePointPageRecord,
+    SourcePerson,
 )
 from app.models.permission import EntityType, PermissionType
 
@@ -154,7 +168,7 @@ class TestClientAndTokens:
         api.token_failure = json_response(
             {"error": "invalid_client", "error_description": "AADSTS7000215: Invalid client secret provided."}, status=401
         )
-        with pytest.raises(ValueError, match="Invalid client secret"):
+        with pytest.raises(ConnectorInitError, match=r"AADSTS7000215.*client secret is wrong"):
             await ready_connector(api, db, checkpoints)
         assert api.graph_calls() == []
 
@@ -830,7 +844,7 @@ class TestSitePages:
 class TestFullRun:
     async def test_run_sync_saves_users_the_site_its_library_and_files(self, connector, api, db) -> None:
         serve_site(api)
-        api.on("GET", "/v1.0/users", page([{"id": "u1", "displayName": "Ana", "mail": "ana@contoso.com", "accountEnabled": True}]))
+        api.on("GET", "/v1.0/users", page([{"id": "u1", "displayName": "Ana", "mail": "ana@contoso.com", "accountEnabled": True}], count=1))
         api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
         api.on("GET", "/v1.0/groups", page([]))
         api.on("GET", f"{SITE_REST}/sitegroups", rest_users())
@@ -847,7 +861,7 @@ class TestFullRun:
 
     async def test_incremental_sync_picks_up_new_files(self, connector, api, db) -> None:
         serve_site(api)
-        api.on("GET", "/v1.0/users", page([]))
+        api.on("GET", "/v1.0/users", page([{"id": "u1", "displayName": "Ana", "mail": "ana@contoso.com", "accountEnabled": True}], count=1))
         api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
         api.on("GET", "/v1.0/groups", page([]))
         api.on("GET", f"{SITE_REST}/sitegroups", rest_users())
@@ -858,6 +872,53 @@ class TestFullRun:
         await connector.run_incremental_sync()
 
         assert "i1" in db.records
+
+
+class TestAuthorship:
+    async def test_a_library_files_creator_and_last_editor_come_from_the_delta_payload(self, connector, api, db) -> None:
+        item = file_item("i1", "plan.pdf")
+        item["createdBy"] = {"user": {"id": "u-ana", "displayName": "Ana", "email": "ana@acme.com"}}
+        item["lastModifiedBy"] = {"application": {"id": "app-sync", "displayName": "Migration Tool"}}
+        delta_pages(api, {None: page([item], delta_link=delta_url("d1"))})
+        serve_item(api, "i1", [])
+
+        await sync_site(connector)
+
+        plan = db.by_name("plan.pdf")
+        assert plan.authored_by == SourcePerson(source_id="u-ana", email="ana@acme.com", display_name="Ana")
+        assert plan.last_modified_by == SourcePerson(
+            source_id="app-sync", display_name="Migration Tool", is_service_account=True
+        )
+
+    async def test_a_pages_creator_and_last_editor_come_from_the_page_listing(self, connector, api, db) -> None:
+        serve_site(api)
+        await connector._get_all_sites()
+        listed = site_page("pg1", "Home")
+        listed["createdBy"] = {"user": {"id": "u-ana", "displayName": "Ana", "email": "ana@acme.com"}}
+        listed["lastModifiedBy"] = {"user": {"id": "u-ben", "displayName": "Ben"}}
+        api.on("GET", PAGES, page([listed]))
+        delta_pages(api, {None: page([], delta_link=delta_url("d1"))})
+
+        await sync_site(connector)
+
+        home = db.by_name("Home - Eng")
+        assert home.authored_by == SourcePerson(source_id="u-ana", email="ana@acme.com", display_name="Ana")
+        assert home.last_modified_by == SourcePerson(source_id="u-ben", display_name="Ben")
+
+    async def test_a_list_items_creator_and_last_editor_are_kept(self, connector) -> None:
+        payload = {
+            "id": "7", "eTag": "le1", "webUrl": f"{SITE_URL}/Lists/Tasks/7_.000",
+            "createdDateTime": "2024-01-01T00:00:00Z", "lastModifiedDateTime": "2024-05-01T10:00:00Z",
+            "createdBy": {"user": {"id": "u-ana", "displayName": "Ana"}},
+            "lastModifiedBy": {"user": {"displayName": "System Account"}},
+            "fields": {"Title": "Ship it"},
+        }
+        node = JsonParseNodeFactory().get_root_parse_node("application/json", json.dumps(payload).encode())
+
+        record = await connector._create_list_item_record(node.get_object_value(ListItem), SITE_ID, "list-1")
+
+        assert record.authored_by == SourcePerson(source_id="u-ana", display_name="Ana")
+        assert record.last_modified_by is not None and record.last_modified_by.is_service_account
 
 
 ADMIN_FOLDER_ID = "9617aacb-e380-454f-ae8e-7fd2526ed289"
@@ -1458,7 +1519,7 @@ class TestRunSafety:
         api.on("GET", "/v1.0/users", page([
             {"id": "u1", "displayName": "Ana", "mail": "ana@contoso.com", "accountEnabled": True, "userType": "Member"},
             {"id": "u2", "displayName": "Bo", "mail": "bo@contoso.com", "accountEnabled": False, "userType": "Member"},
-        ]))
+        ], count=2))
         await connector._sync_users()
         serve_groups_delta(api, {None: page([{"id": "g1"}], delta_link=groups_delta_url("D1"))})
         api.on("GET", "/v1.0/groups", page([{"id": "g1", "displayName": "Eng"}]))
@@ -1501,3 +1562,648 @@ class TestConnectionCheck:
         api.on("GET", f"{SITE_REST}/roleassignments", rest_users())
 
         assert await connector.test_connection_and_access() is True
+
+
+RECORDS, RECORD_GROUPS, USER_GROUPS = (
+    CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.GROUPS.value,
+)
+OPS_ID = f"{SP_HOST},{'3' * 32},{'4' * 32}"
+OPS_URL = f"https://{SP_HOST}/sites/ops"
+OPS_REST = "/sites/ops/_api/web"
+OPS_DRIVE = "b!drive-ops"
+OPS_ROOT = "root-ops"
+
+
+def stored_nodes(db: FakeRecordsDb) -> set[str]:
+    return (
+        {f"{RECORDS}/{k}" for k in db.records}
+        | {f"{RECORD_GROUPS}/{k}" for k in db.record_groups}
+        | {f"{USER_GROUPS}/{k}" for k in db.user_groups}
+    )
+
+
+async def run_full_sync(connector: SharePointConnector, db: FakeRecordsDb, checkpoints: FakeCheckpointStore) -> set[str]:
+    """Run ``run_sync`` as a full sync runs: its sync points deleted first, as the event service
+    does, then the sync runner's sweep. Returns the stored nodes the run took away: those it deleted,
+    and those the sweep unlinks because it neither wrote nor noted them kept (the sweep unlinks
+    nothing when the run reports itself incomplete).
+
+    The fake db notes each record, record group and user group written, as the real processor does
+    (a record also notes its record group), and what the connector notes kept.
+    """
+    checkpoints.sync_points.clear()
+    before = stored_nodes(db)
+    seen = FullSyncSeen()
+
+    def note(collection: str, node_id: str | None) -> None:
+        if node_id:
+            seen.add(collection, node_id)
+
+    def note_record(record: Any) -> None:  # noqa: ANN401
+        note(RECORDS, record.external_record_id)
+        note(RECORD_GROUPS, record.external_record_group_id)
+
+    def wrap(name: str, mark: Any) -> Any:  # noqa: ANN401
+        original = getattr(db, name, None)
+
+        async def write(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            result = await original(*args, **kwargs) if original else None
+            mark(*args)
+            return result
+
+        return write
+
+    async def note_kept_record_group(connector_id: str, external_group_id: str) -> None:
+        # As the real processor: a record group that is not stored is not noted.
+        if external_group_id in db.record_groups:
+            await FakeRecordsDb.note_kept_record_group(db, connector_id, external_group_id)
+            note(RECORD_GROUPS, external_group_id)
+
+    def note_kept_records(connector_id: str, record_ids: list[str]) -> None:
+        for record in db.records.values():
+            if record.id in record_ids:
+                note(RECORDS, record.external_record_id)
+
+    def matches(node: dict[str, Any], filters: dict[str, Any]) -> bool:
+        return all(node.get(key) == getattr(value, "value", value) for key, value in filters.items())
+
+    async def get_nodes_by_filters(
+        collection: str, filters: dict[str, Any], return_fields: list[str] | None = None, **_: object,
+    ) -> list[dict[str, Any]]:
+        if collection == RECORD_GROUPS:
+            nodes = [group.to_arango_base_record_group() for group in db.record_groups.values()]
+        elif collection == USER_GROUPS:
+            nodes = [{"externalGroupId": k, "connectorId": connector.connector_id} for k in db.user_groups]
+        else:
+            nodes = []
+        return [node for node in nodes if matches(node, filters)]
+
+    patches = {
+        "on_new_records": wrap("on_new_records", lambda items: [note_record(r) for r, _ in items]),
+        "on_record_metadata_update": wrap("on_record_metadata_update", note_record),
+        "on_record_content_update": wrap("on_record_content_update", lambda r, *_: note_record(r)),
+        "on_updated_record_permissions": wrap("on_updated_record_permissions", lambda r, *_: note_record(r)),
+        "on_new_record_groups": wrap("on_new_record_groups", lambda gs: [note(RECORD_GROUPS, g.external_group_id) for g, _ in gs]),
+        "on_new_user_groups": wrap("on_new_user_groups", lambda gs: [note(USER_GROUPS, g.source_user_group_id) for g, _ in gs]),
+        "note_kept_user_group": wrap("note_kept_user_group", lambda _c, group_id: note(USER_GROUPS, group_id)),
+        "note_kept_record_group": note_kept_record_group,
+        "note_kept_user_groups": lambda c, gs: [note(USER_GROUPS, g.source_user_group_id) for g in gs],
+        "note_kept_records": note_kept_records,
+        "get_nodes_by_filters": get_nodes_by_filters,
+        "full_sync_running": lambda connector_id: True,
+        "begin_full_sync_run": lambda connector_id: seen,
+        "end_full_sync_run": lambda connector_id, run: None,
+    }
+    for name, patch in patches.items():
+        setattr(db, name, patch)
+    graph = AsyncMock()
+    graph.get_document.return_value = {"id": connector.connector_id, "status": AppStatus.FULL_SYNCING.value}
+    graph.unlink_nodes_missed_by_full_sync.return_value = (0, True)
+    try:
+        await run_sync_task(connector, connector.connector_id, graph, logging.getLogger("test.full_sync"),
+                            start_status=AppStatus.FULL_SYNCING.value)
+    except SharePointSyncIncomplete:
+        pass
+    finally:
+        for name in patches:
+            delattr(db, name)
+    still_stored = stored_nodes(db)
+    if not graph.unlink_nodes_missed_by_full_sync.await_count:
+        return before - still_stored
+    by_collection = graph.unlink_nodes_missed_by_full_sync.await_args.args[1]
+    return (before - still_stored) | {
+        node for node in before & still_stored
+        if node.partition("/")[2] not in by_collection.get(node.partition("/")[0], set())
+    }
+
+
+def ops_root_item() -> dict:
+    return {**root_item(), "id": OPS_ROOT, "parentReference": {"driveId": OPS_DRIVE}}
+
+
+def ops_file(item_id: str, name: str) -> dict:
+    item = file_item(item_id, name, parent_id=OPS_ROOT)
+    item["parentReference"]["driveId"] = OPS_DRIVE
+    return item
+
+
+def serve_eng_and_ops(api) -> None:
+    """Eng (the root site): its library with i1, i2, i-old, pages pg1, pg2, pg-old and the site group
+    Eng Members. Ops (listed by Graph): its library with o1 and the site group Ops Members. Entra
+    groups g1 and g-old. Every route a full sync reads, as the tenant stands before anything changes."""
+    api.on("GET", "/v1.0/users", page([{"id": "u1", "displayName": "Ana", "mail": "ana@contoso.com",
+                                         "accountEnabled": True}], count=1))
+    api.on("GET", GROUPS_DELTA, page([], delta_link=groups_delta_url("D1")))
+    api.on("GET", "/v1.0/groups", page([{"id": "g1", "displayName": "Eng"}, {"id": "g-old", "displayName": "Old"}]))
+    serve_group(api, "g1", [user_member("u1", "ana@contoso.com")])
+    serve_group(api, "g-old", [user_member("u1", "ana@contoso.com")])
+
+    api.on("GET", "/v1.0/sites", page([site_payload(OPS_ID, OPS_URL, "ops")]))
+    api.on("GET", f"/v1.0/sites/{SITE_ID}", site_payload())
+    api.on("GET", f"/v1.0/sites/{OPS_ID}", site_payload(OPS_ID, OPS_URL, "ops"))
+    for site_id in (SITE_ID, OPS_ID):
+        api.on("GET", f"/v1.0/sites/{site_id}/sites", page([]))
+    for rest, group_id, title in ((SITE_REST, 5, "Eng Members"), (OPS_REST, 6, "Ops Members")):
+        api.on("GET", f"{rest}/roleassignments", rest_users(role_assignment(sp_group(group_id, title), "Edit")))
+        api.on("GET", f"{rest}/sitegroups", rest_users(sp_group(group_id, title)))
+        api.on("GET", f"{rest}/sitegroups/GetById({group_id})/users", rest_users(sp_user(11, "ana@contoso.com")))
+
+    delta_pages(api, {None: page([root_item(), file_item("i1", "plan.pdf"), file_item("i2", "budget.pdf"),
+                                  file_item("i-old", "old.pdf")], delta_link=delta_url("d1"))})
+    for item_id, name in (("i1", "plan.pdf"), ("i2", "budget.pdf"), ("i-old", "old.pdf")):
+        serve_item(api, item_id, [])
+        # The item as Graph returns it: a stored file left out of a complete listing is probed by this read.
+        api.on("GET", f"/v1.0/drives/{DRIVE_ID}/items/{item_id}",
+               {**file_item(item_id, name), "@microsoft.graph.downloadUrl": f"https://download.example/{item_id}"})
+    api.on("GET", PAGES, page([site_page("pg1", "Home"), site_page("pg2", "News"), site_page("pg-old", "Old")]))
+    for page_id, title in (("pg1", "Home"), ("pg2", "News"), ("pg-old", "Old")):
+        api.on("GET", f"{PAGES}/{page_id}", site_page(page_id, title))
+
+    api.on("GET", drive_path(OPS_ID), page([drive_payload(OPS_DRIVE, "Ops Docs")]))
+    api.on("GET", f"/v1.0/drives/{OPS_DRIVE}/root", ops_root_item())
+    serve_library_permissions(api, drive_id=OPS_DRIVE)
+    api.on("GET", delta_path(OPS_DRIVE, OPS_ID), page([ops_root_item(), ops_file("o1", "ops.pdf")],
+                                                      delta_link=delta_url("o1", OPS_DRIVE)))
+    serve_item(api, "o1", [], drive_id=OPS_DRIVE)
+    api.on("GET", f"/v1.0/sites/{OPS_ID}/pages", page([]))
+
+
+def delete_the_really_gone(api) -> None:
+    """i-old, pg-old and g-old are deleted at the source: gone from every listing, and Graph answers 404."""
+    delta_pages(api, {None: page([root_item(), file_item("i1", "plan.pdf"), file_item("i2", "budget.pdf")],
+                                 delta_link=delta_url("d2"))})
+    api.on("GET", f"/v1.0/drives/{DRIVE_ID}/items/i-old", graph_error(404, "itemNotFound"))
+    api.on("GET", PAGES, page([site_page("pg1", "Home"), site_page("pg2", "News")]))
+    api.on("GET", f"{PAGES}/pg-old", graph_error(404, "itemNotFound"))
+    api.on("GET", "/v1.0/groups", page([{"id": "g1", "displayName": "Eng"}]))
+
+
+class TestFullSyncUnlinksOnlyWhatIsGone:
+    """A full sync unlinks every stored node it neither writes nor notes kept. A node still in
+    SharePoint must not lose its links because the sync left it out; what is really gone at the
+    source still does.
+
+    Each scenario: a first sync stores the Eng and Ops sites with their libraries, files, pages and
+    site groups, and the Entra groups g1 and g-old. Before the full sync i-old, pg-old and g-old are
+    deleted at the source: they are really gone, and must still be unlinked.
+    """
+
+    REALLY_GONE = {f"{RECORDS}/i-old", f"{RECORDS}/pg-old", f"{USER_GROUPS}/g-old"}
+    OPS_LIBRARY = {f"{RECORD_GROUPS}/{OPS_DRIVE}", f"{RECORDS}/{OPS_DRIVE}:root:{OPS_ROOT}", f"{RECORDS}/o1"}
+    OPS_SITE = {f"{RECORD_GROUPS}/{OPS_ID}", f"{USER_GROUPS}/{OPS_ID}-6"} | OPS_LIBRARY
+
+    @pytest.fixture(autouse=True)
+    def no_retry_owed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An incomplete full sync leaves the connector id in this module-level set for the rest of the process.
+        monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", set())
+
+    @pytest.fixture
+    async def seeded(self, connector, api, db) -> SharePointConnector:
+        serve_eng_and_ops(api)
+        await connector.run_sync()
+        assert self.OPS_SITE | self.REALLY_GONE | {f"{RECORDS}/i2", f"{RECORDS}/pg2"} <= stored_nodes(db)
+        delete_the_really_gone(api)
+        return connector
+
+    async def test_a_full_sync_that_reads_everything_unlinks_only_what_is_gone(self, seeded, db, checkpoints) -> None:
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert seeded.full_sync_coverage().complete is True
+        assert unlinked == self.REALLY_GONE
+
+    async def test_a_site_and_library_graph_says_are_gone_are_unlinked(self, seeded, api, db, checkpoints) -> None:
+        api.on("GET", "/v1.0/sites", page([]))
+        api.on("GET", f"/v1.0/sites/{OPS_ID}", graph_error(404, "itemNotFound"))
+        api.on("GET", f"/v1.0/drives/{OPS_DRIVE}", graph_error(404, "itemNotFound"))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | self.OPS_SITE
+
+    async def test_a_site_the_app_can_no_longer_list_keeps_its_links(self, seeded, api, db, checkpoints) -> None:
+        """Sites.Selected access withdrawn, or a site the listing lags on: Graph still has the site (403, not 404)."""
+        api.on("GET", "/v1.0/sites", page([]))
+        api.on("GET", f"/v1.0/sites/{OPS_ID}", graph_error(403, "accessDenied"))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked - self.REALLY_GONE == set()
+        assert unlinked & self.REALLY_GONE == self.REALLY_GONE
+
+    async def test_a_library_missing_from_the_listing_that_graph_still_has_keeps_its_links(
+        self, seeded, api, db, checkpoints
+    ) -> None:
+        api.on("GET", drive_path(OPS_ID), page([]))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked - self.REALLY_GONE == set()
+        assert unlinked & self.REALLY_GONE == self.REALLY_GONE
+
+    async def test_a_library_the_drive_filter_now_excludes_is_not_kept(self, seeded, api, db, checkpoints) -> None:
+        ops_library_url = seeded._normalize_document_library_url(drive_payload(OPS_DRIVE, "Ops Docs")["webUrl"])
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "drive_ids": {"operator": "not_in", "value": [ops_library_url], "type": "multiselect"},
+        }}}
+        api.on("GET", drive_path(OPS_ID), page([]))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert self.OPS_LIBRARY <= unlinked
+        assert OPS_DRIVE not in db.kept_record_groups
+
+    async def test_every_stored_record_of_a_kept_library_is_noted_past_the_first_page(
+        self, seeded, api, db, checkpoints, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            "app.connectors.sources.microsoft.sharepoint_online.connector.KEPT_RECORDS_PAGE_SIZE", 1,
+        )
+        api.on("GET", drive_path(OPS_ID), page([]))
+        assert len([r for r in db.records.values() if r.external_record_group_id == OPS_DRIVE]) > 1, (
+            "more than one page at a page size of 1"
+        )
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE, "every record of the kept library is noted kept, not only the first page"
+
+    @staticmethod
+    def filter_libraries(connector: SharePointConnector, operator: str, names: list[str]) -> None:
+        urls = [connector._normalize_document_library_url(drive_payload(DRIVE_ID, name)["webUrl"]) for name in names]
+        connector.config_service.config["filters"] = {"sync": {"values": {
+            "drive_ids": {"operator": operator, "value": urls, "type": "multiselect"},
+        }}}
+
+    async def test_a_kept_sites_library_the_drive_filter_now_excludes_is_not_kept(
+        self, seeded, api, db, checkpoints
+    ) -> None:
+        self.filter_libraries(seeded, "not_in", ["Ops Docs"])
+        api.on("GET", "/v1.0/sites", page([]))
+        api.on("GET", f"/v1.0/sites/{OPS_ID}", graph_error(403, "accessDenied"))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | self.OPS_LIBRARY
+        assert OPS_ID in db.kept_record_groups
+        assert OPS_DRIVE not in db.kept_record_groups
+
+    async def test_a_kept_sites_library_the_drive_filter_includes_is_kept(self, seeded, api, db, checkpoints) -> None:
+        self.filter_libraries(seeded, "in", ["Documents", "Ops Docs"])
+        api.on("GET", "/v1.0/sites", page([]))
+        api.on("GET", f"/v1.0/sites/{OPS_ID}", graph_error(403, "accessDenied"))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE
+        assert OPS_DRIVE in db.kept_record_groups
+
+    async def test_an_unlisted_library_answering_403_is_kept(self, seeded, api, db, checkpoints) -> None:
+        api.on("GET", drive_path(OPS_ID), page([]))
+        api.on("GET", f"/v1.0/drives/{OPS_DRIVE}", graph_error(403, "accessDenied"))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE
+        assert seeded.full_sync_coverage().complete is True
+
+    @staticmethod
+    def fail_during_full_sync(monkeypatch: pytest.MonkeyPatch, connector, db, fails) -> None:
+        """Make the full sync's ``get_nodes_by_filters`` raise for the reads ``fails`` picks.
+
+        ``run_full_sync`` installs its own ``get_nodes_by_filters`` just before the run, so the failure is
+        wrapped around it from inside ``run_sync``.
+        """
+        run_sync = connector.run_sync
+
+        async def failing_run_sync() -> None:
+            read = db.get_nodes_by_filters
+
+            async def get_nodes_by_filters(collection: str, filters: dict[str, Any], *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+                if fails(collection, filters):
+                    raise RuntimeError("database unavailable")
+                return await read(collection, filters, *args, **kwargs)
+
+            db.get_nodes_by_filters = get_nodes_by_filters
+            await run_sync()
+
+        monkeypatch.setattr(connector, "run_sync", failing_run_sync)
+
+    async def test_a_failed_stored_library_read_makes_the_full_sync_incomplete(
+        self, seeded, api, db, checkpoints, monkeypatch
+    ) -> None:
+        api.on("GET", drive_path(OPS_ID), page([]))
+        self.fail_during_full_sync(
+            monkeypatch, seeded, db,
+            lambda collection, filters: filters.get("groupType") == RecordGroupType.DRIVE.value,
+        )
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert seeded.full_sync_coverage().complete is False
+        assert unlinked == {f"{RECORDS}/i-old", f"{RECORDS}/pg-old"}, "only Graph's 404s; the sweep does not run"
+
+    async def test_a_library_whose_records_cannot_be_noted_makes_the_full_sync_incomplete(
+        self, seeded, api, db, checkpoints, monkeypatch
+    ) -> None:
+        api.on("GET", drive_path(OPS_ID), page([]))
+        read = db.get_records_in_record_group
+
+        async def get_records_in_record_group(connector_id: str, external_group_id: str, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            if external_group_id == OPS_DRIVE:
+                raise RuntimeError("database unavailable")
+            return await read(connector_id, external_group_id, *args, **kwargs)
+
+        monkeypatch.setattr(db, "get_records_in_record_group", get_records_in_record_group)
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert seeded.full_sync_coverage().complete is False
+        assert unlinked == {f"{RECORDS}/i-old", f"{RECORDS}/pg-old"}, "only Graph's 404s; the sweep does not run"
+
+    async def test_an_incremental_run_does_not_read_stored_libraries(self, seeded, api, db, monkeypatch) -> None:
+        delta_pages(api, {"d1": page([], delta_link=delta_url("d2"))})
+        api.on("GET", drive_path(OPS_ID), page([]))
+        node_reads = AsyncMock(return_value=[])
+        monkeypatch.setattr(db, "get_nodes_by_filters", node_reads)
+        record_reads: list[str] = []
+        read = db.get_records_in_record_group
+
+        async def get_records_in_record_group(connector_id: str, external_group_id: str, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            record_reads.append(external_group_id)
+            return await read(connector_id, external_group_id, *args, **kwargs)
+
+        monkeypatch.setattr(db, "get_records_in_record_group", get_records_in_record_group)
+
+        await seeded.run_sync()
+
+        node_reads.assert_not_awaited()
+        assert OPS_DRIVE not in record_reads
+        tracker = ContainerTracker(seeded.drive_delta_sync_point, f"sharepoint-known-libraries/{OPS_ID}")
+        assert OPS_DRIVE in await tracker.known()
+        assert self.OPS_LIBRARY <= stored_nodes(db), "still there at the source: nothing of it is deleted"
+
+    async def test_a_file_missing_from_the_listing_that_graph_still_has_keeps_its_links(
+        self, seeded, api, db, checkpoints
+    ) -> None:
+        delta_pages(api, {None: page([root_item(), file_item("i1", "plan.pdf")], delta_link=delta_url("d2"))})
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert "i2" in db.records, "the reconciler keeps it: Graph did not answer 404"
+        assert unlinked - self.REALLY_GONE == set()
+        assert unlinked & self.REALLY_GONE == self.REALLY_GONE
+
+    async def test_a_file_the_date_filter_excludes_is_still_unlinked_by_a_full_sync(
+        self, seeded, api, db, checkpoints
+    ) -> None:
+        june = int(datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000)
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "modified": {"operator": "is_after", "type": "datetime", "value": {"start": june, "end": None}},
+        }}}
+        recent = {**file_item("i1", "plan.pdf"), "lastModifiedDateTime": "2024-07-01T10:00:00Z"}
+        delta_pages(api, {None: page([root_item(), recent, file_item("i2", "budget.pdf")], delta_link=delta_url("d2"))})
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert f"{RECORDS}/i2" in unlinked, "listed but out of scope: neither written nor kept"
+        assert seeded.full_sync_coverage().complete is True
+
+    async def test_an_unlisted_file_the_extension_filter_now_excludes_is_not_kept(
+        self, seeded, api, db, checkpoints
+    ) -> None:
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "file_extensions": {"operator": "in", "value": ["pdf"], "type": "multiselect"},
+        }}}
+        delta_pages(api, {None: page([root_item(), file_item("i1", "plan.pdf")], delta_link=delta_url("d2"))})
+        api.on("GET", f"/v1.0/drives/{DRIVE_ID}/items/i2", file_item("i2", "budget.docx"))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | {f"{RECORDS}/i2"}, "still there, but out of scope: not noted kept"
+        assert seeded.full_sync_coverage().complete is True
+
+    async def test_an_unlisted_file_the_extension_filter_includes_is_kept(self, seeded, api, db, checkpoints) -> None:
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "file_extensions": {"operator": "in", "value": ["pdf"], "type": "multiselect"},
+        }}}
+        delta_pages(api, {None: page([root_item(), file_item("i1", "plan.pdf")], delta_link=delta_url("d2"))})
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE
+
+    async def test_an_unlisted_file_whose_read_fails_is_kept_whatever_the_filter(
+        self, seeded, api, db, checkpoints
+    ) -> None:
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "file_extensions": {"operator": "in", "value": ["pdf"], "type": "multiselect"},
+        }}}
+        delta_pages(api, {None: page([root_item(), file_item("i1", "plan.pdf")], delta_link=delta_url("d2"))})
+        api.on("GET", f"/v1.0/drives/{DRIVE_ID}/items/i2", graph_error(503, "serviceNotAvailable"))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE, "the re-read failed: whether i2 is in scope is unknown, so it keeps its links"
+
+    async def test_a_page_missing_from_the_listing_that_graph_still_has_keeps_its_links(
+        self, seeded, api, db, checkpoints
+    ) -> None:
+        api.on("GET", PAGES, page([site_page("pg1", "Home")]))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert "pg2" in db.records, "kept: Graph did not answer 404"
+        assert unlinked - self.REALLY_GONE == set()
+        assert unlinked & self.REALLY_GONE == self.REALLY_GONE
+
+    async def test_a_page_the_date_filter_excludes_is_still_unlinked(self, seeded, api, db, checkpoints) -> None:
+        june = int(datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000)
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "modified": {"operator": "is_after", "type": "datetime", "value": {"start": june, "end": None}},
+        }}}
+        recent = {**site_page("pg1", "Home"), "lastModifiedDateTime": "2024-07-01T10:00:00Z"}
+        api.on("GET", PAGES, page([recent, site_page("pg2", "News")]))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert f"{RECORDS}/pg2" in unlinked, "listed but out of scope: neither written nor kept"
+        assert api.calls("GET", f"{PAGES}/pg2") == [], "a listed page is never probed"
+        assert seeded.full_sync_coverage().complete is True
+
+    async def test_an_unlisted_page_the_date_filter_now_excludes_is_not_kept(self, seeded, api, db, checkpoints) -> None:
+        june = int(datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000)
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "modified": {"operator": "is_after", "type": "datetime", "value": {"start": june, "end": None}},
+        }}}
+        recent = {**site_page("pg1", "Home"), "lastModifiedDateTime": "2024-07-01T10:00:00Z"}
+        api.on("GET", PAGES, page([recent]))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert api.calls("GET", f"{PAGES}/pg2"), "unlisted: probed"
+        # The filter also leaves out the seeded files; only the pages are judged here.
+        pages_unlinked = {node for node in unlinked if node.startswith(f"{RECORDS}/pg")}
+        assert pages_unlinked == {f"{RECORDS}/pg-old", f"{RECORDS}/pg2"}, "still there, but out of scope: not noted kept"
+
+    async def test_an_unlisted_page_the_date_filter_includes_is_kept(self, seeded, api, db, checkpoints) -> None:
+        june = int(datetime(2024, 6, 1, tzinfo=timezone.utc).timestamp() * 1000)
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "modified": {"operator": "is_after", "type": "datetime", "value": {"start": june, "end": None}},
+        }}}
+        recent = {**site_page("pg1", "Home"), "lastModifiedDateTime": "2024-07-01T10:00:00Z"}
+        api.on("GET", PAGES, page([recent]))
+        api.on("GET", f"{PAGES}/pg2", {**site_page("pg2", "News"), "lastModifiedDateTime": "2024-07-02T10:00:00Z"})
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        # The filter also leaves out the seeded files; only the pages are judged here.
+        assert {node for node in unlinked if node.startswith(f"{RECORDS}/pg")} == {f"{RECORDS}/pg-old"}
+
+    async def test_an_unlisted_system_page_is_not_kept(self, seeded, api, db, checkpoints) -> None:
+        api.on("GET", PAGES, page([site_page("pg1", "Home")]))
+        api.on("GET", f"{PAGES}/pg2", {**site_page("pg2", "News"), "createdBy": {"user": {"displayName": "System Account"}}})
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | {f"{RECORDS}/pg2"}
+
+    async def test_a_system_page_is_still_unlinked(self, seeded, api, db, checkpoints) -> None:
+        system = {**site_page("pg2", "News"), "createdBy": {"user": {"displayName": "System Account"}}}
+        api.on("GET", PAGES, page([site_page("pg1", "Home"), system]))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | {f"{RECORDS}/pg2"}
+
+    async def test_an_unlisted_page_graph_cannot_read_is_kept(self, seeded, api, db, checkpoints) -> None:
+        api.on("GET", PAGES, page([site_page("pg1", "Home")]))
+        api.on("GET", f"{PAGES}/pg2", graph_error(503, "serviceNotAvailable"))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE
+        assert seeded.full_sync_coverage().complete is True, "a page that is not a 404 is not a failed listing"
+
+    async def test_a_site_without_a_name_keeps_its_links(self, seeded, api, db, checkpoints) -> None:
+        nameless = {**site_payload(OPS_ID, OPS_URL, "ops"), "name": "", "displayName": ""}
+        api.on("GET", "/v1.0/sites", page([nameless]))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked - self.REALLY_GONE == set()
+        assert unlinked & self.REALLY_GONE == self.REALLY_GONE
+
+    async def test_a_site_the_site_filter_now_excludes_is_not_kept(self, seeded, api, db, checkpoints) -> None:
+        seeded.config_service.config["filters"] = {"sync": {"values": {
+            "site_ids": {"operator": "not_in", "value": [OPS_ID], "type": "multiselect"},
+        }}}
+        api.on("GET", "/v1.0/sites", page([]))
+        api.on("GET", f"/v1.0/sites/{OPS_ID}", graph_error(403, "accessDenied"))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | self.OPS_SITE
+        assert {OPS_ID, OPS_DRIVE} & set(db.kept_record_groups) == set()
+        assert f"{OPS_ID}-6" not in db.kept_user_groups
+
+    async def test_a_kept_sites_unlisted_subsite_is_probed_on_its_own(self, connector, api, db, checkpoints) -> None:
+        sub_id, sub_url, sub_drive = f"{SP_HOST},{'5' * 32},{'6' * 32}", f"{OPS_URL}/sub", "b!drive-sub"
+        sub_rest = "/sites/ops/sub/_api/web"
+        serve_eng_and_ops(api)
+        api.on("GET", f"/v1.0/sites/{OPS_ID}/sites", page([site_payload(sub_id, sub_url, "sub")]))
+        api.on("GET", f"/v1.0/sites/{sub_id}", site_payload(sub_id, sub_url, "sub"))
+        api.on("GET", f"/v1.0/sites/{sub_id}/sites", page([]))
+        api.on("GET", f"/v1.0/sites/{sub_id}/pages", page([]))
+        api.on("GET", f"{sub_rest}/roleassignments", rest_users(role_assignment(sp_group(7, "Sub Members"), "Edit")))
+        api.on("GET", f"{sub_rest}/sitegroups", rest_users(sp_group(7, "Sub Members")))
+        api.on("GET", f"{sub_rest}/sitegroups/GetById(7)/users", rest_users(sp_user(11, "ana@contoso.com")))
+        sub_root = {**root_item(), "id": "root-sub", "parentReference": {"driveId": sub_drive}}
+        sub_file = file_item("s1", "sub.pdf", parent_id="root-sub")
+        sub_file["parentReference"]["driveId"] = sub_drive
+        api.on("GET", drive_path(sub_id), page([drive_payload(sub_drive, "Sub Docs")]))
+        api.on("GET", f"/v1.0/drives/{sub_drive}/root", sub_root)
+        serve_library_permissions(api, drive_id=sub_drive)
+        api.on("GET", delta_path(sub_drive, sub_id), page([sub_root, sub_file], delta_link=delta_url("s1", sub_drive)))
+        serve_item(api, "s1", [], drive_id=sub_drive)
+        await connector.run_sync()
+        sub_site = {f"{RECORD_GROUPS}/{sub_id}", f"{RECORD_GROUPS}/{sub_drive}", f"{RECORDS}/{sub_drive}:root:root-sub",
+                    f"{RECORDS}/s1", f"{USER_GROUPS}/{sub_id}-7"}
+        assert sub_site | self.OPS_SITE <= stored_nodes(db)
+        delete_the_really_gone(api)
+        api.on("GET", "/v1.0/sites", page([]))
+        api.on("GET", f"/v1.0/sites/{OPS_ID}", graph_error(403, "accessDenied"))
+        api.on("GET", f"/v1.0/sites/{sub_id}", graph_error(404, "itemNotFound"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | sub_site
+        assert sub_id not in db.record_groups, "Graph's 404 deletes it"
+
+    async def test_a_failed_stored_site_read_makes_the_full_sync_incomplete(
+        self, seeded, api, db, checkpoints, monkeypatch
+    ) -> None:
+        api.on("GET", "/v1.0/sites", page([]))
+        api.on("GET", f"/v1.0/sites/{OPS_ID}", graph_error(403, "accessDenied"))
+        self.fail_during_full_sync(
+            monkeypatch, seeded, db,
+            lambda collection, filters: filters.get("groupType") == RecordGroupType.SHAREPOINT_SITE.value,
+        )
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert seeded.full_sync_coverage().complete is False
+        assert unlinked == {f"{RECORDS}/i-old", f"{RECORDS}/pg-old"}, "only Graph's 404s; the sweep does not run"
+
+    async def test_a_failed_user_group_read_for_a_kept_site_makes_the_full_sync_incomplete(
+        self, seeded, api, db, checkpoints, monkeypatch
+    ) -> None:
+        api.on("GET", "/v1.0/sites", page([]))
+        api.on("GET", f"/v1.0/sites/{OPS_ID}", graph_error(403, "accessDenied"))
+        self.fail_during_full_sync(monkeypatch, seeded, db, lambda collection, filters: collection == USER_GROUPS)
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert seeded.full_sync_coverage().complete is False
+        assert unlinked == {f"{RECORDS}/i-old", f"{RECORDS}/pg-old"}, "only Graph's 404s; the sweep does not run"
+
+    async def test_only_the_kept_sites_user_groups_are_noted(self, seeded, api, db, checkpoints) -> None:
+        api.on("GET", "/v1.0/sites", page([]))
+        api.on("GET", f"/v1.0/sites/{OPS_ID}", graph_error(403, "accessDenied"))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert db.kept_user_groups == [f"{OPS_ID}-6"]
+        assert f"{USER_GROUPS}/g-old" in unlinked
+
+    async def test_an_incremental_run_does_not_read_stored_sites(self, seeded, api, db, monkeypatch) -> None:
+        delta_pages(api, {"d1": page([], delta_link=delta_url("d2"))})
+        api.on("GET", "/v1.0/sites", page([]))
+        api.on("GET", f"/v1.0/sites/{OPS_ID}", graph_error(403, "accessDenied"))
+        node_reads = AsyncMock(return_value=[])
+        monkeypatch.setattr(db, "get_nodes_by_filters", node_reads)
+
+        await seeded.run_sync()
+
+        node_reads.assert_not_awaited()
+        assert OPS_ID in await ContainerTracker(seeded.drive_delta_sync_point, "sharepoint-known-sites").known()
+        assert self.OPS_SITE <= stored_nodes(db), "still there at the source: nothing of it is deleted"
+
+    async def test_a_site_with_no_name_not_stored_notes_nothing(self, connector, api, db, checkpoints) -> None:
+        serve_eng_and_ops(api)
+        api.on("GET", "/v1.0/sites", page([{**site_payload(OPS_ID, OPS_URL, "ops"), "name": "", "displayName": ""}]))
+
+        await run_full_sync(connector, db, checkpoints)
+
+        assert db.kept_record_groups == []
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_site_group_whose_members_fail_to_read_keeps_its_members_and_links(
+        self, seeded, api, db, checkpoints
+    ) -> None:
+        api.on("GET", f"{OPS_REST}/sitegroups/GetById(6)/users", graph_error(503, "serviceNotAvailable"))
+
+        unlinked = await run_full_sync(seeded, db, checkpoints)
+
+        assert db.user_groups[f"{OPS_ID}-6"] == ["ana@contoso.com"], "never rewritten emptier"
+        assert seeded.full_sync_coverage().complete is False, "a retry is owed; the sweep unlinks nothing this time"
+        assert unlinked == {f"{RECORDS}/i-old", f"{RECORDS}/pg-old"}, "Graph's 404 still deletes them"

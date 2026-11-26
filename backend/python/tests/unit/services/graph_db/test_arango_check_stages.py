@@ -4,6 +4,7 @@ runs only for the nodes still undecided. What the stages admit is tested against
 a real graph in ``tests/integration/graph_permissions/test_provider_v3_access_check.py``;
 these tests hold the staging around them."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -51,6 +52,7 @@ class TestStages:
             "declared": lambda ids: [i for i in ids if i == "c"],
             "seeds": [{"node": "d", "seed": "s1"}],
         })
+        provider._KH_CHECK_CONCURRENT_MAX = 0      # a check of many nodes
         assert await _rows(provider, ["a", "b", "c", "d", "e"]) == {"a", "b", "c", "d"}
         assert [(stage, ids) for stage, ids, *_ in calls] == [
             ("targets", ["a", "b", "c", "d", "e"]),
@@ -68,8 +70,53 @@ class TestStages:
             "seeds": [{"node": "d", "seed": "s1"}],
             "seed_from_app": lambda ids: [i for i in ids if i == "s1"],
         })
+        provider._KH_CHECK_CONCURRENT_MAX = 0
         assert await _rows(provider, ["d"]) == set()
         assert [stage for stage, *_ in calls] == ["targets", "from_app", "declared", "seeds", "seed_from_app"]
+
+    @pytest.mark.asyncio
+    async def test_a_check_of_a_few_nodes_runs_the_walking_arms_side_by_side_with_the_same_answer(self) -> None:
+        def answers() -> dict:
+            return {
+                "targets": [_row("a", ok=True), _row("b", walk=True), _row("c", walk=True), _row("d", walk=True), _row("f", walk=True)],
+                "from_app": lambda ids: [i for i in ids if i == "b"],
+                "declared": lambda ids: [i for i in ids if i == "c"],
+                "seeds": lambda ids: [p for p in ({"node": "b", "seed": "s0"}, {"node": "d", "seed": "s1"}, {"node": "f", "seed": "s2"}) if p["node"] in ids],
+                "seed_from_app": lambda ids: [i for i in ids if i == "s2"],
+            }
+        few, few_calls = _provider(answers())
+        many, _ = _provider(answers())
+        many._KH_CHECK_CONCURRENT_MAX = 0
+        assert await _rows(few, ["a", "b", "c", "d", "f"]) == await _rows(many, ["a", "b", "c", "d", "f"]) == {"a", "b", "c", "d"}
+        assert [(stage, ids) for stage, ids, *_ in few_calls] == [
+            ("targets", ["a", "b", "c", "d", "f"]),
+            ("from_app", ["b", "c", "d", "f"]), ("declared", ["b", "c", "d", "f"]), ("seeds", ["b", "c", "d", "f"]),
+            ("seed_from_app", ["s1", "s2"]), ("seed_declared", ["s1", "s2"]),      # the seed of a node another arm admits is not asked about
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_check_inside_a_transaction_never_sends_two_requests_at_once(self) -> None:
+        """Requests on one stream transaction id must not overlap, so a check of a few nodes inside one runs its arms one at a time."""
+        provider, calls = _provider({
+            "targets": [_row("b", walk=True), _row("d", walk=True)],
+            "from_app": lambda ids: [i for i in ids if i == "b"],
+            "seeds": [{"node": "d", "seed": "s1"}],
+        })
+        running, overlapped = [0], [False]
+        inner = provider.http_client.execute_aql.side_effect
+
+        async def one_at_a_time(*a: object, **k: object) -> list:
+            running[0] += 1
+            overlapped[0] |= running[0] > 1
+            try:
+                await asyncio.sleep(0)
+                return await inner(*a, **k)
+            finally:
+                running[0] -= 1
+        provider.http_client.execute_aql = AsyncMock(side_effect=one_at_a_time)
+        rows = await provider._kh_v3_accessible_rows("u", "org", ["b", "d"], [], access=ACCESS, transaction="trx-1")
+        assert {r["id"] for r in rows} == {"b", "d"} and not overlapped[0]
+        assert [stage for stage, *_ in calls] == ["targets", "from_app", "declared", "seeds", "seed_from_app", "seed_declared"]
 
     @pytest.mark.asyncio
     async def test_a_seed_is_not_held_to_the_request_org(self) -> None:

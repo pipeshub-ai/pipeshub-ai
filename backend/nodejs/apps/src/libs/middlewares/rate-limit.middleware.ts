@@ -1,10 +1,17 @@
-import { createSecretKey, KeyObject } from 'node:crypto';
+import { createHash, createSecretKey, KeyObject } from 'node:crypto';
 import { Request, Response, RequestHandler } from 'express';
 import rateLimit, { Options, ipKeyGenerator } from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import { TokenScopes } from '../enums/token-scopes.enum';
+import {
+  algorithmsFor,
+  toVerificationKey,
+} from '../services/authtoken.service';
+import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
 import { Logger } from '../services/logger.service';
 import { TooManyRequestsError } from '../errors/http.errors';
+import { isMcpRelay } from './mcp-relay';
+import { pathForLog } from './access-log.middleware';
 import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
 
 /**
@@ -23,6 +30,7 @@ function getClientIpKey(req: Request): string {
 }
 
 export const CALLER_ROLE_LOOKUP_PATH = '/api/v1/users/me/role';
+export const MCP_PATH = '/mcp';
 export const SERVICE_AUTHORIZATION_HEADER = 'x-service-authorization';
 
 /**
@@ -57,6 +65,39 @@ function isVerifiedCallerRoleLookup(
   }
 }
 
+/** A path one of whose segments is exactly `internal`: where the service-to-service routes are mounted. */
+const hasInternalSegment = (path: string): boolean =>
+  path.split('/').includes('internal');
+
+/**
+ * SEC-C-16: a service-to-service call to an internal route, proven by a scoped token that verifies here. The
+ * route's own `scopedTokenValidator` runs after this limiter, so the token is verified now rather than trusted
+ * from the path: a public route whose id segment an attacker names `internal` is still counted.
+ */
+function isVerifiedServiceCall(
+  req: Request,
+  key: KeyObject | null,
+  algorithms: jwt.Algorithm[],
+): boolean {
+  if (!key || !hasInternalSegment(req.path)) return false;
+  const header = req.headers.authorization;
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false;
+  try {
+    const claims = jwt.verify(
+      stripTokenDisplayPrefix(header.slice('Bearer '.length).trim()),
+      key,
+      { algorithms },
+    );
+    const scopes: unknown =
+      typeof claims === 'object'
+        ? (claims as { scopes?: unknown }).scopes
+        : undefined;
+    return Array.isArray(scopes) && scopes.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 // Single global rate limiter
 export function createGlobalRateLimiter(
   logger: Logger,
@@ -68,6 +109,11 @@ export function createGlobalRateLimiter(
     scopedJwtSecret !== undefined && scopedJwtSecret !== ''
       ? createSecretKey(Buffer.from(scopedJwtSecret))
       : null;
+  const scopedKey =
+    scopedJwtSecret !== undefined && scopedJwtSecret !== ''
+      ? toVerificationKey(scopedJwtSecret)
+      : null;
+  const scopedAlgorithms = scopedKey ? algorithmsFor(scopedKey) : [];
   const config: Partial<Options> = {
     windowMs: 60 * 1000,
     max: maxRequestsPerMinute,
@@ -91,13 +137,20 @@ export function createGlobalRateLimiter(
       if (isVerifiedCallerRoleLookup(req, serviceKey)) {
         return true;
       }
-      // Internal routes (/…/internal/…) are service-to-service calls protected
-      // by scopedTokenValidator. That middleware runs AFTER the global rate
-      // limiter (route middleware executes later than app.use middleware), so
-      // req.tokenPayload is never set here for those requests. Checking the
-      // path directly is safe: internal routes require a scoped JWT signed with
-      // the server secret, so external callers cannot reach them.
-      if (req.path.includes('/internal/') || req.path.endsWith('/internal')) {
+      // /mcp counts its callers by account once they are authenticated
+      // (modules/mcp/routes); counted here, every caller behind one address,
+      // such as a hosted AI client's, would share one bucket.
+      if (req.path === MCP_PATH || req.path === `${MCP_PATH}/`) {
+        return true;
+      }
+      // An API call made for an /mcp tool call: that call was counted already.
+      if (isMcpRelay(req, serviceKey)) {
+        return true;
+      }
+      // Internal routes (/…/internal/…) are service-to-service calls whose
+      // scopedTokenValidator runs after this limiter, so the token is checked
+      // here; the path alone is the caller's to choose (SEC-C-16).
+      if (isVerifiedServiceCall(req, scopedKey, scopedAlgorithms)) {
         return true;
       }
       const authenticatedServiceReq = req as AuthenticatedServiceRequest;
@@ -117,7 +170,7 @@ export function createGlobalRateLimiter(
 
       logger.warn('Rate limit exceeded', {
         key: rateLimitKey,
-        path: req.path,
+        path: pathForLog(req),
         method: req.method,
         ip: getClientIp(req),
         retryAfter,
@@ -158,9 +211,17 @@ export function slackEventsRateLimitPerMinute(): number {
 
 export interface KeyedRateLimiterOptions {
   prefix: string;
+  // Per counting window: one minute unless `windowMs` says otherwise.
   maxRequestsPerMinute: number;
+  windowMs?: number;
   message: string;
   countOnlyFailures?: boolean;
+  // With `countOnlyFailures`: which responses count (default: any status of 400 or more).
+  isFailure?: (req: Request, res: Response) => boolean;
+  // Narrows an anonymous caller's per-IP bucket, e.g. to the account it names.
+  anonymousSubKey?: (req: Request) => string | undefined;
+  // Writes the 429 body, for surfaces whose clients expect another shape than the REST error.
+  respond?: (res: Response, message: string, retryAfter: number | null) => void;
 }
 
 /**
@@ -176,8 +237,12 @@ export function createKeyedRateLimiter(
   const {
     prefix,
     maxRequestsPerMinute,
+    windowMs = 60 * 1000,
     message,
     countOnlyFailures = false,
+    isFailure,
+    anonymousSubKey,
+    respond,
   } = options;
 
   const keyFor = (req: Request): string => {
@@ -185,31 +250,45 @@ export function createKeyedRateLimiter(
     if (authenticatedUserReq.user?.userId) {
       return `${prefix}:user:${authenticatedUserReq.user.userId}`;
     }
-    return `${prefix}:ip:${getClientIpKey(req)}`;
+    const ipKey = `${prefix}:ip:${getClientIpKey(req)}`;
+    const subKey = anonymousSubKey?.(req);
+    return subKey === undefined ? ipKey : `${ipKey}:${subKey}`;
   };
 
   const config: Partial<Options> = {
-    windowMs: 60 * 1000,
+    windowMs,
     max: maxRequestsPerMinute,
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: countOnlyFailures,
+    ...(isFailure
+      ? {
+          requestWasSuccessful: (req: Request, res: Response) =>
+            !isFailure(req, res),
+        }
+      : {}),
     keyGenerator: keyFor,
     handler: (req: Request, res: Response): void => {
       const retryAfter = res.getHeader('Retry-After');
       logger.warn('Rate limit exceeded', {
         key: keyFor(req),
-        path: req.path,
+        path: pathForLog(req),
         method: req.method,
         ip: getClientIp(req),
         retryAfter,
       });
+      const retrySeconds =
+        retryAfter === undefined ? null : parseInt(String(retryAfter), 10);
+      if (respond) {
+        respond(res, message, retrySeconds);
+        return;
+      }
       const error = new TooManyRequestsError(message);
       res.status(429).json({
         error: {
           code: error.code,
           message: error.message,
-          retryAfter: retryAfter ? parseInt(retryAfter as string, 10) : null,
+          retryAfter: retrySeconds,
         },
       });
     },
@@ -250,11 +329,44 @@ export function createSkillsImportRateLimiter(
   });
 }
 
+// Per-IP auth buckets admit this many times the per-account auth limit, so
+// several people signing in from one office or VPN address are not throttled.
+const AUTH_PER_IP_MULTIPLIER = 6;
+
+/**
+ * The account a sign-in request targets. After /initAuth the session's email
+ * is authoritative (the controller ignores body.email then), so it wins; a
+ * client could otherwise rotate body.email to get a fresh bucket. Hashed so
+ * addresses stay out of the 429 log line and an oversized value cannot bloat
+ * the store.
+ */
+function signInAccountKey(req: Request): string | undefined {
+  const sessionEmail = (req as { sessionInfo?: { email?: unknown } })
+    .sessionInfo?.email;
+  const body = req.body as { email?: unknown; username?: unknown } | undefined;
+  const account = [sessionEmail, body?.email, body?.username].find(
+    (value): value is string =>
+      typeof value === 'string' && value.trim() !== '',
+  );
+  if (account === undefined) {
+    return undefined;
+  }
+  const digest = createHash('sha256')
+    .update(account.trim().toLowerCase())
+    .digest('base64url');
+  return `acct:${digest.slice(0, 22)}`;
+}
+
 /**
  * Login/OTP/password endpoints. The global limiter is sized for general API
- * traffic and is too loose to stop password spraying or OTP/email bombing.
- * The limit is per replica (in-process store), so N pods admit up to
- * N × maxRequestsPerMinute per client until a shared store is wired.
+ * traffic and is too loose to stop password guessing or OTP/email bombing.
+ * Counted per signed-in user, else per client IP and the account the request
+ * names, so people sharing one address do not use up each other's attempts.
+ * Pair it with createAuthIpRateLimiter on anonymous routes: on its own it
+ * would let one address try every account. Mount it after any middleware
+ * that sets req.user or req.sessionInfo, or it falls back to the shared
+ * per-IP key. The limit is per replica (in-process store), so N pods admit
+ * up to N × maxRequestsPerMinute until a shared store is wired.
  */
 export function createAuthRateLimiter(
   logger: Logger,
@@ -264,6 +376,40 @@ export function createAuthRateLimiter(
     prefix: 'auth',
     maxRequestsPerMinute,
     message: 'Too many authentication requests. Please try again later.',
+    anonymousSubKey: signInAccountKey,
+  });
+}
+
+/**
+ * Per-IP backstop for the anonymous auth routes, at a multiple of the
+ * per-account limit: it caps one address spraying passwords or OTP/reset
+ * emails across many accounts.
+ */
+export function createAuthIpRateLimiter(
+  logger: Logger,
+  maxAuthRequestsPerMinute = 10,
+): RequestHandler {
+  return createKeyedRateLimiter(logger, {
+    prefix: 'auth-ip',
+    maxRequestsPerMinute: maxAuthRequestsPerMinute * AUTH_PER_IP_MULTIPLIER,
+    message: 'Too many authentication requests. Please try again later.',
+  });
+}
+
+/**
+ * /initAuth only. The sign-in page calls it on every load, before anyone types
+ * a password, and it checks no credential, so it gets its own per-IP bucket:
+ * page loads must not use up the attempts createAuthRateLimiter allows. Still
+ * limited because every call stores a sign-in session.
+ */
+export function createInitAuthRateLimiter(
+  logger: Logger,
+  maxAuthRequestsPerMinute = 10,
+): RequestHandler {
+  return createKeyedRateLimiter(logger, {
+    prefix: 'auth-init',
+    maxRequestsPerMinute: maxAuthRequestsPerMinute * AUTH_PER_IP_MULTIPLIER,
+    message: 'Too many sign-in requests. Please try again later.',
   });
 }
 

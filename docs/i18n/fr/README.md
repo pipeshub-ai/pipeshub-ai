@@ -53,6 +53,56 @@
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> est une couche d'exécution native pour l'IA, open source et auto-hébergeable, qui connecte les connaissances de l'entreprise, fournit une recherche explicable avec citations et automatise les flux de travail à travers vos systèmes.
 
+### Comment fonctionne PipesHub
+
+PipesHub construit une **couche de contexte unifiée** sur les documents, les conversations, les données structurées, les wikis, les tickets et le code. Les connecteurs synchronisent chaque source avec ses permissions. Le pipeline d'indexation analyse, découpe et vectorise le contenu, puis relie les enregistrements, les personnes et les entités dans un graphe de connaissances.
+
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
+Les questions sont traitées par une **boucle d'agent**, et non par une seule passe « récupérer puis générer ». L'agent planifie, appelle des outils, lit les résultats et continue jusqu'à disposer des preuves nécessaires :
+
+- **Recherche hybride** — récupération sémantique et par mots-clés, pour trouver à la fois le sens et les termes exacts.
+- **Grep / correspondance de motifs** — identifiants exacts, messages d'erreur, clés de tickets et symboles de code.
+- **Navigation dans le graphe de connaissances** — suit les liens entre documents, personnes, tickets, pull requests et fils de discussion.
+- **Lecture de documents** — ouvre la source complète au lieu de se fier à un seul extrait correspondant.
+
+Chaque appel d'outil est filtré selon les permissions de l'utilisateur qui pose la question, et chaque réponse cite les blocs dont elle provient.
+
+
+| | RAG top-k par fragments | PipesHub |
+| --- | --- | --- |
+| **Ce que l'agent voit d'abord** | Quelques fragments de texte | Le nom, l'emplacement, les métadonnées et le résumé de chaque enregistrement, plus les blocs correspondants |
+| **Comment il creuse davantage** | Impossible : une seule récupération par question | Recherche hybride, `grep`/`find` sur les enregistrements, navigation dans les dossiers et requêtes dans le graphe de connaissances, en boucle |
+| **Structure** | Perdue au découpage | Chaque source devient des Blocks : sections, tableaux avec lignes et cellules, fils de discussion, code, tables SQL avec leur schéma |
+| **Permissions** | Souvent approximées à l'indexation | Vérifiées par rapport aux permissions du système source pour l'utilisateur à l'origine de la demande, à chaque appel d'outil |
+| **Citations** | Par fragment, s'il y en a | Par bloc : la page, la cellule de tableau, la ligne, la diapositive ou la ligne de code, sans citations inventées |
 
 ## Fonctionnalités
 

@@ -96,7 +96,6 @@ export function ChangePasswordDialog({
         style={{
           width: overlayWidth(600),
           padding: 'var(--space-5)',
-          background: 'var(--slate-2)',
           borderRadius: 'var(--radius-5)',
           border: '1px solid var(--olive-a3)',
           boxShadow: '0 16px 36px -20px var(--slate-a7, rgba(217, 237, 255, 0.25)), 0 16px 64px 0 var(--slate-a2, rgba(216, 244, 246, 0.04)), 0 12px 60px 0 var(--black-a3, rgba(0, 0, 0, 0.15))',
@@ -122,6 +121,7 @@ export function ChangePasswordDialog({
               </Text>
               <TextField.Root
                 type="password"
+                autoComplete="current-password"
                 placeholder={t('workspace.profile.changePassword.currentPasswordPlaceholder')}
                 value={form.currentPassword}
                 onChange={(e) => {
@@ -144,11 +144,12 @@ export function ChangePasswordDialog({
               <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
                 {t('workspace.profile.changePassword.newPassword')}
               </Text>
-              <Text size="1" style={{ color: 'var(--gray-10)', fontWeight: 300 }}>
+              <Text size="1" style={{ color: 'var(--gray-11)', fontWeight: 300 }}>
                 {t('validation.password.rules')}
               </Text>
               <TextField.Root
                 type={showNewPassword ? 'text' : 'password'}
+                autoComplete="new-password"
                 placeholder={t('workspace.profile.changePassword.newPasswordPlaceholder')}
                 value={form.newPassword}
                 onChange={(e) => {
@@ -172,6 +173,7 @@ export function ChangePasswordDialog({
               >
                 <TextField.Slot side="right">
                   <IconButton
+                    aria-label={showNewPassword ? t('auth.common.hidePassword') : t('auth.common.showPassword')}
                     variant="ghost"
                     color="gray"
                     size="1"
@@ -182,7 +184,7 @@ export function ChangePasswordDialog({
                     <MaterialIcon
                       name={showNewPassword ? 'visibility' : 'visibility_off'}
                       size={16}
-                      color="var(--gray-9)"
+                      color="var(--gray-11)"
                     />
                   </IconButton>
                 </TextField.Slot>
@@ -201,6 +203,7 @@ export function ChangePasswordDialog({
               </Text>
               <TextField.Root
                 type={showConfirmPassword ? 'text' : 'password'}
+                autoComplete="new-password"
                 placeholder={t('workspace.profile.changePassword.confirmPasswordPlaceholder')}
                 value={form.confirmPassword}
                 onChange={(e) => {
@@ -220,6 +223,7 @@ export function ChangePasswordDialog({
               >
                 <TextField.Slot side="right">
                   <IconButton
+                    aria-label={showConfirmPassword ? t('auth.common.hidePassword') : t('auth.common.showPassword')}
                     variant="ghost"
                     color="gray"
                     size="1"
@@ -230,7 +234,7 @@ export function ChangePasswordDialog({
                     <MaterialIcon
                       name={showConfirmPassword ? 'visibility' : 'visibility_off'}
                       size={16}
-                      color="var(--gray-9)"
+                      color="var(--gray-11)"
                     />
                   </IconButton>
                 </TextField.Slot>
@@ -284,7 +288,7 @@ export function ChangePasswordDialog({
                 flexShrink: 0,
               }}
             >
-              <MaterialIcon name="error_outline" size={18} color="var(--red-9)" />
+              <MaterialIcon name="error_outline" size={18} color="var(--red-11)" />
             </Flex>
 
             <Flex direction="column" gap="2">
@@ -293,7 +297,7 @@ export function ChangePasswordDialog({
               </Text>
               <Text
                 size="2"
-                style={{ color: 'var(--gray-10)', lineHeight: '20px' }}
+                style={{ color: 'var(--gray-11)', lineHeight: '20px' }}
               >
                 {apiErrorMessage}
               </Text>

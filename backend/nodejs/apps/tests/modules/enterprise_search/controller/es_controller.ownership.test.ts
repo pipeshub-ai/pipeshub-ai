@@ -107,11 +107,28 @@ async function callJson(handler: JsonHandler, req: never): Promise<JsonOutcome> 
   return { status: res.statusCode, body: res.jsonBody, error: next.firstCall?.args[0] as JsonOutcome['error'] }
 }
 
+/** A refusal sent to `next` before any stream opened, if there was one. */
+const refusals = new WeakMap<FakeSSEResponse, Error>()
+
 async function callStream(handler: StreamHandler, req: never): Promise<FakeSSEResponse> {
   const res = new FakeSSEResponse()
-  await handler(req, res as never)
+  const next = sinon.stub()
+  await (handler as (...args: unknown[]) => Promise<void>)(req, res, next)
   await settle()
+  if (next.called) refusals.set(res, next.firstCall.args[0] as Error)
   return res
+}
+
+/** The "not found" a caller gets: a 404 before streaming for a new message, a RUN_ERROR for a regenerate. */
+function notFoundMessage(res: FakeSSEResponse): string | undefined {
+  const refusal = refusals.get(res)
+  if (refusal) {
+    expect(res.eventsOf('RUN_ERROR'), 'no stream after a refusal').to.have.length(0)
+    return refusal.message
+  }
+  const errors = res.eventsOf('RUN_ERROR')
+  expect(errors, 'RUN_ERROR frames').to.have.length(1)
+  return errors[0]?.data.message as string | undefined
 }
 
 describe('es_controller ownership: nobody reads or changes a conversation that is not theirs', () => {
@@ -183,6 +200,34 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
       expect(s.store.writes).to.deep.equal([])
     })
   }
+
+  // SS0: `write` is the collaborator role. Until SS2 it adds nothing a manager could use: the
+  // owner alone shares, deletes, archives and sends turns (the turn guard answers with a code).
+  for (const c of chatCases.filter((x) => x.name !== 'getConversationById' && x.name !== 'updateFeedback')) {
+    it(`RO-6 ${c.name}: a collaborator (write share) gets 404 and nothing is written`, async () => {
+      const s = setup()
+      s.store.session(s.chatId)?.set({ sharedWith: [{ userId: RECIPIENT, accessLevel: 'write' }] })
+
+      const out = await callJson(c.handler(), request(recipient, c.params(s), c.body))
+
+      expect(out.error?.statusCode).to.equal(404)
+      expect(s.store.writes).to.deep.equal([])
+    })
+  }
+
+  it('RO-7 getConversationById: access.role names the reader\'s role', async () => {
+    const s = setup()
+    // Real requests carry the user id as a string.
+    const role = async (user: User): Promise<unknown> => {
+      const asString = { ...user, userId: String(user.userId) } as unknown as User
+      const out = await callJson(controller.getConversationById(appConfig) as JsonHandler, request(asString, { conversationId: s.chatId }))
+      return (out.body as { conversation: { access: unknown } }).conversation.access
+    }
+    expect(await role(owner)).to.deep.equal({ isOwner: true, accessLevel: 'read', role: 'owner' })
+    expect(await role(recipient)).to.deep.equal({ isOwner: false, accessLevel: 'read', role: 'viewer' })
+    s.store.session(s.chatId)?.set({ sharedWith: [{ userId: RECIPIENT, accessLevel: 'write' }] })
+    expect(await role(recipient)).to.deep.equal({ isOwner: false, accessLevel: 'write', role: 'collaborator' })
+  })
 
   it('getConversationById: a user from another organisation gets 404 even with the right id', async () => {
     const s = setup()
@@ -341,10 +386,8 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
 
         const res = await callStream(c.handler(), request(user, c.params(s), c.body))
 
-        const errors = res.eventsOf('RUN_ERROR')
-        expect(errors, 'RUN_ERROR frames').to.have.length(1)
-        expect(errors[0]?.data.message).to.match(/not found/i)
-        expect(res.writableEnded).to.equal(true)
+        expect(notFoundMessage(res)).to.match(/not found/i)
+        expect(res.writableEnded || refusals.has(res)).to.equal(true)
         expect(s.ai.streamCalls).to.deep.equal([])
         expect(s.store.writes.filter((w) => w.startsWith('message.'))).to.deep.equal([])
         expect(s.store.messagesOf(s.chatId)).to.have.length(2)

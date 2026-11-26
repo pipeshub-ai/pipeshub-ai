@@ -56,13 +56,15 @@ import io
 import logging
 import os
 import re
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from app.connectors.sources.google.drive.team.user_status import UserStatusChange
+from app.connectors.sources.google.drive.team.user_status import UserStatusChange, UserStatusTracker
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -169,6 +171,7 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         dep.on_record_content_update = AsyncMock()
         dep.on_updated_record_permissions = AsyncMock()
         dep.add_permission_to_record = AsyncMock()
+        dep.get_roles_on_record = AsyncMock(return_value=({}, {}))
         dep.inheritance_when_unreadable = AsyncMock(return_value=False)
         dep.get_all_active_users = AsyncMock(return_value=[])
         dep.reindex_existing_records = AsyncMock()
@@ -182,6 +185,7 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         dep.get_users_with_permission_to_node = AsyncMock(
             return_value=[user_with_permission] if user_with_permission is not None else []
         )
+        dep.get_groups_with_permission_to_node = AsyncMock(return_value=[])
 
         ds_provider = _make_mock_data_store_provider(existing_record, user_with_permission, user_by_id)
         config_service = AsyncMock()
@@ -210,7 +214,7 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         conn.drive_data_source.execute = AsyncMock(side_effect=execute)
         conn.config = {"credentials": {}}
         # Collaborators the run safety fixes call: account status, groups, access withdrawal.
-        conn._user_status = MagicMock(compare=AsyncMock(return_value=UserStatusChange()), save=AsyncMock())
+        conn._user_status = MagicMock(compare=AsyncMock(return_value=UserStatusChange()), save=AsyncMock(), forget_fingerprint=AsyncMock())
         dep.get_all_user_groups = AsyncMock(return_value=[])
         dep.remove_user_access_to_connector = AsyncMock(return_value=0)
         dep.on_new_user_groups = AsyncMock()
@@ -502,6 +506,193 @@ class TestSyncUsers:
         await conn._sync_users()
         assert len(conn.synced_users) == 2
         assert conn.admin_data_source.users_list.call_count == 2
+
+    @staticmethod
+    def _cut_listing_connector(stored: dict | None = None) -> tuple:
+        conn = _make_connector()
+        conn._account_domains = {"x.com"}  # read: unread domains alone make a run incomplete
+        state = {
+            "workspace_user_status": {
+                "inactive": ["gone@x.com"], "known": ["a@x.com", "b@x.com", "gone@x.com", "lost@x.com"], "domains": ["x.com", "alias.org"],
+            },
+            **(stored or {}),
+        }
+        sync_point = MagicMock()
+        sync_point.read_sync_point = AsyncMock(side_effect=lambda key: state.get(key))
+        sync_point.update_sync_point = AsyncMock()
+        conn._user_status = UserStatusTracker(sync_point)
+        conn.data_entities_processor.remove_user_access_to_connector = AsyncMock(return_value=0)
+        # linked before, not in this listing (it may be on the missing page, and suspended)
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[
+            MagicMock(email="Linked@x.com"), MagicMock(email="a@x.com")
+        ])
+        return conn, sync_point
+
+    @pytest.mark.asyncio
+    async def test_sync_users_empty_page_with_a_token_changes_no_status_but_still_narrows(self) -> None:
+        conn, sync_point = self._cut_listing_connector()
+        suspended = _make_google_user("b@x.com", "u2")
+        suspended["suspended"] = True
+        conn.admin_data_source.users_list = AsyncMock(side_effect=[
+            {"users": [_make_google_user("a@x.com", "u1")], "nextPageToken": "p2"},
+            {"users": [], "nextPageToken": "p3"},
+            {"users": [_make_google_user("gone@x.com", "u3"), suspended]},
+        ])
+
+        await conn._sync_users()
+
+        # the account the cut listing itself shows suspended loses access, and is not linked again
+        conn.data_entities_processor.remove_user_access_to_connector.assert_awaited_once_with(conn.connector_id, "b@x.com")
+        saved = conn.data_entities_processor.on_new_app_users.await_args.args[0]
+        assert [u.email for u in saved] == ["a@x.com", "gone@x.com"]
+        # nobody is restored, the account that was away stays away, and an account that is merely not listed is
+        # unknown, not inactive
+        assert conn._returning_emails == set()
+        assert conn._inactive_emails == {"gone@x.com", "b@x.com"}
+        # the only thing saved is the suspension the source itself showed (narrowing), kept for later cut listings
+        saved_state = [c.args[1] for c in sync_point.update_sync_point.await_args_list if c.args[0] == "workspace_user_status"]
+        assert len(saved_state) == 1 and saved_state[0]["inactive"] == ["b@x.com", "gone@x.com"]
+        assert conn._sync_ledger.has_gaps and conn._listing_cut is True
+
+    @pytest.mark.asyncio
+    async def test_sync_users_an_empty_last_page_is_cut_once_and_accepted_when_the_same_listing_comes_again(self) -> None:
+        conn, sync_point = self._cut_listing_connector()
+
+        def pages() -> list:
+            return [{"users": [_make_google_user("a@x.com", "u1")], "nextPageToken": "p2"}, {"users": []}]
+
+        conn.admin_data_source.users_list = AsyncMock(side_effect=pages())
+
+        await conn._sync_users()  # first sight of this listing: treated as cut, and remembered
+
+        assert conn._listing_cut is True and conn._sync_ledger.has_gaps
+        (key, data), _ = sync_point.update_sync_point.await_args
+        assert key == "workspace_user_listing_fingerprint" and data["fingerprint"]
+
+        conn2, _ = self._cut_listing_connector({"workspace_user_listing_fingerprint": data})
+        conn2.admin_data_source.users_list = AsyncMock(side_effect=pages())
+
+        await conn2._sync_users()  # the same listing again: the directory's own size, a complete listing
+
+        assert conn2._listing_cut is False
+        assert not conn2._sync_ledger.has_gaps
+        conn2.data_entities_processor.remove_user_access_to_connector.assert_awaited()  # complete: lost@x.com is gone
+
+    @pytest.mark.asyncio
+    async def test_sync_users_a_cut_listing_with_no_users_is_held_back_and_incomplete(self) -> None:
+        conn, _ = self._cut_listing_connector()
+        conn.admin_data_source.users_list = AsyncMock(side_effect=[{"users": [], "nextPageToken": "p2"}, {"users": []}])
+
+        await conn._sync_users()
+
+        assert conn.synced_users == [] and conn._listing_cut is True
+        assert conn._sync_ledger.has_gaps
+        assert conn._inactive_emails == {"gone@x.com"}
+        conn.data_entities_processor.on_new_app_users.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_account_only_on_the_missing_page_keeps_its_file_grants_through_a_cut_run(self) -> None:
+        conn, _ = self._cut_listing_connector()
+        conn.admin_data_source.users_list = AsyncMock(side_effect=[
+            {"users": [_make_google_user("a@x.com", "u1")], "nextPageToken": "p2"}, {"users": [], "nextPageToken": "p3"},
+            {"users": [_make_google_user("gone@x.com", "u3")]},
+        ])
+        await conn._sync_users()
+        conn.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "p1", "role": "reader", "type": "user", "emailAddress": "lost@x.com"},
+            {"id": "p2", "role": "reader", "type": "user", "emailAddress": "gone@x.com"},
+        ]})
+
+        perms, _, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email="a@x.com")
+
+        # lost@x.com is on the missing page: unknown, so its grant is written; gone@x.com was away at the last complete listing
+        assert [p.email for p in perms] == ["lost@x.com"]
+        assert conn._is_inactive_email("lost@x.com") is False
+
+    @pytest.mark.asyncio
+    async def test_a_stored_fingerprint_does_not_vouch_for_a_later_listing_after_a_listing_that_ended_normally(self) -> None:
+        conn, sync_point = self._cut_listing_connector()
+        ab = [_make_google_user("a@x.com", "u1"), _make_google_user("b@x.com", "u2")]
+
+        def ambiguous() -> list:
+            return [{"users": ab[:1], "nextPageToken": "p2"}, {"users": ab[1:], "nextPageToken": "p3"}, {"users": []}]
+
+        state: dict = {}
+        sync_point.read_sync_point = AsyncMock(side_effect=lambda key: state.get(key) or (
+            {"inactive": [], "known": ["a@x.com", "b@x.com", "c@x.com"], "domains": ["x.com"]} if key == "workspace_user_status" else None
+        ))
+
+        async def put(key: str, data: dict) -> None:
+            state[key] = {**state.get(key, {}), **data}
+
+        sync_point.update_sync_point = AsyncMock(side_effect=put)
+        run = lambda pages: setattr(conn.admin_data_source, "users_list", AsyncMock(side_effect=pages))  # noqa: E731
+
+        run(ambiguous())
+        await conn._sync_users()  # {A,B} ends on an empty page: cut, fingerprint kept
+        assert conn._listing_cut is True and state["workspace_user_listing_fingerprint"]["fingerprint"]
+
+        run([{"users": ab[:1], "nextPageToken": "p2"}, {"users": [*ab[1:], _make_google_user("c@x.com", "u3")]}])
+        await conn._sync_users()  # a complete {A,B,C} ending on a page with users: the old fingerprint is cleared
+        assert conn._listing_cut is False and not state["workspace_user_listing_fingerprint"]["fingerprint"]
+
+        conn.data_entities_processor.remove_user_access_to_connector.reset_mock()
+        run(ambiguous())
+        await conn._sync_users()  # {A,B} again: still cut, and C is not withdrawn
+        assert conn._listing_cut is True
+        conn.data_entities_processor.remove_user_access_to_connector.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_cut_user_listing_holds_back_external_membership_of_the_workspaces_own_domains(self) -> None:
+        conn, _ = self._cut_listing_connector()
+        conn.data_entities_processor.on_external_app_users = AsyncMock()
+        conn._account_domains = {"x.com"}
+        conn.synced_user_emails = {"a@x.com"}
+        # lost@alias.org is on the missing page and its domain is none of the listed people's: the last complete
+        # listing's domains still hold it back
+        conn._external_emails = {"lost@x.com", "lost@alias.org", "partner@other.org"}
+        conn._listing_cut = True
+
+        await conn._flush_external_app_users()
+
+        conn.data_entities_processor.on_external_app_users.assert_awaited_once_with(["partner@other.org"], conn.connector_id)
+
+        conn.data_entities_processor.on_external_app_users.reset_mock()
+        conn._listing_cut = False
+        await conn._flush_external_app_users()
+        assert sorted(conn.data_entities_processor.on_external_app_users.await_args.args[0]) == [
+            "lost@alias.org", "lost@x.com", "partner@other.org"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_cut_user_listing_holds_back_a_verified_domain_no_listed_account_is_on(self) -> None:
+        conn, _ = self._cut_listing_connector()
+        conn.data_entities_processor.on_external_app_users = AsyncMock()
+        conn._user_status.known_domains = AsyncMock(return_value=set())
+        conn._account_domains = {"x.com", "alias-only.org"}
+        conn.synced_user_emails = {"a@x.com"}
+        conn._external_emails = {"lost@alias-only.org", "partner@other.org"}
+        conn._listing_cut = True
+
+        await conn._flush_external_app_users()
+
+        conn.data_entities_processor.on_external_app_users.assert_awaited_once_with(["partner@other.org"], conn.connector_id)
+
+    @pytest.mark.asyncio
+    async def test_a_cut_user_listing_keeps_its_collaborators_when_the_workspace_domains_cannot_be_read(self) -> None:
+        conn, _ = self._cut_listing_connector()
+        conn.data_entities_processor.on_external_app_users = AsyncMock()
+        conn._user_status.known_domains = AsyncMock(return_value=set())
+        conn._account_domains = None
+        conn.admin_data_source = MagicMock(domains_list=AsyncMock(side_effect=RuntimeError("down")))
+        conn.synced_user_emails = {"a@x.com"}
+        conn._external_emails = {"lost@x.com", "partner@other.org"}
+        conn._listing_cut = True
+
+        await conn._flush_external_app_users()
+
+        # the listed domains still hold lost@x.com back, and the outside collaborator is not dropped
+        conn.data_entities_processor.on_external_app_users.assert_awaited_once_with(["partner@other.org"], conn.connector_id)
 
     @pytest.mark.asyncio
     async def test_sync_users_empty(self):
@@ -3237,7 +3428,7 @@ class TestConvertToPdf:
                 await conn._convert_to_pdf("/tmp/test.docx", "/tmp")
 
     @pytest.mark.asyncio
-    async def test_output_not_found(self):
+    async def test_output_not_found(self, tmp_path: Path):
         from fastapi import HTTPException
 
         conn = _make_connector()
@@ -3249,7 +3440,7 @@ class TestConvertToPdf:
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process):
             with patch("os.path.exists", return_value=False):
                 with pytest.raises(HTTPException):
-                    await conn._convert_to_pdf("/tmp/test.docx", "/tmp")
+                    await conn._convert_to_pdf(str(tmp_path / "test.docx"), str(tmp_path))
 
     @pytest.mark.asyncio
     async def test_timeout(self):
@@ -4929,9 +5120,170 @@ class TestSweepPlaceholderRecords:
         assert backfilled_record.is_placeholder is False
 
     @pytest.mark.asyncio
-    async def test_unreadable_ancestor_is_resubmitted_as_a_stub(self):
-        """Re-submitting restores the record-group and parent edges a full sync drops,
-        without promoting the stub to a real record."""
+    async def test_an_unreadable_ancestor_found_by_external_id_is_not_rewritten(self) -> None:
+        """B is read and backfilled; its parent A, read back by external id (a plain Record in every graph store), can
+        not be read at the source. A is kept as stored, not written: a plain Record fails every store's file write,
+        which stopped the user's whole sync."""
+        conn = _make_connector()
+        stub_b = _make_existing_record(
+            record_id="rec-b", external_record_id="B", external_record_group_id="my-drive", parent_external_record_id="A",
+        )
+        stub_b.is_placeholder = True
+
+        async def files_get(fileId: str, **_: object) -> dict:
+            if fileId == "A":
+                raise _make_http_error(404)
+            return {"id": "B", "name": "Folder B", "mimeType": MimeTypes.GOOGLE_DRIVE_FOLDER.value, "parents": ["A"]}
+
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=files_get)
+        backfilled_b = MagicMock()
+        backfilled_b.parent_external_record_id = "A"
+        backfilled_b.parent_record_type = RecordType.FILE
+
+        async def _fake_generator(metadata: list, *args: object, **kwargs: object) -> AsyncIterator[tuple]:
+            for _ in metadata:
+                yield (backfilled_b, [], MagicMock())
+
+        conn._process_drive_items_generator = _fake_generator
+        stub_a = _make_existing_record(record_id="rec-a", external_record_id="A", parent_external_record_id=None)
+        stub_a.is_placeholder = True
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=stub_a)
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1", user_email="u@example.com", drive_data_source=ds, drive_id="my-drive",
+            is_shared_drive=False, seeds=[stub_b],
+        )
+
+        written = [r for call in conn.data_entities_processor.on_new_records.await_args_list for r, _ in call.args[0]]
+        assert written == [backfilled_b]
+        conn.data_entities_processor.note_kept_records.assert_any_call(conn.connector_id, ["rec-a"])
+
+    @pytest.mark.asyncio
+    async def test_the_walk_climbs_past_an_unreadable_stub_and_keeps_its_unreadable_parent(self) -> None:
+        """B and its parent A, both stubs, cannot be read. Both are noted kept, so a full sync's unlink leaves the
+        A -> B parent edge and A's own edges: a walk that stopped at B left A unseen and its edges were removed."""
+        conn = _make_connector()
+        stub_b = _make_existing_record(
+            record_id="rec-b", external_record_id="B", external_record_group_id="my-drive", parent_external_record_id="A",
+        )
+        stub_b.is_placeholder = True
+        stub_b.parent_record_type = None  # as the store returns a stub: it keeps the parent id, not its type
+        stub_a = _make_existing_record(record_id="rec-a", external_record_id="A", parent_external_record_id=None)
+        stub_a.is_placeholder = True
+        stub_a.parent_record_type = None
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: stub_a if ext_id == "A" else None
+        )
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=_make_http_error(404))
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1", user_email="u@example.com", drive_data_source=ds, drive_id="my-drive",
+            is_shared_drive=False, seeds=[stub_b],
+        )
+
+        assert sorted(c.kwargs["fileId"] for c in ds.files_get.await_args_list) == ["A", "B"]
+        kept = [i for c in conn.data_entities_processor.note_kept_records.call_args_list for i in c.args[1]]
+        assert kept == ["rec-b", "rec-a"]
+        conn.data_entities_processor.on_new_records.assert_not_called()
+
+    @staticmethod
+    def _b_under_a(*, b_is_placeholder: bool) -> tuple[MagicMock, MagicMock]:
+        """B under A, as the store returns them: the parent id kept, not its type."""
+        stub_b = _make_existing_record(
+            record_id="rec-b", external_record_id="B", external_record_group_id="my-drive", parent_external_record_id="A",
+        )
+        stub_b.is_placeholder = b_is_placeholder
+        stub_b.parent_record_type = None
+        stub_a = _make_existing_record(record_id="rec-a", external_record_id="A", parent_external_record_id=None)
+        stub_a.is_placeholder = True
+        stub_a.parent_record_type = None
+        return stub_b, stub_a
+
+    @staticmethod
+    def _kept(conn: MagicMock) -> list:
+        return [i for c in conn.data_entities_processor.note_kept_records.call_args_list for i in c.args[1]]
+
+    @pytest.mark.asyncio
+    async def test_a_real_ancestor_whose_fetch_fails_is_kept_and_its_parent_walked(self) -> None:
+        """A folder-filtered full sync walks real ancestors too. One that cannot be fetched is kept, and its parent A
+        is still reached and kept, so the unlink leaves A's edges."""
+        conn = _make_connector()
+        stub_b, stub_a = self._b_under_a(b_is_placeholder=False)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: stub_a if ext_id == "A" else None
+        )
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=_make_http_error(404))
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1", user_email="u@example.com", drive_data_source=ds, drive_id="my-drive",
+            is_shared_drive=False, seeds=[stub_b], rewrite_real_ancestors=True,
+        )
+
+        assert self._kept(conn) == ["rec-b", "rec-a"]
+        conn.data_entities_processor.on_new_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_ancestor_whose_permissions_cannot_be_read_is_kept_and_its_parent_walked(self) -> None:
+        """B is fetched but processing it fails (its permission read failed), so nothing is written for it. It is
+        kept, and the walk still reaches A through B's stored parent id."""
+        conn = _make_connector()
+        stub_b, stub_a = self._b_under_a(b_is_placeholder=True)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: stub_a if ext_id == "A" else None
+        )
+
+        async def files_get(fileId: str, **_: object) -> dict:
+            if fileId == "A":
+                raise _make_http_error(404)
+            return {"id": "B", "name": "Folder B", "mimeType": MimeTypes.GOOGLE_DRIVE_FOLDER.value, "parents": ["A"]}
+
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=files_get)
+
+        async def nothing_written(*args: object, **kwargs: object) -> AsyncIterator[tuple]:
+            return
+            yield
+
+        conn._process_drive_items_generator = nothing_written
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1", user_email="u@example.com", drive_data_source=ds, drive_id="my-drive",
+            is_shared_drive=False, seeds=[stub_b],
+        )
+
+        assert self._kept(conn) == ["rec-b", "rec-a"]
+        conn.data_entities_processor.on_new_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_walk_the_safety_bound_stops_leaves_the_run_incomplete(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The ancestors above where the bound stopped the walk were never reached, so nothing the run did not see
+        may be taken for gone: the run is incomplete, which holds the cleanup and the unlink."""
+        import app.connectors.sources.google.drive.team.connector as team
+
+        monkeypatch.setattr(team, "PLACEHOLDER_SWEEP_SAFETY_MAX", 0)
+        conn = _make_connector()
+        stub_b, stub_a = self._b_under_a(b_is_placeholder=True)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, ext_id: stub_a if ext_id == "A" else None
+        )
+        ds = AsyncMock()
+        ds.files_get = AsyncMock(side_effect=_make_http_error(404))
+
+        await conn._sweep_placeholders_for_drive(
+            user_id="u1", user_email="u@example.com", drive_data_source=ds, drive_id="my-drive",
+            is_shared_drive=False, seeds=[stub_b],
+        )
+
+        assert conn._sync_ledger.incomplete
+        assert "rec-a" in self._kept(conn), "the next ancestor, reached but not read, is kept too"
+
+    @pytest.mark.asyncio
+    async def test_unreadable_ancestor_is_kept_as_a_stub(self):
+        """Noted kept, so a full sync's unlink leaves its record-group and parent edges; not rewritten, since a stub
+        read back by external id is a plain Record that no graph store writes as a file."""
         conn = _make_connector()
         stub = _make_existing_record(
             record_id="rec-b",
@@ -4954,8 +5306,8 @@ class TestSweepPlaceholderRecords:
             seeds=[stub],
         )
 
-        submitted = conn.data_entities_processor.on_new_records.await_args.args[0]
-        assert submitted == [(stub, [])]
+        conn.data_entities_processor.on_new_records.assert_not_called()
+        conn.data_entities_processor.note_kept_records.assert_called_once_with(conn.connector_id, ["rec-b"])
         assert stub.is_placeholder is True
 
 

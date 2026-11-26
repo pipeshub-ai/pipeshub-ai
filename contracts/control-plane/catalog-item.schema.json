@@ -1,0 +1,452 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/catalog-item.schema.json",
+  "title": "CatalogItem",
+  "description": "One immutable version of a catalog item of any kind (docs/control-plane/02-lld.md §2.1). Release items (`orgId` null) are generated from the registries into contracts/control-plane/catalog/; org items are rows in `cpCatalogItems`. `descriptorSetDigest` is the canonical digest of {descriptor name: descriptor digest}.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "ref",
+    "kind",
+    "publisher",
+    "name",
+    "version",
+    "orgId",
+    "provenance",
+    "source",
+    "display",
+    "riskClass",
+    "configSchema",
+    "credentialRequirements",
+    "descriptors",
+    "descriptorSetDigest",
+    "deprecated",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "ref": {
+      "$ref": "common.schema.json#/$defs/ItemRef"
+    },
+    "kind": {
+      "description": "Open: validated against the registered domain modules.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$"
+    },
+    "publisher": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "version": {
+      "description": "The source's own version, or `c.` and twelve hex digits of the item's content digest where the source has none.",
+      "type": "string",
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$"
+    },
+    "orgId": {
+      "description": "Null for a shared (builtin or release) item.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "common.schema.json#/$defs/OrgId"
+        }
+      ]
+    },
+    "provenance": {
+      "enum": [
+        "builtin",
+        "release",
+        "imported",
+        "org",
+        "user",
+        "plugin"
+      ]
+    },
+    "source": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "release"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "locator",
+            "fetchedAt",
+            "digest"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "npm",
+                "github",
+                "url",
+                "upload",
+                "plugin"
+              ]
+            },
+            "locator": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "fetchedAt": {
+              "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/UInt"
+            },
+            "digest": {
+              "$ref": "common.schema.json#/$defs/Digest"
+            }
+          }
+        }
+      ]
+    },
+    "display": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description",
+        "icon",
+        "categories",
+        "hidden"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 10000
+        },
+        "icon": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "maxLength": 2048
+            }
+          ]
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 100
+          }
+        },
+        "hidden": {
+          "description": "Internal items: not offered to people (an internal toolset).",
+          "type": "boolean"
+        }
+      }
+    },
+    "riskClass": {
+      "description": "The highest effect over the descriptors; an unclassified tool counts as write-external.",
+      "enum": [
+        "read",
+        "write-internal",
+        "write-external",
+        "execute"
+      ]
+    },
+    "configSchema": {
+      "description": "Domain-specific installation settings, validated by the kind's module.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object"
+        }
+      ]
+    },
+    "credentialRequirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode",
+          "owners",
+          "provider"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,31}$"
+          },
+          "owners": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "user",
+                "agent",
+                "org"
+              ]
+            }
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "maxLength": 128
+              }
+            ]
+          }
+        }
+      }
+    },
+    "descriptors": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "items"
+          ],
+          "properties": {
+            "kind": {
+              "const": "tool"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "descriptors/tool.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "items"
+          ],
+          "properties": {
+            "kind": {
+              "const": "skill-bundle"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "descriptors/skill-bundle.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "items"
+          ],
+          "properties": {
+            "kind": {
+              "const": "engine"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "descriptors/engine.schema.json"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "descriptorSetDigest": {
+      "$ref": "common.schema.json#/$defs/Digest"
+    },
+    "deprecated": {
+      "type": "boolean"
+    },
+    "createdAt": {
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/UInt"
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "ref": "engine:pipeshub/opencode@1.18.34",
+      "kind": "engine",
+      "publisher": "pipeshub",
+      "name": "opencode",
+      "version": "1.18.34",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "opencode",
+        "description": "opencode 1.18.34",
+        "icon": null,
+        "categories": [
+          "engine"
+        ],
+        "hidden": false
+      },
+      "riskClass": "execute",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "engine",
+        "items": [
+          {
+            "name": "opencode",
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182",
+            "optionsDigest": null,
+            "digest": "sha256:fc306f69d9e7a331f4d943c1ef606fdd9e2dfa71863d5f858f7e02bf7b42a998"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:ce8b2f0710efa4323ad17d8f3ec2c9f1cfa866195d08e362c50699994d6746aa",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "toolset:pipeshub/demodesk@c.8fe3f1e886ca",
+      "kind": "toolset",
+      "publisher": "pipeshub",
+      "name": "demodesk",
+      "version": "c.8fe3f1e886ca",
+      "orgId": null,
+      "provenance": "release",
+      "source": {
+        "type": "release"
+      },
+      "display": {
+        "name": "Demo Desk",
+        "description": "Demo ticketing",
+        "icon": "/icons/demo.svg",
+        "categories": [
+          "app"
+        ],
+        "hidden": false
+      },
+      "riskClass": "write-external",
+      "configSchema": {
+        "auth": {
+          "schemas": {
+            "OAUTH": {
+              "fields": []
+            }
+          }
+        }
+      },
+      "credentialRequirements": [
+        {
+          "mode": "oauth",
+          "owners": [
+            "agent",
+            "user"
+          ],
+          "provider": "demodesk"
+        }
+      ],
+      "descriptors": {
+        "kind": "tool",
+        "items": [
+          {
+            "name": "create_ticket",
+            "description": "Create a ticket.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "description": "Title"
+                }
+              },
+              "required": [
+                "title"
+              ]
+            },
+            "effect": "write",
+            "sink": "self",
+            "digest": "sha256:ec96e6559b475d3494bb603cf1d85201f848f45874314e1fa4cc745b1b2c1a8b"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:99c4300acf3de7d85e000c9f5c04b18614348f3963a55b2d5d627371518de7dd",
+      "deprecated": false,
+      "createdAt": 0
+    },
+    {
+      "schemaVersion": 1,
+      "ref": "skill:org/quarterly-report@1.4.2",
+      "kind": "skill",
+      "publisher": "org",
+      "name": "quarterly-report",
+      "version": "1.4.2",
+      "orgId": "org-1",
+      "provenance": "imported",
+      "source": {
+        "type": "github",
+        "locator": "github.com/acme/skills/quarterly-report",
+        "fetchedAt": 1760000000000,
+        "digest": "sha256:468475bd15c20d9951c9ccf5ef0bf2f9cb79f6d0c130c4fdc4aa9df897db804d"
+      },
+      "display": {
+        "name": "quarterly-report",
+        "description": "Quarterly reports.",
+        "icon": null,
+        "categories": [],
+        "hidden": false
+      },
+      "riskClass": "read",
+      "configSchema": null,
+      "credentialRequirements": [],
+      "descriptors": {
+        "kind": "skill-bundle",
+        "items": [
+          {
+            "name": "quarterly-report",
+            "format": "skill-bundle/1",
+            "files": {
+              "SKILL.md": {
+                "sha256": "89bc9236218276ba24ae56d5feee949728f2cfdd13885876666b06f0c3f396ba",
+                "size": 72
+              }
+            },
+            "digest": "sha256:468475bd15c20d9951c9ccf5ef0bf2f9cb79f6d0c130c4fdc4aa9df897db804d"
+          }
+        ]
+      },
+      "descriptorSetDigest": "sha256:3267009afa47d29ea63cd4b9b257669b4d79d96ec3908c5fd95ca728f018fed9",
+      "deprecated": false,
+      "createdAt": 1760000000000
+    }
+  ]
+}

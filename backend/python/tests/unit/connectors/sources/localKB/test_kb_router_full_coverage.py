@@ -5,6 +5,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.localKB.api.kb_router import (
     HTTP_INTERNAL_SERVER_ERROR,
     HTTP_MAX_STATUS,
@@ -606,7 +607,7 @@ class TestUploadRecordsToFolder:
 
 class TestKbRouterDependencyWiring:
     @staticmethod
-    async def _service_with_kb_connector(connector, kb_doc=None):
+    async def _service_with_kb_connector(connector, kb_doc=None, init_error=None):
         from app.connectors.sources.localKB.api.kb_router import get_kb_service
 
         request = MagicMock()
@@ -616,7 +617,7 @@ class TestKbRouterDependencyWiring:
             return_value={"orgId": "org1"} if kb_doc is None else kb_doc
         )
         event_service = MagicMock()
-        event_service.get_or_init_connector = AsyncMock(return_value=connector)
+        event_service.get_or_init_connector = AsyncMock(return_value=connector, side_effect=init_error)
         with patch("app.edition_services.EventService", return_value=event_service, create=True):
             svc = await get_kb_service(request)
         return svc, request, event_service
@@ -664,6 +665,16 @@ class TestKbRouterDependencyWiring:
 
         with pytest.raises(LookupError):
             await svc.processor_for_kb("kb1")
+
+    @pytest.mark.asyncio
+    async def test_a_connector_that_fails_to_initialise_is_not_reported_as_missing(self) -> None:
+        """The init failure itself reaches the caller, not LookupError: the push API answers 500, not 404 KB_NOT_FOUND."""
+        error = ConnectorInitError("token revoked")
+        svc, _, _ = await self._service_with_kb_connector(None, init_error=error)
+
+        with pytest.raises(ConnectorInitError) as caught:
+            await svc.processor_for_kb("kb1")
+        assert caught.value is error
 
     @pytest.mark.asyncio
     async def test_get_kafka_service_from_container(self):
@@ -788,27 +799,6 @@ class TestFolderUploadRouteGaps:
         )
         assert result["success"] is True
         logger.error.assert_called()
-
-
-class TestListKbRecords:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.list_kb_records = AsyncMock(return_value={
-            "records": [],
-            "pagination": {
-                "page": 1, "limit": 20, "totalCount": 0, "totalPages": 0,
-            },
-            "filters": {
-                "applied": {},
-                "available": {
-                    "recordTypes": [], "origins": [], "connectors": [],
-                    "indexingStatus": [], "permissions": [],
-                },
-            },
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/records")
-        assert resp.status_code == 200
 
 
 class TestGetKbChildren:
@@ -1082,7 +1072,7 @@ class TestUpdateRecord:
         resp = client.put("/api/v1/kb/record/r1", json={"updates": {"recordName": "new"}})
         assert resp.status_code == 200
         assert resp.json()["location"] == "kb_root"
-        assert resp.json()["userPermission"] == "NONE"
+        assert resp.json()["userPermission"] is None
 
     def test_publishes_event_data_from_service_result(self):
         app, kb_svc, kafka = _make_app()

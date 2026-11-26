@@ -130,9 +130,8 @@ class TestFormatMessage:
         assert "tool_call_id" not in formatted
 
     def test_multipart_tool_message_strips_images_keeps_text(self) -> None:
-        """Ollama's /api/chat has no multipart tool-result support — images
-        must be stripped here (delivered instead via the PRE_MODEL fallback
-        hook) while the text parts are preserved."""
+        """Ollama's `tool` role takes text only: the result keeps its text and
+        `_format_messages` sends the images in a user message after it."""
         transport = _transport()
         msg = ToolMessage(
             content=[
@@ -444,6 +443,21 @@ class TestStream:
         events = [event async for event in transport.stream([UserMessage(content="search")])]
         final = next(e for e in events if isinstance(e, StreamCompleteEvent)).response
         assert final.message.tool_calls[0].name == "search"
+
+    async def test_tool_calls_across_chunks_are_all_kept(self) -> None:
+        transport = _transport()
+        lines = self._ndjson(
+            {"message": {"content": "", "tool_calls": [{"function": {"name": "search", "arguments": {"q": "x"}}}]}},
+            {"message": {"content": "", "tool_calls": [{"function": {"name": "fetch", "arguments": {"u": "y"}}}]}},
+            {"message": {"content": ""}, "done": True},
+        )
+        fake_response = _FakeStreamResponse(lines)
+        transport._client.stream = MagicMock(return_value=_FakeStreamCM(fake_response))
+
+        events = [event async for event in transport.stream([UserMessage(content="search")])]
+        final = next(e for e in events if isinstance(e, StreamCompleteEvent)).response
+        assert [tc.name for tc in final.message.tool_calls] == ["search", "fetch"]
+        assert [tc.id for tc in final.message.tool_calls] == ["call_0", "call_1"]
 
     async def test_done_without_prior_message_uses_final_chunk_message(self) -> None:
         transport = _transport()

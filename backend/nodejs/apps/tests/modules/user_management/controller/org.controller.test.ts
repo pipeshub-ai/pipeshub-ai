@@ -1,8 +1,11 @@
 import 'reflect-metadata';
+import { InMemorySlackUserLinks } from '../../../support/slack/in-memory-slack-links'
+import { setSlackUserLinkRepository } from '../../../../src/libs/repositories/slack-user-link'
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
 import { OrgController } from '../../../../src/modules/user_management/controller/org.controller';
+import { principalErasers } from '../support/principal-erasers';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { OrgLogos } from '../../../../src/modules/user_management/schema/orgLogo.schema';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
@@ -10,12 +13,24 @@ import { UserGroups } from '../../../../src/modules/user_management/schema/userG
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer';
+import * as outboxDispatcher from '../../../../src/libs/services/outbox/outbox.dispatcher';
+import { MongoUnitOfWork } from '../../../../src/libs/repositories/mongo';
 import {
   BadRequestError,
   NotFoundError,
+  ServiceUnavailableError,
 } from '../../../../src/libs/errors/http.errors'
+import { ORG_DELETE_QUERY_SERVICE_PAGES } from '../../../../src/modules/user_management/controller/org.controller';
+import { installOrgLifecycle, resetOrgLifecycle } from '../../../../src/libs/org-lifecycle';
 
 describe('OrgController', () => {
+  // Org deletion removes the org's Slack links (ADR-SLACKID-01); in memory here.
+  let slackLinks: InMemorySlackUserLinks
+  beforeEach(() => {
+    slackLinks = new InMemorySlackUserLinks()
+    setSlackUserLinkRepository(slackLinks)
+  })
+  afterEach(() => setSlackUserLinkRepository())
   let controller: OrgController;
   let mockConfig: any;
   let mockMailService: any;
@@ -147,6 +162,95 @@ describe('OrgController', () => {
       expect(res.json.calledWith(mockOrg)).to.be.true;
     });
 
+    describe('R51-COMPAT item 10: the compatibility profile with the harness off (ADR-OPS-07)', () => {
+      const saved: Record<string, string | undefined> = {};
+      beforeEach(() => {
+        for (const name of ['PIPESHUB_HARDENED', 'AGENT_HARNESS_WORKER_ENABLED']) saved[name] = process.env[name];
+        delete process.env.PIPESHUB_HARDENED;
+        process.env.AGENT_HARNESS_WORKER_ENABLED = 'false';
+      });
+      afterEach(() => {
+        for (const [name, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
+      });
+      const anOrg = () => ({
+        _id: '507f1f77bcf86cd799439012',
+        registeredName: 'Acme Corporation Ltd',
+        isDeleted: false,
+        save: sinon.stub().resolves(),
+      });
+
+      it('deletes without confirmName, as before ORGDEL: a soft delete and the event, nothing erased', async () => {
+        const mockOrg = anOrg();
+        sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+        const eraser = { eraseUser: sinon.stub(), eraseOrg: sinon.stub() };
+        const queryService = { eraseOrg: sinon.stub() };
+        req.body = {};
+        await new OrgController(mockConfig, mockMailService, mockLogger, mockEventService, eraser, eraser as any, eraser as any, eraser as any, null, null, null, queryService).deleteOrganization(req, res, next);
+        expect(next.called).to.equal(false);
+        expect(mockOrg.isDeleted).to.equal(true);
+        expect(mockEventService.publishEvent.calledOnce).to.equal(true);
+        expect(eraser.eraseOrg.called).to.equal(false);
+        expect(queryService.eraseOrg.called).to.equal(false);
+      });
+
+      it('a confirmName that is sent must still match', async () => {
+        const mockOrg = anOrg();
+        sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+        req.body = { confirmName: 'Acme' };
+        await controller.deleteOrganization(req, res, next);
+        expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+        expect(mockOrg.save.called).to.equal(false);
+      });
+
+      it('erases as before with the harness switched on', async () => {
+        process.env.AGENT_HARNESS_WORKER_ENABLED = 'true';
+        sinon.stub(Org, 'findOne').resolves(anOrg() as any);
+        const eraser = { eraseUser: sinon.stub(), eraseOrg: sinon.stub().resolves(0) };
+        req.body = {};
+        await new OrgController(mockConfig, mockMailService, mockLogger, mockEventService, eraser).deleteOrganization(req, res, next);
+        expect(eraser.eraseOrg.calledOnce).to.equal(true);
+      });
+
+      it("CLEANUP-G1: with the harness on, the org's erasure job is requested before the org is marked deleted, so its sessions, journals, keys and audit chain are erased too", async () => {
+        process.env.AGENT_HARNESS_WORKER_ENABLED = 'true';
+        const mockOrg = anOrg();
+        sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+        const principalDeletion = {
+          requestOrg: sinon.stub().callsFake(async () => {
+            expect(mockOrg.isDeleted).to.equal(false);
+            return true;
+          }),
+        };
+        req.body = {};
+        await new OrgController(mockConfig, mockMailService, mockLogger, mockEventService, null, null, null, null, null, null, null, null, principalDeletion).deleteOrganization(req, res, next);
+        expect(next.called).to.equal(false);
+        expect(principalDeletion.requestOrg.calledOnceWith('507f1f77bcf86cd799439012', String(req.user.userId))).to.equal(true);
+        expect(mockOrg.isDeleted).to.equal(true);
+      });
+
+      it('CLEANUP-G1: a failed request for the erasure job leaves the org undeleted, so the delete can be retried', async () => {
+        process.env.AGENT_HARNESS_WORKER_ENABLED = 'true';
+        const mockOrg = anOrg();
+        sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+        const principalDeletion = { requestOrg: sinon.stub().rejects(new Error('store down')) };
+        req.body = {};
+        await new OrgController(mockConfig, mockMailService, mockLogger, mockEventService, null, null, null, null, null, null, null, null, principalDeletion).deleteOrganization(req, res, next);
+        expect(next.calledOnce).to.equal(true);
+        expect(mockOrg.isDeleted).to.equal(false);
+      });
+
+      it('with the harness off on the compatibility profile, no erasure job is requested', async () => {
+        sinon.stub(Org, 'findOne').resolves(anOrg() as any);
+        const principalDeletion = { requestOrg: sinon.stub().resolves(true) };
+        req.body = {};
+        await new OrgController(mockConfig, mockMailService, mockLogger, mockEventService, null, null, null, null, null, null, null, null, principalDeletion).deleteOrganization(req, res, next);
+        expect(principalDeletion.requestOrg.called).to.equal(false);
+      });
+    });
+
     it('should call next with NotFoundError when org not found', async () => {
       sinon.stub(Org, 'findOne').resolves(null);
 
@@ -199,9 +303,14 @@ describe('OrgController', () => {
   });
 
   describe('deleteOrganization', () => {
+    beforeEach(() => {
+      req.body = { confirmName: 'Acme Corporation Ltd' };
+    });
+
     it('should soft delete org and publish event', async () => {
       const mockOrg = {
         _id: '507f1f77bcf86cd799439012',
+        registeredName: 'Acme Corporation Ltd',
         isDeleted: false,
         save: sinon.stub().resolves(),
       };
@@ -225,6 +334,238 @@ describe('OrgController', () => {
       const error = next.firstCall.args[0];
       expect(error.message).to.equal('Organisation not found');
     });
+
+    it('R40-SLACK: removes the org\'s Slack account links before the org is marked deleted, and no other org\'s', async () => {
+      const mockOrg = {
+        _id: '507f1f77bcf86cd799439012',
+        registeredName: 'Acme Corporation Ltd',
+        isDeleted: false,
+        save: sinon.stub().resolves(),
+      };
+      sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+      const link = { workspaceId: 'T1', teamId: 'T1', slackUserId: 'U1', userId: 'u1', email: 'a@x.test', slackName: 'A' };
+      await slackLinks.upsert({ ...link, orgId: mockOrg._id });
+      await slackLinks.upsert({ ...link, orgId: 'other-org' });
+
+      await controller.deleteOrganization(req, res, next);
+
+      expect(await slackLinks.get(mockOrg._id, 'T1', 'U1')).to.equal(null);
+      expect(await slackLinks.get('other-org', 'T1', 'U1')).to.not.equal(null);
+      expect(mockOrg.isDeleted).to.be.true;
+    });
+
+    it('ER-2: erases the org model accounts before the org is marked deleted', async () => {
+      const mockOrg = {
+        _id: '507f1f77bcf86cd799439012',
+        registeredName: 'Acme Corporation Ltd',
+        isDeleted: false,
+        save: sinon.stub().resolves(),
+      };
+      sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+      const eraser = {
+        eraseUser: sinon.stub().resolves(0),
+        eraseOrg: sinon.stub().callsFake(async () => {
+          expect(mockOrg.isDeleted).to.be.false;
+          return 3;
+        }),
+      };
+      const erasing = new OrgController(mockConfig, mockMailService, mockLogger, mockEventService, eraser);
+
+      await erasing.deleteOrganization(req, res, next);
+
+      expect(eraser.eraseOrg.calledOnceWith('507f1f77bcf86cd799439012')).to.be.true;
+      expect(mockOrg.save.calledOnce).to.be.true;
+    });
+
+    for (const failing of [undefined, 'agentSchedules']) {
+      it(`QA15-10: every principal store listed for deleteOrganization is erased before the org is marked deleted${failing ? ' (a failing one leaves the org undeleted)' : ''}`, async () => {
+        const mockOrg = {
+          _id: '507f1f77bcf86cd799439012',
+          registeredName: 'Acme Corporation Ltd',
+          isDeleted: false,
+          save: sinon.stub().resolves(),
+        };
+        sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+        const erasers = principalErasers(
+          'modules/user_management/controller/org.controller.ts#deleteOrganization',
+          () => mockOrg.isDeleted,
+          failing ? { failing } : {},
+        );
+        expect(erasers.stores).to.deep.equal(['modelAccounts', 'agentSchedules', 'agentMemories', 'engineSignIns', 'inbox', 'personalInstances']);
+        const { modelAccounts, schedules, memories, engineSignIns, inbox, personalInstances } = erasers.byField as Record<string, any>;
+        const erasing = new OrgController(mockConfig, mockMailService, mockLogger, mockEventService, modelAccounts, schedules, memories, engineSignIns, personalInstances, null, inbox, null);
+
+        await erasing.deleteOrganization(req, res, next);
+
+        expect(erasers.calls.map((c) => c.store)).to.deep.equal(failing ? ['modelAccounts', 'agentSchedules'] : erasers.stores);
+        for (const call of erasers.calls) {
+          expect(call, call.store).to.deep.include({ hook: 'eraseOrg', principalDeleted: false });
+          expect(call.args).to.deep.equal(['507f1f77bcf86cd799439012']);
+        }
+        expect(mockOrg.isDeleted).to.equal(failing === undefined);
+        expect(mockOrg.save.called).to.equal(failing === undefined);
+      });
+    }
+
+    it('ER-2: a failed erasure leaves the org undeleted', async () => {
+      const mockOrg = {
+        _id: '507f1f77bcf86cd799439012',
+        registeredName: 'Acme Corporation Ltd',
+        isDeleted: false,
+        save: sinon.stub().resolves(),
+      };
+      sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+      const eraser = { eraseUser: sinon.stub(), eraseOrg: sinon.stub().rejects(new Error('kv down')) };
+      const erasing = new OrgController(mockConfig, mockMailService, mockLogger, mockEventService, eraser);
+
+      await erasing.deleteOrganization(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(mockOrg.isDeleted).to.be.false;
+      expect(mockOrg.save.called).to.be.false;
+    });
+    describe('the typed name', () => {
+      const anOrg = (fields: Record<string, unknown> = {}) => ({
+        _id: '507f1f77bcf86cd799439012',
+        registeredName: 'Acme Corporation Ltd',
+        shortName: 'Acme',
+        contactEmail: 'it@acme.example',
+        isDeleted: false,
+        save: sinon.stub().resolves(),
+        // The org repository reads a document through toObject(): every stored field, not the methods.
+        toObject(this: Record<string, unknown>) {
+          return Object.fromEntries(Object.entries(this).filter(([, v]) => typeof v !== 'function'));
+        },
+        ...fields,
+      });
+
+      afterEach(() => resetOrgLifecycle());
+
+      for (const [what, body] of [
+        ['no name', {}],
+        ['another name', { confirmName: 'Acme' }],
+        ['a name that is not a string', { confirmName: ['Acme Corporation Ltd'] }],
+      ] as const) {
+        it(`the server refuses a delete with ${what}: nothing is erased or deleted, and no hook is asked`, async () => {
+          const mockOrg = anOrg();
+          sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+          const eraser = { eraseUser: sinon.stub(), eraseOrg: sinon.stub() };
+          const queryService = { eraseOrg: sinon.stub() };
+          req.body = body;
+          for (const hooked of [false, true]) {
+            const hook = { deleteOrg: sinon.stub(), signInPageOrg: sinon.stub(), notLiveOrgOf: sinon.stub(), signInRefusal: sinon.stub() };
+            if (hooked) installOrgLifecycle({ orgLifecycleHook: hook });
+            next.resetHistory();
+            await new OrgController(mockConfig, mockMailService, mockLogger, mockEventService, eraser, eraser as any, eraser as any, eraser as any, null, null, null, queryService).deleteOrganization(req, res, next);
+            const refused = next.firstCall.args[0];
+            expect(refused).to.be.instanceOf(BadRequestError);
+            expect(refused.metadata).to.deep.equal({ reasonCode: 'org_delete_name_mismatch' });
+            expect(hook.deleteOrg.called).to.equal(false);
+          }
+          expect(eraser.eraseOrg.called).to.equal(false);
+          expect(queryService.eraseOrg.called).to.equal(false);
+          expect(mockOrg.save.called).to.equal(false);
+        });
+      }
+
+      it('an org without a registered name is confirmed with its display name, then its contact email', async () => {
+        const { orgConfirmationName } = await import('../../../../src/modules/user_management/controller/org.controller');
+        expect(orgConfirmationName({ registeredName: ' Acme Ltd ', shortName: 'Acme' })).to.equal('Acme Ltd');
+        expect(orgConfirmationName({ registeredName: '', shortName: 'Acme' })).to.equal('Acme');
+        expect(orgConfirmationName({ contactEmail: 'me@x.example' })).to.equal('me@x.example');
+        expect(orgConfirmationName({})).to.equal('');
+      });
+
+      it('the immediate delete answers the deleted org and nothing about a later erasure', async () => {
+        sinon.stub(Org, 'findOne').resolves(anOrg() as any);
+        await controller.deleteOrganization(req, res, next);
+        expect(next.called).to.equal(false);
+        expect(Object.keys(res.json.firstCall.args[0]).sort()).to.deep.equal(['data', 'message']);
+      });
+
+      it('an installed deletion hook deletes the org in place of the immediate delete, once the name matched', async () => {
+        const mockOrg = anOrg();
+        sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+        const answer = { message: 'scheduled', data: { isDeleted: true } };
+        const hook = { deleteOrg: sinon.stub().resolves(answer), signInPageOrg: sinon.stub(), notLiveOrgOf: sinon.stub(), signInRefusal: sinon.stub() };
+        installOrgLifecycle({ orgLifecycleHook: hook });
+        const eraser = { eraseUser: sinon.stub(), eraseOrg: sinon.stub() };
+        const queryService = { eraseOrg: sinon.stub() };
+        const publish = mockEventService.publishEvent as sinon.SinonStub;
+
+        await new OrgController(mockConfig, mockMailService, mockLogger, mockEventService, eraser, eraser as any, eraser as any, eraser as any, null, null, null, queryService).deleteOrganization(req, res, next);
+
+        expect(next.called).to.equal(false);
+        const request = hook.deleteOrg.firstCall.args[0];
+        expect(request).to.deep.include({ orgId: '507f1f77bcf86cd799439012', byUserId: '507f1f77bcf86cd799439011' });
+        expect(request.org).to.deep.include({ registeredName: 'Acme Corporation Ltd' });
+        expect(request.config).to.deep.equal({ frontendUrl: 'http://localhost:3000', scopedJwtSecret: 'test-secret' });
+        expect(res.json.firstCall.args[0]).to.equal(answer);
+        expect(eraser.eraseOrg.called).to.equal(false);
+        expect(queryService.eraseOrg.called).to.equal(false);
+        expect(mockOrg.save.called).to.equal(false);
+        expect(publish.called).to.equal(false);
+      });
+    });
+
+    describe("the query service's data", () => {
+      const anOrg = () => ({
+        _id: '507f1f77bcf86cd799439012',
+        registeredName: 'Acme Corporation Ltd',
+        isDeleted: false,
+        save: sinon.stub().resolves(),
+      });
+      const page = (remaining: boolean) => ({ attachments: 1, artifacts: 2, blobs: 3, skillCandidates: 0, remaining });
+      const deleting = (queryService: { eraseOrg: sinon.SinonStub }, eraser?: unknown) =>
+        new OrgController(mockConfig, mockMailService, mockLogger, mockEventService, (eraser ?? null) as any, null, null, null, null, null, null, queryService);
+
+      it('is erased page by page after the harness stores and before the org is marked deleted', async () => {
+        const mockOrg = anOrg();
+        sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+        const order: string[] = [];
+        const eraser = { eraseUser: sinon.stub(), eraseOrg: sinon.stub().callsFake(async () => { order.push('modelAccounts'); return 1; }) };
+        const queryService = {
+          eraseOrg: sinon.stub().callsFake(async () => {
+            expect(mockOrg.isDeleted, 'not deleted while its data is erased').to.equal(false);
+            order.push('queryService');
+            return page(order.filter((o) => o === 'queryService').length < 3);
+          }),
+        };
+
+        await deleting(queryService, eraser).deleteOrganization(req, res, next);
+
+        expect(next.called).to.equal(false);
+        expect(queryService.eraseOrg.alwaysCalledWithExactly('507f1f77bcf86cd799439012')).to.equal(true);
+        expect(order).to.deep.equal(['modelAccounts', 'queryService', 'queryService', 'queryService']);
+        expect(mockOrg.isDeleted).to.equal(true);
+        expect(mockEventService.publishEvent.calledOnce).to.equal(true);
+      });
+
+      it('a page that fails leaves the org undeleted, so the delete can be asked again', async () => {
+        const mockOrg = anOrg();
+        sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+        const queryService = { eraseOrg: sinon.stub().rejects(new Error('query service down')) };
+
+        await deleting(queryService).deleteOrganization(req, res, next);
+
+        expect(next.firstCall.args[0].message).to.equal('query service down');
+        expect(mockOrg.isDeleted).to.equal(false);
+        expect(mockOrg.save.called).to.equal(false);
+        expect(mockEventService.publishEvent.called).to.equal(false);
+      });
+
+      it('an org with more than one delete can erase is left undeleted with a 503; the next delete continues', async () => {
+        const mockOrg = anOrg();
+        sinon.stub(Org, 'findOne').resolves(mockOrg as any);
+        const queryService = { eraseOrg: sinon.stub().resolves(page(true)) };
+
+        await deleting(queryService).deleteOrganization(req, res, next);
+
+        expect(queryService.eraseOrg.callCount).to.equal(ORG_DELETE_QUERY_SERVICE_PAGES);
+        expect(next.firstCall.args[0]).to.be.instanceOf(ServiceUnavailableError);
+        expect(mockOrg.isDeleted).to.equal(false);
+      });
+    });
   });
 
   describe('getOrgLogo', () => {
@@ -245,6 +586,24 @@ describe('OrgController', () => {
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.setHeader.calledWith('Content-Type', 'image/jpeg')).to.be.true;
       expect(res.send.calledOnce).to.be.true;
+    });
+
+    it('serves the logo so an SVG opened as a page cannot run script', async () => {
+      sinon.stub(OrgLogos, 'findOne').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves({
+            logo: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString('base64'),
+            mimeType: 'image/svg+xml',
+          }),
+        }),
+      } as any);
+
+      await controller.getOrgLogo(req, res, next);
+
+      expect(res.setHeader.calledWith('X-Content-Type-Options', 'nosniff')).to.be.true;
+      const csp = res.setHeader.args.find((a: any[]) => a[0] === 'Content-Security-Policy');
+      expect(csp?.[1]).to.match(/sandbox/);
+      expect(csp?.[1]).to.match(/default-src 'none'/);
     });
 
     it('should return 204 when no logo found', async () => {
@@ -655,7 +1014,72 @@ describe('OrgController', () => {
       const org = orgSave.firstCall.thisValue;
       expect([org.signupChannel, org.signupReferrerDomain]).to.deep.equal(['direct', 'news.ycombinator.com']);
       const [event] = eventBuffer.drain().filter((e) => e.event === 'org_created');
-      expect(event.props).to.include({ channel: 'direct', referrer_domain: 'news.ycombinator.com' });
+      expect(event!.props).to.include({ channel: 'direct', referrer_domain: 'news.ycombinator.com' });
+    });
+
+    it('delivers the new org and admin events as soon as they are stored, not at the next poll', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+      };
+      sinon.stub(Org, 'countDocuments').resolves(0);
+      sinon.stub(Org.prototype, 'save').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups.prototype, 'save').resolves();
+      sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+      const kick = sinon.stub(outboxDispatcher, 'kickOutbox');
+      // Hold the unit of work open after its body ran, so a kick from inside the body would show.
+      let commit!: () => void;
+      const committed = new Promise<void>((resolve) => { commit = resolve; });
+      let bodyRan!: () => void;
+      const bodyDone = new Promise<void>((resolve) => { bodyRan = resolve; });
+      const run = MongoUnitOfWork.prototype.run;
+      sinon.stub(MongoUnitOfWork.prototype, 'run').callsFake(async function (
+        this: MongoUnitOfWork,
+        ...args: Parameters<MongoUnitOfWork['run']>
+      ) {
+        const out = await run.apply(this, args);
+        bodyRan();
+        await committed;
+        return out;
+      });
+
+      const done = controller.createOrg(req, res);
+      await bodyDone;
+      expect(mockEventService.publishEvent.calledTwice).to.be.true;
+      expect(kick.called).to.be.false;
+      commit();
+      await done;
+
+      expect(kick.calledOnce).to.be.true;
+    });
+
+    it('does not kick the outbox when the organisation was not created', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+      };
+      sinon.stub(Org, 'countDocuments').resolves(0);
+      sinon.stub(Org.prototype, 'save').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups.prototype, 'save').resolves();
+      sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+      mockEventService.publishEvent.rejects(new Error('outbox write failed'));
+      const kick = sinon.stub(outboxDispatcher, 'kickOutbox');
+
+      try {
+        await controller.createOrg(req, res);
+        expect.fail('Should have thrown');
+      } catch (error: any) {
+        expect(error.statusCode).to.equal(500);
+      }
+      expect(kick.called).to.be.false;
     });
 
     it('should send email when sendEmail is true', async () => {
@@ -1066,6 +1490,13 @@ describe('OrgController', () => {
 });
 
 describe('OrgController - additional coverage', () => {
+  // Org deletion removes the org's Slack links (ADR-SLACKID-01); in memory here.
+  let slackLinks: InMemorySlackUserLinks
+  beforeEach(() => {
+    slackLinks = new InMemorySlackUserLinks()
+    setSlackUserLinkRepository(slackLinks)
+  })
+  afterEach(() => setSlackUserLinkRepository())
   let controller: OrgController
   let mockConfig: any
   let mockMailService: any
@@ -1262,7 +1693,7 @@ describe('OrgController - additional coverage', () => {
       expect(next.called).to.be.false
       expect(res.status.calledWith(201)).to.be.true
       expect(res.json.firstCall.args[0].mimeType).to.equal('image/svg+xml')
-      const stored = update.firstCall.args[1].logo as string
+      const stored = update.firstCall.args[1]!.logo as string
       expect(Buffer.from(stored, 'base64').equals(svg)).to.equal(true)
     })
   })
@@ -1282,8 +1713,10 @@ describe('OrgController - additional coverage', () => {
 
   describe('deleteOrganization - event publishing', () => {
     it('should publish OrgDeletedEvent with orgId', async () => {
+      req.body = { confirmName: 'Acme' }
       const mockOrg = {
         _id: '507f1f77bcf86cd799439012',
+        registeredName: 'Acme',
         isDeleted: false,
         save: sinon.stub().resolves(),
       }
@@ -1578,6 +2011,13 @@ describe('OrgController - additional coverage', () => {
 })
 
 describe('OrgController - additional coverage 2', () => {
+  // Org deletion removes the org's Slack links (ADR-SLACKID-01); in memory here.
+  let slackLinks: InMemorySlackUserLinks
+  beforeEach(() => {
+    slackLinks = new InMemorySlackUserLinks()
+    setSlackUserLinkRepository(slackLinks)
+  })
+  afterEach(() => setSlackUserLinkRepository())
   let controller: OrgController
   let mockConfig: any
   let mockMailService: any
@@ -1828,7 +2268,7 @@ describe('OrgController - additional coverage 2', () => {
       } as any)
 
       await controller.getOrgLogo(req, res, next)
-      expect(res.setHeader.called).to.be.false
+      expect(res.setHeader.calledWith('Content-Type')).to.be.false
       expect(res.status.calledWith(200)).to.be.true
     })
   })
@@ -1939,8 +2379,10 @@ describe('OrgController - additional coverage 2', () => {
   // -----------------------------------------------------------------------
   describe('deleteOrganization', () => {
     it('should soft delete organization', async () => {
+      req.body = { confirmName: 'Acme' }
       const mockOrg = {
         _id: 'org1',
+        registeredName: 'Acme',
         isDeleted: false,
         save: sinon.stub().resolves(),
       }

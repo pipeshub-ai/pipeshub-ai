@@ -1,4 +1,6 @@
 import { apiClient } from '@/lib/api';
+import { publicAuthClient } from '@/lib/api/public-auth-client';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import { desktopAuthorizeParams } from '@/lib/electron';
 import type { ConnectorOAuthCallbackRaw } from '@/app/(main)/connectors/oauth/connector-oauth-callback-response';
@@ -12,8 +14,17 @@ import type {
   FilterOptionsResponse,
   ConnectorStatsResponse,
   ConnectionCheckResponse,
+  PermissionStatus,
+  PermissionFilter,
+  PermissionFilterMode,
   ReindexStage,
   CodeGraphRepo,
+  AccessExplanation,
+  UserAccessConnection,
+  UserAccessConnector,
+  UserAccessRoster,
+  UserAccessInviteResult,
+  UserAccessLinkInfo,
 } from './types';
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
@@ -132,10 +143,13 @@ export const ConnectorsApi = {
     return data;
   },
 
-  /** Try auth settings before saving them; `connectorId` when editing an instance. */
+  /**
+   * Try auth settings before saving them; `connectorId` when editing an instance.
+   * `authType` names the chosen form when a connector offers several: `auth` holds only its fields.
+   */
   async testConnection(
     connectorType: string,
-    payload: { auth: Record<string, unknown>; connectorId?: string }
+    payload: { auth: Record<string, unknown>; authType?: string; connectorId?: string }
   ): Promise<ConnectionCheckResponse> {
     const { data } = await apiClient.post<ConnectionCheckResponse>(
       `${BASE_URL}/registry/${encodeURIComponent(connectorType)}/test-connection`,
@@ -164,6 +178,7 @@ export const ConnectorsApi = {
     baseUrl?: string;
   }) {
     const { data } = await apiClient.post(BASE_URL, payload);
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return data;
   },
 
@@ -173,6 +188,7 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}`,
       { suppressErrorToast: true }
     );
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return parseDeleteConnectorInstanceBody(data ?? null, connectorId);
   },
 
@@ -181,6 +197,7 @@ export const ConnectorsApi = {
     const { data } = await apiClient.put(`${BASE_URL}/${connectorId}/name`, {
       instanceName,
     });
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return data;
   },
 
@@ -206,6 +223,8 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}/config/auth`,
       payload
     );
+    // The panel saves auth without bumping the catalog, so the cards' configs are refreshed here.
+    revalidateSwrNamespace(SWR_NS.connectorConfigs);
     return data;
   },
 
@@ -353,7 +372,9 @@ export const ConnectorsApi = {
   // ── Toggle ──
 
   /**
-   * Toggle sync or agent for a connector instance. Only the Local FS
+   * Turn sync or agent on (`enabled: true`) or off for a connector instance.
+   * Naming the state, rather than flipping, makes a resent request harmless:
+   * the backend changes nothing when the connector is already there. Only the Local FS
    * desktop-offline refusal is suppressed, because callers render that as an
    * info toast; every other failure keeps the generic error toast and its
    * backend message. `device` is the desktop enabling a Local FS connector;
@@ -362,13 +383,15 @@ export const ConnectorsApi = {
   async toggleConnector(
     connectorId: string,
     type: 'sync' | 'agent',
+    enabled: boolean,
     device?: { deviceId: string; deviceName: string }
   ) {
     const { data } = await apiClient.post(
       `${BASE_URL}/${connectorId}/toggle`,
-      { type, ...device },
+      { type, enabled, ...device },
       { suppressErrorToast: isDesktopOfflineError }
     );
+    revalidateSwrNamespace(SWR_NS.teamConnectorLists);
     return data;
   },
 
@@ -465,6 +488,8 @@ export const ConnectorsApi = {
       params: query,
       suppressErrorToast: true,
     });
+    // The desktop app completes OAuth here even when the instance panel was closed meanwhile.
+    revalidateSwrNamespace(SWR_NS.connectorConfigs);
     return data ?? {};
   },
 
@@ -508,6 +533,37 @@ export const ConnectorsApi = {
     return data;
   },
 
+  /** Why a person can or cannot read a record. Org admins only. The caller words every failure. */
+  async explainAccess(
+    connectorId: string,
+    userId: string,
+    recordId: string
+  ): Promise<AccessExplanation> {
+    const { data } = await apiClient.get<AccessExplanation>(
+      `${BASE_URL}/${encodeURIComponent(connectorId)}/permissions/explain`,
+      { params: { userId, recordId }, suppressErrorToast: true }
+    );
+    return data;
+  },
+
+  /** Admin only: how fresh a connector's permissions are. */
+  async getPermissionStatus(connectorId: string): Promise<PermissionStatus> {
+    const { data } = await apiClient.get<PermissionStatus>(
+      `${BASE_URL}/${connectorId}/permissions/status`,
+      { suppressErrorToast: true }
+    );
+    return data;
+  },
+
+  async setPermissionFilter(connectorId: string, mode: PermissionFilterMode): Promise<PermissionFilter> {
+    const { data } = await apiClient.patch<PermissionFilter>(
+      `${BASE_URL}/${connectorId}/permissions/filter`,
+      { mode },
+      { suppressErrorToast: true }
+    );
+    return data;
+  },
+
   /** Code repositories the caller can read, with each one's code-graph status. */
   async getCodeGraphRepos(): Promise<CodeGraphRepo[]> {
     const { data } = await apiClient.get<{ repos?: CodeGraphRepo[] }>(
@@ -515,5 +571,131 @@ export const ConnectorsApi = {
       { suppressErrorToast: true }
     );
     return data.repos ?? [];
+  },
+
+  // ── Per-user access ──
+
+  /** Team connectors in per-user mode, each with the caller's own connection. */
+  async getMyUserAccessConnectors({ silent = false }: { silent?: boolean } = {}): Promise<UserAccessConnector[]> {
+    const { data } = await apiClient.get<{ connectors?: UserAccessConnector[] }>(
+      `${BASE_URL}/user-access/mine`,
+      // A server without per-user access answers 404; the section just stays hidden.
+      { suppressErrorToast: silent ? true : (e) => e.statusCode === 404 }
+    );
+    return data.connectors ?? [];
+  },
+
+  /** Connect the caller's own source account. The caller shows every failure itself. */
+  async connectUserAccess(connectorId: string, token: string): Promise<UserAccessConnection | null> {
+    const { data } = await apiClient.post<{ connection: UserAccessConnection | null }>(
+      `${BASE_URL}/${encodeURIComponent(connectorId)}/user-access`,
+      { token },
+      { suppressErrorToast: true }
+    );
+    return data.connection;
+  },
+
+  /** The source's sign-in URL for the caller; it returns to the connector OAuth callback page. */
+  async startUserAccessSignIn(connectorId: string): Promise<string> {
+    const { data } = await apiClient.get<{ authorizationUrl: string }>(
+      `${BASE_URL}/${encodeURIComponent(connectorId)}/user-access/oauth/authorize`,
+      { suppressErrorToast: true }
+    );
+    return data.authorizationUrl;
+  },
+
+  /** The caller's own connection to one per-user connector. */
+  async getUserAccess(connectorId: string): Promise<UserAccessConnection | null> {
+    const { data } = await apiClient.get<{ connection: UserAccessConnection | null }>(
+      `${BASE_URL}/${encodeURIComponent(connectorId)}/user-access`
+    );
+    return data.connection;
+  },
+
+  async disconnectUserAccess(connectorId: string): Promise<void> {
+    await apiClient.delete(`${BASE_URL}/${encodeURIComponent(connectorId)}/user-access`);
+  },
+
+  /** Admin only. 404 when the connector is not in per-user mode. */
+  async listUserAccessConnections(connectorId: string): Promise<UserAccessConnection[]> {
+    const { data } = await apiClient.get<{ connections?: UserAccessConnection[] }>(
+      `${BASE_URL}/${encodeURIComponent(connectorId)}/user-access/users`,
+      { suppressErrorToast: (e) => e.statusCode === 404 }
+    );
+    return data.connections ?? [];
+  },
+
+  /** Admin only: remove another person's connection. */
+  async removeUserAccessConnection(connectorId: string, userId: string): Promise<void> {
+    await apiClient.delete(
+      `${BASE_URL}/${encodeURIComponent(connectorId)}/user-access/users/${encodeURIComponent(userId)}`
+    );
+  },
+
+  /**
+   * Admin only: one page of everyone who could connect (not the caller), optionally only those whose
+   * name or email contains `q`. 404 when not in per-user mode.
+   */
+  async getUserAccessRoster(
+    connectorId: string,
+    page: { q?: string; offset?: number; limit?: number } = {}
+  ): Promise<UserAccessRoster> {
+    const { data } = await apiClient.get<UserAccessRoster>(
+      `${BASE_URL}/${encodeURIComponent(connectorId)}/user-access/roster`,
+      { params: page, suppressErrorToast: (e) => e.statusCode === 404 }
+    );
+    return data;
+  },
+
+  /** Admin only: notify and email people asking them to connect. */
+  async inviteUserAccess(
+    connectorId: string,
+    target: { all: true } | { userIds: string[] }
+  ): Promise<UserAccessInviteResult> {
+    const { data } = await apiClient.post<UserAccessInviteResult>(
+      `${BASE_URL}/${encodeURIComponent(connectorId)}/user-access/invites`,
+      target
+    );
+    return data;
+  },
+
+  /** The caller's own "don't remind me". */
+  async setUserAccessReminders(connectorId: string, optedOut: boolean): Promise<boolean> {
+    const { data } = await apiClient.post<{ optedOut: boolean }>(
+      `${BASE_URL}/${encodeURIComponent(connectorId)}/user-access/reminders`,
+      { optedOut }
+    );
+    return data.optedOut;
+  },
+
+  // Emailed connect links: no login, so the public client (no bearer, no refresh, no /login redirect).
+
+  async getUserAccessLinkInfo(token: string): Promise<UserAccessLinkInfo> {
+    const { data } = await publicAuthClient.post<UserAccessLinkInfo>(`${BASE_URL}/user-access/link/info`, { token });
+    return data;
+  },
+
+  async authorizeUserAccessLink(token: string): Promise<string> {
+    const { data } = await publicAuthClient.post<{ authorizationUrl: string }>(
+      `${BASE_URL}/user-access/link/authorize`,
+      { token }
+    );
+    return data.authorizationUrl;
+  },
+
+  async optOutUserAccessLink(token: string): Promise<void> {
+    await publicAuthClient.post(`${BASE_URL}/user-access/link/opt-out`, { token });
+  },
+
+  /** Finishes a sign-in started from an emailed link. Always 200; `success` says how it went. */
+  async completeUserAccessLink(
+    code: string,
+    state: string
+  ): Promise<{ success: boolean; connectorName?: string; error_message?: string }> {
+    const { data } = await publicAuthClient.post<{ success: boolean; connectorName?: string; error_message?: string }>(
+      `${BASE_URL}/user-access/link/complete`,
+      { code, state }
+    );
+    return data;
   },
 };

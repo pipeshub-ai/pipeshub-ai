@@ -12,8 +12,14 @@ vi.mock('next/navigation', () => ({
 }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('../components', () => ({
-  ArchivedChatsSidebar: ({ onDeleted }: { onDeleted: (id: string, key: string | null) => void }) => (
-    <button data-testid="list" onClick={() => onDeleted('c1', null)} />
+  ArchivedChatsSidebar: ({ onDeleted, onRestored }: {
+    onDeleted: (id: string, key: string | null) => void;
+    onRestored: (id: string, key: string | null) => void;
+  }) => (
+    <>
+      <button data-testid="list" onClick={() => onDeleted('c1', null)} />
+      <button data-testid="restore" onClick={() => onRestored('c1', null)} />
+    </>
   ),
   ArchivedChatView: () => <div data-testid="conversation" />,
   ArchivedChatsEmptyState: () => <div data-testid="empty" />,
@@ -32,6 +38,7 @@ vi.mock('../store', () => {
 });
 
 import ArchivedChatsPage from '../page';
+import { useChatStore } from '@/chat/store';
 
 beforeEach(() => {
   env.mobile = true;
@@ -65,6 +72,14 @@ describe('archived chats on a phone', () => {
     fireEvent.click(screen.getByTestId('list'));
     expect(env.replace).toHaveBeenCalledWith('/workspace/archived-chats');
     expect(env.push).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the chat lists when a chat is restored, so it shows in Recents', () => {
+    const before = useChatStore.getState().conversationsVersion;
+    renderPage();
+    fireEvent.click(screen.getByTestId('restore'));
+    expect(useChatStore.getState().conversationsVersion).toBe(before + 1);
+    expect(env.push).toHaveBeenCalledWith('/chat?conversationId=c1');
   });
 
   it('keeps the list beside the conversation on larger screens', () => {

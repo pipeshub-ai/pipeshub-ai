@@ -83,6 +83,10 @@ class OutlookRecordsDb(FakeRecordsDb):
         self.deleted_external: list[str] = []
         self.deleted_record_groups: list[str] = []
         self.withdrawn: list[str] = []
+        self.kept_records: list[str] = []
+        self.kept_record_groups: list[str] = []
+        self.child_group_reads: list[str] = []
+        self.fail_child_group_reads = False
 
     async def get_all_app_users(self, connector_id: str, **_: object) -> list[Any]:
         return list(self.app_users)
@@ -100,6 +104,25 @@ class OutlookRecordsDb(FakeRecordsDb):
         self.records.pop(external_id, None)
         for key in [k for k, r in self.records.items() if r.parent_external_record_id == external_id]:
             self.records.pop(key)
+
+    def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        self.kept_records.extend(record_ids)
+
+    async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
+        self.kept_record_groups.append(external_group_id)
+
+    async def get_nodes_by_filters(
+        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None, *, raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Only the child folder lookup: record groups by parentExternalGroupId."""
+        assert collection == CollectionNames.RECORD_GROUPS.value and set(filters) == {"connectorId", "parentExternalGroupId"}
+        parent = filters["parentExternalGroupId"]
+        self.child_group_reads.append(parent)
+        if self.fail_child_group_reads:
+            if raise_on_error:
+                raise RuntimeError("database unavailable")
+            return []
+        return [{"externalGroupId": g.external_group_id} for g in self.record_groups.values() if g.parent_external_group_id == parent]
 
     def full_sync_running(self, connector_id: str) -> bool:
         # run_full_sync installs begin_full_sync_run on the instance for the run's length.
@@ -148,7 +171,7 @@ def db() -> OutlookRecordsDb:
 @pytest.fixture
 def api(cloud: MicrosoftCloudStub, monkeypatch: pytest.MonkeyPatch) -> MicrosoftCloudStub:
     route_microsoft_http(monkeypatch, cloud, "app.sources.client.microsoft.microsoft")
-    cloud.on("GET", "/v1.0/users", page([graph_user("u-ana", ANA), graph_user("u-bo", BO)]))
+    cloud.on("GET", "/v1.0/users", page([graph_user("u-ana", ANA), graph_user("u-bo", BO)], count=2))
     cloud.on("GET", "/v1.0/groups", page([]))
     cloud.on("GET", "/v1.0/users/u-ana/mailFolders", page([folder(INBOX, "Inbox")]))
     cloud.on("GET", delta_path(), page([], delta_link=delta_url("D0")))
@@ -1121,7 +1144,7 @@ class TestDisabledAccounts:
         assert db.user_groups[GROUP] == [ANA, BO]
         assert len(api.calls("GET", folders)) == 1
 
-        api.on("GET", "/v1.0/users", page([{**graph_user("u-ana", ANA), "accountEnabled": False}, graph_user("u-bo", BO)]))
+        api.on("GET", "/v1.0/users", page([{**graph_user("u-ana", ANA), "accountEnabled": False}, graph_user("u-bo", BO)], count=2))
         await connector.run_sync()
 
         assert db.user_groups[GROUP] == [BO], "transitiveMembers lists disabled accounts too"
@@ -1129,7 +1152,7 @@ class TestDisabledAccounts:
         assert "u-ana" not in {u.source_user_id for u in db.app_users}
         assert len(api.calls("GET", folders)) == 1, "the mailbox is not synced"
 
-        api.on("GET", "/v1.0/users", page([{**graph_user("u-ana", ANA), "accountEnabled": True}, graph_user("u-bo", BO)]))
+        api.on("GET", "/v1.0/users", page([{**graph_user("u-ana", ANA), "accountEnabled": True}, graph_user("u-bo", BO)], count=2))
         await connector.run_sync()
 
         assert db.user_groups[GROUP] == [ANA, BO]

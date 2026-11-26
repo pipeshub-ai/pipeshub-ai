@@ -457,16 +457,26 @@ def _count_nodes(node: Any) -> int:  # noqa: ANN401
 
 
 class TestInliningIsBounded:
-    def test_a_schema_that_doubles_per_level_stays_bounded_and_fast(self) -> None:
-        import time
-
+    def test_a_schema_that_doubles_per_level_stays_bounded_and_fast(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.agents.agent_loop import tool_adapter
         from app.agents.agent_loop.tool_adapter import MAX_INLINED_SCHEMA_NODES
 
-        started = time.monotonic()
-        resolved = resolve_json_schema_refs(_doubling_schema(30))
-        elapsed = time.monotonic() - started
+        # Work is bounded by the node budget, not by the 2**30 expansion: 40 levels cost the same.
+        # The resolver's visits are counted, and a run past the bound fails at once instead of expanding.
+        visits, real_resolver = 0, tool_adapter._resolve_json_refs
 
-        assert elapsed < 1.0
+        def counting_resolver(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            nonlocal visits
+            visits += 1
+            if visits > 10 * MAX_INLINED_SCHEMA_NODES:
+                raise AssertionError("the resolver visited more than 10 x the node budget")
+            return real_resolver(*args, **kwargs)
+
+        with monkeypatch.context() as patched:
+            patched.setattr(tool_adapter, "_resolve_json_refs", counting_resolver)
+            resolved = resolve_json_schema_refs(_doubling_schema(30))
+            resolved_40 = resolve_json_schema_refs(_doubling_schema(40))
+        assert _count_nodes(resolved_40) <= 2 * _count_nodes(resolved)
         # Each budgeted dict becomes at most a few output nodes (itself plus its properties map).
         assert _count_nodes(resolved) < 4 * MAX_INLINED_SCHEMA_NODES
         assert "not expanded: the schema is too large" in str(resolved)

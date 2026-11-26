@@ -4,11 +4,13 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-libra
 import '@/lib/__tests__/test-i18n';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUploadStore } from '@/lib/store/upload-store';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import { useKnowledgeBaseStore } from '../store';
 import { resetKnowledgeBaseSession } from '../utils/sidebar-session';
+import axe from 'axe-core';
 import KnowledgeBasePage from '../page';
 import KnowledgeBaseSidebarSlot from '../../@sidebar/knowledge-base/page';
 import { loadMoreNodeChildrenPage, loadMoreRootAppList } from '../utils/sidebar-paginated-fetch';
@@ -62,6 +64,7 @@ const api = vi.hoisted(() => ({
     deleteNode: vi.fn(),
     streamUpload: vi.fn(),
     getRecordDetails: vi.fn(),
+    getRecordDetailsForOpen: vi.fn(),
     streamRecord: vi.fn(),
     streamDownloadRecord: vi.fn(),
     reindexItem: vi.fn(),
@@ -75,6 +78,19 @@ const api = vi.hoisted(() => ({
   },
 }));
 
+// Content opens go through the record-content cache; its transport is the faked `streamRecord`.
+vi.mock('@/lib/record-content', () => ({
+  openRecordContent: (id: string, variant: string) => ({
+    promise: api.kb
+      .streamRecord(id, variant === 'pdf' ? { convertTo: 'application/pdf' } : undefined)
+      .then((blob: Blob) => {
+        const url = URL.createObjectURL(blob);
+        return { url, blob, mime: blob.type, etag: null, release: () => URL.revokeObjectURL(url) };
+      }),
+    leave: () => {},
+  }),
+}));
+
 vi.mock('../api', async () => {
   const { pagedByCursor } = await import('./kb-page-harness');
   return {
@@ -83,20 +99,68 @@ vi.mock('../api', async () => {
       getNavigationNodes: pagedByCursor(api.hub.getNavigationNodes, 0),
       getNodeChildren: pagedByCursor(api.hub.getNodeChildren, 2),
     },
-    KnowledgeBaseApi: api.kb,
+    KnowledgeBaseApi: {
+      ...api.kb,
+      getRecordDetailsForOpen: async (...args: unknown[]) => ({
+        details: await (api.kb.getRecordDetails as (...a: unknown[]) => Promise<unknown>)(...args),
+        grant: null,
+      }),
+    },
     forgetPendingNodeChildrenRequests: () => {},
   };
 });
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
+// @/config imports the collection views itself, so views loaded while the partial mock below
+// resolves bind to the real permission hook; mock the collection hook they read it through.
+vi.mock('../hooks/use-collection-group-permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/use-collection-group-permissions')>()),
+  useCollectionGroupPermissions: () => ({
+    canEdit: !permissions.denied.has('editCollection'),
+    canDelete: !permissions.denied.has('deleteCollection'),
+    canManageSync: !permissions.denied.has('manageConnectorSync'),
+  }),
+}));
+// Records what the page hands to the extension slots, so the tests can check the wiring.
+const slots = vi.hoisted(() => ({
+  hookArgs: [] as Array<string | null>,
+  extras: {
+    panel: null as unknown,
+    onUploadStart: undefined as undefined | (() => void),
+    onFileSucceeded: undefined as undefined | ((recordId: string) => void),
+    onUploadEnd: undefined as undefined | (() => void),
+  },
+  selection: { props: null as null | { selectedItems: Array<{ id: string }>; onChanged?: () => void } },
+}));
+// Hooks the page renders outside its own api (speech capabilities, web search and
+// connector lookups) import the live client from @/lib/api. With no server it fails,
+// the client toasts "Connection error", and the tests that forbid an error toast
+// fail whenever that lands first. Their requests stay pending here, as on a slow network.
+vi.mock('@/lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api')>();
+  const pending = () => new Promise<never>(() => {});
+  const offline = { get: pending, post: pending, put: pending, patch: pending, delete: pending, request: pending };
+  return { ...actual, apiClient: offline, apiClientDefault: offline };
+});
 vi.mock('@/config', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/config')>();
   return {
     ...actual,
+    // The page reaches the extension slots through this module, so they are replaced here.
+    useKbUploadExtras: (kbId: string | null) => {
+      slots.hookArgs.push(kbId);
+      return slots.extras;
+    },
+    SelectionActionBar: (props: React.ComponentProps<typeof actual.SelectionActionBar>) => {
+      slots.selection.props =
+        props.selectedCount > 0 ? { selectedItems: (props.selectedItems ?? []) as Array<{ id: string }>, onChanged: props.onChanged } : null;
+      return <actual.SelectionActionBar {...props} />;
+    },
     // Keep the real collection views, but do not wire the real auth client.
     // A live client calls /api/v1/connectors with no token, toasts that failure,
     // and the reindex "Try again" test then clicks the wrong error toast.
-    useAuthStore: undefined,
+    // The store is state, not the auth client; chat state reads the signed-in user through it.
+    useAuthStore: (await import('@/lib/store/auth-store')).useAuthStore,
     logoutAndRedirect: undefined,
     logoutFromWorkspaceMenu: undefined,
     apiClient: undefined,
@@ -148,6 +212,11 @@ vi.mock('@/app/components/share', () => ({
   ShareSidebar: ({ open }: { open: boolean }) => (open ? <aside aria-label="Share collection" /> : null),
 }));
 
+vi.mock('../publications/publications-panel', () => ({
+  PublicationsPanel: ({ open, kbId }: { open: boolean; kbId: string }) =>
+    open ? <aside aria-label={`Publications of ${kbId}`} /> : null,
+}));
+
 const share = vi.hoisted(() => ({ getSharedMembers: vi.fn() }));
 vi.mock('../share-adapter', () => ({
   createKBShareAdapter: () => ({ getSharedMembers: share.getSharedMembers }),
@@ -197,6 +266,9 @@ let replaceState: { mockRestore: () => void } | null = null;
 
 beforeEach(() => {
   installBrowserShims();
+  slots.hookArgs.length = 0;
+  slots.extras = { panel: null, onUploadStart: undefined, onFileSucceeded: undefined, onUploadEnd: undefined };
+  slots.selection.props = null;
   usePendingChatStore.setState({ pending: null });
   nav.current = createNavigation();
   router.push.mockImplementation((url: string) => nav.current!.setUrl(url));
@@ -380,7 +452,194 @@ describe('Knowledge base page — collections list', () => {
   });
 });
 
+describe('Knowledge base page — the list to assistive tech (QAFINAL-FU-AXE)', () => {
+  it('KBAXE-1: is a table of rows of cells under named column headers, with every control named', async () => {
+    await openEngineering();
+    const table = screen.getByRole('table');
+    expect(within(table).getAllByRole('columnheader').length).toBeGreaterThan(1);
+    expect(within(row('spec.pdf')).getAllByRole('cell').length).toBeGreaterThan(1);
+    expect(within(row('spec.pdf')).getByRole('checkbox', { name: 'Select spec.pdf' })).toBeTruthy();
+    expect(screen.getByRole('checkbox', { name: 'Select all' })).toBeTruthy();
+    // The rules the UX captures' axe pass found broken here; colour contrast needs a browser, so the captures keep it.
+    const result = await axe.run(document.body, {
+      runOnly: { type: 'rule', values: ['aria-required-children', 'aria-required-parent', 'button-name', 'label', 'nested-interactive'] },
+    });
+    expect(result.violations.map((v) => `${v.id}: ${v.nodes.map((n) => `${n.html.slice(0, 120)} ${n.failureSummary}`).join(' | ')}`)).toEqual([]);
+  });
+});
+
 describe('Knowledge base page — inside a collection', () => {
+  it('says a collection is still being prepared, asks again by itself and then lists its items', async () => {
+    withCollections();
+    // Preparing for every request in the first 1.5 s: the rows can only come from the page asking again by itself (after 2 s).
+    const start = Date.now();
+    api.hub.loadFolderData.mockImplementation(async () =>
+      Date.now() - start < 1_500 ? { ...engineeringContents([]), preparing: true } : engineeringContents(),
+    );
+    openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+
+    expect(await screen.findByText(/Preparing this source/)).toBeTruthy();
+    expect(screen.queryByText('No collection selected')).toBeNull();      // rows are coming, not missing
+    expect(screen.getByRole('status', { name: /Preparing this source/ })).toBeTruthy();
+    expect(await screen.findByRole('row', { name: 'spec.pdf' }, { timeout: 6_000 })).toBeTruthy();
+    expect(screen.queryByText(/Preparing this source/)).toBeNull();
+  });
+
+  describe('a retry of a source still being prepared stops once the user leaves it', () => {
+    const DEAL = hubNode({ id: 'rec-deal', name: 'deal.pdf', parentId: 'kb-sales' });
+    const salesContents = () =>
+      folderResponse({ id: 'kb-sales', name: 'Sales', nodeType: 'app' }, [{ id: 'kb-sales', name: 'Sales', nodeType: 'app' }], [DEAL]);
+    const engineeringCalls = () => api.hub.loadFolderData.mock.calls.filter(([, id]) => id === 'kb-eng').length;
+    // Past the first retry's wait (2 s), so a retry that was not cancelled has fired.
+    const pastTheFirstRetry = () => act(() => new Promise((resolve) => setTimeout(resolve, 2_600)));
+
+    beforeEach(() => {
+      withCollections();
+      api.hub.loadFolderData.mockImplementation(async (_type: string, id: string) =>
+        id === 'kb-eng' ? { ...engineeringContents([]), preparing: true } : salesContents(),
+      );
+    });
+
+    it('asks nothing more for a collection the user has left for the collections list, and leaves the list alone', async () => {
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByText(/Preparing this source/);
+      act(() => nav.current!.setUrl('/knowledge-base'));
+      await screen.findByRole('row', { name: 'Sales' });
+      const asked = engineeringCalls();
+
+      await pastTheFirstRetry();
+
+      expect(engineeringCalls()).toBe(asked);
+      expect(row('Sales')).toBeTruthy();
+      expect(screen.queryByText(/Preparing this source/)).toBeNull();
+    });
+
+    it('asks nothing more for a collection the user has left for another one', async () => {
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByText(/Preparing this source/);
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-sales'));
+      await screen.findByRole('row', { name: 'deal.pdf' });
+      const asked = engineeringCalls();
+
+      await pastTheFirstRetry();
+
+      expect(engineeringCalls()).toBe(asked);
+      expect(row('deal.pdf')).toBeTruthy();
+    });
+
+    it('asks nothing more for a collection once the user switches to All records', async () => {
+      api.hub.getAllRootItems.mockResolvedValue(hubResponse([DEAL]));
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByText(/Preparing this source/);
+      act(() => nav.current!.setUrl('/knowledge-base?view=all-records'));
+      await screen.findByRole('row', { name: 'deal.pdf' });
+      const asked = engineeringCalls();
+
+      await pastTheFirstRetry();
+
+      expect(engineeringCalls()).toBe(asked);
+      expect(row('deal.pdf')).toBeTruthy();
+    });
+
+    it('sends no retry scheduled before a newer request of the same collection, so its answer stands', async () => {
+      const userAnswers: ((value: unknown) => void)[] = [];
+      let phase: 'preparing' | 'user' | 'after' = 'preparing';
+      let calls = 0;
+      api.hub.loadFolderData.mockImplementation((_type: string, id: string) => {
+        if (id !== 'kb-eng') return Promise.resolve(salesContents());
+        calls += 1;
+        if (phase === 'preparing') return Promise.resolve({ ...engineeringContents([]), preparing: true });
+        if (phase === 'user') return new Promise((resolve) => { userAnswers.push(resolve); });      // the user's own request, still in flight when the retry is due
+        return Promise.reject(new Error('the retry failed'));
+      });
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByText(/Preparing this source/);
+      phase = 'user';
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-eng&from=search'));      // same collection, a new request
+      await waitFor(() => expect(userAnswers.length).toBeGreaterThan(0));
+      phase = 'after';
+      const asked = calls;
+
+      // The page loads twice on open, so the retry pending is the second (4 s after the second answer): wait past it.
+      await act(() => new Promise((resolve) => setTimeout(resolve, 4_600)));
+      await act(async () => userAnswers.forEach((answer) => answer(engineeringContents())));
+
+      expect(await screen.findByRole('row', { name: 'spec.pdf' })).toBeTruthy();
+      expect(calls).toBe(asked);      // the retry scheduled before the user's request was never sent
+      expect(screen.queryByText(/Failed to load items/)).toBeNull();
+    });
+
+    it('sends no All records retry scheduled before a newer request of the same view, so its answer stands', async () => {
+      const userAnswers: ((value: unknown) => void)[] = [];
+      let phase: 'preparing' | 'user' | 'after' = 'preparing';
+      let calls = 0;
+      api.hub.getAllRootItems.mockImplementation(() => {
+        calls += 1;
+        if (phase === 'preparing') return Promise.resolve(hubResponse([], { preparing: true }));
+        if (phase === 'user') return new Promise((resolve) => { userAnswers.push(resolve); });      // the user's own request, still in flight when the retry is due
+        return Promise.reject(new Error('the retry failed'));
+      });
+      openAt('/knowledge-base?view=all-records');
+      await screen.findByText(/Preparing this source/);
+      phase = 'user';
+      fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));      // the same view, a new request
+      await waitFor(() => expect(userAnswers.length).toBeGreaterThan(0));
+      phase = 'after';
+      const asked = calls;
+
+      await act(() => new Promise((resolve) => setTimeout(resolve, 4_600)));      // past any retry the opening loads scheduled
+      await act(async () => userAnswers.forEach((answer) => answer(hubResponse([DEAL]))));
+
+      expect(await screen.findByRole('row', { name: 'deal.pdf' })).toBeTruthy();
+      expect(calls).toBe(asked);      // the retry scheduled before the user's request was never sent
+    });
+
+    it('a retry the user has moved on from opens no more of its path in the sidebar', async () => {
+      const X = { id: 'folder-x', name: 'Drafts', nodeType: 'folder' as const };
+      const D = { id: 'folder-designs', name: 'Designs', nodeType: 'folder' as const };
+      let answers = 0;
+      let releaseCollection: (value: unknown) => void = () => {};
+      api.hub.loadFolderData.mockImplementation(async (_type: string, id: string) => {
+        if (id !== 'folder-x') return salesContents();
+        answers += 1;
+        return answers <= 2      // both loads of the opening answer that the folder is being prepared; the retry gets it ready
+          ? { ...folderResponse(X, [], []), breadcrumbs: [], preparing: true }
+          : folderResponse(X, [...ENGINEERING_TRAIL, D, X], [SPEC]);
+      });
+      api.hub.getNodeChildren.mockImplementation((_type: string, id: string) =>
+        id === 'kb-eng' && answers >= 3
+          ? new Promise((resolve) => { releaseCollection = resolve; })      // the retry's walk waits on the collection's children
+          : Promise.resolve(hubResponse([])),
+      );
+      openAt('/knowledge-base?nodeType=folder&nodeId=folder-x');
+      await screen.findByText(/Preparing this source/);
+      await waitFor(() => expect(answers).toBeGreaterThanOrEqual(3), { timeout: 8_000 });      // the retry has its answer and walks its path
+      await waitFor(() => expect(api.hub.getNodeChildren.mock.calls.some(([, id]) => id === 'kb-eng')).toBe(true));
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-sales'));
+      await screen.findByRole('row', { name: 'deal.pdf' });
+
+      await act(async () => releaseCollection(hubResponse([hubNode({ ...D, parentId: 'kb-eng', hasChildren: true })])));
+      await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
+
+      expect(api.hub.getNodeChildren.mock.calls.some(([, id]) => id === 'folder-designs')).toBe(false);
+      expect(useKnowledgeBaseStore.getState().expandedFolders['folder-designs']).toBeFalsy();
+    });
+
+    it('asks nothing more for All records once the user leaves it', async () => {
+      api.hub.getAllRootItems.mockResolvedValue(hubResponse([], { preparing: true }));
+      openAt('/knowledge-base?view=all-records');
+      await screen.findByText(/Preparing this source/);
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-sales'));
+      await screen.findByRole('row', { name: 'deal.pdf' });
+      const asked = api.hub.getAllRootItems.mock.calls.length;
+
+      await pastTheFirstRetry();
+
+      expect(api.hub.getAllRootItems.mock.calls.length).toBe(asked);
+      expect(row('deal.pdf')).toBeTruthy();
+    });
+  });
+
   it('shows the collection name in the breadcrumb and every item in it', async () => {
     await openEngineering();
 
@@ -614,6 +873,23 @@ describe('Knowledge base page — inside a collection', () => {
     expect(await screen.findByRole('row', { name: 'spec.pdf' })).toBeTruthy();
   });
 
+  it('loads the members of an open collection once, even as the tree fills in', async () => {
+    await openEngineering();
+    await waitFor(() => expect(share.getSharedMembers).toHaveBeenCalledTimes(1));
+
+    // What the sidebar tree's children fetch does once it lands.
+    act(() => {
+      useKnowledgeBaseStore.getState().addNodes([
+        hubNode({ id: 'folder-late', name: 'Late folder', nodeType: 'folder', parentId: 'kb-eng' }),
+      ]);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    expect(share.getSharedMembers).toHaveBeenCalledTimes(1);
+  });
+
   it('sends a user whose access was removed back to the collections list', async () => {
     withCollections();
     api.hub.loadFolderData.mockRejectedValue({ type: 'AUTHORIZATION_ERROR', message: 'No access', statusCode: 403 });
@@ -782,10 +1058,10 @@ describe('Knowledge base page — failures the user must be able to recover from
     await screen.findByRole('row', { name: 'Engineering' });
     await chooseRowAction('Engineering', 'Delete');
     const dialog = await screen.findByRole('dialog');
-    // A collection is named as one, never as a folder, and the agents that use it lose it too.
+    // A collection is named as one, never as a folder; the agents that use it lose it too, and it is gone for good.
     expect(
       within(dialog).getByText(
-        "'Engineering' and everything in it will be deleted. It will also be removed from any agents that use it.",
+        "'Engineering' and everything in it will be permanently deleted. It will also be removed from any agents that use it. This can't be undone.",
       ),
     ).toBeTruthy();
     typeInto(within(dialog).getByRole('textbox'), 'DELETE');
@@ -1137,7 +1413,36 @@ describe('Knowledge base page — working with files', () => {
     expect(api.kb.reindexItem).not.toHaveBeenCalled();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
-    await waitFor(() => expect(api.kb.reindexItem).toHaveBeenCalledWith('rec-spec', 0, undefined));
+    // A Force reindex says so: the server re-parses and re-indexes, and bypasses every stored result.
+    await waitFor(() => expect(api.kb.reindexItem).toHaveBeenCalledWith('rec-spec', 0, undefined, true));
+  });
+
+  it('a retry of a failed file is not a force reindex', async () => {
+    await openEngineering();
+    api.kb.reindexItem.mockResolvedValue({});
+
+    await chooseRowAction('notes.txt', 'Retry indexing');
+
+    await waitFor(() => expect(api.kb.reindexItem).toHaveBeenCalled());
+    expect(api.kb.reindexItem.mock.calls[0]).toEqual(['rec-notes', 0, undefined]);
+  });
+
+  it('keeps the success when only the list refresh after a reindex fails, and offers no retry that would resend it', async () => {
+    await openEngineering();
+    api.kb.reindexItem.mockImplementation(async () => {
+      // The request is accepted; the refresh of the page that follows it then fails.
+      for (const [name, fn] of Object.entries(api.kb)) {
+        if (name !== 'reindexItem' && vi.isMockFunction(fn)) fn.mockRejectedValue(new Error('refresh failed'));
+      }
+      return {};
+    });
+
+    await chooseRowAction('notes.txt', 'Retry indexing');
+
+    await waitFor(() => expect(useToastStore.getState().toasts.some((t) => t.variant === 'success')).toBe(true));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+    expect(useToastStore.getState().toasts.some((t) => t.variant === 'error')).toBe(false);
+    expect(api.kb.reindexItem).toHaveBeenCalledTimes(1);
   });
 
   it('offers to try again when reindexing could not start', async () => {
@@ -1198,6 +1503,34 @@ describe('Knowledge base page — working with files', () => {
     expect(queryRow('spec.pdf')).toBeNull();
   });
 
+  it('sorts a collection by file name from the column header, ascending then descending', async () => {
+    await openEngineering();
+    const lastSort = () => {
+      const [, , params] = api.hub.loadFolderData.mock.calls.at(-1)!;
+      return { sortBy: params.sortBy, sortOrder: params.sortOrder };
+    };
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(lastSort()).toEqual({ sortBy: 'name', sortOrder: 'asc' }));
+    expect(useKnowledgeBaseStore.getState().sort).toEqual({ field: 'name', order: 'asc' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(lastSort()).toEqual({ sortBy: 'name', sortOrder: 'desc' }));
+  });
+
+  it.each([
+    ['the type sort', 'type'],
+    ['the older name of the type sort', 'nodeType'],
+  ])('opens a collection link with %s and asks the API for its type sort', async (_what, field) => {
+    withCollections();
+    api.hub.loadFolderData.mockResolvedValue(engineeringContents());
+    openAt(`/knowledge-base?nodeType=app&nodeId=kb-eng&sortField=${field}&sortOrder=asc`);
+    await screen.findByRole('row', { name: 'spec.pdf' });
+
+    const [, , params] = api.hub.loadFolderData.mock.calls.at(-1)!;
+    expect({ sortBy: params.sortBy, sortOrder: params.sortOrder }).toEqual({ sortBy: 'type', sortOrder: 'asc' });
+  });
+
   it('loads the next page of a large collection', async () => {
     withCollections();
     api.hub.loadFolderData.mockImplementation(pagedByCursor(async (_type: string, _id: string, params: { page: number }) => {
@@ -1226,6 +1559,85 @@ describe('Knowledge base page — working with files', () => {
     expect(api.hub.loadFolderData).toHaveBeenLastCalledWith(
       'app', 'kb-eng', expect.objectContaining({ cursor: pageCursor(2) }), expect.anything(),
     );
+  });
+});
+
+describe('Knowledge base page — extension slots', () => {
+  it('hands the ticked rows and the list refresh to the selection bar', async () => {
+    await openEngineering();
+    fireEvent.click(within(row('spec.pdf')).getByRole('checkbox'));
+    await waitFor(() => expect(slots.selection.props).not.toBeNull());
+
+    expect(slots.selection.props?.selectedItems.map((i) => i.id)).toEqual(['rec-spec']);
+    api.hub.loadFolderData.mockClear();
+    await act(async () => slots.selection.props?.onChanged?.());
+    await waitFor(() => expect(api.hub.loadFolderData).toHaveBeenCalled());
+  });
+
+  it('asks the upload hook about the open collection and calls its callbacks around an upload', async () => {
+    await openEngineering();
+    expect(slots.hookArgs).toContain('kb-eng');
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onFileSucceeded = (id) => order.push(`ok:${id}`);
+    slots.extras.onUploadEnd = () => order.push('end');
+    const file = new File(['x'], 'readme.txt', { type: 'text/plain' });
+    upload.items = [{ id: 'u1', name: file.name, size: 1, type: 'file', file }];
+    api.kb.streamUpload.mockImplementation(
+      async (_kb: string, _folder: string | null, _files: File[], _meta: unknown, opts: { onEvent: (e: { event: string; data?: unknown }) => void }) => {
+        opts.onEvent({ event: 'file:succeeded', data: { filePath: 'readme.txt', recordId: 'rec-new' } });
+        opts.onEvent({ event: 'done' });
+      },
+    );
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'ok:rec-new', 'end']));
+  });
+
+  it('calls the end callback when every picked file is over the size limit and nothing is sent', async () => {
+    await openEngineering();
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onUploadEnd = () => order.push('end');
+    const huge = new File(['x'], 'dump.bin', { type: 'application/octet-stream' });
+    Object.defineProperty(huge, 'size', { value: 50 * 1024 * 1024 });
+    upload.items = [{ id: 'u1', name: huge.name, size: huge.size, type: 'file', file: huge }];
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'end']));
+    expect(api.kb.streamUpload).not.toHaveBeenCalled();
+  });
+
+  it('calls the end callback when there are no files to upload', async () => {
+    await openEngineering();
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onUploadEnd = () => order.push('end');
+    upload.items = [];
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'end']));
+  });
+
+  it('uploads normally when the hook provides no callbacks', async () => {
+    await openEngineering();
+    const file = new File(['x'], 'readme.txt', { type: 'text/plain' });
+    upload.items = [{ id: 'u1', name: file.name, size: 1, type: 'file', file }];
+    api.kb.streamUpload.mockImplementation(
+      async (_kb: string, _folder: string | null, _files: File[], _meta: unknown, opts: { onEvent: (e: { event: string; data?: unknown }) => void }) => {
+        opts.onEvent({ event: 'file:succeeded', data: { filePath: 'readme.txt' } });
+        opts.onEvent({ event: 'done' });
+      },
+    );
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+    await waitFor(() => expect(api.kb.streamUpload).toHaveBeenCalledTimes(1));
   });
 });
 
@@ -1381,6 +1793,19 @@ describe('Knowledge base page — uploading', () => {
     await waitFor(() => expect(api.hub.loadFolderData).toHaveBeenCalled());
   });
 
+  it('does not offer Upload data on the collections list, where there is no collection to upload into', async () => {
+    withCollections();
+    openAt('/knowledge-base');
+    await screen.findByRole('row', { name: 'Engineering' });
+
+    const trigger = screen.getByTestId('new-dropdown-trigger');
+    await act(async () => {
+      fireEvent.keyDown(trigger, { key: 'Enter' });
+    });
+    expect(await screen.findByRole('menuitem', { name: /New folder$/ })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: /Upload data$/ })).toBeNull();
+  });
+
   it('marks every file failed when the upload connection drops', async () => {
     await openEngineering();
     const a = fileOfSize('a.txt', 10);
@@ -1426,6 +1851,46 @@ describe('Knowledge base page — uploading', () => {
       expect(failed.map((i) => i.name).sort()).toEqual(['one.txt', 'two.txt']);
     });
   });
+
+  it('stops at sign-out: the batch in flight is cancelled and no further batch is sent', async () => {
+    await openEngineering();
+    const folder = (name: string) => {
+      const file = fileOfSize(`${name}.txt`, 10);
+      return { id: name, name, size: 10, type: 'folder' as const, filesWithPaths: [{ file, relativePath: file.name }] };
+    };
+    // Two top-level folders: two batches, sent one after the other.
+    upload.items = [folder('Reports'), folder('Slides')];
+    const signals: AbortSignal[] = [];
+    api.kb.streamUpload.mockImplementation(
+      (_kb: string, _folder: string | null, _files: File[], _meta: unknown, opts: { signal: AbortSignal }) => {
+        signals.push(opts.signal);
+        return new Promise<void>((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      },
+    );
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+    await waitFor(() => expect(api.kb.streamUpload).toHaveBeenCalledTimes(1));
+
+    useToastStore.setState({ toasts: [] });
+    act(() => clearSessionCache());
+    // Installed on the reset store, before the cancelled upload's code resumes.
+    const finalizeSession = vi.fn();
+    useUploadStore.setState({ finalizeSession });
+
+    await waitFor(() => expect(signals[0].aborted).toBe(true));
+    // The second folder's batch would have been sent by now had the loop kept going.
+    await act(async () => {
+      for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    });
+    expect(api.kb.streamUpload).toHaveBeenCalledTimes(1);
+    expect(finalizeSession).not.toHaveBeenCalled();
+    expect(useUploadStore.getState().items).toEqual([]);
+    expect(useToastStore.getState().toasts.filter((t) => t.variant === 'error')).toEqual([]);
+    useUploadStore.setState(useUploadStore.getInitialState(), true);
+  });
 });
 
 describe('Knowledge base page — folders and sharing', () => {
@@ -1457,6 +1922,24 @@ describe('Knowledge base page — folders and sharing', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Share' }));
 
     expect(await screen.findByRole('complementary', { name: 'Share collection' })).toBeTruthy();
+  });
+
+  it('U4 KP-1: with the Labs flag off, an owner sees no Publish', async () => {
+    useFeatureFlagsStore.setState({ flags: {}, agentHarness: null });
+    await openEngineering();
+    useKnowledgeBaseStore.getState().setNodes([ENGINEERING]);
+    await screen.findByRole('button', { name: 'Share' });
+    expect(screen.queryByRole('button', { name: 'Publish' })).toBeNull();
+  });
+
+  it('U4 KP-1: with the Labs flag on, the owner opens the publications panel', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_KNOWLEDGE_PUBLICATIONS: true }, agentHarness: null });
+    await openEngineering();
+    useKnowledgeBaseStore.getState().setNodes([ENGINEERING]);
+    await screen.findByRole('button', { name: 'Share' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Publish' }));
+    expect(await screen.findByRole('complementary', { name: 'Publications of kb-eng' })).toBeTruthy();
+    useFeatureFlagsStore.setState({ flags: {}, agentHarness: null });
   });
 
   it('shows sharing as locked for an owner without sharing permission', async () => {
@@ -1549,6 +2032,141 @@ describe('Knowledge base page — All Records', () => {
       expect.objectContaining({ cursor: 'p2' }),
       expect.anything(),
     );
+  });
+
+  it('goes on from an empty page that says more follows instead of showing no records', async () => {
+    withCollections();
+    const later = hubNode({ id: 'rec-later', name: 'Later.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) => {
+      const second = params?.cursor === 'scan2';
+      return hubResponse(second ? [later] : [], {
+        pagination: {
+          page: 1,
+          limit: 50,
+          totalItems: 1,
+          totalPages: 1,
+          hasNext: !second,
+          hasPrev: false,
+          nextCursor: second ? null : 'scan2',
+          prevCursor: null,
+        },
+      });
+    });
+    openAt('/knowledge-base?view=all-records');
+
+    expect(await screen.findByRole('row', { name: 'Later.xlsx' })).toBeTruthy();
+    expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'scan2' }), expect.anything());
+  });
+
+  it('says that sources still being prepared are not listed yet, so the list does not look complete', async () => {
+    withCollections();
+    const one = hubNode({ id: 'rec-one', name: 'One.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockResolvedValue({ ...hubResponse([one]), notReady: ['app-2'] });
+    openAt('/knowledge-base?view=all-records');
+
+    expect(await screen.findByRole('row', { name: 'One.xlsx' })).toBeTruthy();
+    expect((await screen.findByRole('status')).textContent).toContain('still being prepared');
+  });
+
+  const emptyPage = (nextCursor: string | null, extra: Record<string, unknown> = {}) =>
+    hubResponse([], {
+      pagination: { page: 1, limit: 50, totalItems: 0, totalPages: 0, hasNext: nextCursor !== null, hasPrev: false, nextCursor, prevCursor: null, ...extra },
+    });
+
+  it('treats an empty page that hands back the cursor it was asked with as the end, not a stall', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) => (params?.cursor === 'same' ? emptyPage('same') : emptyPage('same')));
+    openAt('/knowledge-base?view=all-records');
+    await waitFor(() => expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'same' }), expect.anything()));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(api.hub.getAllRootItems.mock.calls.length).toBeLessThanOrEqual(3);      // the first page, the page of 'same', and no more
+  });
+
+  it('stops going on from empty pages after a bounded number of them', async () => {
+    withCollections();
+    let n = 0;
+    api.hub.getAllRootItems.mockImplementation(async () => emptyPage(`c${++n}`));
+    openAt('/knowledge-base?view=all-records');
+    await waitFor(() => expect(api.hub.getAllRootItems.mock.calls.length).toBeGreaterThan(5));
+    await new Promise((r) => setTimeout(r, 300));
+    const calls = api.hub.getAllRootItems.mock.calls.length;
+    expect(calls).toBeLessThanOrEqual(25);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(api.hub.getAllRootItems.mock.calls.length).toBe(calls);
+  });
+
+  it('keeps the cursors of an empty page it goes on from', async () => {
+    withCollections();
+    let release: (v: unknown) => void = () => {};
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) =>
+      params?.cursor === 'ahead' ? new Promise((r) => { release = r; }) : emptyPage('ahead', { hasPrev: true, prevCursor: 'back1' }));
+    openAt('/knowledge-base?view=all-records');
+    await waitFor(() => expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'ahead' }), expect.anything()));
+    expect(useKnowledgeBaseStore.getState().allRecordsPagination.prevCursor).toBe('back1');
+    release(hubResponse([CONNECTOR_FILE]));
+  });
+
+  it('offers Next on the empty state once it stops going on from empty pages, and Next goes on', async () => {
+    withCollections();
+    const later = hubNode({ id: 'rec-later', name: 'Later.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) =>
+      params?.cursor === 'c21' ? hubResponse([later]) : emptyPage(`c${Number(params?.cursor?.slice(1) ?? 0) + 1}`));
+    openAt('/knowledge-base?view=all-records');
+    await waitFor(() => expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'c20' }), expect.anything()));
+    expect(await screen.findByText('No records found')).toBeTruthy();
+    expect(api.hub.getAllRootItems).not.toHaveBeenCalledWith(expect.objectContaining({ cursor: 'c21' }), expect.anything());
+    // The footer sits beside the empty body, not in it, and the body may shrink below its content: a short viewport clips the body, never the footer.
+    const next = await screen.findByRole('button', { name: /Next/ });
+    const body = screen.getByTestId('kb-empty-state');
+    expect(body.contains(next)).toBe(false);
+    expect(body.style.minHeight).toBe('0');
+
+    fireEvent.click(next);
+
+    expect(await screen.findByRole('row', { name: 'Later.xlsx' })).toBeTruthy();
+  });
+
+  it('starts again from the first page when a cursor is refused, and a first page that is not ready is retried a few times, not for ever', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) => {
+      if (params?.cursor === 'n2') throw { type: 'VALIDATION_ERROR', message: 'start the listing from its first page', statusCode: 400 };
+      if (api.hub.getAllRootItems.mock.calls.length > 1) {
+        throw { type: 'SERVER_ERROR', message: 'This source is still being prepared.', statusCode: 503, originalError: { response: { headers: { 'retry-after': '1' } } } };
+      }
+      return hubResponse([CONNECTOR_FILE], { pagination: { page: 1, limit: 50, totalItems: 60, totalPages: 2, startIndex: 1, endIndex: 50, hasNext: true, hasPrev: false, nextCursor: 'n2', prevCursor: null } });
+    });
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    fireEvent.click(screen.getByRole('button', { name: /Next/ }));
+
+    await waitFor(() => expect(api.hub.getAllRootItems.mock.calls.length).toBeGreaterThanOrEqual(3));
+    expect(api.hub.getAllRootItems.mock.calls[2][0]).not.toHaveProperty('cursor');      // the refused cursor is dropped: the listing starts again
+    expect(await screen.findByText(/busy right now/)).toBeTruthy();
+    // the first page, the refused cursor, the first page again and three retries of it, a second apart; then no more
+    await waitFor(() => expect(api.hub.getAllRootItems.mock.calls.length).toBe(6), { timeout: 8000 });
+    await new Promise((r) => setTimeout(r, 2500));
+    expect(api.hub.getAllRootItems.mock.calls.length).toBe(6);
+    expect(api.hub.getAllRootItems.mock.calls.slice(2).every(([params]) => !(params as { cursor?: string })?.cursor)).toBe(true);
+  }, 20000);
+
+  it('goes on backwards from an empty page reached by Previous', async () => {
+    withCollections();
+    const earlier = hubNode({ id: 'rec-earlier', name: 'Earlier.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) => {
+      if (params?.cursor === 'back1') return emptyPage('ahead', { hasPrev: true, prevCursor: 'back2' });
+      if (params?.cursor === 'back2') return hubResponse([earlier]);
+      if (params?.cursor === 'ahead') return hubResponse([CONNECTOR_FILE]);
+      return hubResponse([CONNECTOR_FILE], { pagination: { page: 2, limit: 50, totalItems: 2, totalPages: 2, startIndex: 51, endIndex: 51, hasNext: false, hasPrev: true, nextCursor: null, prevCursor: 'back1' } });
+    });
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    fireEvent.click(screen.getByRole('button', { name: /Previous/ }));
+
+    expect(await screen.findByRole('row', { name: 'Earlier.xlsx' })).toBeTruthy();
+    expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'back2' }), expect.anything());
+    expect(api.hub.getAllRootItems).not.toHaveBeenCalledWith(expect.objectContaining({ cursor: 'ahead' }), expect.anything());
   });
 
   it('requests the next page number when the response has no cursor', async () => {
@@ -1657,6 +2275,24 @@ describe('Knowledge base page — All Records', () => {
     );
   });
 
+  it('fills the tree of a source folder from its complete listing, but never an app, whose tree lives elsewhere', async () => {
+    withCollections();
+    const folder = hubNode({ id: 'fold-1', name: 'Reports', nodeType: 'folder', parentId: 'rg-drive' });
+    api.hub.loadFolderData.mockResolvedValue(hubResponse([folder]));
+
+    const first = openAt('/knowledge-base?view=all-records&nodeType=recordGroup&nodeId=rg-drive');
+    await screen.findByRole('row', { name: 'Reports' });
+    expect(useKnowledgeBaseStore.getState().nodeChildrenCache.get('rg-drive')?.map((n) => n.id)).toEqual(['fold-1']);
+    first.unmount();
+
+    openAt('/knowledge-base?view=all-records&nodeType=app&nodeId=app-drive');
+    await waitFor(() => expect(api.hub.loadFolderData).toHaveBeenCalledWith('app', 'app-drive', expect.anything(), expect.anything()));
+    await screen.findByRole('row', { name: 'Reports' });
+
+    expect(useKnowledgeBaseStore.getState().nodeChildrenCache.has('app-drive')).toBe(false);
+    expect(useKnowledgeBaseStore.getState().appChildrenCache.has('app-drive')).toBe(false);
+  });
+
   it('scopes a question from the chat box to the connectors the filter bar picked', async () => {
     withCollections();
     api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
@@ -1711,6 +2347,61 @@ describe('Knowledge base page — All Records', () => {
         expect.objectContaining({ signal: expect.any(AbortSignal) }),
       ),
     );
+  });
+
+  it('sorts by file name from the column header, ascending then descending', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+    const lastSort = () => {
+      const [params] = api.hub.getAllRootItems.mock.calls.at(-1)!;
+      return { sortBy: params.sortBy, sortOrder: params.sortOrder };
+    };
+    expect(lastSort()).toEqual({ sortBy: 'updatedAt', sortOrder: 'desc' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(lastSort()).toEqual({ sortBy: 'name', sortOrder: 'asc' }));
+    expect(useKnowledgeBaseStore.getState().allRecordsSort).toEqual({ field: 'name', order: 'asc' });
+    await waitFor(() => expect(currentUrl()).toContain('sortField=name'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(lastSort()).toEqual({ sortBy: 'name', sortOrder: 'desc' }));
+    expect(useKnowledgeBaseStore.getState().allRecordsSort).toEqual({ field: 'name', order: 'desc' });
+  });
+
+  it('tells assistive tech which column the records are sorted by, and which way', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+    const sortState = (label: string) => screen.getByRole('columnheader', { name: label }).getAttribute('aria-sort');
+
+    // The button is named by its label alone, not by the icon's ligature text.
+    expect(screen.getByRole('button', { name: 'Updated' })).toBeTruthy();
+    expect([sortState('File name'), sortState('Updated'), sortState('Size')]).toEqual(['none', 'descending', 'none']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(sortState('File name')).toBe('ascending'));
+    expect(sortState('Updated')).toBe('none');
+
+    fireEvent.click(screen.getByRole('button', { name: 'File name' }));
+    await waitFor(() => expect(sortState('File name')).toBe('descending'));
+    // A column that cannot sort states no order at all.
+    expect(screen.getByRole('columnheader', { name: 'Status' }).hasAttribute('aria-sort')).toBe(false);
+  });
+
+  it.each([
+    ['a sort the records API refuses', 'indexingStatus', { sortBy: 'updatedAt', sortOrder: 'asc' }],
+    ['the source sort', 'origin', { sortBy: 'origin', sortOrder: 'asc' }],
+  ])('opens a link with %s as the sort it can serve', async (_what, field, expected) => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
+    openAt(`/knowledge-base?view=all-records&sortField=${field}&sortOrder=asc`);
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    const [params] = api.hub.getAllRootItems.mock.calls.at(-1)!;
+    expect({ sortBy: params.sortBy, sortOrder: params.sortOrder }).toEqual(expected);
   });
 
   it('shows the latest filter results when an earlier request finishes last', async () => {
@@ -1858,6 +2549,12 @@ describe('Knowledge base sidebar — folders stay usable after the collection li
     );
   }
 
+  /** The table's first page of a collection with more children than fit on it. */
+  function engineeringFirstPage(items: KnowledgeHubNode[]) {
+    const response = engineeringContents(items);
+    return { ...response, pagination: { ...response.pagination!, hasNext: true, nextCursor: 'p2' } };
+  }
+
   function childRequests(id: string) {
     return api.hub.getNodeChildren.mock.calls
       .filter(([, requested]) => requested === id)
@@ -1868,7 +2565,7 @@ describe('Knowledge base sidebar — folders stay usable after the collection li
     const folders = numberedFolders(30, 'kb-eng');
     withCollections([ENGINEERING]);
     api.hub.getNodeChildren.mockImplementation(hubChildrenFake(() => ({ 'kb-eng': folders })));
-    api.hub.loadFolderData.mockResolvedValue(engineeringContents(folders.slice(0, 3)));
+    api.hub.loadFolderData.mockResolvedValue(engineeringFirstPage(folders.slice(0, 3)));
     openWithSidebarAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
 
     await waitFor(() => expect(childIdsOf('kb-eng')).toEqual(folders.slice(0, 20).map((f) => f.id)));
@@ -1879,6 +2576,17 @@ describe('Knowledge base sidebar — folders stay usable after the collection li
       await loadMoreNodeChildrenPage('kb-eng');
     });
     expect(childIdsOf('kb-eng')).toEqual(folders.map((f) => f.id));
+  });
+
+  it('lists a small collection once: the sidebar reuses the table listing', async () => {
+    withCollections([ENGINEERING]);
+    api.hub.getNodeChildren.mockImplementation(hubChildrenFake(() => ({ 'kb-eng': [DESIGNS, SPECS_DIR] })));
+    api.hub.loadFolderData.mockResolvedValue(engineeringContents([SPEC, SPECS_DIR, DESIGNS]));
+    openWithSidebarAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+
+    await waitFor(() => expect(childIdsOf('kb-eng')).toEqual(['folder-designs', 'folder-specs']));
+    expect(within(sidebar).getByText('Specs')).toBeTruthy();
+    expect(childRequests('kb-eng')).toEqual([]);
   });
 
   it('keeps every folder shown and the renamed one in view after a sidebar rename', async () => {
@@ -1894,7 +2602,7 @@ describe('Knowledge base sidebar — folders stay usable after the collection li
       renamed = true;
       return {};
     });
-    api.hub.loadFolderData.mockResolvedValue(engineeringContents(folders.slice(0, 3)));
+    api.hub.loadFolderData.mockResolvedValue(engineeringFirstPage(folders.slice(0, 3)));
     openWithSidebarAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
     await waitFor(() => expect(childIdsOf('kb-eng')).toHaveLength(20));
     await act(async () => {
@@ -1987,7 +2695,7 @@ describe('Knowledge base sidebar — folders stay usable after the collection li
     api.hub.getNodeChildren.mockImplementation(
       hubChildrenFake(() => ({ 'kb-eng': [DESIGNS, SPECS_DIR], 'folder-designs': [MOCKUPS] })),
     );
-    api.hub.loadFolderData.mockResolvedValue(engineeringContents([DESIGNS, SPEC]));
+    api.hub.loadFolderData.mockResolvedValue(engineeringContents([DESIGNS, SPECS_DIR, SPEC]));
     openWithSidebarAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
     await screen.findByRole('row', { name: 'spec.pdf' });
     await waitFor(() => expect(childIdsOf('kb-eng')).toEqual(['folder-designs', 'folder-specs']));
@@ -2299,5 +3007,42 @@ describe('Knowledge base page — asking from the chat box', () => {
     expect(usePendingChatStore.getState().pending?.pageContext.selectedNodes).toEqual([
       { id: 'app-conf', name: 'QA Confluence', nodeType: 'app', connector: 'Confluence' },
     ]);
+  });
+});
+
+describe('Knowledge base page — the records list is an accessible table', () => {
+  // jsdom computes no colours, and the page is mounted without the app's landmarks.
+  const AXE_OPTIONS: axe.RunOptions = { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } };
+
+  async function violations() {
+    const result = await axe.run(document.body, AXE_OPTIONS);
+    return result.violations.map((v) => ({ rule: v.id, nodes: v.nodes.map((n) => n.target.join(' ')) }));
+  }
+
+  it('has no axe violations in All Records', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(
+      hubResponse([hubNode({ id: 'rec-drive', name: 'Budget.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE', indexingStatus: 'COMPLETED' })]),
+    );
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    expect(await violations()).toEqual([]);
+  });
+
+  it('has no axe violations in a collection', async () => {
+    await openEngineering();
+
+    expect(await violations()).toEqual([]);
+  });
+
+  it('announces loading outside the table and has no axe violations while rows load', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockReturnValue(new Promise(() => {}));
+    openAt('/knowledge-base?view=all-records');
+
+    const status = await screen.findByRole('status');
+    expect(screen.getByRole('table').contains(status)).toBe(false);
+    expect(await violations()).toEqual([]);
   });
 });

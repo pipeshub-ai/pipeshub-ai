@@ -21,8 +21,8 @@ from db import bootstrap_roles
 from .rls_fixture import FIXTURE_SQL, SEED_SQL, OrgDb, start_pgbouncer
 
 BACKEND = Path(__file__).resolve().parents[2]
-VETTED: list[str] = []
-EXTENSIONS = ["pg_trgm"]      # the baseline extension; the administrator installs it
+VETTED: list[str] = ["retrieval"]
+EXTENSIONS = ["vector", "pg_trgm"]      # pgvector (the retrieval module) and the baseline pg_trgm; the administrator installs them
 SURFACE_DIR = Path(__file__).parent
 UPDATE_SURFACE = os.environ.get("UPDATE_SURFACE") == "1"
 
@@ -76,8 +76,10 @@ def cluster(request, tmp_path_factory):
     b = request.param
     subprocess.run([f"{b}/initdb", "-D", str(root / "data"), "-U", "postgres", "--auth=trust", "-E", "UTF8"],
                    check=True, capture_output=True)
+    # jit=off as CI's server (db-migrations.yml) and migrate.py's catalog check run it: the catalog views' estimates cross the
+    # JIT thresholds, and compiling one such plan costs about 20 s of CPU per read of kernel.rls_violations
     subprocess.run([f"{b}/pg_ctl", "-D", str(root / "data"), "-w", "-l", str(root / "log"), "-o",
-                    f"-p {port} -k {root} -c listen_addresses=127.0.0.1", "start"], check=True, capture_output=True)
+                    f"-p {port} -k {root} -c listen_addresses=127.0.0.1 -c jit=off", "start"], check=True, capture_output=True)
     try:
         yield Cluster(b, root, port)
     finally:

@@ -7,13 +7,17 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 from typing import Any
 
 import pdfplumber
 
+from app.exceptions.indexing_exceptions import MultimodalModelNotConfiguredError
+from app.models.blocks import Block, BlockType
 from app.modules.parsers.encryption import raise_if_pdf_needs_password
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.modules.parsers.worker_verdict import worker_gave_up_on
 from app.services.docling.client import (
     MAX_PAGES_ENV,
     DoclingUnavailableError,
@@ -86,6 +90,51 @@ def _detect_needs_ocr(content: bytes) -> tuple[bool, int | None]:
         return False, None
 
 
+def _with_page_count(result: ParseResult, page_count: int | None) -> ParseResult:
+    """The page count of the bytes parsed, pdfplumber's ``len(pdf.pages)`` (the one counter every path uses), in the
+    result's metadata. Absent when pdfplumber could not open the file."""
+    if page_count:
+        result.metadata = {**(result.metadata or {}), "page_count": page_count}
+    return result
+
+
+def _has_text(result: ParseResult) -> bool:
+    """Whether a parse found any text, in built blocks or in a Docling document.
+
+    Table text counts: a PdfPlumber table row keeps it in ``row_natural_language_text``,
+    and Docling keeps cell text under ``tables[].data.table_cells`` (``texts`` can then
+    be empty). Image blocks never count: their data is the picture, not text.
+    """
+    if result.block_container is not None:
+        return any(_block_has_text(block) for block in result.block_container.blocks)
+    try:
+        doc = json.loads(result.raw_document or "{}")
+    except ValueError:
+        return False
+    if not isinstance(doc, dict):
+        return False
+    if any(_has_str(t, "text") for t in doc.get("texts") or []):
+        return True
+    for table in doc.get("tables") or []:
+        data = table.get("data") if isinstance(table, dict) else None
+        cells = data.get("table_cells") if isinstance(data, dict) else None
+        if any(_has_str(cell, "text") for cell in cells or []):
+            return True
+    return False
+
+
+def _block_has_text(block: Block) -> bool:
+    if block.type == BlockType.IMAGE:
+        return False
+    if isinstance(block.data, str):
+        return bool(block.data.strip())
+    return _has_str(block.data, "row_natural_language_text")
+
+
+def _has_str(value: object, key: str) -> bool:
+    return isinstance(value, dict) and isinstance(value.get(key), str) and bool(value[key].strip())
+
+
 class SmartPDFParser:
     """Delegates to OCR when the document appears to be scanned; otherwise uses
     the primary parser (typically DoclingServiceParser or LocalDoclingParser).
@@ -93,7 +142,12 @@ class SmartPDFParser:
     With a *large_pdf_parser*, a text PDF that Docling does not take (over its
     size or page limit, see ``docling_takes``) goes to that parser instead, and
     so does one the primary parser fails on, before OCR is tried, or one it
-    cannot reach (Docling down or shedding load).
+    cannot reach (Docling down or shedding load). If that parser then fails
+    too, Docling's unavailability is raised, so the record is retried rather
+    than failed as unreadable.
+
+    A PDF sent to OCR when no model that can read images is set up is read as
+    text instead, if it has any; see ``_text_without_ocr``.
     """
 
     def __init__(
@@ -118,13 +172,66 @@ class SmartPDFParser:
         # Full-document pdfplumber scan is synchronous CPU work; keep it off
         # the event loop so one large PDF can't stall every other request.
         needs_ocr, page_count = await asyncio.to_thread(_detect_needs_ocr, content)
+        return _with_page_count(await self._parse_pages(page_count, content, record_name, config, needs_ocr=needs_ocr), page_count)
+
+    async def _parse_pages(
+        self,
+        page_count: int | None,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None,
+        *,
+        needs_ocr: bool,
+    ) -> ParseResult:
         if needs_ocr:
             logger.info(
                 "SmartPDFParser: '%s' appears scanned, using OCR provider",
                 record_name,
             )
-            return await self._ocr.parse(content, record_name, config)
+            try:
+                return await self._ocr.parse(content, record_name, config)
+            except MultimodalModelNotConfiguredError as exc:
+                return await self._text_without_ocr(exc, content, record_name, config, page_count)
+        return await self._parse_text(content, record_name, config, page_count)
 
+    async def _text_without_ocr(
+        self,
+        no_model: MultimodalModelNotConfiguredError,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None,
+        page_count: int | None,
+    ) -> ParseResult:
+        """A PDF sent to OCR when no model that can read images is set up.
+
+        One page that is mostly image is enough to send the whole PDF to OCR
+        (an image-only cover, say), so failing here would lose the text of
+        every other page. The text layer is read instead, without what is only
+        in images. A PDF with no text layer, a real scan, still fails with the
+        reason that says to add such a model.
+        """
+        logger.warning(
+            "SmartPDFParser: '%s' needs OCR for some pages, but no model that can read "
+            "images is set up. Reading its text layer instead; text only in images is left out.",
+            record_name,
+        )
+        # A text parser that fails keeps its own error: a timeout or a crash is
+        # not a missing model, and must stay retryable.
+        result = await self._parse_text(content, record_name, config, page_count, ocr_fallback=False)
+        if not _has_text(result):
+            raise no_model
+        result.metadata = {**(result.metadata or {}), "ocr_skipped": "no multimodal model"}
+        return result
+
+    async def _parse_text(
+        self,
+        content: bytes,
+        record_name: str,
+        config: dict[str, Any] | None,
+        page_count: int | None,
+        *,
+        ocr_fallback: bool = True,
+    ) -> ParseResult:
         primary = self._primary
         if self._large is not None and not docling_takes(len(content), page_count):
             logger.info(
@@ -139,15 +246,23 @@ class SmartPDFParser:
         except DoclingUnavailableError as exc:
             if self._large is None or primary is self._large:
                 raise
-            logger.warning(
+            # A parse that waits for Docling (DoclingNotServing) logs at its hand-back's INFO: the outage is already reported.
+            logger.log(
+                getattr(exc, "log_level", logging.WARNING),
                 "SmartPDFParser: Docling is unavailable for '%s' (%s). Using the PdfPlumber+OpenCV parser.",
                 record_name,
                 exc,
             )
-            return await self._large.parse(content, record_name, config)
+            try:
+                return await self._large.parse(content, record_name, config)
+            except ParseError as large_exc:
+                if large_exc.code in _NOT_RETRIED or worker_gave_up_on(large_exc):
+                    raise
+                # Docling may read what PdfPlumber could not: retry once it serves again, not a verdict on the file.
+                raise exc  # noqa: B904 - keeps its ServiceCallError cause
         except ParseError as exc:
             if self._large is None or primary is self._large or exc.code in _NOT_RETRIED:
-                return await self._ocr_after(exc, content, record_name, config)
+                return await self._ocr_after(exc, content, record_name, config, ocr_fallback=ocr_fallback)
             # A text PDF is not sent to OCR (a model call per page) just because
             # Docling could not read it: the local layout parser reads it first.
             logger.warning(
@@ -158,7 +273,7 @@ class SmartPDFParser:
             try:
                 return await self._large.parse(content, record_name, config)
             except ParseError as large_exc:
-                return await self._ocr_after(large_exc, content, record_name, config)
+                return await self._ocr_after(large_exc, content, record_name, config, ocr_fallback=ocr_fallback)
 
     async def _ocr_after(
         self,
@@ -166,8 +281,10 @@ class SmartPDFParser:
         content: bytes,
         record_name: str,
         config: dict[str, Any] | None,
+        *,
+        ocr_fallback: bool = True,
     ) -> ParseResult:
-        if exc.code in _NOT_RETRIED:
+        if exc.code in _NOT_RETRIED or not ocr_fallback:
             raise exc
         logger.warning(
             "SmartPDFParser: primary parser failed for '%s' (%s). Falling back to OCR.",

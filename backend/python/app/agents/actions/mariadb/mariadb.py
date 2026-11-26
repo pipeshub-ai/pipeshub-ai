@@ -10,6 +10,7 @@ from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -18,6 +19,14 @@ from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.mariadb.mariadb import MariaDBClient
 from app.sources.external.mariadb.mariadb_ import MariaDBDataSource
 from app.utils.conversation_tasks import register_task
+from app.utils.sql_limits import (
+    SQL_MAX_ROWS,
+    SQL_QUERY_TIMEOUT_S,
+    cap_rows,
+    clip_cells,
+    friendly_sql_error,
+    truncation_note,
+)
 from app.agents.actions.util.read_only_sql import read_only_statement
 from app.connectors.core.constants import IconPaths
 from app.services.artifact_registry.models import artifact_owner_id
@@ -46,7 +55,7 @@ class GetTablesSchemaInput(BaseModel):
 
     tables: list[str] = Field(..., description="List of table names to fetch schema for")
 
-@ToolsetBuilder("MariaDB")\
+@ToolsetBuilder("MariaDB", provider=ToolProvider.CONNECTOR)\
     .in_group("Database")\
     .with_description("MariaDB toolset for schema introspection and SQL execution")\
     .with_category(ToolsetCategory.DATABASE)\
@@ -144,7 +153,7 @@ class MariaDB:
         short_description="List tables in the default MariaDB database",
         description="List tables in the default MariaDB database configured in connector auth.",
         parameters=[],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_tables(
         self,
@@ -188,7 +197,7 @@ class MariaDB:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_table_ddl(
         self,
@@ -237,7 +246,7 @@ class MariaDB:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_tables_schema(
         self,
@@ -308,7 +317,7 @@ class MariaDB:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def fetch_db_schema(
         self,
@@ -405,7 +414,7 @@ class MariaDB:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def execute_query(
         self,
@@ -438,20 +447,22 @@ class MariaDB:
             statement, _ = read_only_statement(query)
             query_resp = await self.client.execute_query(
                 query=statement or query, read_only=statement is not None,
+                timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1,
             )
 
             if not query_resp.success:
                 return self._result(False, {
-                    "error": query_resp.error or "Query execution failed",
+                    "error": friendly_sql_error(query_resp.error or "Query execution failed"),
                     "message": query_resp.message,
                 })
 
-            rows = query_resp.data if isinstance(query_resp.data, list) else []
+            rows, rows_cut = cap_rows(query_resp.data if isinstance(query_resp.data, list) else [])
             DISPLAY_LIMIT = 100
-            displayed_rows = rows[:DISPLAY_LIMIT]
+            displayed_rows = [clip_cells(r) if isinstance(r, dict) else r for r in rows[:DISPLAY_LIMIT]]
             result_payload = {
-                "message": query_resp.message or "Query executed successfully",
+                "message": truncation_note() if rows_cut else query_resp.message or "Query executed successfully",
                 "database": db_name,
+                **({"rows_cut_at": SQL_MAX_ROWS} if rows_cut else {}),
                 "row_count": len(rows),
                 "data": displayed_rows,
                 **({"truncated": True, "displayed_row_count": DISPLAY_LIMIT} if len(rows) > DISPLAY_LIMIT else {}),
@@ -504,7 +515,7 @@ class MariaDB:
                     conversation_id=conversation_id,
                     columns=raw_columns,
                     rows=raw_rows,
-                    file_name=f"query_result_{int(time.time())}.csv",
+                    file_name=f"query_result_{int(time.time())}{f'_first_{SQL_MAX_ROWS}_rows' if rows_cut else ''}.csv",
                     source_tool="mariadb.execute_query",
                 ))
                 register_task(conversation_id, task)

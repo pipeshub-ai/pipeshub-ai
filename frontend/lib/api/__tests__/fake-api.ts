@@ -48,7 +48,8 @@ export function fakeApi(routes: Record<string, Route>) {
       headers: new AxiosHeaders(reply.headers ?? {}),
       config,
     };
-    if (reply.status >= 200 && reply.status < 300) return response;
+    const accepted = config.validateStatus ? config.validateStatus(reply.status) : reply.status >= 200 && reply.status < 300;
+    if (accepted) return response;
     throw new AxiosError(`Request failed with status code ${reply.status}`, 'ERR_BAD_RESPONSE', config, null, response);
   };
   return {

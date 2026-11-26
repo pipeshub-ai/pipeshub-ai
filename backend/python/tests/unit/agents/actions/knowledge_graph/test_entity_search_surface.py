@@ -14,6 +14,7 @@ from app.agent_loop_lib.tools.errors import ToolValidationError
 from app.agent_loop_lib.tools.toolset import ToolsetBuilder
 from app.agents.actions.knowledge_graph import entity_search_surface as surface
 from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
+from app.agents.actions.knowledge_graph.ops.summarize import SUMMARIZE_TOOL_NAME
 from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
 from app.agents.agent_loop.entity_search_tool import (
     ENTITY_SEARCH_OFFERED_STATE_KEY,
@@ -23,7 +24,8 @@ from app.agents.agent_loop.entity_search_tool import (
 
 _VARIED = {
     "knowledgegraph__search", "knowledgegraph__search_entities",
-    "knowledgegraph__find_records_by_entity", "knowledgegraph__find_records_by_value",
+    "knowledgegraph__find_records_by_entity",
+    "knowledgegraph__find_co_mentioned_entities",
 }
 
 
@@ -33,8 +35,9 @@ def _tools(offered: bool | None, *, named: bool | None = True) -> tuple[list[Any
     state: dict[str, Any] = {key: value for key, value in keys if value is not None}
     instance = KnowledgeGraph(state=state)
     built = ToolsetBuilder(instance, name="knowledgegraph", description="", path_prefix="/tools/knowledgegraph").tools
-    # The timeline tool has its own switch (test_timeline.py); these are about entity search.
-    declared = [t for t in built if t.name != TIMELINE_TOOL_NAME]
+    # The timeline tool and the quarantined summary have their own switches (test_timeline.py,
+    # test_ga28_knowledge_summarize.py); these are about entity search.
+    declared = [t for t in built if t.name not in {TIMELINE_TOOL_NAME, SUMMARIZE_TOOL_NAME}]
     return declared, instance.tools_for_request(list(declared))
 
 
@@ -58,7 +61,10 @@ def test_not_offered_is_the_declared_toolset_without_the_tool(offered: bool | No
 def test_extraction_off_leaves_out_the_named_entity_tool_and_parameter(named: bool | None) -> None:
     """Shown with the flag off, they made the model call tools that could only fail."""
     declared, served = _tools(False, named=named)
-    left_out = {SEARCH_BY_ENTITIES_TOOL_NAME, "knowledgegraph__find_records_by_value"}
+    left_out = {
+        SEARCH_BY_ENTITIES_TOOL_NAME, "knowledgegraph__find_records_by_value",
+        "knowledgegraph__find_co_mentioned_entities",
+    }
     assert [t.name for t in served] == [t.name for t in declared if t.name not in left_out]
     by_name = {t.name: t for t in declared}
     for tool in served:
@@ -138,10 +144,20 @@ def test_the_declared_search_entities_still_refuses_queries() -> None:
 
 
 def test_an_edit_whose_anchor_is_gone_fails_loudly() -> None:
-    declared = getattr(KnowledgeGraph.find_records_by_value, TOOL_META_ATTR)
-    reworded = replace(declared, description="Find records by a typed value.")
+    declared = getattr(KnowledgeGraph.find_records_by_entity, TOOL_META_ATTR)
+    reworded = replace(declared, description="Find records by an entity.")
     with pytest.raises(ValueError, match="no longer reads"):
-        surface.variant_meta("knowledgegraph__find_records_by_value", reworded)
+        surface.variant_meta("knowledgegraph__find_records_by_entity", reworded)
+
+
+def test_the_value_tool_says_when_to_use_it_without_the_switch() -> None:
+    """The guidance used to ship only with ENTITY_SEARCH_TOOL on."""
+    _, served = _tools(False)
+    (tool,) = [t for t in served if t.name == "knowledgegraph__find_records_by_value"]
+    assert "rather than words" in tool.description
+    params = {p.name: p for p in tool.parameters}
+    assert params["date_from"].type.value == params["date_to"].type.value == "string"
+    assert "whole day" in params["date_to"].description
 
 
 def test_the_offered_search_entities_names_every_query_in_its_activity_line() -> None:

@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/model.response.schema.json",
+  "title": "ModelResponseEvent",
+  "description": "Model response committed before any tool dispatch (invariant I2).",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "model.response"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/ModelResponseData"
+    }
+  },
+  "$defs": {
+    "ModelResponseData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "messageRef",
+        "toolCalls",
+        "usage",
+        "provider",
+        "transport"
+      ],
+      "properties": {
+        "messageRef": {
+          "$ref": "../common.schema.json#/$defs/ContentRef"
+        },
+        "toolCalls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "callId",
+              "modelName",
+              "argsDigest"
+            ],
+            "properties": {
+              "callId": {
+                "$ref": "../common.schema.json#/$defs/Text"
+              },
+              "modelName": {
+                "$ref": "../common.schema.json#/$defs/ModelToolName"
+              },
+              "argsDigest": {
+                "$ref": "../common.schema.json#/$defs/Digest"
+              }
+            }
+          }
+        },
+        "usage": {
+          "$ref": "../common.schema.json#/$defs/Usage"
+        },
+        "rawRef": {
+          "description": "Raw provider state, committed before any dispatch so it is never re-sampled.",
+          "$ref": "../common.schema.json#/$defs/ContentRef"
+        },
+        "provider": {
+          "$ref": "../common.schema.json#/$defs/Name"
+        },
+        "transport": {
+          "$ref": "../common.schema.json#/$defs/Name"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "model.response",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "messageRef": {
+          "ref": "cas/m1",
+          "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 812
+        },
+        "toolCalls": [
+          {
+            "callId": "toolu_01",
+            "modelName": "jira_search",
+            "argsDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "usage": {
+          "inputTokens": 1200,
+          "outputTokens": 80,
+          "cacheReadTokens": 1000
+        },
+        "rawRef": {
+          "ref": "cas/r1",
+          "hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "size": 4096
+        },
+        "provider": "anthropic",
+        "transport": "anthropic-native"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

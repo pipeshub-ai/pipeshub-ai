@@ -1,13 +1,26 @@
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '../services/logger.service';
-import { BaseError } from '../errors/base.error';
-import { HttpError } from '../errors/http.errors';
-import { isClientSafeError, isReaderWritten } from '../errors/reader-friendly';
-import { jsonResponse, logError } from '../utils/error.middleware.utils';
+import { BaseError, ErrorMetadata } from '../errors/base.error';
 import {
-  redactHeadersForLog,
-  redactQueryForLog,
-} from '../utils/log-redaction.utils';
+  REASON_CODE_PATTERN,
+  unansweredCallError,
+} from '../errors/backend-error';
+import {
+  BadRequestError,
+  ExpectedRefusalError,
+  HttpError,
+  LargePayloadError,
+  UnsupportedMediaTypeError,
+} from '../errors/http.errors';
+import { isClientSafeError, isReaderWritten } from '../errors/reader-friendly';
+import { jsonResponse } from '../utils/error.middleware.utils';
+import { classifyRequestError, levelFor } from '../utils/error-class';
+import {
+  markRequestError,
+  routeParams,
+  routeTemplate,
+} from './access-log.middleware';
+import { INVALID_PATH_SEGMENT_MESSAGE } from './safe-path-params.middleware';
 
 /**
  * What a reader is told when the failure is in PipesHub's own plumbing (a
@@ -19,8 +32,73 @@ import {
 const INFRASTRUCTURE_FAILURE_MESSAGE =
   "Something went wrong on PipesHub's side. Please try again; if it keeps happening, ask your admin for help.";
 
+// Nothing more can be answered: close the connection, as Express's own final
+// handler does, so the client sees a cut transfer instead of waiting forever.
+function closeStartedResponse(res: Response): void {
+  if (!res.writableEnded) res.destroy();
+}
+
+/**
+ * Maps a body-parser rejection to the 4xx it stands for. body-parser marks
+ * these with `type` and `expose`; without this they reach the unknown-error
+ * path and a malformed JSON body answers 500. Its own message quotes the body
+ * ("Unexpected token } in JSON at position 12"), so a fixed sentence replaces it.
+ */
+function bodyParserError(error: Error): HttpError | null {
+  const { type, expose } = error as Error & {
+    type?: unknown;
+    expose?: unknown;
+  };
+  if (expose !== true || typeof type !== 'string') {
+    return null;
+  }
+  switch (type) {
+    case 'entity.parse.failed':
+      return new BadRequestError('The request body is not valid JSON.');
+    case 'request.size.invalid':
+      return new BadRequestError(
+        'The request body does not match its Content-Length.',
+      );
+    case 'entity.too.large':
+      return new LargePayloadError('The request body is too large.');
+    case 'parameters.too.many':
+      return new LargePayloadError('The form body has too many fields.');
+    case 'encoding.unsupported':
+      return new UnsupportedMediaTypeError(
+        'The request body uses an unsupported content encoding.',
+      );
+    case 'charset.unsupported':
+      return new UnsupportedMediaTypeError(
+        'The request body uses an unsupported character set.',
+      );
+    default:
+      return null;
+  }
+}
+
+/**
+ * Express's router answers a path segment that is not valid percent-encoding
+ * (`%E0%A4%A`, `%ZZ`) with a URIError marked 400, before any route runs. Its
+ * message quotes the segment as sent, so a fixed sentence replaces it. Our own
+ * `decodeURIComponent` throws a URIError without `status`: that stays a 500.
+ */
+function malformedPathError(error: Error): HttpError | null {
+  return error instanceof URIError &&
+    (error as URIError & { status?: unknown }).status === 400
+    ? new BadRequestError(INVALID_PATH_SEGMENT_MESSAGE)
+    : null;
+}
+
+const omitAccessNotices = (
+  metadata: ErrorMetadata | undefined,
+): ErrorMetadata | undefined => {
+  if (!metadata || !('accessNotices' in metadata)) return metadata;
+  const { accessNotices: _sent, ...rest } = metadata;
+  return rest;
+};
+
 export class ErrorMiddleware {
-  private static logger = Logger.getInstance();
+  private static logger = Logger.getInstance({ service: 'ErrorMiddleware' });
 
   private static sanitizeErrorResponse(errorResponse: any): any {
     if (!errorResponse || typeof errorResponse !== 'object') {
@@ -57,20 +135,44 @@ export class ErrorMiddleware {
 
   static handleError() {
     return (error: Error, req: Request, res: Response, _next: NextFunction) => {
-      // Check if response has already been sent
-      if (res.headersSent) {
-        return;
-      }
-
       try {
-        if (error instanceof BaseError) {
-          this.handleBaseError(error, req, res);
+        if (this.isClientAbort(error, req)) {
+          this.logger.info('Request aborted by the client', {
+            method: req.method,
+            path: req.path,
+            requestId: req.context?.requestId,
+          });
+          return;
+        }
+        // A call to another PipesHub service that got no answer is a 503
+        // (504 on a timeout) wherever it was thrown, not an unknown 500.
+        // The parser's or router's own error is not kept as the cause: its
+        // message quotes the body or the path.
+        const mapped =
+          error instanceof BaseError
+            ? error
+            : (bodyParserError(error) ??
+              malformedPathError(error) ??
+              unansweredCallError(error));
+        // Logged even when the response has started (a stream that failed
+        // midway): controllers no longer log what they pass on.
+        this.logRequestError(mapped ?? error, req, res);
+        if (res.headersSent) {
+          closeStartedResponse(res);
+          return;
+        }
+        if (mapped) {
+          this.handleBaseError(mapped, req, res);
         } else {
-          this.handleUnknownError(error, req, res);
+          this.handleUnknownError(req, res);
         }
       } catch (middlewareError) {
         // If even the error middleware fails, send a basic error response
         console.error('Error in error middleware:', middlewareError);
+        if (res.headersSent) {
+          closeStartedResponse(res);
+          return;
+        }
         jsonResponse(res, 500, {
           error: {
             code: 'MIDDLEWARE_ERROR',
@@ -82,24 +184,57 @@ export class ErrorMiddleware {
     };
   }
 
+  /**
+   * The one line for a failed request: what (method, route, status), why
+   * (error_class, the error with its cause; the stack only at ERROR) and,
+   * from the request context, who.
+   */
+  private static logRequestError(
+    error: Error,
+    req: Request,
+    res: Response,
+  ): void {
+    // A failure to log must never change what the client is answered.
+    try {
+      this.writeRequestError(error, req, res);
+    } catch (logFailure) {
+      console.error('Logging the request error failed:', logFailure);
+    }
+  }
+
+  private static writeRequestError(
+    error: Error,
+    req: Request,
+    res: Response,
+  ): void {
+    const status = res.headersSent
+      ? res.statusCode
+      : error instanceof BaseError
+        ? error.statusCode
+        : 500;
+    const errorClass = classifyRequestError(error, status);
+    markRequestError(res, errorClass);
+    // A refusal the route expects (a lost claim race, a role that may not write) is routine.
+    const level =
+      error instanceof ExpectedRefusalError ? 'info' : levelFor(errorClass);
+    this.logger[level]('http.request.error', {
+      method: req.method,
+      route: routeTemplate(req),
+      status,
+      error_class: errorClass,
+      error_type: error.name,
+      outcome: 'failure',
+      event_name: 'http.request.error',
+      error,
+      params: routeParams(req),
+    });
+  }
+
   private static handleBaseError(
     error: BaseError,
     req: Request,
     res: Response,
   ) {
-    // A thrower may mark an answer it expects (a 4xx) as routine; a 5xx is always an error.
-    const level =
-      error.statusCode < 500 && error.metadata?.logLevel === 'warn'
-        ? 'warn'
-        : 'error';
-    logError(
-      this.logger,
-      'Application error',
-      error,
-      { request: this.getRequestContext(req) },
-      level,
-    );
-
     // Never expose stack traces to clients - security best practice
     const isDevelopment =
       process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'dev';
@@ -126,6 +261,15 @@ export class ErrorMiddleware {
       error instanceof HttpError;
     const isInternalPlumbing = error.statusCode >= 500 && !isOurOwnWording;
     const requestId = req.context?.requestId;
+    // Another service's machine code for the refusal (backend-error), so a
+    // client can say which one without parsing the sentence.
+    const reasonCode: unknown = error.metadata?.reasonCode;
+    const relayedCode =
+      !isInternalPlumbing &&
+      typeof reasonCode === 'string' &&
+      REASON_CODE_PATTERN.test(reasonCode)
+        ? reasonCode
+        : undefined;
 
     const errorResponse = {
       error: {
@@ -133,16 +277,23 @@ export class ErrorMiddleware {
         message: isInternalPlumbing
           ? INFRASTRUCTURE_FAILURE_MESSAGE
           : error.message,
+        ...(relayedCode && { reasonCode: relayedCode }),
         ...(requestId && { requestId }),
         // Only include metadata in development, and never for a failure whose
         // details describe our internals.
+        // The access notices are sent at the top level; left out here, the sanitizer would meet the same array twice and
+        // answer "[Circular]" for the second copy.
         ...(isDevelopment &&
           !isInternalPlumbing && {
-            metadata: error.metadata,
+            metadata: omitAccessNotices(error.metadata),
           }),
         // Stack traces should NEVER be exposed to clients, even in development
         // They are logged server-side only for debugging
       },
+      // Codes the client words ("a source is still syncing"): carried on the error by the route that has them, never text.
+      ...(Array.isArray(error.metadata?.accessNotices) && {
+        accessNotices: error.metadata.accessNotices,
+      }),
     };
 
     const retryAfter = error.metadata?.retryAfter;
@@ -166,12 +317,8 @@ export class ErrorMiddleware {
     );
   }
 
-  private static handleUnknownError(error: Error, req: Request, res: Response) {
-    logError(this.logger, 'Unhandled error', error, {
-      request: this.getRequestContext(req),
-    });
-
-    // The raw message is logged just above. It never goes to the client, not
+  private static handleUnknownError(req: Request, res: Response) {
+    // The raw message is in the log line. It never goes to the client, not
     // even outside production: the integration and compose setups run with
     // NODE_ENV=development, so that branch is reachable in real deployments.
     const requestId = req.context?.requestId;
@@ -188,16 +335,20 @@ export class ErrorMiddleware {
     jsonResponse(res, 500, sanitizedResponse);
   }
 
-  private static getRequestContext(req: Request) {
-    return {
-      method: req.method,
-      path: req.path,
-      // An OAuth callback that fails auth still carries ?code= here, and the
-      // Referer of a request made from a callback page carries it too.
-      query: redactQueryForLog(req.query),
-      params: req.params,
-      ip: req.ip,
-      headers: redactHeadersForLog(req.headers),
-    };
+  /**
+   * The client went away before its request was read (body-parser's
+   * `request.aborted`, or a reset on the request stream): nothing failed on
+   * our side and there is no one left to answer.
+   */
+  private static isClientAbort(error: Error, req: Request): boolean {
+    const { type, code } = error as Error & { type?: unknown; code?: unknown };
+    if (type === 'request.aborted') return true;
+    // `req.destroyed` alone is not the client leaving: a request whose body was read is destroyed once read, so a
+    // reset from a service this route called (an ECONNRESET of its own) would be taken for an abort and never answered.
+    return (
+      code === 'ECONNRESET' &&
+      (req.readableAborted ||
+        (req.socket as { destroyed?: boolean } | undefined)?.destroyed === true)
+    );
   }
 }

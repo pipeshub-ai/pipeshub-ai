@@ -10,7 +10,9 @@ import {
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
   WorkspaceRightPanelBodyPortalContext,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
+import { aiModelFormOptions } from '@/config';
 import type { DiscoveredModel } from '../types';
+import { NO_CREDENTIAL_AUTOFILL_PROPS } from '@/app/components/ui/secret-text-field';
 
 const MAX_VISIBLE_OPTIONS = 200;
 
@@ -188,7 +190,7 @@ export function ModelCombobox({
               opacity: disabled ? 0.6 : 1,
             }}
           >
-            <MaterialIcon name="widgets" size={16} color="var(--gray-10)" />
+            <MaterialIcon name="widgets" size={16} color="var(--gray-11)" />
             {value.map((id) => (
               <Badge key={id} variant="soft" color="gray" size="2" style={{ maxWidth: '100%' }}>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -221,6 +223,7 @@ export function ModelCombobox({
             ))}
             <input
               ref={inputRef}
+              {...NO_CREDENTIAL_AUTOFILL_PROPS}
               role="combobox"
               aria-label={label}
               aria-expanded={open}
@@ -249,7 +252,7 @@ export function ModelCombobox({
                 height: 24,
               }}
             />
-            {loading ? <Spinner size={14} /> : <MaterialIcon name="expand_more" size={18} color="var(--gray-10)" />}
+            {loading ? <Spinner size={14} /> : <MaterialIcon name="expand_more" size={18} color="var(--gray-11)" />}
           </div>
         </Popover.Trigger>
         <Popover.Content
@@ -297,7 +300,7 @@ export function ModelCombobox({
                     as="div"
                     size="1"
                     weight="medium"
-                    style={{ padding: '8px 10px 4px', color: 'var(--gray-10)' }}
+                    style={{ padding: '8px 10px 4px', color: 'var(--gray-11)' }}
                   >
                     {t('workspace.aiModels.modelComboboxOtherGroup')}
                   </Text>
@@ -332,7 +335,7 @@ export function ModelCombobox({
                           {option.model.displayName || option.id}
                         </Text>
                         {option.model.displayName && option.model.displayName !== option.id ? (
-                          <Text size="1" truncate style={{ color: 'var(--gray-10)' }}>
+                          <Text size="1" truncate style={{ color: 'var(--gray-11)' }}>
                             {option.id}
                           </Text>
                         ) : null}
@@ -347,7 +350,7 @@ export function ModelCombobox({
         </Popover.Content>
       </Popover.Root>
       {hint ? (
-        <Text size="1" style={{ color: hintTone === 'red' ? 'var(--red-11)' : 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: hintTone === 'red' ? 'var(--red-11)' : 'var(--gray-11)' }}>
           {hint}
         </Text>
       ) : null}
@@ -364,11 +367,12 @@ function ModelMeta({ model }: { model: DiscoveredModel }) {
       : null,
     model.isMultimodal ? t('workspace.aiModels.badgeVision') : null,
     model.isReasoning ? t('workspace.aiModels.badgeReasoning') : null,
+    ...aiModelFormOptions.discoveredModelBadges(t, model),
     model.deprecated ? t('workspace.aiModels.badgeDeprecated') : null,
   ].filter(Boolean);
   if (parts.length === 0) return null;
   return (
-    <Text size="1" style={{ color: 'var(--gray-10)', flexShrink: 0, whiteSpace: 'nowrap' }}>
+    <Text size="1" style={{ color: 'var(--gray-11)', flexShrink: 0, whiteSpace: 'nowrap' }}>
       {parts.join(' · ')}
     </Text>
   );

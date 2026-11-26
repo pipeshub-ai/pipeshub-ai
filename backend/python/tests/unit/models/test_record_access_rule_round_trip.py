@@ -25,6 +25,7 @@ _TYPED = [
     (E.DealRecord, E.RecordType.DEAL, {}),
     (E.SQLViewRecord, E.RecordType.SQL_VIEW, {}),
     (E.SQLTableRecord, E.RecordType.SQL_TABLE, {}),
+    (E.SQLColumnRecord, E.RecordType.SQL_COLUMN, {}),
     (E.PullRequestRecord, E.RecordType.PULL_REQUEST, {}),
     (E.ArtifactRecord, E.RecordType.ARTIFACT, {}),
     (E.CodeFileRecord, E.RecordType.CODE_FILE, {}),

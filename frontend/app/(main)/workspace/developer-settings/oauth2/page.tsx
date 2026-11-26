@@ -3,7 +3,11 @@
 import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { Flex, Grid, Text, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store';
+import {
+  useUserStore,
+  selectIsAdmin,
+  selectIsProfileInitialized,
+} from '@/lib/store/user-store';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { EntityEmptyState, EntityPagination } from '../../components';
@@ -13,10 +17,12 @@ import { Oauth2PageHeader } from './components/oauth2-page-header';
 import { CreateOAuthApplicationPanel } from './components/create-oauth-application-panel';
 import { ManageOAuthApplicationPanel } from './components/manage-oauth-application-panel';
 import { OAuthApplicationCard } from './components/oauth-application-card';
+import { PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 function Oauth2PageContent() {
   const { t } = useTranslation();
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  const isAdmin = useUserStore(selectIsAdmin);
 
   const [clients, setClients] = useState<OAuthClient[]>([]);
   const [pagination, setPagination] = useState<OAuthClientsPagination | null>(null);
@@ -118,13 +124,15 @@ function Oauth2PageContent() {
         height: '100%',
         width: '100%',
         paddingInline: pagePaddingX(40),
+        // Same gap below the table frame as above the page title
+        paddingBottom: PAGE_PADDING_TOP,
         boxSizing: 'border-box',
         minWidth: 0,
       }}
     >
       <Oauth2PageHeader
         title={t('workspace.oauth2.title')}
-        subtitle={t('workspace.oauth2.subtitle')}
+        subtitle={t(isAdmin ? 'workspace.oauth2.subtitleAdmin' : 'workspace.oauth2.subtitle')}
         searchPlaceholder={t('workspace.oauth2.searchPlaceholder')}
         searchValue={searchQuery}
         onSearchChange={setSearchQuery}

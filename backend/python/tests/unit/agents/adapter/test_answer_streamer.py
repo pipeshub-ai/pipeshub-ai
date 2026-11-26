@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext
+from app.agent_loop_lib.tools.builtin.planning.final_answer import FinalAnswerTool
 from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.hooks.citations import CitationCollector
 from tests.unit.agents.adapter.conftest import make_context
@@ -189,6 +190,50 @@ class TestToolCallPreambleClearing:
         assert sink.events == []
 
 
+class TestReplySentBackForAnotherTry:
+    """A POST_MODEL hook can send a text-only reply back (`recovery_message`),
+    and the next turn starts over. That reply was already on screen."""
+
+    async def test_the_old_reply_is_cleared_when_the_next_turn_calls_a_tool(self) -> None:
+        streamer, sink = _make_streamer()
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Which warehouse do you mean?"}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_END))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TOOL_CALL_START, {"tool": "knowledgegraph__search"}))
+
+        assert sink.events[-1]["data"]["accumulated"] == ""
+        assert len(sink.events) == 2
+
+    async def test_the_old_reply_is_replaced_when_the_next_turn_answers_in_text(self) -> None:
+        streamer, sink = _make_streamer()
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "First draft."}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Second draft."}))
+        await streamer.on_event(_event(EventType.TOOL_CALL_START, {"tool": "knowledgegraph__search"}))
+        await streamer.on_event(_event(EventType.TOOL_CALL_START, {"tool": "knowledgegraph__fetch_record"}))
+
+        assert [e["data"]["accumulated"] for e in sink.events] == ["First draft.", "Second draft.", ""]
+
+    async def test_the_old_reply_is_cleared_when_the_next_turn_starts_a_streaming_terminal_tool(self) -> None:
+        """The terminal tool streams its answer through text deltas, so its start
+        drops only carried text; the old reply must still go, even when the tool
+        streams no text."""
+        streamer, sink = _make_streamer()
+        with patch(
+            "app.agent_loop_lib.tools.builtin.planning.final_answer.final_answer_enabled", return_value=True,
+        ):
+            await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+            await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Which aisle do you mean?"}))
+            await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+            await streamer.on_event(_event(EventType.TOOL_CALL_START, {"tool": FinalAnswerTool().name}))
+
+        assert [e["data"]["accumulated"] for e in sink.events] == ["Which aisle do you mean?", ""]
+
+
 class TestStreamedAnswerTracking:
     async def test_agent_complete_records_terminal_turn_text(self) -> None:
         streamer, _sink = _make_streamer()
@@ -199,6 +244,16 @@ class TestStreamedAnswerTracking:
         await streamer.on_event(_event(EventType.AGENT_COMPLETE, {"output": "The answer is 42."}))
 
         assert streamer.streamed_answer == "The answer is 42."
+
+    async def test_cancellation_keeps_partial_text_for_the_stopped_answer(self) -> None:
+        streamer, _sink = _make_streamer()
+
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_START))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Section 1. "}))
+        await streamer.on_event(_event(EventType.TEXT_MESSAGE_CONTENT, {"delta": "Section 2."}))
+        await streamer.on_event(_event(EventType.CANCELLATION, {"error": "Cancelled"}))
+
+        assert streamer.streamed_answer == "Section 1. Section 2."
 
     async def test_streamed_answer_defaults_to_empty_when_nothing_streamed(self) -> None:
         streamer, _sink = _make_streamer()

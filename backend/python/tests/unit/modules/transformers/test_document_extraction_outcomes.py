@@ -4,18 +4,35 @@ classify", and a typed error when the model fails — which fails extraction,
 never the already-searchable record."""
 
 import asyncio
+import base64
+import io
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import openai
 import pytest
+from botocore.exceptions import ClientError
+from google.genai import errors as genai_errors
 
 from app.models.blocks import Block, BlockType, DataFormat, SemanticMetadata
 from app.modules.transformers.document_extraction import (
     DocumentClassification,
     DocumentExtraction,
+    ExtractionContentFilteredError,
     ExtractionLLMError,
     SubCategories,
 )
+from app.services.llm_gateway.gateway import ProviderUnavailableError
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import (
+    MARK,
+    SENTINELS,
+    httpx_error,
+    openai_error,
+    schema_mismatch,
+    with_cause,
+)
 
 _MODULE = "app.modules.transformers.document_extraction"
 
@@ -76,7 +93,7 @@ async def test_structured_result_is_returned_as_semantic_metadata() -> None:
         f"{_MODULE}.invoke_with_structured_output_and_reflection",
         AsyncMock(return_value=_classification()),
     ):
-        metadata = await extraction.extract_metadata(_blocks(), "org-1")
+        metadata = await extraction.extract_metadata(_blocks(), "org-1", allow_remote_image_uri=True)
     assert isinstance(metadata, SemanticMetadata)
     assert metadata.categories == ["Security"]
 
@@ -85,7 +102,7 @@ async def test_structured_result_is_returned_as_semantic_metadata() -> None:
 async def test_no_content_returns_none() -> None:
     extraction = _extraction()
     with patch(f"{_MODULE}.get_llm_for_role", _llm_role()):
-        assert await extraction.extract_metadata([], "org-1") is None
+        assert await extraction.extract_metadata([], "org-1", allow_remote_image_uri=True) is None
 
 
 @pytest.mark.asyncio
@@ -197,3 +214,328 @@ async def test_a_provider_outage_is_unavailable_not_a_bad_document() -> None:
     ):
         with pytest.raises(LLMUnavailableError):
             await extraction.classify(_blocks(), "org-1", ["Engineering"])
+
+
+def _png_uri(fmt: str = "PNG", declared: str = "image/png") -> str:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    # Varied pixels, so half the file still holds a full header and the cut lands in the pixel data.
+    Image.frombytes("RGB", (64, 64), bytes(i * 7 % 251 for i in range(64 * 64 * 3))).save(buf, format=fmt)
+    return f"data:{declared};base64,{base64.b64encode(buf.getvalue()).decode()}"
+
+
+def _blocks_with_image() -> list[Block]:
+    return [
+        *_blocks(),
+        Block(index=1, type=BlockType.IMAGE, format=DataFormat.BASE64, data={"uri": _png_uri()}),
+    ]
+
+
+def _multimodal_role() -> AsyncMock:
+    return AsyncMock(return_value=(MagicMock(), {"isMultimodal": True, "contextLength": 8000}))
+
+
+def _openai_error(status: int, error: dict | None = None) -> openai.APIStatusError:
+    return openai_error(status, error or {
+        "message": "The image data you provided does not represent a valid image.",
+        "type": "invalid_request_error", "param": "input", "code": "invalid_value",
+    })
+
+
+def _bedrock_validation_error() -> ClientError:
+    return ClientError(
+        {
+            "Error": {"Code": "ValidationException", "Message": "Could not process image"},
+            "ResponseMetadata": {"HTTPStatusCode": 400},
+        },
+        "Converse",
+    )
+
+
+def _image_parts(call: object) -> list[dict]:
+    message = call.args[1][-1]  # type: ignore[attr-defined]
+    return [part for part in message.content if part["type"] == "image_url"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "rejection",
+    [
+        lambda: _openai_error(400),
+        _bedrock_validation_error,
+        lambda: genai_errors.ClientError(400, {"error": {"message": "Unable to process input image."}}),
+    ],
+    ids=["openai", "bedrock", "gemini"],
+)
+async def test_rejected_images_are_dropped_and_the_text_classified(rejection) -> None:
+    extraction = _extraction()
+    invoke = AsyncMock(side_effect=[rejection(), _classification()])
+    with patch(f"{_MODULE}.get_llm_for_role", _multimodal_role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", invoke
+    ):
+        metadata = await extraction.classify(_blocks_with_image(), "org-1", ["Engineering"])
+    assert metadata is not None and metadata.categories == ["Security"]
+    first, second = invoke.call_args_list
+    assert len(_image_parts(first)) == 1
+    assert _image_parts(second) == []
+
+
+@pytest.mark.asyncio
+async def test_fallback_after_a_text_only_retry_does_not_resend_images() -> None:
+    extraction = _extraction()
+    fallback = AsyncMock(return_value=SemanticMetadata(summary="s"))
+    with patch(f"{_MODULE}.get_llm_for_role", _multimodal_role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection",
+        AsyncMock(side_effect=[_openai_error(400), None]),
+    ), patch.object(extraction, "_fallback_summary", fallback):
+        await extraction.classify(_blocks_with_image(), "org-1", ["Engineering"])
+    sent = fallback.call_args.args[1]
+    assert sent and all(part["type"] != "image_url" for part in sent)
+
+
+@pytest.mark.asyncio
+async def test_a_text_only_retry_that_also_fails_is_an_extraction_error() -> None:
+    extraction = _extraction()
+    invoke = AsyncMock(side_effect=[_openai_error(400), _openai_error(400)])
+    with patch(f"{_MODULE}.get_llm_for_role", _multimodal_role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", invoke
+    ):
+        with pytest.raises(ExtractionLLMError):
+            await extraction.classify(_blocks_with_image(), "org-1", ["Engineering"])
+    assert invoke.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("role", "blocks", "error"),
+    [
+        (_llm_role, _blocks, lambda: _openai_error(400)),
+        (_multimodal_role, _blocks_with_image, lambda: _openai_error(401)),
+        (_multimodal_role, _blocks_with_image, lambda: _openai_error(404)),
+        (_multimodal_role, _blocks_with_image, lambda: RuntimeError("boom")),
+        (
+            _multimodal_role, _blocks_with_image,
+            lambda: _openai_error(400, {
+                "message": "Unsupported parameter: 'response_format' is not supported with this model.",
+                "type": "invalid_request_error", "param": "response_format", "code": "unsupported_parameter",
+            }),
+        ),
+        (
+            _multimodal_role, _blocks_with_image,
+            lambda: _openai_error(400, {
+                "message": "The image was filtered due to the prompt triggering Azure OpenAI's content management policy.",
+                "type": None, "param": "prompt", "code": "content_filter",
+            }),
+        ),
+        (
+            _multimodal_role, _blocks_with_image,
+            lambda: _openai_error(400, {
+                "message": "Budget has been exceeded for this key; image requests are paused.",
+                "type": "budget_exceeded", "param": None, "code": "400",
+            }),
+        ),
+        (_multimodal_role, lambda: _blocks_with_image()[1:], lambda: _openai_error(400)),
+    ],
+    ids=[
+        "no-images", "auth", "model-not-found", "unclassified",
+        "unsupported-parameter", "content-filter", "gateway-budget", "images-only",
+    ],
+)
+async def test_other_failures_are_not_retried_without_images(role, blocks, error) -> None:
+    extraction = _extraction()
+    invoke = AsyncMock(side_effect=error())
+    with patch(f"{_MODULE}.get_llm_for_role", role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", invoke
+    ):
+        with pytest.raises(ExtractionLLMError):
+            await extraction.classify(blocks(), "org-1", ["Engineering"])
+    invoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_an_outage_with_images_is_unavailable_not_retried_without_them() -> None:
+    extraction = _extraction()
+    invoke = AsyncMock(side_effect=LLMUnavailableError("down"))
+    with patch(f"{_MODULE}.get_llm_for_role", _multimodal_role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", invoke
+    ):
+        with pytest.raises(LLMUnavailableError):
+            await extraction.classify(_blocks_with_image(), "org-1", ["Engineering"])
+    invoke.assert_awaited_once()
+
+
+def test_a_truncated_image_is_skipped() -> None:
+    from app.modules.transformers.document_extraction import _downscale_base64_image
+
+    header, payload = _png_uri().split(",", 1)
+    raw = base64.b64decode(payload)
+    truncated = base64.b64encode(raw[: len(raw) // 2]).decode()
+    assert _downscale_base64_image(f"{header},{truncated}") is None
+
+
+def test_an_image_declared_with_the_wrong_type_is_relabelled() -> None:
+    blocks = [
+        Block(
+            index=0, type=BlockType.IMAGE, format=DataFormat.BASE64,
+            data={"uri": _png_uri(fmt="JPEG", declared="image/png")},
+        )
+    ]
+    content = _extraction()._prepare_content(blocks, is_multimodal_llm=True, context_length=8000, allow_remote_image_uri=True)
+    assert content[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+# ---------------------------------------------------------------------------
+# Failure lines: one per handled failure, with its class and none of the provider's text (F24b)
+# ---------------------------------------------------------------------------
+
+
+def _logged_extraction() -> DocumentExtraction:
+    # A real logger: log_failure on a MagicMock takes its silent fallback.
+    graph_provider = AsyncMock()
+    graph_provider.get_departments = AsyncMock(return_value=["Engineering"])
+    return DocumentExtraction(logging.getLogger("test.document_extraction"), graph_provider, AsyncMock())
+
+
+def _record() -> MagicMock:
+    record = MagicMock()
+    record.id, record.org_id, record.record_name = "rec-1", "org-1", "doc.txt"
+    record.record_type.value = "FILE"
+    record.block_containers.blocks = _blocks()
+    record.block_containers.block_groups = []
+    return record
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "error_class", "level"),
+    [
+        (lambda: with_cause(ExtractionLLMError(f"call failed: {MARK}"), openai_error(400)), "bad_request", logging.WARNING),
+        (lambda: with_cause(ExtractionLLMError(f"call failed: {MARK}"), openai_error(401)), "misconfigured", logging.ERROR),
+        (lambda: with_cause(ExtractionLLMError(f"call failed: {MARK}"), httpx_error(400)), "bad_request", logging.WARNING),
+        (lambda: with_cause(ProviderUnavailableError(f"p: {MARK}", provider="p"), openai_error(429)), "rate_limited",
+         logging.WARNING),
+        # Causeless: the model twice gave nothing usable, or the provider's circuit is open. Neither is our bug.
+        (lambda: ExtractionLLMError("Document classification and the fallback summary both failed"), "bad_request",
+         logging.WARNING),
+        (lambda: with_cause(ExtractionLLMError(f"call failed: {MARK}"), schema_mismatch(DocumentClassification)),
+         "bad_request", logging.WARNING),
+        (lambda: ProviderUnavailableError(f"p is failing {MARK}", provider="p"), "unavailable", logging.WARNING),
+    ],
+    ids=["400", "401", "httpx-400", "outage-429", "both-failed", "circuit-open", "answer-not-fitting"],
+)
+async def test_a_failed_extraction_is_one_text_free_line_for_the_record(caplog, error, error_class, level) -> None:
+    caplog.set_level(logging.DEBUG)
+    extraction = _logged_extraction()
+    record = _record()
+    with patch.object(extraction, "process_document", AsyncMock(side_effect=error())):
+        await extraction.apply(MagicMock(record=record))
+
+    assert record.semantic_metadata is None
+    assert failure_line(caplog.records, "document_extraction.failed", error_class, level, *SENTINELS)["record_id"] == "rec-1"
+    assert_text_free(caplog.records, *SENTINELS)
+
+
+@pytest.mark.asyncio
+async def test_refused_images_are_noted_by_count_without_the_refusal(caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    extraction = _logged_extraction()
+    invoke = AsyncMock(side_effect=[_openai_error(400, {
+        "message": f"The image data you provided does not represent a valid image. {MARK}",
+        "type": "invalid_request_error", "param": "input", "code": "invalid_value",
+    }), _classification()])
+    with patch(f"{_MODULE}.get_llm_for_role", _multimodal_role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", invoke
+    ):
+        assert await extraction.classify(_blocks_with_image(), "org-1", ["Engineering"]) is not None
+
+    (note,) = [r for r in caplog.records if "classifying its text alone" in r.getMessage()]
+    assert note.levelno == logging.WARNING
+    assert note.error_type == "ExtractionLLMError"
+    assert "1 image" in note.getMessage()
+    assert_text_free(caplog.records, *SENTINELS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["document", "code"])
+async def test_a_failed_fallback_summary_is_one_text_free_line(caplog, kind) -> None:
+    caplog.set_level(logging.DEBUG)
+    extraction = _logged_extraction()
+    gateway = MagicMock(invoke=AsyncMock(side_effect=openai_error(400)))
+    with patch(f"{_MODULE}.get_llm_gateway", return_value=gateway):
+        if kind == "document":
+            result = await extraction._fallback_summary(MagicMock(), [{"type": "text", "text": "doc"}])
+        else:
+            result = await extraction._code_fallback_summary(MagicMock(), "code")
+
+    assert result is None
+    assert failure_line(caplog.records, "extraction.fallback_failed", "bad_request", logging.WARNING, *SENTINELS)["kind"] == kind
+    assert_text_free(caplog.records, *SENTINELS)
+
+
+@pytest.mark.asyncio
+async def test_an_outage_in_the_fallback_is_raised_without_a_line(caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    extraction = _logged_extraction()
+    gateway = MagicMock(invoke=AsyncMock(side_effect=LLMUnavailableError(MARK)))
+    with patch(f"{_MODULE}.get_llm_gateway", return_value=gateway), pytest.raises(LLMUnavailableError):
+        await extraction._fallback_summary(MagicMock(), [{"type": "text", "text": "doc"}])
+
+    assert not [r for r in caplog.records if r.getMessage() == "extraction.fallback_failed"]
+
+
+def _filtered(code: str, message: str = "Blocked.") -> openai.APIStatusError:
+    return openai_error(400, {"message": message, "type": "invalid_request_error", "param": "prompt", "code": code})
+
+
+async def _classify_error(error: Exception) -> ExtractionLLMError:
+    extraction = _extraction()
+    invoke = AsyncMock(side_effect=error)
+    with patch(f"{_MODULE}.get_llm_for_role", _llm_role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", invoke
+    ), pytest.raises(ExtractionLLMError) as raised:
+        await extraction.classify(_blocks(), "org-1", ["Engineering"])
+    invoke.assert_awaited_once()
+    return raised.value
+
+
+@pytest.mark.parametrize("code", ["content_filter", "content_policy_violation", "ResponsibleAIPolicyViolation"])
+@pytest.mark.asyncio
+async def test_a_content_filter_refusal_is_its_own_error(code: str) -> None:
+    raised = await _classify_error(_filtered(code, MARK))
+    assert isinstance(raised, ExtractionContentFilteredError)
+    # The reason is shown on the record; the provider's message can quote the document.
+    assert not any(sentinel in str(raised) for sentinel in SENTINELS)
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_wrapped_by_an_sdk_is_still_recognised() -> None:
+    raised = await _classify_error(with_cause(ValueError("call failed"), _filtered("content_filter")))
+    assert isinstance(raised, ExtractionContentFilteredError)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        lambda: openai_error(400, {"message": "Our content policy", "type": "invalid_request_error", "param": None,
+                                   "code": "invalid_value"}),
+        lambda: ValueError("the document discusses content_filter and content policy"),
+        lambda: openai_error(429),
+    ],
+    ids=["other-400-mentioning-it", "text-mentioning-it", "rate-limit"],
+)
+@pytest.mark.asyncio
+async def test_only_the_providers_code_makes_it_a_content_filter_refusal(error) -> None:
+    assert not isinstance(await _classify_error(error()), ExtractionContentFilteredError)
+
+
+@pytest.mark.asyncio
+async def test_a_content_filter_refusal_of_a_code_file_is_its_own_error() -> None:
+    extraction = _extraction()
+    summary = MagicMock(data={"file_path": "a.py"}, code_metadata=None)
+    with patch(f"{_MODULE}.get_llm_for_role", _llm_role()), patch.object(
+        extraction, "_prepare_code_content", MagicMock(return_value="def f(): ...")
+    ), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", AsyncMock(side_effect=_filtered("content_filter"))
+    ), pytest.raises(ExtractionContentFilteredError):
+        await extraction.process_code_document([], summary)

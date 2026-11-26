@@ -37,6 +37,7 @@ import {
   collectAuthFieldErrors,
 } from './authenticate-tab/auth-step-validation';
 import { useConnectorOAuthPopup } from './authenticate-tab/use-connector-oauth-popup';
+import { useCanEditLinkedOAuthApp, useCanEnterOAuthClient } from './authenticate-tab/use-can-enter-oauth-client';
 import {
   collectSyncFilterErrors,
   hasAnySyncFiltersSelected,
@@ -49,14 +50,14 @@ import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
 
 let connectionCheckSeq = 0;
 
-/** Non-admin OAuth instances must pick an OAuth app before save. */
+/** Someone who may not enter an OAuth client (a member on a team connector) must pick an OAuth app before save. */
 function oauthAppSelectionError(
   selectedAuthType: string,
   oauthConfigId: unknown,
   isProfileInitialized: boolean,
-  isAdmin: boolean
+  mayEnterOAuthClient: boolean | null
 ): string | null {
-  if (selectedAuthType !== 'OAUTH' || !isProfileInitialized || isAdmin !== false) {
+  if (selectedAuthType !== 'OAUTH' || !isProfileInitialized || mayEnterOAuthClient !== false) {
     return null;
   }
   if (
@@ -91,6 +92,8 @@ export function ConnectorPanel() {
   const router = useRouter();
   const { t } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
+  const mayEnterOAuthClient = useCanEnterOAuthClient();
+  const mayEditLinkedOAuthApp = useCanEditLinkedOAuthApp();
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const addToast = useToastStore((s) => s.addToast);
   const {
@@ -403,7 +406,7 @@ export function ConnectorPanel() {
       formData.auth,
       connectorConfig,
       isCreateMode,
-      isAdmin,
+      { mayEditLinkedOAuthApp, mayEnterOAuthClient },
       disableCredEdit
     );
 
@@ -428,7 +431,7 @@ export function ConnectorPanel() {
       selectedAuthType,
       oauthConfigIdStr,
       isProfileInitialized,
-      isAdmin
+      mayEnterOAuthClient
     );
     if (oauthErrEarly) {
       mergeFormErrors({ oauthConfigId: oauthErrEarly });
@@ -437,34 +440,10 @@ export function ConnectorPanel() {
           .querySelector('[data-ph-oauth-app-select]')
           ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
-      if (
-        isCreateMode &&
-        selectedScope === 'personal' &&
-        selectedAuthType === 'OAUTH' &&
-        isProfileInitialized &&
-        isAdmin === false &&
-        connectorType
-      ) {
-        const oauthSnap = useConnectorsStore.getState();
-        const listReady =
-          oauthSnap.oauthAppsListPhase === 'ready' &&
-          oauthSnap.oauthAppsListConnectorType === connectorType &&
-          oauthSnap.oauthAppsListFetchError == null;
-        if (listReady && oauthSnap.oauthAppsList.length === 0) {
-          addToast({
-            variant: 'warning',
-            title: t('workspace.connectors.toasts.oauthAppUnavailableTitle'),
-            description: t('workspace.connectors.toasts.oauthAppUnavailableDescription', {
-              name: connectorTypeName || t('workspace.connectors.toasts.thisConnectorFallback'),
-            }),
-            duration: 4500,
-          });
-        }
-      }
       return false;
     }
 
-    if (selectedAuthType === 'OAUTH' && isAdmin === true && !oauthConfigIdStr) {
+    if (selectedAuthType === 'OAUTH' && mayEnterOAuthClient === true && !oauthConfigIdStr) {
       const oauthAppName = (formData.auth.oauthInstanceName as string | undefined)?.trim();
       if (!oauthAppName) {
         mergeFormErrors({
@@ -516,15 +495,13 @@ export function ConnectorPanel() {
     connectorConfig,
     isProfileInitialized,
     isAdmin,
+    mayEditLinkedOAuthApp,
+    mayEnterOAuthClient,
     isCreateMode,
-    selectedScope,
-    connectorType,
-    connectorTypeName,
     instanceName,
     mergeFormErrors,
     setInstanceNameError,
     setSaveError,
-    addToast,
     t,
   ]);
 
@@ -538,6 +515,7 @@ export function ConnectorPanel() {
       try {
         const result = await ConnectorsApi.testConnection(connectorType, {
           auth,
+          ...(selectedAuthType ? { authType: selectedAuthType } : {}),
           ...(panelConnectorId ? { connectorId: panelConnectorId } : {}),
         });
         if (isStale()) return false;
@@ -561,7 +539,7 @@ export function ConnectorPanel() {
       });
       return false;
     },
-    [connectorType, panelConnectorId, setConnectionCheck, t]
+    [connectorType, panelConnectorId, selectedAuthType, setConnectionCheck, t]
   );
 
   /** Edit mode: PUT /config/auth, then reload so the Configure tab reflects the saved credentials. */
@@ -1088,6 +1066,7 @@ export function ConnectorPanel() {
       primaryTooltip={footerConfig.primaryTooltip}
       onPrimaryClick={footerConfig.onPrimary}
       secondaryLabel={footerConfig.secondaryLabel}
+      secondaryIcon={footerConfig.secondaryIcon}
       onSecondaryClick={footerConfig.onSecondary}
     >
       {isLoading ? (
@@ -1213,6 +1192,7 @@ interface FooterConfig {
   primaryTooltip?: string;
   onPrimary?: () => void;
   secondaryLabel: string;
+  secondaryIcon?: string;
   onSecondary?: () => void;
 }
 
@@ -1305,6 +1285,7 @@ function getFooterConfig({
           : undefined,
       onPrimary: onContinueFromAuthorize,
       secondaryLabel: labels.backToAuth,
+      secondaryIcon: 'arrow_back',
       onSecondary: () => {
         void onBackFromAuthorize();
       },
@@ -1336,6 +1317,7 @@ function getFooterConfig({
     primaryTooltip: configTooltip,
     onPrimary: onSave,
     secondaryLabel: labels.backFromConfigure,
+    secondaryIcon: 'arrow_back',
     onSecondary: () => {
       void onBackFromConfigure();
     },

@@ -1,14 +1,22 @@
-import { IMessageConsumer, StreamMessage } from '../../../libs/types/messaging.types';
-import { Logger } from '../../../libs/services/logger.service';
-import { injectable, inject } from 'inversify';
-import mongoose from 'mongoose';
-import { Notifications } from '../schema/notification.schema';
-import { NotificationService } from './notification.service';
-import { resolveNotificationRecipientUserIds } from '../utils/notification-recipient.resolver';
 import {
-  buildNotificationDocForUser,
-  toBrokerMessage,
-} from '../utils/notification-payload.resolver';
+  IMessageConsumer,
+  StreamMessage,
+} from '../../../libs/types/messaging.types';
+import { Logger } from '../../../libs/services/logger.service';
+import { injectable, inject, optional } from 'inversify';
+import { isRetryableStoreError } from '../../../libs/repositories/errors';
+import { DuplicateEnvelope } from '../../../libs/context/envelope';
+import { NotificationService } from './notification.service';
+import { toBrokerMessage } from '../utils/notification-payload.resolver';
+import { ValidationError } from '../../../libs/errors/validation.error';
+import { deliverToOrg, messageFacts } from './notification.delivery';
+import {
+  PlatformAlertHandler,
+  isPlatformAudience,
+} from './platform-alert.handler';
+
+// Defined beside the delivery that counts it; exported here as before.
+export { notificationEventRefused } from './notification.delivery';
 
 @injectable()
 export class NotificationConsumer {
@@ -17,7 +25,19 @@ export class NotificationConsumer {
     @inject('Logger') private readonly logger: Logger,
     @inject(NotificationService)
     private readonly notificationService: NotificationService,
+    @inject(PlatformAlertHandler)
+    @optional()
+    private readonly platformAlertHandler?: PlatformAlertHandler,
   ) {}
+
+  /** An event for the installation's admins rather than one org's users. */
+  private async handlePlatformEvent(value: unknown): Promise<void> {
+    if (!this.platformAlertHandler) {
+      this.logger.warn('Platform alert skipped: no handler is configured');
+      return;
+    }
+    await this.platformAlertHandler.handle(value);
+  }
 
   async start(): Promise<void> {
     if (!this.consumer.isConnected()) {
@@ -35,10 +55,7 @@ export class NotificationConsumer {
     return this.consumer.isConnected();
   }
 
-  async subscribe(
-    topics: string[],
-    fromBeginning = false,
-  ): Promise<void> {
+  async subscribe(topics: string[], fromBeginning = false): Promise<void> {
     if (this.consumer.isConnected()) {
       await this.consumer.subscribe(topics, fromBeginning);
     }
@@ -48,66 +65,47 @@ export class NotificationConsumer {
     handler: (message: StreamMessage<INotification>) => Promise<void>,
   ): Promise<void> {
     if (this.consumer.isConnected()) {
-      await this.consumer.consume(async (message: StreamMessage<INotification>) => {
-        try {
-          const event = toBrokerMessage(message.value);
-          if (!event) {
-            this.logger.warn('Notification event skipped: invalid orgId or type', {
-              value: message.value,
+      await this.consumer.consume(
+        async (message: StreamMessage<INotification>) => {
+          let redeliver = false;
+          try {
+            if (isPlatformAudience(message.value)) {
+              await this.handlePlatformEvent(message.value);
+              return;
+            }
+            const event = toBrokerMessage(message.value);
+            if (!event) {
+              this.logger.warn(
+                'Notification event skipped: invalid orgId or type',
+                messageFacts(message.value),
+              );
+              return;
+            }
+
+            await deliverToOrg(event, this.notificationService, this.logger);
+          } catch (error) {
+            // A store that is frozen or away is not a bad message: let the broker deliver it again.
+            if (isRetryableStoreError(error)) {
+              redeliver = true;
+              throw error;
+            }
+            // Another delivery of the event stored it first: the consumer acknowledges this one.
+            if (error instanceof DuplicateEnvelope) throw error;
+            // A refused event is the producer's fault (WARNING); anything else is ours.
+            const level = error instanceof ValidationError ? 'warn' : 'error';
+            this.logger[level]('Failed to process notification message', {
+              ...messageFacts(message.value),
+              error,
             });
-            return;
+          } finally {
+            if (!redeliver) await handler(message);
           }
-
-          const orgOid = new mongoose.Types.ObjectId(String(event.orgId));
-          let recipientUserIds = await resolveNotificationRecipientUserIds(
-            orgOid,
-            event.recipientUserIds,
-            event.recipientRoles,
-          );
-
-          if (recipientUserIds.length === 0) {
-            this.logger.warn('Notification event skipped: no recipients', {
-              orgId: event.orgId,
-              type: event.type,
-            });
-            return;
-          }
-
-          const docs = recipientUserIds.map((userOid) => buildNotificationDocForUser(event, userOid));
-          const savedDocs = await Notifications.create(docs);
-
-          const savedIds: string[] = [];
-          const dispatchedUserIds: string[] = [];
-
-          for (const saved of savedDocs) {
-            const userId = String(saved.assignedTo);
-            const payload =
-              typeof (saved as { toObject?: () => object }).toObject === 'function'
-                ? (saved as { toObject: () => object }).toObject()
-                : saved;
-            this.notificationService.sendToUser(userId, 'newNotification', payload);
-            savedIds.push(String(saved._id));
-            dispatchedUserIds.push(userId);
-          }
-
-          this.logger.debug('Notification saved and dispatched', {
-            orgId: event.orgId,
-            type: event.type,
-            recipientCount: dispatchedUserIds.length,
-            notificationIds: savedIds,
-            userIds: dispatchedUserIds,
-          });
-        } catch (error) {
-          this.logger.error('Failed to process notification message', {
-            error: error instanceof Error ? error.message : String(error),
-            messageValue: message.value,
-          });
-        } finally {
-          await handler(message);
-        }
-      });
+        },
+      );
     } else {
-      this.logger.error('Cannot consume notifications: MessageConsumer is not connected');
+      this.logger.error(
+        'Cannot consume notifications: MessageConsumer is not connected',
+      );
       throw new Error('MessageConsumer is not connected');
     }
   }

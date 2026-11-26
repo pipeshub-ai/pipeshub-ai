@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ToolsetsApi } from '@/app/(main)/toolsets/api';
 import { isProcessedError } from '@/lib/api';
+import { failOnSessionEnd } from '@/lib/api/session-cache';
 import { integrationHandoffLink } from '@/lib/auth/desktop-oauth';
 import DesktopHandoffNotice from '@/app/(public)/auth/desktop-handoff-notice';
 import {
@@ -88,12 +89,15 @@ export function ToolsetOAuthCallbackClient() {
           throw new Error(t('agentBuilder.toolsetOAuthNoState'));
         }
 
-        const data = await ToolsetsApi.completeToolsetOAuthCallback({
-          code,
-          state,
-          oauthError,
-          baseUrl: window.location.origin,
-        });
+        // A sign-out (e.g. in another tab) drops the answer: fail into the error state rather than spin forever.
+        const data = await failOnSessionEnd(
+          ToolsetsApi.completeToolsetOAuthCallback({
+            code,
+            state,
+            oauthError,
+            baseUrl: window.location.origin,
+          }),
+        );
 
         if (data?.success === false) {
           const friendlyMessage = data.errorMessage;
@@ -171,7 +175,7 @@ export function ToolsetOAuthCallbackClient() {
               size="3"
               style={{
                 margin: 0,
-                color: 'var(--gray-10)',
+                color: 'var(--gray-11)',
                 lineHeight: '24px',
                 maxWidth: 432,
               }}
@@ -218,7 +222,7 @@ export function ToolsetOAuthCallbackClient() {
               key="toolset-oauth-success-body"
               as="p"
               size="3"
-              style={{ margin: 0, color: 'var(--gray-10)', lineHeight: '24px' }}
+              style={{ margin: 0, color: 'var(--gray-11)', lineHeight: '24px' }}
             >
               {message}
             </Text>
@@ -251,7 +255,7 @@ export function ToolsetOAuthCallbackClient() {
               weight="medium"
               style={{
                 margin: 0,
-                color: 'var(--red-10)',
+                color: 'var(--red-11)',
                 letterSpacing: '-0.04px',
                 lineHeight: '26px',
               }}
@@ -264,7 +268,7 @@ export function ToolsetOAuthCallbackClient() {
               size="3"
               style={{
                 margin: 0,
-                color: 'var(--gray-10)',
+                color: 'var(--gray-11)',
                 lineHeight: '24px',
                 wordBreak: 'break-word',
               }}

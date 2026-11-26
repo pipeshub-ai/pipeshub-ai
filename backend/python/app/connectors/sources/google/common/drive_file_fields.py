@@ -10,15 +10,19 @@ consistent with list.
 # files from files shared with them, and say whether they can edit.
 _DRIVE_FILE_ACCESS_FIELDS = (
     "shortcutDetails/targetId, shortcutDetails/targetMimeType, trashed, ownedByMe, "
-    "capabilities/canEdit, capabilities/canDownload"
+    "capabilities/canEdit, capabilities/canDownload, "
+    # Returned only for the ids a request names in includeLabels, which only a source metadata reader asks for.
+    "labelInfo"
 )
 
 # Personal (OAuth) Drive connector — same inner projection as files.list in
 # google/drive/individual/connector.py
 DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS = (
     "id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, "
-    "headRevisionId, version, shared, md5Checksum, sha1Checksum, sha256Checksum, parents, "
-    f"driveId, {_DRIVE_FILE_ACCESS_FIELDS}"
+    "headRevisionId, version, shared, owners, lastModifyingUser, md5Checksum, sha1Checksum, "
+    "sha256Checksum, parents, "
+    f"driveId, {_DRIVE_FILE_ACCESS_FIELDS}, capabilities/canShare, inheritedPermissionsDisabled, "
+    "permissions(id, type, role, emailAddress, displayName, deleted, view)"
 )
 
 DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS = (
@@ -36,11 +40,12 @@ DRIVE_PERSONAL_SYNC_CHANGES_LIST_FIELDS = (
     f"file({DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS}))"
 )
 
-# Workspace / delegated Drive connector lists include `owners`.
 DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS = (
     "id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, "
-    "headRevisionId, version, shared, owners, md5Checksum, sha1Checksum, sha256Checksum, parents, "
-    f"driveId, sharedWithMeTime, {_DRIVE_FILE_ACCESS_FIELDS}, inheritedPermissionsDisabled"
+    "headRevisionId, version, shared, owners, lastModifyingUser, md5Checksum, sha1Checksum, "
+    "sha256Checksum, parents, "
+    f"driveId, sharedWithMeTime, {_DRIVE_FILE_ACCESS_FIELDS}, inheritedPermissionsDisabled, "
+    "capabilities/canListChildren, capabilities/canShare"
 )
 
 DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS = (

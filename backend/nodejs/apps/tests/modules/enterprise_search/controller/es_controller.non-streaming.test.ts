@@ -4,12 +4,16 @@ import sinon from 'sinon'
 import mongoose from 'mongoose'
 import jwt from 'jsonwebtoken'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
+import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { HttpError } from '../../../../src/libs/errors/http.errors'
+import { Logger } from '../../../../src/libs/services/logger.service'
+import { logLevelFor } from '../../../../src/libs/utils/error.middleware.utils'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { CONVERSATION_ID_HEADER } from '../../../../src/modules/enterprise_search/utils/non-streaming-chat'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
-import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { setUserRepository } from '../../../../src/libs/repositories/user'
+import { setSlackIdentityLinksForTests } from '../../../../src/modules/configuration_manager/slack-identity/slack-linked-account'
 import {
   FakeAIBackend,
   FakeSSEResponse,
@@ -18,6 +22,8 @@ import {
   oid,
 } from './chat-test-harness'
 import { AGENT_KEY, ORG, OWNER, appConfig, seedConversation } from './streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 /**
  * The four non-streaming chat routes, run end to end against the in-memory
@@ -137,6 +143,9 @@ async function run(
 }
 
 describe('es_controller non-streaming chat routes', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   afterEach(() => {
     sinon.restore()
   })
@@ -201,6 +210,25 @@ describe('es_controller non-streaming chat routes', () => {
         })
       }
 
+      if (!flow.create) {
+        it('hides an earlier answer the reader lost access to, in the history and in the response', async () => {
+          sinon.stub(MongoConversationRepository.prototype, 'isConnected').returns(true)
+          const r = await run(flow, (ai, store) => {
+            store.messages.find((m) => m.get('messageType') === 'bot_response')?.set('attachments', [{ recordId: 'rec-lost', recordName: 'lost.pdf' }])
+            ai.reply(/\/chat\/records\/access$/, 200, { accessible: [], accessibleUrls: [] })
+            ai.reply(exactPath(flow.aiPath), 200, answer('A fresh answer.'))
+          })
+
+          expect(r.next.called, String(r.error()?.message)).to.be.false
+          const sent = r.ai.calls.find((c) => c.url.endsWith(flow.aiPath))!.body.previousConversations as Array<{ content: string }>
+          expect(JSON.stringify(sent)).to.not.contain('An older answer.')
+          const stored = (r.res.jsonBody as { conversation: { messages: Array<Record<string, unknown>> } }).conversation.messages
+          expect(JSON.stringify(stored)).to.not.contain('An older answer.')
+          expect(stored.some((m) => m.answerHidden !== undefined)).to.equal(true)
+          expect(stored.some((m) => m.content === 'A fresh answer.' && m.answerHidden === undefined)).to.equal(true)
+        })
+      }
+
       it('saves citations and counts them', async () => {
         const citation = {
           content: 'SSO landed in 2.1',
@@ -216,6 +244,16 @@ describe('es_controller non-streaming chat routes', () => {
         if (!flow.create) expect((r.res.jsonBody as { recordsUsed: number }).recordsUsed).to.equal(1)
       })
 
+      it('tells the client when the answer\'s search was degraded', async () => {
+        const r = await run(flow, (ai) => ai.reply(exactPath(flow.aiPath), 200, answer('ok', { searchDegraded: true })))
+        expect((r.res.jsonBody as { meta: { searchDegraded?: boolean } }).meta.searchDegraded).to.equal(true)
+      })
+
+      it('adds no degraded flag for a complete search', async () => {
+        const r = await run(flow, (ai) => ai.reply(exactPath(flow.aiPath), 200, answer('ok')))
+        expect((r.res.jsonBody as { meta: object }).meta).not.to.have.property('searchDegraded')
+      })
+
       it('keeps a 4xx from the AI backend, with its message, and records the failure', async () => {
         const r = await run(flow, (ai) =>
           ai.reply(exactPath(flow.aiPath), 424, { status: 'error', code: 'llm_not_configured', message: 'Set up a model first.' }),
@@ -229,6 +267,18 @@ describe('es_controller non-streaming chat routes', () => {
         expect(r.messages().at(-1)).to.include({ messageType: 'error', content: 'Set up a model first.' })
         expect(r.conversation().conversationErrors?.at(-1)?.errorType).to.equal('llm_not_configured')
         expect(r.res.headers[CONVERSATION_ID_HEADER.toLowerCase()]).to.equal(String(r.conversation()._id))
+      })
+
+      it('logs a 402 refusal as a warning, and marks it routine for the error middleware', async () => {
+        const error = sinon.stub(Logger.prototype, 'error')
+        const warn = sinon.stub(Logger.prototype, 'warn')
+        const r = await run(flow, (ai) => ai.reply(exactPath(flow.aiPath), 402, { detail: { code: 'PAYMENT_REQUIRED', message: 'Payment required by the upstream service' } }))
+
+        expect(r.error()?.statusCode).to.equal(402)
+        expect(r.error()?.message).to.equal('Payment required by the upstream service')
+        expect(logLevelFor(r.error())).to.equal('warn')
+        expect(error.called).to.equal(false)
+        expect(warn.calledWith('Non-streaming chat turn failed')).to.equal(true)
       })
 
       it('never shows upstream text for a 5xx', async () => {
@@ -524,43 +574,65 @@ describe('es_controller non-streaming chat routes', () => {
   })
 
   describe('internal (scoped-token) callers', () => {
+    const slackToken = { configId: 'cfg-1', slackTeamId: 'T0HOME', slackUserId: 'U0BOT' }
+    let linkedUserId: string | null
     beforeEach(() => {
       sinon.stub(Org, 'find').returns({
         limit: () => ({ lean: () => ({ exec: async () => [{ _id: ORG }] }) }),
       } as never)
+      linkedUserId = null
+      setSlackIdentityLinksForTests({
+        find: async (orgId: string) => (linkedUserId && orgId === String(ORG) ? { orgId: String(ORG), userId: linkedUserId } : null),
+        revoke: async () => undefined,
+      } as never)
+      setUserRepository({
+        getLive: async (orgId: string, id: string) =>
+          id === linkedUserId ? { _id: id, orgId, email: 'bot-user@example.com', fullName: 'Bot User' } : null,
+        getAccountState: async () => ({ kind: 'human' }),
+      } as never)
+    })
+    afterEach(() => {
+      setSlackIdentityLinksForTests(undefined)
+      setUserRepository()
     })
 
-    it('are resolved to their user and re-signed before the AI call', async () => {
-      const userId = oid()
-      sinon.stub(Users, 'findOne').resolves({
-        _id: userId,
-        orgId: ORG,
-        email: 'bot-user@example.com',
-        fullName: 'Bot User',
-        slug: 'bot-user',
-      } as never)
+    it('are resolved to the account the Slack person linked and re-signed before the AI call', async () => {
+      const userId = String(oid())
+      linkedUserId = userId
       const create = flows[0]!
 
       const r = await run(create, (ai) => ai.reply(exactPath('/api/v1/chat'), 200, answer('hi')), {
-        req: { user: undefined, tokenPayload: { email: 'bot-user@example.com' }, headers: { authorization: 'Bearer scoped' } },
+        req: { user: undefined, tokenPayload: { ...slackToken, email: 'someone-else@example.com' }, headers: { authorization: 'Bearer scoped' } },
       })
 
       expect(r.next.called, String(r.error()?.message)).to.be.false
-      expect(String(r.conversation().userId)).to.equal(String(userId))
+      expect(String(r.conversation().userId)).to.equal(userId)
       const token = r.ai.calls[0]!.headers.authorization!.replace('Bearer ', '')
       expect(token).not.to.equal('scoped')
-      expect((jwt.decode(token) as { userId: string }).userId).to.equal(String(userId))
+      expect(jwt.decode(token) as Record<string, unknown>).to.include({ userId, email: 'bot-user@example.com' })
     })
 
-    it('with no matching user are a 404 and nothing is written', async () => {
-      sinon.stub(Users, 'findOne').resolves(null)
+    it('with no linked account are a 401 and nothing is written', async () => {
       const create = flows[0]!
 
       const r = await run(create, () => undefined, {
-        req: { user: undefined, tokenPayload: { email: 'nobody@example.com' } },
+        req: { user: undefined, tokenPayload: { ...slackToken, email: 'nobody@example.com' } },
       })
 
-      expect(r.error()?.statusCode).to.equal(404)
+      expect(r.error()?.statusCode).to.equal(401)
+      expect(r.store.writes).to.deep.equal([])
+    })
+
+    // BOTTOKEN-1: a token that names no Slack bot configuration is not the bot's, whatever email it carries.
+    it('naming no Slack bot configuration are a 401 and nothing is written, even for a linked person', async () => {
+      linkedUserId = String(oid())
+      const create = flows[0]!
+
+      const r = await run(create, () => undefined, {
+        req: { user: undefined, tokenPayload: { email: 'bot-user@example.com', slackTeamId: 'T0HOME', slackUserId: 'U0BOT' } },
+      })
+
+      expect(r.error()?.statusCode).to.equal(401)
       expect(r.store.writes).to.deep.equal([])
     })
   })

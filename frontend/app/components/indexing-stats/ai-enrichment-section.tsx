@@ -14,8 +14,10 @@ const FAILED_COLOR = 'var(--red-11)';
 // Wide enough that a single failure among thousands still shows.
 const MIN_SEGMENT_PX = 4;
 const CHEVRON_SIZE = 18;
+// Header side inset: matches the (44 - 20) / 2 = 12px above and below the title.
+const HEADER_INSET_X = 'var(--space-3)';
 // Lines the body up under the title, past the chevron.
-const BODY_INDENT = `calc(var(--space-1) + ${CHEVRON_SIZE}px + var(--space-2))`;
+const BODY_INDENT = `calc(${HEADER_INSET_X} + ${CHEVRON_SIZE}px + var(--space-2))`;
 
 export interface AiEnrichmentSectionProps {
   classification: StageProgress;
@@ -29,6 +31,8 @@ export interface AiEnrichmentSectionProps {
   isRetryEntitiesBusy?: boolean;
   /** Another reindex or retry is in flight, or a sync is being started. */
   retryDisabled?: boolean;
+  /** Retrying needs the connector sync permission; shown locked without it. */
+  retryLocked?: boolean;
 }
 
 /**
@@ -46,6 +50,7 @@ export function AiEnrichmentSection({
   isRetryClassificationBusy = false,
   isRetryEntitiesBusy = false,
   retryDisabled = false,
+  retryLocked = false,
 }: AiEnrichmentSectionProps) {
   const { t } = useTranslation();
   const bodyId = useId();
@@ -77,7 +82,7 @@ export function AiEnrichmentSection({
           gap: 'var(--space-2)',
           width: '100%',
           minHeight: 44,
-          padding: '0 var(--space-1)',
+          padding: `0 ${HEADER_INSET_X}`,
           border: 'none',
           borderRadius: 'var(--radius-2)',
           backgroundColor: isHeaderHovered ? 'var(--olive-3)' : 'transparent',
@@ -106,7 +111,7 @@ export function AiEnrichmentSection({
           id={bodyId}
           direction="column"
           gap="4"
-          style={{ padding: `0 var(--space-1) var(--space-1) ${BODY_INDENT}` }}
+          style={{ padding: `0 ${HEADER_INSET_X} var(--space-1) ${BODY_INDENT}` }}
         >
           <Text size="1" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.connectors.overview.enrichment.description')}
@@ -119,6 +124,7 @@ export function AiEnrichmentSection({
             onRetry={onRetryFailedClassification}
             retryBusy={isRetryClassificationBusy}
             retryDisabled={retryDisabled}
+            retryLocked={retryLocked}
           />
           {showEntities && entities ? (
             <StageRow
@@ -129,6 +135,7 @@ export function AiEnrichmentSection({
               onRetry={onRetryFailedEntities}
               retryBusy={isRetryEntitiesBusy}
               retryDisabled={retryDisabled}
+              retryLocked={retryLocked}
             />
           ) : null}
         </Flex>
@@ -184,6 +191,7 @@ function StageRow({
   onRetry,
   retryBusy,
   retryDisabled,
+  retryLocked,
 }: {
   label: string;
   hint: string;
@@ -192,6 +200,7 @@ function StageRow({
   onRetry?: () => void;
   retryBusy: boolean;
   retryDisabled: boolean;
+  retryLocked: boolean;
 }) {
   const { t } = useTranslation();
   const applicable = stageApplicableCount(progress);
@@ -223,7 +232,7 @@ function StageRow({
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {label}
           </Text>
-          <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
             {hint}
           </Text>
         </Flex>
@@ -237,7 +246,7 @@ function StageRow({
       {applicable > 0 ? (
         <StageMeter label={label} progress={progress} applicable={applicable} valueText={progressText} />
       ) : progress.skipped === 0 ? (
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: 'var(--gray-11)' }}>
           {t('workspace.connectors.overview.enrichment.notStarted')}
         </Text>
       ) : null}
@@ -263,7 +272,7 @@ function StageRow({
               <Text size="1" weight="medium" style={{ color: 'var(--gray-12)' }}>
                 {item.value}
               </Text>
-              <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              <Text size="1" style={{ color: 'var(--gray-11)' }}>
                 {item.label}
               </Text>
             </Flex>
@@ -279,6 +288,7 @@ function StageRow({
                 onClick={onRetry}
                 disabled={retryDisabled}
                 loading={retryBusy}
+                locked={retryLocked}
               />
             </span>
           ) : null}

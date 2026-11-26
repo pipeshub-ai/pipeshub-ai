@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.utils.user_lookup import get_caller_user
 
 from .models import Actor
 
@@ -26,6 +27,7 @@ __all__ = [
     "AccessPolicy",
     "AccessDeniedError",
     "ArtifactNotFoundError",
+    "ArtifactNotVisibleError",
     "is_direct_share",
     "reader_edge",
 ]
@@ -78,6 +80,13 @@ class ArtifactNotFoundError(LookupError):
     so a cross-org probe cannot use the error message to enumerate IDs)."""
 
 
+class ArtifactNotVisibleError(ArtifactNotFoundError, AccessDeniedError):
+    """A user of the artifact's org holds no permission edge on it (SEC-AZ-07).
+    It is a not-found to every caller that maps errors to answers, so a guessed
+    or leaked id tells a colleague no more than it tells another org; it stays
+    an `AccessDeniedError` for the callers that refuse on either."""
+
+
 class AccessPolicy:
     """Org + permission-edge checks, backend-agnostic via
     `IGraphDBProvider.get_edge`/`get_user_by_user_id` — works unchanged on
@@ -94,7 +103,7 @@ class AccessPolicy:
         user record itself cannot be resolved — this should never happen
         for an authenticated request, but failing closed is the only safe
         default."""
-        user_doc = await self._graph_provider.get_user_by_user_id(actor.user_id)
+        user_doc = await get_caller_user(self._graph_provider, actor.user_id)
         if not user_doc:
             raise ArtifactNotFoundError(f"User not found for userId: {actor.user_id}")
         user_key = user_doc.get("_key") or user_doc.get("id")
@@ -136,7 +145,7 @@ class AccessPolicy:
                 "Access denied: user=%s has no permission edge for artifact=%s",
                 actor.user_id, artifact_id,
             )
-            raise AccessDeniedError(f"Not authorized for artifact: {artifact_id}")
+            raise ArtifactNotVisibleError(f"Artifact not found: {artifact_id}")
         if require_owner and edge.get("role") != "OWNER":
             logger.warning(
                 "Write denied: user=%s holds role=%s (not OWNER) on artifact=%s",

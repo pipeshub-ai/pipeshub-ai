@@ -1,0 +1,62 @@
+# SharePoint Online finance site (permission model doc, sharepoint section), written the way the connector writes it on main.
+#   site group: OPEN, no inheritance, granted to the site groups' members (Limited Access groups are skipped:
+#          role_bindings_to_permission_type, microsoft/sharepoint_online/connector.py:304-317)
+#   library: inherits its site unless it has unique role assignments: connector.py:1419 (drive_record_group.inherit_permissions),
+#          :3164 (_get_library_access)
+#   item without unique permissions: inherits and stores no grants (_drive_item_access, connector.py:1669-1679, with
+#          PERMISSION_MODEL_VERSION = 2 at :262); item with unique permissions: inherit_permissions=False, grants = its own
+#          role assignments plus the identities Graph lists on its links (unique_file_grants)
+#   sharing link: grants only the identities Graph lists on it; an organization or anonymous link opens the item to the
+#          people who redeem it, who arrive through the link's SharePoint group in the role assignments (connector.py:2822-2825)
+# Extra principals and nodes (audrey, leo, cfo, the Archive folder, memo, minutes) exist for the scenarios.
+principals:
+  - {id: bob}
+  - {id: hana}
+  - {id: alice}
+  - {id: raj}
+  - {id: zoe}
+  - {id: audrey}
+  - {id: leo}
+  - {id: cfo}
+  - {id: g:finance-members, kind: group}
+  - {id: g:hr-payroll, kind: group}
+  - {id: g:hr-leads, kind: group}
+  - {id: g:auditors, kind: group}
+nodes:
+  - {id: app, kind: app, app_type: SHAREPOINT}
+  - {id: site:Finance, kind: group, connector: app, rule: OPEN, parents: [app], belongs: [app]}
+  - {id: library:Docs, kind: group, connector: app, rule: OPEN, parents: [site:Finance], inherits: [site:Finance], belongs: [site:Finance]}
+  - {id: forecast, kind: record, connector: app, rule: OPEN, parents: [library:Docs], inherits: [library:Docs], belongs: [library:Docs]}
+  - {id: folder:Payroll, kind: record, connector: app, rule: OPEN, parents: [library:Docs], belongs: [library:Docs]}
+  - {id: salaries, kind: record, connector: app, rule: OPEN, parents: [folder:Payroll], inherits: [folder:Payroll], belongs: [library:Docs]}
+  - {id: folder:Payroll-2026, kind: record, connector: app, rule: OPEN, parents: [folder:Payroll], belongs: [library:Docs]}
+  - {id: board-deck, kind: record, connector: app, rule: OPEN, parents: [library:Docs], belongs: [library:Docs]}
+  - {id: policy, kind: record, connector: app, rule: OPEN, parents: [library:Docs], belongs: [library:Docs]}
+  - {id: public-deck, kind: record, connector: app, rule: OPEN, parents: [library:Docs], belongs: [library:Docs]}
+  - {id: folder:Archive, kind: record, connector: app, rule: OPEN, parents: [library:Docs], inherits: [library:Docs], belongs: [library:Docs]}
+  - {id: archive, kind: record, connector: app, rule: OPEN, parents: [folder:Archive], inherits: [folder:Archive], belongs: [library:Docs]}
+  - {id: memo, kind: record, connector: app, rule: OPEN, parents: [library:Docs], inherits: [library:Docs], belongs: [library:Docs]}
+  - {id: minutes, kind: record, connector: app, rule: OPEN, parents: [library:Docs], inherits: [library:Docs], belongs: [library:Docs]}
+grants:
+  - [g:finance-members, site:Finance]
+  - [g:hr-payroll, folder:Payroll]
+  - [g:hr-leads, folder:Payroll-2026]
+  - [g:finance-members, board-deck]
+  - [alice, board-deck]
+  - [g:finance-members, policy]
+  - [raj, policy]
+  - [g:finance-members, public-deck]
+memberships:
+  - [bob, g:finance-members]
+  - [hana, g:hr-payroll]
+  - [audrey, g:auditors]
+  - [leo, g:hr-leads]
+gates:
+  - [bob, app]
+  - [hana, app]
+  - [alice, app]
+  - [raj, app]
+  - [zoe, app]
+  - [audrey, app]
+  - [leo, app]
+  - [cfo, app]

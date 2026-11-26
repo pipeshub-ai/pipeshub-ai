@@ -10,7 +10,26 @@ export const DRAFT_MAX_CHARS = 20_000;
 interface StoredDraft {
   text: string;
   savedAt: number;
+  quotedExcerpt?: string;
+  quotedExcerptTruncated?: boolean;
 }
+
+export interface DraftQuote {
+  excerpt?: string | null;
+  truncated?: boolean;
+}
+
+export interface DraftFields {
+  text: string;
+  quotedExcerpt: string | null;
+  quotedExcerptTruncated: boolean;
+}
+
+const EMPTY_DRAFT: DraftFields = {
+  text: '',
+  quotedExcerpt: null,
+  quotedExcerptTruncated: false,
+};
 
 interface DraftScope {
   userId: string | null | undefined;
@@ -54,20 +73,32 @@ function parseDraft(raw: string | null): StoredDraft | null {
   return null;
 }
 
-export function loadDraft(key: string): string {
+export function loadDraftFields(key: string): DraftFields {
   const storage = getStorage();
-  if (!storage) return '';
+  if (!storage) return EMPTY_DRAFT;
   try {
     const draft = parseDraft(storage.getItem(key));
-    if (!draft) return '';
+    if (!draft) return EMPTY_DRAFT;
     if (Date.now() - draft.savedAt > DRAFT_MAX_AGE_MS) {
       storage.removeItem(key);
-      return '';
+      return EMPTY_DRAFT;
     }
-    return draft.text;
+    const excerpt =
+      typeof draft.quotedExcerpt === 'string' && draft.quotedExcerpt.trim()
+        ? draft.quotedExcerpt
+        : null;
+    return {
+      text: draft.text,
+      quotedExcerpt: excerpt,
+      quotedExcerptTruncated: excerpt ? Boolean(draft.quotedExcerptTruncated) : false,
+    };
   } catch {
-    return '';
+    return EMPTY_DRAFT;
   }
+}
+
+export function loadDraft(key: string): string {
+  return loadDraftFields(key).text;
 }
 
 export function clearDraft(key: string): void {
@@ -98,19 +129,26 @@ function pruneDrafts(storage: Storage, now: number): void {
   }
 }
 
-/** Empty or whitespace-only text removes the draft. Over-long text is left unsaved. */
-export function saveDraft(key: string, text: string): void {
+/** Empty text and no excerpt removes the draft. Over-long text is left unsaved. */
+export function saveDraft(key: string, text: string, quote?: DraftQuote): void {
   if (areChatDraftWritesBlocked()) return;
   const storage = getStorage();
   if (!storage) return;
   try {
-    if (text.trim() === '') {
+    const excerpt = typeof quote?.excerpt === 'string' ? quote.excerpt.trim() : '';
+    if (text.trim() === '' && !excerpt) {
       storage.removeItem(key);
       return;
     }
     if (text.length > DRAFT_MAX_CHARS) return;
     const now = Date.now();
-    const draft: StoredDraft = { text, savedAt: now };
+    const draft: StoredDraft = {
+      text,
+      savedAt: now,
+      ...(excerpt
+        ? { quotedExcerpt: excerpt, quotedExcerptTruncated: Boolean(quote?.truncated) }
+        : {}),
+    };
     storage.setItem(key, JSON.stringify(draft));
     pruneDrafts(storage, now);
   } catch {

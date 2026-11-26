@@ -73,6 +73,7 @@ def read_mcp_surface(base_url: str, token: str) -> dict:
 class McpToolResult:
     is_error: bool
     content: list[dict]
+    structured: dict | None = None
 
     @property
     def text(self) -> str:
@@ -84,17 +85,25 @@ class McpToolResult:
         return [c["resource"] for c in self.content if c.get("type") == "resource"]
 
     def json(self) -> Any:
-        """The text content parsed as JSON. Raises with the text attached when it is not."""
+        """The result as JSON: its ``structuredContent``, else the text parsed as JSON. Raises with the text attached when
+        neither is there. Since @pipeshub-ai/mcp 4.10 ``pipeshub_search`` answers an agent in text and keeps the JSON in
+        ``structuredContent``."""
+        if self.structured is not None:
+            return self.structured
         try:
             return json.loads(self.text)
         except json.JSONDecodeError as e:
             raise AssertionError(f"expected a JSON tool result, got:\n{self.text[:2000]}") from e
 
 
+def tool_result(result: Any) -> McpToolResult:  # noqa: ANN401 - the SDK's CallToolResult
+    return McpToolResult(bool(result.is_error), [_dump(c) for c in result.content], result.structured_content)
+
+
 async def _call_tool(url: str, token: str, name: str, arguments: dict) -> McpToolResult:
     async with Client(StreamableHttpTransport(url, auth=token), mode="legacy") as client:
         result = await client.call_tool_mcp(name, arguments)
-    return McpToolResult(bool(result.isError), [_dump(c) for c in result.content])
+    return tool_result(result)
 
 
 def call_mcp_tool(

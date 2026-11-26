@@ -18,11 +18,25 @@ const FILES_LIST_LIMIT = 100;
 
 const INDEX_STATUS_COLOR: Record<string, string> = {
   COMPLETED: 'var(--emerald-11)',
-  IN_PROGRESS: 'var(--amber-9)',
-  QUEUED: 'var(--blue-9)',
-  FAILED: 'var(--red-9)',
-  FILE_TYPE_NOT_SUPPORTED: 'var(--red-9)',
+  IN_PROGRESS: 'var(--amber-11)',
+  QUEUED: 'var(--blue-11)',
+  FAILED: 'var(--red-11)',
+  FILE_TYPE_NOT_SUPPORTED: 'var(--red-11)',
   PASSWORD_PROTECTED: 'var(--amber-11)',
+};
+
+const INDEX_STATUS_LABEL_KEY: Record<string, string> = {
+  COMPLETED: 'kb.indexingStatus.completed',
+  IN_PROGRESS: 'kb.indexingStatus.inProgress',
+  QUEUED: 'kb.indexingStatus.queued',
+  NOT_STARTED: 'kb.indexingStatus.notStarted',
+  FAILED: 'kb.indexingStatus.failed',
+  FILE_TYPE_NOT_SUPPORTED: 'kb.indexingStatus.fileTypeNotSupported',
+  AUTO_INDEX_OFF: 'kb.indexingStatus.manualIndexing',
+  PAUSED: 'kb.indexingStatus.paused',
+  EMPTY: 'kb.indexingStatus.empty',
+  ENABLE_MULTIMODAL_MODELS: 'kb.indexingStatus.needsMultimodalModel',
+  SKIPPED: 'kb.indexingStatus.skipped',
 };
 
 interface FilesCardProps {
@@ -33,6 +47,29 @@ interface FilesCardProps {
   onKbCreated: (kbId: string) => void;
   /** Reports the current file count + total size so the parent's "Project setup" row can show them without a second fetch. */
   onSummaryChange?: (summary: { count: number; totalBytes: number }) => void;
+}
+
+/** The file row's indexing icon, named for screen readers and explained on hover/focus. */
+function IndexStatusMark({ status }: { status: string }) {
+  const { t } = useTranslation();
+  const statusText = INDEX_STATUS_LABEL_KEY[status] ? t(INDEX_STATUS_LABEL_KEY[status]) : status;
+  const label = t('chat.projects.workspace.indexingStatusLabel', { status: statusText });
+  return (
+    <Tooltip content={label}>
+      <span
+        role="img"
+        aria-label={label}
+        tabIndex={0}
+        style={{ display: 'inline-flex', flexShrink: 0, lineHeight: 0 }}
+      >
+        <MaterialIcon
+          name={getIndexStatusIcon(status)}
+          size={14}
+          color={INDEX_STATUS_COLOR[status] ?? 'var(--slate-11)'}
+        />
+      </span>
+    </Tooltip>
+  );
 }
 
 /**
@@ -101,11 +138,14 @@ export function FilesCard({
     (fileList: FileList | null) => {
       if (!fileList || fileList.length === 0) return;
       void uploadFiles(Array.from(fileList))
-        .then(() =>
-          // Re-resolve the kbId (idempotent — `ensureLinkedKb` short-circuits
-          // once linked) since the very first upload creates it mid-flight and
-          // this closure's `linkedKnowledgeBaseId` may still be stale.
-          getKbId().then((kbId) => load(kbId)),
+        .then((finished) =>
+          // Cancelled by a sign-out: reloading would run in the next person's session.
+          finished
+            ? // Re-resolve the kbId (idempotent — `ensureLinkedKb` short-circuits
+              // once linked) since the very first upload creates it mid-flight and
+              // this closure's `linkedKnowledgeBaseId` may still be stale.
+              getKbId().then((kbId) => load(kbId))
+            : undefined,
         )
         .catch(() => setLoadError(true));
     },
@@ -133,7 +173,7 @@ export function FilesCard({
   return (
     <Flex direction="column" gap="2">
       <Flex align="center" justify="between">
-        <Text size="1" style={{ color: 'var(--slate-10)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>
           {t('chat.projects.workspace.filesSubtitle', {
             defaultValue: 'Files here are searched only within this project.',
           })}
@@ -170,11 +210,11 @@ export function FilesCard({
           {t('chat.projects.workspace.failedToLoadFiles', { defaultValue: 'Failed to load files' })}
         </Text>
       ) : isLoading ? (
-        <Text size="2" style={{ color: 'var(--slate-10)' }}>
+        <Text size="2" style={{ color: 'var(--slate-11)' }}>
           {t('common.loading', { defaultValue: 'Loading…' })}
         </Text>
       ) : items.length === 0 ? (
-        <Text size="2" style={{ color: 'var(--slate-10)' }}>
+        <Text size="2" style={{ color: 'var(--slate-11)' }}>
           {t('chat.projects.workspace.noFiles')}
         </Text>
       ) : (
@@ -205,14 +245,10 @@ export function FilesCard({
                   {item.name}
                 </Text>
                 {item.indexingStatus && (
-                  <MaterialIcon
-                    name={getIndexStatusIcon(item.indexingStatus)}
-                    size={14}
-                    color={INDEX_STATUS_COLOR[item.indexingStatus] ?? 'var(--slate-10)'}
-                  />
+                  <IndexStatusMark status={item.indexingStatus} />
                 )}
                 {typeof item.sizeInBytes === 'number' && (
-                  <Text size="1" style={{ color: 'var(--slate-10)', flexShrink: 0 }}>
+                  <Text size="1" style={{ color: 'var(--slate-11)', flexShrink: 0 }}>
                     {formatFileSize(item.sizeInBytes)}
                   </Text>
                 )}
@@ -220,6 +256,7 @@ export function FilesCard({
               {canEdit && (
                 <button
                   type="button"
+                  className="touch-hit"
                   aria-label={t('chat.projects.workspace.removeFile')}
                   disabled={deletingId === item.id}
                   onClick={() => setPendingRemove({ id: item.id, name: item.name })}
@@ -233,7 +270,7 @@ export function FilesCard({
                     opacity: deletingId === item.id ? 0.5 : 1,
                   }}
                 >
-                  <MaterialIcon name="close" size={14} color="var(--slate-10)" />
+                  <MaterialIcon name="close" size={14} color="var(--slate-11)" />
                 </button>
               )}
             </Flex>

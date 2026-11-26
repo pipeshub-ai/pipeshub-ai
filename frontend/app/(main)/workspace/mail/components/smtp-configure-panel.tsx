@@ -13,6 +13,7 @@ import { InheritedConfigNotice } from '@/config';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { SmtpApi } from '../api';
 import type { SmtpConfig, SmtpFormData, SmtpFormErrors } from '../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 const INHERITABLE_SECRET_KEYS = ['host', 'username', 'fromEmail', 'password'] as const;
 
@@ -67,7 +68,7 @@ function FieldLabel({ label, hint }: FieldLabelProps) {
         {label}
       </Text>
       {hint && (
-        <Text size="1" style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2 }}>
+        <Text size="1" style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2 }}>
           {hint}
         </Text>
       )}
@@ -239,7 +240,7 @@ export function SmtpConfigurePanel({
         {/* ── Info banner ── */}
         <Box
           style={{
-            background: 'var(--olive-2)',
+            background: 'var(--olive-a2)',
             border: '1px solid var(--accent-3)',
             borderRadius: 'var(--radius-2)',
             overflow: 'hidden',
@@ -264,7 +265,7 @@ export function SmtpConfigurePanel({
                 justifyContent: 'center',
               }}
             >
-              <MaterialIcon name="info" size={16} color="var(--accent-9)" />
+              <MaterialIcon name="info" size={16} color="var(--accent-11)" />
             </Box>
             <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '18px' }}>
               {t('workspace.mail.infoBanner')}
@@ -275,7 +276,7 @@ export function SmtpConfigurePanel({
         {/* ── Fields box ── */}
         <Box
           style={{
-            background: 'var(--olive-2)',
+            background: 'var(--olive-a2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
             padding: 'var(--space-4)',
@@ -304,7 +305,7 @@ export function SmtpConfigurePanel({
                 color={errors.host ? 'red' : undefined}
               >
                 <TextField.Slot>
-                  <MaterialIcon name="dns" size={16} color="var(--slate-9)" />
+                  <MaterialIcon name="dns" size={16} color="var(--slate-11)" />
                 </TextField.Slot>
               </TextField.Root>
               {errors.host && (
@@ -328,7 +329,7 @@ export function SmtpConfigurePanel({
                 color={errors.port ? 'red' : undefined}
               >
                 <TextField.Slot>
-                  <MaterialIcon name="cell_tower" size={16} color="var(--slate-9)" />
+                  <MaterialIcon name="cell_tower" size={16} color="var(--slate-11)" />
                 </TextField.Slot>
               </TextField.Root>
               {errors.port && (
@@ -352,7 +353,7 @@ export function SmtpConfigurePanel({
                 color={errors.fromEmail ? 'red' : undefined}
               >
                 <TextField.Slot>
-                  <MaterialIcon name="mail" size={16} color="var(--slate-9)" />
+                  <MaterialIcon name="mail" size={16} color="var(--slate-11)" />
                 </TextField.Slot>
               </TextField.Root>
               {errors.fromEmail && (
@@ -374,7 +375,7 @@ export function SmtpConfigurePanel({
                 onChange={handleChange('username')}
               >
                 <TextField.Slot>
-                  <MaterialIcon name="manage_accounts" size={16} color="var(--slate-9)" />
+                  <MaterialIcon name="manage_accounts" size={16} color="var(--slate-11)" />
                 </TextField.Slot>
               </TextField.Root>
             </Box>
@@ -385,14 +386,14 @@ export function SmtpConfigurePanel({
                 label={t('workspace.mail.fields.password')}
                 hint={t('workspace.mail.fields.passwordHint')}
               />
-              <TextField.Root
-                type={showPassword ? 'text' : 'password'}
+              <SecretTextField
+                masked={!showPassword}
                 placeholder="••••••••••••••••••••"
                 value={form.password}
                 onChange={handleChange('password')}
               >
                 <TextField.Slot>
-                  <MaterialIcon name="lock" size={16} color="var(--slate-9)" />
+                  <MaterialIcon name="lock" size={16} color="var(--slate-11)" />
                 </TextField.Slot>
                 <TextField.Slot side="right">
                   <Box
@@ -402,11 +403,11 @@ export function SmtpConfigurePanel({
                     <MaterialIcon
                       name={showPassword ? 'visibility_off' : 'visibility'}
                       size={16}
-                      color="var(--slate-9)"
+                      color="var(--slate-11)"
                     />
                   </Box>
                 </TextField.Slot>
-              </TextField.Root>
+              </SecretTextField>
             </Box>
           </Flex>
         </Box>

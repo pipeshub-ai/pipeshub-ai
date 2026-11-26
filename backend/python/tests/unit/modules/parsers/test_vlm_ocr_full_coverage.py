@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import AISettingsUnavailableError, DocumentProcessingError
 
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
 
@@ -43,12 +43,13 @@ class TestCreateLLMFromConfig:
         }
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model",
+            new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_get:
-            result = strategy._create_llm_from_config(llm_config)
+            result = asyncio.run(strategy._create_llm_from_config(llm_config))
             # Should use first model name from the comma-separated list
-            mock_get.assert_called_once_with("openai", llm_config, "gpt-4o")
+            mock_get.assert_awaited_once_with(strategy.config, "openai", llm_config, "gpt-4o", sdk_retries=0)
 
         assert strategy.llm_config is llm_config
 
@@ -64,11 +65,12 @@ class TestCreateLLMFromConfig:
         }
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model",
+            new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_get:
-            strategy._create_llm_from_config(llm_config)
-            mock_get.assert_called_once_with("anthropic", llm_config, "claude-3-opus")
+            asyncio.run(strategy._create_llm_from_config(llm_config))
+            mock_get.assert_awaited_once_with(strategy.config, "anthropic", llm_config, "claude-3-opus", sdk_retries=0)
 
     def test_create_llm_with_no_model_string(self):
         """Creates LLM from config when model string is absent."""
@@ -82,11 +84,12 @@ class TestCreateLLMFromConfig:
         }
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model",
+            new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_get:
-            strategy._create_llm_from_config(llm_config)
-            mock_get.assert_called_once_with("openai", llm_config, None)
+            asyncio.run(strategy._create_llm_from_config(llm_config))
+            mock_get.assert_awaited_once_with(strategy.config, "openai", llm_config, None, sdk_retries=0)
 
     def test_create_llm_with_empty_model_string(self):
         """Creates LLM from config when model string is empty."""
@@ -100,12 +103,13 @@ class TestCreateLLMFromConfig:
         }
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model",
+            new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_get:
-            strategy._create_llm_from_config(llm_config)
+            asyncio.run(strategy._create_llm_from_config(llm_config))
             # Empty string is falsy, so model_name should be None
-            mock_get.assert_called_once_with("openai", llm_config, None)
+            mock_get.assert_awaited_once_with(strategy.config, "openai", llm_config, None, sdk_retries=0)
 
     def test_create_llm_with_no_configuration_key(self):
         """Creates LLM from config when configuration key is missing entirely."""
@@ -118,11 +122,12 @@ class TestCreateLLMFromConfig:
         }
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model",
+            new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_get:
-            strategy._create_llm_from_config(llm_config)
-            mock_get.assert_called_once_with("openai", llm_config, None)
+            asyncio.run(strategy._create_llm_from_config(llm_config))
+            mock_get.assert_awaited_once_with(strategy.config, "openai", llm_config, None, sdk_retries=0)
 
     def test_create_llm_model_string_with_whitespace_entries(self):
         """Model string with empty entries after splitting filters them out."""
@@ -136,11 +141,12 @@ class TestCreateLLMFromConfig:
         }
 
         with patch(
-            "app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model",
+            "app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model",
+            new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_get:
-            strategy._create_llm_from_config(llm_config)
-            mock_get.assert_called_once_with("openai", llm_config, "gpt-4o")
+            asyncio.run(strategy._create_llm_from_config(llm_config))
+            mock_get.assert_awaited_once_with(strategy.config, "openai", llm_config, "gpt-4o", sdk_retries=0)
 
 
 # ============================================================================
@@ -192,15 +198,23 @@ class TestRenderPageBatchToBase64:
         mock_doc.pages = [MagicMock(), MagicMock(), MagicMock()]
         strategy.doc = mock_doc
 
-        async def fake_to_thread(fn, batch):
-            return {p: f"data:image/png;base64,page{p}" for p in batch}
+        dispatched = []
+
+        async def fake_to_thread(fn, *args):
+            dispatched.append(list(args[0]))
+            return fn(*args)
 
         with patch(
             "app.modules.parsers.pdf.vlm_ocr_strategy.asyncio.to_thread",
             side_effect=fake_to_thread,
+        ), patch.object(
+            strategy,
+            "_render_page_batch_to_base64",
+            side_effect=lambda batch: {p: f"data:image/png;base64,page{p}" for p in batch},
         ):
             await strategy._preload_page_images()
 
+        assert dispatched == [[1, 2], [3]]
         assert len(strategy._page_images) == 3
         assert strategy._page_images[1] == "data:image/png;base64,page1"
         assert strategy._page_images[3] == "data:image/png;base64,page3"
@@ -458,15 +472,16 @@ class TestGetMultimodalLLMEdgeCases:
 
     @pytest.mark.asyncio
     async def test_config_get_raises_exception(self):
-        """Exception from config.get_config is wrapped in ValueError."""
+        """A settings store that is down is an outage: retried, with its error as the cause."""
         logger = logging.getLogger("test")
         config = AsyncMock()
         config.get_config = AsyncMock(side_effect=RuntimeError("Config service down"))
 
         strategy = VLMOCRStrategy(logger, config)
 
-        with pytest.raises(DocumentProcessingError, match="Failed to get multimodal LLM"):
+        with pytest.raises(AISettingsUnavailableError, match="Could not read the workspace's AI settings") as exc_info:
             await strategy._get_multimodal_llm()
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
 # ============================================================================

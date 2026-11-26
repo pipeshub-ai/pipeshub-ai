@@ -43,3 +43,19 @@ async def test_a_failed_batch_leaves_the_flag_unset() -> None:
     with pytest.raises(RuntimeError):
         await run_code_block_name_folded_backfill(config, graph, MagicMock())
     config.set_config.assert_not_awaited()
+
+
+async def test_runs_the_backfill_under_a_system_context() -> None:
+    """It is started detached with no context; an org-scoped store walks every organisation only under ``system``."""
+    from app.core.org_context import current_or_system
+
+    kinds: list[str] = []
+
+    async def batch(_limit: int) -> int:
+        kinds.append(current_or_system().kind)
+        return 0
+
+    graph = MagicMock()
+    graph.backfill_block_name_folded = batch
+    await run_code_block_name_folded_backfill(_config(), graph, MagicMock())
+    assert kinds == ["system"]

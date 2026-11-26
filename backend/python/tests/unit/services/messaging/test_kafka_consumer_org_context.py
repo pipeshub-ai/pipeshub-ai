@@ -1,4 +1,4 @@
-"""The Kafka consumer binds the org for the handler only and dead-letters bad envelopes."""
+"""The Kafka consumer binds the verified org for its delivery only and dead-letters bad envelopes."""
 
 import json
 from collections.abc import Iterator
@@ -14,6 +14,7 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
+from tests.unit.services.messaging.message_log_helpers import in_delivery
 
 KEY = envelope.derive_key("kafka-consumer-test")
 
@@ -54,9 +55,9 @@ async def test_signed_and_legacy_messages_bind_their_org() -> None:
     consumer = _consumer(seen)
     ctx = org_context.OrgContext("org_a", "u", "user", "jwt", "r")
     signed = envelope.sign(KEY, "t", {"k": 1}, ctx, event_type="T")
-    assert await consumer._KafkaMessagingConsumer__process_message(_message(signed)) == (True, None)
+    assert await in_delivery(consumer._KafkaMessagingConsumer__process_message(_message(signed))) == (True, None)
     legacy = {"eventType": "T", "payload": {"orgId": "org_z"}}
-    assert await consumer._KafkaMessagingConsumer__process_message(_message(legacy)) == (True, None)
+    assert await in_delivery(consumer._KafkaMessagingConsumer__process_message(_message(legacy))) == (True, None)
     assert seen == ["org_a", "org_z"]
     with pytest.raises(org_context.MissingOrgContext):
         org_context.current()
@@ -66,6 +67,14 @@ async def test_org_mismatch_is_terminal_and_never_reaches_the_handler() -> None:
     seen = []
     ctx = org_context.OrgContext("org_a", "u", "user", "jwt", "r")
     bad = {"eventType": "T", **envelope.sign(KEY, "t", {"orgId": "org_b"}, ctx)}
-    ok, exc = await _consumer(seen)._KafkaMessagingConsumer__process_message(_message(bad))
+    ok, exc = await in_delivery(_consumer(seen)._KafkaMessagingConsumer__process_message(_message(bad)))
     assert ok is False and isinstance(exc, NonRetryableError) and seen == []
     assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL
+
+
+async def test_the_org_cannot_be_bound_outside_a_delivery() -> None:
+    seen = []
+    ctx = org_context.OrgContext("org_a", "u", "user", "jwt", "r")
+    signed = envelope.sign(KEY, "t", {"k": 1}, ctx, event_type="T")
+    ok, exc = await _consumer(seen)._KafkaMessagingConsumer__process_message(_message(signed))
+    assert ok is False and isinstance(exc, RuntimeError) and seen == []

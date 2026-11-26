@@ -17,7 +17,7 @@ import {
 } from '../utils/admin-access-helpers';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Props
@@ -26,8 +26,8 @@ import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/setti
 interface ConnectorDetailsLayoutProps {
   /** Connector type info */
   connector: Connector | null;
-  /** Scope: team or personal */
-  scope: ConnectorScope;
+  /** @deprecated Not read; kept so edition pages that still pass it compile. */
+  scope?: ConnectorScope;
   /** Scope label for breadcrumb */
   scopeLabel: string;
   /** Instances for this connector type */
@@ -65,7 +65,6 @@ interface ConnectorDetailsLayoutProps {
 
 export function ConnectorDetailsLayout({
   connector,
-  scope,
   scopeLabel,
   instances,
   instanceConfigs,
@@ -147,7 +146,7 @@ export function ConnectorDetailsLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 32,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
         paddingBottom: 64,
         paddingInline: pagePaddingX(100),
         overflowY: 'auto',
@@ -176,7 +175,7 @@ export function ConnectorDetailsLayout({
             {scopeLabel}
           </Text>
         </button>
-        <MaterialIcon name="chevron_right" size={14} color="var(--gray-9)" />
+        <MaterialIcon name="chevron_right" size={14} color="var(--gray-11)" />
         <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {connectorName}
         </Text>
@@ -328,7 +327,7 @@ export function ConnectorDetailsLayout({
           gap="2"
           style={{ paddingTop: 80 }}
         >
-          <MaterialIcon name="hub" size={48} color="var(--gray-9)" />
+          <MaterialIcon name="hub" size={48} color="var(--gray-11)" />
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.connectors.noInstances')}
           </Text>
@@ -346,7 +345,6 @@ export function ConnectorDetailsLayout({
             <InstanceCard
               key={`${instance._key}-${instance.isAuthenticated ? '1' : '0'}`}
               instance={instance}
-              scope={scope}
               config={instance._key ? instanceConfigs?.[instance._key] : undefined}
               onManage={onManageInstance}
               onToggleSyncActive={onToggleSyncActive}

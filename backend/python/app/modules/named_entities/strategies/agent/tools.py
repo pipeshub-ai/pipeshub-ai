@@ -16,6 +16,7 @@ from app.agent_loop_lib.tools.builtin.planning.task_complete import (
 from app.agent_loop_lib.tools.tags import TAG_LIFECYCLE_TERMINAL
 from app.modules.named_entities.domain.kinds import EntityKind, EntitySource, spec_for
 from app.modules.named_entities.grounding import Grounder
+from app.modules.named_entities.guardrails import name_rejection
 from app.modules.named_entities.mentions import RawMention
 from app.modules.named_entities.normalizers import normalize_value
 from app.modules.named_entities.recognizers.pattern import is_suppressed_secret
@@ -348,6 +349,13 @@ def stage_wire_entity(session: ExtractionSession, index: int, item: WireEntity, 
         hint = f" nearest: {nearest!r}" if nearest else ""
         return {"index": index, "status": "rejected", "error": f"{item.text!r} not in B{item.block}.{hint}"}
     start, end, surface, grounding = aligned
+    if spec is not None and spec.source is EntitySource.SEMANTIC and (reason := name_rejection(kind, surface)):
+        session.staging.drop(f"not_a_name:{reason}")
+        return {
+            "index": index,
+            "status": "dropped",
+            "error": f"{surface!r} is not a {kind.value} name ({reason}); do not resubmit it",
+        }
     if spec is not None and spec.source is EntitySource.VALUE and normalize_value(kind, surface, session.norm_ctx) is None:
         session.staging.reject("unparsed")
         return {

@@ -33,7 +33,7 @@ test('flush() drains all buffered chunks once started', async () => {
   // With my fix, _flushInner splices the buffer at start-of-flush. Anything
   // pushed during the in-flight flush goes into a new buffer cycle and gets
   // a follow-up scheduleFlush. Verify both batches eventually land.
-  let dispatched: string[][] = [];
+  const dispatched: string[][] = [];
   const d = new BatchDispatcher(async (events: WatchEvent[]) => {
     dispatched.push(events.map((e) => e.path));
     await sleep(20);

@@ -855,6 +855,8 @@ class TestFullSync:
             make_tree_element(".env", entry_type="blob", sha="sha-env", size=10),
             make_tree_element(".env.example", entry_type="blob", sha="sha-env-ex", size=10),
             make_tree_element("deploy/server.pem", entry_type="blob", sha="sha-pem", size=10),
+            make_tree_element(".kube/config", entry_type="blob", sha="sha-kube", size=10),
+            make_tree_element("keys/id_rsa_work", entry_type="blob", sha="sha-key", size=10),
             make_tree_element(".eslintrc.json", entry_type="blob", sha="sha-lint", size=10),
             make_tree_element("big.bin", entry_type="blob", sha="sha-big", size=999_999_999),
             make_tree_element("ok.py", entry_type="blob", sha="sha-ok", size=10),
@@ -1002,6 +1004,16 @@ class TestExcludedTrees:
         # record left from before the rules goes too.
         assert deleted == {"src/lib.py", "build/moved.py"}
         sync._apply_code_renames.assert_not_awaited()
+
+    def test_a_changed_credential_file_has_its_record_deleted(self) -> None:
+        """The record may predate the rule that now excludes the path; it holds the old secret."""
+        sync = ReposSync(make_mock_connector())
+        deletes, adds, modifies, renames = sync._drop_excluded_changes(
+            {}, {}, {".kube/config": "s-k", "src/a.py": "s-a"}, []
+        )
+        assert deletes == {".kube/config": ""}
+        assert modifies == {"src/a.py": "s-a"}
+        assert adds == {} and renames == []
 
     async def test_records_left_from_before_the_rules_are_pruned_past_the_valve(self) -> None:
         """An old sync may have stored thousands of node_modules records; they
@@ -1193,7 +1205,7 @@ class TestRunDispatch:
         sync._incremental_sync.assert_not_awaited()
         c.record_sync_point.update_sync_point.assert_not_awaited()
 
-    async def test_default_branch_change_forces_full_resync(self) -> None:
+    async def test_default_branch_change_syncs_the_difference(self) -> None:
         c = make_mock_connector()
         repo = make_repo(repo_id=1, default_branch="main")
         c.runtime.ds_call.return_value = ok_response(
@@ -1209,8 +1221,8 @@ class TestRunDispatch:
 
         await sync.run(repo)
 
-        sync._full_sync.assert_awaited_once()
-        sync._incremental_sync.assert_not_awaited()
+        sync._incremental_sync.assert_awaited_once()
+        sync._full_sync.assert_not_awaited()
 
     async def test_incremental_failure_falls_back_to_full_sync(self) -> None:
         c = make_mock_connector()

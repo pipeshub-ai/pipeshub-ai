@@ -1,11 +1,14 @@
+import secrets
 from typing import Optional
 
 import httpx  # type: ignore
 
+from app.services.rate_budget import is_throttle, note_throttled
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
+from app.sources.client.http.send_ambiguity import note_httpx_failure, note_status
 from app.sources.client.iclient import IClient
-from app.sources.client.resilience import ResiliencePolicy
+from app.sources.client.resilience import ResiliencePolicy, parse_retry_after
 
 
 class HTTPClient(IClient):
@@ -46,6 +49,13 @@ class HTTPClient(IClient):
             raise RuntimeError("require_public_addresses() must be called before the first request")
         self._public_only = True
 
+    def use_resilience(self, resilience: ResiliencePolicy | None) -> None:
+        """Pace this client by a connector's policy, and so by its vendor's shared budget (G-31): for a client
+        a builder shared with the agent toolsets made without one. Call before the first request."""
+        if self.client is not None:
+            raise RuntimeError("use_resilience() must be called before the first request")
+        self.resilience = resilience
+
     async def _ensure_client(self) -> httpx.AsyncClient:
         """Ensure client is created and available"""
         if self.client is None:
@@ -80,7 +90,19 @@ class HTTPClient(IClient):
             **kwargs
         }
 
-        if isinstance(request.body, dict):
+        if request.files:
+            # httpx only writes its multipart Content-Type when none is set, and a default
+            # the client was built with (often "application/json") counts as set. Naming the
+            # boundary here wins over both that default and a caller's bare "multipart/form-data";
+            # httpx encodes the body with the boundary it finds in this header.
+            request_kwargs["headers"] = {
+                **{k: v for k, v in merged_headers.items() if k.lower() != "content-type"},
+                "Content-Type": f"multipart/form-data; boundary={secrets.token_hex(16)}",
+            }
+            request_kwargs["files"] = request.files
+            if isinstance(request.body, dict):
+                request_kwargs["data"] = request.body
+        elif isinstance(request.body, dict):
             # Check if Content-Type indicates form data
             content_type = request.headers.get("Content-Type", "").lower()
             if "application/x-www-form-urlencoded" in content_type:
@@ -92,7 +114,16 @@ class HTTPClient(IClient):
         elif isinstance(request.body, bytes):
             request_kwargs["content"] = request.body
 
-        response = await client.request(request.method, url, **request_kwargs)
+        try:
+            response = await client.request(request.method, url, **request_kwargs)
+        except httpx.HTTPError as exc:
+            note_httpx_failure(request.method, exc)
+            raise
+        note_status(request.method, response.status_code)
+        retry_after = parse_retry_after(response.headers)
+        if is_throttle(response.status_code, retry_after):
+            # The account this call spends, a sync's or an agent tool call's, backs off as a whole (G-31).
+            await note_throttled(retry_after)
         return HTTPResponse(response)
 
     async def close(self) -> None:

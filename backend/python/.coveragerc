@@ -4,6 +4,7 @@ branch = True
 omit =
     app/sources/external/*
     app/services/graph_db/neo4j/*
+    app/services/graph_db/postgres/*
     app/migrations/*
 
 [report]

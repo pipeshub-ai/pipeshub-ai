@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.modules.parsers.code_parser.models import CONSTRUCT, INITIALIZER
+
 __all__ = [
     "COMMENT_NODE_TYPES",
     "LANGUAGES",
@@ -44,6 +46,9 @@ class LanguageConfig:
     struct_types: frozenset[str] = frozenset()
     trait_types: frozenset[str] = frozenset()
     module_types: frozenset[str] = frozenset()
+    # Module types that, written without a body (C# `namespace X;`, PHP
+    # `namespace A\B;`), name the namespace of every definition after them.
+    statement_namespace_types: frozenset[str] = frozenset()
     impl_types: frozenset[str] = frozenset()
     type_alias_types: frozenset[str] = frozenset()
     function_types: frozenset[str] = frozenset()
@@ -60,6 +65,10 @@ class LanguageConfig:
     # body node -- Dart's `function_signature` + `function_body`. Without this
     # the block for a method would stop at its signature.
     trailing_body_types: frozenset[str] = frozenset()
+    # Hold a scope's members without being one: C/C++ preprocessor branches and
+    # `extern "C"`. Their members are collected as the enclosing scope's, so an
+    # include-guarded header is not one opaque statements span.
+    transparent_types: frozenset[str] = frozenset()
 
     # Span boundaries that are not definitions.
     import_types: frozenset[str] = frozenset()
@@ -78,6 +87,10 @@ class LanguageConfig:
     # (Java's `method_invocation` name/object, Ruby's `call` method/receiver).
     call_name_field: str = ""
     call_receiver_fields: tuple[str, ...] = ()
+    # Calls that construct the type they name, so the name means a type and never a function, by node type -> the
+    # context their facts carry: C++ `new Conn(..)` and `Conn c(..)` construct (CONSTRUCT); a constructor's
+    # `: Base(..)` initializes a base or a member (INITIALIZER).
+    construction_contexts: dict[str, str] = field(default_factory=dict)
     # JSX: a capitalised tag renders a component, which is a call (P-5).
     jsx_element_types: frozenset[str] = frozenset()
     # Statements whose blocks hold module-level definitions: Python's
@@ -95,6 +108,7 @@ class LanguageConfig:
     import_handler_name: str = ""
     heritage_handler_name: str = ""
     type_table_handler_name: str = ""
+    macro_table_handler_name: str = ""
 
     name_field: str = "name"
     body_field: str = "body"
@@ -131,6 +145,9 @@ _BLOCK_DOC = "block_comment"
 _LINE_DOC = "line_comment"
 
 _C_FAMILY_NAMES = ("identifier", "type_identifier", "field_identifier")
+_C_FAMILY_TRANSPARENT = frozenset({
+    "preproc_ifdef", "preproc_if", "preproc_elif", "preproc_elifdef", "preproc_else", "linkage_specification",
+})
 
 
 _PYTHON = LanguageConfig(
@@ -259,7 +276,10 @@ _C = LanguageConfig(
     type_alias_types=frozenset({"type_definition"}),
     function_types=frozenset({"function_definition"}),
     field_types=frozenset({"field_declaration"}),
+    transparent_types=_C_FAMILY_TRANSPARENT,
     import_types=frozenset({"preproc_include"}),
+    import_handler_name="c_family",
+    macro_table_handler_name="c_family",
     name_fallback_child_types=_C_FAMILY_NAMES,
     body_fallback_child_types=("field_declaration_list", "enumerator_list", "compound_statement"),
     unwrap_declarator=True,
@@ -268,7 +288,9 @@ _C = LanguageConfig(
 
 _CPP = LanguageConfig(
     name="cpp",
-    call_types=frozenset({"call_expression"}),
+    call_types=frozenset({"call_expression", "new_expression", "init_declarator", "field_initializer"}),
+    construction_contexts={"new_expression": CONSTRUCT, "init_declarator": CONSTRUCT,
+                           "field_initializer": INITIALIZER},
     ts_module="tree_sitter_cpp",
     ts_language_fn="language",
     # .h uses the C++ grammar rather than the C one: it is a superset, headers
@@ -282,7 +304,12 @@ _CPP = LanguageConfig(
     function_types=frozenset({"function_definition"}),
     field_types=frozenset({"field_declaration"}),
     decorator_wrapper_types=frozenset({"template_declaration"}),
+    transparent_types=_C_FAMILY_TRANSPARENT,
     import_types=frozenset({"preproc_include"}),
+    import_handler_name="c_family",
+    heritage_handler_name="cpp",
+    type_table_handler_name="cpp",
+    macro_table_handler_name="c_family",
     name_fallback_child_types=_C_FAMILY_NAMES,
     body_fallback_child_types=(
         "field_declaration_list", "declaration_list", "enumerator_list", "compound_statement",
@@ -302,14 +329,19 @@ _CSHARP = LanguageConfig(
     enum_types=frozenset({"enum_declaration"}),
     struct_types=frozenset({"struct_declaration", "record_struct_declaration"}),
     module_types=frozenset({"namespace_declaration", "file_scoped_namespace_declaration"}),
-    function_types=frozenset({"local_function_statement"}),
+    statement_namespace_types=frozenset({"file_scoped_namespace_declaration"}),
+    # A local function is part of its method: its calls are the method's, and nothing outside calls it.
     method_types=frozenset({
         "method_declaration", "constructor_declaration", "destructor_declaration",
-        "property_declaration", "operator_declaration", "indexer_declaration",
+        "operator_declaration", "indexer_declaration",
     }),
-    field_types=frozenset({"field_declaration", "event_field_declaration"}),
+    # A property is read, not called: as a field it never takes the call `new Address()` makes to class Address.
+    field_types=frozenset({"field_declaration", "event_field_declaration", "property_declaration"}),
     attached_types=_ATTACHED_DEFAULT | frozenset({"attribute_list"}),
     import_types=frozenset({"using_directive", "extern_alias_directive"}),
+    import_handler_name="csharp",
+    heritage_handler_name="csharp",
+    type_table_handler_name="csharp",
     name_fallback_child_types=("identifier",),
     body_fallback_child_types=("declaration_list", "enum_member_declaration_list", "block"),
     docstring_style=_LINE_DOC,
@@ -434,6 +466,9 @@ _RUST = LanguageConfig(
     field_types=frozenset({"field_declaration", "const_item", "static_item"}),
     attached_types=_ATTACHED_DEFAULT | frozenset({"attribute_item"}),
     import_types=frozenset({"use_declaration", "extern_crate_declaration"}),
+    import_handler_name="rust",
+    heritage_handler_name="rust",
+    type_table_handler_name="rust",
     name_field_overrides={"impl_item": "type"},
     name_fallback_child_types=("identifier", "type_identifier"),
     body_fallback_child_types=(
@@ -463,7 +498,8 @@ _RUBY = LanguageConfig(
 
 _PHP = LanguageConfig(
     name="php",
-    call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression"}),
+    call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression",
+                          "object_creation_expression"}),
     call_name_field="name",
     call_receiver_fields=("object", "scope"),
     ts_module="tree_sitter_php",
@@ -474,11 +510,15 @@ _PHP = LanguageConfig(
     trait_types=frozenset({"trait_declaration"}),
     enum_types=frozenset({"enum_declaration"}),
     module_types=frozenset({"namespace_definition"}),
+    statement_namespace_types=frozenset({"namespace_definition"}),
     function_types=frozenset({"function_definition"}),
     method_types=frozenset({"method_declaration"}),
     field_types=frozenset({"property_declaration", "const_declaration"}),
     attached_types=_ATTACHED_DEFAULT | frozenset({"attribute_list"}),
     import_types=frozenset({"namespace_use_declaration"}),
+    import_handler_name="php",
+    heritage_handler_name="php",
+    type_table_handler_name="php",
     name_fallback_child_types=("name",),
     body_fallback_child_types=(
         "declaration_list", "enum_declaration_list", "compound_statement",

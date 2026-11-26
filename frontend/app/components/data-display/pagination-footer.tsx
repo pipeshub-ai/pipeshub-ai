@@ -16,6 +16,8 @@ export interface PaginationState {
   /** Authoritative flags for sources whose page number is only an estimate. */
   hasPrev?: boolean;
   hasNext?: boolean;
+  /** `totalCount` may not be exact (usually lower): the total and the page count read as "at least". */
+  totalCapped?: boolean;
 }
 
 export function PaginationFooter({
@@ -43,14 +45,15 @@ export function PaginationFooter({
       wrap="wrap"
       gap="3"
       style={{
-        padding: 'var(--space-2) var(--space-4)',
+        // 16px around the count text on every side (12px + the 24px controls' centring)
+        padding: 'var(--space-3) var(--space-4)',
         borderTop: '1px solid var(--olive-3)',
         background: 'var(--olive-2)',
         flexShrink: 0,
       }}
     >
-      <Text size="1" style={{ color: 'var(--slate-10)' }}>
-        {t('common.pagination.showing', { start, end, total: totalCount })}
+      <Text size="1" style={{ color: 'var(--slate-11)' }}>
+        {t(pagination.totalCapped ? 'common.pagination.showingAtLeast' : 'common.pagination.showing', { start, end, total: totalCount })}
       </Text>
       <Flex gap="2" align="center">
         <Button className="touch-hit" variant="ghost" size="1" color="gray" disabled={!hasPrev} onClick={() => onPageChange(page - 1)}>
@@ -58,7 +61,9 @@ export function PaginationFooter({
           {t('common.previous')}
         </Button>
         <Text size="1" weight="medium" style={{ minWidth: 48, textAlign: 'center', color: 'var(--slate-11)' }}>
-          {t('common.pagination.pageOf', { page, total: Math.max(totalPages, 1) })}
+          {pagination.totalCapped
+            ? t('common.pagination.pageOfAtLeast', { page, total: Math.max(totalPages, page, 1) })
+            : t('common.pagination.pageOf', { page, total: Math.max(totalPages, 1) })}
         </Text>
         <Button
           className="touch-hit"

@@ -24,6 +24,8 @@ interface ShareableRowProps {
   /** When provided, suppresses role options in the dropdown (e.g. for chat) */
   noRolesInfo?: { title: string; description: string };
   roleOptions?: { roles: ShareRole[]; labels?: Record<ShareRole, { label: string; description: string }> };
+  /** A team row offers roles like a user row instead of "Teams do not have roles". */
+  teamHasRoles?: boolean;
   /** Whether to show a radio button for selection */
   showRadio?: boolean;
   /** Whether to show "Invite to Pipeshub" link */
@@ -55,6 +57,7 @@ export function ShareableRow({
   showInvite = false,
   noRolesInfo,
   roleOptions,
+  teamHasRoles = false,
   isCurrentUser = false,
   onToggle,
   onRoleChange,
@@ -107,7 +110,7 @@ export function ShareableRow({
               <Text
                 size="1"
                 style={{
-                  color: 'var(--slate-9)',
+                  color: 'var(--slate-11)',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
@@ -162,7 +165,7 @@ export function ShareableRow({
           role={role}
           onRoleChange={onRoleChange}
           onRemove={onRemove}
-          isTeam={type === 'team'}
+          isTeam={type === 'team' && !teamHasRoles}
           noRolesInfo={noRolesInfo}
           roles={roleOptions?.roles}
           labels={roleOptions?.labels}
@@ -171,7 +174,7 @@ export function ShareableRow({
       )}
 
       {isOwner && !showRoleDropdown && (
-        <Text size="2" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
+        <Text size="2" style={{ color: 'var(--slate-11)', flexShrink: 0 }}>
           {t('recordView.permissionOwner')}
         </Text>
       )}
@@ -180,7 +183,7 @@ export function ShareableRow({
         <Text
           size="2"
           style={{
-            color: 'var(--accent-9)',
+            color: 'var(--accent-11)',
             cursor: 'pointer',
             flexShrink: 0,
           }}

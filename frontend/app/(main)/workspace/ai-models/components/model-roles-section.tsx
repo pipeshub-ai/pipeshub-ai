@@ -1,19 +1,22 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
+import useSWR from 'swr';
 import { Badge, Box, Flex, Select, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 import { toast } from '@/lib/store/toast-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { AIModelsApi } from '../api';
+import { SWR_POLICY } from '@/lib/api/swr-cache';
+import { AI_MODEL_KEYS, AIModelsApi } from '../api';
 import type { ConfiguredModel, ModelRoleAssignment } from '../types';
 import { MODEL_ROLE_NAMES } from '../types';
 
+const EMPTY_ROLES: Record<string, ModelRoleAssignment> = {};
+
 interface ModelRolesSectionProps {
   configuredModels: Record<string, ConfiguredModel[]>;
-  onRolesUpdated?: () => void;
   /**
    * 'settings' (default) — compact single-row card for the workspace settings page.
    * 'onboarding' — two-role side-by-side layout with context, shown during setup.
@@ -42,16 +45,19 @@ const INDEXING_ELIGIBLE_MODEL_TYPES = ['llm', 'slm', 'reasoning', 'multiModal'] 
 
 export function ModelRolesSection({
   configuredModels,
-  onRolesUpdated,
   variant = 'settings',
   highlighted = false,
   onAcknowledgedChange,
 }: ModelRolesSectionProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
-  const [loading, setLoading] = useState(true);
+  const { data: rolesData, isLoading: loading, mutate: mutateRoles } = useSWR(
+    AI_MODEL_KEYS.roles,
+    () => AIModelsApi.getRoles(),
+    SWR_POLICY.sessionStable,
+  );
+  const roles = rolesData?.modelRoles ?? EMPTY_ROLES;
   const [saving, setSaving] = useState(false);
-  const [roles, setRoles] = useState<Record<string, ModelRoleAssignment>>({});
   /**
    * Whether the user has explicitly interacted with the dropdown.
    * In onboarding variant the dropdown starts with no value until acknowledged.
@@ -65,27 +71,14 @@ export function ModelRolesSection({
     }
   }, [acknowledged, onAcknowledgedChange]);
 
-  const loadRoles = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await AIModelsApi.getRoles();
-      setRoles(data.modelRoles ?? {});
-      // If an explicit assignment already exists from a previous session, treat it
-      // as acknowledged so we don't block the user needlessly.
-      if (data.modelRoles?.[MODEL_ROLE_NAMES.INDEXING]) {
-        setAcknowledged(true);
-        onAcknowledgedChange?.(true);
-      }
-    } catch {
-      // Non-fatal — falls back to default model
-    } finally {
-      setLoading(false);
-    }
-  }, [onAcknowledgedChange]);
-
+  // An assignment saved in an earlier session counts as acknowledged, so the user is not blocked.
+  // A failed roles read is non-fatal: the indexing role falls back to the default model.
   useEffect(() => {
-    void loadRoles();
-  }, [loadRoles]);
+    if (rolesData?.modelRoles?.[MODEL_ROLE_NAMES.INDEXING]) {
+      setAcknowledged(true);
+      onAcknowledgedChange?.(true);
+    }
+  }, [rolesData]);
 
   const indexingCandidates: ConfiguredModel[] = INDEXING_ELIGIBLE_MODEL_TYPES.flatMap(
     (mt) => (configuredModels[mt] ?? []).map((m) => ({ ...m, modelType: mt }))
@@ -123,16 +116,15 @@ export function ModelRolesSection({
       setSaving(true);
       try {
         await AIModelsApi.updateRoles(updatedRoles);
-        setRoles(updatedRoles);
+        await mutateRoles({ ...rolesData, modelRoles: updatedRoles }, { revalidate: false });
         toast.success(t('workspace.aiModels.roles.toastSaved'));
-        onRolesUpdated?.();
       } catch {
         toast.error(t('workspace.aiModels.roles.toastSaveError'));
       } finally {
         setSaving(false);
       }
     },
-    [roles, indexingCandidates, t, onRolesUpdated, acknowledge]
+    [roles, rolesData, mutateRoles, indexingCandidates, t, acknowledge]
   );
 
   // In onboarding variant the select has no value until the user acknowledges;
@@ -191,7 +183,7 @@ export function ModelRolesSection({
             transition: 'background 0.2s',
           }}
         >
-          <MaterialIcon name="tune" size={15} style={{ color: 'var(--gray-10)' }} />
+          <MaterialIcon name="tune" size={15} style={{ color: 'var(--gray-11)' }} />
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.aiModels.roles.onboardingTitle')}
           </Text>
@@ -232,7 +224,7 @@ export function ModelRolesSection({
                 <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
                   {t('workspace.aiModels.roles.queryRole')}
                 </Text>
-                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)' }}>
                   {t('workspace.aiModels.roles.queryRoleSubtitle')}
                 </Text>
               </Flex>
@@ -249,7 +241,7 @@ export function ModelRolesSection({
                 border: '1px solid var(--gray-4)',
               }}
             >
-              <MaterialIcon name="check_circle" size={14} style={{ color: 'var(--green-9)' }} />
+              <MaterialIcon name="check_circle" size={14} style={{ color: 'var(--green-11)' }} />
               <Text size="2" style={{ color: 'var(--gray-12)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {defaultLlm ? modelLabel(defaultLlm) : t('workspace.aiModels.roles.queryRoleDefault')}
               </Text>
@@ -258,7 +250,7 @@ export function ModelRolesSection({
               </Badge>
             </Flex>
 
-            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: '1.5' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: '1.5' }}>
               {t('workspace.aiModels.roles.queryRoleDescription')}
             </Text>
           </Flex>
@@ -291,7 +283,7 @@ export function ModelRolesSection({
                 <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
                   {t('workspace.aiModels.roles.indexingRole')}
                 </Text>
-                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)' }}>
                   {t('workspace.aiModels.roles.indexingRoleSubtitle')}
                 </Text>
               </Flex>
@@ -304,15 +296,15 @@ export function ModelRolesSection({
 
             {highlighted && !acknowledged && (
               <Flex align="center" gap="1">
-                <MaterialIcon name="error_outline" size={13} style={{ color: 'var(--amber-10)' }} />
-                <Text size="1" style={{ color: 'var(--amber-10)' }}>
+                <MaterialIcon name="error_outline" size={13} style={{ color: 'var(--amber-11)' }} />
+                <Text size="1" style={{ color: 'var(--amber-11)' }}>
                   {t('workspace.aiModels.roles.requiredHint')}
                 </Text>
               </Flex>
             )}
 
             {acknowledged && (
-              <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: '1.5' }}>
+              <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: '1.5' }}>
                 {assignedIndexingModel
                   ? t('workspace.aiModels.roles.indexingRoleAssigned', { model: modelLabel(assignedIndexingModel) })
                   : t('workspace.aiModels.roles.indexingRoleFallback')}
@@ -335,7 +327,7 @@ export function ModelRolesSection({
           <MaterialIcon
             name="lightbulb"
             size={13}
-            style={{ color: highlighted ? 'var(--amber-10)' : 'var(--gray-10)' }}
+            style={{ color: highlighted ? 'var(--amber-11)' : 'var(--gray-11)' }}
           />
           <Text size="1" style={{ color: highlighted ? 'var(--amber-11)' : 'var(--gray-11)', lineHeight: '1.5' }}>
             {t('workspace.aiModels.roles.onboardingTip')}
@@ -365,11 +357,11 @@ export function ModelRolesSection({
           background: 'var(--gray-2)',
         }}
       >
-        <MaterialIcon name="tune" size={16} style={{ color: 'var(--gray-10)' }} />
+        <MaterialIcon name="tune" size={16} style={{ color: 'var(--gray-11)' }} />
         <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {t('workspace.aiModels.roles.sectionTitle')}
         </Text>
-        <Text size="1" style={{ color: 'var(--gray-10)', marginLeft: 4 }}>
+        <Text size="1" style={{ color: 'var(--gray-11)', marginLeft: 4 }}>
           {t('workspace.aiModels.roles.sectionDescription')}
         </Text>
       </Flex>
@@ -403,7 +395,7 @@ export function ModelRolesSection({
               <Text
                 size="1"
                 style={{
-                  color: 'var(--gray-10)',
+                  color: 'var(--gray-11)',
                   lineHeight: '1.5',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',

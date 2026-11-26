@@ -13,7 +13,7 @@ import {
   encodeRFC5987,
   extractOrgId,
   extractUserId,
-  toObjectId,
+  requireId,
   validateFileAndDocumentName,
   getDocumentInfo,
   generatePresignedUrlForDirectUpload,
@@ -30,6 +30,10 @@ import { BadRequestError, NotFoundError, InternalServerError } from '../../../..
 import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
 import mongoose from 'mongoose'
 import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { PassThrough } from 'stream'
+import { captureLogRecords } from '../../../helpers/log-capture'
 
 describe('storage/utils/utils', () => {
   afterEach(() => {
@@ -273,11 +277,11 @@ describe('storage/utils/utils', () => {
   })
 
   // -------------------------------------------------------------------------
-  // toObjectId
+  // requireId
   // -------------------------------------------------------------------------
-  describe('toObjectId', () => {
-    it('should return an ObjectId for a valid id', () => {
-      expect(toObjectId('64d000000000000000000a01', 'organization').toHexString()).to.equal('64d000000000000000000a01')
+  describe('requireId', () => {
+    it('should return the id for a valid one', () => {
+      expect(requireId('64d000000000000000000a01', 'organization')).to.equal('64d000000000000000000a01')
     })
 
     // new ObjectId('user-123') throws a BSONError, which the error middleware answers with 500.
@@ -294,7 +298,7 @@ describe('storage/utils/utils', () => {
     ]
     for (const [id, kind] of malformed) {
       it(`should throw BadRequestError naming the ${kind} id for ${JSON.stringify(id)}`, () => {
-        expect(() => toObjectId(id, kind))
+        expect(() => requireId(id, kind))
           .to.throw(BadRequestError)
           .with.property('message')
           .that.contains(`The ${kind} id in the storage token isn't valid`)
@@ -398,7 +402,7 @@ describe('storage/utils/utils', () => {
   })
 
   describe('getDocumentInfo - a missing document', () => {
-    it('is a 404 marked to be logged at warn, not error', async () => {
+    it('is a 404, which the error middleware logs at warn', async () => {
       sinon.stub(DocumentModel, 'findOne').resolves(null)
       const next = sinon.stub()
       const req = {
@@ -414,10 +418,9 @@ describe('storage/utils/utils', () => {
 
       const error = next.firstCall.args[0]
       expect(error.statusCode).to.equal(404)
-      expect(error.metadata).to.deep.equal({ logLevel: 'warn' })
     })
 
-    it('leaves a failed lookup unmarked, so it is still logged at error', async () => {
+    it('answers a failed lookup with a 500, which is logged at error', async () => {
       sinon.stub(DocumentModel, 'findOne').rejects(new Error('mongo down'))
       const next = sinon.stub()
       const req = {
@@ -526,7 +529,7 @@ describe('storage/utils/utils', () => {
       expect(result).to.exist
       expect(result!.document).to.deep.equal(savedDoc)
       expect(createStub.calledOnce).to.be.true
-      expect(createStub.firstCall.args[0].documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub')
+      expect(createStub.firstCall.args[0]!.documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub')
     })
 
     it('should prefix org and PipesHub when documentPath is provided', async () => {
@@ -543,7 +546,7 @@ describe('storage/utils/utils', () => {
       expect(result).to.exist
       expect(result!.document).to.deep.equal(savedDoc)
       expect(createStub.calledOnce).to.be.true
-      expect(createStub.firstCall.args[0].documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub/folderA')
+      expect(createStub.firstCall.args[0]!.documentPath).to.equal('507f1f77bcf86cd799439011/PipesHub/folderA')
     })
 
     it('should persist the normalized (dot-prefixed) extension', async () => {
@@ -558,7 +561,7 @@ describe('storage/utils/utils', () => {
 
       // Pass the bare extension (no dot) - it must be stored normalized as ".pdf"
       await createPlaceholderDocument(req, next, 1000, 'pdf', 'test.pdf')
-      expect(createStub.firstCall.args[0].extension).to.equal('.pdf')
+      expect(createStub.firstCall.args[0]!.extension).to.equal('.pdf')
     })
 
     it('should call next on validation error', async () => {
@@ -923,5 +926,77 @@ describe('storage/utils/utils - additional coverage', () => {
         expect(root, recordPath).to.not.equal(getFullDocumentPath('org1', recordPath))
       }
     })
+  })
+
+  describe('serveFileFromLocalStorage - a stream that fails', () => {
+    /** Streams a temp file, fails its stream with `error`, and returns the records and the temp folder. */
+    const failStream = (error: Error): { records: Record<string, any>[]; dir: string } => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'n5d-stream-'))
+      const file = path.join(dir, 'Q3-board-minutes.pdf')
+      fs.writeFileSync(file, 'abc')
+      const res: any = Object.assign(new PassThrough(), { setHeader: () => undefined, headersSent: true })
+      let source: NodeJS.EventEmitter | undefined
+      res.on('pipe', (s: NodeJS.EventEmitter) => { source = s })
+      const records = captureLogRecords()
+      try {
+        serveFileFromLocalStorage({ documentName: 'Q3-board-minutes', extension: '.pdf', local: { localPath: `file://${file}` } } as any, res)
+        source!.emit('error', error)
+        return { records, dir }
+      } finally {
+        res.destroy()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    }
+    const levelsOf = (records: Record<string, any>[]) =>
+      records.filter((r) => r.message === 'Streaming a local file failed').map((r) => r.level)
+
+    it('is one line at its class level (our read failed: ERROR), with no path and no document name', () => {
+      const { records, dir } = failStream(Object.assign(new Error('EIO: i/o error, read'), { code: 'EIO' }))
+
+      expect(levelsOf(records)).to.deep.equal(['error'])
+      expect(JSON.stringify(records)).to.not.contain('Q3-board-minutes')
+      expect(JSON.stringify(records)).to.not.contain(dir)
+    })
+
+    it('is INFO when the read was cancelled, not ERROR', () => {
+      const { records } = failStream(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }))
+
+      expect(levelsOf(records)).to.deep.equal(['info'])
+    })
+  })
+})
+
+describe('serveFileFromLocalStorage - a stored .json file (QAFIX3 bug 5)', () => {
+  // The Python reader (`blob_staging.fetch_blob_bytes`) tells this file stream from the cloud `{signedUrl}`
+  // envelope by `Content-Disposition: attachment`: a stored .json file is `application/json` too.
+  it('sends the file itself as an attachment, never as a bare JSON body', async () => {
+    const os = await import('os')
+    const path = await import('path')
+    const { PassThrough } = await import('stream')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qafix3-'))
+    const file = path.join(dir, 'receipt.json')
+    fs.writeFileSync(file, '{"state":"started"}')
+    const headers: Record<string, string> = {}
+    const res = Object.assign(new PassThrough(), {
+      setHeader: (name: string, value: string) => {
+        headers[name] = value
+      },
+      headersSent: false,
+    }) as any
+    const chunks: Buffer[] = []
+    res.on('data', (chunk: Buffer) => chunks.push(chunk))
+    const ended = new Promise((resolve) => res.on('end', resolve))
+    try {
+      serveFileFromLocalStorage(
+        { local: { localPath: file }, documentName: 'receipt', extension: '.json' } as any,
+        res,
+      )
+      await ended
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+    expect(headers['Content-Type']).to.equal('application/json')
+    expect(headers['Content-Disposition']).to.match(/^attachment;/)
+    expect(Buffer.concat(chunks).toString()).to.equal('{"state":"started"}')
   })
 })

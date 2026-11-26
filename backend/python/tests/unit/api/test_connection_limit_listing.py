@@ -416,7 +416,7 @@ class TestTheNavigateRoot:
             return await knowledge_graph_navigate(
                 request=_request(graph, limit), graph_provider=graph, node_id=None, page=1, limit=50,
                 depth=1, node_types=None, created_after=None, created_before=None,
-                modified_after=None, modified_before=None,
+                modified_after=None, modified_before=None, cursor=None,
             )
 
     async def test_a_date_filter_keeps_a_named_app_dated_inside_it(self) -> None:
@@ -425,12 +425,12 @@ class TestTheNavigateRoot:
             kept = await knowledge_graph_navigate(
                 request=_request(_graph(), MIXED_LIMIT), graph_provider=_graph(), node_id=None, page=1, limit=50,
                 depth=1, node_types=None, created_after="2020-01-01T00:00:00Z", created_before=None,
-                modified_after=None, modified_before=None,
+                modified_after=None, modified_before=None, cursor=None,
             )
             dropped = await knowledge_graph_navigate(
                 request=_request(_graph(), MIXED_LIMIT), graph_provider=_graph(), node_id=None, page=1, limit=50,
                 depth=1, node_types=None, created_after="2024-01-01T00:00:00Z", created_before=None,
-                modified_after=None, modified_before=None,
+                modified_after=None, modified_before=None, cursor=None,
             )
 
         assert "kb-other" in [row["id"] for row in kept["rows"]]

@@ -16,8 +16,8 @@ import logging
 import time
 import uuid
 from collections import defaultdict
-from contextlib import asynccontextmanager
-from typing import Optional
+from contextlib import AbstractContextManager, asynccontextmanager
+from typing import TYPE_CHECKING, Optional
 
 from app.agents.constants.mcp_server_constants import (
     get_mcp_credentials_path,
@@ -29,15 +29,33 @@ from app.agents.constants.mcp_server_constants import (
 )
 from app.agents.mcp import cimd
 from app.agents.mcp import oauth_client as oauth_client_module
-from app.agents.mcp.models import OAuthTokens
 from app.agents.mcp.url_guard import MCPUrlPolicy
 from app.config.configuration_service import ConfigurationService
+from app.harness.credentials.read_through import credentials_switch_on
+from app.utils.credential_refresh_log import (
+    EVENT_DEAUTHENTICATE_FAILED,
+    EVENT_STRIKE,
+    Attempt,
+    Kind,
+    Trigger,
+    log_deauthenticated,
+    log_refresh_failure,
+    log_strike,
+    refresh_attempt,
+    refresh_scope,
+)
+from app.utils.logging_fields import log_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from app.agents.mcp.models import OAuthTokens
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "MCPTokenRefreshError",
+    "MCPRefreshLockTimeoutError",
+    "credential_scope",
     "resolve_client_credentials",
     "refresh_credential_record",
 ]
@@ -51,6 +69,17 @@ __all__ = [
 # store; the asyncio lock only keeps one process from polling that key against itself.
 # Never evicted: one entry per instance/owner pair ever refreshed in this process.
 _refresh_locks: "defaultdict[tuple[str, str], asyncio.Lock]" = defaultdict(asyncio.Lock)
+
+# A refusal that says the sign-in can't be renewed (`MCPOAuthError.deauth_reason`) is a strike on the
+# credential record, whoever saw it; the third signs it out. One strike per window: the many callers and
+# replicas that hear one provider answer together count it once, so a sign-out spans 10 minutes at least
+# (the background service's 5-minute scan, three times). A run with no strike for a day (measured from its last
+# strike) is forgotten.
+MAX_REFRESH_REJECTIONS = 3
+STRIKE_SPACING_MS = 300_000
+STRIKE_MEMORY_MS = 86_400_000
+REJECTIONS_FIELD = "refreshRejections"
+LAST_REJECTED_AT_FIELD = "lastRejectedAt"
 
 # Longer than one refresh can take (the token request times out at 15s), so a live holder
 # never loses the lock; short enough that a crashed holder blocks refreshes only briefly.
@@ -66,7 +95,7 @@ async def _cluster_refresh_lock(instance_id: str, owner_id: str, config_service:
     deadline = time.monotonic() + CLUSTER_LOCK_WAIT_SECONDS
     while not await config_service.create_config_if_absent(key, {"owner": token}, ttl_seconds=CLUSTER_LOCK_TTL_SECONDS):
         if time.monotonic() >= deadline:
-            raise MCPTokenRefreshError(
+            raise MCPRefreshLockTimeoutError(
                 f"Another process is still refreshing the token at {get_mcp_credentials_path(instance_id, owner_id)}"
             )
         await asyncio.sleep(_CLUSTER_LOCK_POLL_SECONDS)
@@ -85,7 +114,29 @@ class MCPTokenRefreshError(ValueError):
     `oauth_client_module.MCPOAuthError`/`MCPRefreshTokenInvalidError`, which are raised by
     the HTTP call itself and propagate through this module unchanged. Subclasses
     `ValueError` for compatibility with callers (and tests) written against the pre-Phase-2
-    `_perform_token_refresh`, which raised a bare `ValueError` for these same conditions."""
+    `_perform_token_refresh`, which raised a bare `ValueError` for these same conditions.
+    `refresh_reason` tags which, for the refresh log lines (`credential_refresh_log.ERROR_CLASS_BY_REASON`)."""
+
+    refresh_reason: Optional[str] = None
+
+    def __init__(self, message: str = "", *, refresh_reason: Optional[str] = None) -> None:
+        super().__init__(message)
+        if refresh_reason:  # keeps a subclass's class-level tag
+            self.refresh_reason = refresh_reason
+
+
+class MCPRefreshLockTimeoutError(MCPTokenRefreshError):
+    """Another process held this credential's refresh lock for `CLUSTER_LOCK_WAIT_SECONDS`: the
+    refresh is busy, the sign-in isn't known to be bad."""
+
+    refresh_reason = "lock_contention"
+
+
+def credential_scope(
+    instance_id: str, owner_id: str, *, trigger: Optional[Trigger] = None, org_id: Optional[str] = None,
+) -> AbstractContextManager[None]:
+    """Which MCP sign-in a refresh line is about (`owner_id`: a user id or an agent key)."""
+    return refresh_scope(Kind.MCP, trigger=trigger, org_id=org_id, mcp_server_id=instance_id, owner_id=owner_id)
 
 
 async def resolve_client_credentials(
@@ -166,17 +217,24 @@ async def retire_rejected_dcr_client(
     legacy_path = get_mcp_dcr_client_path(instance_id, owner_id)
     legacy = registered_clients(await config_service.get_config(legacy_path, default=None, use_cache=False))
     if legacy and legacy[0]["clientId"] == client_id:
-        logger.warning(f"Removing OAuth client {client_id} for MCP instance {instance_id}: the provider rejected it")
+        _log_client_retired(instance_id, client_id, "legacy")
         await config_service.delete_config(legacy_path)
 
     shared_path = get_mcp_shared_dcr_client_path(instance_id)
     shared = registered_clients(await config_service.get_config(shared_path, default=None, use_cache=False))
     if shared and shared[0]["clientId"] == client_id and not shared[0].get(REJECTED_AT_FIELD):
-        logger.warning(f"OAuth client {client_id} for MCP instance {instance_id} was rejected; the next sign-in registers another")
+        _log_client_retired(instance_id, client_id, "shared")
         await config_service.set_config(shared_path, {**shared[0], REJECTED_AT_FIELD: get_epoch_timestamp_in_ms()})
     elif len(shared) > 1 and shared[1]["clientId"] == client_id:
-        logger.warning(f"Removing retired OAuth client {client_id} for MCP instance {instance_id}: the provider rejected it")
+        _log_client_retired(instance_id, client_id, "previous")
         await config_service.set_config(shared_path, {key: value for key, value in shared[0].items() if key != PREVIOUS_CLIENT_FIELD})
+
+
+def _log_client_retired(instance_id: str, client_id: str, client_kind: str) -> None:
+    # `shared` is only marked, so the next sign-in registers another; `legacy` and `previous` are removed.
+    logger.warning("Removing the OAuth client the provider rejected", extra={
+        "mcp_server_id": instance_id, "oauth_client": client_id, "client_kind": client_kind,
+    })
 
 
 async def refresh_credential_record(
@@ -185,6 +243,7 @@ async def refresh_credential_record(
     config_service: ConfigurationService,
     *,
     stale_access_token: Optional[str] = None,
+    org_id: str | None = None,
 ) -> OAuthTokens:
     """Refresh the OAuth tokens stored at `/services/mcp/credentials/{instance_id}/{owner_id}`
     and persist the result back to the same record.
@@ -201,12 +260,16 @@ async def refresh_credential_record(
             the refresh token (re-authentication required) — subclass of MCPOAuthError.
         oauth_client_module.MCPOAuthError: the token endpoint request failed otherwise.
     """
+    if org_id is not None and credentials_switch_on():
+        return await _refresh_binding(instance_id, owner_id, config_service, org_id)
     # A provider that rotates refresh tokens has spent the old one once it answers, so a caller
     # that gives up (Stop, a listing's deadline) must not abandon the save halfway.
-    refresh = asyncio.ensure_future(
-        _refresh_credential_record_under_locks(instance_id, owner_id, config_service, stale_access_token)
-    )
-    refresh.add_done_callback(_log_abandoned_refresh_failure)
+    # The task copies the context here: its `end` line keeps the ids, trigger and org after a caller that left.
+    with credential_scope(instance_id, owner_id):
+        refresh = asyncio.ensure_future(
+            _refresh_credential_record_under_locks(instance_id, owner_id, config_service, stale_access_token)
+        )
+    refresh.add_done_callback(_retrieve_exception)
     return await asyncio.shield(refresh)
 
 
@@ -216,17 +279,39 @@ async def _refresh_credential_record_under_locks(
     config_service: ConfigurationService,
     stale_access_token: Optional[str],
 ) -> OAuthTokens:
-    async with _refresh_locks[(instance_id, owner_id)], _cluster_refresh_lock(instance_id, owner_id, config_service):
-        return await _refresh_credential_record_locked(
-            instance_id, owner_id, config_service, stale_access_token,
-        )
+    # Around both locks: an attempt that never gets them still has its one `end` line.
+    async with refresh_attempt(logger, once_key=f"mcp:{instance_id}/{owner_id}") as attempt:
+        async with _refresh_locks[(instance_id, owner_id)], _cluster_refresh_lock(instance_id, owner_id, config_service):
+            return await _refresh_credential_record_locked(
+                instance_id, owner_id, config_service, stale_access_token, attempt,
+            )
 
 
-def _log_abandoned_refresh_failure(task: "asyncio.Future[OAuthTokens]") -> None:
-    # Retrieved here so a refresh whose caller left doesn't end as "exception never retrieved";
-    # a caller that stayed gets the same exception from the shield.
-    if not task.cancelled() and task.exception() is not None:
-        logger.debug(f"MCP token refresh failed: {task.exception()}")
+async def _refresh_binding(
+    instance_id: str, owner_id: str, config_service: ConfigurationService, org_id: str
+) -> OAuthTokens:
+    """With CONTROL_PLANE_CREDENTIALS on (CPD-8) the record is the owner's binding, renewed by the one refresher;
+    the old credential path is read-only."""
+    from app.connectors.core.base.token_service.token_refresher import (
+        binding_refresher_for,
+    )
+
+    refresher = await binding_refresher_for(config_service)
+    for owner in (f"user:{owner_id}", f"agent:{owner_id}"):
+        record = await refresher.refresh_owner(org_id, instance_id, owner)
+        tokens = record.get("oauthTokens") if record is not None else None
+        if isinstance(tokens, dict):
+            return oauth_client_module.parse_tokens(tokens)
+    raise MCPTokenRefreshError(
+        f"The connection to MCP instance {instance_id} could not be renewed; re-authentication is required"
+    )
+
+
+def _retrieve_exception(task: "asyncio.Future[OAuthTokens]") -> None:
+    # Retrieved so a refresh whose caller left doesn't end as "exception never retrieved"; its `end` line
+    # already said how it failed, and a caller that stayed gets the same exception from the shield.
+    if not task.cancelled():
+        task.exception()
 
 
 async def _refresh_credential_record_locked(
@@ -234,39 +319,48 @@ async def _refresh_credential_record_locked(
     owner_id: str,
     config_service: ConfigurationService,
     stale_access_token: Optional[str],
+    attempt: Attempt,
 ) -> OAuthTokens:
     cred_path = get_mcp_credentials_path(instance_id, owner_id)
     record = await config_service.get_config(cred_path, default=None, use_cache=False)
     if not isinstance(record, dict):
-        raise MCPTokenRefreshError(f"No MCP credential record found at {cred_path}")
+        raise MCPTokenRefreshError(f"No MCP credential record found at {cred_path}", refresh_reason="no_credential")
 
     tokens_dict = record.get("oauthTokens")
     if tokens_dict is None:
         tokens_dict = {}
     elif not isinstance(tokens_dict, dict):
-        raise MCPTokenRefreshError(f"Invalid OAuth token record at {cred_path}; re-authentication is required")
+        raise MCPTokenRefreshError(
+            f"Invalid OAuth token record at {cred_path}; re-authentication is required", refresh_reason="invalid_token_record",
+        )
 
     stored_access_token = tokens_dict.get("accessToken") or tokens_dict.get("access_token")
     if stale_access_token and stored_access_token and stored_access_token != stale_access_token:
-        return OAuthTokens.model_validate(tokens_dict)
+        attempt.reason = "adopted"
+        return oauth_client_module.parse_tokens(tokens_dict)
 
-    refresh_token = tokens_dict.get("refreshToken") or tokens_dict.get("refresh_token")
+    refresh_token = _stored_refresh_token(tokens_dict)
     if not refresh_token:
-        raise MCPTokenRefreshError(f"No refresh token available at {cred_path}; re-authentication is required")
+        raise MCPTokenRefreshError(
+            f"No refresh token available at {cred_path}; re-authentication is required", refresh_reason="no_refresh_token",
+        )
 
     token_url = tokens_dict.get("tokenUrl") or tokens_dict.get("token_url")
     if not token_url:
-        raise MCPTokenRefreshError(f"No tokenUrl persisted for {cred_path}; cannot refresh without re-authenticating")
+        raise MCPTokenRefreshError(
+            f"No tokenUrl persisted for {cred_path}; cannot refresh without re-authenticating", refresh_reason="no_token_url",
+        )
 
     client_id, client_secret = await resolve_client_credentials(
         instance_id, owner_id, config_service, issued_by=tokens_dict.get("clientId"),
     )
     if not client_id:
-        raise MCPTokenRefreshError(f"No OAuth client configuration found for {cred_path}")
+        raise MCPTokenRefreshError(f"No OAuth client configuration found for {cred_path}", refresh_reason="config_missing")
 
     # Only an org instance may reach the private network; a personal one, like a missing one,
     # refreshes public-only, so it needn't be looked up.
     instance = await config_service.get_config(get_mcp_instance_path(instance_id), default=None, use_cache=False)
+    failure: Optional[oauth_client_module.MCPOAuthError] = None
     try:
         new_tokens = await oauth_client_module.refresh_access_token(
             token_url=token_url, client_id=client_id, client_secret=client_secret, refresh_token=refresh_token,
@@ -276,9 +370,14 @@ async def _refresh_credential_record_locked(
             auth_method=tokens_dict.get("tokenEndpointAuthMethod") or tokens_dict.get("token_endpoint_auth_method"),
         )
     except oauth_client_module.MCPOAuthError as e:
-        if e.rejected_client:
+        failure = e
+    # After the except: an error the retire raises must not carry the provider's answer as its context.
+    if failure is not None:
+        if failure.rejected_client:
             await retire_rejected_dcr_client(config_service, instance_id, owner_id, client_id)
-        raise
+        if failure.deauth_reason:
+            await _count_rejection(config_service, cred_path, refresh_token, failure)
+        raise failure
     new_tokens = new_tokens.model_copy(update={"client_id": client_id})
 
     # The record may have changed during the request: Disconnect, Reconnect and a credentials
@@ -286,25 +385,102 @@ async def _refresh_credential_record_locked(
     # would restore credentials the user removed, or overwrite the newer grant.
     current = await config_service.get_config(cred_path, default=None, use_cache=False)
     if not isinstance(current, dict):
-        raise MCPTokenRefreshError(f"The MCP credential at {cred_path} was removed while it was being refreshed")
-    current_tokens = current.get("oauthTokens") if isinstance(current.get("oauthTokens"), dict) else {}
-    if (current_tokens.get("refreshToken") or current_tokens.get("refresh_token")) != refresh_token:
-        return OAuthTokens.model_validate(current_tokens)
+        raise MCPTokenRefreshError(
+            f"The MCP credential at {cred_path} was removed while it was being refreshed", refresh_reason="credential_removed",
+        )
+    current_tokens = _tokens_of(current)
+    if _stored_refresh_token(current_tokens) != refresh_token:
+        attempt.reason = "superseded"
+        return oauth_client_module.parse_tokens(current_tokens)
 
-    current["oauthTokens"] = new_tokens.model_dump(by_alias=True, mode="json")
-    current["updatedAt"] = get_epoch_timestamp_in_ms()
-    await _save_refreshed_record(config_service, cred_path, current)
+    # A success ends the run of strikes. A new dict: the config cache holds the one get_config returned, and a failed
+    # write must not change it.
+    updated = {key: value for key, value in current.items() if key not in (REJECTIONS_FIELD, LAST_REJECTED_AT_FIELD)}
+    updated["oauthTokens"] = new_tokens.model_dump(by_alias=True, mode="json")
+    updated["updatedAt"] = get_epoch_timestamp_in_ms()
+    await _save_refreshed_record(config_service, cred_path, updated)
     return new_tokens
+
+
+def _tokens_of(record: dict) -> dict:
+    tokens = record.get("oauthTokens")
+    return tokens if isinstance(tokens, dict) else {}
+
+
+def _stored_refresh_token(tokens: dict) -> Optional[str]:
+    return tokens.get("refreshToken") or tokens.get("refresh_token")
+
+
+def _non_negative_int(value: object) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+async def _count_rejection(
+    config_service: ConfigurationService, cred_path: str, refresh_token: str, failure: oauth_client_module.MCPOAuthError,
+) -> None:
+    """One strike for a sign-in its provider refused, under the refresh locks so every caller and process
+    adds to one count; the third signs it out with `deauthReason`. Never raises: the caller re-raises `failure`."""
+    strikes = 0
+    try:
+        record = await config_service.get_config(cred_path, default=None, use_cache=False)
+        if not isinstance(record, dict) or not record.get("isAuthenticated"):
+            return  # removed, or already signed out
+        prior = _non_negative_int(record.get(REJECTIONS_FIELD)) or 0
+        if _stored_refresh_token(_tokens_of(record)) != refresh_token:
+            # A new sign-in replaced the token the provider refused.
+            log_strike(logger, strike=prior, max_strikes=MAX_REFRESH_REJECTIONS, cause=failure, counted=False, reason="rotated")
+            return
+        now = get_epoch_timestamp_in_ms()
+        last = _non_negative_int(record.get(LAST_REJECTED_AT_FIELD))
+        if last is not None and last > now + STRIKE_SPACING_MS:
+            last = None  # written by a clock far ahead: stale, or it would hold every strike inside the window
+        if last is not None and now - last < STRIKE_SPACING_MS:  # a clock behind `last` counts as inside, too
+            log_strike(
+                logger, strike=prior, max_strikes=MAX_REFRESH_REJECTIONS, cause=failure, counted=False, reason="within_window",
+            )
+            return
+        strikes = (0 if last is None or now - last > STRIKE_MEMORY_MS else prior) + 1
+        # A new dict: the config cache holds the one get_config returned, and a failed write must not change it.
+        kept = {key: value for key, value in record.items() if key not in (REJECTIONS_FIELD, LAST_REJECTED_AT_FIELD)}
+        if strikes < MAX_REFRESH_REJECTIONS:
+            updated = {**kept, REJECTIONS_FIELD: strikes, LAST_REJECTED_AT_FIELD: now}
+        else:
+            updated = {**kept, "isAuthenticated": False, "deauthReason": failure.deauth_reason, "updatedAt": now}
+        saved = await config_service.set_config(cred_path, updated)
+    except Exception as e:
+        final = strikes >= MAX_REFRESH_REJECTIONS
+        log_refresh_failure(
+            logger, EVENT_DEAUTHENTICATE_FAILED if final else EVENT_STRIKE, e, level=logging.ERROR if final else None,
+            strike=f"{strikes}/{MAX_REFRESH_REJECTIONS}", counted=False,
+        )
+        return
+    _log_counted(failure, strikes, saved=saved)
+
+
+def _log_counted(failure: oauth_client_module.MCPOAuthError, strikes: int, *, saved: bool) -> None:
+    """After the write, so no line claims a strike or a sign-out the store doesn't hold."""
+    if not saved and strikes < MAX_REFRESH_REJECTIONS:
+        # Falls short of the count, the safe direction.
+        log_strike(logger, strike=strikes, max_strikes=MAX_REFRESH_REJECTIONS, cause=failure, counted=False, reason="not_saved")
+    elif not saved:
+        log_event(logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure", reason="not_updated",
+                  strike=f"{strikes}/{MAX_REFRESH_REJECTIONS}")
+    else:
+        log_strike(logger, strike=strikes, max_strikes=MAX_REFRESH_REJECTIONS, cause=failure)
+        if strikes >= MAX_REFRESH_REJECTIONS:
+            log_deauthenticated(logger, reason=failure.deauth_reason, strikes=strikes)
 
 
 async def _save_refreshed_record(config_service: ConfigurationService, cred_path: str, record: dict) -> None:
     """A provider that rotates refresh tokens has already invalidated the old one, so a lost write
     would sign the user out at the next refresh. One retry; then say so loudly. The new tokens
     are still returned, since they work for this request."""
-    for attempt in (1, 2):
+    for n in (1, 2):
+        extra: dict[str, object] = {"attempt": f"{n}/2"}
         try:
             if await config_service.set_config(cred_path, record):
                 return
         except Exception as e:
-            logger.warning(f"Saving refreshed MCP tokens to {cred_path} failed (attempt {attempt}): {e}")
-    logger.error(f"Refreshed MCP tokens could not be saved to {cred_path}; the user may have to sign in again")
+            extra["error_type"] = type(e).__name__
+        logger.warning("Saving the refreshed credentials failed", extra=extra)
+    logger.error("Refreshed MCP tokens could not be saved; the user may have to sign in again")

@@ -365,7 +365,7 @@ export function FilterDropdown({
       ) : hasSelection ? (
         <Flex align="center" style={{ flexShrink: 0 }}>
           <Popover.Trigger>
-            <div style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
+            <div className="touch-hit" style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
               <Flex
                 align="center"
                 gap="1"
@@ -456,6 +456,7 @@ export function FilterDropdown({
       ) : (
         <Popover.Trigger>
           <Button
+            className="touch-hit"
             variant="outline"
             size="1"
             radius="medium"
@@ -494,7 +495,10 @@ export function FilterDropdown({
           padding: '8px',
           minWidth: '180px',
           maxWidth: '240px',
-          backgroundColor: 'var(--olive-2)',
+          // Frosted like the action menus (shared frost tokens in globals.css)
+          backgroundColor: 'var(--frost-bg-strong)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-1)',
           boxShadow:
@@ -512,7 +516,7 @@ export function FilterDropdown({
               onChange={(e) => handleSearchChange(e.target.value)}
             >
               <TextField.Slot>
-                <MaterialIcon name="search" size={14} color="var(--slate-9)" />
+                <MaterialIcon name="search" size={14} color="var(--slate-11)" />
               </TextField.Slot>
             </TextField.Root>
           </Box>
@@ -638,13 +642,13 @@ export function FilterDropdown({
           {isLoadingMore && (
             <Flex align="center" justify="center" gap="2" style={{ padding: '8px' }}>
               <Spinner size={12} />
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 {t('filterDropdown.loadingMore')}
               </Text>
             </Flex>
           )}
           {filteredOptions.length === 0 && !isLoadingMore && !isLoadingOptions && (
-            <Text size="2" style={{ color: 'var(--slate-9)', padding: '8px' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)', padding: '8px' }}>
               {emptyMessage || t('message.noResults')}
             </Text>
           )}

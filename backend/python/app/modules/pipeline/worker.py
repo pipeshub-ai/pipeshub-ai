@@ -20,15 +20,22 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.config.constants.arangodb import ProgressStatus
+from app.core.org_context import for_org
 from app.exceptions.indexing_exceptions import ProcessingError
+from app.modules.pipeline.connector_gate import ConnectorBeingDeleted
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.models import (
+    FOREIGN_REASON,
+    ForeignStatus,
     StageJob,
     StageOutcome,
     StageResult,
     StageState,
     StageStatePatch,
 )
+from app.modules.pipeline.pause_budget import PauseState, Verdict
+from app.modules.pipeline.pause_judge import PauseJudge
+from app.modules.pipeline.pause_store import PauseStoreUnavailable
 from app.modules.pipeline.registry import StageRegistry
 from app.modules.pipeline.stage import (
     Deadline,
@@ -37,6 +44,8 @@ from app.modules.pipeline.stage import (
     StageIO,
     StageStateStore,
 )
+from app.services.llm_gateway.fleet_hold import RECONCILE_EVERY_TICKS
+from app.services.llm_gateway.gateway import JobTrace, llm_job
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -45,12 +54,22 @@ from app.services.messaging.config import (
     compute_retry_backoff_seconds,
 )
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
-from app.utils.indexing_timing import ADMITTED, begin_record, end_record
+from app.services.messaging.precision_flip import precision_flip_in
+from app.services.spend_guard.retry_policy import clamp_retry_after
+from app.utils.error_class import log_failure, quotes_content
+from app.utils.indexing_timing import note
 
 # Called once a stage's headline is final on the records it updated, e.g. to release the
 # records' QUEUED md5 copies, which wait for the enrichment to end. Raising makes the
 # delivery retry; the redelivery finds the state settled and calls it again.
 HeadlineSettled = Callable[[StageJob, Sequence[str], ProgressStatus], Awaitable[None]]
+
+
+# Deliveries that did no work, as the reason on the delivery's index.end (StageOutcome.SKIPPED: the stage did not apply).
+_DID_NOTHING = {
+    "stale": "stale", "unchanged": "unchanged", "duplicate": "duplicate", "skipped": "not_applicable",
+    "foreign": "foreign_state",
+}
 
 
 class StagePaused(RequeueWithoutAttempt):
@@ -61,6 +80,33 @@ class StagePaused(RequeueWithoutAttempt):
     """
 
     counts_toward_backstop = False
+
+
+class StageHeldForDelete(StagePaused):
+    """The job's connector is being deleted: hand it back for later, having written nothing.
+
+    Not settled, since a delete can be put back: once it sticks the job finds its records gone
+    and is dropped as stale; after a revert it runs. A run held mid-way leaves its claim
+    IN_PROGRESS, which the redelivery takes over like a crashed run's.
+
+    Only this message waits: the other connectors' jobs on the stage keep running.
+    """
+
+    pauses_consumer = False
+
+
+class StageWaitsForPrecision(StagePaused):
+    """A write of the stage met an index that holds another weight precision than the server serves.
+
+    Handed back to the queue with no delivery attempt counted. The run's claim is settled as QUEUED, so the
+    redelivery claims it again. Only this message waits; the read-time check holds back new work.
+    """
+
+    pauses_consumer = False
+
+
+# How long a job held for a delete waits before it is delivered again.
+HELD_FOR_DELETE_DELAY_S = 60.0
 
 
 class StageRetry(Exception):
@@ -79,6 +125,8 @@ SUPERSEDED = "superseded by a newer revision"
 # snapshot taken from another thread never sees a dict change size.
 OUTCOME_COUNTERS: tuple[str, ...] = (
     "completed", "unchanged", "skipped", "stale", "retry", "paused", "failed", "duplicate", "error", "abandoned",
+    # The job's state is in a status a newer release wrote: that release owns it, so nothing ran.
+    "foreign",
 )
 
 
@@ -103,8 +151,12 @@ class StageJobHandler:
         worker_id: str | None = None,
         clock_ms: Callable[[], int] = _now_ms,
         on_headline_settled: HeadlineSettled | None = None,
+        pause_judge: PauseJudge | None = None,
     ) -> None:
         super().__init__()
+        # The pause budget (``pause_budget``). None runs without one: a paused job then waits without bound.
+        self._pause = pause_judge
+        self._redrive_passes = 0
         self._registry = registry
         self._states = states
         self._headlines = headlines
@@ -118,21 +170,18 @@ class StageJobHandler:
 
     async def __call__(self, message: StreamMessage) -> AsyncGenerator[PipelineEvent, None]:
         job, stage = self._parse(message)
-        # One timings line per job, like a record's: the stage's steps time themselves.
-        timeline, token = begin_record(job.record_ids[0], f"stage:{job.stage}")
-        timeline.mark(ADMITTED)
-        outcome = "failed"
+        # The delivery's index.end is the job's one line; the stage's steps time themselves on it.
+        note(stage=job.stage, job=job.job_id, record_id=job.record_ids[0])
         try:
             await self._handle(job, stage)
-            outcome = "ok"
-        except StagePaused:
-            outcome = "paused"
+        except (StagePaused, StageRetry):
             raise
-        except StageRetry:
-            outcome = "retry"
-            raise
-        finally:
-            end_record(timeline, token, outcome=outcome, logger=self._logger)
+        except Exception as exc:
+            # A flip of the weight precision may sit under any wrapper the stage put around it.
+            flip = precision_flip_in(exc)
+            if flip is None:
+                raise
+            raise StageWaitsForPrecision(str(flip), delay_s=flip.delay_s) from exc
         # The consumer releases the job's permit on INDEXING_COMPLETE; nothing held a parse slot.
         data = PipelineEventData(record_id=job.job_id)
         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=data)
@@ -151,7 +200,7 @@ class StageJobHandler:
         self._count(job.stage, "abandoned")
         try:
             state = await self._states.get(job.state_key)
-            if state is None or state.status in _TERMINAL:
+            if state is None or isinstance(state.status, ForeignStatus) or state.status in _TERMINAL:
                 return
             why = f"Stage job discarded after {attempts} attempt(s): {reason}"
             failed = await self._states.cas(
@@ -169,8 +218,8 @@ class StageJobHandler:
                         job.record_ids, headline, ProgressStatus.FAILED, rev=job.rev, reason=why
                     )
                     await self._headline_settled(job, updated, ProgressStatus.FAILED)
-        except Exception:
-            self._logger.exception("Could not mark abandoned stage job %s FAILED", job.job_id)
+        except Exception as e:
+            log_failure(self._logger, "stage.abandon_failed", e, level=logging.WARNING, include_error_text=not quotes_content(e))
 
     def outcomes(self, stage: str) -> dict[str, int]:
         """How this process's deliveries of ``stage`` ended since it started."""
@@ -180,6 +229,9 @@ class StageJobHandler:
         counters = self._outcomes.get(stage)
         if counters is not None:
             counters[outcome] += 1
+        # The delivery's index.end says it too. A run that worked says stage_outcome once its result is recorded (_apply).
+        if outcome in _DID_NOTHING:
+            note(outcome="skipped", reason=_DID_NOTHING[outcome])
 
     def _parse(self, message: StreamMessage) -> tuple[StageJob, Stage[Any]]:
         try:
@@ -191,31 +243,63 @@ class StageJobHandler:
         return job, self._registry.get(job.stage)
 
     async def _handle(self, job: StageJob, stage: Stage[Any]) -> None:
+        try:
+            await self._handle_job(job, stage)
+        except ConnectorBeingDeleted:
+            # Nothing more is written: the delete removes the records and their stage states,
+            # and a write here would make its batch lose a write conflict.
+            self._logger.debug(
+                "Stage job %s belongs to connector %s, which is being deleted; holding it for %.0fs",
+                job.job_id,
+                job.connector_id,
+                HELD_FOR_DELETE_DELAY_S,
+            )
+            self._count(job.stage, "paused")
+            note(stage_outcome="paused")
+            raise StageHeldForDelete(
+                f"connector {job.connector_id} is being deleted", delay_s=HELD_FOR_DELETE_DELAY_S
+            ) from None
+
+    async def _handle_job(self, job: StageJob, stage: Stage[Any]) -> None:
         io = self._io_for(job, Deadline(stage.budget_s))
+        connector_deleting = getattr(io, "connector_deleting", None)
+        if connector_deleting is not None and await connector_deleting(job):
+            # Before the state is claimed, so a held job has written nothing at all.
+            raise ConnectorBeingDeleted(job.connector_id)
         state = await self._state_for(job, io)
         if state is None:
-            self._logger.info(
+            self._logger.debug(
                 "Stage job %s has no state and none of its records is left on its revision; dropping it",
                 job.job_id,
             )
             self._count(job.stage, "stale")
             return
+        if isinstance(state.status, ForeignStatus):
+            # Handing it back would pause this stage's consumer, and after a rollback no pod would ever take it.
+            self._logger.debug(
+                "Stage job %s: its state is %s, %s; leaving it", job.job_id, state.status.value, FOREIGN_REASON
+            )
+            self._count(job.stage, "foreign")
+            note(foreign_status=state.status.value)
+            return
+        status = state.status
         fingerprint = (await stage.fingerprint(job, io)).digest()
 
         # A fingerprint is stored only by a run that completed, and cleared when a run
         # starts, so an equal one means this revision's output is already current.
         if not job.force and state.fingerprint == fingerprint and await self._output_in_place(job, stage, io, state):
-            await self._complete_unchanged(job, stage, state, fingerprint)
+            await self._complete_unchanged(job, stage, state, status, fingerprint)
             self._count(job.stage, "unchanged")
             return
-        if state.status in _SETTLED and not job.force:
-            self._logger.info("Stage job %s is already %s; ignoring this delivery", job.job_id, state.status.value)
+        if status in _SETTLED and not job.force:
+            self._logger.debug("Stage job %s is already %s; ignoring this delivery", job.job_id, status.value)
             self._count(job.stage, "duplicate")
             return
+        prior, refusal = await self._budget_before_run(job, state)
         run_attempt = state.attempt + 1
         claimed = await self._states.cas(
             job.state_key,
-            expected=state.status,
+            expected=status,
             new=ProgressStatus.IN_PROGRESS,
             patch=StageStatePatch(
                 worker_id=self._worker_id,
@@ -229,20 +313,68 @@ class StageJobHandler:
         )
         if not claimed:
             raise StageRetry(f"stage job {job.job_id} changed state while it was being claimed")
+        note(stage_attempt=run_attempt)
+        allowance = None if refusal is not None else await self._reserve_sends(job, stage, run_attempt)
 
+        trace: JobTrace | None = None
+        budget: asyncio.Timeout | None = None
         try:
-            async with asyncio.timeout(stage.budget_s):
-                result = await stage.run(job, io)
+            if refusal is not None:
+                # The budget of this revision is spent: an automatic re-dispatch must not send anything.
+                last = f" Last status: {state.reason}" if state.reason else ""
+                result = StageResult(outcome=StageOutcome.FAILED, reason=f"{refusal[1]}{last}")
+            else:
+                with llm_job(job.state_key, allowance=allowance) as trace:
+                    async with asyncio.timeout(stage.budget_s) as budget:
+                        result = await stage.run(job, io)
         except TimeoutError:
+            if budget is not None and budget.expired():  # not a shorter timeout raised inside the stage
+                note(timeout_s=stage.budget_s)
             result = StageResult(outcome=StageOutcome.RETRY, reason=f"ran past its {stage.budget_s:.0f}s budget")
+        except ConnectorBeingDeleted:
+            await self._commit_sends(job, run_attempt, trace)
+            raise
         except Exception as exc:
+            await self._commit_sends(job, run_attempt, trace)
             # The consumer classifies it (retry or dead-letter); the reason stays for whoever looks next.
             self._count(job.stage, "error")
             if not await self._settle(job, ProgressStatus.QUEUED, attempt=run_attempt, reason=f"{type(exc).__name__}: {exc}"):
-                # Another run owns the job now; this delivery has nothing left to report.
+                # Another run owns the job now; this line is the failure's only trace.
+                log_failure(
+                    self._logger, "stage.run_failed", exc, level=logging.WARNING, reason="superseded",
+                    include_error_text=not quotes_content(exc),
+                )
                 return
             raise
-        await self._apply(job, stage, result, fingerprint, attempt=run_attempt)
+        if result.outcome is not StageOutcome.PAUSED:
+            # A PAUSED outcome is committed by its verdict; every other one commits what the run spent here.
+            await self._commit_sends(job, run_attempt, trace)
+        await self._apply(
+            job, stage, result, fingerprint, attempt=run_attempt, was_paused=state.status is ProgressStatus.PAUSED
+        )
+
+    async def _budget_before_run(
+        self, job: StageJob, state: StageState
+    ) -> tuple[PauseState | None, tuple[Verdict, str] | None]:
+        """The job's pause budget so far, and the refusal when it is spent; judged before the job is claimed.
+
+        A budget that cannot be read defers the job (``StagePaused``, nothing written), whatever its status: an
+        automatic redrive leaves a FAILED job QUEUED with its spent budget, so "not readable" is never "not spent". A
+        forced run starts over (the coordinator reset its budget) and goes ahead; its calls pause while Redis is down."""
+        if self._pause is None or not self._pause.available:
+            return None, None
+        try:
+            prior = await self._pause.prior(job.state_key)
+            refusal = None if job.force else await self._pause.spent(job, prior)
+        except PauseStoreUnavailable as exc:
+            if job.force:
+                return None, None
+            self._count(job.stage, "paused")
+            raise StagePaused(
+                f"the pause budget cannot be read ({exc}); holding stage job {job.job_id}",
+                delay_s=compute_retry_backoff_seconds(max(state.attempt, 1)),
+            ) from None
+        return prior, refusal
 
     async def _state_for(self, job: StageJob, io: StageIO) -> StageState | None:
         """The job's state, recreated when its claim is missing; None when its records are gone.
@@ -284,14 +416,16 @@ class StageJobHandler:
             seen.status, seen.attempt, seen.fingerprint, seen.output
         )
 
-    async def _complete_unchanged(self, job: StageJob, stage: Stage[Any], state: StageState, fingerprint: str) -> None:
+    async def _complete_unchanged(
+        self, job: StageJob, stage: Stage[Any], state: StageState, status: ProgressStatus, fingerprint: str
+    ) -> None:
         # Also when it read COMPLETED: a run claimed since must not be reported complete on its behalf.
         # The attempt it read fences that: a forced redrive that claimed (and maybe finished) in the
         # meantime has moved it on, even when the status has come back round to COMPLETED.
-        already = state.status is ProgressStatus.COMPLETED
+        already = status is ProgressStatus.COMPLETED
         if not await self._states.cas(
             job.state_key,
-            expected=state.status,
+            expected=status,
             new=ProgressStatus.COMPLETED,
             patch=StageStatePatch() if already else StageStatePatch(finished_at_ms=self._clock_ms(), reason=None),
             expected_attempt=state.attempt,
@@ -300,10 +434,12 @@ class StageJobHandler:
         result = StageResult(
             outcome=StageOutcome.COMPLETED, fingerprint=fingerprint, reason="inputs unchanged", record_view=job.view
         )
+        await self._clear_pause(job, state.attempt)
         await self._finish(job, stage, result)
 
     async def _apply(
-        self, job: StageJob, stage: Stage[Any], result: StageResult, fingerprint: str, *, attempt: int
+        self, job: StageJob, stage: Stage[Any], result: StageResult, fingerprint: str, *, attempt: int,
+        was_paused: bool = False,
     ) -> None:
         outcome = result.outcome
         self._count(job.stage, outcome.value)
@@ -314,12 +450,15 @@ class StageJobHandler:
                 job, ProgressStatus.COMPLETED, attempt=attempt, fingerprint=fingerprint, output=result.output
             ):
                 return
+            note(stage_outcome=outcome.value)
+            await self._clear_pause(job, attempt)
             await self._finish(
                 job, stage, result.model_copy(update={"fingerprint": fingerprint, "record_view": result.record_view or job.view})
             )
         elif outcome is StageOutcome.SKIPPED:
             if not await self._settle(job, ProgressStatus.SKIPPED, attempt=attempt, reason=result.reason):
                 return
+            await self._clear_pause(job, attempt)
             await self._finish(job, stage, result.model_copy(update={"record_view": result.record_view or job.view}))
         elif outcome is StageOutcome.STALE:
             # Terminal for this revision so the sweeper never revives it; nothing else is written.
@@ -327,27 +466,146 @@ class StageJobHandler:
         elif outcome is StageOutcome.RETRY:
             if not await self._settle(job, ProgressStatus.QUEUED, attempt=attempt, reason=result.reason):
                 return
+            note(stage_outcome=outcome.value)
             raise StageRetry(result.reason or f"stage {job.stage} asked to retry")
         elif outcome is StageOutcome.PAUSED:
+            judgement = await self._pause.judge(job, result, attempt=attempt) if self._pause is not None else None
+            if judgement is not None and judgement.decision.verdict.is_fail:
+                # The budget is spent: a poison document, a lone job at the absolute cap, or the wall.
+                reason = judgement.decision.reason or f"stage {job.stage} failed"
+                await self._fail(job, stage, reason, attempt=attempt)
+                return
             if not await self._settle(job, ProgressStatus.PAUSED, attempt=attempt, reason=result.reason):
                 return
+            note(stage_outcome=outcome.value)
+            if judgement is not None:
+                await self._redrive_capped(judgement.scope, judgement.redrive, judgement.episode)
             # Backs off like a retry (15 s, 1 min, 4 min, then every 5 min) so a long outage costs
             # little, and never returns before the dependency said it might be back.
-            delay = max(result.retry_after_s or 0.0, compute_retry_backoff_seconds(attempt))
-            raise StagePaused(result.reason or f"stage {job.stage} is paused", delay_s=delay)
+            delay = max(clamp_retry_after(result.retry_after_s) or 0.0, compute_retry_backoff_seconds(attempt))
+            if judgement is not None and judgement.decision.verdict is Verdict.REDRIVE:
+                delay += judgement.jitter_s
+            elif self._pause is not None:
+                delay += await self._pause.hold_jitter(result)
+            # One WARNING per episode: a job that was already PAUSED and pauses again repeats what its first pause said.
+            raise StagePaused(
+                result.reason or f"stage {job.stage} is paused",
+                delay_s=delay,
+                log_level=logging.DEBUG if was_paused else logging.WARNING,
+            )
         else:
             reason = result.reason or f"stage {job.stage} failed"
-            if not await self._settle(job, ProgressStatus.FAILED, attempt=attempt, reason=reason):
-                return
-            if stage.headline is not None:
-                updated = await self._headlines.set_headline(
-                    job.record_ids, stage.headline, ProgressStatus.FAILED, rev=job.rev, reason=reason
+            await self._fail(job, stage, reason, attempt=attempt)
+
+    async def _fail(self, job: StageJob, stage: Stage[Any], reason: str, *, attempt: int) -> None:
+        if not await self._settle(job, ProgressStatus.FAILED, attempt=attempt, reason=reason):
+            return
+        note(stage_outcome="failed")
+        if stage.headline is not None:
+            updated = await self._headlines.set_headline(
+                job.record_ids, stage.headline, ProgressStatus.FAILED, rev=job.rev, reason=reason
+            )
+            try:
+                await self._headline_settled(job, updated, ProgressStatus.FAILED)
+            except Exception as e:
+                log_failure(
+                    self._logger, "stage.follow_up_failed", e, level=logging.WARNING,
+                    include_error_text=not quotes_content(e),
                 )
+        raise StageFailed(reason, record_id=job.job_id)
+
+    async def _reserve_sends(self, job: StageJob, stage: Stage[Any], attempt: int) -> int | None:
+        """Reserve the failed sends this run may make (what the absolute cap leaves after the committed sends and any
+        twin run's reservation); None without a pause budget. When the store cannot be written the job is handed back
+        (QUEUED, ``StagePaused``) before it sends anything; a forced run goes ahead unreserved, its calls pause on their
+        own while Redis is down."""
+        if self._pause is None or not self._pause.available:
+            return None
+        try:
+            return await self._pause.reserve(job, attempt=attempt, stale_ms=int(2 * stage.budget_s * 1000))
+        except PauseStoreUnavailable as exc:
+            if job.force:
+                return None
+            await self._settle(job, ProgressStatus.QUEUED, attempt=attempt, reason="the pause budget cannot be read")
+            self._count(job.stage, "paused")
+            raise StagePaused(
+                f"the pause budget cannot be written ({exc}); holding stage job {job.job_id}",
+                delay_s=compute_retry_backoff_seconds(max(attempt, 1)),
+            ) from None
+
+    async def _commit_sends(self, job: StageJob, attempt: int, trace: JobTrace | None) -> None:
+        """Commit what a run that did not pause spent (a RETRY, a failure, a timeout, a completion) and release its
+        reservation, so the next run's allowance counts it. A commit that fails leaves the reservation to go stale,
+        and a stale reservation counts as fully spent."""
+        if self._pause is None or not self._pause.available:
+            return
+        await self._pause.commit(job, attempt=attempt, trace=trace)
+
+    async def _clear_pause(self, job: StageJob, attempt: int) -> None:
+        """A COMPLETED or SKIPPED revision starts its pause budget over, unless a later attempt has written it since."""
+        if self._pause is not None:
+            await self._pause.clear(job.state_key, attempt=attempt)
+
+    async def _redrive_capped(self, scope: str, state_keys: Sequence[str], episode: str = "") -> None:
+        """Jobs the charged cap failed in the window of a key hold: the key was the problem, not the document. Each is
+        owed a redrive until it is done (``_redrive_one``); what this pass cannot do, the recovery leader retries."""
+        if self._pause is None:
+            return
+        for key in state_keys:
+            if await self._redrive_one(key, episode):
                 try:
-                    await self._headline_settled(job, updated, ProgressStatus.FAILED)
-                except Exception:
-                    self._logger.exception("Stage job %s failed and its follow-up could not run", job.job_id)
-            raise StageFailed(reason, record_id=job.job_id)
+                    await self._pause.redrive_done(scope, key)
+                except PauseStoreUnavailable:
+                    self._logger.debug("could not mark the hold redrive of %s done; the next pass finds it done", key)
+
+    async def retry_hold_redrives(self) -> int:
+        """The recovery leader's pass over the redrives provider holds still owe. Returns how many were completed."""
+        if self._pause is None or not self._pause.available:
+            return 0
+        if self._redrive_passes % RECONCILE_EVERY_TICKS == 0:
+            # The scope index is a fast path; the owed sets themselves are the record (``PauseStore.reconcile_owed``).
+            try:
+                await self._pause.reconcile_owed()
+            except PauseStoreUnavailable:
+                self._logger.warning("could not reconcile the owed redrive index; using the index as it is", exc_info=True)
+        self._redrive_passes += 1
+        done = 0
+        for scope, owed in (await self._pause.pending_redrives()).items():
+            for key, episode in owed:
+                if await self._redrive_one(key, episode):
+                    await self._pause.redrive_done(scope, key)
+                    done += 1
+        return done
+
+    async def _redrive_one(self, key: str, episode: str = "") -> bool:
+        """Redrive one job a hold owes: a fresh charge count first, then a redrive that is not forced, so its pause budget
+        (sends, wall) carries on. True when nothing more is owed: done, or the job no longer needs it. A job still running
+        may yet settle FAILED by its charged cap, and a reset or redrive that fails is tried again, so those stay owed."""
+        if self._pause is None:
+            return True
+        try:
+            other = await self._states.get(key)
+            if other is None or not other.org_id:
+                return True
+            if other.status is ProgressStatus.IN_PROGRESS:
+                return False
+            if other.status in (ProgressStatus.QUEUED, ProgressStatus.PAUSED):
+                # It will run again: it must not meet its old charge count at the pre-run check. Once per episode,
+                # so a pass repeated after its redrive went out leaves the charges a new run has made.
+                await self._pause.release_charged(key, episode)
+                return True
+            if other.status is not ProgressStatus.FAILED:
+                return True
+            # Still owed means the redrive has not gone out (a refused publish, or a crash after the reset), so it is
+            # sent even when this episode's reset was already done. A run that has since reached its cap on its own is
+            # refused by the pre-run check before it sends, so a redrive here never buys it more sends.
+            await self._pause.release_charged(key, episode)
+            with for_org(other.org_id, job="stage_hold_redrive"):
+                await self._coordinator.redrive(other.to_job().view, other.stage, priority=other.priority, force=False)
+            return True
+        except Exception:
+            self._logger.warning("could not redrive stage job %s after a provider hold; it is retried", key, exc_info=True)
+            return False
 
     async def _finish(self, job: StageJob, stage: Stage[Any], result: StageResult) -> None:
         if stage.headline is not None:
@@ -361,7 +619,7 @@ class StageJobHandler:
                 clear_reason=status is ProgressStatus.COMPLETED,
             )
             if not updated:
-                self._logger.info(
+                self._logger.debug(
                     "Stage job %s finished, but no bound record is still on revision %s; not dispatching successors",
                     job.job_id,
                     job.rev,
@@ -404,6 +662,7 @@ class StageJobHandler:
         current = await self._states.get(job.state_key)
         if (
             current is not None
+            and not isinstance(current.status, ForeignStatus)
             and current.status not in _TERMINAL
             and current.attempt == attempt
             and await self._states.cas(
@@ -411,7 +670,7 @@ class StageJobHandler:
             )
         ):
             return True
-        self._logger.warning(
+        self._logger.debug(
             "Stage job %s (attempt %d) could not record %s; its state is now %s (attempt %s)",
             job.job_id,
             attempt,
@@ -420,4 +679,6 @@ class StageJobHandler:
             current.attempt if current else "-",
         )
         self._count(job.stage, "duplicate")
+        # Superseded, not a duplicate delivery: another run owns the state (a later note wins over _count's).
+        note(outcome="skipped", reason="superseded", owner_attempt=current.attempt if current else None)
         return False

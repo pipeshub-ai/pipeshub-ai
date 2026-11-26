@@ -664,7 +664,8 @@ class TestGitHubTeamsIssues:
             )
             # assignee_source_id is written but never hydrated back (see
             # _TICKET_UNHYDRATED), so the observable consequence is asserted instead:
-            # exactly one ASSIGNED_TO edge, built from the primary assignee's email.
+            # one ASSIGNED_TO edge per assignee. The record's people links resolve
+            # each id to a member, or to a person node for someone who is not one.
             expected_email = emails.get(str(assignees[0]["id"]))
             assert record.assignee_email == expected_email, (
                 "assignee_email must be the PRIMARY assignee's or None — never borrowed "
@@ -675,20 +676,46 @@ class TestGitHubTeamsIssues:
             assigned = await graph_provider.get_record_outgoing_entity_relations(
                 connector_id, multi_external, "ASSIGNED_TO",
             )
-            assert len(assigned) <= 1, (
-                f"expected at most one ASSIGNED_TO edge (single-valued assignee_email), "
+            assignee_ids = {str(a["id"]) for a in assignees if a.get("id") is not None}
+            assert len(assigned) == len(set(assigned)) == len(assignee_ids), (
+                f"expected one ASSIGNED_TO edge per assignee ({len(assignee_ids)}), "
                 f"got {assigned!r}"
             )
-            if expected_email:
-                assert assigned, "primary assignee resolved to a user but no ASSIGNED_TO edge"
+            # A target is the node's sourceUserId, else userId, else its key. A user that
+            # already existed keeps its own userId; one the connector created carries the
+            # GitHub id there; a non-member's edge ends on a person node with a generated
+            # key. So members are matched on whatever their user node carries, as the Jira
+            # test does, and what is left must be one edge per non-member.
+            unmatched = set(assigned)
+            non_members = 0
+            for github_id in sorted(assignee_ids):
+                email = emails.get(github_id)
+                if not email:
+                    non_members += 1
+                    continue
+                user_doc = await graph_provider.graph_find_user_by_email(email) or {}
+                expected_ids = {github_id} | {
+                    str(user_doc[k]) for k in ("sourceUserId", "userId", "_key", "id") if user_doc.get(k)
+                }
+                hit = expected_ids & unmatched
+                assert hit, (
+                    f"member assignee {github_id} ({email}): none of {sorted(expected_ids)} "
+                    f"in ASSIGNED_TO targets {assigned!r}"
+                )
+                unmatched -= hit
+            assert len(unmatched) == non_members, (
+                f"expected {non_members} ASSIGNED_TO edge(s) to non-member person nodes, "
+                f"got {sorted(unmatched)} left of {assigned!r}"
+            )
 
+            # Hidden-email tickets link the author as REPORTED_BY only: CREATED_BY comes
+            # from creator_email, which GitHub never gives.
             creator = multi.get("user") or {}
             if emails.get(str(creator.get("id"))):
-                for edge_type in ("CREATED_BY", "REPORTED_BY"):
-                    related = await graph_provider.get_record_outgoing_entity_relations(
-                        connector_id, multi_external, edge_type,
-                    )
-                    assert related, f"{edge_type} edge missing on {multi_external}"
+                related = await graph_provider.get_record_outgoing_entity_relations(
+                    connector_id, multi_external, "REPORTED_BY",
+                )
+                assert related, f"REPORTED_BY edge missing on {multi_external}"
             checked += 1
         else:
             logger.info("TC-GH-ISSUE-002: no multi-assignee issue — entity relations skipped")

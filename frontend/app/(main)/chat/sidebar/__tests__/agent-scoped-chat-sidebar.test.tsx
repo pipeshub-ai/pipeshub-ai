@@ -33,6 +33,7 @@ vi.mock('@/lib/store/mobile-sidebar-store', () => ({
 }));
 vi.mock('@/app/(main)/agents/api', () => ({
   AgentsApi: { getAgent: h.getAgent, fetchAgentConversations: h.fetchAgentConversations },
+  agentDetailKey: (id: string) => ['agents/detail', id] as const,
 }));
 vi.mock('@/chat/build-chat-url', () => ({ openFreshAgentChat: vi.fn() }));
 vi.mock('../agent-sidebar-row-access', () => ({ getAgentSidebarRowMenuAccess: () => ({}) }));
@@ -40,6 +41,7 @@ vi.mock('../header', () => ({ ChatSidebarHeader: () => null }));
 vi.mock('../sidebar-item', () => ({ SidebarItem: ({ label }: { label: React.ReactNode }) => <span>{label}</span> }));
 vi.mock('../agent-more-chats-sidebar', () => ({ AgentMoreChatsSidebar: () => null }));
 vi.mock('../agents-sidebar', () => ({ AgentsSidebar: () => null }));
+vi.mock('../jobs-nav-entries', () => ({ JobsNavEntries: () => <span data-testid="jobs-nav-entries" /> }));
 vi.mock('../chat-section', () => ({
   ChatSection: ({
     title,
@@ -66,7 +68,11 @@ vi.mock('../chat-section', () => ({
   },
 }));
 
+import { act } from '@testing-library/react';
+import { clearSessionCache } from '@/lib/api/session-cache';
+import { useChatStore } from '@/chat/store';
 import { AgentScopedChatSidebar } from '../agent-scoped-chat-sidebar';
+import { refreshJobLists } from '@/lib/harness-jobs/swr-keys';
 
 const conv = (id: string, title: string, isOwner: boolean) =>
   ({ id, title, isOwner, createdAt: 1, updatedAt: 1, isShared: !isOwner }) as never;
@@ -81,6 +87,8 @@ const renderSidebar = () =>
   );
 
 beforeEach(() => {
+  // The agent detail is cached for 60 s; each case starts from an empty cache.
+  clearSessionCache();
   h.getAgent.mockResolvedValue({ agent: { _key: 'agent-7' } });
 });
 
@@ -159,7 +167,71 @@ describe('agent sidebar: chats shared with the user', () => {
     renderSidebar();
 
     await waitFor(() => expect(screen.getByTestId('chat.sharedChats')).toBeTruthy());
-    expect(screen.queryByText('chat.newChat')).toBeNull();
+    await waitFor(() => expect(screen.queryByText('chat.newChat')).toBeNull());
     expect(screen.getByText('chat.noChatsYet')).toBeTruthy();
+  });
+
+  it('offers New Chat while the agent is still loading', async () => {
+    h.getAgent.mockReturnValue(new Promise(() => {}));
+    h.fetchAgentConversations.mockResolvedValue({ conversations: [], sharedConversations: [], pagination });
+
+    renderSidebar();
+
+    expect(await screen.findByText('chat.newChat')).toBeTruthy();
+  });
+});
+
+describe('agent sidebar: the agent detail', () => {
+  it('asks for the agent once, and a chats refresh does not ask again', async () => {
+    h.fetchAgentConversations.mockResolvedValue({ conversations: [], sharedConversations: [], pagination });
+
+    renderSidebar();
+    await waitFor(() => expect(h.fetchAgentConversations).toHaveBeenCalledTimes(1));
+    expect(h.getAgent).toHaveBeenCalledTimes(1);
+    expect(h.getAgent).toHaveBeenCalledWith('agent-7', { quiet: true });
+
+    act(() => useChatStore.getState().bumpConversationsVersion());
+
+    await waitFor(() => expect(h.fetchAgentConversations).toHaveBeenCalledTimes(2));
+    expect(h.getAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses the agent for a remount within 60 s', async () => {
+    h.fetchAgentConversations.mockResolvedValue({ conversations: [], sharedConversations: [], pagination });
+
+    renderSidebar();
+    await waitFor(() => expect(h.getAgent).toHaveBeenCalledTimes(1));
+    cleanup();
+    renderSidebar();
+
+    await waitFor(() => expect(h.fetchAgentConversations).toHaveBeenCalledTimes(2));
+    expect(h.getAgent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('agent sidebar: run marks move without a reload (classic jobs §6)', () => {
+  it('shows the Needs you and Jobs entries, and re-reads its chats in place on a job lists refresh', async () => {
+    h.fetchAgentConversations.mockResolvedValue({ conversations: [conv('mine-1', 'My roadmap chat', true)], sharedConversations: [], pagination });
+    renderSidebar();
+    expect(screen.getByTestId('jobs-nav-entries')).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId('recents').textContent).toBe('My roadmap chat'));
+    const reads = h.fetchAgentConversations.mock.calls.length;
+
+    h.fetchAgentConversations.mockResolvedValue({ conversations: [conv('mine-1', 'My roadmap chat, renamed', true)], sharedConversations: [], pagination });
+    act(() => refreshJobLists());
+    await waitFor(() => expect(screen.getByTestId('recents').textContent).toBe('My roadmap chat, renamed'));
+    expect(h.fetchAgentConversations.mock.calls.length).toBe(reads + 1);
+    expect(useChatStore.getState().isAgentConversationsLoading).toBe(false);
+  });
+
+  it('keeps the rows shown when that quiet re-read fails', async () => {
+    h.fetchAgentConversations.mockResolvedValue({ conversations: [conv('mine-1', 'My roadmap chat', true)], sharedConversations: [], pagination });
+    renderSidebar();
+    await waitFor(() => expect(screen.getByTestId('recents').textContent).toBe('My roadmap chat'));
+    h.fetchAgentConversations.mockRejectedValue(new Error('down'));
+    act(() => refreshJobLists());
+    await waitFor(() => expect(h.fetchAgentConversations).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('recents').textContent).toBe('My roadmap chat');
+    expect(useChatStore.getState().agentConversationsError).toBeNull();
   });
 });

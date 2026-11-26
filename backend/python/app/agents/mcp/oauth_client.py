@@ -8,67 +8,128 @@ breaking for form-encoded token endpoints (e.g. GitHub).
 import base64
 import json as _json
 import logging
+import socket
+from collections.abc import Mapping
 from typing import Any, Optional
 from urllib.parse import parse_qs, quote_plus
 
 import httpx
+from pydantic import ValidationError
 
 from app.agents.mcp.errors import MCPUrlBlockedError
 from app.agents.mcp.models import OAuthTokens, TokenEndpointAuthMethod, utcnow
 from app.agents.mcp.url_guard import GuardedTransport
+from app.utils.error_class import chain_has
+from app.utils.oauth_errors import (
+    CLIENT_REJECTED_ERROR_CODES,
+    MAX_TOKEN_LIFETIME_S,
+    PERMANENT_GRANT_ERROR_CODES,
+    is_permanent_grant_rejection,
+    is_transient_status,
+    oauth_error_code,
+)
+from app.utils.url_fetcher import UnresolvableHostError
 
 logger = logging.getLogger(__name__)
 
 TOKEN_REQUEST_TIMEOUT_SECONDS = 15.0
 
-# RFC 6749 §5.2 errors a retry can't fix: the grant or the client registration is no longer
-# valid, so the user has to sign in again. GitHub's own codes arrive with HTTP 200.
-_PERMANENT_ERROR_CODES = frozenset({
-    "invalid_grant", "invalid_client", "unauthorized_client", "unsupported_grant_type",
-    "invalid_scope", "invalid_request", "bad_refresh_token", "incorrect_client_credentials",
-})
-_PERMANENT_REFRESH_ERROR_MARKERS = (
-    "invalid_grant",
-    "invalid_refresh_token",
-    "refresh token is invalid",
-    "refresh token has expired",
-    "bad_refresh_token",
-)
+# MCP also counts a refused request shape as permanent. Connectors don't: one regression in
+# our own request would then deauthenticate every org-wide connector at once. For the same reason
+# these are no strike toward signing a credential out (`deauth_reason`).
+_REQUEST_REFUSED_CODES = frozenset({"invalid_request", "invalid_scope", "unsupported_grant_type"})
+_PERMANENT_ERROR_CODES = PERMANENT_GRANT_ERROR_CODES | _REQUEST_REFUSED_CODES
 _MAX_ERROR_TEXT_CHARS = 500
 
 
 class MCPOAuthError(Exception):
     """Raised when a token exchange/refresh request fails. `error_code` is the RFC 6749 `error`
-    the provider sent, when it sent one."""
+    the provider sent, when it sent one; `status` is the token endpoint's HTTP status, when it answered with an error.
+    `refresh_reason` tags why for the refresh log lines (`app.utils.credential_refresh_log.ERROR_CLASS_BY_REASON`)."""
 
-    def __init__(self, message: str = "", *, error_code: Optional[str] = None) -> None:
+    refresh_reason: Optional[str] = None
+
+    def __init__(
+        self, message: str = "", *, error_code: Optional[str] = None, status: Optional[int] = None,
+        refresh_reason: Optional[str] = None,
+    ) -> None:
         super().__init__(message)
         self.error_code = error_code
+        self.status = status
+        if refresh_reason:  # keeps a subclass's class-level tag
+            self.refresh_reason = refresh_reason
 
     @property
     def rejected_client(self) -> bool:
         """The provider doesn't know the client (or its secret) any more."""
-        return (self.error_code or "").lower() == "invalid_client"
+        return self._code == "invalid_client"
+
+    @property
+    def deauth_reason(self) -> Optional[str]:
+        """Why this answer counts toward signing the credential out (`token_refresh`), or None. A refused
+        client is a misconfiguration, not the user's revoked grant, but no retry fixes it either."""
+        refused = self._code in CLIENT_REJECTED_ERROR_CODES and not is_transient_status(self.status)
+        return "oauth_client_rejected" if refused else None
+
+    @property
+    def _code(self) -> str:
+        return (self.error_code or "").lower()
+
+    @property
+    def unanswered(self) -> bool:
+        """The request failed before the token endpoint answered (refused, timed out, cut off):
+        an outage, not a verdict on the grant."""
+        return isinstance(self.__cause__, httpx.TransportError)
 
 
 class MCPRefreshTokenInvalidError(MCPOAuthError):
     """The provider permanently rejected the refresh token — re-authentication is required."""
 
+    refresh_reason = "invalid_grant"
 
-def _is_permanent_refresh_rejection(error_text: str, error_code: Optional[str] = None) -> bool:
-    if error_code and error_code.lower() in _PERMANENT_ERROR_CODES:
-        return True
-    lowered = error_text.lower()
-    return any(marker in lowered for marker in _PERMANENT_REFRESH_ERROR_MARKERS)
+    @property
+    def deauth_reason(self) -> Optional[str]:
+        # A refused request shape is more likely our own regression than every user's dead grant.
+        return None if self._code in _REQUEST_REFUSED_CODES else "refresh_token_invalid"
 
 
-def _error_code(body: Any) -> Optional[str]:  # noqa: ANN401
-    code = body.get("error") if isinstance(body, dict) else None
-    return code if isinstance(code, str) and code else None
+class MCPMalformedTokenError(MCPOAuthError):
+    """A token field (a provider's answer or a saved record) is not what `OAuthTokens` defines.
+    Names the field as OAuth spells it, never its value."""
+
+    refresh_reason = "malformed_token"
+
+    def __init__(self, field_name: str) -> None:
+        super().__init__(f"OAuth token field '{field_name}' is malformed")
+        self.field_name = field_name
+
+
+# A saved record's keys are camelCase; the message names the OAuth (snake_case) field either way.
+_FIELD_BY_ALIAS = {info.alias: name for name, info in OAuthTokens.model_fields.items() if info.alias}
+
+
+def parse_tokens(data: Mapping[str, Any]) -> OAuthTokens:
+    """`OAuthTokens` from a token answer's fields or a saved record (camelCase or snake_case keys).
+
+    Raises:
+        MCPMalformedTokenError: a field has the wrong type, or `expires_in` is past `MAX_TOKEN_LIFETIME_S`.
+    """
+    try:
+        tokens = OAuthTokens.model_validate(data)
+    except ValidationError as e:
+        loc = e.errors(include_input=False)[0]["loc"]
+        field_name = _FIELD_BY_ALIAS.get(str(loc[0]), str(loc[0])) if loc else "oauth_tokens"
+    else:
+        # Bounded here, not on the model: OpenAPI loads its saved credentials with the same model.
+        if tokens.expires_in is None or abs(tokens.expires_in) <= MAX_TOKEN_LIFETIME_S:
+            return tokens
+        field_name = "expires_in"
+    # Outside the except: pydantic's text quotes the value, and it must not ride along as __context__.
+    raise MCPMalformedTokenError(field_name)
 
 
 def _error_text(status_code: int, body: Any, text: str) -> str:  # noqa: ANN401
-    code = _error_code(body)
+    code = oauth_error_code(body)
     if code:
         description = body.get("error_description")
         return f"{code}: {description}" if isinstance(description, str) and description else code
@@ -129,7 +190,11 @@ async def _post_token_request(
         try:
             resp = await client.post(token_url, data=data, headers={"Accept": "application/json", **(headers or {})})
         except MCPUrlBlockedError as e:
-            raise MCPOAuthError(str(e)) from e
+            # The guard refuses a host that doesn't resolve with the same error as a policy block; DNS is often transient.
+            reason = "host_unresolved" if chain_has(e, UnresolvableHostError, socket.gaierror) else "url_blocked"
+            raise MCPOAuthError(str(e), refresh_reason=reason) from e
+        except httpx.TransportError as e:
+            raise MCPOAuthError(f"OAuth token request failed before an answer ({type(e).__name__})") from e
         content_type = resp.headers.get("content-type", "").lower()
         text = resp.text
         json_body = None
@@ -141,14 +206,21 @@ async def _post_token_request(
 
         body = _parse_token_response(content_type, text, json_body) if text or json_body is not None else {}
         # Some providers (GitHub) report an error with HTTP 200, so the body decides too.
-        error_code = _error_code(body)
+        error_code = oauth_error_code(body)
         if resp.status_code >= 400 or error_code:
             detail = _error_text(resp.status_code, body, text)
-            if _is_permanent_refresh_rejection(text, error_code):
+            # A refused client is never a rejected grant, even when its description reads like one.
+            client_refused = (error_code or "").lower() in CLIENT_REJECTED_ERROR_CODES
+            if not client_refused and is_permanent_grant_rejection(
+                text, error_code, _PERMANENT_ERROR_CODES, status=resp.status_code,
+            ):
                 raise MCPRefreshTokenInvalidError(
                     f"OAuth token request rejected ({resp.status_code}): {detail}", error_code=error_code,
+                    status=resp.status_code,
                 )
-            raise MCPOAuthError(f"OAuth token request failed ({resp.status_code}): {detail}", error_code=error_code)
+            raise MCPOAuthError(
+                f"OAuth token request failed ({resp.status_code}): {detail}", error_code=error_code, status=resp.status_code,
+            )
         return body
 
 
@@ -179,17 +251,17 @@ async def exchange_code_for_token(
     if "access_token" not in token_data:
         raise MCPOAuthError("OAuth token response missing access_token")
 
-    return OAuthTokens(
-        access_token=token_data["access_token"],
-        token_type=token_data.get("token_type") or "Bearer",
-        refresh_token=token_data.get("refresh_token"),
-        expires_in=token_data.get("expires_in"),
-        scope=token_data.get("scope"),
-        token_url=token_url,
-        resource=resource,
-        token_endpoint_auth_method=used_method,
-        created_at=utcnow(),
-    )
+    return parse_tokens({
+        "access_token": token_data["access_token"],
+        "token_type": token_data.get("token_type") or "Bearer",
+        "refresh_token": token_data.get("refresh_token"),
+        "expires_in": token_data.get("expires_in"),
+        "scope": token_data.get("scope"),
+        "token_url": token_url,
+        "resource": resource,
+        "token_endpoint_auth_method": used_method,
+        "created_at": utcnow(),
+    })
 
 
 async def request_client_credentials_token(
@@ -211,16 +283,16 @@ async def request_client_credentials_token(
     if "access_token" not in token_data:
         raise MCPOAuthError("OAuth token response missing access_token")
 
-    return OAuthTokens(
-        access_token=token_data["access_token"],
-        token_type=token_data.get("token_type") or "Bearer",
-        expires_in=token_data.get("expires_in"),
-        scope=token_data.get("scope"),
-        token_url=token_url,
-        client_id=client_id,
-        token_endpoint_auth_method=used_method,
-        created_at=utcnow(),
-    )
+    return parse_tokens({
+        "access_token": token_data["access_token"],
+        "token_type": token_data.get("token_type") or "Bearer",
+        "expires_in": token_data.get("expires_in"),
+        "scope": token_data.get("scope"),
+        "token_url": token_url,
+        "client_id": client_id,
+        "token_endpoint_auth_method": used_method,
+        "created_at": utcnow(),
+    })
 
 
 async def refresh_access_token(
@@ -243,16 +315,16 @@ async def refresh_access_token(
 
     token_data = await _post_token_request(token_url, data, allow_private=allow_private, headers=headers)
     if "access_token" not in token_data:
-        raise MCPOAuthError("OAuth refresh response missing access_token")
+        raise MCPOAuthError("OAuth refresh response missing access_token", refresh_reason="no_access_token")
 
-    return OAuthTokens(
-        access_token=token_data["access_token"],
-        token_type=token_data.get("token_type") or "Bearer",
-        refresh_token=token_data.get("refresh_token") or refresh_token,
-        expires_in=token_data.get("expires_in"),
-        scope=token_data.get("scope"),
-        token_url=token_url,
-        resource=resource,
-        token_endpoint_auth_method=used_method,
-        created_at=utcnow(),
-    )
+    return parse_tokens({
+        "access_token": token_data["access_token"],
+        "token_type": token_data.get("token_type") or "Bearer",
+        "refresh_token": token_data.get("refresh_token") or refresh_token,
+        "expires_in": token_data.get("expires_in"),
+        "scope": token_data.get("scope"),
+        "token_url": token_url,
+        "resource": resource,
+        "token_endpoint_auth_method": used_method,
+        "created_at": utcnow(),
+    })

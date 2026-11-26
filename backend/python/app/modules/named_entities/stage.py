@@ -12,19 +12,22 @@ import time
 from typing import TYPE_CHECKING
 
 from app.modules.entity_resolution.models import ResolutionMode
+from app.modules.named_entities.coref import link_short_forms
 from app.modules.named_entities.domain.config import load_named_entity_config
-from app.modules.named_entities.domain.models import NamedEntityExtraction
+from app.modules.named_entities.domain.models import NamedEntityExtraction, model_failed
 from app.modules.named_entities.extractor import (
     NamedEntityExtractor,
     NamedEntityRequest,
-    indexing_llm,
+    indexing_llm_or_none,
 )
 from app.modules.named_entities.graph_writer import (
     NamedEntityGraphWriter,
     PersistRetrySupersededError,
 )
+from app.modules.named_entities.merge import anchor_year_less_dates
 from app.modules.named_entities.normalizers.dates import NormalizationContext
 from app.modules.named_entities.resolution import NamedEntityResolver
+from app.services.messaging.precision_flip import PrecisionFlip
 from app.telemetry.modules.named_entity_metrics import observe_stage, record_run
 
 _MODEL_GAVE_UP = frozenset({"no_progress", "budget_turns", "budget_tokens", "timeout"})
@@ -55,14 +58,14 @@ REEXTRACT_MAX_WINDOWS = 50
 
 def needs_reextract(extraction: NamedEntityExtraction) -> bool:
     """A written extraction that left text unread: the call budget ran out, or
-    the agent stopped with blocks it had not read. Failed calls are not a reason:
-    a re-extraction would fail the same way, and the last good entities stay."""
+    the agent stopped with blocks it had not read. A failed call is not one of
+    these: the entities stage retries the whole record (``model_failed``)."""
     stats = extraction.stats
-    if extraction.status != "PARTIAL" or stats.windows_run >= REEXTRACT_MAX_WINDOWS:
+    if extraction.status != "PARTIAL" or stats.windows_run >= REEXTRACT_MAX_WINDOWS or model_failed(extraction):
         return False
     if stats.windows_total > stats.windows_run:
         return True
-    return extraction.strategy == "agent" and extraction.termination_reason != "llm_error"
+    return extraction.strategy == "agent"
 
 
 async def extract_named_entities(
@@ -97,14 +100,9 @@ async def extract_named_entities(
             enabled_kinds=[kind.value for kind in config.enabled()],
             budgets=budgets.model_dump(),
         )
-    llm = transport = None
-    provider = model = "indexing"
-    try:
-        llm, transport, provider, model = await indexing_llm(
-            config_service, org_id=record.org_id, shard_key=record.record_name or "",
-        )
-    except Exception:
-        logger.warning("Named-entity model unavailable; keeping deterministic spans")
+    llm, transport, provider, model, kinds = await indexing_llm_or_none(
+        config_service, config.enabled(), org_id=record.org_id, shard_key=record.record_name or "",
+    )
     request = NamedEntityRequest(
         blocks=blocks,
         org_id=record.org_id,
@@ -112,7 +110,7 @@ async def extract_named_entities(
         record_type=getattr(record.record_type, "value", "") or "",
         reference_time_ms=_reference_ms(record),
         tz=config.tz,
-        enabled=config.enabled(),
+        enabled=kinds,
         budgets=budgets,
         llm=llm,
         transport=transport,
@@ -130,6 +128,10 @@ def _model_gave_nothing(extraction: NamedEntityExtraction) -> bool:
     if extraction.termination_reason == "llm_error":
         return True
     return extraction.stats.accepted == 0 and extraction.termination_reason in _MODEL_GAVE_UP
+
+
+class EntityIndexWriteFailed(Exception):
+    """Some entity points of the record were not written to the vector index."""
 
 
 async def persist_named_entities(
@@ -171,12 +173,31 @@ async def persist_named_entities(
             outcome = "failed"
             return "kept"
         resolver = NamedEntityResolver(graph_provider, llm=llm, mode=ResolutionMode.SHADOW)
-        resolved = await resolver.resolve(record.org_id, extraction.entities)
+        # A kept extraction from before a fold rule folds now, so writing it again
+        # (a reprojection, a persist retry) learns the short forms as aliases.
+        entities = link_short_forms([entity.model_copy(deep=True) for entity in extraction.entities])
+        anchoring = _year_anchor(record, extraction)
+        if anchoring is not None:
+            year_less = sum(1 for e in entities if getattr(e.value, "ambiguous", False))
+            entities = anchor_year_less_dates(entities, anchoring)
+            if year_less:
+                logger.info(
+                    "named_entities record=%s year_less_dates=%d still_year_less=%d", getattr(record, "id", ""),
+                    year_less, sum(1 for e in entities if getattr(e.value, "ambiguous", False)),
+                )
+        resolved = await resolver.resolve(record.org_id, entities)
         embeddable = await writer.write(record.org_id, record.id, resolved, retry_due=retry_due)
         if entity_vector_store and embeddable:
-            await entity_vector_store.upsert_entities_batch(embeddable)
+            from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
+
+            written = await entity_vector_store.upsert_entities_batch(embeddable)
+            if isinstance(written, EntityWriteOutcome) and written.failed:
+                # Entities that did not reach the index are not a finished write: the caller retries it.
+                raise EntityIndexWriteFailed(f"{written.failed} of {len(embeddable)} entity points were not written")
     except PersistRetrySupersededError:
         outcome = result = "superseded"
+    except PrecisionFlip:
+        raise  # the index holds another weight precision: the stage waits, it did not fail
     except Exception as exc:
         outcome = result = "failed"
         logger.warning(
@@ -220,6 +241,20 @@ def log_run(record: Record, extraction: NamedEntityExtraction, *, outcome: str, 
         stats.extract_ms,
         seconds,
     )
+
+
+def _year_anchor(record: Record, extraction: NamedEntityExtraction) -> NormalizationContext | None:
+    """How to give dates written without a year a year: the one nearest the record's
+    creation (when such text is written). Only times an edit never moves: the source's
+    creation, else when the record was first stored. Its last update would move an
+    unchanged "Sep 10" to the next year on a later edit. None for an upload: its
+    creation time is when it was uploaded, not when its text was written."""
+    from app.models.source_dates import is_kb_upload
+
+    reference = getattr(record, "source_created_at", None) or getattr(record, "created_at", None)
+    if not reference or is_kb_upload(getattr(record, "connector_name", None), getattr(record, "origin", None)):
+        return None
+    return NormalizationContext(reference_time_ms=reference, tz=extraction.tz or "UTC", anchor_years=True)
 
 
 def normalization_context(record: Record, tz: str) -> NormalizationContext:

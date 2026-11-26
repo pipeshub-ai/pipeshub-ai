@@ -275,7 +275,7 @@ function DropZone({ type, onDrop, isEmpty, compact = false }: DropZoneProps) {
           borderRadius: 'var(--radius-1)',
           background: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
-          backdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
           flex: 1,
           height: '100%',
         }}
@@ -314,7 +314,7 @@ function DropZone({ type, onDrop, isEmpty, compact = false }: DropZoneProps) {
         <MaterialIcon
           name="add"
           size={24}
-          color={isDragOver ? 'var(--accent-9)' : 'var(--slate-9)'}
+          color={isDragOver ? 'var(--accent-11)' : 'var(--slate-11)'}
         />
         {isEmpty && (
           <>
@@ -497,7 +497,7 @@ function UploadedItem({ item, onRemove }: UploadedItemProps) {
           }}
         >
           {item.type === 'folder' ? (
-            <MaterialIcon name="folder" size={16} color="var(--accent-9)" />
+            <MaterialIcon name="folder" size={16} color="var(--accent-11)" />
           ) : (
             <FileIcon filename={item.name} size={16} />
           )}
@@ -513,7 +513,7 @@ function UploadedItem({ item, onRemove }: UploadedItemProps) {
           >
             {item.name}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-9)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {item.type === 'folder'
               ? `${item.filesWithPaths?.length ?? 0} files`
               : formatBytes(item.size)}
@@ -664,7 +664,7 @@ function FolderTreeRow({ node, depth, onRemovePath }: FolderTreeRowProps) {
             <Box style={{ width: 20, flexShrink: 0 }} />
           )}
           {isFolder ? (
-            <MaterialIcon name="folder" size={16} color="var(--accent-9)" style={{ flexShrink: 0 }} />
+            <MaterialIcon name="folder" size={16} color="var(--accent-11)" style={{ flexShrink: 0 }} />
           ) : (
             <Box style={{ flexShrink: 0, display: 'inline-flex' }}>
               <FileIcon filename={node.name} size={16} />
@@ -681,7 +681,7 @@ function FolderTreeRow({ node, depth, onRemovePath }: FolderTreeRowProps) {
             {node.name}
           </Text>
           {!isFolder && node.size != null && (
-            <Text size="1" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
+            <Text size="1" style={{ color: 'var(--slate-11)', flexShrink: 0 }}>
               {formatBytes(node.size)}
             </Text>
           )}
@@ -741,7 +741,7 @@ function UploadedFolderItem({ item, onRemoveFolder, onRemovePath }: UploadedFold
           padding: 'var(--space-1) var(--space-3) var(--space-1) var(--space-2)',
         }}
       >
-        <Text size="1" style={{ color: 'var(--slate-9)', paddingLeft: 'var(--space-2)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)', paddingLeft: 'var(--space-2)' }}>
           {fileCount} {fileCount === 1 ? 'file' : 'files'} · {formatBytes(item.size)}
         </Text>
       </Flex>
@@ -769,11 +769,14 @@ function formatBytes(bytes: number): string {
 export interface UploadDataSidebarProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSave: (items: UploadFileItem[]) => void;
+  /** Return false to keep the picked files in the panel (nothing was uploaded). */
+  onSave: (items: UploadFileItem[]) => boolean | void;
   isSaving?: boolean;
   /** Folder levels that can still be added under the upload target. */
   remainingFolderLevels?: number;
   maxFolderDepth?: number;
+  /** Extra content above the footer. Editions plug it in via config.ts. */
+  extras?: React.ReactNode;
 }
 
 export function UploadDataSidebar({
@@ -783,6 +786,7 @@ export function UploadDataSidebar({
   isSaving = false,
   remainingFolderLevels = Infinity,
   maxFolderDepth,
+  extras,
 }: UploadDataSidebarProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -832,7 +836,7 @@ export function UploadDataSidebar({
   const handleSave = useCallback(() => {
     const allItems = [...fileItems, ...folderItems];
     if (allItems.length > 0) {
-      onSave(allItems);
+      if (onSave(allItems) === false) return;
       setFileItems([]);
       setFolderItems([]);
     }
@@ -878,10 +882,10 @@ export function UploadDataSidebar({
           ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
-          background: 'var(--effects-translucent)',
+          background: 'var(--frost-bg)',
           border: '1px solid var(--olive-3)',
           borderRadius: isMobile ? 0 : 'var(--radius-2)',
-          backdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
           boxShadow: ' 0 20px 48px 0 rgba(0, 0, 0, 0.25)',
           overflow: 'hidden',
           display: 'flex',
@@ -901,8 +905,6 @@ export function UploadDataSidebar({
           style={{
             padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-4)',
             borderBottom: '1px solid var(--olive-3)',
-            backdropFilter: 'blur(8px)',
-            backgroundColor: 'var(--effects-translucent)',
             minWidth: 0,
             overflow: 'hidden',
             flexShrink: 0,
@@ -925,10 +927,12 @@ export function UploadDataSidebar({
               {t('kb.upload.documentation')}
             </Button>
             <IconButton
+              aria-label={t('common.close')}
               variant="ghost"
+              // Radix ghost buttons pull out by their padding; keep the header's own inset
+              style={{ margin: 0 }}
               color="gray"
               size="2"
-              aria-label={t('common.close')}
               onClick={() => handleOpenChange(false)}
             >
               <MaterialIcon name="close" size={16} color="var(--slate-11)" />
@@ -947,8 +951,6 @@ export function UploadDataSidebar({
             minWidth: 0,
             width: '100%',
             padding: 'var(--space-4)',
-            backgroundColor: 'var(--effects-translucent)',
-            backdropFilter: 'blur(8px)',
           }}
         >
           {/* Upload Files Section */}
@@ -971,7 +973,7 @@ export function UploadDataSidebar({
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
                   {t('kb.upload.filesTitle')}
                 </Text>
-                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                   {t('kb.upload.filesHint', { maxMb: maxFileSizeMB })}
                 </Text>
               </Flex>
@@ -1017,7 +1019,7 @@ export function UploadDataSidebar({
             <>
           <Flex align="center" gap="3">
             <Box style={{ flex: 1, height: '1px', backgroundColor: 'var(--slate-6)' }} />
-            <Text size="1" style={{ color: 'var(--slate-9)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t('kb.upload.or')}
             </Text>
             <Box style={{ flex: 1, height: '1px', backgroundColor: 'var(--slate-6)' }} />
@@ -1043,7 +1045,7 @@ export function UploadDataSidebar({
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
                   {t('kb.upload.foldersTitle')}
                 </Text>
-                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                   {t('kb.upload.foldersHint', { maxMb: maxFileSizeMB })}
                 </Text>
               </Flex>
@@ -1096,7 +1098,7 @@ export function UploadDataSidebar({
             )}
 
             {folderItems.length === 0 && !foldersAllowed && (
-              <Text size="1" style={{ color: 'var(--slate-9)' }} data-testid="upload-folder-limit-reached">
+              <Text size="1" style={{ color: 'var(--slate-11)' }} data-testid="upload-folder-limit-reached">
                 {t('kb.upload.folderLimitReached', { max: maxFolderDepth })}
               </Text>
             )}
@@ -1104,6 +1106,10 @@ export function UploadDataSidebar({
             </>
           )}
         </Box>
+
+        {extras ? (
+          <Box style={{ padding: 'var(--space-2) var(--space-4)', flexShrink: 0 }}>{extras}</Box>
+        ) : null}
 
         {/* Footer */}
         <Flex

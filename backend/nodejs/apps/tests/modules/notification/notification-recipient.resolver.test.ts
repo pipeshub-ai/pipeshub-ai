@@ -11,7 +11,7 @@ import {
 
 function stubUserGroupsFind(groups: { users?: unknown[] }[]): sinon.SinonStub {
   const lean = sinon.stub().resolves(groups);
-  const select = sinon.stub().returns({ lean });
+  const select = sinon.stub().returns({ sort: sinon.stub().returnsThis(), lean });
   return sinon.stub(UserGroups, 'find').returns({ select } as any);
 }
 
@@ -61,12 +61,12 @@ describe('notification/notification-recipient.resolver', () => {
       stubUserGroupsFind([]);
 
       const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
-      expect(result.map((id) => id.toString())).to.have.members([
+      expect(result.map((id) => id)).to.have.members([
         user1.toString(),
         user2.toString(),
       ]);
       expect(findStub.firstCall.args[0]).to.deep.equal({
-        orgId,
+        orgId: String(orgId),
         role: 'admin',
         isDeleted: { $ne: true },
         // "Notify the administrators" means people. A service account has no
@@ -92,7 +92,7 @@ describe('notification/notification-recipient.resolver', () => {
         stubUserGroupsFind([{ users: [user] }]);
         const result = await resolveRoleRecipientUserIds(orgId, [role]);
         expect(result).to.have.length(1);
-        expect(result[0].toString()).to.equal(user.toString());
+        expect(result[0]).to.equal(user.toString());
       }
     });
 
@@ -103,7 +103,7 @@ describe('notification/notification-recipient.resolver', () => {
 
       const result = await resolveRoleRecipientUserIds(orgId, ['admin', 'standard']);
       expect(result).to.have.length(1);
-      expect(result[0].toString()).to.equal(shared.toString());
+      expect(result[0]).to.equal(shared.toString());
     });
 
     it('normalizes role casing and trims whitespace for admin', async () => {
@@ -122,7 +122,7 @@ describe('notification/notification-recipient.resolver', () => {
 
       const result = await resolveRoleRecipientUserIds(orgId, ['standard']);
       expect(result).to.have.length(1);
-      expect(result[0].toString()).to.equal(valid.toString());
+      expect(result[0]).to.equal(valid.toString());
     });
 
     it('returns empty array when admin users and groups are empty', async () => {
@@ -139,7 +139,7 @@ describe('notification/notification-recipient.resolver', () => {
       stubUserGroupsFind([{ users: [groupAdmin] }]);
 
       const result = await resolveRoleRecipientUserIds(orgId, ['admin']);
-      expect(result.map((id) => id.toString())).to.have.members([roleAdmin.toString()]);
+      expect(result.map((id) => id)).to.have.members([roleAdmin.toString()]);
     });
   });
 
@@ -150,7 +150,7 @@ describe('notification/notification-recipient.resolver', () => {
       const user2 = new mongoose.Types.ObjectId().toString();
 
       const result = await resolveNotificationRecipientUserIds(orgId, [user1, user2], []);
-      expect(result.map((id) => id.toString())).to.have.members([user1, user2]);
+      expect(result.map((id) => id)).to.have.members([user1, user2]);
       expect(findStub.called).to.be.false;
     });
 
@@ -160,7 +160,7 @@ describe('notification/notification-recipient.resolver', () => {
       stubUserGroupsFind([]);
 
       const result = await resolveNotificationRecipientUserIds(orgId, [], ['admin']);
-      expect(result.map((id) => id.toString())).to.include(user.toString());
+      expect(result.map((id) => id)).to.include(user.toString());
     });
 
     it('merges and deduplicates direct ids and role-resolved ids', async () => {
@@ -174,7 +174,7 @@ describe('notification/notification-recipient.resolver', () => {
         [shared.toString()],
         ['admin'],
       );
-      const strings = result.map((id) => id.toString());
+      const strings = result.map((id) => id);
       expect(strings).to.include(shared.toString());
       expect(strings).to.include(roleOnly.toString());
       expect(strings.filter((s) => s === shared.toString())).to.have.length(1);
@@ -190,7 +190,7 @@ describe('notification/notification-recipient.resolver', () => {
         [],
       );
       expect(result).to.have.length(1);
-      expect(result[0].toString()).to.equal(valid);
+      expect(result[0]).to.equal(valid);
     });
 
     it('handles non-array recipientUserIds (single string)', async () => {
@@ -199,7 +199,7 @@ describe('notification/notification-recipient.resolver', () => {
 
       const result = await resolveNotificationRecipientUserIds(orgId, user, []);
       expect(result).to.have.length(1);
-      expect(result[0].toString()).to.equal(user);
+      expect(result[0]).to.equal(user);
     });
 
     it('handles non-array recipientRoles (ignores non-array value)', async () => {

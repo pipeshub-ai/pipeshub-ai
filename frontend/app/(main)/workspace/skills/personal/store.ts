@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import { immer } from 'zustand/middleware/immer';
 import { devtools } from 'zustand/middleware';
 import type { EditingSkillTarget, EditorTab, SkillCandidate, SkillMetadata } from './types';
@@ -16,6 +17,8 @@ export interface EditorPrefill {
   prefillSubcategory?: string;
   prefillTags?: string[];
   candidateId?: string;
+  /** "Save as command" from a chat message (SLASH1): the new skill starts as a /command. */
+  prefillCommand?: boolean;
 }
 
 interface SkillsState {
@@ -194,3 +197,5 @@ export const useSkillsStore = create<SkillsState & SkillsActions>()(
     { name: 'skills-store' }
   )
 );
+
+resetStoreOnSessionEnd(useSkillsStore);

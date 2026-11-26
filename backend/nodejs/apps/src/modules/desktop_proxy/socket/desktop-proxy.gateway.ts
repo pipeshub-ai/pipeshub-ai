@@ -13,6 +13,7 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import { findSessionRefusal, findSessionRefusals } from '../../../config';
 import { LocalFsRelay } from './local-fs-relay';
+import { classifyError } from '../../../libs/utils/error-class';
 import {
   DesktopRegisterAck,
   DesktopRegisterPayload,
@@ -234,7 +235,12 @@ export class DesktopProxySocketGateway {
     let decoded: Awaited<ReturnType<AuthTokenService['verifyToken']>>;
     try {
       decoded = await this.authTokenService.verifyToken(extractedToken);
-    } catch {
+    } catch (error) {
+      // The socket is refused here, so this is the one place it is logged.
+      this.logger.warn('socket.auth.rejected', {
+        error_class: classifyError(error),
+        error,
+      });
       return new BadRequestError('Authentication token expired');
     }
 
@@ -256,8 +262,8 @@ export class DesktopProxySocketGateway {
       // failure, so the desktop client keeps retrying until the check works.
       this.logger.error('Desktop handshake: session check failed', {
         error,
-        orgId,
-        userId,
+        org_id: orgId,
+        target_user_id: userId,
       });
       return new Error('Unable to check the session right now');
     }
@@ -299,8 +305,8 @@ export class DesktopProxySocketGateway {
       sockets.forEach((socket, i) => {
         if (!refusals[i]) return;
         this.logger.info('Disconnecting desktop socket: session revoked', {
-          orgId: socket.data.orgId,
-          userId: socket.data.userId,
+          org_id: socket.data.orgId,
+          target_user_id: socket.data.userId,
           reason: refusals[i],
         });
         socket.disconnect(true);

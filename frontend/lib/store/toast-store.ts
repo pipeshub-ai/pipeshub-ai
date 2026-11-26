@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
+import { onSessionEnd } from '@/lib/api/session-cache';
 // ========================================
 // Toast Types
 // ========================================
@@ -368,3 +369,12 @@ export const toast = {
     }
   },
 };
+
+// A loading toast waits on work of the session that just ended, which never settles; other toasts
+// (e.g. "Password updated" before a planned sign-out) stay.
+onSessionEnd(() => {
+  useToastStore
+    .getState()
+    .toasts.filter((t) => t.variant === 'loading')
+    .forEach((t) => toast.dismiss(t.id));
+});

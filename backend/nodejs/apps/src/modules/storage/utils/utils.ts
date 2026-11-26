@@ -1,13 +1,17 @@
-import { DocumentModel } from '../schema/document.schema';
+import { setUntrustedContentHeaders } from '../../../libs/utils/untrusted-content.utils';
+import { getDocumentRepository } from '../../../libs/repositories/document';
+import { isValidId } from '../../../libs/repositories/ids';
 import { NextFunction, Response } from 'express';
 import {
   BadRequestError,
   InternalServerError,
   NotFoundError,
+  PreconditionFailedError,
   ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
-import mongoose from 'mongoose';
+import { localEtagOf, normalizeEtag } from './storage-fingerprint';
 import { Logger } from '../../../libs/services/logger.service';
+import { releaseOnClientClose } from '../../../libs/utils/release-on-close';
 import { getMimeType } from '../mimetypes/mimetypes';
 import {
   Document,
@@ -16,7 +20,9 @@ import {
   StorageVendor,
 } from '../types/storage.service.types';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
-import { ErrorMetadata } from '../../../libs/errors/base.error';
+import { ErrorMetadata, withCause } from '../../../libs/errors/base.error';
+import { classifyError, levelFor } from '../../../libs/utils/error-class';
+import { storageCause } from '../providers/vendor-failure';
 import { createReadStream } from 'fs';
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../constants/constants';
 import fs from 'fs';
@@ -31,55 +37,39 @@ const logger = Logger.getInstance({
 });
 
 /**
- * Write a file to the storage vendor, or fail with a message the uploader can act on.
- * The vendor's own error (a path, an OS code, an S3 or Azure response) goes to the log only.
+ * A 503 for storage that failed us, with the vendor's status and code as its cause: the error
+ * middleware's line then says why, and the vendor's text (paths, buckets) never leaves.
  */
+export const storageUnavailable = (
+  message: string,
+  failure: unknown,
+): ServiceUnavailableError =>
+  withCause(new ServiceUnavailableError(message), storageCause(failure));
+
+/** Write a file to the storage vendor, or fail with a message the uploader can act on. */
 export async function writeToStorage(
   adapter: StorageServiceAdapter,
   payload: FilePayload,
-  context: Record<string, unknown> = {},
 ): Promise<StorageServiceResponse<string>> {
   let response: StorageServiceResponse<string>;
   try {
     response = await adapter.uploadDocumentToStorageService(payload);
   } catch (error) {
-    logger.error('Writing a file to storage failed', {
-      ...context,
-      error: error instanceof Error ? error.message : String(error),
-      metadata: (error as { metadata?: unknown }).metadata,
-    });
-    throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+    throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, error);
   }
   if (response.statusCode !== HTTP_STATUS.OK || !response.data) {
-    logger.error('Writing a file to storage failed', {
-      ...context,
+    throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, {
       statusCode: response.statusCode,
-      error: response.msg,
     });
-    throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
   }
   return response;
 }
 
 // Interface for document storage info response
+// A plain row. Writes go through the document repository, never the row.
 export interface DocumentInfoResponse {
-  document: mongoose.Document<unknown, {}, DocumentModel> & DocumentModel;
+  document: Document;
 }
-
-/**
- * Read-only callers can ask for a plain object instead of a hydrated model.
- *
- * Mongoose hydration -- schema defaults, casting, getters, change tracking --
- * measured ~20% of gateway CPU under load, and the download path reads a
- * handful of fields and never saves. Opt-in rather than default because other
- * callers of getDocumentInfo do mutate and save the document.
- */
-// `Document` here is the plain data interface from storage.service.types.
-// NOT DocumentModel: that is declared `extends IDocument, MongooseDocument`, so
-// it carries save()/markModified()/etc and a lean object typed as it would
-// still compile against the hydrated-only API -- exactly the runtime crash the
-// lean path is meant to make impossible.
-export type LeanDocumentInfoResponse = { document: Document };
 
 export function encodeRFC5987(str: string): string {
   return encodeURIComponent(str)
@@ -91,37 +81,25 @@ export function encodeRFC5987(str: string): string {
 
 async function getDocumentInfoFromDb(
   documentId: string,
-  orgId: mongoose.Types.ObjectId,
-  lean: true,
-): Promise<LeanDocumentInfoResponse | undefined>;
-async function getDocumentInfoFromDb(
-  documentId: string,
-  orgId: mongoose.Types.ObjectId,
-  lean?: false,
-): Promise<DocumentInfoResponse | undefined>;
-async function getDocumentInfoFromDb(
-  documentId: string,
-  orgId: mongoose.Types.ObjectId,
-  lean = false,
-): Promise<DocumentInfoResponse | LeanDocumentInfoResponse | undefined> {
+  orgId: string,
+  lean: boolean,
+): Promise<DocumentInfoResponse | undefined> {
   try {
     // Validate documentId is a valid ObjectId
-    if (!mongoose.isValidObjectId(documentId)) {
+    if (!isValidId(documentId)) {
       throw new NotFoundError('Invalid document ID');
     }
 
-    // Fetch the document from MongoDB
-    const query = DocumentModel.findOne({
-      _id: documentId,
+    const document = await getDocumentRepository().getLive(
       orgId,
-      isDeleted: false,
-    });
-    const document = lean ? await query.lean<Document>().exec() : await query;
+      documentId,
+      lean,
+    );
 
     if (!document) {
       // Callers probe for documents that may be gone (deduplicated content
       // removed with another connector); that is not a server fault.
-      throw new NotFoundError('Document not found', { logLevel: 'warn' });
+      throw new NotFoundError('Document not found');
     }
     return { document };
   } catch (error) {
@@ -132,45 +110,32 @@ async function getDocumentInfoFromDb(
       throw error;
     }
 
-    const logger = Logger.getInstance();
-    logger.error('Error fetching document:', {
-      documentId,
-      orgId,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    });
-
-    throw new InternalServerError('Error fetching document information');
+    throw withCause(
+      new InternalServerError('Error fetching document information'),
+      error,
+    );
   }
 }
 
-export async function getDocumentInfo(
-  req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-  next: NextFunction,
-  lean: true,
-): Promise<LeanDocumentInfoResponse | undefined>;
-export async function getDocumentInfo(
-  req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
-  next: NextFunction,
-  lean?: false,
-): Promise<DocumentInfoResponse | undefined>;
+/**
+ * `lean` is for read-only callers: building the full model (schema defaults,
+ * casting, change tracking) measured ~20% of gateway CPU under load, and the
+ * download path reads a handful of fields and never writes. Callers that
+ * compute a write from the row (counters, version lists) need the defaults.
+ */
 export async function getDocumentInfo(
   req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
   next: NextFunction,
   lean = false,
-): Promise<DocumentInfoResponse | LeanDocumentInfoResponse | undefined> {
+): Promise<DocumentInfoResponse | undefined> {
   try {
-    const orgId = extractOrgId(req);
+    const orgId = requireId(extractOrgId(req), 'organization');
     const documentId = req.params.documentId;
 
-    const orgID = toObjectId(orgId, 'organization');
     if (!documentId) {
       throw new NotFoundError('Document ID is required');
     }
-    // Branch rather than pass the boolean through: the overloads are what stop
-    // a lean object being handed to a caller expecting a hydrated document.
-    const documentInfo = lean
-      ? await getDocumentInfoFromDb(documentId, orgID, true)
-      : await getDocumentInfoFromDb(documentId, orgID, false);
+    const documentInfo = await getDocumentInfoFromDb(documentId, orgId, lean);
     if (!documentInfo) {
       throw new NotFoundError('Document not found');
     }
@@ -259,8 +224,9 @@ export function getArtifactSetFolder(
 }
 
 /**
- * Where one content revision of a virtual record keeps its files.
- * e.g. 'org1/PipesHub/record-revisions/vr-1/0123abcd'
+ * Where one artifact set of a virtual record keeps its files, by the set's key
+ * (`artifactSet.rev`): e.g. 'org1/PipesHub/record-revisions/vr-1/0123abcd' for a
+ * revision's shared set, '.../vr-1/0123abcd-<writeId>' for a stored write's own.
  */
 export function getArtifactSetRoot(
   orgId: string,
@@ -403,7 +369,6 @@ export function validateFileAndDocumentName(
     );
   }
 
-
   if (documentName?.includes('/')) {
     throw new BadRequestError(
       `File "${fileNameForError}": The document name cannot contain a forward slash.`,
@@ -442,17 +407,17 @@ export async function createPlaceholderDocument(
       documentName,
       documentPath: fullDocumentPath,
       alternateDocumentName,
-      orgId: toObjectId(orgId, 'organization'),
+      orgId: requireId(orgId, 'organization'),
       isVersionedFile: isVersionedFile,
       permissions: permissions,
-      initiatorUserId: userId ? toObjectId(userId, 'user') : null,
+      initiatorUserId: userId ? requireId(userId, 'user') : null,
       customMetadata,
       sizeInBytes: size,
       storageVendor: storageVendor ?? StorageVendor.S3,
       extension: normalizeExtension(extension),
     };
 
-    const savedDocument = await DocumentModel.create(documentInfo);
+    const savedDocument = await getDocumentRepository().create(documentInfo);
     return { document: savedDocument };
   } catch (error) {
     next(error);
@@ -464,33 +429,25 @@ export async function generatePresignedUrlForDirectUpload(
   adapter: StorageServiceAdapter,
   documentPath: string | undefined,
 ): Promise<string | undefined> {
-  try {
-    if (!documentPath) {
-      throw new BadRequestError('Document path is required');
-    }
-    const presignedUrlResponse =
-      await adapter.generatePresignedUrlForDirectUpload(documentPath);
-
-    if (presignedUrlResponse.statusCode !== 200) {
-      logger.error(
-        'Error generating presigned URL:',
-        presignedUrlResponse.data?.url,
-      );
-      const errorMetadata: ErrorMetadata = {
-        statusCode: presignedUrlResponse.statusCode,
-        requestedUrl: presignedUrlResponse.data?.url,
-        errorMessage: presignedUrlResponse.msg,
-        timestamp: new Date().toISOString(),
-      };
-      throw new InternalServerError(
-        'Error generating presigned URL:',
-        errorMetadata,
-      );
-    }
-    return presignedUrlResponse.data?.url;
-  } catch (error) {
-    throw error;
+  if (!documentPath) {
+    throw new BadRequestError('Document path is required');
   }
+  const presignedUrlResponse =
+    await adapter.generatePresignedUrlForDirectUpload(documentPath);
+
+  if (presignedUrlResponse.statusCode !== 200) {
+    const errorMetadata: ErrorMetadata = {
+      statusCode: presignedUrlResponse.statusCode,
+      requestedUrl: presignedUrlResponse.data?.url,
+      errorMessage: presignedUrlResponse.msg,
+      timestamp: new Date().toISOString(),
+    };
+    throw new InternalServerError(
+      'Error generating presigned URL:',
+      errorMetadata,
+    );
+  }
+  return presignedUrlResponse.data?.url;
 }
 
 export function getBaseUrl(url: string): string | undefined {
@@ -511,116 +468,190 @@ export function getStorageVendor(storageType: string): StorageVendor {
   }
 }
 
-export function serveFileFromLocalStorage(document: Document, res: Response, version?: number) {
-  try {
-    const localFilePath = version !== undefined
-      ? (document.versionHistory?.[version]?.local?.localPath ||
-         document.versionHistory?.[version]?.local?.url)
-      : (document.local?.localPath);
+/**
+ * Streams a local file. The file is opened once and its identity (the synthetic ETag, `dev:ino:size:mtimeNs`) is taken from the OPEN
+ * descriptor, which is the same file the bytes come from: with `ifMatch` a download of any other identity answers 412 before a byte
+ * is sent, and the response always carries `ETag`.
+ */
+export type ByteRange = { start: number; end: number };
 
-    if (!localFilePath) {
-      throw new NotFoundError('Local file path not found for requested version');
-    }
-
-    // DON'T use new URL() - it treats # as a fragment identifier!
-    // Instead, manually parse the file:// URL
-
-    let filePath: string;
-
-    if (localFilePath.startsWith('file://')) {
-      // Remove the file:// protocol
-      let pathPart = localFilePath.substring(7); // Remove 'file://'
-
-      if (process.platform === 'win32') {
-        // Windows: file:///C:/path/to/file
-        // Remove leading / if present (file:/// becomes /C:/...)
-        if (pathPart.startsWith('/')) {
-          pathPart = pathPart.substring(1);
-        }
-        // Decode URI components and convert forward slashes to backslashes
-        filePath = decodeURIComponent(pathPart).replace(/\//g, '\\');
-      } else {
-        // Unix: file:///path/to/file or file://path/to/file
-        // Remove leading / if we have // (file:// case)
-        if (pathPart.startsWith('//')) {
-          pathPart = pathPart.substring(1);
-        }
-        filePath = decodeURIComponent(pathPart);
-      }
-    } else {
-      // If it's not a file:// URL, treat it as a direct path
-      filePath = localFilePath;
-    }
-
-    // Check if file exists using synchronous access
-    try {
-      fs.accessSync(filePath, fs.constants.R_OK);
-    } catch (err) {
-      logger.error('File not accessible:', {
-        filePath,
-        originalPath: localFilePath,
-        documentName: document.documentName,
-        extension: document.extension,
-        error: err,
-      });
-      throw new NotFoundError(
-        `File not found or not accessible: ${document.documentName}${document.extension}`,
-      );
-    }
-
-    // Get mime type from extension
-    const mimeType = getMimeType(document.extension);
-
-    // Encode filename for Content-Disposition header
-    const fullName = `${document.documentName}${document.extension}`;
-    const filenameStar = encodeRFC5987(fullName);
-
-    // Set headers
-    res.setHeader('Content-Type', mimeType || 'application/octet-stream');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename*=UTF-8''${filenameStar}`,
-    );
-
-    // Stream the file
-    const fileStream = createReadStream(filePath);
-    fileStream.pipe(res);
-
-    // Handle streaming errors
-    fileStream.on('error', (error) => {
-      logger.error('Error streaming file:', {
-        filePath,
-        documentName: document.documentName,
-        error,
-      });
-      if (!res.headersSent) {
-        res
-          .status(HTTP_STATUS.INTERNAL_SERVER)
-          .json({ error: 'Error streaming file' });
-      }
-    });
-  } catch (error) {
-    logger.error('Error serving local file:', error);
-    throw error;
+/**
+ * Reads one `Range: bytes=...` header against a file of `size` bytes (RFC 9110 section 14.1.2).
+ * `null` means "serve the whole file": no header, a multi-range, or a header that is not a valid range.
+ * `'unsatisfiable'` means the range starts at or after the end (416). An end past the last byte is clamped.
+ */
+export function parseByteRange(
+  header: string | undefined,
+  size: number,
+): ByteRange | 'unsatisfiable' | null {
+  if (header === undefined || header === '') return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match || (match[1] === '' && match[2] === '')) return null;
+  if (match[1] === '') {
+    const suffix = Number(match[2]);
+    if (!Number.isSafeInteger(suffix) || suffix === 0) return 'unsatisfiable';
+    return size === 0
+      ? 'unsatisfiable'
+      : { start: Math.max(0, size - suffix), end: size - 1 };
   }
+  const start = Number(match[1]);
+  const end = match[2] === '' ? size - 1 : Number(match[2]);
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    (match[2] !== '' && end < start)
+  )
+    return null;
+  if (start >= size) return 'unsatisfiable';
+  return { start, end: Math.min(end, size - 1) };
+}
+
+export function serveFileFromLocalStorage(
+  document: Document,
+  res: Response,
+  version?: number,
+  ifMatch?: string,
+  rangeHeader?: string,
+) {
+  const localFilePath =
+    version !== undefined
+      ? document.versionHistory?.[version]?.local?.localPath ||
+        document.versionHistory?.[version]?.local?.url
+      : document.local?.localPath;
+
+  if (!localFilePath) {
+    throw new NotFoundError('Local file path not found for requested version');
+  }
+
+  // DON'T use new URL() - it treats # as a fragment identifier!
+  // Instead, manually parse the file:// URL
+
+  let filePath: string;
+
+  if (localFilePath.startsWith('file://')) {
+    // Remove the file:// protocol
+    let pathPart = localFilePath.substring(7); // Remove 'file://'
+
+    if (process.platform === 'win32') {
+      // Windows: file:///C:/path/to/file
+      // Remove leading / if present (file:/// becomes /C:/...)
+      if (pathPart.startsWith('/')) {
+        pathPart = pathPart.substring(1);
+      }
+      // Decode URI components and convert forward slashes to backslashes
+      filePath = decodeURIComponent(pathPart).replace(/\//g, '\\');
+    } else {
+      // Unix: file:///path/to/file or file://path/to/file
+      // Remove leading / if we have // (file:// case)
+      if (pathPart.startsWith('//')) {
+        pathPart = pathPart.substring(1);
+      }
+      filePath = decodeURIComponent(pathPart);
+    }
+  } else {
+    // If it's not a file:// URL, treat it as a direct path
+    filePath = localFilePath;
+  }
+
+  // Open the file once: its identity and its bytes then come from the same descriptor.
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY);
+  } catch (err) {
+    throw withCause(
+      new NotFoundError(
+        `File not found or not accessible: ${document.documentName}${document.extension}`,
+      ),
+      storageCause(err),
+    );
+  }
+  let etag: string;
+  let size: number;
+  try {
+    const stat = fs.fstatSync(fd, { bigint: true });
+    etag = localEtagOf(stat);
+    size = Number(stat.size);
+  } catch (err) {
+    fs.closeSync(fd);
+    throw err;
+  }
+  if (ifMatch !== undefined && normalizeEtag(ifMatch) !== etag) {
+    fs.closeSync(fd);
+    throw new PreconditionFailedError(
+      'The file is not the one that was verified; read the document again',
+    );
+  }
+  res.setHeader('ETag', `"${etag}"`);
+  res.setHeader('Accept-Ranges', 'bytes');
+
+  // One range of the same open file; the ETag above names exactly these bytes.
+  const range = parseByteRange(rangeHeader, size);
+  if (range === 'unsatisfiable') {
+    fs.closeSync(fd);
+    res.status(416);
+    res.setHeader('Content-Range', `bytes */${String(size)}`);
+    res.end();
+    return;
+  }
+
+  // Get mime type from extension
+  const mimeType = getMimeType(document.extension);
+
+  // Encode filename for Content-Disposition header
+  const fullName = `${document.documentName}${document.extension}`;
+  const filenameStar = encodeRFC5987(fullName);
+
+  setUntrustedContentHeaders(
+    (name, value) => res.setHeader(name, value),
+    mimeType || 'application/octet-stream',
+    `attachment; filename*=UTF-8''${filenameStar}`,
+  );
+
+  // Stream the file
+  if (range) {
+    res.status(206);
+    res.setHeader(
+      'Content-Range',
+      `bytes ${String(range.start)}-${String(range.end)}/${String(size)}`,
+    );
+    res.setHeader('Content-Length', String(range.end - range.start + 1));
+  }
+  const fileStream = createReadStream(
+    filePath,
+    range ? { fd, start: range.start, end: range.end } : { fd },
+  );
+  fileStream.pipe(res);
+  releaseOnClientClose(res, fileStream);
+
+  // Handle streaming errors
+  fileStream.on('error', (error) => {
+    logger[levelFor(classifyError(error))]('Streaming a local file failed', {
+      error,
+    });
+    if (!res.headersSent) {
+      res
+        .status(HTTP_STATUS.INTERNAL_SERVER)
+        .json({ error: 'Error streaming file' });
+    }
+  });
 }
 
 /**
- * The org and user ids come from the caller's token. A malformed one makes
- * `new ObjectId` throw a BSONError, which reaches the client as a 500.
- * isValidObjectId is not enough: it passes a number, which ObjectId turns into
- * a made-up timestamp id that matches nothing.
+ * The org and user ids come from the caller's token. A malformed one would
+ * otherwise reach the store as a driver error and the client as a 500.
+ * A bare number is refused too: the store's id parser turns it into a
+ * made-up timestamp id that matches nothing.
  */
-export function toObjectId(
-  id: unknown,
-  kind: 'organization' | 'user',
-): mongoose.Types.ObjectId {
-  if (typeof id !== 'string' || !mongoose.isObjectIdOrHexString(id)) {
+export const isHexId = (id: unknown): id is string =>
+  typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
+
+export function requireId(id: unknown, kind: 'organization' | 'user'): string {
+  if (!isHexId(id)) {
     throw new BadRequestError(
       `The ${kind} id in the storage token isn't valid. Issue the token with the 24-character id of an existing ${kind}, then try again.`,
     );
   }
-  return new mongoose.Types.ObjectId(id);
+  return id;
 }
 
 export function extractOrgId(

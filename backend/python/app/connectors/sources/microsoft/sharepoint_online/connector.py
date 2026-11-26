@@ -21,6 +21,8 @@ import httpx
 from aiolimiter import AsyncLimiter
 from azure.core.exceptions import (
     ClientAuthenticationError,
+    ServiceRequestError,
+    ServiceResponseError,
 )
 from azure.identity import CredentialUnavailableError
 from azure.identity.aio import CertificateCredential, ClientSecretCredential
@@ -51,6 +53,12 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.source_metadata import (
+    ItemMetadata,
+    apply_source_metadata,
+    held_metadata,
+    source_metadata,
+)
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -97,6 +105,11 @@ from app.connectors.core.registry.types import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
+from app.connectors.sources.microsoft.common.expired_group_delta import (
+    GROUPS_READ_AGAIN,
+    remove_groups_gone_from_directory,
+)
+from app.connectors.sources.microsoft.common.graph_people import source_person
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
     RecordUpdate,
@@ -107,6 +120,7 @@ from app.connectors.sources.microsoft.sharepoint_online.container_tracker import
 )
 from app.connectors.sources.microsoft.sharepoint_online.drive_reconciler import (
     DriveReconciler,
+    Unlisted,
 )
 from app.connectors.sources.microsoft.sharepoint_online.everyone_groups import (
     everyone_group_for_claim,
@@ -120,6 +134,9 @@ from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
     SharePointSyncIncomplete,
     SyncHealth,
 )
+from app.connectors.sources.microsoft.common.outlook_constants import (
+    is_expired_delta_link_error,
+)
 from app.connectors.sources.microsoft.common.sharepoint_permission_scope import (
     GUID_PATTERN,
     SHAREPOINT_ITEMS_PAGE_SIZE,
@@ -129,6 +146,10 @@ from app.connectors.sources.microsoft.common.sharepoint_permission_scope import 
     SHAREPOINT_REST_RETRY_STATUSES,
     ListPermissionScope,
     drive_item_unique_id,
+)
+from app.connectors.sources.microsoft.common.sign_in_errors import (
+    describe_sign_in_error,
+    known_sign_in_problem,
 )
 from app.connectors.sources.microsoft.sharepoint_online.utils import (
     clean_html_output,
@@ -149,6 +170,8 @@ from app.models.entities import (
     SharePointPageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.microsoft.send_safe_middleware import credential_graph_adapter
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -158,6 +181,9 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # A composite site ID has the format: "hostname,site-id,web-id"
 COMPOSITE_SITE_ID_COMMA_COUNT = 2
 COMPOSITE_SITE_ID_PARTS_COUNT = 3
+
+# Stored records of a kept record group read per page while noting them kept
+KEPT_RECORDS_PAGE_SIZE = 1000
 
 
 def _sharepoint_filter_options_graph_batch_size(filtered_page_limit: int) -> int:
@@ -465,6 +491,13 @@ class CountryToRegionMapper:
     .with_description("Sync documents and lists from SharePoint Online")\
     .with_categories(["Storage", "Documentation"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0), as before.
+        rate_limit=10,
+        max_retries=0,
+    )\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH_ADMIN_CONSENT).fields([
             AuthField(
@@ -668,17 +701,12 @@ class SharePointConnector(BaseConnector):
         # Cache for site metadata
         self.site_cache: Dict[str, SiteMetadata] = {}
 
-        # Per site, the site groups (ids as strings) that hold a tenant-wide claim, and
-        # which one. Rebuilt by _sync_user_groups.
-        self._org_wide_site_groups: dict[str, dict[str, set[str]]] = {}
-        # Per site, the site groups whose members this run could not read.
-        self._unreadable_site_groups: dict[str, set[str]] = {}
-        # Sites whose SharePoint groups this run listed in full; a group grant elsewhere is unknown.
-        self._site_groups_read: set[str] = set()
         self._reset_permission_caches()
         self._health = SyncHealth()
         # Emails of accounts the tenant has disabled or deleted, from this run's user list.
         self._inactive_emails: set[str] = set()
+        # Emails the user listing showed as active; the only users granted directly while no disabled set is known.
+        self._confirmed_active_emails: set[str] = set()
         self._drive_roots: dict[str, str] = {}
         self._discovered_site_ids: set[str] = set()
         # Sites the sync filters excluded this run; what PipesHub stores for them is deleted.
@@ -690,6 +718,10 @@ class SharePointConnector(BaseConnector):
         self._rewrite_all_items = False
         # Set for a run that has to read every Entra group's members again.
         self._refresh_all_groups = False
+        # Set for a run whose user listing is not trusted and that has no earlier disabled set to fall back on.
+        self._disabled_set_unknown = False
+        # Whether this run's disabled set comes from a trusted listing, and so may become the stored one.
+        self._listing_trusted = True
 
         self.tenant_region: str = None
         self.sync_filters: FilterCollection = FilterCollection()
@@ -717,18 +749,41 @@ class SharePointConnector(BaseConnector):
         self._unified_groups: dict[str, bool | None] = {}
         self._directory_object_types: dict[str, str | None] = {}
         self._directory_role_members: dict[str, list[dict]] = {}
+        # Whether this run left out a direct grant because the user's status was not known.
+        self._withheld_unknown_user = False
+        # Per site, the site groups (ids as strings) that hold a tenant-wide claim, and which one.
+        # Rebuilt by _sync_user_groups; empty at the start of every run, so a run that does not read the
+        # groups cannot grant from an earlier run's.
+        self._org_wide_site_groups: dict[str, dict[str, set[str]]] = {}
+        # Per site, the site groups whose members this run could not read.
+        self._unreadable_site_groups: dict[str, set[str]] = {}
+        # Sites whose SharePoint groups this run listed in full; a group grant elsewhere is unknown.
+        self._site_groups_read: set[str] = set()
+
+    @staticmethod
+    def _build_credential(credential_cls: type, **kwargs: str) -> object:
+        try:
+            return credential_cls(**kwargs)
+        except ValueError as error:
+            # azure-identity checks the tenant ID's format here, before any request; other ValueErrors
+            # (such as a certificate it cannot parse) are not about the tenant.
+            if "tenant" not in str(error).lower():
+                raise
+            raise ConnectorInitError(
+                "The Directory (Tenant) ID is not valid. Check it in the app registration."
+            ) from error
 
     async def init(self) -> bool:
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
 
         if not config:
             self.logger.error("❌ SharePoint Online credentials not found")
-            raise ValueError("SharePoint Online credentials not found")
+            raise ConnectorInitError("SharePoint Online credentials not found")
 
         credentials_config = config.get("auth", {})
         if not credentials_config:
             self.logger.error("❌ SharePoint Online credentials not found")
-            raise ValueError("SharePoint Online credentials not found")
+            raise ConnectorInitError("SharePoint Online credentials not found")
 
         # Load credentials from config
         tenant_id = credentials_config.get("tenantId")
@@ -768,7 +823,7 @@ class SharePointConnector(BaseConnector):
         # Validation
         if not all((tenant_id, client_id, sharepoint_domain)):
             self.logger.error("❌ Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
-            raise ValueError("Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
+            raise ConnectorInitError("Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
 
         # Check for one valid authentication method
         has_certificate = certificate_data and private_key_data
@@ -776,7 +831,7 @@ class SharePointConnector(BaseConnector):
 
         if not (has_certificate or has_client_secret):
             self.logger.error("❌ Authentication credentials missing. Provide either clientSecret or certificate + private key.")
-            raise ValueError("Authentication credentials missing. Provide either clientSecret or certificate + private key.")
+            raise ConnectorInitError("Authentication credentials missing. Provide either clientSecret or certificate + private key.")
 
         credentials = SharePointCredentials(
             tenant_id=tenant_id,
@@ -839,7 +894,8 @@ class SharePointConnector(BaseConnector):
                 self.logger.info(f"✅ Created combined PEM file at: {self.temp_cert_file.name}")
 
                 # Create credential with the combined certificate file
-                self.credential = CertificateCredential(
+                self.credential = self._build_credential(
+                    CertificateCredential,
                     tenant_id=credentials.tenant_id,
                     client_id=credentials.client_id,
                     certificate_path=self.temp_cert_file.name,
@@ -859,10 +915,16 @@ class SharePointConnector(BaseConnector):
                         os.unlink(self.temp_cert_file.name)
                     except OSError:  # <--- The fix
                         pass
-                raise ValueError(f"Failed to set up certificate authentication: {cert_error}")
+                if isinstance(cert_error, ConnectorInitError):
+                    raise
+                raise ConnectorInitError(
+                    "The certificate or private key in the connector's settings could not be read. Paste the "
+                    "certificate and its private key in PEM format, then try again."
+                ) from cert_error
 
         elif has_client_secret:
-            self.credential = ClientSecretCredential(
+            self.credential = self._build_credential(
+                ClientSecretCredential,
                 tenant_id=credentials.tenant_id,
                 client_id=credentials.client_id,
                 client_secret=credentials.client_secret,
@@ -882,28 +944,36 @@ class SharePointConnector(BaseConnector):
         except Exception as token_error:
             sanitized_error = sanitize_azure_error(token_error)
             self.logger.error(f"❌ Failed to initialize credential: {sanitized_error}")
+            await self._notify_token_failure(*self._token_failure_notice(token_error, for_sharepoint=False))
             # Clean up temp certificate file if it was created
             if self.temp_cert_file:
                 try:
                     os.unlink(self.temp_cert_file.name)
                 except OSError:
                     pass
+            # An AADSTS code not in the table may be transient (e.g. AADSTS90033), so it stays a 5xx.
+            problem = known_sign_in_problem(token_error)
+            if problem:
+                raise ConnectorInitError(problem) from token_error
             raise ValueError(
                 f"Failed to initialize SharePoint credential: {sanitized_error}"
             )
         
-        sharepoint_token = await self._get_sharepoint_access_token()
-        if not sharepoint_token:
-            self.logger.error("❌ Failed to obtain SharePoint access token during initialization")
-            raise ValueError(
-                "Unable to acquire a SharePoint access token. Please verify "
-                "SharePoint host URL and authentication settings."
-            )
+        try:
+            await self._get_sharepoint_access_token(raise_errors=True)
+        except Exception as token_error:
+            sanitized_error = sanitize_azure_error(token_error)
+            self.logger.error(f"❌ Failed to obtain SharePoint access token during initialization: {sanitized_error}")
+            problem = known_sign_in_problem(token_error, resource_setting="SharePoint domain")
+            if problem:
+                raise ConnectorInitError(
+                    f"Could not get a SharePoint access token for {self.sharepoint_domain}. {problem}"
+                ) from token_error
+            raise ValueError(f"Unable to acquire a SharePoint access token: {sanitized_error}") from token_error
 
         # Initialize Graph Client
         self.client = GraphServiceClient(
-            self.credential,
-            scopes=["https://graph.microsoft.com/.default"]
+            request_adapter=credential_graph_adapter(self.credential, resilience=self.resilience)
         )
         self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
 
@@ -1179,11 +1249,20 @@ class SharePointConnector(BaseConnector):
         return subsites
 
     async def _remove_deleted_sites(self) -> None:
-        """Remove the sites the last complete discovery had and Graph now answers 404 for."""
+        """Remove the sites the last complete discovery had and Graph now answers 404 for.
+
+        On a full sync, which forgets the remembered sites, the stored ones stand in for them, and one kept
+        is noted kept.
+        """
         if not getattr(self, '_discovery_complete', False):
             return
         tracker = ContainerTracker(self.drive_delta_sync_point, SITES_SYNC_POINT_KEY)
         known = await tracker.known()
+        if self.data_entities_processor.full_sync_running(self.connector_id) is True:
+            try:
+                known |= (await self._stored_record_groups({"groupType": RecordGroupType.SHAREPOINT_SITE.value})).keys()
+            except Exception as e:
+                self._health.skipped("stored sites", e)
         keep = set(self._discovered_site_ids)
         for site_id in known - self._discovered_site_ids:
             if await self._graph_says_gone(lambda s=site_id: self.client.sites.by_site_id(s).get()):
@@ -1191,7 +1270,37 @@ class SharePointConnector(BaseConnector):
                 await self.data_entities_processor.on_record_group_deleted(site_id, self.connector_id)
             else:
                 keep.add(site_id)
+                if self._pass_site_ids_filters(site_id):
+                    await self._keep_stored_site(site_id)
         await tracker.remember(keep)
+
+    async def _keep_stored_site(self, site_id: str) -> None:
+        """Note a stored site as seen by a full sync in progress: its record group with its pages, its stored
+        libraries with their records, and its SharePoint groups. When they cannot be noted, the run is marked
+        incomplete so nothing is unlinked."""
+        if self.data_entities_processor.full_sync_running(self.connector_id) is not True:
+            return
+        await self._keep_stored_record_group(site_id)
+        try:
+            libraries = await self._stored_record_groups(
+                {"groupType": RecordGroupType.DRIVE.value, "parentExternalGroupId": site_id}
+            )
+            for drive_id, url in libraries.items():
+                if not self._stored_library_filtered_out(url):
+                    await self._keep_stored_record_group(drive_id)
+            groups = await self.data_entities_processor.get_nodes_by_filters(
+                CollectionNames.GROUPS.value,
+                {"connectorId": self.connector_id},
+                return_fields=["externalGroupId"],
+                raise_on_error=True,
+            )
+            for group in groups:
+                external_id = group.get("externalGroupId") or ""
+                # The ids _site_groups_with_members gives a site's SharePoint groups.
+                if external_id.startswith(f"{site_id}-"):
+                    await self.data_entities_processor.note_kept_user_group(self.connector_id, external_id)
+        except Exception as e:
+            self._health.skipped(f"stored site {site_id}", e)
 
     async def _sync_site_content(self, site_record_group: RecordGroup) -> None:
         """Sync a site's libraries and pages.
@@ -1294,12 +1403,17 @@ class SharePointConnector(BaseConnector):
 
     async def _graph_says_gone(self, call: Callable[[], Any]) -> bool:
         """Whether Graph answers 404 for a container: the one answer that lets a missing container be removed."""
+        gone, _ = await self._graph_probe(call)
+        return gone
+
+    async def _graph_probe(self, call: Callable[[], Any]) -> tuple[bool, Any]:
+        """Graph's answer for something a listing left out: (gone, payload). Gone is a 404; the payload is
+        what the read returned, None when it failed, so the sync filters can be applied to what is still there."""
         try:
             async with self.rate_limiter:
-                await call()
+                return False, await call()
         except Exception as e:
-            return getattr(e, 'response_status_code', None) == GRAPH_NOT_FOUND
-        return False
+            return getattr(e, 'response_status_code', None) == GRAPH_NOT_FOUND, None
 
     async def _remove_filtered_out(
         self, tracker_key: str, excluded_ids: set[str], forget: Callable[[str], Awaitable[None]]
@@ -1331,10 +1445,56 @@ class SharePointConnector(BaseConnector):
             await self._forget_library(site_id, drive_id)
         await tracker.remember(set())
 
+    async def _stored_record_groups(self, filters: dict) -> dict[str, str | None]:
+        """The stored record groups of this connector that match ``filters``, as external id to web URL."""
+        nodes = await self.data_entities_processor.get_nodes_by_filters(
+            CollectionNames.RECORD_GROUPS.value,
+            {"connectorId": self.connector_id, **filters},
+            return_fields=["externalGroupId", "webUrl"],
+            raise_on_error=True,
+        )
+        return {node["externalGroupId"]: node.get("webUrl") for node in nodes if node.get("externalGroupId")}
+
+    async def _keep_stored_record_group(self, external_group_id: str) -> None:
+        """Note a stored record group and all its records as seen by a full sync in progress.
+
+        Soft-deleted records too, so a restored item comes back with its edges. When they cannot be noted,
+        the run is marked incomplete so nothing is unlinked.
+        """
+        try:
+            if self.data_entities_processor.full_sync_running(self.connector_id) is not True:
+                return
+            await self.data_entities_processor.note_kept_record_group(self.connector_id, external_group_id)
+            page_size = KEPT_RECORDS_PAGE_SIZE
+            after_key: str | None = None
+            while True:
+                page = await self.data_entities_processor.get_records_in_record_group(
+                    self.connector_id, external_group_id, page_size, after_key, visibility=RecordVisibility.ALL,
+                )
+                self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
+                if len(page) < page_size:
+                    return
+                after_key = page[-1].id
+        except Exception as e:
+            self._health.skipped(f"stored record group {external_group_id}", e)
+
     async def _remove_deleted_libraries(self, site_id: str, listed_drive_ids: set[str]) -> None:
-        """Remove the libraries of a site that its last listing had and Graph now says are gone."""
+        """Remove the libraries of a site that its last listing had and Graph now says are gone.
+
+        On a full sync, which forgets the remembered libraries, the stored ones stand in for them, and one
+        kept is noted kept.
+        """
         tracker = ContainerTracker(self.drive_delta_sync_point, f"sharepoint-known-libraries/{site_id}")
         known = await tracker.known()
+        stored: dict[str, str | None] = {}
+        if self.data_entities_processor.full_sync_running(self.connector_id) is True:
+            try:
+                stored = await self._stored_record_groups(
+                    {"groupType": RecordGroupType.DRIVE.value, "parentExternalGroupId": site_id}
+                )
+                known |= stored.keys()
+            except Exception as e:
+                self._health.skipped(f"stored libraries of site {site_id}", e)
         keep = set(listed_drive_ids)
         for drive_id in known - listed_drive_ids:
             if await self._graph_says_gone(lambda d=drive_id: self.client.drives.by_drive_id(d).get()):
@@ -1342,7 +1502,14 @@ class SharePointConnector(BaseConnector):
                 await self.data_entities_processor.on_record_group_deleted(drive_id, self.connector_id)
             else:
                 keep.add(drive_id)
+                if not self._stored_library_filtered_out(stored.get(drive_id)):
+                    await self._keep_stored_record_group(drive_id)
         await tracker.remember(keep)
+
+    def _stored_library_filtered_out(self, url: str | None) -> bool:
+        """Whether the current drive filters exclude a stored library, judged by its stored URL. One with
+        no stored URL cannot be judged and is not excluded."""
+        return bool(url) and not self._pass_drive_key_filters(self._normalize_document_library_url(url))
 
     @staticmethod
     def _is_site_pages_library(drive: object) -> bool:
@@ -1501,7 +1668,7 @@ class SharePointConnector(BaseConnector):
                 continue
             if listing_everything:
                 await DriveReconciler(self.data_entities_processor, self.connector_id, self.logger).remove_unlisted(
-                    drive_id, listed, lambda external_id: self._drive_item_gone(drive_id, external_id)
+                    drive_id, listed, lambda external_id: self._probe_unlisted_drive_item(drive_id, external_id)
                 )
             if listing_everything and not item_failed:
                 await self._remove_root_placeholder(drive_id)
@@ -1531,10 +1698,24 @@ class SharePointConnector(BaseConnector):
         if stale is not None and stale.is_placeholder:
             await self.data_entities_processor.on_record_deleted(record_id=stale.id)
 
-    async def _drive_item_gone(self, drive_id: str, external_id: str) -> bool:
+    async def _probe_unlisted_drive_item(self, drive_id: str, external_id: str) -> Unlisted:
+        """An item a complete listing left out: gone on a 404, out of scope when the item Graph returns is one
+        the sync filters exclude, kept otherwise (also when the read fails)."""
         item_id = external_id.split(":root:")[-1]
-        return await self._graph_says_gone(
+        gone, item = await self._graph_probe(
             lambda: self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).get()
+        )
+        if gone:
+            return Unlisted.GONE
+        if item is not None and self._drive_item_out_of_scope(item):
+            return Unlisted.OUT_OF_SCOPE
+        return Unlisted.KEPT
+
+    def _drive_item_out_of_scope(self, item: DriveItem) -> bool:
+        """Whether the sync filters (dates, extensions) exclude the item, or it is a file with no extension."""
+        is_root = getattr(item, 'root', None) is not None
+        return not self._pass_drive_date_filters(item) or not self._pass_extension_filter(item) or (
+            getattr(item, 'folder', None) is None and not is_root and '.' not in (getattr(item, 'name', None) or '')
         )
 
     async def _process_drive_item(self, item: DriveItem, site_id: str, drive_id: str, users: List[AppUser], modified_after: Optional[str] = None, modified_before: Optional[str] = None, created_after: Optional[str] = None, created_before: Optional[str] = None) -> Optional[RecordUpdate]:
@@ -1559,10 +1740,7 @@ class SharePointConnector(BaseConnector):
         existing_record = await self.data_entities_processor.get_record_by_external_id(
             self.connector_id, external_record_id
         )
-        out_of_scope = not self._pass_drive_date_filters(item) or not self._pass_extension_filter(item) or (
-            getattr(item, 'folder', None) is None and not is_root and '.' not in (getattr(item, 'name', None) or '')
-        )
-        if out_of_scope:
+        if self._drive_item_out_of_scope(item):
             if existing_record:
                 # The item is still there but no longer in the sync's scope (a rename to an excluded
                 # extension, say): it leaves PipesHub like a deleted one.
@@ -1610,6 +1788,13 @@ class SharePointConnector(BaseConnector):
         file_record = await self._create_file_record(item, drive_id, existing_record)
         if not file_record:
             raise RuntimeError(f"item {item_id} could not be mapped to a record")
+        held = held_metadata(existing_record)
+        fields = await self._metadata_reader().fields_for(
+            drive_id, item_id, held, changed=file_record.is_file and (is_new or is_updated)
+        )
+        if apply_source_metadata(file_record, existing_record, fields):
+            is_updated = True
+            metadata_changed = True
         if access is None:
             # An edit is still synced; the record keeps its stored access and inheritance.
             file_record.inherit_permissions = await self._inheritance_when_unreadable(
@@ -1732,6 +1917,8 @@ class SharePointConnector(BaseConnector):
                 crc32_hash=hashes.get('crc32_hash'),
                 sha1_hash=hashes.get('sha1_hash'),
                 sha256_hash=hashes.get('sha256_hash'),
+                authored_by=source_person(getattr(item, 'created_by', None)),
+                last_modified_by=source_person(getattr(item, 'last_modified_by', None)),
             )
 
         except Exception as e:
@@ -2142,7 +2329,9 @@ class SharePointConnector(BaseConnector):
                 weburl=getattr(item, 'web_url', None),
                 parent_external_record_id=list_id,
                 external_record_group_id=site_id,
-                semantic_metadata=metadata
+                semantic_metadata=metadata,
+                authored_by=source_person(getattr(item, 'created_by', None)),
+                last_modified_by=source_person(getattr(item, 'last_modified_by', None)),
             )
 
         except Exception as e:
@@ -2172,7 +2361,11 @@ class SharePointConnector(BaseConnector):
         return pages
 
     async def _remove_deleted_pages(self, site_id: str, listed_page_ids: set[str]) -> None:
-        """Remove the stored pages of a site that its complete page listing no longer has."""
+        """Remove the stored pages of a site that its complete page listing no longer has.
+
+        One the source still has is noted kept for a full sync in progress, unless the date filters or the
+        system-page rule now exclude it, as they exclude a listed page.
+        """
         stored = []
         after_key = None
         while True:
@@ -2188,9 +2381,17 @@ class SharePointConnector(BaseConnector):
             if record.record_type != RecordType.SHAREPOINT_PAGE or record.external_record_id in listed_page_ids:
                 continue
             # Out of the listing is a candidate; only Graph's 404 for the page itself removes it.
-            if await self._graph_says_gone(lambda p=record.external_record_id: pages.by_base_site_page_id(p).get()):
+            gone, source_page = await self._graph_probe(
+                lambda p=record.external_record_id: pages.by_base_site_page_id(p).get()
+            )
+            if gone:
                 self.logger.info(f"🗑️ Page {record.record_name} is gone at the source; removing it")
                 await self.data_entities_processor.on_record_deleted(record_id=record.id)
+            elif source_page is None or self._page_in_scope(source_page):
+                self.data_entities_processor.note_kept_records(self.connector_id, [record.id])
+
+    def _page_in_scope(self, page: SitePage) -> bool:
+        return self._pass_page_date_filters(page) and not self._is_system_page(page)
 
     @staticmethod
     def _is_system_page(page: SitePage) -> bool:
@@ -2214,9 +2415,9 @@ class SharePointConnector(BaseConnector):
             page_name = getattr(page, 'title', getattr(page, 'name', 'unknown'))
             if not page_id:
                 continue
-            if not self._pass_page_date_filters(page) or self._is_system_page(page):
-                continue
             listed.add(page_id)
+            if not self._page_in_scope(page):
+                continue
 
             existing_record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, page_id)
             is_new = existing_record is None
@@ -2310,6 +2511,8 @@ class SharePointConnector(BaseConnector):
                 inherit_permissions=True,
                 semantic_metadata=metadata,
                 preview_renderable=False,
+                authored_by=source_person(getattr(page, 'created_by', None)),
+                last_modified_by=source_person(getattr(page, 'last_modified_by', None)),
             )
 
         except Exception as e:
@@ -2529,40 +2732,59 @@ class SharePointConnector(BaseConnector):
 
         return modified_after, modified_before, created_after, created_before
 
-    async def _get_sharepoint_access_token(self, resource_host: str = None) -> Optional[str]:
+    async def _get_sharepoint_access_token(
+        self, resource_host: str = None, *, raise_errors: bool = False
+    ) -> Optional[str]:
         """An app-only token for SharePoint REST on a host (default: the tenant's SharePoint domain).
 
         The connector's credential keeps its tokens until they are close to expiring, so this asks the
-        token endpoint once per host per hour instead of once per SharePoint call.
+        token endpoint once per host per hour instead of once per SharePoint call. A failure returns None,
+        or with ``raise_errors`` is raised as it came, so the caller can tell its cause.
         """
         parsed = urllib.parse.urlparse(resource_host or self.sharepoint_domain or "")
         host = parsed.hostname or (self.sharepoint_domain or "").replace('https://', '').replace('http://', '').strip('/')
         resource = f"https://{host}"
         try:
-            token = await self.credential.get_token(f"{resource}/.default")
-            return token.token
-        except CredentialUnavailableError as credential_error:
-            self.logger.error(
-                f"❌ SharePoint credential unavailable for {resource}: {sanitize_azure_error(credential_error)}"
+            return (await self.credential.get_token(f"{resource}/.default")).token
+        except Exception as error:
+            self.logger.error(f"❌ Failed to get a SharePoint token for {resource}: {sanitize_azure_error(error)}")
+            await self._notify_token_failure(*self._token_failure_notice(error, for_sharepoint=True))
+            if raise_errors:
+                raise
+            return None
+
+    @staticmethod
+    def _token_failure_notice(error: Exception, *, for_sharepoint: bool) -> tuple[str, str]:
+        """The title and message of the notice telling the connector's creator a token request failed.
+
+        ``for_sharepoint`` says the token was for the SharePoint host rather than Microsoft Graph, so only
+        then can the SharePoint host URL be to blame.
+        """
+        if isinstance(error, (ServiceRequestError, ServiceResponseError)):
+            return (
+                "SharePoint could not reach Microsoft",
+                "Unable to reach Microsoft to get an access token. This is usually a temporary network problem, "
+                "not a problem with the connector's settings. If it keeps happening, check that the PipesHub "
+                "server can reach login.microsoftonline.com.",
             )
-            await self._notify_token_failure(
+        if isinstance(error, CredentialUnavailableError):
+            return (
                 "SharePoint authentication failed",
                 "Unable to authenticate using current credentials. Please verify the connector authentication credentials.",
             )
-            return None
-        except ClientAuthenticationError as auth_error:
-            title, message = get_sharepoint_auth_notification(auth_error)
-            self.logger.error(f"❌ Error getting SharePoint token for {resource}: {sanitize_azure_error(auth_error)}")
-            await self._notify_token_failure(title, message)
-            return None
-        except Exception as e:
-            self.logger.error(f"❌ Unexpected error getting SharePoint token for {resource}: {sanitize_azure_error(e)}")
-            await self._notify_token_failure(
-                "SharePoint authentication Failed",
-                "Unable to acquire a SharePoint access token. Please verify SharePoint host URL "
-                "and connector authentication credentials.",
+        if not for_sharepoint:
+            return (
+                "SharePoint authentication failed",
+                describe_sign_in_error(error) or "Unable to acquire a Microsoft Graph access token. Please verify "
+                "the connector authentication credentials.",
             )
-            return None
+        if isinstance(error, ClientAuthenticationError):
+            return get_sharepoint_auth_notification(error)
+        return (
+            "SharePoint authentication Failed",
+            "Unable to acquire a SharePoint access token. Please verify SharePoint host URL "
+            "and connector authentication credentials.",
+        )
 
     async def _notify_token_failure(self, title: str, message: str) -> None:
         if self._token_failure_notified:
@@ -2571,7 +2793,7 @@ class SharePointConnector(BaseConnector):
         await self.notify(
             type=NotificationType.CONNECTOR_AUTH_ERROR,
             severity=NotificationSeverity.ERROR,
-            title=title,
+            title=f"{self.display_name}: {title}",
             message=message,
             recipient_user_ids=[self.created_by],
         )
@@ -2602,6 +2824,12 @@ class SharePointConnector(BaseConnector):
                 return {'id': user_id, 'email': email, 'name': getattr(item, 'display_name', 'Unknown')}
         return None
 
+    def _require_known_disabled_set(self) -> None:
+        """Raises while no disabled set is known: a member list filtered by an incomplete set could include an
+        account the tenant has disabled, so what it grants is unknown and the caller keeps what is stored."""
+        if self._disabled_set_unknown:
+            raise RuntimeError("the disabled accounts are not known yet; no group member list is read")
+
     async def _fetch_graph_group_members(self, group_id: str, is_owner: bool = False) -> List[dict]:
         """The enabled user accounts of an Entra group (through nested groups), or of its owners.
 
@@ -2610,6 +2838,7 @@ class SharePointConnector(BaseConnector):
         and has nobody in it; SharePoint keeps the claims of deleted Microsoft 365 groups in its site groups
         and role assignments.
         """
+        self._require_known_disabled_set()
         group = self.client.groups.by_group_id(group_id)
         builder = group.owners if is_owner else group.transitive_members
         users: list[dict] = []
@@ -2776,10 +3005,28 @@ class SharePointConnector(BaseConnector):
 
         return permissions
 
+    def _user_may_be_granted(self, email: str) -> bool:
+        """Whether a grant naming this user is written. Never for an account the tenant has disabled or deleted.
+        While no disabled set is known, only for a user the listing showed as active: the others are withheld
+        without failing the item, and the next run writes them once the set is known."""
+        email = email.lower()
+        if email in self._inactive_emails:
+            return False
+        if self._disabled_set_unknown and email not in self._confirmed_active_emails:
+            self._withheld_unknown_user = True
+            return False
+        return True
+
     def _is_inactive_identity(self, user: object) -> bool:
-        """A Graph identity of an account the tenant has disabled or deleted (it can no longer read anything)."""
+        """A Graph identity whose grant is not written (see _user_may_be_granted)."""
         email = (getattr(user, 'additional_data', None) or {}).get("email")
-        return isinstance(email, str) and email.lower() in self._inactive_emails
+        if isinstance(email, str):
+            return not self._user_may_be_granted(email)
+        if self._disabled_set_unknown:
+            # No email, so the listing cannot have shown this account active: withheld like an unlisted one.
+            self._withheld_unknown_user = True
+            return True
+        return False
 
     async def _graph_group_grant(self, group: object, site_user: object, role: PermissionType) -> list[Permission]:
         """A Graph group grant. An M365 group's owners claim names the whole group, so it is narrowed to the owners."""
@@ -2889,7 +3136,7 @@ class SharePointConnector(BaseConnector):
 
         if principal_type == SP_PRINCIPAL_USER:
             email = principal.get('Email') or principal.get('UserPrincipalName')
-            if email and email.lower() not in self._inactive_emails:
+            if email and self._user_may_be_granted(email):
                 return [Permission(external_id=str(principal.get('Id')), email=email, type=role, entity_type=EntityType.USER)]
         return []
 
@@ -2927,6 +3174,7 @@ class SharePointConnector(BaseConnector):
         members can't all be read; a partial answer is not kept for the rest of the run."""
         if role_id in self._directory_role_members:
             return self._directory_role_members[role_id]
+        self._require_known_disabled_set()
         users: list[dict] = []
         members = self.client.directory_roles.by_directory_role_id(role_id).members
         async with self.rate_limiter:
@@ -3309,30 +3557,61 @@ class SharePointConnector(BaseConnector):
         # past the group deletions on the remaining pages.
         delta_link = (sync_point.get('deltaLink') or sync_point.get('nextLink')) if sync_point else None
 
-        if delta_link is None or self._refresh_all_groups:
-            caught_up = True
-            if delta_link is not None:
-                # Only the stored link reports the groups deleted since it was taken: the full read below lists
-                # the groups that exist, and the new link starts after the deletions.
-                try:
-                    caught_up = await self._perform_delta_sync(delta_link, sync_point_key)
-                except Exception as e:
+        read_every_group = delta_link is None or self._refresh_all_groups
+        caught_up, expired = True, False
+        new_delta_link, link_taken = None, False
+        if read_every_group:
+            # Taken before the saved link is drained: a group deleted between the drain and a later link would be
+            # reported by neither, and the full read does not list it.
+            new_delta_link, link_taken = await self._get_initial_delta_link(), True
+        if delta_link is not None:
+            # Only the stored link reports the groups deleted since it was taken: the full read below lists
+            # the groups that exist, and the new link starts after the deletions.
+            try:
+                caught_up = await self._perform_delta_sync(delta_link, sync_point_key)
+            except Exception as e:
+                if is_expired_delta_link_error(e):
+                    # Kept, the link would fail every later run: no run can catch up on it any more.
+                    self.logger.error("The saved Entra group delta link has expired; reading every group again")
+                    read_every_group = expired = True
+                elif read_every_group:
                     caught_up = False
                     self._health.skipped("Entra group changes", e)
+                else:
+                    raise
+        if read_every_group:
             self.logger.info("Reading every Entra group's members...")
-            # The delta link is taken before the groups are read, so no change made meanwhile is missed.
-            new_delta_link = await self._get_initial_delta_link()
+            if not link_taken:
+                # The saved link expired: groups deleted before this one are found by the lookup below.
+                new_delta_link = await self._get_initial_delta_link()
             complete = await self._perform_initial_full_sync()
+            if expired:
+                try:
+                    await remove_groups_gone_from_directory(
+                        self.data_entities_processor, self.connector_id, self.msgraph_client,
+                        self._handle_delete_group, self.logger,
+                    )
+                except Exception as e:
+                    # The expired link stays, so the next run looks for them again.
+                    caught_up = False
+                    self._health.skipped("Entra groups deleted at the source", e)
             if new_delta_link and complete and caught_up:
                 await self.user_group_sync_point.update_sync_point(
                     sync_point_key,
                     {"nextLink": None, "deltaLink": new_delta_link}
                 )
-                await self.user_sync_point.update_sync_point(
-                    INACTIVE_USERS_SYNC_POINT_KEY, sync_point_data={"emails": sorted(self._inactive_emails)}
-                )
-        else:
-            await self._perform_delta_sync(delta_link, sync_point_key)
+                if expired:
+                    await self.notify(
+                        type=NotificationType.CONNECTOR_WARNING,
+                        severity=NotificationSeverity.WARNING,
+                        title="Every Microsoft group was read again",
+                        message=GROUPS_READ_AGAIN,
+                        recipient_user_ids=[self.created_by],
+                    )
+                if self._listing_trusted:
+                    await self.user_sync_point.update_sync_point(
+                        INACTIVE_USERS_SYNC_POINT_KEY, sync_point_data={"emails": sorted(self._inactive_emails)}
+                    )
 
     async def _get_initial_delta_link(self) -> Optional[str]:
         """
@@ -3547,6 +3826,43 @@ class SharePointConnector(BaseConnector):
         else:
             return PermissionType.READ
 
+    async def _withdraw_unlisted_app_users(self, listed: list[AppUser]) -> bool:
+        """Take the connector away from stored users (guest accounts included) the complete
+        user read no longer lists and that Microsoft confirms are gone (a 404 on the user
+        itself): a stale listing cannot withdraw anyone, nor can a failed or throttled read
+        of the user. Only called after a complete read; an empty list withdraws nobody (the
+        directory always has users), and so does a failed read of the stored users.
+        Restoring the account saves the user again.
+
+        Returns whether the listing can be trusted: every stored account it does not list was
+        confirmed gone. An empty listing, a failed read of the stored users, and an unlisted
+        account that was found or whose read failed make it untrusted."""
+        if not listed:
+            return False
+        try:
+            stored = await self.data_entities_processor.get_app_user_links(self.connector_id)
+        except Exception as e:
+            self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
+            return False
+        kept = {u.source_user_id for u in listed}
+        gone = []
+        trusted = True
+        for u in stored:
+            if not u.source_user_id or u.source_user_id in kept:
+                continue
+            try:
+                if await self.msgraph_client.get_user_status(u.source_user_id) != "gone":
+                    trusted = False
+                    continue
+            except Exception as e:
+                self.logger.error(f"Could not confirm user {u.source_user_id} is gone; keeping the access: {e}")
+                trusted = False
+                continue
+            gone.append(u)
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+        return trusted
+
     async def _sync_users(self) -> None:
         """Sync the tenant's users, note who is disabled, and rewrite the tenant-wide claim groups.
 
@@ -3568,13 +3884,30 @@ class SharePointConnector(BaseConnector):
             )
             raise
         await self.data_entities_processor.on_new_app_users(users)
-        self._inactive_emails = {user.email.lower() for user in users if user.email and user.is_active is False}
+        self._confirmed_active_emails = {u.email.lower() for u in users if u.email and u.is_active is not False}
+        trusted = getattr(users, "complete", True) and await self._withdraw_unlisted_app_users(users)
         stored = await self.user_sync_point.read_sync_point(INACTIVE_USERS_SYNC_POINT_KEY)
-        # Saved once every group has been read with the new set (_sync_azure_ad_groups).
-        self._refresh_all_groups = set((stored or {}).get("emails") or []) != self._inactive_emails
-        await self.data_entities_processor.on_new_user_groups(
-            everyone_groups(self.connector_name, self.connector_id, users)
-        )
+        stored_emails = set((stored or {}).get("emails") or [])
+        if trusted:
+            self._inactive_emails = {user.email.lower() for user in users if user.email and user.is_active is False}
+            # Saved once every group has been read with the new set (_sync_azure_ad_groups).
+            self._refresh_all_groups = stored_emails != self._inactive_emails
+            self._disabled_set_unknown = False
+            self._listing_trusted = True
+            await self.data_entities_processor.on_new_user_groups(
+                everyone_groups(self.connector_name, self.connector_id, users)
+            )
+        else:
+            # Unknown is not empty: a listing that may be cut or stale replaces no membership and no disabled set.
+            self.logger.warning("User listing is not trusted; no user loses access and the claim groups keep their members this run")
+            # The accounts a cut listing shows as disabled are disabled; the rest is the last good set. Used this run, never saved.
+            self._inactive_emails = stored_emails | {user.email.lower() for user in users if user.email and user.is_active is False}
+            self._refresh_all_groups = False
+            self._listing_trusted = False
+            # Without an earlier set nobody is known to be enabled either: no group is read until a trusted listing.
+            # A key never saved reads as {} (not None); a saved empty set is {"emails": []}.
+            self._disabled_set_unknown = "emails" not in (stored or {})
+            self._health.skipped("user listing", "not trusted; the claim groups and the disabled set were not rewritten")
         self.logger.info(f"✅ Successfully synced {len(users)} users")
 
     # Record update handling
@@ -3651,12 +3984,19 @@ class SharePointConnector(BaseConnector):
 
             # Recreate Graph client with new credential
             self.client = GraphServiceClient(
-                self.credential,
-                scopes=["https://graph.microsoft.com/.default"]
+                request_adapter=credential_graph_adapter(self.credential, resilience=self.resilience)
             )
             self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
 
             self.logger.info("✅ Credential successfully reinitialized")
+
+    def _metadata_reader(self) -> ItemMetadata:
+        """The source metadata reads of this connector's files, through its current Graph client."""
+        reader = getattr(self, "_item_metadata", None)
+        if reader is None:
+            reader = source_metadata().item_metadata(lambda: self.msgraph_client, self.logger)
+            self._item_metadata = reader
+        return reader
 
     async def run_sync(self) -> None:
         """One sync run: users, groups, sites, then each site's libraries and pages.
@@ -3665,6 +4005,7 @@ class SharePointConnector(BaseConnector):
         that did not read everything must not report success, and a full sync that did not must not
         remove what it did not see (full_sync_coverage).
         """
+        self._metadata_reader().new_sync()
         start_time = datetime.now()
         self.stats = {
             'sites_processed': 0,
@@ -3697,9 +4038,20 @@ class SharePointConnector(BaseConnector):
                 # A warning about the app's permissions must not stop the sync it is about.
                 self.logger.warning(f"⚠️ Could not check the app's Microsoft Graph permissions: {e}")
             await self._sync_users()
+            if self._disabled_set_unknown:
+                # A grant may be withheld this run (_user_may_be_granted), and an item's grants and the drives' delta
+                # tokens are saved as the run goes. Mark every item for reading again before any of that, so a run
+                # that stops anywhere after this point still leaves the next run to write what was withheld. If this
+                # write fails, the run stops here and nothing has moved.
+                await self.drive_delta_sync_point.update_sync_point(
+                    PERMISSION_MODEL_SYNC_POINT_KEY, sync_point_data={"version": 0}
+                )
 
             sites = await self._get_all_sites()
-            await self._sync_user_groups(sites)
+            if self._disabled_set_unknown:
+                self.logger.warning("The disabled accounts are not known yet; no group is read until a trusted user listing")
+            else:
+                await self._sync_user_groups(sites)
             await self._remove_deleted_sites()
             await self._remove_filtered_out(FILTERED_SITES_SYNC_POINT_KEY, self._filtered_out_site_ids, self._forget_site)
 
@@ -3707,6 +4059,7 @@ class SharePointConnector(BaseConnector):
             for site in sites:
                 if not site.name and not site.display_name:
                     self.logger.warning(f"Site name is empty: '{site.id}'")
+                    await self._keep_stored_site(site.id)
                     continue
                 source_created_at = int(site.created_date_time.timestamp() * 1000) if site.created_date_time else None
                 source_updated_at = int(site.last_modified_date_time.timestamp() * 1000) if site.last_modified_date_time else source_created_at
@@ -4002,7 +4355,7 @@ class SharePointConnector(BaseConnector):
                     if site:
                         # A change notification can't say what changed at which depth; a run
                         # reads every library's changes since its delta token.
-                        await self.run_sync()
+                        await self.request_sync()
 
             self.logger.info("✅ SharePoint webhook notification processed")
 

@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FolderIcon } from '@/app/components/ui';
 import type { KnowledgeHubApiResponse } from '../../types';
 import { isKbCollectionsHubApp } from '../../utils/all-records-transformer';
+import { useTranslation } from 'react-i18next';
 
 interface FolderDetailsSidebarProps {
   open: boolean;
@@ -29,7 +30,8 @@ function DetailRow({ label, value }: DetailRowProps) {
   return (
     <Box
       style={{
-        background: 'var(--olive-2)',
+        // Translucent so the panel's frost shows through the cards
+        background: 'var(--olive-a2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
         padding: 'var(--space-4)',
@@ -38,7 +40,7 @@ function DetailRow({ label, value }: DetailRowProps) {
         gap: 'var(--space-2)',
       }}
     >
-      <Text size="1" weight="medium" style={{ color: 'var(--slate-10)' }}>
+      <Text size="1" weight="medium" style={{ color: 'var(--slate-11)' }}>
         {label}
       </Text>
       <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
@@ -66,6 +68,7 @@ function formatTimestamp(timestamp: number | undefined): string | undefined {
 }
 
 export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDetailsSidebarProps) {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const currentNode = tableData?.currentNode;
   const breadcrumbs = tableData?.breadcrumbs;
@@ -82,10 +85,10 @@ export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDe
           ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
-          backgroundColor: 'var(--effects-translucent)',
+          backgroundColor: 'var(--frost-bg)',
           border: '1px solid var(--olive-3)',
           borderRadius: isMobile ? 0 : 'var(--radius-2)',
-          backdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
           boxShadow: '0 20px 48px 0 rgba(0, 0, 0, 0.25)',
           overflow: 'hidden',
           display: 'flex',
@@ -95,7 +98,7 @@ export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDe
         }}
       >
         <VisuallyHidden>
-          <Dialog.Title>{currentNode?.name || 'Folder Details'}</Dialog.Title>
+          <Dialog.Title>{currentNode?.name || t('dialog.folderDetails')}</Dialog.Title>
         </VisuallyHidden>
 
         {/* Header */}
@@ -105,8 +108,6 @@ export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDe
           style={{
             padding: '8px 8px 8px 16px',
             borderBottom: '1px solid var(--olive-3)',
-            backgroundColor: 'var(--effects-translucent)',
-            backdropFilter: 'blur(8px)',
           }}
         >
           <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
@@ -127,7 +128,10 @@ export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDe
 
           <Flex align="center" gap="1">
             <IconButton
+              aria-label={t('common.close')}
               variant="ghost"
+              // Radix ghost buttons pull out by their padding; keep the header's own inset
+              style={{ margin: 0 }}
               color="gray"
               size="2"
               onClick={() => onOpenChange(false)}

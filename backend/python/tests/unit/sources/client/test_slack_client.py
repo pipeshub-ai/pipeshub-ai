@@ -377,7 +377,7 @@ class TestSlackRESTClientViaTokenNewMethods:
         mock_wc2.token = "xoxb-new"
         call_count = [0]
 
-        def make_wc(token):
+        def make_wc(token, **_options):
             call_count[0] += 1
             return mock_wc1 if call_count[0] == 1 else mock_wc2
 

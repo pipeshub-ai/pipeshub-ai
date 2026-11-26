@@ -1,9 +1,13 @@
+import contextlib
+import functools
 import json
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from inspect import isawaitable, isclass
 from typing import Any, cast
 from uuid import uuid4
+
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -16,14 +20,20 @@ from app.telemetry.identity import domain_from_email
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.containers.connector import ConnectorAppContainer
+from app.core.org_jobs import for_each_org, of_org
 from app.models.entities import RecordType
 from app.services.graph_db.common.utils import (
     ROOT_SCOPED_CONNECTOR_TYPES,
     org_id_from_app_edge,
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.messaging.lanes.lifecycle import assign_lane_to_new_connector
+from app.services.messaging.lanes.lifecycle import (
+    assign_lane_to_new_connector,
+    free_lane_of_deleted_connector,
+)
+from app.utils.error_class import log_failure
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import await_or_503, get_document_or_503
 
 
 # KB app documents store type == Connectors.KNOWLEDGE_BASE.value ("KB"), but the
@@ -141,6 +151,27 @@ def Connector(
 
         return cls
     return decorator
+
+
+def _org_app_edge(org_id: str, connector_id: str, timestamp: int) -> dict[str, Any]:
+    """The edge from an organisation to one of its connector instances, which the connector list follows."""
+    return {
+        "from_id": org_id,
+        "from_collection": CollectionNames.ORGS.value,
+        "to_id": connector_id,
+        "to_collection": CollectionNames.APPS.value,
+        "createdAtTimestamp": timestamp,
+    }
+
+
+class ConnectorInstanceNotDeletedError(RuntimeError):
+    """The graph answered that it did not delete the connector instance."""
+
+    # The providers answer an outage this way and log its cause themselves.
+    log_error_class = "unavailable"
+
+    def __init__(self, connector_id: str) -> None:
+        super().__init__(f"Connector instance {connector_id} was not deleted")
 
 
 class ConnectorRegistry:
@@ -320,10 +351,12 @@ class ConnectorRegistry:
         return True
 
     async def _org_id_from_edge(self, connector_instance: dict[str, Any]) -> str | None:
+        """The org on the app's org-app edge; an edge read the store could not answer just now is a 503 (other
+        failures are raised as they are)."""
         connector_id = connector_instance.get("_key") or connector_instance.get("id")
         if not connector_id:
             return None
-        return await org_id_from_app_edge(await self._get_graph_provider(), connector_id)
+        return await await_or_503(org_id_from_app_edge(await self._get_graph_provider(), connector_id, raise_on_error=True))
 
     async def _can_delete_connector(
         self,
@@ -385,6 +418,8 @@ class ConnectorRegistry:
 
             return False
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"Error checking connector access: {e}")
             return False
@@ -473,20 +508,12 @@ class ConnectorRegistry:
             connector_id: Unique key of the connector instance
 
         Returns:
-            Connector instance document or None if not found
+            Connector instance document, or None if there is none. A failed read is a 503, not None, so an outage is
+            not answered as a missing connector (404) or as an unlocked one.
         """
-        try:
-            graph_provider = await self._get_graph_provider()
-            return await graph_provider.get_document(
-                connector_id,
-                self._collection_name
-            )
-
-        except Exception as e:
-            self.logger.debug(
-                f"Could not get connector instance {connector_id} from database: {e}"
-            )
-            return None
+        # The first read builds the data store; a store that is down then is the same outage as a failed read.
+        graph_provider = await await_or_503(self._get_graph_provider())
+        return await get_document_or_503(graph_provider, connector_id, self._collection_name)
 
     async def _create_connector_instance(
         self,
@@ -512,6 +539,7 @@ class ConnectorRegistry:
         Returns:
             Created connector instance document or None if failed
         """
+        node_written = False
         try:
             graph_provider = await self._get_graph_provider()
 
@@ -606,18 +634,11 @@ class ConnectorRegistry:
                 raise Exception(
                     f"Failed to create connector instance for {connector_type}"
                 )
+            node_written = True
 
             # Create relationship edge between organization and instance
-            edge_document = {
-                "from_id": org_id,
-                "from_collection": CollectionNames.ORGS.value,
-                "to_id": instance_key,
-                "to_collection": CollectionNames.APPS.value,
-                "createdAtTimestamp": current_timestamp,
-            }
-
             created_edge = await graph_provider.batch_create_edges(
-                [edge_document],
+                [_org_app_edge(org_id, instance_key, current_timestamp)],
                 CollectionNames.ORG_APP_RELATION.value,
             )
 
@@ -640,13 +661,53 @@ class ConnectorRegistry:
             return instance_document
 
         except ValueError:
-            # Re-raise ValueError (name uniqueness) as-is
+            # Re-raise ValueError (name uniqueness, raised before the node is written) as-is
+            if node_written:
+                await self._discard_unfinished_instance(instance_key, org_id)
             raise
         except Exception as e:
             self.logger.error(
                 f"Error creating connector instance for {connector_type}: {e}"
             )
+            if node_written:
+                await self._discard_unfinished_instance(instance_key, org_id)
             return None
+
+    async def _discard_unfinished_instance(self, connector_id: str, org_id: str) -> None:
+        """Remove a node this create wrote but could not finish: alone it still holds the name, and without its org edge the
+        admin's list may not show it. Raises ConnectorInstanceNotDeletedError, logged once here, when it stays."""
+        try:
+            await self.discard_connector_instance(connector_id, org_id)
+        except Exception as undo_error:
+            log_failure(self.logger, "connector.route.failed", undo_error, include_error_text=False,
+                        op="rollback", step="instance", connector_id=connector_id)
+            raise ConnectorInstanceNotDeletedError(connector_id) from undo_error
+
+    async def discard_connector_instance(self, connector_id: str, org_id: str) -> None:
+        """Remove an instance this process just created, which nothing uses yet: the graph's full delete of it, then
+        its queue lane. Raises when the graph did not delete it."""
+        graph_provider = await self._get_graph_provider()
+        try:
+            result = await graph_provider.delete_connector_instance(connector_id=connector_id, org_id=org_id)
+            if not result.get("success"):
+                raise ConnectorInstanceNotDeletedError(connector_id)
+        except Exception:
+            await self._relink_to_org(graph_provider, connector_id, org_id)
+            raise
+        await free_lane_of_deleted_connector(self.logger, connector_id)
+
+    async def _relink_to_org(self, graph_provider: IGraphDBProvider, connector_id: str, org_id: str) -> None:
+        """Put back the org edge of an instance a failed delete left in place: some stores remove a connector's edges before
+        its node (ArangoDB, outside its transaction), and the list reaches an instance only through that edge. Best effort:
+        the caller logs the failed delete, and docs/logging.md says how to remove an instance left unlisted."""
+        with contextlib.suppress(Exception):
+            instance = await graph_provider.get_document(connector_id, self._collection_name)
+            # Only an instance of this org: a discard asked under another org must never link it there.
+            if instance is not None and await self.belongs_to_org(instance, org_id):
+                await graph_provider.batch_create_edges(
+                    [_org_app_edge(org_id, connector_id, get_epoch_timestamp_in_ms())],
+                    CollectionNames.ORG_APP_RELATION.value,
+                )
 
     async def _deactivate_connector_instance(self, connector_id: str) -> bool:
         """
@@ -705,11 +766,25 @@ class ConnectorRegistry:
         """
         try:
             graph_provider = await self._get_graph_provider()
-
-            # Get all connector instances from database
-            all_documents = await graph_provider.get_all_documents(
-                self._collection_name
+            # Org by org: on PostgreSQL every read and write runs under one org.
+            failed = await for_each_org(
+                graph_provider, "connector_registry_sync",
+                functools.partial(self._sync_org_with_database, graph_provider), self.logger,
             )
+        except Exception as e:
+            self.logger.error(f"Error syncing registry with database: {e}")
+            return False
+        if failed:
+            return False
+        self.logger.info("Successfully synced registry with database")
+        return True
+
+    async def _sync_org_with_database(self, graph_provider: IGraphDBProvider, org_id: str) -> None:
+        """One org's part of ``sync_with_database``, called under that org."""
+        try:
+            all_documents = of_org(await graph_provider.get_all_documents(
+                self._collection_name
+            ), org_id)
 
             # Collect keys of instances that need to be deactivated
             keys_to_deactivate = []
@@ -800,12 +875,9 @@ class ConnectorRegistry:
                     f"Backfilled permissionModel on {len(stale_permission_models)} connector instances"
                 )
 
-            self.logger.info("Successfully synced registry with database")
-            return True
-
         except Exception as e:
-            self.logger.error(f"Error syncing registry with database: {e}")
-            return False
+            self.logger.error(f"Error syncing registry with database org={org_id}: {e}")
+            raise
 
     def _build_connector_info(
         self,
@@ -1403,6 +1475,8 @@ class ConnectorRegistry:
             metadata = self._connectors[registry_key]
             return self._build_connector_info(connector_type, metadata, document)
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(
                 f"Error getting connector instance {connector_id}: {e}"
@@ -1561,6 +1635,7 @@ class ConnectorRegistry:
         org_id: str,
         *,
         is_admin: bool,
+        transaction: str | None = None,
     ) -> dict[str, Any] | None:
         """
         Update a connector instance in the database with access control.
@@ -1571,6 +1646,7 @@ class ConnectorRegistry:
             user_id: User ID performing the update
             org_id: Organization ID
             is_admin: Whether the user is an admin
+            transaction: Read and write the instance inside this graph transaction
         Returns:
             Updated connector instance document or None if failed
         Raises:
@@ -1581,7 +1657,8 @@ class ConnectorRegistry:
 
             existing_document = await graph_provider.get_document(
                 connector_id,
-                self._collection_name
+                self._collection_name,
+                transaction=transaction,
             )
 
             if not existing_document:
@@ -1636,16 +1713,18 @@ class ConnectorRegistry:
                 'updatedAtTimestamp': get_epoch_timestamp_in_ms()
             }
 
-            # Execute update via update_node (only the changed fields)
+            # Execute update via update_node (only the changed fields: replaying the whole stored
+            # document would send legacy keys the schema no longer accepts)
             node_updates = {
-                k: v for k, v in updated_document.items()
+                k: v for k, v in {**updates, 'updatedAtTimestamp': updated_document['updatedAtTimestamp']}.items()
                 if k not in ('_key', '_id', '_rev', 'id')
             }
 
             await graph_provider.update_node(
                 connector_id,
                 self._collection_name,
-                node_updates
+                node_updates,
+                transaction=transaction,
             )
 
             result = [updated_document]

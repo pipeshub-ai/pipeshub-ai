@@ -14,6 +14,8 @@ from app.connectors.sources.notion.connector import (
     _DatabaseUnavailable,
 )
 from app.connectors.sources.notion_personal.connector import NotionPersonalConnector
+from app.connectors.utils.record_ids import new_record_id
+from app.models.blocks import Block, BlockSubType, BlockType, DataFormat
 from app.models.entities import Record, RecordType
 from app.services.notification.types import NotificationType
 from app.sources.client.notion.notion import NotionRESTClientViaOAuth
@@ -444,3 +446,102 @@ async def test_personal_connector_runs_the_shared_finishing_passes() -> None:
                AsyncMock(return_value=(MagicMock(), MagicMock()))):
         await conn.run_sync()
     conn._finish_sync.assert_awaited_once()
+
+
+# ---- a child met by the sync and the stream at once -------------------------------------------
+
+
+class TestChildMetByTwoWritersAtOnce:
+    """The sync and the stream of a parent page (indexing reads the page while the sync goes
+    on) can each look for a child page, data source or file before either has stored it. Each
+    then created its own record, so the graph held two records for one child. The next full
+    sync rewrote the one its lookup found and unlinked the other, which lost its parent and the
+    access it inherits."""
+
+    FILE_BLOCK = {
+        "id": "blk-1", "type": "file", "created_time": OLD, "last_edited_time": OLD,
+        "file": {"type": "file", "name": "spec.pdf", "file": {"url": "https://files.notion.so/spec.pdf"}},
+    }
+    DATA_SOURCE = {
+        "object": "data_source", "id": "ds-1", "title": [{"plain_text": "Tasks"}],
+        "created_time": OLD, "last_edited_time": OLD, "parent": {"type": "database_id", "database_id": "db-1"},
+    }
+
+    @staticmethod
+    def _child_page_block(page_id: str) -> Block:
+        return Block(
+            id="b1", index=0, type=BlockType.TEXT, sub_type=BlockSubType.CHILD_RECORD,
+            format=DataFormat.TXT, data="Child", source_id=page_id, source_type="child_page", name="WEBPAGE",
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_sync_and_the_stream_store_one_record(self) -> None:
+        conn = _connector_with(MagicMock())
+        stored: dict[str, Record] = {}
+
+        async def store(records_with_permissions) -> None:
+            # Both writes run with neither able to see the other's record yet.
+            for record, _ in records_with_permissions:
+                stored[record.id] = record
+
+        conn.data_entities_processor.on_new_records = AsyncMock(side_effect=store)
+
+        await conn._resolve_child_reference_blocks(
+            [self._child_page_block("child-1")], parent_record=_stored("parent-1"))
+        records = await conn._records_for_search_object(_page("child-1"), "page")
+        await conn.data_entities_processor.on_new_records(records)
+
+        assert [r.external_record_id for r in stored.values()] == ["child-1"], (
+            f"one child page stored as {len(stored)} records: {sorted(stored)}")
+
+    @pytest.mark.asyncio
+    async def test_a_new_child_gets_the_same_id_from_every_writer(self) -> None:
+        conn = _connector_with(MagicMock())
+        conn.resolve_page_title_by_id = AsyncMock(return_value="Row")
+
+        stream = await conn._batch_get_or_create_child_records({
+            "child-1": ("Child", RecordType.WEBPAGE, "parent-1"),
+            "ds-1": ("Tasks", RecordType.DATASOURCE, None),
+            "blk-1": ("spec.pdf", RecordType.FILE, "parent-1"),
+        })
+        row = await conn.get_record_child_by_external_id("row-1", "ds-1")
+        sync = {
+            "child-1": (await conn._transform_to_webpage_record(_page("child-1"), "page")).id,
+            "ds-1": (await conn._transform_to_webpage_record(
+                self.DATA_SOURCE, "data_source", database_parent_id="parent-1")).id,
+            "blk-1": conn._transform_to_file_record(self.FILE_BLOCK, "parent-1").id,
+            "row-1": (await conn._transform_to_webpage_record(_page("row-1"), "page")).id,
+        }
+
+        assert {ext_id: child.child_id for ext_id, child in stream.items()} | {"row-1": row.child_id} == sync
+        assert sync == {ext_id: new_record_id(conn.connector_id, ext_id) for ext_id in sync}
+
+    @pytest.mark.asyncio
+    async def test_a_stored_child_keeps_its_id(self) -> None:
+        conn = _connector_with(MagicMock())
+        child = _stored("child-1")
+        child.record_name = "Child"
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=child)
+        block = self._child_page_block("child-1")
+
+        await conn._resolve_child_reference_blocks([block], parent_record=_stored("parent-1"))
+
+        assert [c.child_id for c in block.table_row_metadata.children_records] == ["rid-child-1"]
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_block_points_at_the_record_the_sync_stored_first(self) -> None:
+        # The sync stores the child (under an id from before derived ids) between the stream's
+        # lookup and its write; the processor matches on external id and keeps the stored id.
+        conn = _connector_with(MagicMock())
+
+        async def match_stored(records_with_permissions) -> None:
+            for record, _ in records_with_permissions:
+                record.id = "rid-stored-by-sync"
+
+        conn.data_entities_processor.on_new_records = AsyncMock(side_effect=match_stored)
+        block = self._child_page_block("child-1")
+
+        await conn._resolve_child_reference_blocks([block], parent_record=_stored("parent-1"))
+
+        assert [c.child_id for c in block.table_row_metadata.children_records] == ["rid-stored-by-sync"]

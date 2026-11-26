@@ -56,6 +56,7 @@ _OPENROUTER_TTS_FORMAT = AIModelField(
         ModelCapability.IMAGE_GENERATION,
         ModelCapability.TTS,
         ModelCapability.STT,
+        ModelCapability.DECISION,
     ]) \
     .with_icon("/icons/ai-models/openrouter.svg") \
     .with_color("#6366F1") \
@@ -82,6 +83,9 @@ _OPENROUTER_TTS_FORMAT = AIModelField(
     .add_field(API_KEY, ModelCapability.STT) \
     .add_field(model_field("e.g., openai/whisper-1"), ModelCapability.STT) \
     .add_field(FRIENDLY_NAME, ModelCapability.STT) \
+    .add_field(API_KEY, ModelCapability.DECISION) \
+    .add_field(model_field("e.g., typesafe/jev-1.13"), ModelCapability.DECISION) \
+    .add_field(FRIENDLY_NAME, ModelCapability.DECISION) \
     , GATEWAY_CAPABILITIES).build_decorator()
 class OpenRouterProvider:
     pass

@@ -94,7 +94,7 @@ def cluster(request, tmp_path_factory) -> Iterator[Cluster]:
         major = int(subprocess.run([f"{b}/postgres", "--version"], capture_output=True, text=True).stdout.split()[2].split(".")[0])
         c = Cluster(b, root, port, major)
         c.psql("postgres", "CREATE DATABASE tpl")
-        _py("db.bootstrap_roles", {"PG_ADMIN_URL": f"postgresql://postgres@127.0.0.1:{port}/tpl", "PG_BOOTSTRAP_EXTENSIONS": "pg_trgm"})
+        _py("db.bootstrap_roles", {"PG_ADMIN_URL": f"postgresql://postgres@127.0.0.1:{port}/tpl", "PG_BOOTSTRAP_EXTENSIONS": "vector,pg_trgm", "PG_BOOTSTRAP_ALLOW_NO_PASSWORD": "1"})
         _py("db.migrate", {"PG_MIGRATE_URL": f"postgresql+psycopg://pipeshub_migrate@127.0.0.1:{port}/tpl"})
         c.psql("tpl", file=HERE / "fixture.sql")
         yield c
@@ -109,6 +109,7 @@ class Env:
     db: str
     start_bouncer: Callable[..., int]
     stop_bouncer: Callable[[int], None]
+    restart_bouncer: Callable[[int], None]
 
     def dsn(self, svc: str = "query", port: int | None = None) -> str:
         return f"postgresql://pipeshub_{svc}{'' if svc == 'jobs' else '_login'}@127.0.0.1:{port or self.cluster.port}/{self.db}"
@@ -127,7 +128,7 @@ def env(cluster, request, tmp_path) -> Iterator[Env]:
     procs: dict[int, subprocess.Popen] = {}
     ports = iter(range(_free_port(63000), 65000))
 
-    def start_bouncer(*, reset: bool = True, max_prepared: int = 200, pool_size: int = 2) -> int:
+    def start_bouncer(*, reset: bool = True, max_prepared: int = 200, pool_size: int = 2, settings: dict[str, object] | None = None) -> int:
         port = next(ports)
         while socket.socket().connect_ex(("127.0.0.1", port)) == 0:
             port = next(ports)
@@ -150,7 +151,7 @@ default_pool_size = {pool_size}
 ignore_startup_parameters = extra_float_digits
 logfile = {tmp_path}/pgb{port}.log
 pidfile = {tmp_path}/pgb{port}.pid
-""")
+""" + "".join(f"{k} = {v}\n" for k, v in (settings or {}).items()))
         procs[port] = (subprocess.Popen([os.environ["KERNEL_TEST_PGBOUNCER"], str(ini)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         _wait_port(port)
         return port
@@ -160,7 +161,13 @@ pidfile = {tmp_path}/pgb{port}.pid
         p.kill()
         p.wait(10)
 
-    yield Env(cluster, name, start_bouncer, stop_bouncer)
+    def restart_bouncer(port: int) -> None:
+        """Kill the bouncer on ``port`` and start it again on the same port and settings, as a pooler container restart does."""
+        stop_bouncer(port)
+        procs[port] = subprocess.Popen([os.environ["KERNEL_TEST_PGBOUNCER"], str(tmp_path / f"pgb{port}.ini")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _wait_port(port)
+
+    yield Env(cluster, name, start_bouncer, stop_bouncer, restart_bouncer)
     for port in list(procs):
         stop_bouncer(port)
     cluster.psql("postgres", f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")

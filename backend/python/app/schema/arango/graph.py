@@ -86,6 +86,7 @@ EDGE_DEFINITIONS = [
             CollectionNames.MEETINGS.value,
             CollectionNames.ARTIFACTS.value,
             CollectionNames.SQL_TABLES.value,
+            CollectionNames.SQL_COLUMNS.value,
             CollectionNames.SQL_VIEWS.value,
         ],
     },
@@ -148,7 +149,7 @@ EDGE_DEFINITIONS = [
     {
         "edge_collection": CollectionNames.ENTITY_RELATIONS.value,
         "from_vertex_collections": [CollectionNames.RECORDS.value],
-        "to_vertex_collections": [CollectionNames.USERS.value],
+        "to_vertex_collections": [CollectionNames.USERS.value, CollectionNames.ORGS.value, CollectionNames.PEOPLE.value],
     },
     # Agent Builder Graph Edges
     {
@@ -186,6 +187,12 @@ EDGE_DEFINITIONS = [
         "edge_collection": CollectionNames.AGENT_HAS_SKILL.value,
         "from_vertex_collections": [CollectionNames.AGENT_INSTANCES.value],
         "to_vertex_collections": [CollectionNames.AGENT_SKILLS.value],
+    },
+    # Knowledge publications (P2.13): a knowledge base or record group -> its publication
+    {
+        "edge_collection": CollectionNames.PUBLISHED_VIA.value,
+        "from_vertex_collections": [CollectionNames.APPS.value, CollectionNames.RECORD_GROUPS.value],
+        "to_vertex_collections": [CollectionNames.KNOWLEDGE_PUBLICATIONS.value],
     },
     {
         "edge_collection": CollectionNames.PROSPECT.value,

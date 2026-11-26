@@ -159,11 +159,6 @@ def test_csv_row_longer_than_its_header_keeps_every_value() -> None:
     assert "surprise-extra" in [str(v) for v in rows[0].values()]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="excel_parser.py: a damaged or non-xlsx file raises zipfile.BadZipFile out of "
-    "parse(), which the parsing service reports as a 500 outage instead of a parse error",
-)
 @pytest.mark.parametrize(
     "content", [b"not a workbook", OLE_SIGNATURE + b"\0" * 512], ids=["garbage", "old-binary-container"]
 )
@@ -342,7 +337,7 @@ class TestFormatSupportProbe:
     ) -> None:
         fake_libreoffice()
         with caplog.at_level(logging.DEBUG), pytest.raises(DocumentProcessingError) as caught:
-            await convert_with_libreoffice(b"{\\rtf1 damaged", "rtf", "docx")
+            await convert_with_libreoffice(b"damaged", "ods", "xlsx")
         assert not isinstance(caught.value, LibreOfficeCouldNotReadFileError)
         assert "component" not in caplog.text
         assert not _probe_runs(tmp_path / "libreoffice-args.log")

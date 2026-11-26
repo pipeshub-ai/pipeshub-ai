@@ -8,7 +8,12 @@ import type { ToolApprovalDetails } from '../../../types';
 const chat = vi.hoisted(() => ({
   streamMessageForSlot: vi.fn(),
   buildStreamChatRequestForSlot: vi.fn((slotId: string, query: string) => ({ slotId, query })),
-  state: { activeSlotId: 'slot-1', slots: { 'slot-1': { isOwner: true as boolean | null, isStreaming: false } } },
+  state: {
+    activeSlotId: 'slot-1',
+    slots: { 'slot-1': { isOwner: true as boolean | null, isStreaming: false } },
+    // The harness's message actions read the configured models (the model a run used).
+    settings: { availableModels: [] },
+  },
 }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
@@ -59,7 +64,7 @@ describe('ToolApprovalCard', () => {
     expect(screen.getByText('Jira')).toBeTruthy();
     expect(screen.getByText(/^Needs your approval · expires in 15 min$/)).toBeTruthy();
     expect(screen.getByText('Login fails')).toBeTruthy();
-    expect(screen.getByText('["bug"]')).toBeTruthy();
+    expect(screen.getByText('bug')).toBeTruthy();
     expect(screen.queryByText("Can't be undone")).toBeNull();
   });
 

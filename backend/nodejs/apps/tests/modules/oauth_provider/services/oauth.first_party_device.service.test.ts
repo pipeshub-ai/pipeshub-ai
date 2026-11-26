@@ -11,20 +11,33 @@ import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
 import { AgentMcpScopes } from '../../../../src/modules/oauth_provider/config/scopes.config'
-import { createMockLogger } from '../../../helpers/mock-logger'
+import { setOAuthAppRepository } from '../../../../src/libs/repositories/oauth-app'
+import { setIdentityPort } from '../../../../src/libs/repositories/identity'
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
+import { createMockLogger, createSnakeCaseLogKeyGuard, MockLogger } from '../../../helpers/mock-logger'
+import { NO_APP_CREATOR } from '../../../../src/libs/repositories/oauth-app'
 
 describe('FirstPartyDeviceAppService', () => {
   let service: FirstPartyDeviceAppService
   let mockEncryptionService: any
   const orgId = new Types.ObjectId()
   const userId = new Types.ObjectId()
+  // Every logger a test builds, for the snake_case check after it.
+  const madeLoggers: MockLogger[] = []
+  const newLogger = (): MockLogger => {
+    const logger = createMockLogger()
+    madeLoggers.push(logger)
+    return logger
+  }
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
 
   beforeEach(() => {
     mockEncryptionService = {
       encrypt: sinon.stub().returns('encrypted-secret'),
     }
     service = new FirstPartyDeviceAppService(
-      createMockLogger(),
+      newLogger(),
       mockEncryptionService,
       {
         getAllowedScopeNamesForRole: sinon.stub().returns([...AgentMcpScopes]),
@@ -36,9 +49,9 @@ describe('FirstPartyDeviceAppService', () => {
     const orgQuery: any = {
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
-      lean: sinon.stub().resolves([{ _id: orgId }]),
+      lean: sinon.stub().resolves({ _id: orgId }),
     }
-    sinon.stub(Org, 'find').returns(orgQuery)
+    sinon.stub(Org, 'findOne').returns(orgQuery)
     const userQuery: any = {
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
@@ -47,8 +60,28 @@ describe('FirstPartyDeviceAppService', () => {
     sinon.stub(Users, 'findOne').returns(userQuery)
   })
 
-  afterEach(() => {
+  afterEach(function () {
+    snakeCaseKeys.check(this, ...madeLoggers.splice(0))
     sinon.restore()
+    setOAuthAppRepository()
+    setIdentityPort()
+    delete process.env.DOC_STORE
+  })
+
+  // Discovery and the device endpoint have no session, so nothing is bound when this runs.
+  it('runs as the install organisation when nothing is bound (PostgreSQL)', async () => {
+    process.env.DOC_STORE = 'postgres'
+    setIdentityPort({ oldestOrgId: async () => 'org-1' } as any)
+    let bound: string | undefined
+    setOAuthAppRepository({
+      findByClientId: async () => {
+        bound = getCurrentOrgId()
+        return { _id: 'a', clientId: FIRST_PARTY_DEVICE_CLIENT_ID, allowedScopes: [...AgentMcpScopes] }
+      },
+    } as any)
+
+    expect(await service.getOrCreate()).to.equal(FIRST_PARTY_DEVICE_CLIENT_ID)
+    expect(bound).to.equal('org-1')
   })
 
   it('should return the existing client_id without creating another app', async () => {
@@ -80,7 +113,7 @@ describe('FirstPartyDeviceAppService', () => {
     await service.getOrCreate()
     expect(update.calledOnce).to.be.true
     expect(update.firstCall.args).to.deep.equal([
-      { _id: appId },
+      { _id: appId.toString() },
       { $addToSet: { allowedScopes: { $each: ['kb:write', 'kb:upload'] } } },
     ])
   })
@@ -90,7 +123,7 @@ describe('FirstPartyDeviceAppService', () => {
   it('grants offline_access so device logins get a refresh token, on new and existing apps', async () => {
     const withOffline = [...AgentMcpScopes, 'offline_access']
     service = new FirstPartyDeviceAppService(
-      createMockLogger(),
+      newLogger(),
       mockEncryptionService,
       { getAllowedScopeNamesForRole: sinon.stub().returns(withOffline) } as any,
       { mcpScopes: withOffline } as any,
@@ -106,14 +139,14 @@ describe('FirstPartyDeviceAppService', () => {
     const update = sinon.stub(OAuthApp, 'updateOne').resolves({} as any)
     await service.getOrCreate()
     expect(update.firstCall.args).to.deep.equal([
-      { _id: appId },
+      { _id: appId.toString() },
       { $addToSet: { allowedScopes: { $each: ['offline_access'] } } },
     ])
   })
 
   it('does not add a preset scope the instance MCP_SCOPES leaves out', async () => {
     service = new FirstPartyDeviceAppService(
-      createMockLogger(),
+      newLogger(),
       mockEncryptionService,
       { getAllowedScopeNamesForRole: sinon.stub().returns([...AgentMcpScopes]) } as any,
       { mcpScopes: AgentMcpScopes.filter((s) => s !== 'kb:write' && s !== 'kb:upload') } as any,
@@ -162,23 +195,18 @@ describe('FirstPartyDeviceAppService', () => {
     )
     expect(data.allowedScopes).to.deep.equal([...AgentMcpScopes])
     expect(mockEncryptionService.encrypt.calledOnce).to.be.true
+    // One app for the whole instance: it belongs to the install organisation and names no person as its creator.
+    expect(String(data.orgId)).to.equal(orgId.toString())
+    expect(String(data.createdBy)).to.equal(NO_APP_CREATOR)
+    expect((Users.findOne as sinon.SinonStub).called).to.be.false
+    expect(madeLoggers[0]?.info.args).to.deep.include([
+      'First-party device app created',
+      { client_id: FIRST_PARTY_DEVICE_CLIENT_ID, org_id: orgId.toString() },
+    ])
   })
 
   it('should return null when the instance has no org', async () => {
-    ;(Org.find as sinon.SinonStub).returns({
-      sort: sinon.stub().returnsThis(),
-      select: sinon.stub().returnsThis(),
-      lean: sinon.stub().resolves([]),
-    })
-    sinon.stub(OAuthApp, 'findOne').resolves(null)
-    const create = sinon.stub(OAuthApp, 'create')
-
-    expect(await service.getOrCreate()).to.equal(null)
-    expect(create.called).to.be.false
-  })
-
-  it('should return null when the org has no users yet', async () => {
-    ;(Users.findOne as sinon.SinonStub).returns({
+    ;(Org.findOne as sinon.SinonStub).returns({
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
       lean: sinon.stub().resolves(null),
@@ -188,6 +216,19 @@ describe('FirstPartyDeviceAppService', () => {
 
     expect(await service.getOrCreate()).to.equal(null)
     expect(create.called).to.be.false
+  })
+
+  it('does not wait for a user to borrow as the creator', async () => {
+    ;(Users.findOne as sinon.SinonStub).returns({
+      sort: sinon.stub().returnsThis(),
+      select: sinon.stub().returnsThis(),
+      lean: sinon.stub().resolves(null),
+    })
+    sinon.stub(OAuthApp, 'findOne').resolves(null)
+    const create = sinon.stub(OAuthApp, 'create').resolves({ clientId: FIRST_PARTY_DEVICE_CLIENT_ID } as any)
+
+    expect(await service.getOrCreate()).to.equal(FIRST_PARTY_DEVICE_CLIENT_ID)
+    expect(String((create.firstCall.args[0] as Record<string, unknown>).createdBy)).to.equal(NO_APP_CREATOR)
   })
 
   it('should return the winner when two creates race on clientId', async () => {
@@ -203,7 +244,7 @@ describe('FirstPartyDeviceAppService', () => {
 
   it('should omit scopes that are not in MCP_SCOPES', async () => {
     service = new FirstPartyDeviceAppService(
-      createMockLogger(),
+      newLogger(),
       mockEncryptionService,
       {
         getAllowedScopeNamesForRole: sinon.stub().returns([...AgentMcpScopes]),
@@ -224,7 +265,7 @@ describe('FirstPartyDeviceAppService', () => {
 
   it('should return null when the agent preset intersects MCP_SCOPES as empty', async () => {
     service = new FirstPartyDeviceAppService(
-      createMockLogger(),
+      newLogger(),
       mockEncryptionService,
       {
         getAllowedScopeNamesForRole: sinon.stub().returns([...AgentMcpScopes]),

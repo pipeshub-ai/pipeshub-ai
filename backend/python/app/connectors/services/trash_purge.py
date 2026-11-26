@@ -32,6 +32,14 @@ The purge runs whether ``ENABLE_SOFT_DELETE`` is on or off: turning the trash
 off makes new deletes hard deletes, and what is already in the trash is still
 removed on schedule. Only ``softDeletePurge.enabled`` pauses it; an unfinished
 run resumes from its cursor when it is on again.
+
+``softDeletePurge`` is each org's own setting, read inside that org: an org
+switched off is passed over, and its retention, page size and per-tick budget
+apply to its own walk. A run starts when any enabled org's schedule says it is
+due; the tick itself (``SOFT_DELETE_PURGE_TICK_SECONDS``) is service-wide, and so
+is the cap on one tick's work across every org
+(``SOFT_DELETE_PURGE_MAX_RUN_SECONDS``, two hours by default): when it is hit the
+run stops and the next tick resumes from its cursor.
 """
 
 from __future__ import annotations
@@ -58,6 +66,7 @@ from app.modules.indexing.vector_membership_backfill import (
 from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
 from app.services.graph_db.common.utils import is_storage_document_id
 from app.services.messaging.utils import MessagingUtils
+from app.services.permissions.structure_generation import note_org_structure_change
 from app.telemetry.modules.soft_delete_metrics import (
     record_purge_run,
     record_purged,
@@ -84,6 +93,8 @@ RECORD_EVENTS_TOPIC = "record-events"
 DAY_MS = 24 * 60 * 60 * 1000
 # Above a slow page's graph work, below the gap a dead leader leaves.
 LEASE_TTL_SECONDS = 600
+# One tick's work across every org: the default maxRunMinutes a single run had before the settings were per org.
+DEFAULT_MAX_RUN_SECONDS = 2 * 60 * 60
 GROUP_PAGE_SIZE = 100
 MAX_ERROR_LENGTH = 500
 
@@ -182,7 +193,8 @@ class PurgeSettings:
 
 
 async def load_purge_settings(config_service: ConfigurationService) -> PurgeSettings:
-    settings = await config_service.get_config(PLATFORM_SETTINGS_KEY, default={}, use_cache=False)
+    # Raising: a failed read answered with the defaults would purge an org on the default retention.
+    settings = await config_service.get_config(PLATFORM_SETTINGS_KEY, default={}, use_cache=False, raise_on_error=True)
     return PurgeSettings.from_config(settings.get(SETTINGS_FIELD) if isinstance(settings, dict) else None)
 
 
@@ -190,7 +202,6 @@ async def load_purge_settings(config_service: ConfigurationService) -> PurgeSett
 class PurgeRun:
     run_id: str
     started_at: int
-    cutoff: int
     org_ids: list[str]
     org_index: int = 0
     after: list | None = None
@@ -207,7 +218,6 @@ class PurgeRun:
         return cls(
             run_id=str(raw["run_id"]),
             started_at=int(raw["started_at"]),
-            cutoff=int(raw["cutoff"]),
             org_ids=[str(o) for o in raw.get("org_ids") or []],
             org_index=int(raw.get("org_index") or 0),
             after=list(raw["after"]) if raw.get("after") else None,
@@ -307,9 +317,11 @@ class TrashPurger:
         if not await self.lock.try_acquire():
             return Outcome.NOT_LEADER
         try:
+            state = await self._read_state()
+            org_ids = state.run.org_ids if state.run else await self._org_ids()
             # Not the Labs flag: with the trash off, what is in it is still removed on schedule.
-            settings = await load_purge_settings(self.config_service)
-            if not settings.enabled:
+            enabled = [s for s in await self._org_settings(org_ids) if s.enabled]
+            if not enabled:
                 return Outcome.DISABLED
             if not await self._drain_outbox():
                 record_purge_run(Outcome.PAUSED)
@@ -318,41 +330,39 @@ class TrashPurger:
                 # Without it each page reads the whole trash; the next tick looks again.
                 self.logger.warning("Trash purge skipped this tick: the index it walks is not built yet")
                 return Outcome.INDEX_NOT_READY
-            state = await self._read_state()
             if state.run is None:
                 now = self.clock()
-                if not settings.is_due(state.last_started_at, now):
+                # One run walks every org, so it starts on the earliest schedule any enabled org asks for;
+                # each org still keeps its own retention, so an extra walk removes nothing early.
+                if not any(s.is_due(state.last_started_at, now) for s in enabled):
                     return Outcome.NOT_DUE
-                state.run = PurgeRun(
-                    run_id=uuid4().hex,
-                    started_at=now,
-                    cutoff=now - settings.min_age_ms,
-                    org_ids=await self._org_ids(),
-                )
+                state.run = PurgeRun(run_id=uuid4().hex, started_at=now, org_ids=org_ids)
                 state.last_started_at = now
                 await self._save_state(state)
-                self.logger.info(
-                    "Trash purge %s started: %d org(s), records in the trash since %d or earlier",
-                    state.run.run_id, len(state.run.org_ids), state.run.cutoff,
-                )
+                self.logger.info("Trash purge %s started: %d org(s)", state.run.run_id, len(state.run.org_ids))
             else:
                 self.logger.info("Trash purge %s resumed", state.run.run_id)
-            outcome = await self._work(state, settings)
+            outcome = await self._work(state)
             if outcome != Outcome.FINISHED:
                 record_purge_run(outcome)
             return outcome
         finally:
             await self.lock.release()
 
-    async def _work(self, state: PurgeState, settings: PurgeSettings) -> str:
+    async def _work(self, state: PurgeState) -> str:
         run = state.run
         assert run is not None
-        deadline = self.monotonic() + settings.max_run_minutes * 60
-        processed = 0
+        cap = self.monotonic() + (_env_seconds("SOFT_DELETE_PURGE_MAX_RUN_SECONDS") or DEFAULT_MAX_RUN_SECONDS)
         while run.org_index < len(run.org_ids):
             org_id = run.org_ids[run.org_index]
             with for_org(org_id, job="trash_purge"):
-                while True:
+                # Each org's own settings: its switch, retention, page size and budget for this tick.
+                settings = await load_purge_settings(self.config_service)
+                cutoff = run.started_at - settings.min_age_ms
+                deadline = min(self.monotonic() + settings.max_run_minutes * 60, cap)
+                processed = 0
+                # An org switched off is passed over; the run goes on with the others.
+                while settings.enabled:
                     stop = await self._stop_reason(deadline, processed, settings)
                     if stop:
                         self.logger.info(
@@ -362,7 +372,7 @@ class TrashPurger:
                         return stop
                     page = await self.graph.get_purgeable_trashed_records(
                         org_id,
-                        run.cutoff,
+                        cutoff,
                         after=tuple(run.after) if run.after else None,
                         limit=settings.page_size,
                         max_attempts=settings.max_attempts,
@@ -371,7 +381,7 @@ class TrashPurger:
                     run.pass_held += int(page.get("held") or 0)
                     if rows:
                         try:
-                            published = await self._purge_page(org_id, rows, run, settings)
+                            published = await self._purge_page(org_id, rows, run, cutoff, settings)
                         except GraphLockUnavailableError as exc:
                             self.logger.warning("Trash purge %s paused: %s", run.run_id, exc)
                             await self._save_state(state)
@@ -396,7 +406,9 @@ class TrashPurger:
                         break
                     if settings.page_pause_ms:
                         await self.sleep(settings.page_pause_ms / 1000)
-                removed, stop = await self._purge_kept_groups(org_id, deadline, processed, settings)
+                removed, stop = (
+                    await self._purge_kept_groups(org_id, deadline, processed, settings) if settings.enabled else (0, None)
+                )
                 run.groups += removed
                 if stop:
                     # The org is not done: the next tick walks it again, which finds its trash
@@ -408,7 +420,7 @@ class TrashPurger:
             run.after = None
             run.pass_purged = run.pass_held = 0
             await self._save_state(state)
-        await self._finish(state, settings)
+        await self._finish(state)
         return Outcome.FINISHED
 
     async def _stop_reason(self, deadline: float, processed: int, settings: PurgeSettings) -> str | None:
@@ -420,7 +432,9 @@ class TrashPurger:
             return Outcome.PAUSED
         return None
 
-    async def _purge_page(self, org_id: str, rows: list[dict], run: PurgeRun, settings: PurgeSettings) -> bool:
+    async def _purge_page(
+        self, org_id: str, rows: list[dict], run: PurgeRun, cutoff: int, settings: PurgeSettings,
+    ) -> bool:
         """Purge one page; False when its events could not be published and stay owed."""
         ids = [row["id"] for row in rows]
         outbox_key = f"{OUTBOX_DIRECTORY}{run.run_id}-{uuid4().hex[:12]}"
@@ -428,7 +442,7 @@ class TrashPurger:
         await self._save_outbox(outbox_key, org_id, saved)
         try:
             result = await self.graph.purge_trashed_records(
-                ids, org_id, run.cutoff, max_attempts=settings.max_attempts
+                ids, org_id, cutoff, max_attempts=settings.max_attempts
             )
             purged, kept = list(result.get("purged") or []), list(result.get("kept") or [])
         except GraphLockUnavailableError:
@@ -439,7 +453,7 @@ class TrashPurger:
                 "Trash purge: the graph refused a page of %d record(s) in org %s; retrying one by one: %s",
                 len(ids), org_id, exc,
             )
-            purged, kept = await self._purge_one_by_one(org_id, ids, run, settings)
+            purged, kept = await self._purge_one_by_one(org_id, ids, run, cutoff, settings)
         run.purged += len(purged)
         run.pass_purged += len(purged)
         run.kept += len(kept)
@@ -470,14 +484,14 @@ class TrashPurger:
         return True
 
     async def _purge_one_by_one(
-        self, org_id: str, ids: list[str], run: PurgeRun, settings: PurgeSettings
+        self, org_id: str, ids: list[str], run: PurgeRun, cutoff: int, settings: PurgeSettings
     ) -> tuple[list[dict], list[str]]:
         purged: list[dict] = []
         kept: list[str] = []
         for record_id in ids:
             try:
                 result = await self.graph.purge_trashed_records(
-                    [record_id], org_id, run.cutoff, max_attempts=settings.max_attempts
+                    [record_id], org_id, cutoff, max_attempts=settings.max_attempts
                 )
             except GraphLockUnavailableError:
                 raise
@@ -547,15 +561,18 @@ class TrashPurger:
                 self.logger.error("Trash purge: dropping malformed outbox entry %s", key)
                 await self._forget_outbox(key)
                 continue
-            # Still there means the page never reached the graph delete, or the
-            # record was restored; either way it owes nothing.
-            gone = {
-                record_id: cleanup
-                for record_id, cleanup in items.items()
-                if await self.graph.get_document(record_id, CollectionNames.RECORDS.value, raise_on_error=True) is None
-            }
-            if gone and not await self._publish(org_id, gone):
-                return False
+            with for_org(org_id, job="trash_purge"):
+                # Still there means the page never reached the graph delete, or the
+                # record was restored; either way it owes nothing.
+                gone = {
+                    record_id: cleanup
+                    for record_id, cleanup in items.items()
+                    if await self.graph.get_document(
+                        record_id, CollectionNames.RECORDS.value, raise_on_error=True
+                    ) is None
+                }
+                if gone and not await self._publish(org_id, gone):
+                    return False
             self.logger.info(
                 "Trash purge: finished an interrupted page in org %s, %d record(s) cleaned up", org_id, len(gone)
             )
@@ -580,9 +597,11 @@ class TrashPurger:
             self.logger.warning("Trash purge: could not remove kept record groups in org %s: %s", org_id, exc)
         if removed:
             self.logger.info("Trash purge: removed %d record group(s) kept for the trash in org %s", removed, org_id)
+            # deleted record groups: a structural write made outside the transaction store, on connectors we cannot name
+            await note_org_structure_change(self.graph, org_id, self.logger)
         return removed, stop
 
-    async def _finish(self, state: PurgeState, settings: PurgeSettings) -> None:
+    async def _finish(self, state: PurgeState) -> None:
         run = state.run
         assert run is not None
         now = self.clock()
@@ -596,14 +615,15 @@ class TrashPurger:
             "Trash purge %s finished in %.0fs: %d purged, %d kept, %d failed, %d record group(s) removed",
             run.run_id, duration, run.purged, run.kept, run.failed, run.groups,
         )
-        await self._refresh_backlog(run.org_ids, settings, now)
+        await self._refresh_backlog(run.org_ids, now)
 
-    async def _refresh_backlog(self, org_ids: list[str], settings: PurgeSettings, now: int) -> None:
+    async def _refresh_backlog(self, org_ids: list[str], now: int) -> None:
         pending = stuck = 0
         oldest: int | None = None
         try:
             for org_id in org_ids:
                 with for_org(org_id, job="trash_purge"):
+                    settings = await load_purge_settings(self.config_service)
                     stats = await self.graph.get_trash_purge_stats(org_id, settings.max_attempts)
                 stuck += stats["stuck"]
                 pending += stats["trashed"] - stats["stuck"]
@@ -615,9 +635,16 @@ class TrashPurger:
         set_trash_backlog(pending, stuck, max(0.0, (now - oldest) / 1000) if oldest is not None else 0.0)
         if stuck:
             self.logger.error(
-                "Trash purge: %d record(s) failed %d purges and are left in the trash; see purgeLastError",
-                stuck, settings.max_attempts,
+                "Trash purge: %d record(s) failed every purge attempt and are left in the trash; see purgeLastError",
+                stuck,
             )
+
+    async def _org_settings(self, org_ids: list[str]) -> list[PurgeSettings]:
+        settings = []
+        for org_id in org_ids:
+            with for_org(org_id, job="trash_purge"):
+                settings.append(await load_purge_settings(self.config_service))
+        return settings
 
     async def _org_ids(self) -> list[str]:
         # Raising: an empty answer from a failed read would start, and finish, a run that purged nothing.

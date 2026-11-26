@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 
@@ -17,7 +18,7 @@ export interface GeneralFormData {
   state: string;
   city: string;
   zipCode: string;
-  dataCollection: boolean;
+  optIn: boolean;
   logoFileName: string | null;
 }
 
@@ -85,7 +86,7 @@ const EMPTY_FORM: GeneralFormData = {
   state: '',
   city: '',
   zipCode: '',
-  dataCollection: false,
+  optIn: false,
   logoFileName: null,
 };
 
@@ -111,7 +112,7 @@ function isFormEqual(a: GeneralFormData, b: GeneralFormData): boolean {
     a.state === b.state &&
     a.city === b.city &&
     a.zipCode === b.zipCode &&
-    a.dataCollection === b.dataCollection &&
+    a.optIn === b.optIn &&
     a.logoFileName === b.logoFileName
   );
 }
@@ -184,3 +185,5 @@ export const useGeneralStore = create<GeneralStore>()(
     { name: 'GeneralStore' }
   )
 );
+
+resetStoreOnSessionEnd(useGeneralStore);

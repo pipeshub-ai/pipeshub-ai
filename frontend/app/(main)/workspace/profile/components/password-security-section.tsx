@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -12,15 +12,27 @@ import { SettingsSection } from './settings-section';
 
 export interface PasswordSecuritySectionProps {
   onChangePasswordClick: () => void;
+  /** null while the status is loading; the action button is hidden until known */
+  hasPassword: boolean | null;
+  /** The status request failed; a retry button replaces the action button */
+  statusFailed?: boolean;
+  onRetryStatus?: () => void;
+  /** Mails the link for setting a first password */
+  onSetPasswordClick: () => void;
 }
 
 // ========================================
 // Component
 // ========================================
 
-export function PasswordSecuritySection({ onChangePasswordClick }: PasswordSecuritySectionProps) {
+export function PasswordSecuritySection({
+  onChangePasswordClick,
+  hasPassword,
+  statusFailed,
+  onRetryStatus,
+  onSetPasswordClick,
+}: PasswordSecuritySectionProps) {
   const { t } = useTranslation();
-  const [btnHovered, setBtnHovered] = useState(false);
 
   return (
     <SettingsSection title={t('workspace.profile.passwordSecurity.title')}>
@@ -52,31 +64,40 @@ export function PasswordSecuritySection({ onChangePasswordClick }: PasswordSecur
             <Text
               size="1"
               style={{
-                color: 'var(--gray-9)',
+                color: 'var(--gray-11)',
                 display: 'block',
                 marginTop: 2,
                 lineHeight: '16px',
                 fontWeight: 300,
               }}
             >
-              {t('workspace.profile.passwordSecurity.followEmailDescription')}
+              {hasPassword === false
+                ? t('workspace.profile.passwordSecurity.setPasswordDescription')
+                : t('workspace.profile.passwordSecurity.followEmailDescription')}
             </Text>
           </Box>
         </Flex>
 
+        {hasPassword === null && statusFailed && (
+          <Button type="button" variant="soft" color="gray" size="2" onClick={onRetryStatus}>
+            {t('message.tryAgain')}
+          </Button>
+        )}
+        {hasPassword !== null && (
         <Button
           type="button"
-          onClick={onChangePasswordClick}
-          onMouseEnter={() => setBtnHovered(true)}
-          onMouseLeave={() => setBtnHovered(false)}
-          variant='solid'
-          size='2'
-          style={{
-            backgroundColor: btnHovered ? 'var(--slate-a4)' : 'var(--slate-a3)',
-          }}
+          onClick={hasPassword ? onChangePasswordClick : onSetPasswordClick}
+          variant="soft"
+          color="gray"
+          size="2"
         >
-          {t('workspace.profile.passwordSecurity.changePassword')}
+          {t(
+            hasPassword
+              ? 'workspace.profile.passwordSecurity.changePassword'
+              : 'workspace.profile.passwordSecurity.setPassword'
+          )}
         </Button>
+        )}
 
       </Flex>
     </SettingsSection>

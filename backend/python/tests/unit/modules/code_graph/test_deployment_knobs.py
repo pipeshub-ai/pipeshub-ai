@@ -18,7 +18,8 @@ KNOBS = [
 ]
 FILES = [
     "deployment/docker-compose/docker-compose.yml",
-    "deployment/helm/pipeshub-ai/templates/deployment.yaml",
+    # The env list is one shared helper, included by the app and parsing pods.
+    "deployment/helm/pipeshub-ai/templates/_helpers.tpl",
     "deployment/docker-compose/env.template",
 ]
 

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from app.utils import pdf_stream_conversion
+from app.utils import libreoffice_convert, pdf_stream_conversion
 from app.utils.pdf_stream_conversion import (
     convert_file_to_pdf_stream,
     libreoffice_to_pdf,
@@ -106,7 +106,31 @@ async def test_a_missing_pdf_raises_the_output_not_found_error(tmp_path: Path, m
     with pytest.raises(HTTPException) as raised:
         await libreoffice_to_pdf(str(source), str(tmp_path))
 
-    assert raised.value.detail == "PDF conversion failed - output file not found"
+    assert raised.value.detail == {"reasonCode": "conversion_failed", "message": "PDF conversion failed - output file not found"}
+
+
+async def test_a_failed_conversion_logs_libreoffice_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class _Process:
+        returncode = 77
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"", b"javaldx: could not find a Java Runtime"
+
+    async def fake_exec(*_args: str, **_kwargs: object) -> _Process:
+        return _Process()
+
+    monkeypatch.setattr(pdf_stream_conversion.asyncio, "create_subprocess_exec", fake_exec)
+    source = tmp_path / "file.bin"
+    source.write_bytes(b"a")
+
+    with caplog.at_level("ERROR", logger=pdf_stream_conversion.__name__), pytest.raises(HTTPException) as raised:
+        await libreoffice_to_pdf(str(source), str(tmp_path))
+
+    assert raised.value.detail == {"reasonCode": "conversion_failed", "message": "Failed to convert file to PDF"}
+    assert "exit code 77" in caplog.text
+    assert "could not find a Java Runtime" in caplog.text
 
 
 def _run_instead_of_soffice(
@@ -142,12 +166,48 @@ async def test_a_cancelled_conversion_stops_libreoffice(tmp_path: Path, monkeypa
 
 async def test_a_conversion_that_ignores_terminate_is_killed_and_reaped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     started, _ = _run_instead_of_soffice(monkeypatch, "trap '' TERM; exec sleep 60")
-    monkeypatch.setattr(pdf_stream_conversion, "_STOP_GRACE_SECONDS", 0.5)
+    monkeypatch.setattr(libreoffice_convert, "_STOP_GRACE_SECONDS", 0.5)
     source = tmp_path / "file.bin"
     source.write_bytes(b"a")
 
     with pytest.raises(HTTPException) as raised:
         await libreoffice_to_pdf(str(source), str(tmp_path), timeout=0.5)
 
-    assert raised.value.detail == "PDF conversion timed out"
+    assert raised.value.status_code == 504
+    assert raised.value.detail == {"reasonCode": "conversion_timed_out", "message": "PDF conversion timed out"}
     assert started[0].returncode is not None
+
+
+async def test_no_soffice_on_path_is_logged_and_answered_as_converter_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The e2e app image once lacked LibreOffice: every PPTX preview was a bare 500 with nothing logged.
+    monkeypatch.setenv("PATH", str(tmp_path))
+    source = tmp_path / "deck.pptx"
+    source.write_bytes(b"pptx")
+
+    with caplog.at_level("ERROR", logger=pdf_stream_conversion.logger.name):
+        with pytest.raises(HTTPException) as raised:
+            await libreoffice_to_pdf(str(source), str(tmp_path))
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail["reasonCode"] == "converter_unavailable"
+    assert "Download" in raised.value.detail["message"]
+    assert any("soffice" in r.getMessage() and r.exc_info for r in caplog.records)
+    assert pdf_stream_conversion.document_conversion_available() is False
+
+
+async def test_a_failed_conversion_logs_what_libreoffice_said(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _run_instead_of_soffice(monkeypatch, "echo 'Error: source file could not be loaded' >&2; exit 1")
+    source = tmp_path / "file.bin"
+    source.write_bytes(b"a")
+
+    with caplog.at_level("ERROR", logger=pdf_stream_conversion.logger.name):
+        with pytest.raises(HTTPException) as raised:
+            await libreoffice_to_pdf(str(source), str(tmp_path))
+
+    assert raised.value.status_code == 500
+    assert raised.value.detail["reasonCode"] == "conversion_failed"
+    assert any("source file could not be loaded" in r.getMessage() for r in caplog.records)

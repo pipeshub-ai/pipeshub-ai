@@ -12,7 +12,10 @@ import pytest
 
 from app.services.resource_governor import probe as probe_mod
 from app.services.resource_governor.policy import MEM_HARD, MEM_SOFT
-from app.services.resource_governor.probe import BaselineMemoryTracker, SystemResourceProbe
+from app.services.resource_governor.probe import (
+    BaselineMemoryTracker,
+    SystemResourceProbe,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -168,6 +171,87 @@ class TestCgroupV2CpuQuota:
         _write(tmp_path / "cpu.max", "max 100000")
         quota = probe_mod._resolve_cpu_quota()
         assert quota > 0
+
+
+class TestGovernorQuotaFollowsAffinity:
+    """G-12: the governor's quota and ``effective_cpu_count()`` agree."""
+
+    @pytest.fixture(autouse=True)
+    def _host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(probe_mod.os, "cpu_count", lambda: 64)
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: 2)
+
+    def test_governor_quota_follows_smaller_affinity(self, tmp_path: Path) -> None:
+        _write(tmp_path / "cpu.max", "400000 100000")
+        assert probe_mod._resolve_cpu_quota() == 2.0
+        assert probe_mod.effective_cpu_count() == 2
+
+    def test_v1_quota_follows_smaller_affinity(self, tmp_path: Path) -> None:
+        _write(tmp_path / "cpu" / "cpu.cfs_quota_us", "400000")
+        _write(tmp_path / "cpu" / "cpu.cfs_period_us", "100000")
+        assert probe_mod._resolve_cpu_quota() == 2.0
+
+    def test_smaller_quota_still_wins_over_affinity(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: 8)
+        _write(tmp_path / "cpu.max", "300000 100000")
+        assert probe_mod._resolve_cpu_quota() == 3.0
+
+    @pytest.mark.parametrize("cpu_max", ["0 100000", "-100000 100000"])
+    def test_non_positive_quota_is_no_limit(self, tmp_path: Path, cpu_max: str) -> None:
+        _write(tmp_path / "cpu.max", cpu_max)
+        assert probe_mod._resolve_cpu_quota() == 2.0  # falls back to the affinity mask
+
+    def test_fractional_quota_kept_for_utilisation(self, tmp_path: Path) -> None:
+        _write(tmp_path / "cpu.max", "150000 100000")
+        assert probe_mod._resolve_cpu_quota() == 1.5
+
+    def test_fractional_quota_below_affinity_is_not_floored_early(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: 1)
+        _write(tmp_path / "cpu.max", "150000 100000")
+        assert probe_mod._resolve_cpu_quota() == 1.0  # min(1.5, 1): the mask is the bound
+
+    @pytest.mark.parametrize(
+        ("cpu_max", "affinity"),
+        [("150000 100000", 16), ("400000 100000", 2), ("250000 100000", 4), ("max 100000", 3)],
+    )
+    def test_ceilings_floor_the_fraction(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cpu_max: str, affinity: int,
+    ) -> None:
+        from app.services.resource_governor.policy import ceiling_cpus
+
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: affinity)
+        _write(tmp_path / "cpu.max", cpu_max)
+        assert ceiling_cpus(probe_mod._resolve_cpu_quota()) == probe_mod.effective_cpu_count()
+
+    def test_sub_one_quota_keeps_its_fraction_for_ceilings(self) -> None:
+        from app.services.resource_governor.policy import ceiling_cpus
+
+        assert ceiling_cpus(0.5) == 0.5  # the existing sub-1 sizing; heavy is floored at 1 either way
+
+    def test_ceilings_from_a_fractional_snapshot(self) -> None:
+        from app.services.resource_governor.models import ResourceSnapshot
+        from app.services.resource_governor.policy import resolve_ceilings
+
+        def snap(quota: float) -> ResourceSnapshot:
+            return ResourceSnapshot(
+                cpu_quota=quota, cpu_utilisation=None, cpu_throttled_ratio=None, cpu_pressure=None,
+                mem_limit_bytes=None, mem_working_set_bytes=None, source="t",
+            )
+
+        assert resolve_ceilings(snap(1.5), None, None) == resolve_ceilings(snap(1.0), None, None)
+        assert resolve_ceilings(snap(3.9), None, None) == resolve_ceilings(snap(3.0), None, None)
+
+    def test_plain_host_is_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No cgroup files: the quota is the affinity count, as before."""
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: 6)
+        assert probe_mod._resolve_cpu_quota() == 6.0
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: None)
+        monkeypatch.setattr(probe_mod.os, "cpu_count", lambda: 12)
+        assert probe_mod._resolve_cpu_quota() == 12.0
+        monkeypatch.setattr(probe_mod.os, "cpu_count", lambda: None)
+        assert probe_mod._resolve_cpu_quota() == 1.0
 
 
 class TestCgroupV1CpuQuota:
@@ -578,3 +662,86 @@ class TestSystemResourceProbeBaselineIntegration:
         assert snap.mem_baseline_bytes == limit // 2
         assert snap.mem_usable_bytes == limit // 2
         assert snap.mem_pressure == pytest.approx(1.0)
+
+
+PSI_V2 = (
+    "some avg10=12.50 avg60=3.00 avg300=1.00 total=123\n"
+    "full avg10=4.00 avg60=0.50 avg300=0.10 total=45\n"
+)
+
+
+class TestPressureSample:
+    def test_cpu_and_memory_psi_with_full_and_oom_kill(self, tmp_path: Path) -> None:
+        _write(tmp_path / "cpu.pressure", PSI_V2)
+        _write(tmp_path / "memory.pressure", PSI_V2.replace("12.50", "30.00"))
+        _write(tmp_path / "memory.events", "low 0\nhigh 0\nmax 4\noom 2\noom_kill 3\noom_group_kill 0\n")
+        sample = probe_mod.read_pressure(cpu_utilisation=0.5, mem_ratio=0.95)
+        assert (sample.cpu_psi_some_avg10, sample.cpu_psi_some_avg60) == (0.125, 0.03)
+        assert (sample.cpu_psi_full_avg10, sample.cpu_psi_full_avg60) == (0.04, 0.005)
+        assert (sample.mem_psi_some_avg10, sample.mem_psi_full_avg60) == (0.30, 0.005)
+        assert sample.oom_kills_total == 3
+        assert sample.cpu_saturated is False
+        assert sample.mem_saturated is True
+
+    def test_cpu_saturated_by_psi_or_utilisation(self, tmp_path: Path) -> None:
+        _write(tmp_path / "cpu.pressure", "some avg10=0.00 avg60=20.00 avg300=0.00 total=1\n")
+        assert probe_mod.read_pressure(cpu_utilisation=0.1, mem_ratio=None).cpu_saturated is True
+        _write(tmp_path / "cpu.pressure", "some avg10=0.00 avg60=19.90 avg300=0.00 total=1\n")
+        assert probe_mod.read_pressure(cpu_utilisation=0.1, mem_ratio=None).cpu_saturated is False
+        assert probe_mod.read_pressure(cpu_utilisation=0.90, mem_ratio=None).cpu_saturated is True
+
+    def test_some_without_full_leaves_full_unknown(self, tmp_path: Path) -> None:
+        _write(tmp_path / "memory.pressure", "some avg10=1.00 avg60=2.00 avg300=3.00 total=9\n")
+        sample = probe_mod.read_pressure(None, None)
+        assert sample.mem_psi_some_avg60 == 0.02
+        assert sample.mem_psi_full_avg60 is None
+
+    def test_cgroup_v1_and_missing_files_are_unknown_not_zero(self, tmp_path: Path) -> None:
+        _write(tmp_path / "cpu" / "cpu.stat", "nr_periods 1\n")  # a v1 layout: no PSI files at all
+        sample = probe_mod.read_pressure(None, None)
+        assert sample == probe_mod.PressureSample()
+        assert sample.cpu_saturated is None and sample.mem_saturated is None
+
+    def test_v1_oom_control_oom_kill(self, tmp_path: Path) -> None:
+        _write(tmp_path / "memory" / "memory.oom_control", "oom_kill_disable 0\nunder_oom 0\noom_kill 7\n")
+        assert probe_mod.read_pressure(None, None).oom_kills_total == 7
+
+    @pytest.mark.parametrize("text", ["", "garbage", "some avg10=abc avg60=\nfull\n", "some avg10=-\n"])
+    def test_garbage_is_unknown(self, tmp_path: Path, text: str) -> None:
+        _write(tmp_path / "cpu.pressure", text)
+        _write(tmp_path / "memory.events", "oom_kill notanumber\n")
+        sample = probe_mod.read_pressure(None, None)
+        assert sample.cpu_psi_some_avg10 is None and sample.cpu_psi_some_avg60 is None
+        assert sample.oom_kills_total is None
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "some avg10=99999999 avg60=500.00\n",  # a percentage over 100 is not a reading
+            "some avg10=1e3 avg60=1.0.0\n",  # a partial number must not parse as 1
+            "some avg10=12.5x avg60=3.0abc\n",
+            "some avg10=NaN avg60=inf\n",
+            "some avg10=100.01 avg60=-1.00\n",
+        ],
+    )
+    def test_psi_outside_zero_to_one_or_malformed_is_unknown(self, tmp_path: Path, text: str) -> None:
+        _write(tmp_path / "cpu.pressure", text)
+        sample = probe_mod.read_pressure(0.1, 0.1)
+        assert sample.cpu_psi_some_avg10 is None and sample.cpu_psi_some_avg60 is None
+
+    def test_psi_at_the_bounds_is_kept(self, tmp_path: Path) -> None:
+        _write(tmp_path / "cpu.pressure", "some avg10=0.00 avg60=100.00 avg300=0.00 total=1\n")
+        sample = probe_mod.read_pressure(None, None)
+        assert (sample.cpu_psi_some_avg10, sample.cpu_psi_some_avg60) == (0.0, 1.0)
+
+    def test_nan_inputs_do_not_make_a_saturation_flag_known(self) -> None:
+        sample = probe_mod.read_pressure(float("nan"), float("nan"))
+        assert sample.mem_saturated is None
+        assert sample.cpu_saturated is None
+
+    def test_not_linux_reads_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write(tmp_path / "cpu.pressure", PSI_V2)
+        monkeypatch.setattr(probe_mod.sys, "platform", "darwin")
+        sample = probe_mod.read_pressure(0.2, 0.2)
+        assert sample.cpu_psi_some_avg10 is None and sample.oom_kills_total is None
+        assert (sample.cpu_saturated, sample.mem_saturated) == (False, False)

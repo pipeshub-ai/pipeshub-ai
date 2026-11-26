@@ -31,6 +31,9 @@ from tests.support.vector_db import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _make_vectorstore(supports_sparse=False):
     """Instantiate a VectorStore with everything mocked to bypass __init__ side effects."""
     from unittest.mock import MagicMock as _MM
@@ -163,7 +166,7 @@ class TestEmbeddingModelCaching:
         vs.config_service.get_config = AsyncMock(return_value=self._config())
 
         with patch(
-            "app.modules.transformers.vectorstore.get_embedding_model",
+            "app.utils.llm.get_embedding_model",
             return_value=mock_embeddings,
         ) as build:
             await vs.get_embedding_model_instance()
@@ -181,7 +184,7 @@ class TestEmbeddingModelCaching:
         vs.config_service.get_config = AsyncMock(return_value=self._config())
 
         with patch(
-            "app.modules.transformers.vectorstore.get_embedding_model",
+            "app.utils.llm.get_embedding_model",
             return_value=mock_embeddings,
         ) as build:
             await vs.get_embedding_model_instance()
@@ -295,7 +298,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         with patch(
-            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            "app.utils.llm.get_default_embedding_model",
             return_value=mock_embeddings,
         ):
             result = await vs.get_embedding_model_instance()
@@ -328,7 +331,7 @@ class TestGetEmbeddingModelInstance:
         vs._initialize_collection = AsyncMock()
 
         with patch(
-            "app.modules.transformers.vectorstore.get_embedding_model",
+            "app.utils.llm.get_embedding_model",
             return_value=mock_embeddings,
         ):
             result = await vs.get_embedding_model_instance()
@@ -349,7 +352,7 @@ class TestGetEmbeddingModelInstance:
         )
 
         with patch(
-            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            "app.utils.llm.get_default_embedding_model",
             return_value=mock_embeddings,
         ):
             with pytest.raises(IndexingError):
@@ -389,7 +392,7 @@ class TestCreateEmbeddings:
 
         await vs._create_embeddings(chunks, "rec-1", "vr-1", "test_collection")
 
-        vs.delete_embeddings.assert_awaited_once_with("vr-1", "test_collection")
+        vs.delete_embeddings.assert_awaited_once_with("vr-1", "test_collection", org_id=None)
         vs._process_document_chunks.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -820,6 +823,7 @@ class TestApply:
 
         mock_ctx = MagicMock()
         mock_ctx.record = mock_record
+        mock_ctx.reconciliation_context = None
 
         result = await vs.apply(mock_ctx)
         vs.index_documents.assert_awaited_once()

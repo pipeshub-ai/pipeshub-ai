@@ -13,12 +13,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.core.org_context import for_org, system
 from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
     DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
 )
+from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -33,6 +35,9 @@ MAX_RECONCILE_ATTEMPTS = 5
 
 _RECORDS = CollectionNames.RECORDS.value
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
+# FAILED is left out: the copy stays NOT_STARTED and takes the outcome of a later
+# successful redrive, which a FAILED copy would never be offered.
+_FINAL_EXTRACTION = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.SKIPPED.value})
 
 
 class DuplicateReconciler:
@@ -60,19 +65,24 @@ class DuplicateReconciler:
             return True
         try:
             sibling_keys = [
-                key for key in (await self.graph.get_records_by_virtual_record_id(virtual_record_id) or [])
+                key for key in (
+                    await self.graph.get_records_by_virtual_record_id(virtual_record_id, raise_on_error=True)
+                    or []
+                )
                 if key and key != record_id
             ]
             if not sibling_keys:
                 return True
-            source_doc = await self.graph.get_document(record_id, _RECORDS)
+            # A read that fails must fail the reconcile, so the pending flag stays
+            # for the retry sweep; None is a record that is gone.
+            source_doc = await self.graph.get_document(record_id, _RECORDS, raise_on_error=True)
             org_id = (source_doc or {}).get("orgId")
             if not org_id:
                 return True
 
             complete = True
             for sibling_key in sibling_keys:
-                sibling_doc = await self.graph.get_document(sibling_key, _RECORDS)
+                sibling_doc = await self.graph.get_document(sibling_key, _RECORDS, raise_on_error=True)
                 # get_records_by_virtual_record_id is not org-scoped; a
                 # virtualRecordId shared across orgs must not carry this
                 # org's taxonomy to another tenant's record.
@@ -90,6 +100,29 @@ class DuplicateReconciler:
                     )
                     complete = False
                     continue
+                # A copy indexed while the primary waited for classification on first
+                # use took its NOT_STARTED; it shares the primary's outcome, set once
+                # the taxonomy is there so the status never claims what is missing.
+                outcome = source_doc.get("extractionStatus")
+                if (
+                    outcome in _FINAL_EXTRACTION
+                    and sibling_doc.get("indexingStatus") == ProgressStatus.COMPLETED.value
+                    and sibling_doc.get("extractionStatus") == ProgressStatus.NOT_STARTED.value
+                    # Fenced: a copy whose revision moved since the read is that revision's own.
+                    and not await self.graph.update_node_fields_if_match(
+                        sibling_key,
+                        _RECORDS,
+                        {"extractionStatus": outcome},
+                        {
+                            "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                            "contentRev": sibling_doc.get("contentRev"),
+                        },
+                    )
+                ):
+                    self.logger.warning(
+                        "Extraction status of duplicate %s of record %s not written", sibling_key, record_id,
+                    )
+                    complete = False
                 # Separate from the taxonomy copy, which skips mentionsEntity. A
                 # failure still lets the entity sync run, and keeps the reconcile
                 # pending so a retry copies the mentions; the copy is an upsert.
@@ -107,7 +140,9 @@ class DuplicateReconciler:
                     )
                     complete = False
 
-            await self.sync_vector_membership(virtual_record_id)
+            # The retry sweep runs with no org bound: the points are written for the record's own org.
+            with for_org(org_id, job="duplicate-reconcile"):
+                await self.sync_vector_membership(virtual_record_id)
             return complete
         except Exception as e:
             self.logger.warning(
@@ -128,10 +163,10 @@ async def retry_pending_duplicate_reconciles(
     """Reconcile primaries whose pending flag is due: their handler did not
     clear it within ``DUPLICATE_RECONCILE_GRACE_MS`` of the promotion.
 
-    Holds no ``record:<id>`` lease. The consumer drops an event whose record
-    lease it cannot take within seconds, so holding it through a reconcile
-    would lose a real update or delete; recovery's own lock already keeps
-    sweeps apart, and a reconcile is idempotent. What must not race is the
+    Holds no ``record:<id>`` lease. The consumer hands back an event whose
+    record lease it cannot take within seconds, so holding it through a
+    reconcile would hold up a real update or delete; recovery's own lock already
+    keeps sweeps apart, and a reconcile is idempotent. What must not race is the
     flag: it is cleared only while its due time is still the one this sweep
     read, so a promotion made meanwhile keeps its flag.
 
@@ -139,29 +174,48 @@ async def retry_pending_duplicate_reconciles(
     ``MAX_RECONCILE_ATTEMPTS`` the flag is cleared and the count kept, so an
     operator can find the record. Returns how many records were reconciled.
     """
-    rows = await graph_provider.get_records_pending_duplicate_reconcile(
-        due_before_ms=now_ms(), limit=page_size,
-    )
+    # The read spans every organisation; each row's follow-up is bound to the organisation the row carries.
+    with system("duplicate_reconcile"):
+        rows = await graph_provider.get_records_pending_duplicate_reconcile(
+            due_before_ms=now_ms(), limit=page_size,
+        )
     reconciled = 0
     for row in rows:
         record_id = row.get("_key")
         if not record_id:
             continue
+        org_id = row.get("orgId")
         due = row.get(DUPLICATE_RECONCILE_DUE_AT_FIELD)
-        try:
-            if await _retry_one(graph_provider, reconciler, logger, record_id, now_ms):
-                reconciled += 1
-        except Exception:
-            logger.warning(
-                "duplicate_reconcile: retry failed for record %s", record_id, exc_info=True,
-            )
+        if not org_id:
+            # Nothing can run for it, and left pending it would take a place in every page: clear the flag; it is counted once that applied.
+            with system("duplicate_reconcile"):
+                try:
+                    cleared = await graph_provider.update_node_fields_if_match(
+                        record_id, _RECORDS, _cleared(0),
+                        {DUPLICATE_RECONCILE_PENDING_FIELD: True, DUPLICATE_RECONCILE_DUE_AT_FIELD: due},
+                    )
+                except Exception:
+                    cleared = False
+                    logger.warning("duplicate_reconcile: could not drop the pending reconcile of %s", record_id, exc_info=True)
+            if cleared:
+                logger.warning("duplicate_reconcile: record %s has no organisation; its pending reconcile was dropped", record_id)
+                record_recovery_org_pass("duplicate_reconcile", "no_org_row")
+            continue
+        with for_org(str(org_id), job="duplicate_reconcile"):
             try:
-                await _record_failure(
-                    graph_provider, logger, record_id,
-                    _int(row.get(DUPLICATE_RECONCILE_ATTEMPTS_FIELD)), due, now_ms,
-                )
+                if await _retry_one(graph_provider, reconciler, logger, record_id, now_ms):
+                    reconciled += 1
             except Exception:
-                logger.warning("duplicate_reconcile: could not count the failure on %s", record_id)
+                logger.warning(
+                    "duplicate_reconcile: retry failed for record %s", record_id, exc_info=True,
+                )
+                try:
+                    await _record_failure(
+                        graph_provider, logger, record_id,
+                        _int(row.get(DUPLICATE_RECONCILE_ATTEMPTS_FIELD)), due, now_ms,
+                    )
+                except Exception:
+                    logger.warning("duplicate_reconcile: could not count the failure on %s", record_id)
     if rows:
         logger.info(
             "duplicate_reconcile: retried %d pending record(s), reconciled %d", len(rows), reconciled,
@@ -208,6 +262,59 @@ async def _retry_one(
     return False
 
 
+async def rearm_failed_reconcile(
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+    record_id: str,
+    now_ms: Callable[[], int] | None = None,
+) -> bool:
+    """Keep a retry trigger for a reconcile whose every attempt failed.
+
+    A sweep can clear the pending flag while a slow promotion is still in
+    flight (it finds no promoted copies yet), so the handler's failed reconcile
+    may find no flag left. The flag is set again with the first failure's
+    backoff, and only when the record itself says it is not pending: a flag that
+    is set (by the promotion, or by an earlier re-arm) already has its own due
+    time and attempt count, which the sweep owns. The write is fenced on the
+    flag, due time and indexing status that were read, so a promotion made meanwhile keeps its
+    own flag. A record the sweep gave up on (attempt count at the limit) is not
+    re-armed, so the retries stay bounded. Returns whether the flag was set; a failed read or write is logged and
+    answers False.
+    """
+    try:
+        # A failed read must raise (and be logged below), not answer None: here
+        # None means the record is gone, and an unread record keeps no flag.
+        record = await graph_provider.get_document(record_id, _RECORDS, raise_on_error=True)
+        if not isinstance(record, dict):
+            return False
+        if record.get(DUPLICATE_RECONCILE_PENDING_FIELD) is True:
+            return False
+        if record.get("indexingStatus") not in _RECONCILED_STATUSES:
+            return False
+        attempts = _int(record.get(DUPLICATE_RECONCILE_ATTEMPTS_FIELD)) + 1
+        if attempts >= MAX_RECONCILE_ATTEMPTS:
+            return False
+        return bool(
+            await graph_provider.update_node_fields_if_match(
+                record_id,
+                _RECORDS,
+                {
+                    DUPLICATE_RECONCILE_PENDING_FIELD: True,
+                    DUPLICATE_RECONCILE_ATTEMPTS_FIELD: attempts,
+                    DUPLICATE_RECONCILE_DUE_AT_FIELD: (now_ms or get_epoch_timestamp_in_ms)() + DUPLICATE_RECONCILE_GRACE_MS * 2 ** attempts,
+                },
+                {
+                    DUPLICATE_RECONCILE_PENDING_FIELD: record.get(DUPLICATE_RECONCILE_PENDING_FIELD),
+                    DUPLICATE_RECONCILE_DUE_AT_FIELD: record.get(DUPLICATE_RECONCILE_DUE_AT_FIELD),
+                    "indexingStatus": record.get("indexingStatus"),
+                },
+            )
+        )
+    except Exception as exc:
+        logger.warning("Could not re-arm the reconcile of record %s: %s", record_id, type(exc).__name__)
+        return False
+
+
 async def _record_failure(
     graph_provider: IGraphDBProvider,
     logger: Logger,
@@ -252,5 +359,6 @@ def _int(value: object) -> int:
 __all__ = [
     "MAX_RECONCILE_ATTEMPTS",
     "DuplicateReconciler",
+    "rearm_failed_reconcile",
     "retry_pending_duplicate_reconciles",
 ]

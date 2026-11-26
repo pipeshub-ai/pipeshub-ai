@@ -21,6 +21,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.sync.sync_runner import run_sync_task
+from app.core.org_context import for_org
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.services.cache import invalidation_hooks as hooks
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -166,7 +167,7 @@ class TestCascadeDeleteSite:
         ):
             await processor.on_records_deleted_cascade(["rec-1", "rec-2"], "kb-1")
 
-        notify.assert_awaited_once_with("kb-1")
+        notify.assert_awaited_once_with("kb-1", None)  # the processor has no org here: a global bump, never a wrong org
 
     async def test_silent_when_nothing_was_deleted(self) -> None:
         processor = self._processor({"successfully_deleted": 0, "eventData": None})
@@ -198,6 +199,7 @@ class TestIndexingCompletionSite:
     async def test_fires_when_a_record_becomes_searchable(self) -> None:
         orchestrator = SinkOrchestrator.__new__(SinkOrchestrator)
         orchestrator.logger = MagicMock()
+        orchestrator.config_service = None
         orchestrator.graph_provider = MagicMock()
         orchestrator.graph_provider.batch_update_nodes = AsyncMock(return_value=True)
 
@@ -210,10 +212,14 @@ class TestIndexingCompletionSite:
         record.org_id = "org-1"
         ctx = MagicMock()
         ctx.record = record
+        ctx.settings = {"enrichment_follows": True}
 
         notify = AsyncMock()
         with patch(
             "app.modules.transformers.sink_orchestrator.notify_record_indexed", new=notify
+        ), patch(
+            "app.modules.transformers.sink_orchestrator.is_classify_on_first_use_enabled",
+            AsyncMock(return_value=False),
         ):
             await orchestrator._update_indexing_status(ctx)
 
@@ -245,7 +251,8 @@ class TestDeleteRecordResultShape:
         provider.execute_query = AsyncMock(return_value=[])
         provider.client.execute_query = AsyncMock(return_value=[])
 
-        result = await provider.delete_record(record_id="rec-1", user_id="user-1", org_id="org-1")
+        with for_org("org-1", job="test"):  # the delete route runs inside the caller's org
+            result = await provider.delete_record(record_id="rec-1", user_id="user-1", org_id="org-1")
 
         assert result["success"] is True
         assert result["connectorId"] == "conn-1"

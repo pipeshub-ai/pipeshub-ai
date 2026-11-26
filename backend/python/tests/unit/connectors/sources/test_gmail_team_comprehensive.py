@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
@@ -162,7 +163,7 @@ class TestGmailInit:
     @pytest.mark.asyncio
     async def test_init_no_auth_credentials(self, connector):
         connector.config_service.get_config = AsyncMock(return_value={"auth": {}})
-        with pytest.raises(ValueError, match="Service account credentials not found"):
+        with pytest.raises(ConnectorInitError, match="Service account credentials not found"):
             await connector.init()
 
     @pytest.mark.asyncio
@@ -170,7 +171,7 @@ class TestGmailInit:
         connector.config_service.get_config = AsyncMock(return_value={
             "auth": {"type": "service_account"}
         })
-        with pytest.raises(ValueError, match="Admin email not found"):
+        with pytest.raises(ConnectorInitError, match="Admin email not found"):
             await connector.init()
 
 

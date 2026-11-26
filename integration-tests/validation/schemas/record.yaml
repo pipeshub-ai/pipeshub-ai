@@ -8,6 +8,66 @@ fields:
       - OPEN
       - STRICT
       - RESTRICTED
+  adds_permissions:
+    required: false
+    type: boolean
+  authored_by:
+    required: false
+    type: object
+    properties:
+      source_id:
+        required: false
+        type: string
+      email:
+        required: false
+        type: string
+      display_name:
+        required: false
+        type: string
+      is_service_account:
+        required: false
+        type: boolean
+  created_by:
+    required: false
+    type: object
+    properties:
+      source_id:
+        required: false
+        type: string
+      email:
+        required: false
+        type: string
+      display_name:
+        required: false
+        type: string
+      is_service_account:
+        required: false
+        type: boolean
+  last_modified_by:
+    required: false
+    type: object
+    properties:
+      source_id:
+        required: false
+        type: string
+      email:
+        required: false
+        type: string
+      display_name:
+        required: false
+        type: string
+      is_service_account:
+        required: false
+        type: boolean
+  owners:
+    required: false
+    type: array
+  shared_with:
+    required: false
+    type: array
+  people_unknown:
+    required: false
+    type: array
   block_containers:
     type: object
     required: false
@@ -33,6 +93,9 @@ fields:
   created_at:
     required: false
     type: integer
+  edition_fields:
+    required: false
+    type: object
   external_record_group_id:
     required: false
     type: string
@@ -51,6 +114,9 @@ fields:
   id:
     required: false
     type: string
+  incarnation_id:
+    required: false
+    type: string
   indexing_status:
     required: false
     type: string
@@ -63,6 +129,12 @@ fields:
   queued_at:
     required: false
     type: integer
+  first_queued_at:
+    required: false
+    type: integer
+  indexing_attempts:
+    required: false
+    type: integer
   inherit_permissions:
     required: false
     type: boolean
@@ -71,6 +143,11 @@ fields:
   inherit_permissions_from_group:
     required: false
     type: boolean
+  # Write-time: the record group the record takes its access from (a Jira issue's security level); empty when it has none, absent when the
+  # writer names none. Never stored on the record (the processor writes it as edges).
+  access_group_external_id:
+    required: false
+    type: string
   rewrite_permissions:
     required: false
     type: boolean
@@ -90,6 +167,11 @@ fields:
     required: false
     type: boolean
   is_vlm_ocr_processed:
+    required: false
+    type: boolean
+  # Created by an API push; written only when true. Indexing never fetches remote
+  # content for such a record.
+  push_origin:
     required: false
     type: boolean
   is_deleted:

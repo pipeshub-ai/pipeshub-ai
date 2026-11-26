@@ -65,9 +65,13 @@ PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
 PERMISSION_DENIED_403_REASONS = {
     "insufficientFilePermissions",
     "appNotAuthorizedToFile",
-    "domainPolicy",
     "teamDriveMembershipRequired",
 }
+
+# 403 reasons that refuse the app everywhere, not one item: "domainPolicy: The domain administrators have disabled
+# Drive apps." (https://developers.google.com/workspace/drive/api/guides/handle-errors). Never a refusal of the item,
+# and never counted toward skipping it: every run is retried, and fails, until the administrators allow the app.
+APP_WIDE_403_REASONS = {"domainPolicy"}
 
 
 # 403 reasons Drive uses for quota and rate limits. These clear as the quota refills,
@@ -126,6 +130,19 @@ def drive_error_reasons(error: HttpError) -> set:
     return reasons
 
 
+def sharing_refused(error: BaseException) -> bool:
+    """Whether Google refused to show an item's sharing for good: a 404, or a 403 whose every reason is a known
+    permanent denial (`is_permission_denied_403`).
+
+    Such a read is answered: the sharing is unknown to this user. Anything else (a 403 with no reason, a rate
+    limit, `domainPolicy`, a 5xx, a timeout) is a read that did not happen, to be tried again, not an answer.
+    """
+    if not isinstance(error, HttpError):
+        return False
+    status = getattr(error.resp, "status", None)
+    return status == 404 or (status == 403 and is_permission_denied_403(error))
+
+
 def _403_reasons(error: HttpError) -> set:
     if error.resp.status != HttpStatusCode.FORBIDDEN.value:
         return set()
@@ -165,7 +182,7 @@ def is_unrecognised_403(error: HttpError) -> bool:
     """True for a 403 that is neither a known permission refusal nor a quota or rate limit."""
     if error.resp.status != HttpStatusCode.FORBIDDEN.value:
         return False
-    if _403_reasons(error) & QUOTA_403_REASONS:
+    if _403_reasons(error) & (QUOTA_403_REASONS | APP_WIDE_403_REASONS):
         return False
     return not is_permission_denied_403(error)
 
@@ -745,6 +762,43 @@ async def fetch_folder_children(
             page_token = response.get("nextPageToken")
             if not page_token:
                 break
+
+
+async def settle_ancestor_level(
+    processor: DataSourceEntitiesProcessor,
+    connector_id: str,
+    frontier: list[Record],
+    written: list[Record],
+    visited: set,
+    needs_backfill: Callable[[Record], bool],
+    see: Callable[[str | None], None],
+) -> list[Record]:
+    """Settle one level of the placeholder sweep and return the next.
+
+    Every ancestor the walk touched is written or kept: the ones of ``frontier`` not in ``written``
+    (call after writing them), whatever the reason (a failed fetch, a failed read of their
+    permissions), are noted kept, so a full sync's unlink leaves their record group and parent
+    edges, and passed to ``see`` (the run's ledger), so its stale-record cleanup does not take them
+    for gone. They are kept as stored, never rewritten: read back by external id they are plain
+    records, which no graph store writes as a file. The walk then goes on to the parent of every
+    one of them, by parent id alone (the store does not keep the parent's type); a record at the
+    drive root has none.
+    """
+    written_ids = {record.external_record_id for record in written}
+    kept = [record for record in frontier if record.external_record_id not in written_ids]
+    processor.note_kept_records(connector_id, [record.id for record in kept if record.id])
+    for record in kept:
+        see(record.external_record_id)
+    next_level: list[Record] = []
+    for record in [*written, *kept]:
+        parent_ext_id = record.parent_external_record_id
+        if not parent_ext_id or parent_ext_id in visited:
+            continue
+        visited.add(parent_ext_id)
+        parent = await processor.get_record_by_external_id(connector_id, parent_ext_id)
+        if parent is not None and needs_backfill(parent):
+            next_level.append(parent)
+    return next_level
 
 
 async def fetch_ancestor_metadata(

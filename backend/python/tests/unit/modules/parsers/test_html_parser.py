@@ -8,15 +8,17 @@ from app.exceptions.indexing_exceptions import DocumentProcessingError
 from bs4 import BeautifulSoup
 
 from app.models.blocks import Block, BlockType, BlocksContainer, ImageMetadata
+from app.modules.parsers.html_parser import html_parser
 from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
+from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
 from app.utils.converters.caption_map import apply_caption_map as _apply_caption_map
+from tests.support.fresh_module import fresh_copy
 
 
 @pytest.fixture
 def parser():
-    """Create DoclingHtmlParser with mocked DocumentConverter to avoid heavy import."""
-    with patch("app.modules.parsers.html_parser.docling_html_parser.DocumentConverter"):
-        return DoclingHtmlParser()
+    """Create a DoclingHtmlParser (the constructor does not touch the converter)."""
+    return DoclingHtmlParser()
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +59,7 @@ class TestParseFile:
         mock_converter.convert.return_value = mock_result
 
         with patch(
-            "app.modules.parsers.html_parser.docling_html_parser.DocumentConverter",
+            "docling.document_converter.DocumentConverter",
             return_value=mock_converter,
         ):
             parser = DoclingHtmlParser()
@@ -73,7 +75,7 @@ class TestParseFile:
         mock_converter.convert.return_value = mock_result
 
         with patch(
-            "app.modules.parsers.html_parser.docling_html_parser.DocumentConverter",
+            "docling.document_converter.DocumentConverter",
             return_value=mock_converter,
         ):
             parser = DoclingHtmlParser()
@@ -409,7 +411,7 @@ class TestDoclingHtmlParse:
     async def test_parse_uses_docling_processor(self, parser):
         mock_doc = MagicMock()
         mock_doc.model_dump_json.return_value = '{"doc": true}'
-        with patch("html_to_markdown.convert", return_value="# Hello"), \
+        with patch("app.utils.html_markdown.html_to_markdown_async", return_value="# Hello"), \
              patch.object(parser, "clean_html", side_effect=lambda x: x), \
              patch.object(parser, "replace_relative_image_urls", side_effect=lambda x: x), \
              patch.object(parser, "extract_and_replace_images", return_value=("<p>Hello</p>", [])), \
@@ -430,7 +432,7 @@ class TestDoclingHtmlParse:
     async def test_parse_converts_to_markdown(self, parser):
         mock_doc = MagicMock()
         mock_doc.model_dump_json.return_value = "{}"
-        with patch("html_to_markdown.convert", return_value="# markdown") as mock_convert, \
+        with patch("app.utils.html_markdown.html_to_markdown_async", return_value="# markdown") as mock_convert, \
              patch.object(parser, "clean_html", side_effect=lambda x: x), \
              patch.object(parser, "replace_relative_image_urls", side_effect=lambda x: x), \
              patch.object(parser, "extract_and_replace_images", return_value=("<p>Hello</p>", [])), \
@@ -449,7 +451,7 @@ class TestDoclingHtmlParse:
     async def test_parse_bytes_strips_and_runs_pipeline(self, parser):
         mock_doc = MagicMock()
         mock_doc.model_dump_json.return_value = "{}"
-        with patch("html_to_markdown.convert", return_value="# md") as mock_convert, \
+        with patch("app.utils.html_markdown.html_to_markdown_async", return_value="# md") as mock_convert, \
              patch("app.modules.parsers.pdf.docling_processor.DoclingProcessor") as mock_processor_cls, \
              patch.object(parser, "clean_html", side_effect=lambda x: x), \
              patch.object(parser, "replace_relative_image_urls", side_effect=lambda x: x), \
@@ -473,7 +475,7 @@ class TestDoclingHtmlParse:
                 "new_alt_text": "Image_1",
             }
         ]
-        with patch("html_to_markdown.convert", return_value="# md"), \
+        with patch("app.utils.html_markdown.html_to_markdown_async", return_value="# md"), \
              patch("app.modules.parsers.pdf.docling_processor.DoclingProcessor") as mock_processor_cls, \
              patch.object(parser, "clean_html", side_effect=lambda x: x), \
              patch.object(parser, "replace_relative_image_urls", side_effect=lambda x: x), \
@@ -486,7 +488,7 @@ class TestDoclingHtmlParse:
             mock_processor_cls.return_value.parse_document = AsyncMock(return_value=mock_doc)
             result = await parser.parse(b"<img src='x'>", "doc.html")
 
-        mock_b64.assert_awaited_once_with(["https://example.com/pic.png"])
+        mock_b64.assert_awaited_once_with(["https://example.com/pic.png"], allow_remote_fetch=True)
         assert result.metadata["caption_map"] == {"Image_1": "data:image/png;base64,ENC"}
 
     @pytest.mark.asyncio
@@ -497,7 +499,7 @@ class TestDoclingHtmlParse:
             {"url": "https://example.com/a.png", "alt_text": "a", "new_alt_text": "Image_1"},
             {"url": "https://example.com/b.png", "alt_text": "b", "new_alt_text": "Image_2"},
         ]
-        with patch("html_to_markdown.convert", return_value="# md"), \
+        with patch("app.utils.html_markdown.html_to_markdown_async", return_value="# md"), \
              patch("app.modules.parsers.pdf.docling_processor.DoclingProcessor") as mock_processor_cls, \
              patch.object(parser, "clean_html", side_effect=lambda x: x), \
              patch.object(parser, "replace_relative_image_urls", side_effect=lambda x: x), \
@@ -523,7 +525,7 @@ class TestDoclingHtmlParse:
             data=None,
         )
         expected_blocks = BlocksContainer(blocks=[image_block], block_groups=[])
-        with patch("html_to_markdown.convert", return_value="# Title"), \
+        with patch("app.utils.html_markdown.html_to_markdown_async", return_value="# Title"), \
              patch("app.modules.parsers.pdf.docling_processor.DoclingProcessor") as mock_processor_cls:
             instance = mock_processor_cls.return_value
             instance.parse_document = AsyncMock(return_value=MagicMock())
@@ -545,31 +547,18 @@ class TestDoclingHtmlParse:
 class TestHTMLParserShim:
     def test_html_parser_defaults_to_selectolax(self):
         with patch.dict("os.environ", {"PARSER_BACKEND": "selectolax"}, clear=False):
-            import importlib
+            shim = fresh_copy(html_parser)
 
-            import app.modules.parsers.html_parser.html_parser as html_parser_module
-
-            importlib.reload(html_parser_module)
-            HTMLParser = html_parser_module.HTMLParser
-
-        assert HTMLParser.__name__ == "SelectolaxHtmlParser"
-        assert HTMLParser.__module__ == (
-            "app.modules.parsers.html_parser.selectolax_html_parser"
-        )
+        assert shim.HTMLParser is SelectolaxHtmlParser
 
     def test_html_parser_can_select_docling_backend(self):
+        shared = html_parser.HTMLParser
         with patch.dict("os.environ", {"PARSER_BACKEND": "docling"}, clear=False):
             with patch(
-                "app.modules.parsers.html_parser.docling_html_parser.DocumentConverter"
+                "docling.document_converter.DocumentConverter"
             ):
-                import importlib
+                shim = fresh_copy(html_parser)
 
-                import app.modules.parsers.html_parser.html_parser as html_parser_module
-
-                importlib.reload(html_parser_module)
-                HTMLParser = html_parser_module.HTMLParser
-
-        assert HTMLParser.__name__ == "DoclingHtmlParser"
-        assert HTMLParser.__module__ == (
-            "app.modules.parsers.html_parser.docling_html_parser"
-        )
+        assert shim.HTMLParser is DoclingHtmlParser
+        # A reload here used to leave the shared shim on Docling for every later test in the process.
+        assert html_parser.HTMLParser is shared

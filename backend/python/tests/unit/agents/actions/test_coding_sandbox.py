@@ -55,6 +55,25 @@ class TestExecutePython:
             assert data["exit_code"] == 0
 
     @pytest.mark.asyncio
+    async def test_redacts_secrets_in_output(self) -> None:
+        from app.agents.actions.coding_sandbox.coding_sandbox import CodingSandbox
+
+        sandbox = CodingSandbox(_make_state())
+        mock_result = ExecutionResult(
+            success=False,
+            stdout="REDIS_URL=redis://:hunter2pass@redis:6379\n",
+            stderr="token sk-abcdefghijklmnopqrstuvwxyz123456",
+            exit_code=1,
+            error="auth failed for redis://:hunter2pass@redis:6379",
+            artifacts=[],
+        )
+        with patch("app.agents.actions.coding_sandbox.coding_sandbox.get_executor") as mock_get:
+            mock_get.return_value = AsyncMock(execute=AsyncMock(return_value=mock_result))
+            _, result_json = await sandbox.execute_python("print(1)")
+        assert "hunter2pass" not in result_json
+        assert "sk-abcdefghijklmnopqrstuvwxyz123456" not in result_json
+
+    @pytest.mark.asyncio
     async def test_failure(self):
         from app.agents.actions.coding_sandbox.coding_sandbox import CodingSandbox
 
@@ -507,6 +526,23 @@ class TestScheduleArtifactUploadException:
             "type": "artifacts",
             "artifacts": [{"fileName": "out.csv", "documentId": "d"}],
         }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["execute_python", "execute_typescript"])
+async def test_cleanup_a_runs_output_never_reaches_the_logs(tool: str, caplog: pytest.LogCaptureFixture) -> None:
+    """CLEANUP: stdout and stderr are the user's content; the logs carry their sizes and the exit code only."""
+    import logging
+
+    from app.agents.actions.coding_sandbox.coding_sandbox import CodingSandbox
+
+    result = ExecutionResult(success=False, stdout="OUT-CANARY-7", stderr="ERR-CANARY-7", exit_code=1)
+    with patch("app.agents.actions.coding_sandbox.coding_sandbox.get_executor") as mock_get:
+        mock_get.return_value = AsyncMock(execute=AsyncMock(return_value=result))
+        with caplog.at_level(logging.DEBUG):
+            await getattr(CodingSandbox(_make_state()), tool)("code")
+    assert "CANARY" not in caplog.text
+    assert "stdout_len=12" in caplog.text
 
 
 class TestArtifactOwner:

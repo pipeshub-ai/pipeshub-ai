@@ -20,6 +20,11 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.connectors.core.constants import IconPaths
+from app.connectors.core.base.source_metadata import (
+    apply_source_metadata,
+    held_metadata,
+    source_metadata,
+)
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -66,6 +71,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    SourcePerson,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.box.box import (
@@ -82,7 +88,38 @@ from app.connectors.core.base.error.stream_errors import (
 from app.utils.streaming import create_stream_record_response, stream_content
 
 
+ITEM_FIELDS = (
+    'type,id,name,size,created_at,modified_at,path_collection,etag,sha1,shared_link,'
+    'owned_by,created_by,modified_by'
+)
+
+
+def item_fields() -> str:
+    """What a listing asks for: the item's own fields and any the source metadata reader adds."""
+    return ','.join([ITEM_FIELDS, *source_metadata().box_fields()])
+
+
+# Box service accounts and app users sign in under this domain.
+_BOX_APP_LOGIN_DOMAIN = '@boxdevedition.com'
+
+
 # Helper functions
+def box_person(user: dict | None) -> SourcePerson | None:
+    """A Box mini user ({id, name, login}) as a SourcePerson; None for none or the anonymous user."""
+    if not user:
+        return None
+    source_id = str(user.get('id') or '') or None
+    email = user.get('login') or None
+    if not source_id and not email:
+        return None
+    return SourcePerson(
+        source_id=source_id,
+        email=email,
+        display_name=user.get('name') or None,
+        is_service_account=bool(email and email.lower().endswith(_BOX_APP_LOGIN_DOMAIN)),
+    )
+
+
 def get_parent_path_from_path(path: str) -> Optional[str]:
     """Extracts the parent path from a file/folder path."""
     if not path or path == "/" or "/" not in path.lstrip("/"):
@@ -272,8 +309,6 @@ class BoxConnector(BaseConnector):
         # One sync at a time per connector: runs share the As-User context, the read flag and the cursor.
         self._sync_lock = asyncio.Lock()
         self._sync_owner: asyncio.Task | None = None
-        self._webhook_run_pending = False
-        self._webhook_tasks: set[asyncio.Task] = set()
 
     @asynccontextmanager
     async def _one_sync_at_a_time(self) -> AsyncGenerator[None, None]:
@@ -477,6 +512,9 @@ class BoxConnector(BaseConnector):
                 sha1_hash=entry.get('sha1'),
                 external_revision_id=entry.get('etag'),
                 is_shared=is_shared,
+                authored_by=box_person(entry.get('created_by')),
+                last_modified_by=box_person(entry.get('modified_by')),
+                owners=[owner] if (owner := box_person(owned_by)) else [],
             )
 
             # Collaborations created on an ancestor are not copied here: the child inherits them.
@@ -535,6 +573,12 @@ class BoxConnector(BaseConnector):
                     file_record.external_record_group_id = None
                 file_record.shared_with_me_record_group_ids = [f"0S:{user_email.lower()}"]
 
+            # Every read carries what the metadata reader asks for; a change in Box may move no timestamp, so it is
+            # applied each time.
+            metadata_moved = is_file and apply_source_metadata(
+                file_record, existing_record, source_metadata().box_metadata(entry, held_metadata(existing_record))
+            )
+
             # Determine if new or updated
             if existing_record:
                 is_content_modified = existing_record.source_updated_at != source_updated_at
@@ -544,7 +588,7 @@ class BoxConnector(BaseConnector):
                     is_new=False,
                     is_updated=True,
                     is_deleted=False,
-                    metadata_changed=is_content_modified,
+                    metadata_changed=is_content_modified or metadata_moved,
                     content_changed=is_content_modified,
                     permissions_changed=permissions is not None,
                     new_permissions=permissions or [],
@@ -615,6 +659,9 @@ class BoxConnector(BaseConnector):
                 if not isinstance(accessible_by, dict):
                     continue
                 role = collab.get('role', 'viewer')
+                # Box shows an uploader item names, but no preview or download.
+                if role == 'uploader':
+                    continue
 
                 # Map Box roles to our permission types
                 permission_type = PermissionType.READ
@@ -1117,7 +1164,7 @@ class BoxConnector(BaseConnector):
         offset = 0
         limit = 1000
 
-        fields = 'type,id,name,size,created_at,modified_at,path_collection,etag,sha1,shared_link,owned_by'
+        fields = item_fields()
 
         if not self.current_user_id:
             try:
@@ -1820,9 +1867,9 @@ class BoxConnector(BaseConnector):
                     if not owner_id:
                         try:
                             if item_type == 'folder':
-                                item_response = await self.data_source.folders_get_folder_by_id(item_id)
+                                item_response = await self.data_source.folders_get_folder_by_id(item_id, fields=ITEM_FIELDS)
                             else:
-                                item_response = await self.data_source.files_get_file_by_id(item_id)
+                                item_response = await self.data_source.files_get_file_by_id(item_id, fields=ITEM_FIELDS)
 
                             if item_response.success:
                                 item_data = self._to_dict(item_response.data)
@@ -1844,7 +1891,8 @@ class BoxConnector(BaseConnector):
                     # regardless of whether the owner is internal or external. Individually-shared
                     # files never surface in the grantee's own folder-tree walk, so this is the only
                     # way to discover them - even for same-enterprise (internal) shares.
-                    if item_id and granted_email and granted_user_box_id:
+                    role = get_val(source, 'role') or get_val(get_val(event, 'additional_details'), 'role')
+                    if item_id and granted_email and granted_user_box_id and role != 'uploader':
                         collaborators_in_org = await self._get_app_users_by_emails([granted_email])
                         if collaborators_in_org:
                             items_to_sync_shared_with_me.append((
@@ -2096,14 +2144,14 @@ class BoxConnector(BaseConnector):
                 for item_id, item_type in collab_items:
                     try:
                         if (item_type or "").lower() == "folder":
-                            folder_response = await self.data_source.folders_get_folder_by_id(item_id)
+                            folder_response = await self.data_source.folders_get_folder_by_id(item_id, fields=ITEM_FIELDS)
                             if not folder_response.success:
                                 self.logger.warning(f"Failed to fetch folder {item_id} as shared-with-me: {folder_response.error}")
                                 self._mark_read_incomplete(folder_response.error)
                                 continue
                             entry = self._to_dict(folder_response.data)
                         else:
-                            file_response = await self.data_source.files_get_file_by_id(item_id)
+                            file_response = await self.data_source.files_get_file_by_id(item_id, fields=item_fields())
                             if not file_response.success:
                                 self.logger.warning(f"Failed to fetch file {item_id} as shared-with-me: {file_response.error}")
                                 self._mark_read_incomplete(file_response.error)
@@ -2150,7 +2198,7 @@ class BoxConnector(BaseConnector):
             await self.data_source.set_as_user_context(owner_id)
 
             # 2. Parallel Fetch of File Details
-            tasks = [self.data_source.files_get_file_by_id(fid) for fid in file_ids]
+            tasks = [self.data_source.files_get_file_by_id(fid, fields=item_fields()) for fid in file_ids]
             responses = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Convert each response to a dict once and reuse it for logging + both passes below.
@@ -2228,7 +2276,7 @@ class BoxConnector(BaseConnector):
 
                 # Fetch folder from Box and create it
                 self.logger.info(f"📁 Parent folder {folder_id} not found in DB, fetching and creating...")
-                folder_response = await self.data_source.folders_get_folder_by_id(folder_id)
+                folder_response = await self.data_source.folders_get_folder_by_id(folder_id, fields=ITEM_FIELDS)
 
                 if not folder_response.success:
                     self.logger.warning(f"Failed to fetch parent folder {folder_id}: {folder_response.error}")
@@ -2278,7 +2326,7 @@ class BoxConnector(BaseConnector):
             for folder_id in folder_ids:
                 try:
                     # 2. Fetch folder metadata from Box
-                    folder_response = await self.data_source.folders_get_folder_by_id(folder_id)
+                    folder_response = await self.data_source.folders_get_folder_by_id(folder_id, fields=ITEM_FIELDS)
 
                     if not folder_response.success:
                         self.logger.warning(f"Failed to fetch folder {folder_id}: {folder_response.error}")
@@ -2339,7 +2387,7 @@ class BoxConnector(BaseConnector):
         """
         offset = 0
         limit = 1000
-        fields = 'type,id,name,size,created_at,modified_at,path_collection,etag,sha1,shared_link,owned_by'
+        fields = item_fields()
         effective_email = user_email or "incremental_sync_user"
 
         while True:
@@ -2534,23 +2582,9 @@ class BoxConnector(BaseConnector):
             return False
 
     def handle_webhook_notification(self, notification: Dict) -> None:
-        """Queue one incremental sync; notifications that arrive while it waits are covered by it."""
-        if self._webhook_run_pending:
-            self.logger.info("Box webhook received; an incremental sync is already queued and will include it.")
-            return
-        self.logger.info("Box webhook received. Queuing an incremental sync.")
-        self._webhook_run_pending = True
-        task = asyncio.create_task(self._run_queued_sync())
-        self._webhook_tasks.add(task)
-        task.add_done_callback(self._webhook_tasks.discard)
-
-    async def _run_queued_sync(self) -> None:
-        async with self._one_sync_at_a_time():
-            # Cleared as the run starts, so a change that lands during it queues the next one.
-            self._webhook_run_pending = False
-            # run_sync, not run_incremental_sync: after an incomplete full sync it must be a full sync
-            # again, and an incremental run here would store or refresh the cursor over the gap.
-            await self.run_sync()
+        """Ask for a sync; one asked for while another runs is re-issued after it."""
+        self.logger.info("Box webhook received. Requesting a sync.")
+        self.request_sync()
 
     @classmethod
     async def create_connector(
@@ -2609,9 +2643,9 @@ class BoxConnector(BaseConnector):
                     tasks = []
                     for rec in owner_records:
                         if rec.mime_type != MimeTypes.FOLDER.value:
-                            tasks.append(self.data_source.files_get_file_by_id(rec.external_record_id))
+                            tasks.append(self.data_source.files_get_file_by_id(rec.external_record_id, fields=ITEM_FIELDS))
                         else:
-                            tasks.append(self.data_source.folders_get_folder_by_id(rec.external_record_id))
+                            tasks.append(self.data_source.folders_get_folder_by_id(rec.external_record_id, fields=ITEM_FIELDS))
 
                     responses = await asyncio.gather(*tasks, return_exceptions=True)
 

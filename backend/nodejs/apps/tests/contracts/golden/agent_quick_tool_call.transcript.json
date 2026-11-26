@@ -1,0 +1,110 @@
+{
+  "conversation": {
+    "sessionType": "agent",
+    "nextSeq": 2,
+    "userId": "oid-1",
+    "orgId": "oid-2",
+    "title": "How much paid leave do I get?",
+    "initiator": "oid-1",
+    "isShared": false,
+    "isDeleted": false,
+    "isArchived": false,
+    "lastActivityAt": "<clock>",
+    "status": "Complete",
+    "modelInfo": {
+      "chatMode": "quick"
+    },
+    "agentKey": "agent-1",
+    "conversationSource": "agent_chat",
+    "_id": "oid-3",
+    "sharedWith": [],
+    "conversationErrors": [],
+    "createdAt": "<timestamp>",
+    "updatedAt": "<timestamp>",
+    "__v": 0
+  },
+  "messages": [
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 1,
+      "messageType": "user_query",
+      "content": "How much paid leave do I get?",
+      "contentFormat": "MARKDOWN",
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [],
+      "_id": "oid-4",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "citations": [],
+      "followUpQuestions": [],
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    },
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 2,
+      "messageType": "bot_response",
+      "content": "You get 25 days of paid leave a year.",
+      "contentFormat": "MARKDOWN",
+      "citations": [],
+      "confidence": null,
+      "followUpQuestions": [],
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [
+        {
+          "type": "text",
+          "content": "",
+          "runId": "uuid-1"
+        },
+        {
+          "type": "tool_call",
+          "toolCallId": "call-search",
+          "toolName": "goldendocs__search_docs",
+          "args": "{\"query\": \"paid leave\"}",
+          "status": "completed",
+          "runId": "uuid-1",
+          "argsSummary": "Search Docs: \"paid leave\"",
+          "resultPreview": "{\"query\": \"paid leave\", \"hits\": [{\"title\": \"Leave policy\", \"excerpt\": \"25 days of paid leave.\"}]}",
+          "resultSummary": "Completed successfully"
+        },
+        {
+          "type": "text",
+          "content": "You get 25 days of paid leave a year.",
+          "runId": "uuid-1",
+          "isFinal": true
+        }
+      ],
+      "_id": "oid-5",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    }
+  ]
+}

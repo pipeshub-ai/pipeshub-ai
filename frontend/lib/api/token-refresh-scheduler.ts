@@ -12,26 +12,23 @@
  * 1. Zustand subscription on `useAuthStore` — every time `accessToken`
  *    changes (login / setTokens / logout, including refreshes initiated
  *    here) the timer is recomputed from the new token.
- * 2. `storage` event — when another tab writes a new access token to
- *    `localStorage`, this tab adopts it (no extra refresh call) and
- *    reschedules.
+ * 2. `storage` event on the signed-in mark — another tab signed out (this
+ *    one follows), signed in as someone else (this one reloads), or signed
+ *    in while this one was signed out (this one restores from the session).
  * 3. `visibilitychange` — when the tab returns to foreground (e.g. after
  *    laptop sleep, where setTimeout firing is unreliable) the scheduler
  *    re-checks expiry and refreshes immediately if needed.
  */
 
+import { restoreSession } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
+import { accountOfToken, SESSION_HINT_KEY } from '@/lib/auth/session-credential';
 import {
-  ACCESS_TOKEN_STORAGE_KEY,
-  REFRESH_TOKEN_STORAGE_KEY,
-} from '@/lib/store/auth-store';
-import { useAuthStore, logoutAndRedirect } from '@/config';
-import {
-  refreshAccessToken,
+  refreshOrSignOut,
   isTokenExpired,
   getTokenExpirySeconds,
   DEFAULT_EXPIRY_BUFFER_SECONDS,
 } from './token-refresh';
-
 /**
  * `setTimeout` accepts a 32-bit signed delay; values larger than this wrap
  * to a near-zero delay and would fire immediately. We clamp and chain.
@@ -58,12 +55,12 @@ async function refreshNow(): Promise<void> {
   timerId = null;
   scheduledForToken = null;
 
-  const ok = await refreshAccessToken();
-  if (!ok) {
-    // Hard stop: clear any state that may have been re-armed concurrently
-    // by an inbound `storage` event, then log the user out.
+  // A refusal logs the user out, unless the session already ended meanwhile; then the timer may
+  // already belong to the next person, so it is left alone. With no answer nothing changes:
+  // the next request's pre-send check, or the tab becoming visible, tries again.
+  if ((await refreshOrSignOut()) === 'signed-out') {
+    // Hard stop: clear any state that may have been re-armed concurrently by an inbound `storage` event.
     clearTimer();
-    logoutAndRedirect();
   }
 }
 
@@ -118,31 +115,28 @@ export function cancel(): void {
 }
 
 function handleStorageEvent(event: StorageEvent): void {
-  if (event.key !== ACCESS_TOKEN_STORAGE_KEY) return;
-
+  if (event.key !== SESSION_HINT_KEY && event.key !== null) return;
+  if (event.oldValue === event.newValue) return;
   const current = useAuthStore.getState().accessToken;
-  // Same value as we already hold → skip; re-applying it would write
-  // localStorage again and fan out a redundant `storage` event in N tabs.
-  if (event.newValue === current) return;
 
-  // Another tab logged out → mirror that here.
+  // Another tab signed out (or cleared the site's storage) → mirror that here.
   if (event.newValue === null) {
-    useAuthStore.getState().logout();
+    if (current) useAuthStore.getState().logout();
     return;
   }
 
-  // Another tab refreshed the access token → adopt it locally so we don't
-  // re-issue a refresh of our own. The refresh-token key may also flip in
-  // the same write batch; pick up whichever one we have.
-  const refreshToken =
-    window.localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY) ??
-    useAuthStore.getState().refreshToken;
-  if (refreshToken) {
-    useAuthStore.getState().setTokens(event.newValue, refreshToken);
-  } else {
-    useAuthStore.getState().setAccessToken(event.newValue);
+  // Another tab signed in while this one was signed out → sign in here too.
+  if (!current) {
+    void restoreSession();
+    return;
   }
-  // The zustand subscription will then call `scheduleFromToken`.
+
+  // Another tab signed in as someone else without this one signing out. Every
+  // cache, store and the open chat here belong to the previous account, and a
+  // page load is the one reset that leaves none of it on screen. Web only in
+  // practice: the desktop app has a single window, so no other tab writes.
+  const before = accountOfToken(current);
+  if (before && before !== event.newValue) window.location.assign('/chat/');
 }
 
 function handleVisibilityChange(): void {

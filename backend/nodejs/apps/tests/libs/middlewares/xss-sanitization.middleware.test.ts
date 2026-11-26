@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import { xssSanitizationMiddleware } from '../../../src/libs/middlewares/xss-sanitization.middleware'
 import { BadRequestError } from '../../../src/libs/errors/http.errors'
 import { Logger } from '../../../src/libs/services/logger.service'
+import { AGENT_HARNESS_INTERNAL_PREFIX } from '../../../src/modules/agent-harness/transport/internal-routes'
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
 import express from 'express'
 import http from 'http'
@@ -341,6 +342,28 @@ describe('XSS Sanitization Middleware', () => {
       expect(next.firstCall.args).to.have.length(0)
     })
 
+    it('passes the files and manifest of a pushed repository through, but not its name or any other path under it', () => {
+      for (const [path, method, exempt] of [
+        ['/api/v1/local-repos/key12345/files', 'PUT', true],
+        ['/api/v1/local-repos/key12345/manifest', 'POST', true],
+        ['/api/v1/local-repos/key12345', 'PUT', false],
+        ['/api/v1/local-repos/key12345/commit', 'POST', false],
+        ['/api/v1/local-repos/key12345/files/', 'PUT', true],
+        ['/api/v1/Local-Repos/key12345/FILES', 'PUT', true],
+        ['/api/v1/local-repos/key12345/manifest/', 'POST', true],
+        ['/api/v1/local-repos/key12345/files/extra', 'PUT', false],
+        ['/api/v1/local-repos/key12345/files', 'GET', false],
+      ] as const) {
+        const req = createMockRequest({ path, method, body: { name: '<img src=x onerror=alert(1)>' } })
+        const next = createMockNext()
+
+        xssSanitizationMiddleware(req, createMockResponse(), next)
+
+        const passed = next.calledOnce && next.firstCall.args.length === 0
+        expect(passed, `${method} ${path}`).to.equal(exempt)
+      }
+    })
+
     it('should skip validation for POST to /api/v1/conversations/ paths', () => {
       const req = createMockRequest({
         path: '/api/v1/conversations/new',
@@ -354,6 +377,47 @@ describe('XSS Sanitization Middleware', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args).to.have.length(0)
+    })
+
+    it('should skip validation for POST and PUT to the worker-only agent-harness routes', () => {
+      for (const method of ['POST', 'PUT']) {
+        const html = '<p>result</p><script>alert(1)</script>'
+        const req = createMockRequest({
+          path: `${AGENT_HARNESS_INTERNAL_PREFIX}/runs/run-1/commit`,
+          method,
+          body: { events: [{ data: { receipt: { body: html } } }] },
+        })
+        const next = createMockNext()
+        xssSanitizationMiddleware(req, createMockResponse(), next)
+        expect(next.calledOnce).to.be.true
+        expect(next.firstCall.args).to.have.length(0)
+        expect(req.body.events[0].data.receipt.body).to.equal(html)
+      }
+    })
+
+    it('should still validate the browser-facing agent-harness routes and look-alike prefixes', () => {
+      for (const path of [
+        '/api/v1/agent-harness/sessions/s-1/runs',
+        `${AGENT_HARNESS_INTERNAL_PREFIX}x/runs/run-1/commit`,
+        AGENT_HARNESS_INTERNAL_PREFIX,
+      ]) {
+        const req = createMockRequest({ path, method: 'POST', body: { text: '<script>alert(1)</script>' } })
+        const next = createMockNext()
+        xssSanitizationMiddleware(req, createMockResponse(), next)
+        expect(next.calledOnce, path).to.be.true
+        expect(next.firstCall.args[0], path).to.be.instanceOf(BadRequestError)
+      }
+    })
+
+    it('should still validate query strings on the worker-only routes (GET)', () => {
+      const req = createMockRequest({
+        path: `${AGENT_HARNESS_INTERNAL_PREFIX}/runs/run-1/content`,
+        method: 'GET',
+        query: { ref: '<script>alert(1)</script>' },
+      })
+      const next = createMockNext()
+      xssSanitizationMiddleware(req, createMockResponse(), next)
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
     })
 
     it('passes an API toolset spec and credentials through unchanged', () => {
@@ -370,6 +434,29 @@ describe('XSS Sanitization Middleware', () => {
         xssSanitizationMiddleware(req, res, next)
         expect(next.firstCall.args, `${method} ${path}`).to.have.length(0)
         expect(req.body, `${method} ${path}`).to.deep.equal(body)
+      }
+    })
+
+    it('passes an MCP server logo through and checks the same string anywhere else', () => {
+      // Base64 whose last segment reads like an event handler (`/onAb=`).
+      const logo = `data:image/png;base64,iVBORw0KGgo${'A'.repeat(120_000)}/onAb=`
+      const res = createMockResponse()
+
+      const req = createMockRequest({ path: '/api/v1/mcp-servers/instances/abc/logo', method: 'PUT', body: { logo } })
+      const next = createMockNext()
+      xssSanitizationMiddleware(req, res, next)
+      expect(next.firstCall.args).to.have.length(0)
+      expect(req.body.logo).to.equal(logo)
+
+      for (const [method, path] of [
+        ['PUT', '/api/v1/mcp-servers/instances/abc'],
+        ['POST', '/api/v1/mcp-servers/instances/abc/logo'],
+        ['PUT', '/api/v1/mcp-servers/instances/abc/logo/extra'],
+      ] as const) {
+        const other = createMockRequest({ path, method, body: { logo } })
+        const otherNext = createMockNext()
+        xssSanitizationMiddleware(other, res, otherNext)
+        expect(otherNext.firstCall.args[0], `${method} ${path}`).to.be.instanceOf(BadRequestError)
       }
     })
 
@@ -1000,11 +1087,67 @@ describe('XSS Sanitization Middleware', () => {
       expect(body.received.params.arguments.query).to.equal(question)
     })
 
+    it("R36-COVER: a schedule's prompt reaches its runs as typed (a < b, code with <<); its other fields are still checked", async () => {
+      const prompt = 'flag rows where a < b\nb.append(x * (64 << 20)) and cite [Summary of <id>]'
+      const made = await post('/api/v1/agent-harness/schedules', { name: 'nightly', input: { query: prompt } })
+      expect(made.status).to.equal(200)
+      expect(made.body.received.input.query).to.equal(prompt)
+      const named = await post('/api/v1/agent-harness/schedules', { name: '<b>nightly</b>', input: { query: 'q' } })
+      expect(named.status).to.equal(400)
+    })
+
     it('accepts <id> in the query of POST /api/v1/search, which MCP search calls, unchanged', async () => {
       const { status, body } = await post('/api/v1/search', { query: question, limit: 5 })
 
       expect(status).to.equal(200)
       expect(body.received.query).to.equal(question)
+    })
+
+    it('accepts <id> in the pattern of an MCP pipeshub_grep call and the query of pipeshub_search_entities, unchanged', async () => {
+      const grep = await post('/mcp', toolCall('pipeshub_grep', { pattern: 'List<String>', regex: false }))
+      expect(grep.status).to.equal(200)
+      expect(grep.body.received.params.arguments.pattern).to.equal('List<String>')
+
+      const entities = await post('/mcp', toolCall('pipeshub_search_entities', { query: question }))
+      expect(entities.status).to.equal(200)
+      expect(entities.body.received.params.arguments.query).to.equal(question)
+    })
+
+    it('accepts markup in the pattern of POST /api/v1/search/grep, unchanged, but not in its other fields', async () => {
+      const ok = await post('/api/v1/search/grep', { pattern: '<div class="x">' })
+      expect(ok.status).to.equal(200)
+      expect(ok.body.received.pattern).to.equal('<div class="x">')
+
+      const bad = await post('/api/v1/search/grep', { pattern: 'x', paths: ['<script>alert(1)</script>'] })
+      expect(bad.status).to.equal(400)
+    })
+
+    it('accepts source text in the code search, read and resolve fields, unchanged, but not in their other fields', async () => {
+      const cases: Array<[string, Record<string, string>]> = [
+        ['/api/v1/code-graph/search', { pattern: 'vector<int>::push_back', path: 'src/a<b>.cpp' }],
+        ['/api/v1/code-graph/semantic-search', { query: 'where is List<String> built' }],
+        ['/api/v1/code-graph/read', { qualified_name: 'operator<<', file_path: 'src/x.cpp' }],
+        ['/api/v1/code-graph/outline', { file_path: 'src/a<b>.cpp' }],
+        ['/api/v1/graph/resolve', { qualifiedName: 'Map<K, V>::get', filePath: 'src/a<b>.java' }],
+      ]
+      for (const [route, fields] of cases) {
+        const ok = await post(route, fields)
+        expect(ok.status, route).to.equal(200)
+        for (const [key, value] of Object.entries(fields)) {
+          expect(ok.body.received[key], `${route} ${key}`).to.equal(value)
+        }
+        const bad = await post(route, { ...fields, repo: '<script>alert(1)</script>' })
+        expect(bad.status, `${route} other field`).to.equal(400)
+      }
+    })
+
+    it('accepts <id> in the query of POST /api/v1/search/entities, unchanged, but not in its other fields', async () => {
+      const ok = await post('/api/v1/search/entities', { query: question })
+      expect(ok.status).to.equal(200)
+      expect(ok.body.received.query).to.equal(question)
+
+      const bad = await post('/api/v1/search/entities', { query: 'x', namedEntityKinds: ['<script>alert(1)</script>'] })
+      expect(bad.status).to.equal(400)
     })
 
     it('accepts <id> in the query of POST /api/v1/retrieve, unchanged', async () => {
@@ -1069,7 +1212,7 @@ describe('XSS Sanitization Middleware', () => {
 
         expect(status).to.equal(400)
         expect(body.error.message).to.include(field)
-        expect(body.error.message).to.include('longer than 100,000 characters')
+        expect(body.error.message).to.include('more than 100,000 characters')
       }
     })
 
@@ -1133,6 +1276,62 @@ describe('XSS Sanitization Middleware', () => {
       expect(status).to.equal(200)
       expect(body.received.query).to.equal(question)
       expect(body.received.note).to.equal('<b>kept</b>')
+    })
+
+    // Seen on Claude: citing Slack messages failed with 400 because a quote
+    // held Slack's own markup, `<!here>`.
+    describe('quotes of an MCP pipeshub_show_citations call', () => {
+      const slack = '<!here> bug bash at 5 -> <@U0B19K8BWHX> see <https://pipeshub.test/x|the page>'
+      const cite = '7ada7d80-62c4-425c-a125-d65a1ea3101a..0...n'
+
+      it('accepts Slack markup in every quote, unchanged', async () => {
+        const { status, body } = await post('/mcp', toolCall('pipeshub_show_citations', {
+          citations: [{ cite, quote: slack }, { cite, quote: '<!channel> starts at 6' }, { cite }],
+        }))
+
+        expect(status).to.equal(200)
+        expect(body.received.params.arguments.citations).to.deep.equal([
+          { cite, quote: slack }, { cite, quote: '<!channel> starts at 6' }, { cite },
+        ])
+      })
+
+      it('still refuses markup in a cite', async () => {
+        const { status, body } = await post('/mcp', toolCall('pipeshub_show_citations', {
+          citations: [{ cite: '<script>alert(1)</script>', quote: slack }],
+        }))
+
+        expect(status).to.equal(400)
+        expect(body.error.message).to.include('"params.arguments.citations[0].cite"')
+      })
+
+      it('still refuses markup in any other field of the call', async () => {
+        const { status, body } = await post('/mcp', toolCall('pipeshub_show_citations', {
+          citations: [{ cite, quote: slack, note: '<b>x</b>' }],
+        }))
+
+        expect(status).to.equal(400)
+        expect(body.error.message).to.include('"params.arguments.citations[0].note"')
+      })
+
+      it('still refuses a quote over 100,000 characters as too long', async () => {
+        const { status, body } = await post('/mcp', toolCall('pipeshub_show_citations', {
+          citations: [{ cite, quote: 'x'.repeat(100_001) }],
+        }))
+
+        expect(status).to.equal(400)
+        expect(body.error.message).to.include('too long')
+        expect(body.error.message).to.include('more than 100,000 characters')
+        // A long quote holds no markup: the refusal does not say it was checked for some.
+        expect(body.error.message).not.to.include('HTML')
+      })
+
+      it('still checks a quote on any other tool', async () => {
+        const { status } = await post('/mcp', toolCall('pipeshub_get_record_content', {
+          citations: [{ cite, quote: '<!here>' }],
+        }))
+
+        expect(status).to.equal(400)
+      })
     })
   })
 })

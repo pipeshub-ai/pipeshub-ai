@@ -1,6 +1,5 @@
 import { Response, NextFunction } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { Logger } from '../../../libs/services/logger.service';
 import {
   InternalServerError,
   UnauthorizedError,
@@ -13,13 +12,12 @@ import {
 } from '../../tokens_manager/utils/connector.utils';
 import { ConversationTitleService } from '../services/conversation-title.service';
 
-const logger = Logger.getInstance({
-  service: 'Artifacts Controller',
-});
-
 type ArtifactListItem = {
   conversationId?: string | null;
   conversationTitle?: string;
+  agentKey?: string;
+  projectId?: string;
+  conversationArchived?: true;
   [key: string]: unknown;
 };
 
@@ -98,8 +96,12 @@ async function enrichConversationTitles(
     if (!item.conversationId) {
       return item;
     }
-    const title = titles.get(item.conversationId);
-    return title ? { ...item, conversationTitle: title } : item;
+    const conversation = titles.get(item.conversationId);
+    if (!conversation) {
+      return item;
+    }
+    const { title, ...links } = conversation;
+    return { ...item, conversationTitle: title, ...links };
   });
 }
 
@@ -145,7 +147,6 @@ export const listArtifacts =
       data.items = await enrichConversationTitles(items, orgId, userId);
       res.status(statusCode).json(data);
     } catch (error: unknown) {
-      logger.error('Error listing artifacts', { error });
       next(handleBackendError(error, 'list artifacts'));
     }
   };
@@ -176,7 +177,6 @@ export const getArtifact =
       const [enriched] = await enrichConversationTitles([data], orgId, userId);
       res.status(statusCode).json(enriched);
     } catch (error: unknown) {
-      logger.error('Error getting artifact', { error });
       next(handleBackendError(error, 'get artifact'));
     }
   };
@@ -207,7 +207,6 @@ export const listArtifactVersions =
       );
       res.status(statusCode).json(data);
     } catch (error: unknown) {
-      logger.error('Error listing artifact versions', { error });
       next(handleBackendError(error, 'list artifact versions'));
     }
   };
@@ -240,7 +239,6 @@ const proxyArtifactPermissions =
         .status(statusCode)
         .json(requirePayload(connectorResponse.data, `Failed to ${operation}`));
     } catch (error: unknown) {
-      logger.error(`Error during ${operation}`, { error });
       next(handleBackendError(error, operation));
     }
   };
@@ -279,7 +277,6 @@ export const deleteArtifact =
       }
       res.status(204).end();
     } catch (error: unknown) {
-      logger.error('Error deleting artifact', { error });
       next(handleBackendError(error, 'delete artifact'));
     }
   };

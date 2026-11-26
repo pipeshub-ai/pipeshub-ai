@@ -11,6 +11,12 @@ EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS = 600.0
 # (embedding_main.EncodeGate); any other value, or none, is bulk.
 EMBEDDING_PRIORITY_HEADER = "X-Embedding-Priority"
 EMBEDDING_PRIORITY_QUERY = "query"
+# Request header that carries the cost class of the record an indexing batch belongs to (small, large, huge)
+# under PARSE_ADMISSION=classes. The server's encode gate serves small ahead of large and huge.
+PARSE_CLASS_HEADER = "X-Parse-Class"
+# One /v1/tokenize request: the server rejects more (413), the indexing client splits to fit.
+TOKENIZE_MAX_ITEMS = 2048
+TOKENIZE_MAX_CHARS = 2_000_000
 
 # Bound on one HTTP attempt to a hosted embedding API. The provider SDKs
 # default to 600s and retry twice on top, so without this a single stalled
@@ -23,6 +29,12 @@ REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS = 60.0
 # indexing batches, and a search that waits it out on one stalled request answers
 # after its caller has given up, while a fresh attempt answers at once.
 QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS = 15.0
+
+# For a local model (the embedding server, or a provider on an internal address), one deadline over all
+# attempts to embed a search query. It may be loading on first use or after an idle unload, so no single
+# attempt is cut short; but without a deadline a server that accepts the connection and never answers
+# holds the search for the client's own timeout (600s per attempt, retried).
+LOCAL_QUERY_EMBEDDING_DEADLINE_SECONDS = 60.0
 
 class OCRProvider(Enum):
     AZURE_DI = "azureDI"
@@ -81,8 +93,6 @@ def validate_reasoning_effort(value: str | None) -> str | None:
     non-``None`` value must be one of ``REASONING_EFFORT_VALUES``.
     """
     if value is not None and value not in REASONING_EFFORT_VALUES:
-        raise ValueError(
-            f"Invalid reasoningEffort '{value}'. Must be one of: "
-            f"{', '.join(sorted(REASONING_EFFORT_VALUES))}."
-        )
+        # Not the value: this message reaches the 400 body, which Node logs and shows.
+        raise ValueError(f"Invalid reasoningEffort. Must be one of: {', '.join(sorted(REASONING_EFFORT_VALUES))}.")
     return value

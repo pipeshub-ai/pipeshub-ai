@@ -65,14 +65,18 @@ def graph_error_status(error: object) -> int | None:
     return int(match.group(1) or match.group(2)) if match else None
 
 
-# Graph answers a delta link it no longer accepts with 410 and one of these codes.
+# Graph answers a delta link it no longer accepts with 410 and one of these codes; a directory (groups) link
+# past its age is a 400 that only its text tells from another bad request.
 # The data source passes errors on only as text, so they are matched in that text.
-_EXPIRED_DELTA_LINK = re.compile(r"syncStateNotFound|syncStateInvalid|resyncRequired")
+_EXPIRED_DELTA_LINK = re.compile(r"syncStateNotFound|syncStateInvalid|resyncRequired|DeltaLink older than")
 
 
 def is_expired_delta_link_error(error: object) -> bool:
     """True when a delta read failed because the saved delta link expired or was invalidated."""
-    return graph_error_status(error) == 410 or bool(_EXPIRED_DELTA_LINK.search(str(error)))
+    # An SDK error's text holds Graph's message but not its code (syncStateNotFound), so the code is read too.
+    main_error = getattr(error, "error", None)
+    text = f"{getattr(main_error, 'code', None) or ''} {error}"
+    return graph_error_status(error) == 410 or bool(_EXPIRED_DELTA_LINK.search(text))
 
 
 # Graph answers a well-known folder the mailbox does not have (e.g. no archive) with 404.
@@ -94,35 +98,6 @@ def is_no_mailbox_error(error: object) -> bool:
     return bool(_NO_MAILBOX.search(str(error)))
 
 
-# Microsoft sign-in (AADSTS) codes of a failed token request, and what to fix.
-_SIGN_IN_PROBLEMS: tuple[tuple[str, str], ...] = (
-    ("AADSTS7000215", "the client secret is wrong. Copy the secret's Value (not its Secret ID) "
-                      "from the app registration and save it again."),
-    ("AADSTS7000222", "the client secret has expired. Create a new client secret in the app "
-                      "registration and save it here."),
-    ("AADSTS700016", "no app with this Application (Client) ID exists in this directory. Check the "
-                     "Client ID and the Directory (Tenant) ID."),
-    ("AADSTS90002", "the Directory (Tenant) ID was not found. Check it in the app registration."),
-    ("AADSTS900023", "the Directory (Tenant) ID is not valid. Check it in the app registration."),
-    ("AADSTS65001", "an admin has not granted consent to the app. Grant admin consent for its API "
-                    "permissions in the app registration."),
-    ("AADSTS700082", "the sign-in has expired. Sign in again on the connector's Authorize tab."),
-    ("AADSTS70008", "the sign-in has expired. Sign in again on the connector's Authorize tab."),
-)
-
-
-def describe_sign_in_error(error: object) -> str | None:
-    """A message that says what to fix, when ``error`` is a known Microsoft sign-in failure."""
-    text = str(error)
-    for code, problem in _SIGN_IN_PROBLEMS:
-        if re.search(rf"\b{code}\b", text):
-            return f"Microsoft sign-in failed ({code}): {problem}"
-    other = re.search(r"\bAADSTS\d+\b", text)
-    if other:
-        return f"Microsoft sign-in failed ({other.group(0)}). Check the connector's credentials, or sign in again."
-    return None
-
-
 class OutlookFolders:
     """Standard Outlook folders: filter option label -> Graph well-known folder name."""
     # Matched through /mailFolders/{well-known name}: display names are localized.
@@ -137,6 +112,9 @@ class OutlookFolders:
         "Conversation History": "conversationhistory",
     }
     STANDARD_FOLDERS: list[str] = list(WELL_KNOWN_NAMES)
+    # Created on first use, so many mailboxes lack them; a 404 for any other standard
+    # folder means Graph did not resolve one the mailbox has.
+    MAY_BE_ABSENT: tuple[str, ...] = ("Archive", "Conversation History")
     # Synced only when a folder filter selects it. Deleting a mail or a folder in Outlook
     # moves it here, so syncing it by default kept deleted mail searchable. Recoverable
     # Items (recoverableitemsdeletions) is outside the folder tree and never listed.
@@ -313,6 +291,9 @@ class OutlookSyncPointKeys:
     # Which kind of Graph ids a folder's delta link (and the mail it read) was saved with.
     ID_TYPE = "id_type"
     DELTA_LINK = "delta_link"
+    # Whether the read a folder's delta link continues asks for each mail's source metadata: a link saved before
+    # keeps its query, so its mail is read without it and keeps what it holds.
+    METADATA_READ = "metadata_read"
     LAST_SYNC_TIMESTAMP = "last_sync_timestamp"
     FOLDER_ID = "folder_id"
     FOLDER_NAME = "folder_name"

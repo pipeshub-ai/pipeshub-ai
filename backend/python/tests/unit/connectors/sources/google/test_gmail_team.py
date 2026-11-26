@@ -1,11 +1,14 @@
 """Tests for GoogleGmailTeamConnector (app/connectors/sources/google/gmail/team/connector.py)."""
 
 import base64
+import json
 import logging
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httplib2
 import pytest
 
 from app.config.constants.arangodb import Connectors, MimeTypes, ProgressStatus
@@ -16,6 +19,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     DatetimeOperator,
     Filter,
@@ -221,14 +225,14 @@ class TestTeamGmailInit:
 
     async def test_init_raises_when_no_auth(self, connector):
         connector.config_service.get_config = AsyncMock(return_value={"auth": {}})
-        with pytest.raises(ValueError, match="Service account credentials not found"):
+        with pytest.raises(ConnectorInitError, match="Service account credentials not found"):
             await connector.init()
 
     async def test_init_raises_when_no_admin_email(self, connector):
         connector.config_service.get_config = AsyncMock(return_value={
             "auth": {"someKey": "someValue"},
         })
-        with pytest.raises(ValueError, match="Admin email not found"):
+        with pytest.raises(ConnectorInitError, match="Admin email not found"):
             await connector.init()
 
 
@@ -1015,7 +1019,7 @@ class TestInit:
     @pytest.mark.asyncio
     async def test_init_no_auth(self, connector_fullcov):
         connector_fullcov.config_service.get_config = AsyncMock(return_value={"auth": {}})
-        with pytest.raises(ValueError, match="Service account credentials not found"):
+        with pytest.raises(ConnectorInitError, match="Service account credentials not found"):
             await connector_fullcov.init()
 
     @pytest.mark.asyncio
@@ -1023,7 +1027,7 @@ class TestInit:
         connector_fullcov.config_service.get_config = AsyncMock(return_value={
             "auth": {"someKey": "someValue"},
         })
-        with pytest.raises(ValueError, match="Admin email not found"):
+        with pytest.raises(ConnectorInitError, match="Admin email not found"):
             await connector_fullcov.init()
 
 
@@ -2072,3 +2076,91 @@ class TestGetExistingRecordFullCoverage:
         )
         result = await connector_fullcov._get_existing_record("msg-1")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# A setup Google refuses is reported with what to fix (answers 400, not 500)
+# ---------------------------------------------------------------------------
+
+_GMAIL_TEAM = "app.connectors.sources.google.gmail.team.connector"
+_WORKSPACE_CONFIG = {"auth": {"adminEmail": "admin@example.com", "type": "service_account", "client_id": "1234"}}
+
+
+def _refresh_error(code: str, description: str) -> Exception:
+    from google.auth.exceptions import RefreshError
+
+    return RefreshError(f"{code}: {description}", {"error": code, "error_description": description})
+
+
+class _CallOnce:
+    """GmailCallPolicy without retries or waiting."""
+
+    def __init__(self, *_args, **_kwargs) -> None:
+        pass
+
+    async def run(self, call: Callable[[], Awaitable[object]], _what: str) -> object:
+        return await call()
+
+
+class TestTeamGmailInitSetupProblems:
+    async def test_an_unreadable_key_says_to_upload_a_json_key(self, connector) -> None:
+        from app.connectors.sources.google.common.connector_google_exceptions import (
+            ServiceAccountKeyError,
+        )
+
+        connector.config_service.get_config = AsyncMock(return_value=_WORKSPACE_CONFIG)
+        with patch(f"{_GMAIL_TEAM}.GoogleClient.build_from_services",
+                   AsyncMock(side_effect=ServiceAccountKeyError("Expecting value: line 1 column 1"))):
+            with pytest.raises(ConnectorInitError, match="not a valid JSON key file"):
+                await connector.init()
+
+    async def test_an_unexpected_client_failure_stays_an_internal_error(self, connector) -> None:
+        connector.config_service.get_config = AsyncMock(return_value=_WORKSPACE_CONFIG)
+        with patch(f"{_GMAIL_TEAM}.GoogleClient.build_from_services",
+                   AsyncMock(side_effect=RuntimeError("boom"))):
+            with pytest.raises(ValueError, match="Failed to initialize Google Admin client"):
+                await connector.init()
+
+
+class TestTeamGmailConnectionTestSetupProblems:
+    @pytest.fixture(autouse=True)
+    def _no_retries(self) -> Iterator[None]:
+        with patch(f"{_GMAIL_TEAM}.GmailCallPolicy", _CallOnce):
+            yield
+
+    async def test_delegation_not_authorized_names_domain_wide_delegation(self, connector_fullcov) -> None:
+        connector_fullcov.config = {"credentials": _WORKSPACE_CONFIG}
+        connector_fullcov.admin_data_source.users_get = AsyncMock(side_effect=_refresh_error(
+            "unauthorized_client",
+            "Client is unauthorized to retrieve access tokens using this method, or client not authorized for any "
+            "of the scopes requested.",
+        ))
+
+        with pytest.raises(ConnectorInitError, match=r"Domain-wide delegation.*client ID \(1234\)"):
+            await connector_fullcov.test_connection_and_access()
+
+    async def test_a_gmail_api_turned_off_names_the_apis_to_turn_on(self, connector_fullcov) -> None:
+        connector_fullcov.config = {"credentials": _WORKSPACE_CONFIG}
+        body = {"error": {"code": 403, "message": "Gmail API has not been used in project 1 before or it is disabled.",
+                          "errors": [{"reason": "accessNotConfigured", "domain": "usageLimits"}]}}
+        connector_fullcov.gmail_data_source.users_get_profile = AsyncMock(side_effect=HttpError(
+            httplib2.Response({"status": 403}), json.dumps(body).encode(),
+            uri="https://gmail.googleapis.com/gmail/v1/users/admin%40example.com/profile"))
+
+        with pytest.raises(ConnectorInitError, match="Gmail API and the Admin SDK API must be turned on"):
+            await connector_fullcov.test_connection_and_access()
+
+    async def test_an_admin_email_google_does_not_know_names_the_email(self, connector_fullcov) -> None:
+        connector_fullcov.config = {"credentials": _WORKSPACE_CONFIG}
+        connector_fullcov.admin_data_source.users_get = AsyncMock(
+            side_effect=_refresh_error("invalid_grant", "Invalid email or User ID"))
+
+        with pytest.raises(ConnectorInitError, match=r"admin email .*\(admin@example.com\)"):
+            await connector_fullcov.test_connection_and_access()
+
+    async def test_a_passing_outage_fails_without_a_setup_message(self, connector_fullcov) -> None:
+        connector_fullcov.config = {"credentials": _WORKSPACE_CONFIG}
+        connector_fullcov.admin_data_source.users_get = AsyncMock(
+            side_effect=HttpError(MagicMock(status=503), b"Service Unavailable"))
+
+        assert await connector_fullcov.test_connection_and_access() is False

@@ -103,7 +103,7 @@ async def test_a_deleted_folder_leaves_with_its_subtree_and_spares_its_sibling(b
 
     done = await apply_deleted_entry(processor, connector_id, "/pr3880/restricted", gone, processor.logger)
 
-    assert done is True
+    assert done.removed and not done.failed and not done.unsure
     assert not await _exists(backend, connector_id, folder)
     assert not await _exists(backend, connector_id, child), "Dropbox may report only the folder; its file goes too"
     assert await _exists(backend, connector_id, sibling)

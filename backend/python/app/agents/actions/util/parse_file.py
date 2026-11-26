@@ -15,10 +15,11 @@ Only the extensions in ``SUPPORTED_BLOCK_FILE_EXTENSIONS`` are accepted.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from pathlib import Path
-from typing import Final, Optional, Union
+from typing import TYPE_CHECKING, Final, Optional, Union
 
 from pydantic import BaseModel
 
@@ -40,6 +41,10 @@ from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.text_decoding import decode_text
 from app.utils.chat_helpers import count_tokens_text
 from app.utils.llm import LLMNotConfiguredError, get_llm_for_role
+from app.utils.run_model_scope import note_records_read
+
+if TYPE_CHECKING:
+    from app.agents.actions.util.live_record import LiveCitations
 
 # ---------------------------------------------------------------------------
 # Supported extensions (OOXML, OLE2, and text/markup as specified)
@@ -188,6 +193,9 @@ class FileContentParser:
 
         ext_n = (file_record.extension or "").strip().lower().lstrip(".")
         file_name = file_record.record_name or "document"
+        # A spreadsheet's rows go to a model while parsing: in a harness run the classification extension
+        # point checks this record.
+        note_records_read([str(getattr(file_record, "id", "") or "")])
         return await self.parse_raw_to_blocks(bytes(raw), ext_n, file_name=file_name)
 
     async def check_token_limit(
@@ -220,8 +228,13 @@ class FileContentParser:
         model_name: Optional[str],
         model_key: Optional[str],
         configuration_service: ConfigurationService,
+        *,
+        citations: LiveCitations,
     ) -> tuple[bool, list[LlmContextItem]]:
-        """Return ``(True, llm_context)`` on success, or ``(False, error_list)``."""
+        """Return ``(True, llm_context)`` on success, or ``(False, error_list)``.
+
+        The context cites the record's blocks by reference, and the record
+        becomes a source of the run's citations only on success."""
         try:
             ext_n = (file_record.extension or "").strip().lower().lstrip(".")
             if not ext_n or not self.is_supported_extension(ext_n):
@@ -239,9 +252,9 @@ class FileContentParser:
             file_record.block_containers = blocks
 
             try:
-                llm_context = file_record.to_llm_full_context()
+                llm_context = citations.render(file_record)
             except Exception as exc:
-                self._logger.exception("to_llm_full_context failed")
+                self._logger.exception("Rendering the file's context failed")
                 return (False, _error_list(f"Context build failed: {exc}"))
 
             try:
@@ -258,6 +271,7 @@ class FileContentParser:
                 return (False, _error_list(f"Token check failed: {exc}"))
 
             if is_within_limit:
+                citations.register(file_record)
                 return (True, llm_context)
             return (False, _error_list("Token limit exceeded"))
         except Exception as exc:
@@ -288,22 +302,22 @@ class FileContentParser:
         return await processor.create_blocks(conv_res)
 
     async def handle_doc(self, raw: bytes, file_name: str) -> BlocksContainer:
-        docx_stream = self._doc_parser.convert_doc_to_docx(raw)
+        docx_stream = await self._doc_parser.convert_doc_to_docx_async(raw)
         docx_bytes = docx_stream.read()
         return await self.handle_docx(docx_bytes, file_name)
 
     async def handle_ppt(self, raw: bytes, file_name: str) -> BlocksContainer:
-        pptx_bytes = self._ppt_parser.convert_ppt_to_pptx(raw)
+        pptx_bytes = await self._ppt_parser.convert_ppt_to_pptx_async(raw)
         return await self.handle_pptx(pptx_bytes, file_name)
 
     async def handle_xls(self, raw: bytes, file_name: str) -> BlocksContainer:
-        xlsx_bytes = self._xls_parser.convert_xls_to_xlsx(raw)
+        xlsx_bytes = await self._xls_parser.convert_xls_to_xlsx_async(raw)
         return await self.handle_xlsx(xlsx_bytes, file_name)
 
     async def handle_xlsx(self, raw: bytes, file_name: str) -> BlocksContainer:
         llm, _ = await get_llm_for_role(self._config, "indexing", reasoning_effort="low")
         excel = ExcelParser(self._logger, self._config)
-        excel.load_workbook_from_binary(raw)
+        await asyncio.to_thread(excel.load_workbook_from_binary, raw)
         return await excel.create_blocks(llm)
 
     async def handle_csv(self, raw: bytes, file_name: str) -> BlocksContainer:
@@ -355,7 +369,7 @@ class FileContentParser:
         modified_html, images = self._html_parser.extract_and_replace_images(html_content)
         urls_to_convert = [image["url"] for image in images]
         if urls_to_convert:
-            base64_urls = await self._image_parser.urls_to_base64(urls_to_convert)
+            base64_urls = await self._image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
             for i, image in enumerate(images):
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]
@@ -378,7 +392,7 @@ class FileContentParser:
         caption_map: dict[str, str] = {}
         urls_to_convert = [image["url"] for image in images]
         if urls_to_convert:
-            base64_urls = await self._image_parser.urls_to_base64(urls_to_convert)
+            base64_urls = await self._image_parser.urls_to_base64(urls_to_convert, allow_remote_fetch=True)
             for i, image in enumerate(images):
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]

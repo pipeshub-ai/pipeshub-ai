@@ -1,0 +1,97 @@
+{
+  "description": "A RunSpec pinned by the Node resolver (P1.2) for tests/modules/agent-harness/support/golden-run-spec.ts. Python must read it and compute the same specDigest (P-4). Regenerate only with a deliberate resolver change.",
+  "pinned": {
+    "spec": {
+      "schemaVersion": 2,
+      "harnessMajor": 2,
+      "foldVersion": 5,
+      "runKind": "interactive",
+      "principalRef": "p_user-1",
+      "model": {
+        "policy": [
+          {
+            "provider": "anthropic",
+            "model": "claude-x"
+          }
+        ],
+        "promptVersion": "pipeshub-agent-2026-09",
+        "reasoningEffort": "medium"
+      },
+      "grants": {
+        "tools": [
+          {
+            "toolId": "jira@inst-42/search_issues",
+            "descriptorDigest": "sha256:fdbf5f7bc57ea918d3e373fca784cc93f6333a092d340584477e622d56ae6a08"
+          },
+          {
+            "toolId": "mcp@mcp-9/list_prs",
+            "descriptorDigest": "sha256:3fb8976a44727ad7004290a5f14d2768b93783dda3cc5b69a0d7c4b3fe0defb2"
+          },
+          {
+            "toolId": "web@serper/web_search",
+            "descriptorDigest": "sha256:c453413bebe51e6a4f2463b716d18dca6cddce6f429aedf639ceda1c7d43a964"
+          }
+        ],
+        "sandboxProfile": "none",
+        "egress": "none"
+      },
+      "budgets": {
+        "maxTurns": 15,
+        "maxTokens": 1000000,
+        "maxCostUsd": 5,
+        "maxChildren": 0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2026-10-01T12:00:00.000Z"
+      },
+      "capabilitiesDigest": "sha256:e5effe383d3c0278463ad885854012d09c2d44c8fdee3d622bc761e394749933",
+      "extensions": {
+        "x.pipeshub": {
+          "agent": {
+            "agentKey": "agent-1",
+            "definitionVersion": 7,
+            "mode": "react"
+          },
+          "model": {
+            "modelKey": "model-2",
+            "modelName": "claude-x"
+          },
+          "knowledge": {
+            "apps": [
+              "app-drive"
+            ],
+            "kb": [
+              "kb-1"
+            ],
+            "strictScope": true
+          },
+          "mcp": [
+            {
+              "instanceId": "mcp-9",
+              "manifestDigest": "sha256:f82bce4f53016e1527a1d693a8dc87f4854d389bcdd1157eeb62a06472561c48"
+            }
+          ],
+          "skills": [
+            {
+              "name": "xlsx",
+              "bundleDigest": "sha256:60120e5e125ee8715bfe17de4de8540124e6e4e1e2a30e3427f7ccfeb45b6a06"
+            }
+          ],
+          "mounts": [],
+          "via": "pat"
+        }
+      }
+    },
+    "specDigest": "sha256:5e73a17357e0557616cadae7885215b9228f6a702bc92322ecdc040604b0ecc3",
+    "capabilities": {
+      "journal.durable": true,
+      "livebus": "inproc",
+      "sandbox.isolation": "none",
+      "sandbox.egress": "none",
+      "mcp.stdio": "off",
+      "blob.cas.gc": false,
+      "triggers.always_on": false,
+      "workers.dispatched": false
+    },
+    "capabilitiesDigest": "sha256:e5effe383d3c0278463ad885854012d09c2d44c8fdee3d622bc761e394749933"
+  }
+}

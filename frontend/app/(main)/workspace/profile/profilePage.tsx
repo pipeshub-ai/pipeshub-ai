@@ -27,6 +27,14 @@ export default function ProfilePage() {
     avatarInputRef,
     userId,
     changePasswordOpen,
+    hasPassword,
+    passwordStatusFailed,
+    retryPasswordStatus,
+    settingPassword,
+    setPasswordDialogOpen,
+    setSetPasswordDialogOpen,
+    handleSetPasswordClick,
+    handleSetPasswordConfirm,
     setChangePasswordOpen,
     changeEmailOpen,
     setChangeEmailOpen,
@@ -83,7 +91,7 @@ export default function ProfilePage() {
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.profile.title')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--gray-11)', marginTop: 'var(--space-1)', display: 'block' }}>
             {t('workspace.profile.subtitle')}
           </Text>
         </Box>
@@ -123,6 +131,10 @@ export default function ProfilePage() {
         <Box style={{ marginBottom: 80 }}>
           <PasswordSecuritySection
             onChangePasswordClick={() => setChangePasswordOpen(true)}
+            hasPassword={hasPassword}
+            statusFailed={passwordStatusFailed}
+            onRetryStatus={retryPasswordStatus}
+            onSetPasswordClick={handleSetPasswordClick}
           />
         </Box>
       </SettingsPageContainer>
@@ -132,6 +144,18 @@ export default function ProfilePage() {
         open={changePasswordOpen}
         onOpenChange={setChangePasswordOpen}
         onSuccess={handlePasswordChangeSuccess}
+      />
+
+      {/* ── Set Password Confirmation Dialog ── */}
+      <ConfirmationDialog
+        open={setPasswordDialogOpen}
+        onOpenChange={setSetPasswordDialogOpen}
+        title={t('workspace.profile.passwordSecurity.setPasswordDialogTitle')}
+        message={t('workspace.profile.passwordSecurity.setPasswordDialogMessage')}
+        confirmLabel={t('workspace.profile.passwordSecurity.setPasswordDialogConfirm')}
+        confirmVariant="primary"
+        isLoading={settingPassword}
+        onConfirm={handleSetPasswordConfirm}
       />
 
       {/* ── Change Email Dialog ── */}

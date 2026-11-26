@@ -1,0 +1,398 @@
+{
+  "info": {
+    "id": "ses_001",
+    "slug": "jolly-eagle",
+    "projectID": "<SHA1>",
+    "directory": "/workspace",
+    "path": "",
+    "title": "resume-src",
+    "agent": "pipeshub",
+    "model": {
+      "id": "fake-model",
+      "providerID": "pipeshub",
+      "variant": "default"
+    },
+    "version": "1.18.34",
+    "summary": {
+      "additions": 0,
+      "deletions": 0,
+      "files": 0
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 40,
+      "output": 20,
+      "reasoning": 0,
+      "cache": {
+        "read": 0,
+        "write": 0
+      }
+    },
+    "time": {
+      "created": 1790938453748,
+      "updated": 1790938494546
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1790938454087
+        },
+        "agent": "pipeshub",
+        "model": {
+          "providerID": "pipeshub",
+          "modelID": "fake-model"
+        },
+        "id": "msg_001",
+        "sessionID": "ses_001"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "first turn",
+          "id": "prt_001",
+          "sessionID": "ses_001",
+          "messageID": "msg_001"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_001",
+        "role": "assistant",
+        "mode": "pipeshub",
+        "agent": "pipeshub",
+        "path": {
+          "cwd": "/workspace",
+          "root": "/workspace"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 15,
+          "input": 10,
+          "output": 5,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        "modelID": "fake-model",
+        "providerID": "pipeshub",
+        "time": {
+          "created": 1790938456970,
+          "completed": 1790938460748
+        },
+        "finish": "stop",
+        "id": "msg_002",
+        "sessionID": "ses_001"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_002",
+          "sessionID": "ses_001",
+          "messageID": "msg_002"
+        },
+        {
+          "type": "text",
+          "text": "ok",
+          "time": {
+            "start": 1790938460683,
+            "end": 1790938460703
+          },
+          "id": "prt_003",
+          "sessionID": "ses_001",
+          "messageID": "msg_002"
+        },
+        {
+          "reason": "stop",
+          "type": "step-finish",
+          "tokens": {
+            "total": 15,
+            "input": 10,
+            "output": 5,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 0
+            }
+          },
+          "cost": 0,
+          "id": "prt_004",
+          "sessionID": "ses_001",
+          "messageID": "msg_002"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1790938460992
+        },
+        "agent": "pipeshub",
+        "model": {
+          "providerID": "pipeshub",
+          "modelID": "fake-model"
+        },
+        "id": "msg_003",
+        "sessionID": "ses_001"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "CALLTOOL:pipeshub_pipeshub_search:{\"query\":\"turn two\"}",
+          "id": "prt_005",
+          "sessionID": "ses_001",
+          "messageID": "msg_003"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_003",
+        "role": "assistant",
+        "mode": "pipeshub",
+        "agent": "pipeshub",
+        "path": {
+          "cwd": "/workspace",
+          "root": "/workspace"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 15,
+          "input": 10,
+          "output": 5,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        "modelID": "fake-model",
+        "providerID": "pipeshub",
+        "time": {
+          "created": 1790938461034,
+          "completed": 1790938461208
+        },
+        "finish": "tool-calls",
+        "id": "msg_004",
+        "sessionID": "ses_001"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_006",
+          "sessionID": "ses_001",
+          "messageID": "msg_004"
+        },
+        {
+          "type": "tool",
+          "tool": "pipeshub_pipeshub_search",
+          "callID": "call_1",
+          "state": {
+            "status": "completed",
+            "input": {
+              "query": "turn two"
+            },
+            "output": "RESULT for pipeshub_search {\"query\": \"turn two\"}",
+            "metadata": {
+              "truncated": false
+            },
+            "title": "",
+            "time": {
+              "start": 1790938461157,
+              "end": 1790938461181
+            }
+          },
+          "id": "prt_007",
+          "sessionID": "ses_001",
+          "messageID": "msg_004"
+        },
+        {
+          "reason": "tool-calls",
+          "type": "step-finish",
+          "tokens": {
+            "total": 15,
+            "input": 10,
+            "output": 5,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 0
+            }
+          },
+          "cost": 0,
+          "id": "prt_008",
+          "sessionID": "ses_001",
+          "messageID": "msg_004"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_003",
+        "role": "assistant",
+        "mode": "pipeshub",
+        "agent": "pipeshub",
+        "path": {
+          "cwd": "/workspace",
+          "root": "/workspace"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 15,
+          "input": 10,
+          "output": 5,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        "modelID": "fake-model",
+        "providerID": "pipeshub",
+        "time": {
+          "created": 1790938461216,
+          "completed": 1790938461344
+        },
+        "finish": "stop",
+        "id": "msg_005",
+        "sessionID": "ses_001"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_009",
+          "sessionID": "ses_001",
+          "messageID": "msg_005"
+        },
+        {
+          "type": "text",
+          "text": "DONE:RESULT for pipeshub_search {\"query\": \"turn two\"}",
+          "time": {
+            "start": 1790938461309,
+            "end": 1790938461318
+          },
+          "id": "prt_010",
+          "sessionID": "ses_001",
+          "messageID": "msg_005"
+        },
+        {
+          "reason": "stop",
+          "type": "step-finish",
+          "tokens": {
+            "total": 15,
+            "input": 10,
+            "output": 5,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 0
+            }
+          },
+          "cost": 0,
+          "id": "prt_011",
+          "sessionID": "ses_001",
+          "messageID": "msg_005"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1790938486511
+        },
+        "agent": "pipeshub",
+        "model": {
+          "providerID": "pipeshub",
+          "modelID": "fake-model"
+        },
+        "id": "msg_006",
+        "sessionID": "ses_001"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "after restore",
+          "id": "prt_012",
+          "sessionID": "ses_001",
+          "messageID": "msg_006"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_006",
+        "role": "assistant",
+        "mode": "pipeshub",
+        "agent": "pipeshub",
+        "path": {
+          "cwd": "/workspace",
+          "root": "/workspace"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 15,
+          "input": 10,
+          "output": 5,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        "modelID": "fake-model",
+        "providerID": "pipeshub",
+        "time": {
+          "created": 1790938492423,
+          "completed": 1790938494533
+        },
+        "finish": "stop",
+        "id": "msg_007",
+        "sessionID": "ses_001"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_013",
+          "sessionID": "ses_001",
+          "messageID": "msg_007"
+        },
+        {
+          "type": "text",
+          "text": "ok",
+          "time": {
+            "start": 1790938494484,
+            "end": 1790938494500
+          },
+          "id": "prt_014",
+          "sessionID": "ses_001",
+          "messageID": "msg_007"
+        },
+        {
+          "reason": "stop",
+          "type": "step-finish",
+          "tokens": {
+            "total": 15,
+            "input": 10,
+            "output": 5,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 0
+            }
+          },
+          "cost": 0,
+          "id": "prt_015",
+          "sessionID": "ses_001",
+          "messageID": "msg_007"
+        }
+      ]
+    }
+  ]
+}

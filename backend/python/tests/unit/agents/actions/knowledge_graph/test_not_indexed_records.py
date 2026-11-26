@@ -12,6 +12,7 @@ still answers like a missing one.
 """
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -43,6 +44,7 @@ from app.utils.fetch_full_record import (
     UNAVAILABLE,
     _fetch_multiple_records_impl,
 )
+from tests.support.record_access import InMemoryRecordAccess
 
 PR_ID = "6c1d3a52-2f0e-4c8e-9d7a-3b5f0e1a2c44"
 PR_URL = "https://github.com/acme/app/pull/3758"
@@ -92,9 +94,8 @@ def _typed_pr() -> PullRequestRecord:
 def _graph(*, access: bool = True, status: str = OFF, typed: Any = None) -> MagicMock:  # noqa: ANN401
     graph = MagicMock()
     graph.config_service = None
-    graph.check_record_access_with_details = AsyncMock(return_value={"_key": PR_ID} if access else None)
-    graph.get_user_by_user_id = AsyncMock(return_value={"_key": "user-1"})
-    graph.check_access = AsyncMock(return_value=SimpleNamespace(node_ids={PR_ID} if access else set()))
+    records = InMemoryRecordAccess().user("user-1", "org-1")
+    (records.readable("user-1", "org-1", PR_ID) if access else records).serve(graph)
     graph.get_document = AsyncMock(return_value=_doc(status))
     graph.get_record_by_id = AsyncMock(return_value=typed)
     return graph
@@ -169,6 +170,7 @@ class TestHttpRecordContent:
         request.state.user = {"userId": "user-1", "orgId": "org-1"}
         request.app.container.logger.return_value = MagicMock()
         request.app.container.config_service.return_value = MagicMock()
+        request.app.container.redis_provider = AsyncMock(return_value=None)
         return request
 
     async def _content(self, graph: MagicMock) -> dict[str, Any]:
@@ -206,13 +208,35 @@ class TestHttpRecordContent:
         assert shown > FETCH_MAX_CHARS - 500
         assert f"showed {shown} of {FETCH_MAX_CHARS * 3} characters" in body["content"]
 
+    async def test_a_record_being_prepared_is_described_and_marked(self) -> None:
+        graph = _graph(typed=_typed_pr())
+        fetch = AsyncMock(return_value={
+            "ok": False,
+            "not_indexed_records": {PR_ID: {"status": "QUEUED", "context": "Record ID: x", "preparing": "waiting"}},
+        })
+        with patch.object(connector_router, "_fetch_multiple_records_impl", fetch):
+            body = await self._content(graph)
+
+        assert body["preparing"] is True and "Content being prepared" in body["content"]
+
+    async def test_the_fetch_asks_through_the_containers_producer(self) -> None:
+        graph = _graph(status=ProgressStatus.COMPLETED.value)
+        request = self._request()
+        fetch = AsyncMock(return_value={"ok": False})
+        with patch.object(connector_router, "_fetch_multiple_records_impl", fetch), \
+                patch("app.utils.fetch_full_record.BlobStorage", MagicMock()):
+            await connector_router.get_record_content(record_id=PR_ID, request=request, graph_provider=graph)
+
+        assert fetch.await_args.kwargs["parse_now"]._producer is request.app.container.messaging_producer
+
     async def test_access_is_one_check_that_the_fetch_reuses(self) -> None:
         graph = _graph(status=ProgressStatus.COMPLETED.value)
         fetch = AsyncMock(return_value={"ok": False})
         with patch.object(connector_router, "_fetch_multiple_records_impl", fetch):
             await self._content(graph)
 
-        graph.check_record_access_with_details.assert_not_called()
+        # The shared fake records every access question it answers, whichever method asked it: one, once.
+        assert graph.check_access.__self__.asked_about == [("user-1", "org-1", PR_ID)]
         assert fetch.await_args.kwargs["accessible"] == {PR_ID}
 
     async def test_a_record_the_caller_may_not_read_is_still_refused(self) -> None:
@@ -287,8 +311,117 @@ class TestFetchRecordTool:
                 context=_context(graph), virtual_records={}, citation_ref_mapper=None, record_ids=[PR_ID],
             )
 
-        assert "(status: QUEUED)" in output.error
-        assert "asking again shortly may work" in output.error
+        # KN-09: a pending record is the typed index_not_ready answer, not a failure; its note is unchanged.
+        assert output.success is True
+        message = json.loads(output.data)["message"]
+        assert "(status: QUEUED)" in message
+        assert "asking again shortly may work" in message
+
+
+class TestFetchRecordToolParsesOnDemand:
+    @staticmethod
+    def _asking(graph: MagicMock) -> tuple[SimpleNamespace, MagicMock]:
+        config = MagicMock()
+        config.get_config = AsyncMock(return_value={})
+        context = _context(graph)
+        context.config_service = config
+        sender = MagicMock()
+        sender.send_message = AsyncMock(return_value=True)
+        return context, sender
+
+    @staticmethod
+    def _quick(wait: float):  # noqa: ANN205
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        stack.enter_context(patch("app.utils.fetch_full_record._POLL_STEPS", (0.01,)))
+        stack.enter_context(patch("app.utils.fetch_full_record._POLL_THEN_EVERY", 0.01))
+        stack.enter_context(patch("app.utils.fetch_full_record.parse_now_wait_seconds", AsyncMock(return_value=wait)))
+        stack.enter_context(patch("app.utils.fetch_full_record.BlobStorage", MagicMock()))
+        return stack
+
+    async def test_a_record_that_is_not_ready_in_time_says_it_is_being_prepared(self) -> None:
+        graph = _graph(status=ProgressStatus.QUEUED.value, typed=None)
+        context, sender = self._asking(graph)
+
+        with self._quick(0.05), patch("app.modules.pipeline.parse_now._get_producer", AsyncMock(return_value=sender)):
+            output, _ = await execute_fetch_record(
+                context=context, virtual_records={}, citation_ref_mapper=None, record_ids=[PR_ID],
+            )
+
+        sender.send_message.assert_awaited_once()
+        assert output.success is False
+        assert "being prepared" in output.error and "Content being prepared" in output.error
+        assert f"Name: {PR_NAME}" in output.error
+        assert "stays unindexed" not in output.error
+
+    async def test_a_record_that_becomes_ready_is_read_with_citations(self) -> None:
+        queued = _doc(ProgressStatus.QUEUED.value) | {"contentRev": "rev-1"}
+        ready = queued | {"parseNowStatus": "STORED", "parseNowRev": "rev-1"}
+        graph = _graph(status=ProgressStatus.QUEUED.value, typed=None)
+        graph.get_document = AsyncMock(side_effect=[queued, queued, ready])
+        context, sender = self._asking(graph)
+        content = {
+            "id": PR_ID, "record_name": PR_NAME, "virtual_record_id": "vr-pr", "record_type": "FILE",
+            "context_metadata": f"Record ID: {PR_ID}", "frontend_url": "http://x",
+            "block_containers": {
+                "blocks": [{"index": 0, "type": "text", "parent_index": None, "data": "Retry webhook deliveries"}],
+                "block_groups": [],
+            },
+        }
+
+        async def fake_get_record(vrid, mapping, *_a, **_kw) -> None:
+            mapping[vrid] = content
+
+        with self._quick(1), patch("app.modules.pipeline.parse_now._get_producer", AsyncMock(return_value=sender)), \
+                patch("app.utils.fetch_full_record.get_record", side_effect=fake_get_record):
+            output, _ = await execute_fetch_record(
+                context=context, virtual_records={}, citation_ref_mapper=None, record_ids=[PR_ID],
+            )
+
+        assert output.success is True
+        assert "Retry webhook deliveries" in output.data and "[ref" in output.data
+        assert "being prepared" not in output.data
+
+    async def test_a_failed_publish_is_todays_text(self) -> None:
+        graph = _graph(status=ProgressStatus.QUEUED.value, typed=None)
+        context, sender = self._asking(graph)
+        sender.send_message = AsyncMock(return_value=False)
+
+        with self._quick(0.05), patch("app.modules.pipeline.parse_now._get_producer", AsyncMock(return_value=sender)):
+            output, _ = await execute_fetch_record(
+                context=context, virtual_records={}, citation_ref_mapper=None, record_ids=[PR_ID],
+            )
+
+        # No parse could start, so the record reads as today's not-indexed one. The harness answers that as its typed
+        # index-not-ready outcome (WP-100 KN-09), whose message carries the same words.
+        assert output.success is True and '"status": "index_not_ready"' in output.data
+        assert "asking again shortly may work" in output.data and "being prepared" not in output.data
+
+    @pytest.mark.parametrize(("start_block", "wired"), [(0, True), (40, False)])
+    async def test_only_the_first_page_can_start_a_parse(self, start_block: int, wired: bool) -> None:
+        context, _ = self._asking(_graph())
+        tool = MagicMock()
+        tool.coroutine = AsyncMock(return_value={"ok": False, "not_available_ids": []})
+
+        with patch("app.utils.fetch_full_record.create_fetch_full_record_tool", return_value=tool) as create:
+            await execute_fetch_record(
+                context=context, virtual_records={}, citation_ref_mapper=None, record_ids=[PR_ID],
+                start_block=start_block,
+            )
+
+        assert (create.call_args.kwargs["parse_now"] is not None) is wired
+
+    async def test_without_a_configuration_service_nothing_is_asked(self) -> None:
+        tool = MagicMock()
+        tool.coroutine = AsyncMock(return_value={"ok": False, "not_available_ids": []})
+
+        with patch("app.utils.fetch_full_record.create_fetch_full_record_tool", return_value=tool) as create:
+            await execute_fetch_record(
+                context=_context(_graph()), virtual_records={}, citation_ref_mapper=None, record_ids=[PR_ID],
+            )
+
+        assert create.call_args.kwargs["parse_now"] is None
 
 
 # --- Lookup by identifier and navigate ------------------------------------------

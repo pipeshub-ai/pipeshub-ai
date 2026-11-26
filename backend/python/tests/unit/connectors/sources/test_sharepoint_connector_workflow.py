@@ -18,6 +18,7 @@ from app.config.constants.arangodb import (
     MimeTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     FilterCollection,
 )
@@ -47,6 +48,7 @@ def _make_mock_deps():
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-sp-1"
     data_entities_processor.on_new_app_users = AsyncMock()
+    data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
@@ -303,14 +305,14 @@ class TestSharePointConnectorInit:
     async def test_init_missing_credentials_raises(self):
         connector, dep, dsp, cs, tx = _make_connector()
         cs.get_config = AsyncMock(return_value=None)
-        with pytest.raises(ValueError, match="credentials not found"):
+        with pytest.raises(ConnectorInitError, match="credentials not found"):
             await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_missing_auth_block_raises(self):
         connector, dep, dsp, cs, tx = _make_connector()
         cs.get_config = AsyncMock(return_value={"auth": {}})
-        with pytest.raises(ValueError, match="credentials not found"):
+        with pytest.raises(ConnectorInitError, match="credentials not found"):
             await connector.init()
 
     @pytest.mark.asyncio
@@ -323,7 +325,7 @@ class TestSharePointConnectorInit:
                 # missing sharepointDomain
             }
         })
-        with pytest.raises(ValueError, match="Incomplete"):
+        with pytest.raises(ConnectorInitError, match="Incomplete"):
             await connector.init()
 
     @pytest.mark.asyncio
@@ -337,7 +339,7 @@ class TestSharePointConnectorInit:
                 # no clientSecret, no certificate
             }
         })
-        with pytest.raises(ValueError, match="Authentication credentials missing"):
+        with pytest.raises(ConnectorInitError, match="Authentication credentials missing"):
             await connector.init()
 
     @pytest.mark.asyncio
@@ -1060,7 +1062,7 @@ class TestSharePointFullSync:
         connector.client_secret = "s"
         connector.client = MagicMock()
         connector.msgraph_client = MagicMock()
-        connector.msgraph_client.get_all_users = AsyncMock(return_value=[])
+        connector._sync_users = AsyncMock()  # the users are not what this run test is about
         connector.user_sync_point = MagicMock()
         connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
         _mock_container_sync_point(connector)

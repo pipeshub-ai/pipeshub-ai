@@ -24,6 +24,7 @@ import pytest
 
 from app.services.messaging.config import RedisStreamsConfig
 from app.services.messaging.redis_streams.indexing_consumer import (
+    _REFRESH_OWN_SCRIPT,
     IndexingRedisStreamsConsumer,
 )
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
@@ -354,7 +355,9 @@ class TestHeldEntriesAreNotReclaimed:
 
     async def test_ownership_refresh_uses_justid(self, logger, config):
         """JUSTID resets the idle timer without incrementing the delivery
-        counter -- the whole point of refreshing rather than re-claiming."""
+        counter -- the whole point of refreshing rather than re-claiming.
+        Only for entries still pending under this consumer: one a peer
+        claimed is not taken back."""
         consumer = self._consumer(logger, config)
         await consumer._IndexingRedisStreamsConsumer__enqueue_message(
             "record-events", "0-0", _fields()
@@ -363,10 +366,13 @@ class TestHeldEntriesAreNotReclaimed:
 
         await consumer._IndexingRedisStreamsConsumer__refresh_held_ownership()
 
-        _args, kwargs = consumer.redis.xclaim.call_args
-        assert kwargs["justid"] is True
-        assert kwargs["message_ids"] == ["0-0"]
-        assert kwargs["min_idle_time"] == 0
+        script, numkeys, stream, group, name, body_check, *ids = consumer.redis.eval.call_args.args
+        assert script == _REFRESH_OWN_SCRIPT
+        assert "'JUSTID'" in script and "entry[2] == ARGV[2]" in script
+        # A held entry is being worked on: its body is not checked.
+        assert (numkeys, stream, group, name, body_check, ids) == (
+            1, "record-events", consumer.config.group_id, consumer.consumer_name, "0", ["0-0"]
+        )
 
     async def test_refresh_is_rate_limited(self, logger, config):
         consumer = self._consumer(logger, config)
@@ -375,18 +381,18 @@ class TestHeldEntriesAreNotReclaimed:
         )
         consumer._last_ownership_refresh = 0.0
         await consumer._IndexingRedisStreamsConsumer__refresh_held_ownership()
-        consumer.redis.xclaim.reset_mock()
+        consumer.redis.eval.reset_mock()
 
         await consumer._IndexingRedisStreamsConsumer__refresh_held_ownership()
 
-        consumer.redis.xclaim.assert_not_called()
+        consumer.redis.eval.assert_not_called()
 
     async def test_a_failed_refresh_does_not_propagate(self, logger, config):
         consumer = self._consumer(logger, config)
         await consumer._IndexingRedisStreamsConsumer__enqueue_message(
             "record-events", "0-0", _fields()
         )
-        consumer.redis.xclaim = AsyncMock(side_effect=RuntimeError("down"))
+        consumer.redis.eval = AsyncMock(side_effect=RuntimeError("down"))
         consumer._last_ownership_refresh = 0.0
 
         await consumer._IndexingRedisStreamsConsumer__refresh_held_ownership()
@@ -571,7 +577,9 @@ class TestRecoveryClaimBudget:
 
         budget = consumer._IndexingRedisStreamsConsumer__recovery_claim_budget(100)
 
-        assert budget == 3
+        # Three places free, one of them (a quarter of the buffer) left for new
+        # events, so recovery never fills the buffer and stops reading.
+        assert budget == 2
 
     async def test_budget_is_zero_when_the_buffer_is_full(self, logger, config):
         consumer = _make_consumer(
@@ -635,6 +643,48 @@ class TestLaneStreamAdoption:
             "record-events.0",
             "record-events.1",
             "record-events.2",
+        ]
+
+    async def test_a_lane_subset_adopts_only_leftover_lanes(
+        self, logger, config, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("MESSAGE_BROKER", "redis")
+        monkeypatch.setenv("FAIR_SCHEDULING_LANE_COUNT", "8")
+        monkeypatch.setenv("INDEXING_CONSUME_LANES", "6-7")
+        consumer = self._consumer(
+            logger, config, ["record-events", "record-events.6", "record-events.7"]
+        )
+        consumer.redis.scan_iter = self._scan(
+            [f"record-events.{lane}" for lane in range(10)]
+        )
+        consumer.redis.type = AsyncMock(return_value="stream")
+
+        await consumer._IndexingRedisStreamsConsumer__adopt_existing_lane_streams()
+
+        assert consumer.config.topics == [
+            "record-events",
+            "record-events.6",
+            "record-events.7",
+            "record-events.8",
+            "record-events.9",
+        ]
+
+    async def test_a_lane_subset_leaves_other_topics_lanes_adopted(
+        self, logger, config, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("MESSAGE_BROKER", "redis")
+        monkeypatch.setenv("FAIR_SCHEDULING_LANE_COUNT", "8")
+        monkeypatch.setenv("INDEXING_CONSUME_LANES", "6-7")
+        consumer = self._consumer(logger, config, ["pipeline.classify"])
+        consumer.redis.scan_iter = self._scan(["pipeline.classify.0", "pipeline.classify.3"])
+        consumer.redis.type = AsyncMock(return_value="stream")
+
+        await consumer._IndexingRedisStreamsConsumer__adopt_existing_lane_streams()
+
+        assert consumer.config.topics == [
+            "pipeline.classify",
+            "pipeline.classify.0",
+            "pipeline.classify.3",
         ]
 
     async def test_ignores_keys_that_are_not_lane_streams(self, logger, config):

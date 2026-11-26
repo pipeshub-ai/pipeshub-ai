@@ -229,7 +229,8 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
   },
   'project:write': {
     name: 'project:write',
-    description: 'Create, update and share projects',
+    description:
+      'Create, update and share projects. Adding files to a project also needs kb:write',
     category: 'Projects',
     requiresUserConsent: true,
   },
@@ -270,6 +271,12 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
   'code:read': {
     name: 'code:read',
     description: 'Read indexed code repositories and their code graph',
+    category: 'Code',
+    requiresUserConsent: true,
+  },
+  'code:write': {
+    name: 'code:write',
+    description: 'Push local repositories to be indexed into the code graph',
     category: 'Code',
     requiresUserConsent: true,
   },
@@ -337,7 +344,12 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
   },
 };
 
-/** Scopes non–org-admin users cannot register on OAuth apps (org admins get all scopes). */
+/**
+ * Scopes non–org-admin users cannot register on OAuth apps (org admins get all scopes).
+ * `code:write` is not one: a pushed repository is indexed only into the pusher's own
+ * personal connector, and the device login app every user signs in with is cut to the
+ * scopes a member may hold.
+ */
 export const AdminOnlyScopes = new Set<string>([
   'org:write',
   'org:admin',
@@ -364,12 +376,20 @@ export const DefaultMcpScopes = [
   'kb:upload',
   'team:read',
   'user:read',
+  // No /mcp tool needs it, so discovery leaves it out (McpToolScopes). It
+  // stays in the cap so a client registered with it, and the tokens it holds,
+  // keep working.
   'usergroup:read',
   'config:read',
   'agent:read',
   'agent:execute',
   'connector:read',
+  'connector:write',
+  'connector:sync',
   'code:read',
+  'project:read',
+  'project:write',
+  'project:delete',
 ];
 
 /**
@@ -393,7 +413,13 @@ export const AgentMcpScopes = [
   'kb:upload',
   'user:read',
   'connector:read',
+  // Lets an agent add a web source (pipeshub_add_web_source): create the
+  // connector, save its start URL and start the crawl.
+  'connector:write',
+  'connector:sync',
   'code:read',
+  // Lets the CLI push a local repository to be indexed (pipeshub index).
+  'code:write',
 ] as const;
 
 /**
@@ -401,7 +427,9 @@ export const AgentMcpScopes = [
  * both in Node and in the Python service it forwards to, plus `offline_access`
  * so MCP clients get a refresh token. Clients such as Claude Code request
  * every scope in `scopes_supported`, so discovery advertises only these.
- * MCP_SCOPES stays the cap on what any token may hold.
+ * MCP_SCOPES stays the cap on personal access tokens, service tokens, dynamically
+ * registered clients and the device login app. An app registered in Developer
+ * settings is capped by its creator's role instead (`AdminOnlyScopes`).
  */
 export const McpToolScopes = [
   'offline_access',
@@ -415,10 +443,11 @@ export const McpToolScopes = [
   'kb:write',
   'kb:upload',
   'connector:read',
+  'connector:write',
+  'connector:sync',
   'config:read',
   'user:read',
   'team:read',
-  'usergroup:read',
   'code:read',
 ] as const;
 

@@ -22,6 +22,7 @@ to extend ``GitHubTeamsConnector``, overriding only the permission hooks on
 
 from __future__ import annotations
 
+import math
 from logging import Logger
 
 from fastapi.responses import StreamingResponse
@@ -75,11 +76,12 @@ from app.connectors.sources.github_teams.common.utils import (
     updated_since_filter_field,
 )
 from app.models.entities import Record
+from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.github.github import GitHubClient
 from app.sources.external.github.github_async import GitHubAsyncDataSource
 
 from .comments import CommentsHelper
-from .constants import HTTP_UNAUTHORIZED
+from .constants import HTTP_TOO_MANY_REQUESTS, HTTP_UNAUTHORIZED
 from .filters import FiltersHelper
 from .issue_reconciler import IssueReconciler
 from .issues import IssuesSync
@@ -94,6 +96,10 @@ from .users import UsersSync
 
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
+_SIGN_IN_REFUSED = (
+    "GitHub refused this connector's sign-in and it could not be refreshed. "
+    "Reconnect it, or replace its token, in the connector's settings."
+)
 
 
 @(
@@ -339,6 +345,21 @@ class GitHubTeamsConnector(BaseConnector):
                     f"GitHub rejected the credentials ({response.api_message or 'Bad credentials'}). "
                     "Reconnect this connector with a valid token."
                 )
+            if response.status_code == HTTP_TOO_MANY_REQUESTS:
+                # GitHub's limit is spent, or PipesHub is holding back the reserve it leaves for
+                # the account's other tools (refused before any request, so the token itself was
+                # not checked). "Verify your credentials" sent admins to rotate a working token.
+                wait = response.retry_after_seconds
+                when = (
+                    f"Try again in {math.ceil(wait / 60)} min or later."
+                    if wait
+                    else "GitHub gave no time to wait; try again in a few minutes, and wait longer if it fails again."
+                )
+                raise ConnectorInitError(
+                    "GitHub's API rate limit for this token is used up for now "
+                    f"({response.api_message or response.error}), so the credentials could not be checked. "
+                    f"This is not a sign they are wrong. {when}"
+                )
             return False
         except ConnectorInitError:
             raise
@@ -377,6 +398,7 @@ class GitHubTeamsConnector(BaseConnector):
 
     async def run_sync(self) -> None:
         """Run a full GitHub sync (users -> repos -> issues/PRs/code)."""
+        self.runtime.sign_in_refused = False
         try:
             self.record_sync_point.org_id = self.data_entities_processor.org_id
             await self.repos.timestamps.cancel()
@@ -398,7 +420,26 @@ class GitHubTeamsConnector(BaseConnector):
                 )
         except Exception as e:
             self.logger.error("Error in GitHub Teams sync: %s", e, exc_info=True)
+            await self._stop_if_sign_in_refused(e)
             raise
+
+    async def _stop_if_sign_in_refused(self, error: Exception) -> None:
+        """Raise the reconnect error, after telling the owner, when GitHub refused this run's sign-in."""
+        if self.runtime.sign_in_refused is True:
+            await self._tell_to_reconnect()
+            raise ConnectorInitError(_SIGN_IN_REFUSED) from error
+
+    async def _tell_to_reconnect(self) -> None:
+        self.logger.error("GitHub sync stopped: GitHub refused the sign-in and it could not be refreshed")
+        try:
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"{self.display_name}: needs to be reconnected",
+                message=_SIGN_IN_REFUSED,
+            )
+        except Exception as e:
+            self.logger.warning("The reconnect notice was not sent: %s", type(e).__name__)
 
     def full_sync_coverage(self) -> FullSyncCoverage:
         """An issue or pull request last updated before the "updated since" window is not

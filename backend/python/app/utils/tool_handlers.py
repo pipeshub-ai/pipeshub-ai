@@ -16,6 +16,9 @@ from typing import Any
 
 from app.utils.chat_helpers import generate_text_fragment_url
 from app.utils.citations import (
+    WEB_CITATION_STYLE,
+    WebCitationStyle,
+    citation_ref_for_llm,
     display_url_for_llm,
 )
 from app.utils.logger import create_logger
@@ -104,10 +107,18 @@ class RecordsHandler(ToolResultHandler):
     async def format_message(self, tool_result: dict[str, Any], context: dict[str, Any]) -> list[dict[str, Any]]:
         message_contents = context.get("message_contents", [])
         flattened = [msg for message_content in message_contents for msg in message_content]
-        not_available = tool_result.get("not_available_ids", {})
+        reasons = tool_result.get("unavailable_reasons") or {}
+        not_available = [rid for rid in tool_result.get("not_available_ids", {}) if reasons.get(rid) != "content_being_prepared"]
+        preparing = [rid for rid in tool_result.get("not_available_ids", {}) if reasons.get(rid) == "content_being_prepared"]
         if not_available:
             ids_str = ", ".join(f"'{rid}'" for rid in not_available)
             flattened.append({"type": "text", "text": f"\nNote: The following record(s) are not available: {ids_str}"})
+        if preparing:
+            ids_str = ", ".join(f"'{rid}'" for rid in preparing)
+            flattened.append({
+                "type": "text",
+                "text": f"\nNote: The content of the following record(s) is being prepared; ask again shortly: {ids_str}",
+            })
         return flattened
 
 
@@ -116,6 +127,39 @@ class RecordsHandler(ToolResultHandler):
 
     def needs_token_management(self) -> bool:
         return True
+
+
+def _separate_fields(context: dict[str, Any]) -> bool:
+    return context.get(WEB_CITATION_STYLE) == WebCitationStyle.SEPARATE
+
+
+# The two fields explained where they appear: an engine's task instructions are pinned to measured text (SR-17), and
+# a run that never reads the web pays nothing for this.
+SEPARATE_FIELDS_GUIDE = (
+    "Each url: is the page's real link: use it to open or fetch the page, to link it in a file, or to pass it to a "
+    "tool. Cite a block only in your answer, as [source](its Citation ID), for example [source](ref1)."
+)
+
+
+def _guide(context: dict[str, Any]) -> str:
+    return f"{SEPARATE_FIELDS_GUIDE}\n" if _separate_fields(context) else ""
+
+
+def _url_field(url: str) -> str:
+    # One line however the provider spelled it, so a link cannot add a field of its own.
+    return f"url: {defuse(''.join(url.split()))}"
+
+
+def _citation_lines(page_url: str | None, citation_url: str, context: dict[str, Any]) -> list[str]:
+    """How a web block names its link and its Citation ID (``WebCitationStyle``); ``page_url`` None when the
+    caller shows the page once for many blocks."""
+    ref_mapper = context.get("ref_mapper")
+    if not _separate_fields(context):
+        return [f"url/Citation ID: {display_url_for_llm(citation_url, ref_mapper)}"]
+    lines = [_url_field(page_url)] if page_url else []
+    ref = citation_ref_for_llm(citation_url, ref_mapper)
+    return lines + ([f"Citation ID: {ref}"] if ref else [])
+
 
 class WebSearchHandler(ToolResultHandler):
     """Handler for web search results."""
@@ -126,11 +170,10 @@ class WebSearchHandler(ToolResultHandler):
             web_results = []
 
         query = tool_result.get("query", "")
-        ref_mapper = context.get("ref_mapper")
 
         formatted_blocks = [{
             "type": "text",
-            "text": f"web_search_query: {query}\nBlocks retrieved from web search:\n{fence_open('web_search')}",
+            "text": f"web_search_query: {query}\nBlocks retrieved from web search:\n{_guide(context)}{fence_open('web_search')}",
         }]
 
         for result in web_results:
@@ -143,11 +186,10 @@ class WebSearchHandler(ToolResultHandler):
             citation_url = (
                 generate_text_fragment_url(link, snippet, SourceFormat.PLAIN) if snippet else link
             )
-            display_url = display_url_for_llm(citation_url, ref_mapper)
             lines = [f"title: {defuse(title)}", f"site: {result.get('domain') or display_domain(link)}"]
             if result.get("published"):
                 lines.append(f"published: {defuse(str(result['published']))}")
-            lines += [f"url/Citation ID: {display_url}", f"content: {defuse(snippet)}"]
+            lines += [*_citation_lines(link, citation_url, context), f"content: {defuse(snippet)}"]
             formatted_blocks.append({"type": "text", "text": "\n".join(lines)})
 
         formatted_blocks.append({"type": "text", "text": FENCE_CLOSE})
@@ -204,13 +246,13 @@ class UrlContentHandler(ToolResultHandler):
         # Only text reaches the model: a tool message carries text alone, so image blocks
         # (from older stored results) are skipped rather than downloaded and dropped.
         url = tool_result.get("url", "")
-        ref_mapper = context.get("ref_mapper")
-        formatted_blocks = [{"type": "text", "text": f"Blocks of content from the URL:\n{fence_open(display_domain(url))}"}]
+        page = f"{_guide(context)}{_url_field(url)}\n" if _separate_fields(context) and url else ""
+        formatted_blocks = [{"type": "text", "text": f"Blocks of content from the URL:\n{page}{fence_open(display_domain(url))}"}]
         for block in _text_blocks(tool_result):
-            display_url = display_url_for_llm(_block_citation_url(url, block), ref_mapper)
+            lines = _citation_lines(None, _block_citation_url(url, block), context)
             formatted_blocks.append({
                 "type": "text",
-                "text": f"url/Citation ID: {display_url}\ncontent: {defuse(_block_attr(block, 'content', ''))}",
+                "text": "\n".join([*lines, f"content: {defuse(_block_attr(block, 'content', ''))}"]),
             })
         formatted_blocks.append({"type": "text", "text": FENCE_CLOSE})
         return formatted_blocks

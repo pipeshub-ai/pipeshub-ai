@@ -432,6 +432,134 @@ class TestGCSRecordGroupsForBuckets:
 
 
 # ===========================================================================
+# Full sync coverage
+# ===========================================================================
+class TestGCSFullSyncCoverage:
+    @pytest.fixture()
+    def listing_connector(self, gcs_connector: GCSConnector) -> GCSConnector:
+        gcs_connector.data_source = MagicMock()
+        gcs_connector.data_source.list_buckets = AsyncMock(
+            return_value=_make_response(True, {"Buckets": [{"name": "b1"}, {"name": "b2"}]})
+        )
+        gcs_connector._create_record_groups_for_buckets = AsyncMock()
+        gcs_connector._sync_bucket = AsyncMock()
+        return gcs_connector
+
+    @patch("app.connectors.sources.google_cloud_storage.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_full_sync_with_no_errors_reports_complete(self, mock_filters, listing_connector) -> None:
+        from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        await listing_connector.run_sync()
+        coverage = listing_connector.full_sync_coverage()
+        assert isinstance(coverage, FullSyncCoverage)
+        assert coverage.complete is True
+
+    @patch("app.connectors.sources.google_cloud_storage.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_run_sync_resets_the_incomplete_flag(self, mock_filters, listing_connector) -> None:
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        listing_connector._sync_incomplete = True
+        await listing_connector.run_sync()
+        assert listing_connector.full_sync_coverage().complete is True
+
+    @patch("app.connectors.sources.google_cloud_storage.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_bucket_that_raises_makes_the_sync_incomplete(self, mock_filters, listing_connector) -> None:
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        listing_connector._sync_bucket = AsyncMock(side_effect=[RuntimeError("boom"), None])
+        await listing_connector.run_sync()
+        assert listing_connector._sync_bucket.await_count == 2
+        assert listing_connector.full_sync_coverage().complete is False
+
+    @patch("app.connectors.sources.google_cloud_storage.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_failed_bucket_list_makes_the_sync_incomplete(self, mock_filters, listing_connector) -> None:
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        listing_connector.data_source.list_buckets = AsyncMock(
+            return_value=_make_response(False, error="Access denied")
+        )
+        await listing_connector.run_sync()
+        assert listing_connector.full_sync_coverage().complete is False
+
+    async def test_a_bucket_group_lock_timeout_that_recovers_keeps_the_sync_complete(self, gcs_connector) -> None:
+        gcs_connector.scope = ConnectorScope.TEAM.value
+        gcs_connector.data_entities_processor.on_new_record_groups = AsyncMock(
+            side_effect=[Exception("timeout waiting to lock"), None]
+        )
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await gcs_connector._create_record_groups_for_buckets(["b"])
+        assert gcs_connector._sync_incomplete is False
+
+    async def test_a_bucket_group_that_cannot_be_saved_makes_the_sync_incomplete(self, gcs_connector) -> None:
+        gcs_connector.scope = ConnectorScope.TEAM.value
+        gcs_connector.data_entities_processor.on_new_record_groups = AsyncMock(side_effect=RuntimeError("boom"))
+        await gcs_connector._create_record_groups_for_buckets(["b"])
+        assert gcs_connector._sync_incomplete is True
+
+    @staticmethod
+    def _list_one_object(connector: GCSConnector, key: str) -> None:
+        connector.data_source = MagicMock()
+        connector.data_source.list_blobs = AsyncMock(return_value=_make_response(True, {
+            "Contents": [{"Key": key, "LastModified": "2025-06-01T00:00:00Z", "Size": 1}],
+            "IsTruncated": False,
+        }))
+        connector.record_sync_point = MagicMock()
+        connector.record_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.record_sync_point.update_sync_point = AsyncMock()
+        connector._ensure_parent_folders_exist = AsyncMock()
+        connector._process_records_with_retry = AsyncMock()
+
+    async def _sync_prefix(self, connector: GCSConnector, recorded: dict[str, str]) -> bool:
+        from app.connectors.core.registry.folder_scope import FolderScope
+
+        _, complete = await connector._sync_bucket_prefix("b", "", FolderScope(), recorded, [])
+        return complete
+
+    async def test_a_stored_object_that_fails_keeps_its_record(self, gcs_connector) -> None:
+        self._list_one_object(gcs_connector, "k.txt")
+        gcs_connector._process_gcs_object = AsyncMock(return_value=(None, []))
+        gcs_connector.data_entities_processor.note_kept_records = MagicMock()
+
+        assert await self._sync_prefix(gcs_connector, {"b/k.txt": "rec-1"}) is True
+        assert gcs_connector._sync_incomplete is False
+        gcs_connector.data_entities_processor.note_kept_records.assert_called_once_with("gcs-conn-1", ["rec-1"])
+
+    async def test_a_stored_object_that_raises_keeps_its_record(self, gcs_connector) -> None:
+        self._list_one_object(gcs_connector, "k.txt")
+        gcs_connector._process_gcs_object = AsyncMock(side_effect=RuntimeError("boom"))
+        gcs_connector.data_entities_processor.note_kept_records = MagicMock()
+
+        await self._sync_prefix(gcs_connector, {"b/k.txt": "rec-1"})
+        assert gcs_connector._sync_incomplete is False
+        gcs_connector.data_entities_processor.note_kept_records.assert_called_once_with("gcs-conn-1", ["rec-1"])
+
+    async def test_a_new_object_that_fails_leaves_the_sync_complete(self, gcs_connector) -> None:
+        self._list_one_object(gcs_connector, "k.txt")
+        gcs_connector._process_gcs_object = AsyncMock(return_value=(None, []))
+        gcs_connector.data_entities_processor.note_kept_records = MagicMock()
+
+        await self._sync_prefix(gcs_connector, {})
+        assert gcs_connector._sync_incomplete is False
+        gcs_connector.data_entities_processor.note_kept_records.assert_not_called()
+
+    async def test_an_object_whose_folder_write_raises_makes_the_sync_incomplete(self, gcs_connector) -> None:
+        self._list_one_object(gcs_connector, "d/k.txt")
+        gcs_connector._ensure_parent_folders_exist = AsyncMock(side_effect=RuntimeError("boom"))
+        gcs_connector._process_gcs_object = AsyncMock(return_value=(MagicMock(), []))
+
+        await self._sync_prefix(gcs_connector, {})
+        assert gcs_connector._sync_incomplete is True
+
+    async def test_a_batch_that_fails_to_save_mid_listing_makes_the_sync_incomplete(self, gcs_connector) -> None:
+        self._list_one_object(gcs_connector, "k.txt")
+        gcs_connector.batch_size = 1
+        gcs_connector._process_gcs_object = AsyncMock(return_value=(MagicMock(), []))
+        gcs_connector._process_records_with_retry = AsyncMock(side_effect=RuntimeError("boom"))
+
+        # The unsaved batch is retried after the listing, and that failure is raised.
+        with pytest.raises(RuntimeError, match="boom"):
+            await self._sync_prefix(gcs_connector, {"b/k.txt": "rec-1"})
+        assert gcs_connector._sync_incomplete is True
+
+
+# ===========================================================================
 # Process records with retry
 # ===========================================================================
 class TestGCSProcessRecordsRetry:
@@ -452,6 +580,31 @@ class TestGCSProcessRecordsRetry:
         )
         with pytest.raises(Exception, match="Some other error"):
             await gcs_connector._process_records_with_retry([(MagicMock(), [])])
+
+    async def test_a_moved_record_is_saved_as_a_move(self, gcs_connector) -> None:
+        """on_new_records finds no record at the new key, so the stored content
+        would stay at the old path."""
+        gcs_connector.data_entities_processor.on_records_moved = AsyncMock()
+        moved = MagicMock(id="r1", external_record_id="bucket/new/a.txt")
+        new = MagicMock(id="r2", external_record_id="bucket/b.txt")
+        gcs_connector._moved_record_ids = {"r1": "bucket/old/a.txt"}
+
+        await gcs_connector._process_records_with_retry([(moved, ["p1"]), (new, [])])
+
+        gcs_connector.data_entities_processor.on_records_moved.assert_awaited_once_with(
+            [("bucket/old/a.txt", moved, ["p1"])]
+        )
+        gcs_connector.data_entities_processor.on_new_records.assert_awaited_once_with([(new, [])])
+
+    async def test_a_batch_of_moves_only_saves_no_new_records(self, gcs_connector) -> None:
+        gcs_connector.data_entities_processor.on_records_moved = AsyncMock()
+        moved = MagicMock(id="r1", external_record_id="bucket/new/a.txt")
+        gcs_connector._moved_record_ids = {"r1": "bucket/old/a.txt"}
+
+        await gcs_connector._process_records_with_retry([(moved, [])])
+
+        gcs_connector.data_entities_processor.on_records_moved.assert_awaited_once()
+        gcs_connector.data_entities_processor.on_new_records.assert_not_awaited()
 
 
 # ===========================================================================

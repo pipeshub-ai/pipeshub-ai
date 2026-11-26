@@ -11,6 +11,7 @@ import {
 import { OAuthAccessToken } from '../../../../src/modules/oauth_provider/schema/oauth.access_token.schema'
 import { OAuthRefreshToken } from '../../../../src/modules/oauth_provider/schema/oauth.refresh_token.schema'
 import { InvalidGrantError } from '../../../../src/libs/errors/oauth.errors'
+import { createSnakeCaseLogKeyGuard } from '../../../helpers/mock-logger'
 
 describe('AuthorizationCodeService', () => {
   let service: AuthorizationCodeService
@@ -26,7 +27,11 @@ describe('AuthorizationCodeService', () => {
     service = new AuthorizationCodeService(mockLogger)
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -56,10 +61,9 @@ describe('AuthorizationCodeService', () => {
       )
       expect((createStub.firstCall.args[0] as any).knowledgeLimit).to.deep.equal(knowledgeLimit)
 
-      const consume = sinon.stub(AuthorizationCode, 'findOneAndUpdate').resolves({} as any)
-
+      sinon.stub(AuthorizationCode, 'updateOne').resolves({ modifiedCount: 1 } as any)
       sinon.stub(AuthorizationCode, 'findOne').resolves({
-        _id: new Types.ObjectId(), userId: new Types.ObjectId(), orgId: new Types.ObjectId(),
+        _id: new Types.ObjectId(), code: 'c', clientId: 'client-1', userId: new Types.ObjectId(), orgId: new Types.ObjectId(),
         redirectUri: 'https://example.com/cb', scopes: ['org:read'], knowledgeLimit,
         expiresAt: new Date(Date.now() + 600000), isUsed: false, save: sinon.stub().resolves(),
       } as any)
@@ -70,9 +74,10 @@ describe('AuthorizationCodeService', () => {
     it('should store PKCE challenge when provided', async () => {
       const createStub = sinon.stub(AuthorizationCode, 'create').resolves({} as any)
 
+      const userId = new Types.ObjectId().toString()
       await service.generateCode(
         'client-1',
-        new Types.ObjectId().toString(),
+        userId,
         new Types.ObjectId().toString(),
         'https://example.com/cb',
         ['org:read'],
@@ -83,10 +88,19 @@ describe('AuthorizationCodeService', () => {
       const createArgs = createStub.firstCall.args[0] as any
       expect(createArgs.codeChallenge).to.equal('challenge-value')
       expect(createArgs.codeChallengeMethod).to.equal('S256')
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Authorization code generated', { client_id: 'client-1', user_id: userId, scopes: ['org:read'], has_pkce: true }],
+      ])
     })
   })
 
   describe('exchangeCode', () => {
+    // Redemption is one conditional write; the result says whether this call won.
+    let consume: sinon.SinonStub
+    beforeEach(() => {
+      consume = sinon.stub(AuthorizationCode, 'updateOne').resolves({ modifiedCount: 1 } as any)
+    })
+
     it('should exchange valid code without PKCE for a confidential client', async () => {
       const userId = new Types.ObjectId()
       const orgId = new Types.ObjectId()
@@ -103,7 +117,6 @@ describe('AuthorizationCodeService', () => {
         codeChallenge: undefined,
         save: sinon.stub().resolves(),
       }
-      const consume = sinon.stub(AuthorizationCode, 'findOneAndUpdate').resolves({} as any)
       sinon.stub(AuthorizationCode, 'findOne').resolves(mockCode as any)
 
       const result = await service.exchangeCode(
@@ -118,87 +131,12 @@ describe('AuthorizationCodeService', () => {
       expect(result.orgId).to.equal(orgId.toString())
       expect(result.scopes).to.deep.equal(['org:read'])
       expect(consume.calledOnce).to.be.true
-    })
-
-    describe('single use', () => {
-      const validCode = () => ({
-        _id: new Types.ObjectId(),
-        code: 'c1',
-        clientId: 'client-1',
-        userId: new Types.ObjectId(),
-        orgId: new Types.ObjectId(),
-        redirectUri: 'https://example.com/cb',
-        scopes: ['org:read'],
-        expiresAt: new Date(Date.now() + 600000),
-        isUsed: false,
-      })
-
-      it('consumes the code with one conditional write on the unused code', async () => {
-        const row = validCode()
-        sinon.stub(AuthorizationCode, 'findOne').resolves(row as any)
-        const consume = sinon.stub(AuthorizationCode, 'findOneAndUpdate').resolves(row as any)
-
-        await service.exchangeCode('c1', 'client-1', 'https://example.com/cb', undefined, true)
-
-        const [filter, update] = consume.firstCall.args as any[]
-        expect(filter._id).to.equal(row._id)
-        expect(filter.isUsed).to.equal(false)
-        expect(update.$set.isUsed).to.equal(true)
-      })
-
-      it('refuses the loser of two exchanges racing on one code, flags the replay and revokes the tokens', async () => {
-        const row = validCode()
-        const findOne = sinon.stub(AuthorizationCode, 'findOne')
-        findOne.onFirstCall().resolves(row as any)
-        findOne.onSecondCall().resolves({ ...row, isUsed: true } as any)
-        sinon.stub(AuthorizationCode, 'findOneAndUpdate').resolves(null)
-        const flag = sinon.stub(AuthorizationCode, 'updateOne').resolves({} as any)
-        const access = sinon.stub(OAuthAccessToken, 'updateMany').resolves({} as any)
-        const refresh = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({} as any)
-
-        let error: unknown
-        try {
-          await service.exchangeCode('c1', 'client-1', 'https://example.com/cb', undefined, true)
-        } catch (e) {
-          error = e
-        }
-        expect(error).to.be.instanceOf(InvalidGrantError)
-        expect((error as Error).message).to.include('already been used')
-        expect((flag.firstCall.args[1] as any).$set.replayedAt).to.be.instanceOf(Date)
-        expect(access.calledOnce).to.be.true
-        expect(refresh.calledOnce).to.be.true
-      })
-
-      it('revokes nothing when the code expired or was swept between the check and the write', async () => {
-        const row = validCode()
-        const findOne = sinon.stub(AuthorizationCode, 'findOne')
-        findOne.onFirstCall().resolves(row as any)
-        findOne.onSecondCall().resolves(null)
-        sinon.stub(AuthorizationCode, 'findOneAndUpdate').resolves(null)
-        const access = sinon.stub(OAuthAccessToken, 'updateMany').resolves({} as any)
-
-        let error: unknown
-        try {
-          await service.exchangeCode('c1', 'client-1', 'https://example.com/cb', undefined, true)
-        } catch (e) {
-          error = e
-        }
-        expect(error).to.be.instanceOf(InvalidGrantError)
-        expect((error as Error).message).to.include('Invalid or expired')
-        expect(access.called).to.be.false
-      })
-
-      it('reports a replay only once the flag was set', async () => {
-        const findOne = sinon.stub(AuthorizationCode, 'findOne')
-        findOne.onFirstCall().resolves({ replayedAt: new Date() } as any)
-        findOne.onSecondCall().resolves({} as any)
-        expect(await service.wasReplayed('c1', 'client-1')).to.equal(true)
-        expect(await service.wasReplayed('c1', 'client-1')).to.equal(false)
-      })
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Authorization code exchanged', { client_id: 'client-1', user_id: userId.toString() }],
+      ])
     })
 
     it('should throw InvalidGrantError when code not found', async () => {
-      const consume = sinon.stub(AuthorizationCode, 'findOneAndUpdate').resolves({} as any)
       sinon.stub(AuthorizationCode, 'findOne').resolves(null)
       try {
         await service.exchangeCode('bad-code', 'client-1', 'https://example.com/cb')
@@ -217,9 +155,7 @@ describe('AuthorizationCodeService', () => {
         userId,
         isUsed: true,
       }
-      const consume = sinon.stub(AuthorizationCode, 'findOneAndUpdate').resolves({} as any)
       sinon.stub(AuthorizationCode, 'findOne').resolves(mockCode as any)
-      sinon.stub(AuthorizationCode, 'updateOne').resolves({} as any)
       sinon.stub(OAuthAccessToken, 'updateMany').resolves({} as any)
       sinon.stub(OAuthRefreshToken, 'updateMany').resolves({} as any)
 
@@ -230,6 +166,81 @@ describe('AuthorizationCodeService', () => {
         expect(error).to.be.instanceOf(InvalidGrantError)
         expect((error as InvalidGrantError).message).to.include('already been used')
       }
+      expect(mockLogger.warn.args).to.deep.equal([
+        ['Authorization code reuse detected! Revoking all associated tokens', {
+          client_id: 'client-1', user_id: userId.toString(), code_id: mockCode._id.toString(),
+        }],
+        ['All tokens revoked due to code reuse', { client_id: 'client-1', user_id: userId.toString() }],
+      ])
+    })
+
+    describe('losing the write for the code', () => {
+      const unused = () => ({
+        _id: new Types.ObjectId(),
+        code: 'raced-code',
+        clientId: 'client-1',
+        userId: new Types.ObjectId(),
+        orgId: new Types.ObjectId(),
+        redirectUri: 'https://example.com/cb',
+        scopes: ['org:read'],
+        expiresAt: new Date(Date.now() + 600000),
+        isUsed: false,
+      })
+
+      it('is a replay when the code was used meanwhile: flags it and revokes what it issued', async () => {
+        const mockCode = unused()
+        sinon.stub(AuthorizationCode, 'findOne')
+          .onFirstCall().resolves(mockCode as any)
+          .onSecondCall().resolves({ ...mockCode, isUsed: true } as any)
+        consume.resolves({ modifiedCount: 0 } as any)
+        const access = sinon.stub(OAuthAccessToken, 'updateMany').resolves({} as any)
+        sinon.stub(OAuthRefreshToken, 'updateMany').resolves({} as any)
+
+        try {
+          await service.exchangeCode('raced-code', 'client-1', 'https://example.com/cb', undefined, true)
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+          expect((error as InvalidGrantError).message).to.include('already been used')
+        }
+        expect(access.calledOnce).to.be.true
+        expect(access.firstCall.args[1]).to.include({ revokedReason: 'code_reuse_detected' })
+        const flag = consume.getCalls().find((c) => (c.args[1] as any).$set?.replayedAt)
+        expect(flag, 'replayedAt written').to.exist
+      })
+
+      it('is not a replay when the code expired or was swept between validation and redemption: nothing is revoked', async () => {
+        for (const reread of [{ ...unused(), isUsed: false }, null]) {
+          sinon.restore()
+          consume = sinon.stub(AuthorizationCode, 'updateOne').resolves({ modifiedCount: 0 } as any)
+          sinon.stub(AuthorizationCode, 'findOne')
+            .onFirstCall().resolves(unused() as any)
+            .onSecondCall().resolves(reread as any)
+          const access = sinon.stub(OAuthAccessToken, 'updateMany').resolves({} as any)
+          const refresh = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({} as any)
+
+          try {
+            await service.exchangeCode('raced-code', 'client-1', 'https://example.com/cb', undefined, true)
+            expect.fail('Should have thrown')
+          } catch (error) {
+            expect(error).to.be.instanceOf(InvalidGrantError)
+            expect((error as InvalidGrantError).message).to.not.include('already been used')
+          }
+          expect(access.called).to.be.false
+          expect(refresh.called).to.be.false
+          expect(consume.calledOnce, 'only the redemption write, no replay flag').to.be.true
+        }
+      })
+    })
+
+    it('wasReplayed reads the flag the losing redeemer left', async () => {
+      const findOne = sinon.stub(AuthorizationCode, 'findOne')
+      findOne.onFirstCall().resolves({ _id: new Types.ObjectId(), replayedAt: new Date() } as any)
+      findOne.onSecondCall().resolves({ _id: new Types.ObjectId() } as any)
+      findOne.onThirdCall().resolves(null)
+      expect(await service.wasReplayed('c', 'client-1')).to.be.true
+      expect(await service.wasReplayed('c', 'client-1')).to.be.false
+      expect(await service.wasReplayed('c', 'client-1')).to.be.false
     })
 
     it('should throw InvalidGrantError when code is expired', async () => {
@@ -241,7 +252,6 @@ describe('AuthorizationCodeService', () => {
         expiresAt: new Date(Date.now() - 1000),
         isUsed: false,
       }
-      const consume = sinon.stub(AuthorizationCode, 'findOneAndUpdate').resolves({} as any)
       sinon.stub(AuthorizationCode, 'findOne').resolves(mockCode as any)
       sinon.stub(AuthorizationCode, 'deleteOne').resolves({} as any)
 
@@ -264,7 +274,6 @@ describe('AuthorizationCodeService', () => {
         expiresAt: new Date(Date.now() + 600000),
         isUsed: false,
       }
-      const consume = sinon.stub(AuthorizationCode, 'findOneAndUpdate').resolves({} as any)
       sinon.stub(AuthorizationCode, 'findOne').resolves(mockCode as any)
 
       try {
@@ -288,7 +297,6 @@ describe('AuthorizationCodeService', () => {
         codeChallenge: 'some-challenge',
         codeChallengeMethod: 'S256',
       }
-      const consume = sinon.stub(AuthorizationCode, 'findOneAndUpdate').resolves({} as any)
       sinon.stub(AuthorizationCode, 'findOne').resolves(mockCode as any)
 
       try {
@@ -312,7 +320,6 @@ describe('AuthorizationCodeService', () => {
         codeChallenge: 'some-challenge',
         codeChallengeMethod: 'S256',
       }
-      const consume = sinon.stub(AuthorizationCode, 'findOneAndUpdate').resolves({} as any)
       sinon.stub(AuthorizationCode, 'findOne').resolves(mockCode as any)
 
       try {
@@ -343,7 +350,6 @@ describe('AuthorizationCodeService', () => {
         codeChallengeMethod: 'plain',
         save: sinon.stub().resolves(),
       }
-      const consume = sinon.stub(AuthorizationCode, 'findOneAndUpdate').resolves({} as any)
       sinon.stub(AuthorizationCode, 'findOne').resolves(mockCode as any)
 
       const result = await service.exchangeCode(
@@ -362,9 +368,7 @@ describe('AuthorizationCodeService', () => {
       type AuthCodeQuery = ReturnType<typeof AuthorizationCode.findOne>
 
       // exchangeCode awaits findOne and touches only the fixture's fields and save().
-      let consume: sinon.SinonStub
       function stubFindOne(fixture: AuthCodeFixture): void {
-        consume = sinon.stub(AuthorizationCode, 'findOneAndUpdate').resolves({} as any)
         sinon
           .stub(AuthorizationCode, 'findOne')
           .returns(Promise.resolve(fixture) as unknown as AuthCodeQuery)
@@ -400,7 +404,7 @@ describe('AuthorizationCodeService', () => {
           expect(error).to.be.instanceOf(InvalidGrantError)
           expect((error as InvalidGrantError).message).to.include('PKCE is required')
         }
-        expect(consume.called).to.be.false
+        expect(mockCode.isUsed).to.be.false
         expect(mockCode.save.called).to.be.false
       })
 
@@ -465,7 +469,7 @@ describe('AuthorizationCodeService', () => {
           expect(error).to.be.instanceOf(InvalidGrantError)
           expect((error as InvalidGrantError).message).to.include('Invalid code verifier')
         }
-        expect(consume.called).to.be.false
+        expect(mockCode.isUsed).to.be.false
       })
     })
   })
@@ -490,6 +494,9 @@ describe('AuthorizationCodeService', () => {
       const userId = new Types.ObjectId().toString()
       await service.revokeCodesForUser(userId)
       expect(deleteStub.calledOnce).to.be.true
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Revoked authorization codes for user', { target_user_id: userId }],
+      ])
     })
   })
 
@@ -498,6 +505,9 @@ describe('AuthorizationCodeService', () => {
       const deleteStub = sinon.stub(AuthorizationCode, 'deleteMany').resolves({} as any)
       await service.revokeCodesForApp('client-1')
       expect(deleteStub.calledOnce).to.be.true
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Revoked authorization codes for app', { client_id: 'client-1' }],
+      ])
     })
   })
 

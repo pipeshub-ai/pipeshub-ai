@@ -7,11 +7,12 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 export interface WorkspaceHeaderIconButtonProps {
   icon: string;
   onClick: () => void;
-  'aria-label'?: string;
+  /** The control holds only an icon, so it needs its own name (the icon is decorative). */
+  'aria-label': string;
   style?: CSSProperties;
 }
 
-/** 32├ù32 bordered icon control ΓÇö matches workspace headers (e.g. Bots). */
+/** 32×32 bordered icon control — matches workspace headers (e.g. Bots). */
 export function WorkspaceHeaderIconButton({
   icon,
   onClick,

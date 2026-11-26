@@ -12,6 +12,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -95,7 +96,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register Linear toolset
-@ToolsetBuilder("Linear")\
+@ToolsetBuilder("Linear", provider=ToolProvider.CONNECTOR)\
     .in_group("Project Management")\
     .with_description("Linear integration for issue tracking and project management")\
     .with_category(ToolsetCategory.APP)\
@@ -145,7 +146,7 @@ class Linear:
         short_description="Get current authenticated Linear user",
         description="Get current user information from Linear, including display name, email, and account details.",
         parameters=[],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_viewer(self) -> Tuple[bool, str]:
         """Get current user information"""
@@ -172,7 +173,7 @@ class Linear:
                 required=True,
             )
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user(self, user_id: str) -> Tuple[bool, str]:
         """Get user by ID"""
@@ -190,7 +191,7 @@ class Linear:
     @tool(
         path="/tools/linear/get_teams",
         short_description="List Linear teams",
-        description="Get all teams in the Linear workspace with optional pagination.",
+        description="Get all teams in the Linear workspace with optional pagination. Each team lists all its members.",
         parameters=[
             ToolParameter(
                 name="first",
@@ -205,7 +206,7 @@ class Linear:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_teams(
         self,
@@ -216,13 +217,39 @@ class Linear:
         try:
             response = await self.client.teams(first=first, after=after)
 
-            if response.success:
-                return True, json.dumps({"data": response.data})
-            else:
+            if not response.success:
                 return False, json.dumps({"error": response.message})
+            for team in ((response.data or {}).get("teams") or {}).get("nodes") or []:
+                error = await self._read_all_members(team)
+                if error:
+                    return False, json.dumps({"error": error})
+            return True, json.dumps({"data": response.data})
         except Exception as e:
             logger.error(f"Error getting teams: {e}")
             return False, json.dumps({"error": str(e)})
+
+    async def _read_all_members(self, team: dict) -> Optional[str]:
+        """Add the members ``teams`` leaves out (it lists 10 per team). Returns an error, or None."""
+        members = team.get("members") or {}
+        nodes = list(members.get("nodes") or [])
+        info = members.get("pageInfo") or {}
+        cursor = None
+        while info.get("hasNextPage"):
+            if not info.get("endCursor") or info["endCursor"] == cursor:
+                return f"Linear reported more members of team {team.get('id')} without a cursor to read them"
+            cursor = info["endCursor"]
+            page = await self.client.execute_operation(
+                "teamMembers", {"id": team.get("id"), "first": 100, "after": cursor})
+            if not page.success:
+                return page.message or f"Failed to read the members of team {team.get('id')}"
+            more = ((page.data or {}).get("team") or {}).get("members")
+            if more is None:
+                return f"Linear returned no members page for team {team.get('id')}"
+            nodes.extend(more.get("nodes") or [])
+            info = more.get("pageInfo") or {}
+        if members:
+            team["members"] = {"nodes": nodes, "pageInfo": info}
+        return None
 
     @tool(
         path="/tools/linear/get_team",
@@ -236,7 +263,7 @@ class Linear:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_team(self, team_id: str) -> Tuple[bool, str]:
         """Get team by ID"""
@@ -275,7 +302,7 @@ class Linear:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_issues(
         self,
@@ -317,7 +344,7 @@ class Linear:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_issue(self, issue_id: str) -> Tuple[bool, str]:
         """Get issue by ID"""
@@ -374,7 +401,7 @@ class Linear:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_issue(
         self,
@@ -444,7 +471,7 @@ class Linear:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def update_issue(
         self,
@@ -489,7 +516,7 @@ class Linear:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def delete_issue(self, issue_id: str) -> Tuple[bool, str]:
         """Delete an issue"""

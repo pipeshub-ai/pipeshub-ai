@@ -14,8 +14,14 @@ import {
   runWithOrgContext,
   validateMode,
 } from './orgContext';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Logger } from '../services/logger.service';
-import { ENVELOPE_REQUEST_ID, sanitizeRootId } from './request-context';
+import { metricsBackend } from '../services/telemetry/telemetry-impl';
+import {
+  ENVELOPE_REQUEST_ID,
+  sanitizeRootId,
+  setContextIdentity,
+} from './request-context';
 
 /**
  * Signed broker envelope (v2); the Python twin is `app/core/envelope.py` and
@@ -30,12 +36,15 @@ import { ENVELOPE_REQUEST_ID, sanitizeRootId } from './request-context';
  * counted, logged and (`ORG_CONTEXT_MODE=enforce`) rejected.
  *
  * Replay: a signature older than `ENVELOPE_MAX_AGE_SECONDS` (default 900) is stale
- * (counted and logged in shadow mode, rejected in enforce mode). That bounds replay to
- * the window; exact replay rejection needs a durable consumer inbox (`claim`) that
- * records event ids, which is not wired yet. Nothing keeps seen-ids in Redis.
+ * (counted and logged in shadow mode, rejected in enforce mode). A consumer given a group
+ * name skips an event id its group already finished for that org (the durable inbox,
+ * `platform.consumer_inbox`, see `libs/services/consumer-inbox.ts`); the id is recorded only
+ * after the handler returned, so a failed handler is retried. Nothing keeps seen-ids in Redis:
+ * an evicted id would let a replay through, and under `noeviction` the ids fill the server.
  */
 export const DEFAULT_MAX_AGE_SECONDS = 900;
 export const MAX_FUTURE_SKEW_SECONDS = 300;
+export const DEFAULT_ADMITTED_MAX_AGE_SECONDS = 86400;
 
 export class EnvelopeRejected extends Error {
   constructor(public readonly reason: string) {
@@ -51,10 +60,37 @@ export class DuplicateEnvelope extends Error {
   }
 }
 
+/** Which events each consumer group has finished, per org. */
 export interface Inbox {
-  /** true the first time an eventId is seen. Durable, same transaction as the effect. */
-  claim(topic: string, eventId: string, orgId: string): Promise<boolean>;
+  /** True when `consumer` already finished this event. */
+  seen(consumer: string, eventId: string, orgId: string): Promise<boolean>;
+  /** Remember that `consumer` finished this event; called only after its handler succeeded. */
+  record(consumer: string, eventId: string, orgId: string): Promise<void>;
+  /**
+   * Runs `fn` in one write unit of work with the record, so the effect `fn` writes there and the record commit
+   * together. Throws DuplicateEnvelope (and rolls `fn` back) when another delivery of the event recorded it first.
+   */
+  recordWith<T>(
+    consumer: string,
+    eventId: string,
+    orgId: string,
+    fn: () => Promise<T>,
+  ): Promise<T>;
 }
+
+/** pipeshub_consumer_inbox_errors_total{op}: inbox reads or writes that failed; the message ran as if new. */
+const inboxErrors = metricsBackend.createCounter({
+  name: 'pipeshub_consumer_inbox_errors_total',
+  help: 'Consumer inbox reads or writes that failed; the message was processed as if new (at-least-once)',
+  labelNames: ['op'],
+});
+
+/** pipeshub_consumer_inbox_skipped_total{consumer}: deliveries of an event the group had already finished. */
+const inboxSkipped = metricsBackend.createCounter({
+  name: 'pipeshub_consumer_inbox_skipped_total',
+  help: 'Redelivered or replayed broker messages acknowledged without running the handler again',
+  labelNames: ['consumer'],
+});
 
 /** pipeshub_envelope_unverified_total{topic}: ctx present but no key configured */
 export const envelopeUnverified = new Map<string, number>();
@@ -94,16 +130,35 @@ export function signEnabled(): boolean {
   );
 }
 
-export function maxAgeSeconds(): number {
-  const raw = (process.env.ENVELOPE_MAX_AGE_SECONDS ?? '').trim();
-  if (!raw) return DEFAULT_MAX_AGE_SECONDS;
+function positiveSeconds(name: string, fallback: number): number {
+  const raw = (process.env[name] ?? '').trim();
+  if (!raw) return fallback;
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(
-      `ENVELOPE_MAX_AGE_SECONDS must be a positive number, got '${raw}'`,
-    );
+    throw new Error(`${name} must be a positive number, got '${raw}'`);
   }
   return value;
+}
+
+export function maxAgeSeconds(): number {
+  return positiveSeconds('ENVELOPE_MAX_AGE_SECONDS', DEFAULT_MAX_AGE_SECONDS);
+}
+
+/**
+ * How long the inbox keeps an event id: the same window as the Python twin (`replay_window_seconds`), the longest a copy of a
+ * signed envelope passes the age check there (its age or a stored PostgreSQL-queue admission, plus the future skew). Both
+ * languages prune the one table, so the windows must match.
+ */
+export function replayWindowSeconds(): number {
+  return (
+    Math.max(
+      maxAgeSeconds(),
+      positiveSeconds(
+        'ENVELOPE_ADMITTED_MAX_AGE_SECONDS',
+        DEFAULT_ADMITTED_MAX_AGE_SECONDS,
+      ),
+    ) + MAX_FUTURE_SKEW_SECONDS
+  );
 }
 
 export function ctxRequired(): boolean {
@@ -189,6 +244,8 @@ export interface Opened {
   ctx: OrgContext | null;
   /** `ctx` removed, `payload` decoded */
   message: Record<string, unknown>;
+  /** The signed `ctx.eventId`, else the producer's top-level `eventId`; absent from an older producer's message. */
+  eventId?: string;
 }
 
 export function legacyCtx(message: Record<string, unknown>): OrgContext | null {
@@ -224,7 +281,11 @@ function unsigned(message: Record<string, unknown>): Opened {
       throw new EnvelopeRejected('malformed');
   }
   const flat = 'payload' in rest ? { ...rest, payload } : rest;
-  return { ctx: legacyCtx(flat), message: flat };
+  return {
+    ctx: legacyCtx(flat),
+    message: flat,
+    ...(isStr(message.eventId) && { eventId: message.eventId }),
+  };
 }
 
 const isStr = (v: unknown): v is string =>
@@ -242,14 +303,14 @@ function sigOk(
   return want.length === got.length && timingSafeEqual(want, got);
 }
 
-/** Verify a consumed message and derive its OrgContext. Throws EnvelopeRejected / DuplicateEnvelope. */
+/** Verify a consumed message and derive its OrgContext. Rejects with EnvelopeRejected. */
+// eslint-disable-next-line @typescript-eslint/require-await -- async so that a refusal is a rejected promise, never a synchronous throw
 export async function openEnvelope(
   topic: string,
   message: Record<string, unknown>,
   opts: {
     keys?: Buffer[];
     required?: boolean;
-    inbox?: Inbox | null;
     now?: () => number;
   } = {},
 ): Promise<Opened> {
@@ -332,8 +393,6 @@ export async function openEnvelope(
   const bodyOrg = (body as Record<string, unknown>).orgId;
   if (bodyOrg !== undefined && bodyOrg !== null && bodyOrg !== c.orgId)
     throw new EnvelopeRejected('org_mismatch');
-  if (opts.inbox && !(await opts.inbox.claim(topic, c.eventId, c.orgId)))
-    throw new DuplicateEnvelope(c.eventId);
   const { ctx: _ctx, org_ctx: _org, ...rest } = message;
   return {
     ctx: makeOrgContext({
@@ -344,12 +403,18 @@ export async function openEnvelope(
       requestId: sanitizeRootId(c.requestId ?? undefined) ?? '-',
     }),
     message: { ...rest, payload: body },
+    eventId: c.eventId,
   };
 }
 
 let keyProvider: (() => Promise<Buffer[]>) | null = null;
 let signKey: Buffer | null = null;
 let inbox: Inbox | null = null;
+
+/** Startup wiring: the durable consumer inbox, or null for none (consumers then keep the broker's at-least-once delivery). */
+export function configureInbox(impl: Inbox | null): void {
+  inbox = impl;
+}
 
 /** Startup wiring: key provider (current key first, previous key during rotation) and the consumer inbox. */
 export function configureEnvelope(
@@ -376,7 +441,7 @@ export function configureEnvelopeFromSecret(
   reload?: () => Promise<string | undefined>,
 ): void {
   validateMode();
-  maxAgeSeconds();
+  replayWindowSeconds();
   if (keyRetry) clearTimeout(keyRetry);
   keyRetry = null;
   if (scopedJwtSecret) {
@@ -420,18 +485,29 @@ export function setKeyRetryInitialMs(ms: number): void {
   keyRetryInitialMs = ms;
 }
 
+/** The message with a top-level `eventId` (a UUID) unless it already names one. */
+export function withEventId<T extends Record<string, unknown>>(
+  message: T,
+): T | (T & { eventId: string }) {
+  const existing = message.eventId;
+  if (typeof existing === 'string' && existing.length > 0) return message;
+  return { ...message, eventId: randomUUID() };
+}
+
 /**
- * Producer hook: sign when `ENVELOPE_SIGN` is on.
+ * Producer hook: sign when `ENVELOPE_SIGN` is on, and give every message an event id (a UUID at publish).
+ * Signing adds integrity, not identity: a signed message carries the id in `ctx.eventId`, any other leaves with a
+ * top-level `eventId`, so consumers can tell a redelivery of an event from a new event.
  * Signed shape: top-level fields stay, `payload` becomes the signed JSON string, `ctx` is added.
- * With the flag off the message is sent unchanged (v1). With it on, a message that cannot be signed
- * (no org bound, payload naming another org) is counted in `envelopeUnsigned` and sent unchanged;
+ * With the flag off the message is sent as v1, plus `eventId`. With it on, a message that cannot be signed
+ * (no org bound, payload naming another org) is counted in `envelopeUnsigned` and sent unsigned (with `eventId`);
  * with no key it throws in enforce mode and is counted and logged in shadow mode.
  */
 export function signMessage<T extends Record<string, unknown>>(
   topic: string,
   message: T,
 ): T | Record<string, unknown> {
-  if (!signEnabled()) return message;
+  if (!signEnabled()) return withEventId(message);
   const ctx = orgContextStorage.getStore();
   const payload = message.payload;
   if (
@@ -442,12 +518,12 @@ export function signMessage<T extends Record<string, unknown>>(
     Array.isArray(payload)
   ) {
     bump(envelopeUnsigned, `${topic}:no_org`);
-    return message;
+    return withEventId(message);
   }
   const bodyOrg = (payload as Record<string, unknown>).orgId;
   if (bodyOrg !== undefined && bodyOrg !== null && bodyOrg !== ctx.orgId) {
     bump(envelopeUnsigned, `${topic}:org_mismatch`);
-    return message;
+    return withEventId(message);
   }
   if (!signKey) {
     bump(envelopeUnsigned, `${topic}:no_key`);
@@ -460,7 +536,7 @@ export function signMessage<T extends Record<string, unknown>>(
       'envelope signing enabled but no key is available: sent unsigned (shadow mode)',
       { topic },
     );
-    return message;
+    return withEventId(message);
   }
   const { payload: _p, ctx: _c, ...rest } = message;
   const eventType =
@@ -478,34 +554,228 @@ export function signMessage<T extends Record<string, unknown>>(
   };
 }
 
+/**
+ * The same event signed again with a fresh `issuedAt`, for a delivery the PostgreSQL queue hands back without an attempt (a
+ * database outage), so a message that waits through many hand-backs does not outlive `ENVELOPE_MAX_AGE_SECONDS` and get rejected
+ * as stale. Every field but `issuedAt` and `sig` is kept, the event id too, so the inbox still recognises a redelivery. Only a
+ * message that verifies with the signing key and is still within the accepted age is renewed (a stale or forged one never turns
+ * into a fresh signature); null otherwise, and the hand-back keeps the stored value.
+ */
+export function renewEnvelope(
+  topic: string,
+  message: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const c = message.ctx as EnvelopeCtx | undefined | null;
+  const payload = message.payload;
+  if (
+    !signKey ||
+    c === undefined ||
+    c === null ||
+    typeof c !== 'object' ||
+    (c.v as number) !== 2 ||
+    typeof payload !== 'string' ||
+    !Number.isInteger(c.issuedAt)
+  )
+    return null;
+  const eventType =
+    typeof message.eventType === 'string' ? message.eventType : '';
+  const now = Math.floor(Date.now() / 1000);
+  const age = now - c.issuedAt;
+  // the window openEnvelope accepts: neither stale nor dated further ahead than the clock skew it allows
+  if (
+    !sigOk(signKey, topic, c, payload, eventType) ||
+    age > maxAgeSeconds() ||
+    -age > MAX_FUTURE_SKEW_SECONDS
+  )
+    return null;
+  const { sig: _sig, ...fields } = c;
+  const fresh: EnvelopeCtx = { ...fields, issuedAt: now };
+  fresh.sig = computeSig(signKey, topic, fresh, payload, eventType);
+  return { ...message, ctx: fresh };
+}
+
 export async function openConfigured(
   topic: string,
   message: Record<string, unknown>,
 ): Promise<Opened> {
   return openEnvelope(topic, message, {
     keys: keyProvider ? await keyProvider() : [],
-    inbox,
   });
 }
 
+/** One delivery a consumer group handles: what the inbox is asked about and records. */
+interface Delivery {
+  inbox: Inbox;
+  consumer: string;
+  eventId: string;
+  /** Unset for a message with no org of its own (one that fans out to several orgs): only `withDeliveryRecorded(fn, org)` records it. */
+  orgId: string | undefined;
+  recorded: boolean;
+}
+
+const deliveryStorage = new AsyncLocalStorage<Delivery>();
+
+/** Counts and logs (at most every 30 s) an inbox call that failed; the message runs as if new. */
+export function inboxFailed(op: string, consumer: string, e: unknown): void {
+  inboxErrors.inc({ op });
+  logLoud(
+    `inbox-${op}:${consumer}`,
+    'consumer inbox call failed: the message is processed as if new',
+    { op, consumer, error: e instanceof Error ? e.name : typeof e },
+  );
+}
+
+function skipped(d: Delivery, topic: string): void {
+  inboxSkipped.inc({ consumer: d.consumer });
+  Logger.getInstance().info(
+    'broker message already processed by this consumer group: acknowledged without running it again',
+    { component: 'Envelope', topic, consumer: d.consumer, eventId: d.eventId },
+  );
+}
+
 /**
- * Consumer wrapper: verify, bind the org for `fn` only, skip replays.
- * Throws EnvelopeRejected (caller dead-letters/acks); a duplicate returns undefined.
+ * Only a message naming its event id can be matched, and only per org: the signed org, else the one the handler acts on
+ * (`payload.orgId`, or a flat message's `orgId`). A message without an org is matched only per org it fans out to.
+ */
+function deliveryOf(
+  consumer: string,
+  opened: Opened,
+  value: Record<string, unknown>,
+): Delivery | undefined {
+  const orgId = opened.ctx?.orgId ?? value.orgId;
+  if (!inbox || !consumer || !opened.eventId) return undefined;
+  return {
+    inbox,
+    consumer,
+    eventId: opened.eventId,
+    orgId: isStr(orgId) ? orgId : undefined,
+    recorded: false,
+  };
+}
+
+/**
+ * Consumer wrapper: verify, bind the org for `fn` only, and with a `consumer` (the group) and an inbox skip an event the
+ * group already finished; the event is recorded after `fn` returned. Throws EnvelopeRejected (caller dead-letters/acks);
+ * a duplicate returns undefined and is acknowledged by the caller like a handled message.
  */
 export async function runWithEnvelope<V, R>(
   topic: string,
   value: V,
   fn: (value: V) => Promise<R>,
+  consumer = '',
 ): Promise<R | undefined> {
   if (value === null || typeof value !== 'object' || Array.isArray(value))
     return fn(value);
-  let opened: Opened;
-  try {
-    opened = await openConfigured(topic, value as Record<string, unknown>);
-  } catch (e) {
-    if (e instanceof DuplicateEnvelope) return undefined;
-    throw e;
+  const opened = await openConfigured(topic, value as Record<string, unknown>);
+  const d = deliveryOf(consumer, opened, value as Record<string, unknown>);
+  if (d?.orgId) {
+    let seen = false;
+    try {
+      seen = await d.inbox.seen(d.consumer, d.eventId, d.orgId);
+    } catch (e) {
+      inboxFailed('seen', d.consumer, e);
+    }
+    if (seen) {
+      skipped(d, topic);
+      return undefined;
+    }
   }
-  const run = (): Promise<R> => fn(opened.message as V);
-  return opened.ctx ? runWithOrgContext(opened.ctx, run) : run();
+  const run = async (): Promise<R | undefined> => {
+    if (!d) return fn(opened.message as V);
+    let out: R;
+    try {
+      out = await deliveryStorage.run(d, () => fn(opened.message as V));
+    } catch (e) {
+      if (!(e instanceof DuplicateEnvelope)) throw e;
+      skipped(d, topic);
+      return undefined;
+    }
+    if (d.orgId && !d.recorded) {
+      try {
+        await d.inbox.record(d.consumer, d.eventId, d.orgId);
+      } catch (e) {
+        inboxFailed('record', d.consumer, e);
+      }
+    }
+    return out;
+  };
+  if (!opened.ctx) return run();
+  // Only a verified signature replaces the unverified org the consumer's log context was opened with.
+  if (opened.ctx.source === 'envelope') setContextIdentity(opened.ctx);
+  return runWithOrgContext(opened.ctx, run);
+}
+
+/** True while handling a delivery the durable inbox tracks: a step that fails can then be retried by delivering the message again. */
+export function inDurableDelivery(): boolean {
+  return deliveryStorage.getStore() !== undefined;
+}
+
+/** The inbox id of `step` of the current delivery's event (event ids are UUIDs, so no event id ends in `#<step>`). */
+const stepId = (d: Delivery, step: string): string => `${d.eventId}#${step}`;
+
+async function seenFor(
+  id: (d: Delivery) => string,
+  orgId: string,
+): Promise<boolean> {
+  const d = deliveryStorage.getStore();
+  if (!d) return false;
+  try {
+    return await d.inbox.seen(d.consumer, id(d), orgId);
+  } catch (e) {
+    inboxFailed('seen', d.consumer, e);
+    return false;
+  }
+}
+
+/**
+ * Whether the current delivery's event already finished `step` for `orgId`: a step with no transaction to join (publishing
+ * mail), recorded by `recordDeliveryStep` once it has run. False outside a delivery with an inbox, and when the inbox cannot
+ * answer, so the step runs again; it must be safe to repeat.
+ */
+export function deliveryStepDone(
+  step: string,
+  orgId: string,
+): Promise<boolean> {
+  return seenFor((d) => stepId(d, step), orgId);
+}
+
+/** Whether `withDeliveryRecorded(fn, orgId)` already committed for the current delivery's event (false as above). */
+export function deliveryRecordedFor(orgId: string): Promise<boolean> {
+  return seenFor((d) => d.eventId, orgId);
+}
+
+/** Records that the current delivery's event finished `step` for `orgId`. Never throws; false when nothing was recorded. */
+export async function recordDeliveryStep(
+  step: string,
+  orgId: string,
+): Promise<boolean> {
+  const d = deliveryStorage.getStore();
+  if (!d) return false;
+  try {
+    await d.inbox.record(d.consumer, stepId(d, step), orgId);
+    return true;
+  } catch (e) {
+    inboxFailed('record', d.consumer, e);
+    return false;
+  }
+}
+
+/**
+ * For a handler whose effect is one PostgreSQL unit of work: runs `fn` in a unit that also records the delivery for `orgId`
+ * (default: the message's org), so the effect and the record commit together. It throws DuplicateEnvelope, rolling `fn` back,
+ * when the event was already recorded for that org: by a second delivery running at the same time, or, for a message that fans
+ * out to several orgs, by an earlier delivery that reached this org. Outside a delivery with an inbox it just runs `fn`.
+ */
+export async function withDeliveryRecorded<T>(
+  fn: () => Promise<T>,
+  orgId?: string,
+): Promise<T> {
+  const d = deliveryStorage.getStore();
+  const org = orgId ?? d?.orgId;
+  if (!d || !org) return fn();
+  if (org !== d.orgId)
+    return d.inbox.recordWith(d.consumer, d.eventId, org, fn);
+  if (d.recorded) return fn();
+  d.recorded = true;
+  return d.inbox.recordWith(d.consumer, d.eventId, org, fn);
 }

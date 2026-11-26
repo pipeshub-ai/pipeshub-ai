@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
+import { useRouter } from 'next/navigation';
 import {
   Box,
   Button,
@@ -14,6 +15,7 @@ import {
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SettingsSaveBar } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { PromptsApi } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -49,7 +51,7 @@ function PromptSectionCard({
         borderRadius: 'var(--radius-1)',
         overflow: 'hidden',
         backgroundColor: 'var(--olive-2)',
-        backdropFilter: 'blur(25px)',
+        backdropFilter: 'var(--frost-filter)',
       }}
     >
       {/* Card header row */}
@@ -70,13 +72,13 @@ function PromptSectionCard({
             flexShrink: 0,
           }}
         >
-          <MaterialIcon name={iconName} size={20} color="var(--accent-9)" />
+          <MaterialIcon name={iconName} size={20} color="var(--accent-11)" />
         </Flex>
         <Flex direction="column" gap="1" style={{ flex: 1 }}>
           <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {title}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-9)', fontWeight: 300, lineHeight: '16px' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)', fontWeight: 300, lineHeight: '16px' }}>
             {description}
           </Text>
         </Flex>
@@ -138,7 +140,7 @@ function PromptEditor({
         style={{ resize: 'vertical' }}
       />
 
-      <Text size="1" style={{ color: 'var(--slate-10)', lineHeight: '16px', fontWeight: 300 }}>
+      <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
         {helperText}
       </Text>
     </>
@@ -156,7 +158,7 @@ function PromptConfigCallout() {
         padding: 'var(--space-3) var(--space-4)',
       }}
     >
-       <IconButton variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
+       <IconButton aria-hidden variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
         <MaterialIcon name="info" size={16} color="var(--accent-11)" />
       </IconButton>
       <Flex direction="column" gap="1">
@@ -178,6 +180,9 @@ function PromptConfigCallout() {
 export default function PromptsPage() {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
+  const router = useRouter();
+  const isAdmin = useUserStore(selectIsAdmin);
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -197,8 +202,17 @@ export default function PromptsPage() {
     customPromptWebSearch !== savedPromptWebSearch ||
     customPromptAgent !== savedPromptAgent;
 
+  // The sidebar hides this page from members, but the URL still opens it. A profile that failed
+  // to load leaves isAdmin null; General is open to everyone, so that goes there too.
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin !== true) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
   // ── Load on mount ──────────────────────────────────────────
   useEffect(() => {
+    if (!isProfileInitialized || isAdmin !== true) return;
     const load = async () => {
       try {
         const prompts = await PromptsApi.getSystemPrompts();
@@ -213,7 +227,7 @@ export default function PromptsPage() {
       }
     };
     load();
-  }, []);
+  }, [isProfileInitialized, isAdmin]);
 
   // ── Handlers ───────────────────────────────────────────────
   // "Reset to Default" means removing the org override entirely — an empty
@@ -271,6 +285,10 @@ export default function PromptsPage() {
     });
   }, [savedPrompt, savedPromptWebSearch, savedPromptAgent, addToast, t]);
 
+  if (!isProfileInitialized || isAdmin !== true) {
+    return null;
+  }
+
   // ── Loading state ──────────────────────────────────────────
   if (isLoading) {
     return (
@@ -291,7 +309,7 @@ export default function PromptsPage() {
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.prompts.customInstructionsTitle')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 4, display: 'block' }}>
               {t('workspace.prompts.customInstructionsDescription')}
             </Text>
           </Box>
@@ -319,7 +337,7 @@ export default function PromptsPage() {
             borderRadius: 'var(--radius-1)',
           }}
         >
-          <IconButton variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a3)' }} tabIndex={-1}>
+          <IconButton aria-hidden variant="soft" size="2" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a3)' }} tabIndex={-1}>
             <MaterialIcon name="info" size={16} color="var(--slate-11)" />
           </IconButton>
           <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>

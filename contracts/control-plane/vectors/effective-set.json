@@ -1,0 +1,1581 @@
+{
+  "description": "EffectiveSetResolver vectors (03-interfaces §4.3, 02-lld §5.2): inputs and the expected effective set or refusal. Node computes each; Python validates and recomputes each digest.",
+  "vectors": [
+    {
+      "subject": {
+        "actorId": "u3",
+        "agentKey": "a7"
+      },
+      "dimensions": {},
+      "bindings": [],
+      "actorTeams": [],
+      "agentOwner": null,
+      "toolEffects": {},
+      "id": "ES-1",
+      "description": "an org-visible MCP installation granted with a tool subset: only those tools, sorted, with their approved digests",
+      "installations": [
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+            "tools": {
+              "list_issues": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+              "create_issue": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "close_issue": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        }
+      ],
+      "grants": [
+        {
+          "schemaVersion": 1,
+          "orgId": "org-a",
+          "subject": "agent:a7",
+          "entries": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "tools": [
+                "list_issues",
+                "close_issue"
+              ],
+              "required": false
+            }
+          ],
+          "revision": 1
+        }
+      ],
+      "expected": {
+        "set": {
+          "items": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "ready",
+              "reason": null,
+              "tools": [
+                {
+                  "toolId": "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001/close_issue",
+                  "descriptorDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                },
+                {
+                  "toolId": "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001/list_issues",
+                  "descriptorDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+                }
+              ],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            }
+          ],
+          "digest": "sha256:dca8ff25d8370e53e0b2dce2db049a3775dfd27bb0317795a671f5175119be69"
+        }
+      }
+    },
+    {
+      "subject": {
+        "actorId": "u3",
+        "agentKey": "a7"
+      },
+      "dimensions": {
+        "catalog.kinds.toolset.allowed": false,
+        "tools.grant": {
+          "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002": null,
+          "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0003": null,
+          "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0004": null,
+          "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0006": null,
+          "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0007": null
+        }
+      },
+      "bindings": [],
+      "actorTeams": [],
+      "agentOwner": null,
+      "toolEffects": {},
+      "id": "ES-2",
+      "description": "every unavailable reason in the documented order, one per granted installation",
+      "installations": [
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "disabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        },
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0003",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "user:u9",
+          "visibility": "owner",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        },
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0004",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": null,
+          "pending": null,
+          "status": "pending_approval",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        },
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0005",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        },
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0006",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "per_user",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        },
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0007",
+          "orgId": "org-a",
+          "item": "toolset:pipeshub/jira@1",
+          "kind": "toolset",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        }
+      ],
+      "grants": [
+        {
+          "schemaVersion": 1,
+          "orgId": "org-a",
+          "subject": "agent:a7",
+          "entries": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "tools": null,
+              "required": false
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+              "tools": null,
+              "required": false
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0003",
+              "tools": null,
+              "required": false
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0004",
+              "tools": null,
+              "required": false
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0005",
+              "tools": null,
+              "required": false
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0006",
+              "tools": null,
+              "required": false
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0007",
+              "tools": null,
+              "required": false
+            }
+          ],
+          "revision": 1
+        }
+      ],
+      "expected": {
+        "set": {
+          "items": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "item": null,
+              "kind": null,
+              "state": "unavailable",
+              "reason": "not_installed",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": null,
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "disabled",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": null,
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0003",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "not_visible",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": null,
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0004",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "not_approved",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0005",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "not_granted",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0006",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "credential_missing",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0007",
+              "item": "toolset:pipeshub/jira@1",
+              "kind": "toolset",
+              "state": "unavailable",
+              "reason": "policy_ceiling",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": null,
+                "approvedBy": null
+              }
+            }
+          ],
+          "digest": "sha256:020e80148f12082883ef318c519ca66149123e5e9dac6cafb35a367071fd1e1c"
+        }
+      }
+    },
+    {
+      "subject": {
+        "actorId": "u3",
+        "agentKey": "a7"
+      },
+      "dimensions": {
+        "tools.effects": [
+          "read",
+          "workspace"
+        ]
+      },
+      "bindings": [],
+      "actorTeams": [],
+      "agentOwner": null,
+      "toolEffects": {
+        "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001": {
+          "list_issues": "read",
+          "create_issue": "write",
+          "mystery": null
+        },
+        "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002": {
+          "delete_all": "execute"
+        }
+      },
+      "id": "ES-3",
+      "description": "tools.effects: only tools whose effect is inside the ceiling; an unclassified tool is dropped; an item left with none is not_granted",
+      "installations": [
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+            "tools": {
+              "list_issues": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+              "create_issue": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "mystery": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        },
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+            "tools": {
+              "delete_all": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        }
+      ],
+      "grants": [
+        {
+          "schemaVersion": 1,
+          "orgId": "org-a",
+          "subject": "agent:a7",
+          "entries": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "tools": null,
+              "required": false
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+              "tools": null,
+              "required": false
+            }
+          ],
+          "revision": 1
+        }
+      ],
+      "expected": {
+        "set": {
+          "items": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "ready",
+              "reason": null,
+              "tools": [
+                {
+                  "toolId": "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001/list_issues",
+                  "descriptorDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+                }
+              ],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "not_granted",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            }
+          ],
+          "digest": "sha256:ba7e9f94c7024c104539e38db1cbfb45e057fb8ad0d366a77fbd27364cb27b4c"
+        }
+      }
+    },
+    {
+      "subject": {
+        "actorId": "u3",
+        "agentKey": "a7"
+      },
+      "dimensions": {},
+      "bindings": [],
+      "actorTeams": [],
+      "agentOwner": null,
+      "toolEffects": {},
+      "id": "ES-4",
+      "description": "a required item without a credential refuses the run naming it",
+      "installations": [
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "per_user",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        },
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        }
+      ],
+      "grants": [
+        {
+          "schemaVersion": 1,
+          "orgId": "org-a",
+          "subject": "agent:a7",
+          "entries": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "tools": null,
+              "required": true
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+              "tools": null,
+              "required": false
+            }
+          ],
+          "revision": 1
+        }
+      ],
+      "expected": {
+        "refusal": "CP_CREDENTIAL_MISSING",
+        "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001"
+      }
+    },
+    {
+      "subject": {
+        "actorId": "u3",
+        "agentKey": "a7"
+      },
+      "dimensions": {},
+      "bindings": [],
+      "actorTeams": [],
+      "agentOwner": null,
+      "toolEffects": {},
+      "id": "ES-5",
+      "description": "the same item not required: unavailable{credential_missing}, the rest ready",
+      "installations": [
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "per_user",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        },
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        }
+      ],
+      "grants": [
+        {
+          "schemaVersion": 1,
+          "orgId": "org-a",
+          "subject": "agent:a7",
+          "entries": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "tools": null,
+              "required": false
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+              "tools": null,
+              "required": false
+            }
+          ],
+          "revision": 1
+        }
+      ],
+      "expected": {
+        "set": {
+          "items": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "credential_missing",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "ready",
+              "reason": null,
+              "tools": [
+                {
+                  "toolId": "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002/create_issue",
+                  "descriptorDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                },
+                {
+                  "toolId": "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002/list_issues",
+                  "descriptorDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                }
+              ],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            }
+          ],
+          "digest": "sha256:17096ac8a1869ca1f00d2f41a87e1e4a8a11fd244ae85018ef8afd6f8cefcf3f"
+        }
+      }
+    },
+    {
+      "subject": {
+        "actorId": "u3",
+        "agentKey": "a7"
+      },
+      "dimensions": {},
+      "bindings": [],
+      "actorTeams": [],
+      "agentOwner": "u1",
+      "toolEffects": {},
+      "id": "ES-6",
+      "description": "sharing: in a run of the agent, what the agent's owner put on it is visible to whoever runs it",
+      "installations": [
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+          "orgId": "org-a",
+          "item": "skill:pipeshub/notes@1",
+          "kind": "skill",
+          "owner": "user:u1",
+          "visibility": "owner",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        }
+      ],
+      "grants": [
+        {
+          "schemaVersion": 1,
+          "orgId": "org-a",
+          "subject": "agent:a7",
+          "entries": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "tools": null,
+              "required": false
+            }
+          ],
+          "revision": 1
+        }
+      ],
+      "expected": {
+        "set": {
+          "items": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "item": "skill:pipeshub/notes@1",
+              "kind": "skill",
+              "state": "ready",
+              "reason": null,
+              "tools": [
+                {
+                  "toolId": "notes@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001/create_issue",
+                  "descriptorDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                },
+                {
+                  "toolId": "notes@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001/list_issues",
+                  "descriptorDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                }
+              ],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "owner",
+                "approvedBy": null
+              }
+            }
+          ],
+          "digest": "sha256:857f281adee6346152e356685602ab490516dee3c2f9519bec5bc49c1a633b4e"
+        }
+      }
+    },
+    {
+      "subject": {
+        "actorId": "u3",
+        "agentKey": "a7"
+      },
+      "dimensions": {},
+      "bindings": [],
+      "actorTeams": [],
+      "agentOwner": "u1",
+      "toolEffects": {},
+      "id": "ES-7",
+      "description": "sharing does not reach an item of someone other than the agent owner",
+      "installations": [
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "user:u9",
+          "visibility": "owner",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        }
+      ],
+      "grants": [
+        {
+          "schemaVersion": 1,
+          "orgId": "org-a",
+          "subject": "agent:a7",
+          "entries": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "tools": null,
+              "required": false
+            }
+          ],
+          "revision": 1
+        }
+      ],
+      "expected": {
+        "set": {
+          "items": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "not_visible",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": null,
+                "approvedBy": null
+              }
+            }
+          ],
+          "digest": "sha256:b05b0c7b1379860caf6bee8732157e92ad9771ef92ddfab2a153f2b510400b1a"
+        }
+      }
+    },
+    {
+      "subject": {
+        "actorId": "u3",
+        "agentKey": null
+      },
+      "dimensions": {},
+      "bindings": [],
+      "actorTeams": [
+        "t1"
+      ],
+      "agentOwner": null,
+      "toolEffects": {},
+      "id": "ES-8",
+      "description": "an assistant run (no agent): the org, user and team grants merged; another user's item is not visible; a team item is visible to a member",
+      "installations": [
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "user:u9",
+          "visibility": "owner",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        },
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "team:t1",
+          "visibility": "team",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        },
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0003",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "team:t2",
+          "visibility": "team",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        }
+      ],
+      "grants": [
+        {
+          "schemaVersion": 1,
+          "orgId": "org-a",
+          "subject": "org",
+          "entries": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "tools": null,
+              "required": false
+            }
+          ],
+          "revision": 1
+        },
+        {
+          "schemaVersion": 1,
+          "orgId": "org-a",
+          "subject": "team:t1",
+          "entries": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+              "tools": [
+                "list_issues"
+              ],
+              "required": false
+            }
+          ],
+          "revision": 1
+        },
+        {
+          "schemaVersion": 1,
+          "orgId": "org-a",
+          "subject": "user:u3",
+          "entries": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+              "tools": [
+                "create_issue"
+              ],
+              "required": false
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0003",
+              "tools": null,
+              "required": false
+            }
+          ],
+          "revision": 1
+        }
+      ],
+      "expected": {
+        "set": {
+          "items": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "not_visible",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "org",
+                "visibleVia": null,
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "ready",
+              "reason": null,
+              "tools": [
+                {
+                  "toolId": "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002/create_issue",
+                  "descriptorDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                },
+                {
+                  "toolId": "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002/list_issues",
+                  "descriptorDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                }
+              ],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "user:u3",
+                "visibleVia": "team",
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0003",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "not_visible",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "user:u3",
+                "visibleVia": null,
+                "approvedBy": null
+              }
+            }
+          ],
+          "digest": "sha256:d36644d2e02e6937c93d08cc7fe02f5fdde84402635f969475b03b83b765fd82"
+        }
+      }
+    },
+    {
+      "subject": {
+        "actorId": "u3",
+        "agentKey": "a7"
+      },
+      "dimensions": {},
+      "bindings": [
+        {
+          "schemaVersion": 1,
+          "id": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+          "orgId": "org-a",
+          "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+          "owner": "user:u3",
+          "mode": "api_key",
+          "status": "revoked",
+          "secret": {
+            "path": "/services/controlPlane/credentials/org-a/inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001/user/u3",
+            "version": 1,
+            "versionDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "scopes": [],
+          "expiresAt": null,
+          "refreshedAt": null,
+          "lastError": null,
+          "revision": 1
+        },
+        {
+          "schemaVersion": 1,
+          "id": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+          "orgId": "org-a",
+          "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+          "owner": "user:u3",
+          "mode": "api_key",
+          "status": "expired",
+          "secret": {
+            "path": "/services/controlPlane/credentials/org-a/inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001/user/u3",
+            "version": 1,
+            "versionDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "scopes": [],
+          "expiresAt": null,
+          "refreshedAt": null,
+          "lastError": null,
+          "revision": 1
+        },
+        {
+          "schemaVersion": 1,
+          "id": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S0003",
+          "orgId": "org-a",
+          "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0003",
+          "owner": "org",
+          "mode": "api_key",
+          "status": "active",
+          "secret": {
+            "path": "/services/controlPlane/credentials/org-a/inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001/user/u3",
+            "version": 1,
+            "versionDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "scopes": [],
+          "expiresAt": null,
+          "refreshedAt": null,
+          "lastError": null,
+          "revision": 1
+        }
+      ],
+      "actorTeams": [],
+      "agentOwner": null,
+      "toolEffects": {},
+      "id": "ES-9",
+      "description": "a revoked and an expired per-user credential; an active one carries its binding reference",
+      "installations": [
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "per_user",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        },
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "per_user",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        },
+        {
+          "schemaVersion": 1,
+          "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0003",
+          "orgId": "org-a",
+          "item": "mcp:pipeshub/linear@3",
+          "kind": "mcp",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "tools": {
+              "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "create_issue": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "user:u-admin"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "org",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        }
+      ],
+      "grants": [
+        {
+          "schemaVersion": 1,
+          "orgId": "org-a",
+          "subject": "agent:a7",
+          "entries": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "tools": null,
+              "required": false
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+              "tools": null,
+              "required": false
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0003",
+              "tools": null,
+              "required": false
+            }
+          ],
+          "revision": 1
+        }
+      ],
+      "expected": {
+        "set": {
+          "items": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "credential_revoked",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "credential_expired",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0003",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "ready",
+              "reason": null,
+              "tools": [
+                {
+                  "toolId": "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0003/create_issue",
+                  "descriptorDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                },
+                {
+                  "toolId": "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0003/list_issues",
+                  "descriptorDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                }
+              ],
+              "binding": {
+                "ref": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S0003",
+                "owner": "org",
+                "versionDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+              },
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            }
+          ],
+          "digest": "sha256:c58005ac3acfd2eace7c0b0134f77c0a96290c2919fd8769b91ae0e55eac8f27"
+        }
+      }
+    },
+    {
+      "subject": {
+        "actorId": "u3",
+        "agentKey": "a7"
+      },
+      "dimensions": {
+        "tools.grant": {
+          "skill_notes": null
+        }
+      },
+      "bindings": [],
+      "actorTeams": [],
+      "agentOwner": null,
+      "toolEffects": {},
+      "id": "ES-10",
+      "description": "a skill is pinned by its bundle, its one descriptor; tools.grant narrows it like any item",
+      "installations": [
+        {
+          "schemaVersion": 1,
+          "id": "skill_notes",
+          "orgId": "org-a",
+          "item": "skill:pipeshub/notes@1.0.0",
+          "kind": "skill",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "tools": {
+              "notes": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "system"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        },
+        {
+          "schemaVersion": 1,
+          "id": "skill_pdf",
+          "orgId": "org-a",
+          "item": "skill:pipeshub/pdf@1.0.1",
+          "kind": "skill",
+          "owner": "org",
+          "visibility": "org",
+          "config": {
+            "url": "https://mcp.example.test/sse"
+          },
+          "approved": {
+            "descriptorSetDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "tools": {
+              "pdf": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            },
+            "approvalRef": null,
+            "at": 1,
+            "by": "system"
+          },
+          "pending": null,
+          "status": "enabled",
+          "installedVia": null,
+          "credentialMode": "none",
+          "revision": 1,
+          "updatedAt": 1,
+          "updatedBy": "user:u-admin"
+        }
+      ],
+      "grants": [
+        {
+          "schemaVersion": 1,
+          "orgId": "org-a",
+          "subject": "agent:a7",
+          "entries": [
+            {
+              "installation": "skill_notes",
+              "tools": null,
+              "required": false
+            },
+            {
+              "installation": "skill_pdf",
+              "tools": null,
+              "required": false
+            }
+          ],
+          "revision": 1
+        }
+      ],
+      "expected": {
+        "set": {
+          "items": [
+            {
+              "installation": "skill_notes",
+              "item": "skill:pipeshub/notes@1.0.0",
+              "kind": "skill",
+              "state": "ready",
+              "reason": null,
+              "tools": [
+                {
+                  "toolId": "notes@skill_notes/notes",
+                  "descriptorDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                }
+              ],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "skill_pdf",
+              "item": "skill:pipeshub/pdf@1.0.1",
+              "kind": "skill",
+              "state": "unavailable",
+              "reason": "not_granted",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            }
+          ],
+          "digest": "sha256:450bcc7216e877848ddadb21360e974c52c56e0b88ee4c6af2d88733a4e2e9f5"
+        }
+      }
+    }
+  ]
+}

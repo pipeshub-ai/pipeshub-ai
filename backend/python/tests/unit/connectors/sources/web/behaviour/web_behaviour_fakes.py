@@ -131,11 +131,14 @@ class FakeWeb:
         self._lock = threading.Lock()
         self.requests: list[tuple[str, str]] = []
         self.user_agents: list[str] = []  # the User-Agent of each request in ``requests``
+        # (url, headers) of each request in ``requests``, header names lower-cased.
+        self.request_headers: list[tuple[str, dict[str, str]]] = []
         self.clients: list[tuple[str, str]] = []  # (fake client, url) for curl_cffi / cloudscraper requests
         self.challenges_solved: list[str] = []
         self.served: list[tuple[str, str, str]] = []  # (client, method, url) for every answered request
         self.not_modified: list[str] = []
         self.browser_visits: list[str] = []
+        self.browser_context_keys: list[str | None] = []  # the context each of ``browser_visits`` loaded in
         self.browser_loaded: list[str] = []  # every address the browser requested, redirect hops included
         self.browser_starts = 0
         self.browser_broken = False
@@ -193,6 +196,7 @@ class FakeWeb:
         self.requests.append((method, url))
         self.served.append((via, method, url))
         self.user_agents.append(next((str(v) for k, v in request_headers.items() if k.lower() == "user-agent"), ""))
+        self.request_headers.append((url, {str(k).lower(): str(v) for k, v in request_headers.items()}))
         page = self._current(url, consume=method == "GET")
         if method == "HEAD" and page.head_status is not None:
             return None if page.head_status == HEAD_HANGS_UP else (page.head_status, {}, b"", page)
@@ -376,12 +380,11 @@ async def serve_fake_browser(site: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(crawl4ai_fetcher, "_shared_instance", None)
     monkeypatch.setattr(crawl4ai_fetcher, "_ref_count", 0)
     monkeypatch.setattr(crawl4ai_fetcher, "_shared_lock", None)
+    monkeypatch.setattr(crawl4ai_fetcher, "_idle_close", None)
     try:
         yield site
     finally:
-        leftover = crawl4ai_fetcher._shared_instance
-        if leftover is not None:
-            await leftover.close()
+        await crawl4ai_fetcher.close_shared_fetcher()
 
 
 def browser_crawler_class(site: FakeWeb) -> type:
@@ -407,6 +410,8 @@ def browser_crawler_class(site: FakeWeb) -> type:
                 return SimpleNamespace(url=url, redirected_url=url, html="", success=False, status_code=None,
                                        error_message=DRIVER_GONE, crawl_stats=None, js_execution_result=None)
             site.browser_visits.append(url)
+            # crawl4ai keys a context by its run config, which carries the key as the proxy username.
+            site.browser_context_keys.append(getattr(getattr(config, "proxy_config", None), "username", None))
             final_url, page = site.render(url)
             if page.kills_browser:
                 site.kill_browser()

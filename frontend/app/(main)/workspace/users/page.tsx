@@ -5,13 +5,13 @@ import { pagePaddingX } from '@/app/components/ui/responsive';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore, UsersPageHeaderActions } from '@/config';
+import { useAuthStore, useMemberAccountActions, UsersPageHeaderActions } from '@/config';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useNewestRequest } from '@/lib/hooks/use-newest-request';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
 import { FilterDropdown, DateRangePicker } from '@/app/components/ui';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import type { DateFilterType } from '@/app/components/ui/date-range-picker';
 import {
   EntityPageHeader,
   EntityFilterBar,
@@ -26,6 +26,7 @@ import {
 } from '../components';
 import type { BulkAction } from '../components';
 import type { ColumnConfig } from '../components';
+import { isOwnerHandoverRefusal } from '../components/owner-handover';
 import type { FilterChipConfig } from '../components/entity-filter-bar';
 import type { RowAction } from '../components/entity-row-action-menu';
 import { isProcessedError } from '@/lib/api';
@@ -35,7 +36,15 @@ import { UsersApi } from './api';
 import { ProfileApi } from '../profile/api';
 import { SmtpApi } from '../mail/api';
 import type { User } from './types';
+import { dateFilterToRange } from './date-filter';
 import { InviteUsersSidebar, UserProfileSidebar } from './components';
+import { RemoveUserDialog, removedUserDescription } from './components/remove-user-dialog';
+import {
+  DeactivateUserDialog,
+  userStatus,
+  type AccountSwitch,
+} from './components/deactivate-user-dialog';
+import { PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Constants
@@ -62,49 +71,6 @@ const STATUS_OPTIONS = [
 ];
 
 // ========================================
-// Helpers
-// ========================================
-
-/** Check if a timestamp (ms) falls within a date range */
-function isInDateRange(
-  timestampMs: number | undefined,
-  afterDate?: string,
-  beforeDate?: string,
-  dateType?: DateFilterType
-): boolean {
-  if (!timestampMs) return false;
-  if (!afterDate && !beforeDate) return true;
-
-  const itemDate = new Date(timestampMs);
-  itemDate.setHours(0, 0, 0, 0);
-
-  if (dateType === 'on' && afterDate) {
-    const target = new Date(afterDate);
-    target.setHours(0, 0, 0, 0);
-    return itemDate.getTime() === target.getTime();
-  }
-  if (dateType === 'before' && beforeDate) {
-    const before = new Date(beforeDate);
-    before.setHours(0, 0, 0, 0);
-    return itemDate < before;
-  }
-  if (dateType === 'after' && afterDate) {
-    const after = new Date(afterDate);
-    after.setHours(0, 0, 0, 0);
-    return itemDate > after;
-  }
-  // between
-  if (afterDate && beforeDate) {
-    const after = new Date(afterDate);
-    after.setHours(0, 0, 0, 0);
-    const before = new Date(beforeDate);
-    before.setHours(23, 59, 59, 999);
-    return itemDate >= after && itemDate <= before;
-  }
-  return true;
-}
-
-// ========================================
 // Page Component
 // ========================================
 
@@ -116,13 +82,18 @@ function UsersPageContent() {
   const searchParams = useSearchParams();
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  const memberActions = useMemberAccountActions(isAdmin);
 
   // Remove user confirmation state
   const [removeTarget, setRemoveTarget] = useState<User | null>(null);
   const [isRemoving, setIsRemoving] = useState(false);
+  // OAuth apps the person to remove created; null until known, or when it could not be read.
+  const [removeTargetAppCount, setRemoveTargetAppCount] = useState<number | null>(null);
   const [cancelInviteTarget, setCancelInviteTarget] = useState<User | null>(null);
   const [isCancellingInvite, setIsCancellingInvite] = useState(false);
   const [unblockTarget, setUnblockTarget] = useState<User | null>(null);
+  const [accountSwitch, setAccountSwitch] = useState<{ user: User; action: AccountSwitch } | null>(null);
+  const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
   const [isUnblocking, setIsUnblocking] = useState(false);
   const [roleChangeTarget, setRoleChangeTarget] = useState<{
     user: User;
@@ -181,7 +152,9 @@ function UsersPageContent() {
   }, []);
 
   // ── Fetch users (server-paginated + server-filtered) ──────────────────
+  const beginRequest = useNewestRequest();
   const fetchUsers = useCallback(async () => {
+    const isStale = beginRequest();
     setLoading(true);
     setError(null);
     try {
@@ -218,8 +191,24 @@ function UsersPageContent() {
       if (filters.groups?.length) {
         params.groupIds = filters.groups.join(',');
       }
+      // Date filters are applied by the server so the total and the pages match
+      const lastActive = dateFilterToRange(
+        filters.lastActiveAfter,
+        filters.lastActiveBefore,
+        filters.lastActiveDateType
+      );
+      params.lastActiveFrom = lastActive.from;
+      params.lastActiveTo = lastActive.to;
+      const joined = dateFilterToRange(
+        filters.dateJoinedAfter,
+        filters.dateJoinedBefore,
+        filters.dateJoinedDateType
+      );
+      params.joinedFrom = joined.from;
+      params.joinedTo = joined.to;
 
       const result = await UsersApi.fetchMergedUsers(params);
+      if (isStale()) return;
       setUsers(result.users, result.totalCount);
 
       // Restore profile panel when navigating directly to ?panel=profile&userId=xxx
@@ -231,12 +220,13 @@ function UsersPageContent() {
         pendingProfileUserIdRef.current = null;
       }
     } catch (err: unknown) {
+      if (isStale()) return;
       const message = err instanceof Error ? err.message : 'Failed to load users';
       setError(message);
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
-  }, [page, limit, searchQuery, filters, setUsers, setLoading, setError, openProfilePanel]);
+  }, [beginRequest, page, limit, searchQuery, filters, setUsers, setLoading, setError, openProfilePanel]);
 
   useEffect(() => {
     fetchUsers();
@@ -413,39 +403,8 @@ function UsersPageContent() {
     [filters, setFilters]
   );
 
-  // ── Client-side date filters (role/group/status are server-side) ──
-  const filteredUsers = useMemo(() => {
-    let result = users;
-
-    // Last Active date filter (client-side)
-    if (filters.lastActiveAfter || filters.lastActiveBefore) {
-      result = result.filter((u) =>
-        isInDateRange(
-          u.updatedAtTimestamp,
-          filters.lastActiveAfter,
-          filters.lastActiveBefore,
-          filters.lastActiveDateType
-        )
-      );
-    }
-
-    // Date Joined filter (client-side)
-    if (filters.dateJoinedAfter || filters.dateJoinedBefore) {
-      result = result.filter((u) =>
-        isInDateRange(
-          u.createdAtTimestamp,
-          filters.dateJoinedAfter,
-          filters.dateJoinedBefore,
-          filters.dateJoinedDateType
-        )
-      );
-    }
-
-    return result;
-  }, [users, filters]);
-
-  // Server already returns the correct page; client-side filters may further narrow the set
-  const paginatedUsers = filteredUsers;
+  // All filters are applied by the server, which returns the requested page
+  const paginatedUsers = users;
   const effectiveTotalCount = totalCount;
 
   const hasActiveFilters = !!(
@@ -668,11 +627,7 @@ function UsersPageContent() {
         label: t('workspace.users.columns.status'),
         width: '110px',
         render: (user) => (
-          <StatusBadge
-            status={
-              user.isBlocked ? 'Blocked' : user.hasLoggedIn ? 'Active' : 'Pending'
-            }
-          />
+          <StatusBadge status={userStatus(user)} />
         ),
       },
       {
@@ -701,8 +656,25 @@ function UsersPageContent() {
     [t, currentUser]
   );
 
+  useEffect(() => {
+    setRemoveTargetAppCount(null);
+    const userId = removeTarget?.userId;
+    if (!userId) return;
+    let cancelled = false;
+    UsersApi.countOAuthAppsCreatedBy(userId)
+      .then((count) => {
+        if (!cancelled) setRemoveTargetAppCount(count);
+      })
+      .catch(() => {
+        // The warning is extra; the dialog still works without it.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [removeTarget]);
+
   // ── Row actions ────────────
-  const handleRemoveUser = useCallback(async () => {
+  const handleRemoveUser = useCallback(async (workspace: string) => {
     if (!removeTarget) return;
     setIsRemoving(true);
     try {
@@ -710,18 +682,19 @@ function UsersPageContent() {
       addToast({
         variant: 'success',
         title: t('workspace.users.actions.removeSuccess'),
-        description: t('workspace.users.actions.removeSuccessDescription', {
-          name: removeTarget.name || removeTarget.email,
-        }),
+        description: removedUserDescription(t, removeTarget, workspace),
         duration: 3000,
       });
       setRemoveTarget(null);
       fetchUsers();
-    } catch {
+    } catch (error) {
       addToast({
         variant: 'error',
         title: t('workspace.users.actions.removeError'),
-        duration: 5000,
+        description: isOwnerHandoverRefusal(error)
+          ? t('workspace.users.actions.removeNoAdminForHandover')
+          : undefined,
+        duration: isOwnerHandoverRefusal(error) ? 8000 : 5000,
       });
     } finally {
       setIsRemoving(false);
@@ -795,18 +768,35 @@ function UsersPageContent() {
     }
   }, [unblockTarget, addToast, t, fetchUsers]);
 
+  const handleConfirmAccountSwitch = useCallback(async () => {
+    if (!accountSwitch) return;
+    const { user, action } = accountSwitch;
+    const name = user.name || user.email;
+    setIsSwitchingAccount(true);
+    try {
+      if (action === 'deactivate') await UsersApi.deactivateUser(user.userId);
+      else await UsersApi.reactivateUser(user.userId);
+      addToast({
+        variant: 'success',
+        title: t(`workspace.users.actions.${action}Success`),
+        description: t(`workspace.users.actions.${action}SuccessDescription`, { name }),
+        duration: 4000,
+      });
+      setAccountSwitch(null);
+      void fetchUsers();
+    } catch {
+      addToast({
+        variant: 'error',
+        title: t(`workspace.users.actions.${action}Error`),
+        duration: 5000,
+      });
+    } finally {
+      setIsSwitchingAccount(false);
+    }
+  }, [accountSwitch, addToast, t, fetchUsers]);
+
   const unblockConfirmKeyword =
     unblockTarget?.name?.trim() || unblockTarget?.email || '';
-
-  // Shared "coming soon" toast helper
-  const showComingSoon = useCallback(() => {
-    addToast({
-      variant: 'info',
-      title: t('workspace.users.actions.comingSoonTitle'),
-      description: t('workspace.users.actions.comingSoonDescription'),
-      duration: 3000,
-    });
-  }, [addToast, t]);
 
   // ── Change Role handler ──
   const handleChangeRole = useCallback(
@@ -946,15 +936,35 @@ function UsersPageContent() {
       const isPending = !user.hasLoggedIn && user.isActive;
       // Expired: invited but never logged in and invite is no longer active
       const isPendingExpired = !user.hasLoggedIn && !user.isActive;
-      // Deactivated: has logged in before but account is now inactive
-      const isDeactivated = user.hasLoggedIn && !user.isActive;
+      // Deactivated by an admin (SEC-AZ-08), whatever else is true of the account
+      const isDeactivated = user.isDisabled === true;
       // Active: logged in and currently active
       const isActive = user.hasLoggedIn && user.isActive;
       const currentRole = user.role || 'Member';
 
       let actions: (RowAction | false)[];
 
-      if (user.isBlocked) {
+      if (isDeactivated) {
+        actions = [
+          {
+            icon: 'visibility',
+            label: t('workspace.users.actions.viewProfile'),
+            onClick: () => navigateToProfilePanel(user),
+          },
+          isAdmin && {
+            icon: 'person_check',
+            label: t('workspace.users.actions.reactivate'),
+            onClick: () => setAccountSwitch({ user, action: 'reactivate' }),
+          },
+          isAdmin && currentRole !== 'Admin' && {
+            icon: 'person_remove',
+            label: t('workspace.users.actions.removeFromWorkspace'),
+            variant: 'danger' as const,
+            separatorBefore: true,
+            onClick: () => setRemoveTarget(user),
+          },
+        ];
+      } else if (user.isBlocked) {
         actions = [
           {
             icon: 'visibility',
@@ -1023,9 +1033,6 @@ function UsersPageContent() {
             onClick: () => requestCancelInvite(user),
           },
         ];
-      } else if (isDeactivated) {
-        // TODO: Handle deactivated user — e.g. Reactivate, Remove from Workspace
-        actions = [];
       } else if (isActive && currentRole === 'Admin') {
         actions = [
           {
@@ -1043,6 +1050,7 @@ function UsersPageContent() {
               options: ROLE_SUB_MENU_OPTIONS,
             },
           },
+          memberActions.action(user),
           isAdmin && {
             icon: 'person_remove',
             label: t('workspace.users.actions.removeFromWorkspace'),
@@ -1084,8 +1092,9 @@ function UsersPageContent() {
           isAdmin && {
             icon: 'person_off',
             label: t('workspace.users.actions.deactivate'),
-            onClick: showComingSoon,
+            onClick: () => setAccountSwitch({ user, action: 'deactivate' }),
           },
+          memberActions.action(user),
           isAdmin && {
             icon: 'person_remove',
             label: t('workspace.users.actions.removeFromWorkspace'),
@@ -1105,12 +1114,12 @@ function UsersPageContent() {
       isAdmin,
       addToast,
       navigateToProfilePanel,
-      showComingSoon,
       requestChangeRole,
       handleResendInvite,
       handleEditInvite,
       requestCancelInvite,
       ROLE_SUB_MENU_OPTIONS,
+      memberActions.action,
     ]
   );
 
@@ -1127,6 +1136,9 @@ function UsersPageContent() {
         height: '100%',
         width: '100%',
         paddingInline: pagePaddingX(40),
+        // Same gap below the table frame as above the page title
+        paddingBottom: PAGE_PADDING_TOP,
+        boxSizing: 'border-box',
       }}
     >
       {/* Header */}
@@ -1157,8 +1169,9 @@ function UsersPageContent() {
         style={{
           flex: 1,
           overflow: 'hidden',
-          border: '1px solid var(--slate-6)',
-          borderRadius: 'var(--radius-3)',
+          border: '1px solid var(--olive-3)',
+          borderRadius: 'var(--radius-1)',
+          backgroundColor: 'var(--olive-1)',
         }}
       >
         {/* Filter bar */}
@@ -1172,11 +1185,11 @@ function UsersPageContent() {
             gap="2"
             style={{ flex: 1, padding: 'var(--space-6)' }}
           >
-            <MaterialIcon name="filter_list_off" size={32} color="var(--slate-8)" />
+            <MaterialIcon name="filter_list_off" size={32} color="var(--slate-11)" />
             <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.users.noFilterResults', 'No users match the applied filters')}
             </Text>
-            <Text size="1" style={{ color: 'var(--slate-9)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.users.noFilterResultsHint', 'Try adjusting or clearing the filters above')}
             </Text>
           </Flex>
@@ -1192,6 +1205,7 @@ function UsersPageContent() {
               renderRowActions={renderRowActions}
               isLoading={isLoading}
               onRowClick={(user) => navigateToProfilePanel(user)}
+              ariaLabel={t('workspace.users.title')}
             />
           </>
         )}
@@ -1229,6 +1243,8 @@ function UsersPageContent() {
       {/* User Profile Sidebar */}
       <UserProfileSidebar />
 
+      {memberActions.dialog}
+
       {/* Change Role Confirmation Dialog */}
       <ConfirmationDialog
         open={!!roleChangeTarget}
@@ -1250,21 +1266,19 @@ function UsersPageContent() {
         onConfirm={() => void handleConfirmChangeRole()}
       />
 
-      {/* Remove User Confirmation Dialog */}
-      <ConfirmationDialog
-        open={!!removeTarget}
-        onOpenChange={(open) => {
-          if (!open) setRemoveTarget(null);
-        }}
-        title={t('workspace.users.actions.removeUserTitle')}
-        message={t('workspace.users.actions.removeUserMessage', {
-          email: removeTarget?.email || removeTarget?.name || '',
-          workspace: 'Pipeshub',
-        })}
-        confirmLabel={t('workspace.users.actions.removeButton')}
-        cancelLabel={t('workspace.users.actions.cancelButton')}
-        confirmVariant="danger"
+      <DeactivateUserDialog
+        target={accountSwitch?.user ?? null}
+        action={accountSwitch?.action ?? 'deactivate'}
+        isLoading={isSwitchingAccount}
+        onClose={() => setAccountSwitch(null)}
+        onConfirm={() => void handleConfirmAccountSwitch()}
+      />
+
+      <RemoveUserDialog
+        target={removeTarget}
+        oauthAppCount={removeTargetAppCount}
         isLoading={isRemoving}
+        onClose={() => setRemoveTarget(null)}
         onConfirm={handleRemoveUser}
       />
 

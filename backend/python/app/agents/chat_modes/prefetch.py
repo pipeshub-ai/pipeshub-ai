@@ -31,6 +31,7 @@ from app.modules.retrieval.context.targeted import (
 from app.modules.retrieval.context.units import unit_children
 from app.modules.retrieval.selection_scope import connection_sources_of
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, is_base64_image
+from app.utils.error_class import failure_reason, log_failure
 
 if TYPE_CHECKING:
     import logging
@@ -61,6 +62,8 @@ _FILTER_REFUSED_STATUS_CODE = 422
 _SEARCH_FAILED_STATUSES = frozenset({
     Status.ERROR.value,
     Status.SEARCH_INDEX_UNAVAILABLE.value,
+    Status.EMBEDDING_OUT_OF_CREDIT.value,
+    Status.EMBEDDING_RATE_LIMITED.value,
     Status.PERMISSION_CHECK_UNAVAILABLE.value,
     Status.VECTOR_DB_NOT_READY.value,
 })
@@ -71,7 +74,7 @@ _SEARCH_RAISED_NOTICE = "The search could not run."
 @dataclass
 class PrefetchResult:
     """Pure data produced by one upfront retrieval call. Never mutates
-    caller state -- `chat_modes/bridge.py` is solely responsible for
+    caller state -- `chat_modes/setup.py` is solely responsible for
     applying this onto `AgentContext.tool_state`."""
 
     formatted_context: str
@@ -82,7 +85,7 @@ class PrefetchResult:
     is_empty: bool
     error_message: str | None = field(default=None)
     # IMAGE blocks captured during formatting (`collected_images` side-
-    # channel — see `chat_helpers.build_message_content_array`). `bridge.py`
+    # channel — see `chat_helpers.build_message_content_array`). `chat_modes/setup.py`
     # merges these into `context.attachment_image_blocks` so the existing
     # `shape_image_injection` PRE_MODEL hook delivers them to the model,
     # since prefetch produces plain text (folded into `goal.constraints`),
@@ -124,6 +127,7 @@ async def prefetch_retrieval(
     ref_mapper: CitationRefMapper | None = None,
     image_budget: ImageBudget | None = None,
     image_admission: ImageAdmission | None = None,
+    caller_user_id: str | None = None,
     read_in_full: bool = False,
     can_fetch: bool = True,
 ) -> PrefetchResult | None:
@@ -142,7 +146,7 @@ async def prefetch_retrieval(
     `web_search` via `tool_loader.py`) -- reusing it here (rather than the
     default fresh one) keeps every citation on this request numbered
     through one mapper, so a mapper swap after prefetch resolves doesn't
-    orphan refs those tools already registered. See `bridge.py`'s
+    orphan refs those tools already registered. See `chat_modes/setup.py`'s
     `_produce()` for the call site this matters for.
 
     `image_admission`, when given, is the request's arbiter: images prefetch
@@ -165,9 +169,11 @@ async def prefetch_retrieval(
             user_id=user_id,
             limit=limit,
             filter_groups=filters,
+            caller_user_id=caller_user_id,
         )
     except Exception as exc:  # noqa: BLE001 - surfaced as a graceful empty prefetch
-        logger.error("prefetch_retrieval: search_with_filters failed: %s", exc, exc_info=True)
+        # The turn carries on without it. No error text: a search error can quote the query.
+        log_failure(logger, "prefetch.failed", exc, include_error_text=False)
         return PrefetchResult(
             formatted_context="",
             final_results=[],
@@ -175,7 +181,7 @@ async def prefetch_retrieval(
             tool_records=[],
             citation_ref_mapper=ref_mapper,
             is_empty=True,
-            error_message=str(exc),
+            error_message=failure_reason(exc),
             failure_notice=_SEARCH_RAISED_NOTICE,
         )
 

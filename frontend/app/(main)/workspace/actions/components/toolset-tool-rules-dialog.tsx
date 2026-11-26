@@ -82,7 +82,6 @@ export function ToolsetToolRulesDialog({
         style={{
           maxWidth: '44rem',
           padding: 'var(--space-5)',
-          backgroundColor: 'var(--color-panel-solid)',
           borderRadius: 'var(--radius-5)',
           border: '1px solid var(--olive-a3)',
         }}
@@ -105,11 +104,11 @@ export function ToolsetToolRulesDialog({
               {t('workspace.actions.toolRules.toolsError')}
             </Text>
           ) : tools === null ? (
-            <Text as="p" size="2" style={{ color: 'var(--slate-10)' }}>
+            <Text as="p" size="2" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.mcpServers.toolRules.loading')}
             </Text>
           ) : tools.length === 0 ? (
-            <Text as="p" size="2" style={{ color: 'var(--slate-10)' }}>
+            <Text as="p" size="2" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.mcpServers.toolRules.noTools')}
             </Text>
           ) : (

@@ -20,7 +20,8 @@ from the gated record-level App and the record from the group.
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
     up -d --wait neo4j-graph-it arango-graph-it
-  cd backend/python && pytest tests/integration/graph_db/test_permitted_entity_records_real_backends.py -m integration
+  cd backend/python && NEO4J_IT_URI=bolt://localhost:17687 ARANGO_IT_URL=http://localhost:18529 \\
+    pytest tests/integration/graph_db/test_permitted_entity_records_real_backends.py -m integration
 """
 from __future__ import annotations
 
@@ -47,6 +48,7 @@ from app.modules.retrieval.entity_permissions import (
 )
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support import it_backends
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -55,9 +57,7 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
-NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
 NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 ARANGO_DB = "entity_graph_it"
 # The connector ids are App keys, so each run takes its own: the stores are shared.
@@ -68,6 +68,7 @@ NOISE = 70
 # Newest first among the readable records.
 READABLE = ("app", "direct", "group", "inherited")
 HIDDEN = ("anyone", "anyone-off", "denied")
+CANDIDATES = NOISE + len(READABLE) + len(HIDDEN)  # the topic's records
 
 logger = logging.getLogger("permitted-entity-records-it")
 
@@ -113,7 +114,8 @@ def _connector(keys: dict[str, Any], record_key: str) -> str:
 
 
 async def _open_neo4j(monkeypatch: pytest.MonkeyPatch) -> Neo4jProvider:
-    monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
+    neo4j_uri = it_backends.endpoint("NEO4J_IT_URI")
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
     monkeypatch.setenv("NEO4J_DATABASE", "neo4j")
@@ -208,9 +210,12 @@ async def _seed_neo4j(provider: Neo4jProvider, org_id: str) -> None:
         MATCH (direct:Record {id: $direct}), (denied:Record {id: $denied})
         CREATE (seen:NamedEntity {id: $seen, orgId: $org, kind: 'organization', name: 'Acme', normKey: 'acme'})
         CREATE (hidden:NamedEntity {id: $hidden, orgId: $org, kind: 'organization', name: 'Initech', normKey: 'initech'})
-        CREATE (direct)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1}]->(seen)
-        CREATE (denied)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1}]->(seen)
-        CREATE (denied)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1}]->(hidden)
+        CREATE (direct)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1,
+                                           extractedNames: ['Acme']}]->(seen)
+        CREATE (denied)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1,
+                                           extractedNames: ['Acme']}]->(seen)
+        CREATE (denied)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1,
+                                           extractedNames: ['Initech']}]->(hidden)
         """,
         parameters={"org": org_id, "direct": r["direct"], "denied": r["denied"],
                     "seen": keys["named_seen"], "hidden": keys["named_hidden"]},
@@ -225,9 +230,10 @@ async def _close_neo4j(provider: Neo4jProvider, org_id: str) -> None:
 
 
 async def _open_arango(monkeypatch: pytest.MonkeyPatch) -> ArangoHTTPProvider:
+    arango_url = it_backends.endpoint("ARANGO_IT_URL")
     config_service = MagicMock()
     config_service.get_config = AsyncMock(return_value={
-        "url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
+        "url": arango_url, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
     })
     provider = ArangoHTTPProvider(logger, config_service)
     if not await asyncio.wait_for(provider.connect(), timeout=60):
@@ -314,11 +320,11 @@ async def _seed_arango(provider: ArangoHTTPProvider, org_id: str) -> None:
     named = CollectionNames.NAMED_ENTITIES.value
     await _insert(provider, CollectionNames.MENTIONS_ENTITY.value, [
         {"_from": f"records/{source}", "_to": f"{named}/{target}", "orgId": org_id,
-         "mentionCount": 1, "createdAtTimestamp": 1}
-        for source, target in (
-            (r["direct"], keys["named_seen"]),
-            (r["denied"], keys["named_seen"]),
-            (r["denied"], keys["named_hidden"]),
+         "mentionCount": 1, "createdAtTimestamp": 1, "extractedNames": [spelling]}
+        for source, target, spelling in (
+            (r["direct"], keys["named_seen"], "Acme"),
+            (r["denied"], keys["named_seen"], "Acme"),
+            (r["denied"], keys["named_hidden"], "Initech"),
         )
     ])
     await provider.create_taxonomy_node_if_absent(CollectionNames.TOPICS.value, {
@@ -472,6 +478,126 @@ class TestPermittedEntityRecords:
         assert out[("record", records["denied"])] == []
 
 
+# Only Neo4j's statement drops the walk, and the backend-matrix job fails on any skip, so
+# the ArangoDB leg leaves these out of collection (graph_db/conftest.py).
+@pytest.mark.neo4j_only
+class TestNeo4jRoleWalkLeftOut:
+    """When every ref's connectors are app-level, Neo4j sends the statement without the
+    permission-role walk: its first UNION branch admits every such row, and the walk is most
+    of the statement's planning time. On a real server both statements must return the same
+    rows, positions and paging metadata for the same parameters."""
+
+    @staticmethod
+    async def _both(
+        provider: Neo4jProvider, org_id: str, ref: dict[str, Any], *, offset: int, window: int, limit: int,
+    ) -> dict[bool, list[dict[str, Any]]]:
+
+        from app.services.graph_db.common.utils import (
+            ENTITY_CANDIDATE_SCAN_CAP,
+            within_param,
+        )
+
+        entity_type = ref["type"]
+        typed = provider._entity_refs_by_type([ref])[entity_type]
+        params = {
+            "refs": typed, "org_id": org_id, "user_key": _keys(org_id)["user"],
+            "app_level_connector_ids": sorted({c for r in typed for c in r["connectorIds"]}),
+            "record_types": None, "offset": offset, "window": window, "limit": limit,
+            "scan_cap": ENTITY_CANDIDATE_SCAN_CAP, "completed": ProgressStatus.COMPLETED.value,
+            "within": within_param(None),
+        }
+        out: dict[bool, list[dict[str, Any]]] = {}
+        for role_test in (True, False):
+            statement = provider._permitted_entity_records_cypher(entity_type, role_test=role_test)
+            # Both forms must really run: a generator that ignored role_test would pass parity.
+            assert ("permission_role" in statement) is role_test
+            rows = await provider.client.execute_query(statement, parameters=params)
+            out[role_test] = [dict(row) for row in rows or []]
+        return out
+
+    @staticmethod
+    def _same(both: dict[bool, list[dict[str, Any]]], ref_id: str, *, has_row: bool = True) -> dict[str, Any]:
+        """The one row both forms returned for ``ref_id``, after checking it is the same row.
+        A missing row must not read as an empty window: only a ref whose MATCH finds no
+        record at all (``has_row=False``) gets none, which the provider reads as empty."""
+        import json
+
+        for rows in both.values():
+            assert [row["id"] for row in rows] == ([ref_id] if has_row else [])
+        if not has_row:
+            return {"window_size": 0, "hits": []}
+        assert json.dumps(both[False][0], sort_keys=True, default=str) == json.dumps(
+            both[True][0], sort_keys=True, default=str,
+        )
+        return both[True][0]
+
+    @pytest.mark.parametrize(
+        ("connectors", "offset", "window", "limit", "expected_window", "expected_hits"),
+        [
+            ("both", 0, 200, 200, CANDIDATES, CANDIDATES),         # every candidate, in one window
+            ("both", 0, 20, 5, 20, 5),                             # the walk stops at the limit
+            ("both", 0, 20, 200, 20, 20),                          # the window bounds the walk
+            ("both", 60, 60, 60, CANDIDATES - 60, CANDIDATES - 60),  # a later window
+            ("both", 500, 60, 60, 0, 0),                           # past the last candidate: empty
+            ("app", 0, 200, 200, 1, 1),                            # one connector: its one record
+            ("none", 0, 200, 200, 0, 0),                           # no connectors: no candidates
+        ],
+    )
+    async def test_a_topic_reads_the_same_with_and_without_the_walk(
+        self, backend, connectors: str, offset: int, window: int, limit: int,
+        expected_window: int, expected_hits: int,
+    ) -> None:
+        provider, org_id = backend
+        connector_ids = {"both": [APP_LEVEL, RECORD_LEVEL], "app": [APP_LEVEL], "none": []}[connectors]
+        ref = {"id": _keys(org_id)["topic"], "type": "topic", "connectorIds": connector_ids}
+
+        both = await self._both(provider, org_id, ref, offset=offset, window=window, limit=limit)
+        # A window past the last candidate still gets its row (window_size 0); a ref with no
+        # connectors matches no record, so the statement returns no row for it.
+        row = self._same(both, ref["id"], has_row=connectors != "none")
+
+        assert row["window_size"] == expected_window
+        # Every candidate is admitted here, so the walk keeps the first window rows, in order.
+        assert [hit["pos"] for hit in row["hits"]] == list(range(expected_hits))
+
+    async def test_a_record_ref_reads_the_same_with_and_without_the_walk(self, backend) -> None:
+        provider, org_id = backend
+        ref = {"id": _keys(org_id)["records"]["direct"], "type": "record", "connectorIds": [RECORD_LEVEL]}
+
+        row = self._same(await self._both(provider, org_id, ref, offset=0, window=200, limit=200), ref["id"])
+
+        assert row["window_size"] == 1
+        assert [(hit["pos"], hit["row"]["_key"]) for hit in row["hits"]] == [(0, ref["id"])]
+
+    async def test_the_provider_leaves_the_walk_out_and_returns_every_candidate(self, backend) -> None:
+        """The decision itself, through the method: with both connectors app-level every
+        candidate in the window comes back, in order."""
+        provider, org_id = backend
+        keys = _keys(org_id)
+        sent: list[str] = []
+        original = provider.client.execute_query
+
+        async def recording(query: str, **kwargs: Any) -> Any:  # noqa: ANN401
+            sent.append(query)
+            return await original(query, **kwargs)
+
+        provider.client.execute_query = recording  # type: ignore[method-assign]
+        try:
+            out = await provider.get_permitted_entity_records(
+                [{"id": keys["topic"], "type": "topic", "connectorIds": [APP_LEVEL, RECORD_LEVEL]}],
+                org_id, keys["user"], app_level_connector_ids=[APP_LEVEL, RECORD_LEVEL],
+                limit_per_entity=200, window=200,
+            )
+        finally:
+            provider.client.execute_query = original  # type: ignore[method-assign]
+
+        rows = out[("topic", keys["topic"])]
+        assert sent and all("permission_role" not in query for query in sent)
+        assert len(rows) == rows.window_size == rows.examined == NOISE + len(READABLE) + len(HIDDEN)
+        stamps = _timestamps(keys)
+        assert [row["_key"] for row in rows] == sorted(stamps, key=stamps.__getitem__, reverse=True)
+
+
 class TestThroughThePermissionLayer:
     async def test_search_keeps_an_entity_whose_readable_records_are_old(self, backend) -> None:
         """KG-11: the newest 70 are unreadable; the old probe saw only 60."""
@@ -546,3 +672,186 @@ class TestThroughThePermissionLayer:
         assert [h.entity_id for h in hits] == [keys["gate_topic"]]
         assert [r["_key"] for r in hits[0].records] == [keys["gated"]]
         assert hits[0].more_records is False
+
+
+# ---------------------------------------------------------------------------
+# A record named directly is returned whether or not its content is indexed.
+# One fixture, both backends: the same rows, with the same keys.
+# ---------------------------------------------------------------------------
+
+TITLE_RECORDS = {
+    "indexed": {"status": ProgressStatus.COMPLETED.value},
+    "queued": {"status": ProgressStatus.QUEUED.value},
+    "off": {"status": ProgressStatus.AUTO_INDEX_OFF.value},
+    "trashed": {"status": ProgressStatus.QUEUED.value, "deleted": True},
+    "other_org": {"status": ProgressStatus.QUEUED.value, "other_org": True},
+    "other_connector": {"status": ProgressStatus.QUEUED.value, "connector": RECORD_LEVEL},
+}
+FOUND_BY_NAME = {"indexed", "queued", "off"}
+
+
+def _title_rows(org_id: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": f"{org_id}-title-{name}",
+            "name": name,
+            "org": f"{org_id}-other" if spec.get("other_org") else org_id,
+            "connector": spec.get("connector", APP_LEVEL),
+            "status": spec["status"],
+            "deleted": bool(spec.get("deleted")),
+        }
+        for name, spec in TITLE_RECORDS.items()
+    ]
+
+
+async def _seed_title_records(provider: Neo4jProvider | ArangoHTTPProvider, org_id: str) -> None:
+    rows = _title_rows(org_id)
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query(
+            """
+            UNWIND $rows AS row
+            CREATE (:Record {id: row.id, orgId: row.org, connectorId: row.connector, recordName: row.name,
+                             recordType: 'FILE', isDeleted: row.deleted, indexingStatus: row.status,
+                             sourceLastModifiedTimestamp: 1})
+            """,
+            parameters={"rows": rows},
+        )
+        return
+    await _insert(provider, CollectionNames.RECORDS.value, [
+        {
+            **Record(
+                id=row["id"], org_id=row["org"], record_name=row["name"], record_type=RecordType.FILE,
+                external_record_id=f"ext-{row['id']}", version=0, origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.KNOWLEDGE_BASE, connector_id=row["connector"],
+                indexing_status=row["status"], source_updated_at=1,
+            ).to_arango_base_record(),
+            "isDeleted": row["deleted"],
+        }
+        for row in rows
+    ])
+
+
+async def _remove_title_records(provider: Neo4jProvider | ArangoHTTPProvider, org_id: str) -> None:
+    ids = [row["id"] for row in _title_rows(org_id)]
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query(
+            "MATCH (r:Record) WHERE r.id IN $ids DETACH DELETE r", parameters={"ids": ids},
+        )
+        return
+    await provider.http_client.execute_aql(
+        f"FOR d IN {CollectionNames.RECORDS.value} FILTER d._key IN @ids REMOVE d IN {CollectionNames.RECORDS.value}",
+        {"ids": ids},
+    )
+
+
+@pytest.fixture
+async def title_records(backend) -> AsyncIterator[dict[str, str]]:
+    provider, org_id = backend
+    await _seed_title_records(provider, org_id)
+    try:
+        yield {row["name"]: row["id"] for row in _title_rows(org_id)}
+    finally:
+        await _remove_title_records(provider, org_id)
+
+
+class TestRecordsFoundByTheirName:
+    async def test_candidates_are_the_live_records_of_the_org_and_connector_whatever_their_index_state(
+        self, backend, title_records,
+    ) -> None:
+        provider, org_id = backend
+        refs = [{"id": key, "type": "record", "connectorIds": [APP_LEVEL]} for key in title_records.values()]
+        found = await provider.get_entity_candidate_records(refs, org_id)
+        returned = {name for name, key in title_records.items() if found[("record", key)]}
+        assert returned == FOUND_BY_NAME
+        for name in returned:
+            (row,) = found[("record", title_records[name])]
+            assert set(row) == set(ArangoHTTPProvider._ENTITY_CANDIDATE_RECORD_FIELDS)
+            assert row["indexingStatus"] == TITLE_RECORDS[name]["status"]
+
+    async def test_permitted_rows_agree_with_the_candidates(self, backend, title_records) -> None:
+        provider, org_id = backend
+        refs = [{"id": key, "type": "record", "connectorIds": [APP_LEVEL]} for key in title_records.values()]
+        out = await provider.get_permitted_entity_records(
+            refs, org_id, _keys(org_id)["user"], app_level_connector_ids=[APP_LEVEL],
+        )
+        returned = {name for name, key in title_records.items() if out[("record", key)]}
+        assert returned == FOUND_BY_NAME
+        for name in returned:
+            (row,) = out[("record", title_records[name])]
+            assert set(row) == set(ArangoHTTPProvider._ENTITY_CANDIDATE_RECORD_FIELDS)
+            assert row["indexingStatus"] == TITLE_RECORDS[name]["status"]
+
+
+async def _set_rule(provider: Neo4jProvider | ArangoHTTPProvider, record_key: str, rule: str) -> None:
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query("MATCH (r:Record {id: $id}) SET r.accessRule = $rule", parameters={"id": record_key, "rule": rule})
+    else:
+        await provider.http_client.execute_aql(
+            f"UPDATE @id WITH {{accessRule: @rule}} IN {CollectionNames.RECORDS.value}", {"id": record_key, "rule": rule})
+
+
+async def _grant_user(provider: Neo4jProvider | ArangoHTTPProvider, org_id: str, record_key: str) -> None:
+    keys = _keys(org_id)
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query(
+            "MATCH (u:User {id: $user}), (r:Record {id: $id}) CREATE (u)-[:PERMISSION {type: 'USER', role: 'READER'}]->(r)",
+            parameters={"user": keys["user"], "id": record_key})
+    else:
+        await _insert(provider, CollectionNames.PERMISSION.value, [{
+            "_from": f"{CollectionNames.USERS.value}/{keys['user']}", "_to": f"{CollectionNames.RECORDS.value}/{record_key}",
+            "type": "USER", "role": "READER"}])
+
+
+@pytest.mark.parametrize("rule", ["PARENT_AND_GRANT", "RESTRICTED"])
+async def test_a_record_that_needs_its_own_grant_takes_no_role_from_the_group_it_inherits(backend, rule: str) -> None:
+    """The role test reads a role on the record group a record inherits from as a role on the record. A record whose rule needs its own grant
+    takes no role from it: without a grant of its own it is not returned, and with one it is."""
+    provider, org_id = backend
+    inherited = _keys(org_id)["records"]["inherited"]
+    await _set_rule(provider, inherited, rule)
+    rows = await _permitted(provider, org_id, limit_per_entity=20, window=200, timeout_seconds=30)
+    assert inherited not in {row["_key"] for row in rows}
+    await _grant_user(provider, org_id, inherited)
+    rows = await _permitted(provider, org_id, limit_per_entity=20, window=200, timeout_seconds=30)
+    assert inherited in {row["_key"] for row in rows}
+
+
+async def _grant_owner_on_group(provider: Neo4jProvider | ArangoHTTPProvider, org_id: str) -> None:
+    keys = _keys(org_id)
+    if isinstance(provider, Neo4jProvider):
+        await provider.client.execute_query(
+            "MATCH (u:User {id: $user}), (rg:RecordGroup {id: $rg}) CREATE (u)-[:PERMISSION {type: 'USER', role: 'OWNER'}]->(rg)",
+            parameters={"user": keys["user"], "rg": keys["rg"]})
+    else:
+        await _insert(provider, CollectionNames.PERMISSION.value, [{
+            "_from": f"{CollectionNames.USERS.value}/{keys['user']}", "_to": f"{CollectionNames.RECORD_GROUPS.value}/{keys['rg']}",
+            "type": "USER", "role": "OWNER"}])
+
+
+@pytest.mark.parametrize("rule", ["PARENT_AND_GRANT", "RESTRICTED", "OPEN"])
+async def test_a_record_that_needs_its_own_grant_takes_its_role_from_its_own_grants_alone(backend, rule: str) -> None:
+    """The user holds READER on the record and OWNER on the record group it inherits from. A record that needs its own grant reads
+    READER (the group's grant never raises it); an OPEN one reads OWNER, inherited."""
+    provider, org_id = backend
+    keys = _keys(org_id)
+    inherited = keys["records"]["inherited"]
+    await _set_rule(provider, inherited, rule)
+    await _grant_user(provider, org_id, inherited)
+    await _grant_owner_on_group(provider, org_id)
+    perms = await provider.get_knowledge_hub_context_permissions(keys["user"], org_id, inherited, parent_type="record")
+    assert perms["role"] == ("OWNER" if rule == "OPEN" else "READER")
+
+
+@pytest.mark.parametrize("rule", ["PARENT_AND_GRANT", "RESTRICTED", "OPEN"])
+async def test_a_record_that_needs_its_own_grant_shows_the_role_of_its_own_grants_in_its_details(backend, rule: str) -> None:
+    """The record's details name the role its own grants give: READER on the record and OWNER on the record group it inherits from read READER for a
+    record that needs its own grant, as the role reads do; an OPEN one reads OWNER."""
+    provider, org_id = backend
+    keys = _keys(org_id)
+    inherited = keys["records"]["inherited"]
+    await _set_rule(provider, inherited, rule)
+    await _grant_user(provider, org_id, inherited)
+    await _grant_owner_on_group(provider, org_id)
+    details = await provider.check_record_access_with_details(keys["user"], org_id, inherited)
+    assert details is not None
+    assert details["permissions"][0]["relationship"] == ("OWNER" if rule == "OPEN" else "READER")

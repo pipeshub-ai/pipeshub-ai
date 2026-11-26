@@ -12,6 +12,7 @@ import { useChatStore } from '@/chat/store';
 import type { ChatKnowledgeFilters, CollectionMeta } from '@/chat/types';
 import { BELOW_APP_KEYS, checkStateOf, selectedIds, toggleNode } from '@/chat/utils/tree-selection';
 import { CollectionLeadingIcon } from './collection-row';
+import { onSessionEnd } from '@/lib/api/session-cache';
 
 const CHILDREN_PAGE_SIZE = 20;
 const INDENT_PER_LEVEL_PX = 16;
@@ -175,7 +176,7 @@ export function ExpandArrow({
         border: 'none',
         padding: 0,
         cursor: 'pointer',
-        color: 'var(--slate-10)',
+        color: 'var(--slate-11)',
       }}
     >
       <MaterialIcon name={expanded ? 'expand_more' : 'chevron_right'} size={18} />
@@ -194,7 +195,7 @@ export function LoadMoreLink({ loading, onClick }: { loading: boolean; onClick: 
         background: 'none',
         border: 'none',
         cursor: loading ? 'default' : 'pointer',
-        color: 'var(--olive-9)',
+        color: 'var(--olive-11)',
         fontSize: 12,
         padding: 0,
         textAlign: 'left',
@@ -342,13 +343,13 @@ export function KnowledgeTreeChildren({
   if (status === 'error') {
     return (
       <Flex align="center" gap="2" style={note}>
-        <Text size="1" style={{ color: 'var(--red-9)' }}>
+        <Text size="1" style={{ color: 'var(--red-11)' }}>
           {t('chat.treeLoadFailed')}
         </Text>
         <button
           type="button"
           onClick={retry}
-          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--olive-9)', fontSize: 12 }}
+          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--olive-11)', fontSize: 12 }}
         >
           {t('chat.treeRetry')}
         </button>
@@ -358,7 +359,7 @@ export function KnowledgeTreeChildren({
   if (items.length === 0) {
     return (
       <Flex align="center" style={note}>
-        <Text size="1" style={{ color: 'var(--slate-9)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>
           {t('chat.treeEmpty')}
         </Text>
       </Flex>
@@ -471,7 +472,7 @@ export function KnowledgeTreeRow({
           {node.name}
         </Text>
         {node.subtitle ? (
-          <Text size="1" truncate title={node.subtitle} style={{ color: 'var(--slate-9)', minWidth: 0 }}>
+          <Text size="1" truncate title={node.subtitle} style={{ color: 'var(--slate-11)', minWidth: 0 }}>
             {node.subtitle}
           </Text>
         ) : null}
@@ -496,6 +497,11 @@ const MAX_PLACE_ATTEMPTS = 3;
 const PLACE_RETRY_MS = 3000;
 const placeAsked = new Set<string>();
 const placeAttempts = new Map<string, number>();
+// The places are forgotten with the chat store at session end, so the next person must ask again.
+onSessionEnd(() => {
+  placeAsked.clear();
+  placeAttempts.clear();
+});
 
 /**
  * Learns where nodes sit in the tree when it was not walked down to them: a
@@ -706,7 +712,7 @@ export function KnowledgeTreeGroup({
           {title}
         </Text>
         {meta ? (
-          <Text size="1" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
+          <Text size="1" style={{ color: 'var(--slate-11)', flexShrink: 0 }}>
             {meta}
           </Text>
         ) : null}
@@ -885,7 +891,7 @@ export function KnowledgeSearchResults({
   if (status === 'short') {
     return (
       <Flex align="center" style={note} role="status">
-        <Text size="1" style={{ color: 'var(--neutral-a10)' }}>
+        <Text size="1" style={{ color: 'var(--neutral-a11)' }}>
           {t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })}
         </Text>
       </Flex>
@@ -897,7 +903,7 @@ export function KnowledgeSearchResults({
   if (status === 'error') {
     return (
       <Flex align="center" style={note} role="alert">
-        <Text size="1" style={{ color: 'var(--red-9)' }}>
+        <Text size="1" style={{ color: 'var(--red-11)' }}>
           {t('chat.treeSearchFailed')}
         </Text>
       </Flex>
@@ -906,7 +912,7 @@ export function KnowledgeSearchResults({
   if (shown.length === 0) {
     return emptyText ? (
       <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
-        <Text size="2" style={{ color: 'var(--slate-9)' }}>
+        <Text size="2" style={{ color: 'var(--slate-11)' }}>
           {emptyText}
         </Text>
       </Flex>
@@ -916,7 +922,7 @@ export function KnowledgeSearchResults({
   return (
     <Flex direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
       <Flex align="center" style={{ height: 28, paddingLeft: 'var(--space-1)' }}>
-        <Text size="1" style={{ color: 'var(--olive-9)' }}>
+        <Text size="1" style={{ color: 'var(--olive-11)' }}>
           {t('chat.treeSearchMatches')}
         </Text>
       </Flex>

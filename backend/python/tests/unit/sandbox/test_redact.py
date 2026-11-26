@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from app.sandbox.redact import redact_sandbox_paths
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 class TestRedactSandboxPaths:
@@ -115,3 +120,37 @@ class TestRedactSandboxPaths:
         # both are preceded by an alphanumeric char in the prior path
         # segment, so the bare-/output redactor must leave them alone.
         assert redact_sandbox_paths(raw) == raw
+
+
+class TestRedactSecrets:
+    """Sandbox code can print this process's own env (``/proc/1/environ``) or
+    any credential it finds; none of it may reach the model."""
+
+    @pytest.fixture(autouse=True)
+    def _env_secret(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        from app.utils import log_redaction
+
+        monkeypatch.setenv("FOO_API_KEY", "fooKeyValue123456")
+        log_redaction.refresh_env_secrets()
+        yield
+        monkeypatch.delenv("FOO_API_KEY")
+        log_redaction.refresh_env_secrets()
+
+    @pytest.mark.parametrize(
+        ("raw", "secret"),
+        [
+            ("FOO_API_KEY=fooKeyValue123456\nHOME=/root", "fooKeyValue123456"),
+            ("key is sk-abcdefghijklmnopqrstuvwxyz123456", "sk-abcdefghijklmnopqrstuvwxyz123456"),
+            ("REDIS_URL=redis://:hunter2pass@redis:6379", "hunter2pass"),
+        ],
+    )
+    def test_masks_secrets(self, raw: str, secret: str) -> None:
+        out = redact_sandbox_paths(raw)
+        assert secret not in out
+        assert "REDACTED" in out
+
+    def test_masks_secrets_and_paths_together_idempotently(self) -> None:
+        raw = "wrote /tmp/alcs-1/output/a.txt with fooKeyValue123456"
+        once = redact_sandbox_paths(raw)
+        assert once == "wrote <output>/a.txt with [REDACTED]"
+        assert redact_sandbox_paths(once) == once

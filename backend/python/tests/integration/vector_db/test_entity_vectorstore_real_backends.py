@@ -28,10 +28,11 @@ the rest:
   docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml \\
     up -d --wait redis-vector-it opensearch-vector-it
   docker run -d --name qdrant-it -p 6343:6333 qdrant/qdrant:v1.15
-  cd backend/python && pytest tests/integration/vector_db/test_entity_vectorstore_real_backends.py -m integration
+  cd backend/python && QDRANT_HOST=localhost REDIS_VECTOR_HOST=localhost OPENSEARCH_HOST=localhost \\
+    pytest tests/integration/vector_db/test_entity_vectorstore_real_backends.py -m integration
 
-Environment: QDRANT_HTTP_PORT (6343), REDIS_VECTOR_HOST/PORT (6399),
-OPENSEARCH_HOST/PORT (9299).
+Environment: QDRANT_HOST, QDRANT_HTTP_PORT (6343), REDIS_VECTOR_HOST, REDIS_VECTOR_PORT (6399),
+OPENSEARCH_HOST, OPENSEARCH_PORT (9299). A backend whose host is unset is skipped.
 """
 from __future__ import annotations
 
@@ -51,6 +52,7 @@ from app.modules.transformers.entity_vectorstore import (
     EntityVectorStore,
 )
 from app.services.vector_db.models import HealthStatus
+from tests.support import it_backends
 from tests.support.embedding_config import config_service as embedding_config_service
 from tests.support.entity_vector_db import recreate_lock_redis
 
@@ -106,9 +108,10 @@ async def _qdrant() -> IVectorDBService:
     from app.services.vector_db.qdrant.config import QdrantConfig
     from app.services.vector_db.qdrant.qdrant import QdrantService
 
+    host = it_backends.endpoint("QDRANT_HOST")
     # HTTP only: with gRPC the client always dials 6334, whatever `port` says.
     port = int(os.environ.get("QDRANT_HTTP_PORT", "6343"))
-    service = QdrantService(QdrantConfig.from_dict({"host": "localhost", "port": port, "prefer_grpc": False}))
+    service = QdrantService(QdrantConfig.from_dict({"host": host, "port": port, "prefer_grpc": False}))
     await _connect(service, f"Qdrant:{port}")
     return service
 
@@ -118,7 +121,7 @@ async def _redis() -> IVectorDBService:
     from app.services.vector_db.redis.config import RedisVectorConfig
     from app.services.vector_db.redis.redis_vector import RedisVectorService
 
-    host = os.environ.get("REDIS_VECTOR_HOST", "localhost")
+    host = it_backends.endpoint("REDIS_VECTOR_HOST")
     port = int(os.environ.get("REDIS_VECTOR_PORT", "6399"))
     service = RedisVectorService(RedisVectorConfig(host=host, port=port))
     await _connect(service, f"Redis:{port}")
@@ -130,7 +133,7 @@ async def _opensearch() -> IVectorDBService:
     from app.services.vector_db.opensearch.config import OpenSearchConfig
     from app.services.vector_db.opensearch.opensearch import OpenSearchService
 
-    host = os.environ.get("OPENSEARCH_HOST", "localhost")
+    host = it_backends.endpoint("OPENSEARCH_HOST")
     port = int(os.environ.get("OPENSEARCH_PORT", "9299"))
     service = OpenSearchService(OpenSearchConfig(
         host=host, port=port, username="admin", password="admin", use_ssl=False, verify_certs=False,
@@ -193,7 +196,9 @@ def _entity(
 
 
 async def _point(store: EntityVectorStore, org: str, entity_type: str, entity_id: str) -> dict[str, Any] | None:
-    point_id = store._point_id(org, entity_type, entity_id)
+    # a point is stored under the id of the epoch it was written in (the first epoch keeps the plain one)
+    fence = await store._guard().capture(store.collection_name)
+    point_id = store._stored_id(store._point_id(org, entity_type, entity_id), fence)
     points = await store.vector_db_service.retrieve_points(store.collection_name, [point_id])
     return points[0].payload if points else None
 
@@ -257,6 +262,7 @@ class TestMembershipReads:
 
         await store.vector_db_service.update_payload_by_ids(
             store.collection_name, [present, missing], {"connectorIds": ["c2"]},
+            org_id=org,
         )
 
         assert (await _point(store, org, "topic", "t1"))["connectorIds"] == ["c2"]
@@ -642,6 +648,34 @@ class TestRebuildSupport:
         payload = await _point(store, org, "topic", "t1")
         assert payload["metadata"]["embeddingModel"] == f"other:model:{DIM}"
 
+    async def test_the_same_model_from_another_provider_is_not_a_change(self, store: EntityVectorStore) -> None:
+        """What the server hands back must compare as the same model after a move to a gateway."""
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        store._model_id = "azureOpenAI:text-embedding-3-small"
+        entity = _entity("t1", org=org, connectors=["c1"])
+        await store.upsert_entities_batch([entity], merge_membership=False)
+        await _publish_writes(store)
+        moved = EntityVectorStore(
+            logger=logger, config_service=embedding_config_service(), vector_db_service=store.vector_db_service,
+            collection_name=store.collection_name, recreate_on_dimension_mismatch=True,
+        )
+
+        async def _stub(embedding_configs: list | None = None) -> None:
+            moved._dense_embeddings = _StubEmbeddings()
+            moved._embedding_size = DIM
+            moved._model_id = "openAICompatible:azure/text-embedding-3-small"
+
+        moved._init_embeddings = _stub  # type: ignore[method-assign]
+        await moved._ensure_initialized()
+        outcome = await moved.upsert_entities_batch(
+            [entity, _entity("t2", org=org, connectors=["c1"])], merge_membership=False,
+        )
+        await _publish_writes(store)
+
+        assert (outcome.written, outcome.unchanged, outcome.failed) == (1, 1, 0)
+        [found] = await moved.find_candidates([entity.name], org, "topic")
+        assert "t1" in {match["entityId"] for match in found}
+
     async def test_dimension_change_recreates_only_when_enabled(self, store: EntityVectorStore) -> None:
         org = f"org-{uuid.uuid4().hex[:6]}"
         await store.upsert_entities_batch([_entity("t1", org=org, connectors=["c1"])])
@@ -720,7 +754,7 @@ class TestRebuildSupport:
         assert outcome.written == 1
         info = await store.vector_db_service.get_collection_info(store.collection_name)
         assert info.exists and info.dense_dimension == DIM * 2
-        assert await _point(store, org, "topic", "t1") is not None
+        assert await _point(writer, org, "topic", "t1") is not None  # read through the writer: the epoch keys are its
 
     async def test_a_same_dimension_model_change_waits_for_the_owner_to_recreate(
         self, store: EntityVectorStore,
@@ -804,6 +838,7 @@ class TestWriteOutcomeAndLocks:
                 await service.update_payload_by_ids(
                     collection, [store._point_id(org, "topic", "t1")],
                     {"connectorIds": ["c-gone", "c-other", "c-new"]},
+                    org_id=org,
                 )
             return await real_retrieve(collection, ids)
 

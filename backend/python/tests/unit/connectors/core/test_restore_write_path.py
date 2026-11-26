@@ -35,6 +35,9 @@ def _processor() -> DataSourceEntitiesProcessor:
     proc.org_id = "org-1"
     proc.messaging_producer = AsyncMock()
     proc.messaging_producer.send_messages = AsyncMock(side_effect=lambda topic, messages: [True] * len(messages))
+    # Title events have their own tests (test_dsp_record_title_events.py); here they would only share send_messages.
+    proc._publish_record_titles = AsyncMock()
+    proc.get_typed_records_by_ids = AsyncMock(return_value={})
     return proc
 
 
@@ -131,6 +134,16 @@ def _trashed(record_id: str, batch: str = "b-1", **overrides) -> Record:
 
 
 class TestRestoreTrashedRecords:
+    async def test_the_restored_records_get_their_title_points_back(self) -> None:
+        proc = _processor()
+        rec = _stored("r1")
+        proc.get_typed_records_by_ids = AsyncMock(return_value={"r1": rec})
+        _with_store(proc, _Store([_trashed("r1")]))
+        with patch(f"{MODULE}.notify_kb_records_changed", AsyncMock()), patch(f"{MODULE}.record_restored"):
+            await proc.restore_trashed_records("c1", "b-1", [{"id": "r1"}])
+        proc.get_typed_records_by_ids.assert_awaited_once_with(["r1"])
+        assert list(proc._publish_record_titles.await_args.args[0]) == [rec]
+
     async def test_a_trashed_parent_refuses_only_when_asked(self) -> None:
         proc = _processor()
         store = _with_store(proc, _Store([_trashed("r1"), _trashed("folder-1", batch="b-2")]))
@@ -155,7 +168,7 @@ class TestRestoreTrashedRecords:
         ((restores, batch),) = store.restored
         assert batch == "b-1"
         assert restores == [{"id": "r1", "set": {"indexingStatus": "NOT_STARTED"}}, {"id": "r2", "set": {}}]
-        notify.assert_awaited_once_with("c1")
+        notify.assert_awaited_once_with("c1", "org-1")
         counted.assert_called_once_with(DeleteSource.USER.value, 2)
 
     async def test_a_released_external_id_is_given_back_when_free(self) -> None:

@@ -31,6 +31,9 @@ fields:
   merged_by:
     required: false
     type: string
+  milestone:
+    required: false
+    type: string
   review_email:
     required: false
     type: array

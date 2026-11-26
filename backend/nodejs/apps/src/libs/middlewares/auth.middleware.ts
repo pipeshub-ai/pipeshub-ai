@@ -1,24 +1,58 @@
 // auth.middleware.ts
 import { Response, NextFunction, Request, RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
-import { UnauthorizedError } from '../errors/http.errors';
+import { ForbiddenError, UnauthorizedError } from '../errors/http.errors';
+import { orgLifecycle } from '../org-lifecycle';
 import { Logger } from '../services/logger.service';
 import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';
 import { AuthTokenService } from '../services/authtoken.service';
 import { inject, injectable } from 'inversify';
-import { IUserActivity, UserActivities } from '../../modules/auth/schema/userActivities.schema';
-import { userActivitiesType } from '../utils/userActivities.utils';
+import {
+  getActivityRepository,
+  type ActivityDto,
+} from '../repositories/activity';
+import { getUserRepository } from '../repositories/user';
 import { findSessionRefusal } from '../utils/user-session.utils';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
 import { parseScopeString } from '../../modules/oauth_provider/services/scope.validator.service';
-import { Users } from '../../modules/user_management/schema/users.schema';
-import { Org } from '../../modules/user_management/schema/org.schema';
-import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
+import { getOrgRepository } from '../repositories/org';
+import {
+  getOAuthAppRepository,
+  NO_APP_CREATOR,
+} from '../repositories/oauth-app';
 import { assertDelegationStillHolds } from '../../modules/oauth_provider/services/delegation-guard';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
-import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
+import {
+  isPatClientId,
+  PAT_TOKEN_PREFIX,
+  SERVICE_TOKEN_PREFIX,
+  stripTokenDisplayPrefix,
+} from '../../modules/oauth_provider/constants/constants';
+import {
+  AuthAttemptMethod,
+  recordAuthAttempt,
+  refusalOutcome,
+} from '../services/telemetry/telemetry-impl';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
+import { setContextIdentity } from '../context/request-context';
+import { recordAgentCall } from './agent-call-recorder';
+import { MCP_PATH } from './rate-limit.middleware';
+import {
+  auditAuthRefusal,
+  authRefusal,
+  type AuthRefusalEvent,
+} from '../../modules/auth/utils/sign-in-audit';
+
+/** The user-held tokens whose refusal is an auth decision; S2S scopes are not audited. */
+const AUDITED_SCOPES: Readonly<Record<string, AuthRefusalEvent>> = {
+  [TokenScopes.TOKEN_REFRESH]: 'auth.session.refresh',
+  [TokenScopes.PASSWORD_RESET]: 'auth.password_reset.complete',
+  [TokenScopes.VALIDATE_EMAIL]: 'auth.email.change',
+  // EE mounts these (org email verification at signup); OSS has no route for them.
+  [TokenScopes.ORG_EMAIL_VERIFY]: 'auth.email.verify',
+  [TokenScopes.EMAIL_VERIFIED]: 'auth.email.verify',
+};
 
 const CLIENT_NAME_HEADER = 'client-name';
 const WEB_CLIENT_NAME = 'pipeshub-ai';
@@ -26,7 +60,14 @@ export const TOKEN_CLIENT_NAME = 'api';
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
-const { PASSWORD_CHANGED } = userActivitiesType;
+/** What kind of bearer the header carries, read before `extractToken` strips its display prefix. */
+function bearerMethod(header: string | undefined): AuthAttemptMethod {
+  const token = header?.split(' ')[1] ?? '';
+  if (token.startsWith(PAT_TOKEN_PREFIX)) return 'pat';
+  if (token.startsWith(SERVICE_TOKEN_PREFIX)) return 'service_token';
+  return 'session';
+}
+
 // Delay in milliseconds between password change activity and token generation
 
 @injectable()
@@ -39,21 +80,38 @@ export class AuthMiddleware {
     this.authenticate = this.authenticate.bind(this);
   }
 
-  private isOAuthToken(
-    decoded: Record<string, any> | null,
-  ): boolean {
-    return decoded !== null && decoded.tokenType === 'oauth' && typeof decoded.client_id === 'string' && typeof decoded.iss === 'string';
+  private isOAuthToken(decoded: Record<string, any> | null): boolean {
+    return (
+      decoded !== null &&
+      decoded.tokenType === 'oauth' &&
+      typeof decoded.client_id === 'string' &&
+      typeof decoded.iss === 'string'
+    );
   }
 
   async authenticate(
     req: AuthenticatedUserRequest,
-    _res: Response,
+    res: Response,
     next: NextFunction,
   ) {
+    let method = bearerMethod(req.headers.authorization);
+    let presented = false;
+    let accepted = false;
     try {
       const token = this.extractToken(req);
       if (!token) {
         throw new UnauthorizedError('No token provided');
+      }
+      presented = true;
+
+      // A sign-in good for its own routes only (which verify it themselves) is
+      // refused here, after checking it is genuine, so a forged one reads as any bad token.
+      const limited = orgLifecycle().scopedTokenGuard(token);
+      if (limited !== false) {
+        await this.tokenService.verifyUserActionToken(token, limited.scope);
+        throw new ForbiddenError(limited.message, {
+          reasonCode: limited.reasonCode,
+        });
       }
 
       // peek at the token payload to determine token type
@@ -63,12 +121,17 @@ export class AuthMiddleware {
         // authenticate regular token
         await this.authenticateRegularToken(token, req);
       } else {
+        if (method === 'session') method = 'oauth_token';
         if (!this.oauthTokenServiceFactory()) {
           throw new UnauthorizedError('OAuth authentication is not configured');
         }
         // authenticate oauth token
         await this.authenticateOAuthToken(token, req);
       }
+
+      accepted = true;
+      recordAuthAttempt(method, 'success');
+      recordAgentCall(req, res);
 
       // Bind the verified token's org for the rest of the request (never a client field).
       const orgId = req.user?.orgId as string | undefined;
@@ -86,8 +149,28 @@ export class AuthMiddleware {
         next();
       }
     } catch (error) {
+      // A request with no credential is not an attempt; a handler's error after acceptance is not a refusal.
+      if (presented && !accepted)
+        recordAuthAttempt(method, refusalOutcome(error));
       next(error);
     }
+  }
+
+  /**
+   * The token is verified, so its organisation and user are the ones the account reads that follow run as. (They are
+   * bound for the rest of the request once authentication has finished.)
+   */
+  private asVerified<T>(
+    orgId: string | undefined,
+    userId: string | undefined,
+    source: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (!orgId) return fn();
+    return runWithOrgContext(
+      makeOrgContext({ orgId, userId: userId || null, kind: 'user', source }),
+      fn,
+    );
   }
 
   /**
@@ -99,13 +182,16 @@ export class AuthMiddleware {
   ): Promise<void> {
     const decoded = await this.tokenService.verifyToken(token);
     req.user = decoded;
+    // Context middleware runs before auth, so this is the first point the org is known. Bound before the session
+    // check on purpose: the signature is valid, so a refused session's 401 still says whose it was.
+    setContextIdentity({ orgId: decoded.orgId, userId: decoded.userId });
 
     const refusal = await findSessionRefusal(decoded, this.logger);
     if (refusal) {
       throw new UnauthorizedError(refusal);
     }
 
-    this.logger.debug('User authenticated', decoded);
+    this.logger.debug('User authenticated');
   }
 
   /**
@@ -120,6 +206,18 @@ export class AuthMiddleware {
 
     // verify the oauth token (checks signature, expiry, revocation status)
     const payload = await oauthTokenService.verifyAccessToken(token);
+
+    // Audience-bound tokens (RFC 8707) are only issued for /mcp, so one works elsewhere only
+    // as part of an /mcp tool call. That includes the role lookup a Python service makes for the
+    // call, which forwards the relay header it was sent.
+    const route = `${req.baseUrl}${req.path}`.replace(/\/$/, '');
+    if (
+      payload.aud !== undefined &&
+      route !== MCP_PATH &&
+      !this.tokenService.isMcpRelay(req)
+    ) {
+      throw new UnauthorizedError('This token is only valid at /mcp');
+    }
 
     const tokenScopes = parseScopeString(payload.scope);
     if (tokenScopes.length === 0) {
@@ -145,17 +243,19 @@ export class AuthMiddleware {
     const isClientCredentials = userId === payload.client_id;
     if (isClientCredentials) {
       try {
-        const app = await OAuthApp.findOne({
-          clientId: payload.client_id,
-          isDeleted: false,
-        })
-          .select('createdBy tokenIdentityUserId')
-          .lean()
-          .exec();
+        const app = await getOAuthAppRepository().findLiveIdentity(
+          payload.client_id,
+        );
         if (app) {
           // Absent means the creator, which is how every app behaves until
           // someone points it at a service account.
-          const resolved = (app.tokenIdentityUserId ?? app.createdBy).toString();
+          const resolved = app.tokenIdentityUserId ?? app.createdBy;
+          // An app no person created has nobody for its client_credentials tokens to act as.
+          if (resolved === NO_APP_CREATOR) {
+            throw new UnauthorizedError(
+              'This application does not act as a user',
+            );
+          }
 
           // The token carries the identity it was minted for. If the
           // application has been pointed somewhere else since, this token is
@@ -200,14 +300,9 @@ export class AuthMiddleware {
 
     let email: string | undefined;
     let role: 'admin' | 'member' | undefined;
-    const user = await Users.findOne({
-      _id: userId,
-      orgId: orgId,
-      isDeleted: false,
-    })
-      .select('email fullName role isDisabled kind')
-      .lean()
-      .exec();
+    const user = await this.asVerified(orgId, userId, 'oauth', () =>
+      getUserRepository().getAuthSnapshot(orgId, userId),
+    );
 
     // Unlike session auth, OAuth/PAT tokens can outlive the user by
     // months or years — a removed employee's token must stop working
@@ -237,10 +332,13 @@ export class AuthMiddleware {
     // document (`users.routes.ts:319`) instead of trusting the request. There
     // is no value to clamp that both halves would agree on, so the only
     // answer that fails closed is no token at all.
-    if (payload.act?.sub !== undefined) {
+    const delegatedBy = payload.act?.sub;
+    if (delegatedBy !== undefined) {
       // The rules live in one place because OAuthAuthMiddleware needs the
       // same ones for the OIDC endpoints; see delegation-guard.ts.
-      await assertDelegationStillHolds(payload.act.sub, userId, orgId, user);
+      await this.asVerified(orgId, userId, 'oauth', () =>
+        assertDelegationStillHolds(delegatedBy, userId, orgId, user),
+      );
     }
 
     email = user.email;
@@ -260,13 +358,9 @@ export class AuthMiddleware {
 
     if (!accountType && isClientCredentials) {
       try {
-        const org = await Org.findOne({
-          _id: orgId,
-          isDeleted: false,
-        })
-          .select('accountType')
-          .lean()
-          .exec();
+        const org = await this.asVerified(orgId, userId, 'oauth', () =>
+          getOrgRepository().getAccountType(orgId),
+        );
         if (org) {
           accountType = org.accountType;
         }
@@ -276,6 +370,9 @@ export class AuthMiddleware {
       }
     }
 
+    // A decoded token's JSON may carry null where the type says absent.
+    const signedLimit: unknown = payload.knowledgeLimit;
+    const appLimitSigned = signedLimit !== undefined && signedLimit !== null;
     req.user = {
       userId,
       orgId,
@@ -284,9 +381,26 @@ export class AuthMiddleware {
       accountType,
       role,
       isOAuth: true,
+      tokenId: payload.tokenRowId,
+      delegatedBy,
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
+      oauthAudience: payload.aud,
+      // The Python services take a personal access token's limit from here,
+      // via /api/v1/users/me/role, because its owner can change it after the
+      // token was signed. null: everything the owner can see.
+      ...(isPatClientId(payload.client_id)
+        ? { knowledgeLimit: payload.knowledgeLimit ?? null }
+        : {}),
+      // An OAuth app token keeps the limit its user agreed to, signed into the
+      // token, which Python reads from the token itself. The harness still has
+      // to see it: a durable run works later without the token and could not
+      // hold to it, so a limited credential never starts one.
+      ...(!isPatClientId(payload.client_id) && appLimitSigned
+        ? { oauthAppKnowledgeLimit: payload.knowledgeLimit }
+        : {}),
     };
+    setContextIdentity({ orgId, userId });
     // The web app's client name lets an agent run wait for a person to approve a tool call.
     // An OAuth or personal access token is a program, not the web app, so it can't claim it.
     if (
@@ -304,7 +418,7 @@ export class AuthMiddleware {
     });
   }
 
-  scopedTokenValidator = (scope: string): RequestHandler => {
+  scopedTokenValidator = (scope: string, audience?: string): RequestHandler => {
     return async (
       req: AuthenticatedServiceRequest,
       _res: Response,
@@ -314,31 +428,47 @@ export class AuthMiddleware {
         const token = this.extractToken(req);
 
         if (!token) {
-          throw new UnauthorizedError('No token provided');
+          throw authRefusal(
+            new UnauthorizedError('No token provided'),
+            'no_token',
+          );
         }
 
-        const decoded = await this.tokenService.verifyScopedToken(token, scope);
+        const decoded = await this.tokenService
+          .verifyScopedToken(token, scope, audience)
+          .catch((error: unknown) => {
+            if (!(error instanceof UnauthorizedError)) throw error;
+            const { cause } = error as { cause?: unknown };
+            throw authRefusal(
+              error,
+              cause instanceof jwt.TokenExpiredError
+                ? 'token_expired'
+                : 'token_invalid',
+            );
+          });
         req.tokenPayload = decoded;
         req.verifiedToken = token;
 
-        const userId = decoded?.userId;
+        const userId = decoded?.userId as string | undefined;
         const orgId = decoded?.orgId as string | undefined;
+        setContextIdentity({ orgId, userId });
 
-        this.logger.debug(`userId: ${userId}, orgId: ${orgId}, scope: ${scope}`);
+        this.logger.debug('Scoped token verified', { scope });
 
-        if (userId && orgId && (scope === TokenScopes.PASSWORD_RESET || scope === TokenScopes.VALIDATE_EMAIL)) {
-          let userActivity: Pick<IUserActivity, 'createdAt'> | null = null;
+        if (
+          userId &&
+          orgId &&
+          (scope === TokenScopes.PASSWORD_RESET ||
+            scope === TokenScopes.VALIDATE_EMAIL)
+        ) {
+          let userActivity: Pick<ActivityDto, 'createdAt'> | null = null;
           try {
-            userActivity = await UserActivities.findOne({
-              userId: userId,
-              orgId: orgId,
-              isDeleted: false,
-              activityType: PASSWORD_CHANGED,
-            })
-              .sort({ createdAt: -1 }) // sort by most recent first
-              .lean()
-              .exec();
-
+            userActivity = await this.asVerified(
+              orgId,
+              userId,
+              'scoped_jwt',
+              () => getActivityRepository().latestPasswordChange(userId, orgId),
+            );
           } catch (activityError) {
             this.logger.error('Failed to fetch user activity', activityError);
           }
@@ -347,18 +477,27 @@ export class AuthMiddleware {
             const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
             const activityTimestamp = userActivity.createdAt?.getTime() || 0;
             if (activityTimestamp > tokenIssuedAt) {
-              throw new UnauthorizedError('Password reset link expired, please request for a new link');
+              throw authRefusal(
+                new UnauthorizedError(
+                  'Password reset link expired, please request for a new link',
+                ),
+                'link_used',
+              );
             }
           }
         }
 
-        this.logger.debug('User authenticated', decoded);
+        this.logger.debug('Scoped service token authenticated', {
+          scope,
+          audience: decoded.aud as unknown,
+          workerId: decoded.workerId as unknown,
+        });
         // Pre-org flows (login lookups, mail) mint scoped tokens without an orgId; they stay unbound.
         if (orgId) {
           runWithOrgContext(
             makeOrgContext({
               orgId,
-              userId: userId ? String(userId) : null,
+              userId: userId || null,
               kind: 'service',
               source: 'scoped_jwt',
             }),
@@ -368,6 +507,8 @@ export class AuthMiddleware {
           next();
         }
       } catch (error) {
+        const event = AUDITED_SCOPES[scope];
+        if (event) auditAuthRefusal(event, error);
         next(error);
       }
     };

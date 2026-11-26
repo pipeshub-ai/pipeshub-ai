@@ -7,7 +7,10 @@ from typing import Any, Dict, Optional  # noqa: UP035 - keep aliases for legacy 
 from urllib.parse import quote, urlparse
 
 from app.config.configuration_service import ConfigurationService
-from app.connectors.core.base.token_service.oauth_service import OAuthConfig
+from app.connectors.core.base.token_service.oauth_service import (
+    OAuthConfig,
+    OAuthStoreUnavailableError,
+)
 from app.connectors.core.constants import AuthFieldKeys
 
 logger = logging.getLogger(__name__)
@@ -70,16 +73,18 @@ def extract_oauth_error_message(exc: Exception) -> str:
     helper span more than just the OAuth token exchange (DB updates, cache
     refresh, scheduling), so ``exc`` may carry internal details unrelated to
     the OAuth provider. Instead it only classifies the exception against a
-    fixed allow-list of known messages, logging any provider-supplied
-    description server-side for debugging.
+    fixed allow-list of known messages. Callers hand ``exc`` to the request
+    line without its text (``mark_request_failure(..., include_error_text=False)``).
 
-    The function tries, in order:
+    An ``OAuthStoreUnavailableError`` (our own store failed, not the provider) answers a retry message. Otherwise
+    the function tries, in order:
       1. Parse the embedded JSON response from the exception message
-      2. Log any ``error_description``/``message`` the provider supplied (not returned)
-      3. Map the ``error`` code to a known user-friendly string
-      4. Use the HTTP status code for a generic message
-      5. Fall back to a safe generic message
+      2. Map the ``error`` code to a known user-friendly string
+      3. Use the HTTP status code for a generic message
+      4. Fall back to a safe generic message
     """
+    if isinstance(exc, OAuthStoreUnavailableError):
+        return "PipesHub couldn't record this sign-in because its own storage didn't respond. Please try again."
     msg = str(exc)
 
     # --- 1. Try to extract the JSON body from the exception string --------
@@ -92,18 +97,7 @@ def extract_oauth_error_message(exc: Exception) -> str:
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # --- 2. Log the provider's human-readable description (never returned) ---
-    if isinstance(error_body, dict):
-        # Standard OAuth / Atlassian / Google / Microsoft / GitHub / GitLab / Linear
-        description = (error_body.get("error_description") or "").strip()
-        # Notion uses "message" instead of "error_description"
-        if not description:
-            description = (error_body.get("message") or "").strip()
-        # Slack uses "error" as a code string, no separate description
-        if description:
-            logger.info(f"OAuth token exchange failed, provider description: {description[:500]}")
-
-    # --- 3. Map the error code to a known message -------------------------
+    # --- 2. Map the error code to a known message -------------------------
     error_code = ""
     if isinstance(error_body, dict):
         error_code = (error_body.get("error") or "").strip().lower()
@@ -114,14 +108,14 @@ def extract_oauth_error_message(exc: Exception) -> str:
     if error_code and error_code in _OAUTH_ERROR_CODE_MAP:
         return f"{_OAUTH_ERROR_CODE_MAP[error_code]} Please update it in the admin settings."
 
-    # --- 4. Fallback: regex scan for known codes in the raw message -------
+    # --- 3. Fallback: regex scan for known codes in the raw message -------
     # Handles cases where JSON parsing failed but the error code is in the text
     msg_lower = msg.lower()
     for code, friendly in _OAUTH_ERROR_CODE_MAP.items():
         if code in msg_lower:
             return f"{friendly} Please update it in the admin settings."
 
-    # --- 5. HTTP status code fallback -------------------------------------
+    # --- 4. HTTP status code fallback -------------------------------------
     status_match = re.search(r"status (\d{3})", msg)
     if status_match:
         status = int(status_match.group(1))
@@ -138,9 +132,12 @@ def extract_oauth_error_message(exc: Exception) -> str:
         if status >= 500:
             return "The OAuth provider is experiencing issues. Please try again later."
 
-    # --- 6. Check for common ValueError messages from handle_callback -----
+    # --- 5. Check for common ValueError messages from handle_callback -----
     if "Invalid or expired state" in msg:
         return "The authentication session has expired. Please close this window and try again."
+    if "already submitted" in msg:
+        return ("This sign-in was already submitted. Close this window and check the connector; "
+                "if it isn't connected, start a new sign-in.")
     if "already been used" in msg:
         return "This authorization code has already been used. Please close this window and start a new authentication."
 
@@ -356,6 +353,8 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
             token_url=token_url,
             scope=' '.join(auth_config.get('scopes', [])) if auth_config.get('scopes') else ''
         )
+
+    oauth_config.public_only = bool(auth_config.get("publicOnly"))
 
     if auth_config.get('tokenAccessType'):
         oauth_config.token_access_type = auth_config.get('tokenAccessType')
@@ -590,3 +589,71 @@ async def fetch_oauth_config_by_id(
         if logger:
             logger.error("Error fetching OAuth config")
         return None
+
+
+# ============================================================================
+# Personal OAuth apps
+# ============================================================================
+
+# Set by the server on an OAuth app someone created for their own personal connector, and
+# never taken from a request. Only that person may list, link, change or sign in with the
+# app. An app without it belongs to the org.
+OAUTH_APP_OWNER_FIELD = "ownerUserId"
+
+OAUTH_APPS_PREFIX = "/services/oauth/"
+
+
+def oauth_app_owner(app: dict[str, Any] | None) -> str | None:
+    """The user a personal OAuth app belongs to, or None for an org app."""
+    owner = (app or {}).get(OAUTH_APP_OWNER_FIELD)
+    # Any other stored value still names an owner, so a damaged record stays private.
+    return None if owner in (None, "") else str(owner)
+
+
+def oauth_app_usable_by(app: dict[str, Any] | None, user_id: str | None) -> bool:
+    """Whether ``user_id`` may see and use ``app``: an org app, or their own personal app."""
+    owner = oauth_app_owner(app)
+    return owner is None or (bool(user_id) and owner == user_id)
+
+
+async def oauth_app_public_only(
+    auth_config: dict[str, Any] | None,
+    config_service: ConfigurationService,
+    logger: logging.Logger | None = None,
+) -> bool:
+    """Whether a connector's server calls may reach public addresses only.
+
+    A person's own connector may carry addresses they typed (a GitLab instance URL), so it is
+    held to public addresses unless it is linked to an org app that still exists. A team
+    connector's addresses come from an administrator and keep the deployment's rule.
+    """
+    auth_config = auth_config or {}
+    if str(auth_config.get("connectorScope") or "").lower() != "personal":
+        return False
+    app = await fetch_oauth_config_by_id(
+        oauth_config_id=auth_config.get("oauthConfigId") or "",
+        connector_type=auth_config.get("connectorType") or "",
+        config_service=config_service,
+        logger=logger,
+    )
+    return app is None or oauth_app_owner(app) is not None
+
+
+async def remove_personal_oauth_apps(config_service: ConfigurationService, org_id: str, user_id: str) -> int:
+    """Remove a deleted user's personal OAuth apps of every connector type. Returns how many went."""
+    removed = 0
+    for key in await config_service.list_keys_in_directory(OAUTH_APPS_PREFIX):
+        # A failed read must fail the cleanup, not read as a type with no apps.
+        apps = await config_service.get_config(key, default=[], use_cache=False, raise_on_error=True)
+        if not isinstance(apps, list):
+            continue
+        kept = [
+            app for app in apps
+            if not (isinstance(app, dict) and app.get("orgId") == org_id and oauth_app_owner(app) == user_id)
+        ]
+        if len(kept) == len(apps):
+            continue
+        if not await config_service.set_config(key, kept):
+            raise RuntimeError(f"Could not save {key} without the deleted user's OAuth apps")
+        removed += len(apps) - len(kept)
+    return removed

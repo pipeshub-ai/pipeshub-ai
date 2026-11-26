@@ -2,16 +2,51 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Literal
+from urllib.parse import parse_qs, urlsplit
 
 from app.core.db.errors import DbConfigError
 
 Pooler = Literal["pgbouncer_txn", "none", "azure_pgbouncer", "pgbouncer_session"]
 _POOLERS = ("pgbouncer_txn", "none", "azure_pgbouncer", "pgbouncer_session")
 _SERVICE = re.compile(r"[a-z][a-z0-9_]{0,30}")
+
+
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+_PLAINTEXT_MODES = ("disable", "allow", "prefer")
+# Callers rebuild configs on every use; without this the same warning repeats many times per process.
+_PLAINTEXT_WARNED: set[tuple[str, str, str]] = set()
+_PLAINTEXT_WARNED_LOCK = threading.Lock()
+
+
+def warn_if_plaintext_remote(var: str, url: str) -> None:
+    """Warn once per process per (variable, host, sslmode) when a non-local PostgreSQL URL may connect without TLS.
+
+    Names the variable, never the URL.
+    """
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        query = parse_qs(parts.query)
+    except ValueError:
+        return
+    host = (query.get("host") or [host])[0]
+    if not host or host.startswith("/") or host in _LOCAL_HOSTS:
+        return
+    sslmode = (query.get("sslmode") or ["prefer"])[0]
+    if sslmode in _PLAINTEXT_MODES:
+        with _PLAINTEXT_WARNED_LOCK:
+            if (var, host, sslmode) in _PLAINTEXT_WARNED:
+                return
+            _PLAINTEXT_WARNED.add((var, host, sslmode))
+        logging.getLogger(__name__).warning(
+            "%s points at a non-local PostgreSQL host without TLS; add ?sslmode=verify-full (at least require)", var
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +80,6 @@ class DbConfig:
     fence: bool = True  # write UoWs assert the deployment-profile epoch read at start
     want_extensions: tuple[str, ...] = ()
     app_version: str = "dev"
-    slow_statement_ms: int = 500
 
     def __post_init__(self) -> None:
         if not _SERVICE.fullmatch(self.service):
@@ -75,6 +109,8 @@ class DbConfig:
     @classmethod
     def from_env(cls, service: str) -> DbConfig:
         env = os.environ
+        for var in ("PG_CORE_URL", "PG_JOBS_URL"):
+            warn_if_plaintext_remote(var, env.get(var, ""))
         return cls(
             service=service,
             dsn=env.get("PG_CORE_URL", ""),

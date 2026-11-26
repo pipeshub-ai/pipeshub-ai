@@ -20,10 +20,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
 import pytest
-from zammad_behaviour_fakes import T0, FakeHttpResponse, FakeRecordsDb
+from zammad_behaviour_fakes import T0, FakeHttpResponse, FakeRecordsDb, run_full_sync
 
-from app.connectors.sources.zammad.connector import KB_SYNC_POINT_KEY, ZammadConnector
-from app.models.entities import Record, WebpageRecord
+from app.connectors.sources.zammad import connector as zammad_connector
+from app.connectors.sources.zammad.connector import (
+    KB_SYNC_POINT_KEY,
+    ReadOutcome,
+    ZammadConnector,
+)
+from app.models.entities import FileRecord, Record, WebpageRecord
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.external.zammad.zammad import ZammadDataSource
 
@@ -66,6 +71,10 @@ class FakeZammad64Kb:
         self.init_status = 200
         self.init_body: object | None = None
         self.calls: list[tuple[str, str, dict[str, str]]] = []
+        # Answers left out of the listing (deleted, or no longer visible to the token).
+        self.unlisted: set[int] = set()
+        # answer id -> HTTP status GET .../answers/{id} answers with instead of the answer
+        self.answer_status: dict[int, int] = {}
 
     def edit_answer(self, answer_id: int, seconds: float) -> None:
         self.answers[answer_id]["updated_at"] = stamp(seconds)
@@ -105,11 +114,20 @@ class FakeZammad64Kb:
         if path == "/api/v1/knowledge_bases/init" and request.method == "POST":
             if self.init_body is not None:
                 return FakeHttpResponse(self.init_status, self.init_body)
+            listed = [a for a in self.answers if a not in self.unlisted]
             return FakeHttpResponse(self.init_status, {
                 **self._structure(),
-                "KnowledgeBaseAnswer": {str(a): dict(data) for a, data in self.answers.items()},
-                "KnowledgeBaseAnswerTranslation": self._translations(list(self.answers)),
+                "KnowledgeBaseAnswer": {str(a): dict(self.answers[a]) for a in listed},
+                "KnowledgeBaseAnswerTranslation": self._translations(listed),
             })
+        answer_read = re.fullmatch(rf"/api/v1/knowledge_bases/{KB_ID}/answers/(\d+)", path)
+        if answer_read and request.method == "GET":
+            answer_id = int(answer_read.group(1))
+            if answer_id in self.answer_status:
+                return FakeHttpResponse(self.answer_status[answer_id], {"error": "not now"})
+            if answer_id not in self.answers:
+                return FakeHttpResponse(404, {"error": f"Couldn't find KnowledgeBase::Answer with 'id'={answer_id}"})
+            return FakeHttpResponse(200, {"assets": {"KnowledgeBaseAnswer": {str(answer_id): self.answers[answer_id]}}})
         if re.fullmatch(r"/api/v1/knowledge_bases/\d+/categories/\d+/permissions", path):
             return FakeHttpResponse(200, {"permissions": [{"role_id": 1, "access": "editor"}]})
         return FakeHttpResponse(404, {"error": f"no route {path}"})
@@ -140,7 +158,9 @@ class KbRecords(FakeRecordsDb):
         self.fail_lookup_for: set[str] = set()
         self.group_writes: list[tuple[str, str]] = []
 
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
+    async def get_record_by_external_id(
+        self, connector_id: str, external_record_id: str, *, raise_on_error: bool = False,
+    ) -> Record | None:
         if external_record_id in self.fail_lookup_for:
             raise RuntimeError("graph unavailable")
         return await super().get_record_by_external_id(connector_id, external_record_id)
@@ -210,7 +230,10 @@ async def test_every_answer_in_a_knowledge_base_larger_than_a_page_is_read_once(
     assert sorted(records.answer_writes) == sorted(f"kb_answer_{a}" for a in range(1, ANSWERS + 1))
     assert len(records.answer_writes) == len(set(records.answer_writes))
     assert zammad.searches() == []
-    assert [(m, p) for m, p, _ in zammad.calls] == [("POST", "/api/v1/knowledge_bases/init")]
+    # One listing; besides it, only each category's permissions are read, never an answer.
+    assert [(m, p) for m, p, _ in zammad.calls] == [("POST", "/api/v1/knowledge_bases/init")] + [
+        ("GET", f"/api/v1/knowledge_bases/{KB_ID}/categories/{cid}/permissions") for cid in CATEGORIES
+    ]
     assert _kb_sync_point(connector) == _newest(zammad, connector) + 1000
     # Answers land in their category; the nested one hangs under its parent category.
     assert records.records["kb_answer_2"].external_record_group_id == "cat_3"
@@ -293,3 +316,419 @@ async def test_an_answer_that_fails_to_write_is_read_again_on_the_next_sync() ->
     assert held_at == connector._parse_zammad_datetime(zammad.answers[20]["updated_at"])
     assert "kb_answer_20" in records.answer_writes
     assert _kb_sync_point(connector) == _newest(zammad, connector) + 1000
+
+
+async def test_a_listing_that_cannot_be_read_makes_the_sync_incomplete() -> None:
+    zammad, records = FakeZammad64Kb(ANSWERS), KbRecords()
+    zammad.init_status, zammad.init_body = 503, {"error": "unavailable"}
+    with _connector(zammad, records) as connector:
+        await connector._sync_knowledge_bases()
+
+    assert connector._incomplete == ["the knowledge base listing"]
+
+
+async def test_an_answer_that_fails_to_write_makes_the_sync_incomplete() -> None:
+    zammad, records = FakeZammad64Kb(ANSWERS), KbRecords()
+    records.fail_lookup_for = {"kb_answer_20"}
+    with _connector(zammad, records) as connector:
+        await connector._sync_knowledge_bases()
+
+    assert connector._incomplete == ["1 knowledge base answer(s)"]
+    # The categories' editors are recorded only once every answer they gate was written.
+    assert "category_editors" not in connector.kb_sync_point.points.get(KB_SYNC_POINT_KEY, {})
+
+
+# ---- answers that leave the listing -------------------------------------------
+
+PDF = {"id": 70, "filename": "guide.pdf", "size": 3, "preferences": {"Content-Type": "application/pdf"}}
+
+
+def _answer_reads(zammad: FakeZammad64Kb) -> list[str]:
+    return [p for m, p, _ in zammad.calls if m == "GET" and "/answers/" in p]
+
+
+async def test_an_answer_deleted_in_zammad_is_removed_with_its_attachments() -> None:
+    zammad, records = FakeZammad64Kb(ANSWERS), KbRecords()
+    zammad.answers[3]["attachments"] = [dict(PDF)]
+    with _connector(zammad, records) as connector:
+        await connector._sync_knowledge_bases()
+        assert {"kb_answer_3", "kb_answer_3_attachment_70"} <= records.external_ids()
+
+        del zammad.answers[3]
+        await connector._sync_knowledge_bases()
+
+    assert not {"kb_answer_3", "kb_answer_3_attachment_70"} & records.external_ids()
+    # The attachment goes first, so a failure never strands it without its answer.
+    assert records.deleted == ["kb_answer_3_attachment_70", "kb_answer_3"]
+    assert _answer_reads(zammad) == [f"/api/v1/knowledge_bases/{KB_ID}/answers/3"]
+    assert connector._incomplete == []
+
+
+async def test_an_answer_the_token_may_no_longer_read_is_kept() -> None:
+    """403 does not say the answer is gone, only that this token may not see it."""
+    zammad, records = FakeZammad64Kb(ANSWERS), KbRecords()
+    with _connector(zammad, records) as connector:
+        await connector._sync_knowledge_bases()
+        zammad.unlisted.add(3)
+        zammad.answer_status[3] = 403
+        await connector._sync_knowledge_bases()
+
+    assert "kb_answer_3" in records.external_ids()
+    assert records.deleted == []
+    assert connector._incomplete == []
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_an_answer_that_cannot_be_read_back_is_kept_and_the_sync_is_incomplete(status: int) -> None:
+    zammad, records = FakeZammad64Kb(ANSWERS), KbRecords()
+    with _connector(zammad, records) as connector:
+        await connector._sync_knowledge_bases()
+        del zammad.answers[3]
+        zammad.answer_status[3] = status
+        await connector._sync_knowledge_bases()
+        assert "kb_answer_3" in records.external_ids()
+        assert connector._incomplete == ["the check of knowledge base answer 3"]
+
+        # Read again on the next sync, and removed once Zammad says it is gone.
+        del zammad.answer_status[3]
+        connector._incomplete = []
+        await connector._sync_knowledge_bases()
+
+    assert "kb_answer_3" not in records.external_ids()
+    assert connector._incomplete == []
+
+
+async def test_an_answer_listed_nowhere_but_still_readable_is_kept() -> None:
+    zammad, records = FakeZammad64Kb(ANSWERS), KbRecords()
+    with _connector(zammad, records) as connector:
+        await connector._sync_knowledge_bases()
+        zammad.unlisted.add(3)
+        await connector._sync_knowledge_bases()
+
+    assert "kb_answer_3" in records.external_ids()
+    assert records.deleted == []
+
+
+async def test_an_answer_already_in_the_trash_is_not_read_back() -> None:
+    zammad, records = FakeZammad64Kb(ANSWERS), KbRecords()
+    with _connector(zammad, records) as connector:
+        await connector._sync_knowledge_bases()
+        records.records["kb_answer_3"].is_deleted = True
+        del zammad.answers[3]
+        await connector._sync_knowledge_bases()
+
+    assert _answer_reads(zammad) == []
+    assert records.deleted == []
+
+
+async def test_an_answer_in_the_trash_that_zammad_lists_again_is_written_again() -> None:
+    zammad, records = FakeZammad64Kb(ANSWERS), KbRecords()
+    with _connector(zammad, records) as connector:
+        await connector._sync_knowledge_bases()
+        records.records["kb_answer_3"].is_deleted = True
+        records.answer_writes.clear()
+        await connector._sync_knowledge_bases()
+
+    assert records.answer_writes == ["kb_answer_3"]
+
+
+async def test_an_answer_listed_but_not_held_is_written_though_unchanged() -> None:
+    zammad, records = FakeZammad64Kb(ANSWERS), KbRecords()
+    with _connector(zammad, records) as connector:
+        await connector._sync_knowledge_bases()
+        del records.records["kb_answer_9"]  # removed from PipesHub, still in Zammad
+        records.answer_writes.clear()
+        await connector._sync_knowledge_bases()
+
+    assert records.answer_writes == ["kb_answer_9"]
+
+
+# ---- scheduled state changes ---------------------------------------------------
+
+def _at(monkeypatch: pytest.MonkeyPatch, seconds: float) -> None:
+    now = int((T0 + timedelta(seconds=seconds)).timestamp() * 1000)
+    monkeypatch.setattr(zammad_connector, "get_epoch_timestamp_in_ms", lambda: now)
+
+
+async def test_a_scheduled_publish_is_written_when_it_comes_due(monkeypatch: pytest.MonkeyPatch) -> None:
+    zammad, records = FakeZammad64Kb(ANSWERS), KbRecords()
+    zammad.answers[4]["published_at"] = stamp(200_000)  # internal now, published later
+    with _connector(zammad, records) as connector:
+        _at(monkeypatch, 100_000)
+        await connector._sync_knowledge_bases()
+        assert records.records["kb_answer_4"].inherit_permissions is True  # internal: the category's readers
+        records.answer_writes.clear()
+
+        _at(monkeypatch, 150_000)
+        await connector._sync_knowledge_bases()
+        assert records.answer_writes == []  # not due yet
+
+        _at(monkeypatch, 300_000)
+        await connector._sync_knowledge_bases()
+        due = list(records.answer_writes)
+        records.answer_writes.clear()
+        await connector._sync_knowledge_bases()
+
+    # Nothing in the answer was edited (updated_at is as it was): the due time alone rewrites it.
+    assert due == ["kb_answer_4"]
+    assert records.records["kb_answer_4"].inherit_permissions is False  # published: everyone
+    assert _kb_sync_point(connector) == connector._parse_zammad_datetime(stamp(200_000)) + 1000
+    assert records.answer_writes == []
+
+
+
+# ---- full sync: the runner unlinks every held node the run did not note ----
+
+EMPTY_CATEGORY = 4
+
+
+class FakeZammad64KbWithEmptyCategory(FakeZammad64Kb):
+    """Category 4 holds no answer, so it can be deleted in Zammad between syncs."""
+
+    def __init__(self, answer_count: int) -> None:
+        super().__init__(answer_count)
+        self.empty_category = True
+        # Categories left out of the listing (no longer visible to the token), with their answers.
+        self.hidden_categories: set[int] = set()
+
+    def hide_category(self, category_id: int) -> None:
+        self.hidden_categories.add(category_id)
+        self.unlisted |= {a for a, answer in self.answers.items() if answer["category_id"] == category_id}
+
+    def _structure(self) -> dict[str, Any]:
+        structure = super()._structure()
+        for category_id in self.hidden_categories:
+            structure["KnowledgeBase"][str(KB_ID)]["category_ids"].remove(category_id)
+            del structure["KnowledgeBaseCategory"][str(category_id)]
+            del structure["KnowledgeBaseCategoryTranslation"][str(100 + category_id)]
+        if self.empty_category:
+            structure["KnowledgeBase"][str(KB_ID)]["category_ids"].append(EMPTY_CATEGORY)
+            structure["KnowledgeBaseCategory"][str(EMPTY_CATEGORY)] = {
+                "id": EMPTY_CATEGORY, "knowledge_base_id": KB_ID, "parent_id": None, "translation_ids": [],
+            }
+        return structure
+
+
+# Answer 5 and the empty category are deleted in Zammad before the full sync; everything else is still there.
+KB_GONE_FROM_ZAMMAD = frozenset({f"recordGroup:cat_{EMPTY_CATEGORY}"})
+
+
+def _whole_sync_reads_only_the_kb(connector: ZammadConnector) -> None:
+    """``run_sync`` with every step but the knowledge base reading nothing, and reading it in full."""
+    connector.external_client = object()
+    connector._fetch_roles = AsyncMock(return_value=([], ReadOutcome.COMPLETE))
+    connector._fetch_users = AsyncMock(return_value=([], {}))
+    connector._fetch_groups = AsyncMock(return_value=([], []))
+    connector._sync_roles = AsyncMock()
+    connector._remove_tickets_in_excluded_groups = AsyncMock()
+
+
+async def _kb_full_sync(
+    connector: ZammadConnector, records: KbRecords,
+) -> tuple[bool, list[str], list[str]]:
+    """(no further full sync owed, nodes still in Zammad that were unlinked or deleted, gone nodes unlinked)."""
+    held = {f"record:{ext}" for ext in records.external_ids()}
+
+    def clear_sync_points() -> None:
+        connector.kb_sync_point.points.clear()
+        connector.tickets_sync_point.points.clear()
+
+    with patch.object(zammad_connector, "load_connector_filters", AsyncMock(return_value=(None, None))):
+        done, unlinked = await run_full_sync(connector, records, clear_sync_points)
+    removed = unlinked | (held - {f"record:{ext}" for ext in records.external_ids()})
+    still_there = removed - KB_GONE_FROM_ZAMMAD - {"record:kb_answer_5"}
+    return done, sorted(still_there), sorted(unlinked & KB_GONE_FROM_ZAMMAD)
+
+
+@contextmanager
+def _kb_gone_world() -> Iterator[tuple[FakeZammad64KbWithEmptyCategory, KbRecords, ZammadConnector]]:
+    zammad, records = FakeZammad64KbWithEmptyCategory(6), KbRecords()
+    zammad.answers[3]["attachments"] = [dict(PDF)]
+    with _connector(zammad, records) as connector:
+        _whole_sync_reads_only_the_kb(connector)
+        yield zammad, records, connector
+
+
+async def _seed_then_delete_in_zammad(
+    zammad: FakeZammad64KbWithEmptyCategory, records: KbRecords, connector: ZammadConnector,
+) -> None:
+    with patch.object(zammad_connector, "load_connector_filters", AsyncMock(return_value=(None, None))):
+        await connector.run_sync()
+    assert {"kb_answer_3", "kb_answer_3_attachment_70", "kb_answer_5"} <= records.external_ids()
+    assert f"cat_{EMPTY_CATEGORY}" in records.record_groups
+    del zammad.answers[5]
+    zammad.empty_category = False
+
+
+async def test_a_kb_full_sync_unlinks_only_what_is_gone_from_zammad() -> None:
+    with _kb_gone_world() as (zammad, records, connector):
+        await _seed_then_delete_in_zammad(zammad, records, connector)
+
+        done, wrongly_removed, gone_unlinked = await _kb_full_sync(connector, records)
+
+    assert done is True
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(KB_GONE_FROM_ZAMMAD))
+    assert "kb_answer_5" in records.deleted
+
+
+async def test_a_kb_full_sync_keeps_the_links_of_an_answer_listed_nowhere_but_still_readable() -> None:
+    with _kb_gone_world() as (zammad, records, connector):
+        await _seed_then_delete_in_zammad(zammad, records, connector)
+        zammad.unlisted.add(3)
+
+        done, wrongly_removed, gone_unlinked = await _kb_full_sync(connector, records)
+
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(KB_GONE_FROM_ZAMMAD))
+    assert done is True
+
+
+async def test_a_kb_full_sync_keeps_the_links_of_an_answer_the_token_may_no_longer_read() -> None:
+    """403 keeps the answer, as an incremental sync does; the unlink must not strip it either."""
+    with _kb_gone_world() as (zammad, records, connector):
+        await _seed_then_delete_in_zammad(zammad, records, connector)
+        zammad.unlisted.add(3)
+        zammad.answer_status[3] = 403
+
+        done, wrongly_removed, gone_unlinked = await _kb_full_sync(connector, records)
+
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(KB_GONE_FROM_ZAMMAD))
+    assert done is True
+
+
+async def test_a_kb_full_sync_does_not_drop_an_answer_attachment_whose_record_could_not_be_looked_up() -> None:
+    with _kb_gone_world() as (zammad, records, connector):
+        await _seed_then_delete_in_zammad(zammad, records, connector)
+        records.fail_lookup_for.add("kb_answer_3_attachment_70")
+
+        _, wrongly_removed, _ = await _kb_full_sync(connector, records)
+        assert wrongly_removed == []
+
+        records.fail_lookup_for.clear()
+        done, wrongly_removed, gone_unlinked = await _kb_full_sync(connector, records)
+
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(KB_GONE_FROM_ZAMMAD))
+    assert done is True
+
+
+@contextmanager
+def _attachment_build_fails(connector: ZammadConnector, external_id: str) -> Iterator[None]:
+    """Building the attachment ``external_id`` raises; looking up its stored record still works."""
+    build = connector._transform_attachment_to_file_record
+
+    async def failing_build(**kwargs: object) -> FileRecord | None:
+        if kwargs["external_record_id"] == external_id:
+            raise ValueError("unreadable attachment")
+        return await build(**kwargs)
+
+    with patch.object(connector, "_transform_attachment_to_file_record", side_effect=failing_build):
+        yield
+
+
+async def test_an_answer_attachment_that_never_builds_keeps_its_record_without_wedging_full_syncs() -> None:
+    with _kb_gone_world() as (zammad, records, connector):
+        await _seed_then_delete_in_zammad(zammad, records, connector)
+        with _attachment_build_fails(connector, "kb_answer_3_attachment_70"):
+            for _ in range(2):
+                records.answer_writes.clear()
+                done, wrongly_removed, gone_unlinked = await _kb_full_sync(connector, records)
+
+                assert (done, wrongly_removed, gone_unlinked) == (True, [], sorted(KB_GONE_FROM_ZAMMAD))
+                assert "kb_answer_3" in records.answer_writes
+                assert "kb_answer_3_attachment_70" in records.external_ids()
+
+
+async def test_an_answer_attachment_never_stored_that_fails_to_build_is_not_written() -> None:
+    with _kb_gone_world() as (zammad, records, connector):
+        await _seed_then_delete_in_zammad(zammad, records, connector)
+        zammad.answers[3]["attachments"].append({**PDF, "id": 71, "filename": "new.pdf"})
+        with _attachment_build_fails(connector, "kb_answer_3_attachment_71"):
+            records.answer_writes.clear()
+            done, wrongly_removed, _ = await _kb_full_sync(connector, records)
+
+    assert (done, wrongly_removed) == (True, [])
+    assert "kb_answer_3" in records.answer_writes
+    assert "kb_answer_3_attachment_71" not in records.external_ids()
+
+
+async def test_an_answer_whose_failing_attachment_cannot_be_looked_up_is_not_written() -> None:
+    with _kb_gone_world() as (zammad, records, connector):
+        await _seed_then_delete_in_zammad(zammad, records, connector)
+        records.fail_lookup_for.add("kb_answer_3_attachment_70")
+        with _attachment_build_fails(connector, "kb_answer_3_attachment_70"):
+            records.answer_writes.clear()
+            done, wrongly_removed, gone_unlinked = await _kb_full_sync(connector, records)
+
+    assert (done, wrongly_removed, gone_unlinked) == (False, [], [])
+    assert "kb_answer_3" not in records.answer_writes
+    assert "1 knowledge base answer(s)" in connector._incomplete
+
+
+async def test_an_answer_attachment_deleted_in_zammad_is_unlinked_beside_one_kept_as_stored() -> None:
+    with _kb_gone_world() as (zammad, records, connector):
+        zammad.answers[3]["attachments"].append({**PDF, "id": 71, "filename": "old.pdf"})
+        await _seed_then_delete_in_zammad(zammad, records, connector)
+        assert "kb_answer_3_attachment_71" in records.external_ids()
+        zammad.answers[3]["attachments"] = [dict(PDF)]
+        with _attachment_build_fails(connector, "kb_answer_3_attachment_70"):
+            done, wrongly_removed, gone_unlinked = await _kb_full_sync(connector, records)
+
+    assert done is True
+    # Attachment 71 is gone from Zammad, so its removal is expected, not wrong.
+    assert wrongly_removed == ["record:kb_answer_3_attachment_71"]
+    assert gone_unlinked == sorted(KB_GONE_FROM_ZAMMAD)
+
+
+async def test_a_kb_full_sync_keeps_the_category_of_a_kept_answer_the_token_no_longer_lists() -> None:
+    """An internal answer reads with its category's grants, so the category's links stay as stored too."""
+    with _kb_gone_world() as (zammad, records, connector):
+        await _seed_then_delete_in_zammad(zammad, records, connector)
+        category = zammad.answers[3]["category_id"]
+        zammad.hide_category(category)
+        zammad.answer_status[3] = 403
+
+        done, wrongly_removed, gone_unlinked = await _kb_full_sync(connector, records)
+
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(KB_GONE_FROM_ZAMMAD))
+    assert f"cat_{category}" in records.record_groups
+    assert done is True
+
+
+async def test_a_kb_full_sync_removes_an_unlisted_answer_zammad_says_is_gone() -> None:
+    with _kb_gone_world() as (zammad, records, connector):
+        await _seed_then_delete_in_zammad(zammad, records, connector)
+        zammad.unlisted.add(3)
+        zammad.answer_status[3] = 404
+
+        done, wrongly_removed, gone_unlinked = await _kb_full_sync(connector, records)
+
+    assert {"kb_answer_3", "kb_answer_3_attachment_70"} <= set(records.deleted)
+    assert (wrongly_removed, gone_unlinked) == (
+        ["record:kb_answer_3", "record:kb_answer_3_attachment_70"], sorted(KB_GONE_FROM_ZAMMAD),
+    )
+    assert done is True
+
+
+async def test_a_kb_full_sync_that_cannot_note_a_kept_answer_unlinks_nothing() -> None:
+    with _kb_gone_world() as (zammad, records, connector):
+        await _seed_then_delete_in_zammad(zammad, records, connector)
+        zammad.unlisted.add(3)
+        records.fail_lookup_for.add("kb_answer_3")
+
+        done, wrongly_removed, gone_unlinked = await _kb_full_sync(connector, records)
+
+    assert (done, wrongly_removed, gone_unlinked) == (False, [], [])
+    assert "the check of knowledge base answer 3" in connector._incomplete
+    assert "kb_answer_3" not in records.deleted
+
+
+@pytest.mark.parametrize("status", [429, 500])
+async def test_a_kb_full_sync_that_cannot_read_back_an_unlisted_answer_unlinks_nothing(status: int) -> None:
+    with _kb_gone_world() as (zammad, records, connector):
+        await _seed_then_delete_in_zammad(zammad, records, connector)
+        zammad.unlisted.add(3)
+        zammad.answer_status[3] = status
+
+        done, wrongly_removed, gone_unlinked = await _kb_full_sync(connector, records)
+
+    assert (done, wrongly_removed, gone_unlinked) == (False, [], [])
+    assert "kb_answer_3" in records.external_ids()

@@ -352,10 +352,10 @@ export function MoveFolderSidebar({
           ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
-          background: 'var(--effects-translucent)',
+          background: 'var(--frost-bg)',
           border: '1px solid var(--olive-3)',
           borderRadius: isMobile ? 0 : 'var(--radius-2)',
-          backdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
           boxShadow: '0 20px 48px 0 rgba(0, 0, 0, 0.25)',
           overflow: 'hidden',
           display: 'flex',
@@ -374,8 +374,6 @@ export function MoveFolderSidebar({
           style={{
             padding: '8px 8px 8px 16px',
             borderBottom: '1px solid var(--olive-3)',
-            background: 'var(--effects-translucent)',
-            backdropFilter: 'blur(8px)',
           }}
         >
           <Flex align="center" gap="2">
@@ -389,7 +387,10 @@ export function MoveFolderSidebar({
             </Text>
           </Flex>
           <IconButton
+            aria-label={t('common.close')}
             variant="ghost"
+            // Radix ghost buttons pull out by their padding; keep the header's own inset
+            style={{ margin: 0 }}
             color="gray"
             size="2"
             onClick={() => handleOpenChange(false)}
@@ -399,7 +400,7 @@ export function MoveFolderSidebar({
         </Flex>
 
         {/* Search */}
-        <Box style={{ padding: '16px 16px 0', background: 'var(--effects-translucent)', backdropFilter: 'blur(8px)' }}>
+        <Box style={{ padding: '16px 16px 0' }}>
           <TextField.Root
             size="2"
             placeholder={t('form.search')}
@@ -407,7 +408,7 @@ export function MoveFolderSidebar({
             onChange={(e) => setSearchQuery(e.target.value)}
           >
             <TextField.Slot>
-              <MaterialIcon name="search" size={16} color="var(--slate-9)" />
+              <MaterialIcon name="search" size={16} color="var(--slate-11)" />
             </TextField.Slot>
           </TextField.Root>
         </Box>
@@ -419,8 +420,6 @@ export function MoveFolderSidebar({
             padding: 'var(--space-4)',
             flex: 1,
             overflowY: 'auto',
-            background: 'var(--effects-translucent)',
-            backdropFilter: 'blur(25px)',
           }}
         >
           {collectionTree && showRoot ? (
@@ -521,7 +520,7 @@ export function MoveFolderSidebar({
             </Flex>
           ) : (
               <Flex align="center" justify="center" style={{ padding: 'var(--space-8)' }}>
-              <Text size="2" style={{ color: 'var(--slate-9)' }}>
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>
                 {searchQuery ? t('moveFolder.noFolders') : t('sidebar.noCollectionSelected')}
               </Text>
             </Flex>
@@ -536,8 +535,6 @@ export function MoveFolderSidebar({
           style={{
             padding: '8px 16px',
             borderTop: '1px solid var(--olive-3)',
-            background: 'var(--effects-translucent)',
-            backdropFilter: 'blur(8px)',
           }}
         >
           <LoadingButton

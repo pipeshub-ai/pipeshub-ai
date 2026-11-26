@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Button, Code, Dialog, Flex, Select, Switch, Text, TextArea, TextField } from '@radix-ui/themes';
+import { Button, Code, Dialog, Flex, Select, Switch, Text, TextArea } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/store/toast-store';
 import { AIModelsApi } from '../api';
@@ -12,6 +12,7 @@ import type {
   IdentityForwardingSettings,
   IdentityPreview,
 } from '../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 const TEMPLATE_PLACEHOLDERS = '{{subject}}, {{groups}}, {{workload}}, {{request_id}}';
 const SERVICE_KEY_FIELD = 'identityForwardingServiceApiKey';
@@ -47,7 +48,7 @@ function textToTemplates(text: string): Record<string, string> {
 interface IdentityForwardingDialogProps {
   model: ConfiguredModel | null;
   onClose: () => void;
-  onSaved: () => void;
+  onSaved?: () => void;
 }
 
 export function IdentityForwardingDialog({ model, onClose, onSaved }: IdentityForwardingDialogProps) {
@@ -133,7 +134,7 @@ export function IdentityForwardingDialog({ model, onClose, onSaved }: IdentityFo
         ...(serviceApiKey !== undefined ? { serviceApiKey } : {}),
       });
       toast.success(t('workspace.aiModels.identity.saved'));
-      onSaved();
+      onSaved?.();
       onClose();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : t('workspace.aiModels.identity.saveFailed'));
@@ -205,8 +206,7 @@ export function IdentityForwardingDialog({ model, onClose, onSaved }: IdentityFo
 
               <Flex direction="column" gap="1">
                 <Text size="2" weight="medium">{t('workspace.aiModels.identity.serviceKey')}</Text>
-                <TextField.Root
-                  type="password"
+                <SecretTextField
                   value={serviceKey}
                   disabled={clearServiceKey}
                   placeholder={

@@ -18,8 +18,12 @@ const mcpApi = vi.hoisted(() => ({
   getInstanceTools: vi.fn(),
   getMyToolRules: vi.fn(),
   updateMyToolRules: vi.fn(),
+  getPopular: vi.fn(async () => []),
 }));
 // These tests cover the default notices, whatever the build's config provides.
+// The Enterprise notices these screens show are for admins; render them as an admin would see them.
+vi.mock('@/lib/hooks/use-enterprise-prompt', () => ({ useEnterprisePrompt: () => true }));
+
 vi.mock('@/config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/config')>()),
   EnterpriseFeatureNotice: (await import('@/app/components/ui/enterprise-badge')).EnterpriseFeatureNotice,
@@ -30,8 +34,9 @@ vi.mock('../api', () => ({ McpServersApi: mcpApi }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => null }));
 
-import { McpPersonalLayout } from '../personal/components/mcp-personal-layout';
-import { McpPersonalServerCard } from '../personal/components/mcp-personal-server-card';
+import { McpServersLayout } from '../components/mcp-servers-layout';
+import { McpServerPage } from '../components/mcp-server-page';
+import { offeredForPersonalServers } from '../catalog-replacement';
 import { McpAddServerDialog } from '../personal/components/mcp-add-server-dialog';
 import { McpInstanceConfigPanel } from '../team/components/mcp-instance-config-panel';
 import { McpDisconnectDialog } from '../components/mcp-disconnect-dialog';
@@ -95,25 +100,29 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('McpPersonalLayout', () => {
-  function layout(props: Partial<React.ComponentProps<typeof McpPersonalLayout>> = {}) {
+describe('McpServersLayout, as on the personal page', () => {
+  function layout(props: Partial<React.ComponentProps<typeof McpServersLayout>> = {}) {
+    const templates = props.templates ?? [];
     renderInTheme(
-      <McpPersonalLayout
-        instances={[]}
-        templates={[]}
+      <McpServersLayout
+        title="MCP servers"
+        subtitle=""
+        actions={null}
         isLoading={false}
         searchQuery=""
-        busyInstanceId={null}
         onSearchChange={noop}
-        onRefresh={noop}
-        onAddServer={noop}
-        onSetUp={noop}
-        onAuthenticate={noop}
-        onReauthenticate={noop}
-        onRemoveCredentials={noop}
-        onToolApprovals={noop}
-        onEdit={noop}
-        onDelete={noop}
+        instances={[]}
+        templates={templates}
+        catalog={offeredForPersonalServers(templates)}
+        catalogDescription="Servers you add here are only visible to you."
+        emptyTitle="No MCP servers available"
+        emptyDescription="Add one of your own, or ask your admin to add one for everyone."
+        isAdmin={false}
+        busyInstanceId={null}
+        onOpen={noop}
+        onConnect={noop}
+        onReconnect={noop}
+        onAdd={noop}
         {...props}
       />,
     );
@@ -121,55 +130,91 @@ describe('McpPersonalLayout', () => {
 
   const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
-  it('shows every server and the catalog entries nobody has set up as cards, like the toolsets page', () => {
-    const onSetUp = vi.fn();
+  it('lists every server with its status, those that need something first, then what can be added', () => {
+    const onAdd = vi.fn();
     const notion = template({ typeId: 'notion', displayName: 'Notion', description: 'Pages and databases' });
+    const github = template({ typeId: 'github', displayName: 'GitHub' });
     layout({
       instances: [
-        entry({ _id: 'org', name: 'Team Server', typeId: 'github' }),
+        entry({ _id: 'org', name: 'Team Server', typeId: 'github', isCustom: false }),
         entry({ _id: 'mine', name: 'My Server', scope: 'personal' }),
         entry({ _id: 'off', name: 'Needs Sign-in', authMode: 'oauth', isAuthenticated: false }),
       ],
       templates: [
         notion,
-        template({ typeId: 'github', displayName: 'GitHub' }),
+        github,
         template({ typeId: 'local', displayName: 'Local Files', transport: 'stdio' }),
         template({ typeId: 'old', displayName: 'Old Slack', replacedBy: 'slack' }),
       ],
-      onSetUp,
+      onAdd,
     });
 
-    // Connected first, my own before the organization's; then the rest; then what can be set up.
+    const off = screen.getByText('Needs Sign-in');
     const mine = screen.getByText('My Server');
     const team = screen.getByText('Team Server');
-    const off = screen.getByText('Needs Sign-in');
     const offer = screen.getByText('Notion');
-    expect(follows(mine, team) && follows(team, off) && follows(off, offer)).toBe(true);
+    expect(follows(off, mine) && follows(mine, team) && follows(team, offer)).toBe(true);
     expect(screen.getByText('Yours')).toBeTruthy();
-    // Already set up here, a local command, or replaced: not offered.
-    expect(screen.queryByText('GitHub')).toBeNull();
+    expect(screen.getAllByText('Connected')).toHaveLength(2);
+    expect(screen.getByText('Not connected')).toBeTruthy();
+    // A local command or a replaced entry is not offered; one already added can be added again.
     expect(screen.queryByText('Local Files')).toBeNull();
     expect(screen.queryByText('Old Slack')).toBeNull();
+    expect(screen.getByText('Added')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Set up' }));
-    expect(onSetUp).toHaveBeenCalledWith(notion);
+    expect(onAdd).toHaveBeenCalledWith(notion);
+    fireEvent.click(screen.getByRole('button', { name: 'Add another' }));
+    expect(onAdd).toHaveBeenCalledWith(github);
   });
 
-  it('filters by tab, with counts', () => {
+  it('counts each status and filters by it', () => {
     layout({
-      instances: [entry({ _id: 'ready', name: 'Ready One' }), entry({ _id: 'off', name: 'Off One', authMode: 'oauth' })],
-      templates: [template({ typeId: 'notion', displayName: 'Notion' })],
+      instances: [
+        entry({ _id: 'ready', name: 'Ready One' }),
+        entry({ _id: 'off', name: 'Off One', authMode: 'oauth' }),
+        entry({ _id: 'down', name: 'Down One', toolsErrorCode: 'unreachable', toolsError: 'no answer' }),
+      ],
     });
 
     expect(screen.getByRole('radio', { name: 'All (3)' })).toBeTruthy();
     fireEvent.click(screen.getByRole('radio', { name: 'Connected (1)' }));
     expect(screen.getByText('Ready One')).toBeTruthy();
     expect(screen.queryByText('Off One')).toBeNull();
-    expect(screen.queryByText('Notion')).toBeNull();
-    fireEvent.click(screen.getByRole('radio', { name: 'Not connected (2)' }));
-    expect(screen.queryByText('Ready One')).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: 'Needs action (1)' }));
     expect(screen.getByText('Off One')).toBeTruthy();
-    expect(screen.getByText('Notion')).toBeTruthy();
+    expect(screen.queryByText('Ready One')).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: 'Unavailable (1)' }));
+    expect(screen.getByText('Down One')).toBeTruthy();
+    expect(screen.queryByText('Off One')).toBeNull();
+  });
+
+  it('offers the one fix on the row, and opens the server from anywhere else on it', () => {
+    const onConnect = vi.fn();
+    const onReconnect = vi.fn();
+    const onOpen = vi.fn();
+    const expired = entry({ _id: 'exp', name: 'Expired', authMode: 'oauth', isAuthenticated: true, toolsErrorCode: 'auth_expired' });
+    const fresh = entry({ _id: 'new', name: 'Fresh', authMode: 'oauth' });
+    const waiting = entry({ _id: 'wait', name: 'Waiting', authMode: 'api_token', useAdminAuth: true });
+    layout({ instances: [expired, fresh, waiting], onConnect, onReconnect, onOpen });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(onConnect).toHaveBeenCalledWith(fresh);
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    expect(onReconnect).toHaveBeenCalledWith(expired);
+    expect(onOpen).not.toHaveBeenCalled();
+    // A member waiting on a shared credential has nothing to press.
+    expect(screen.getByText('Waiting for admin')).toBeTruthy();
+    const waitingRow = screen.getAllByTestId('mcp-server-row').find((row) => row.textContent?.includes('Waiting for admin'));
+    expect(within(waitingRow!).queryByRole('button')).toBeNull();
+    // Each row's name is its link, so no control sits inside another.
+    for (const row of screen.getAllByTestId('mcp-server-row')) {
+      expect(row.getAttribute('role')).toBeNull();
+      expect(within(row).getAllByRole('link')).toHaveLength(1);
+    }
+
+    fireEvent.click(screen.getByRole('link', { name: 'Waiting' }));
+    expect(onOpen).toHaveBeenCalledWith(waiting);
   });
 
   it('searches servers and catalog entries alike', () => {
@@ -225,80 +270,6 @@ describe('McpDisconnectDialog', () => {
   });
 });
 
-describe('McpPersonalServerCard', () => {
-  it('offers edit and delete on my own server', async () => {
-    const onEdit = vi.fn();
-    renderInTheme(
-      <McpPersonalServerCard
-        instance={entry({ scope: 'personal' })}
-        isBusy={false}
-        onAuthenticate={noop}
-        onReauthenticate={noop}
-        onRemoveCredentials={noop}
-        onEdit={onEdit}
-        onDelete={noop}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button'));
-    expect(await screen.findByText('Delete')).toBeTruthy();
-    fireEvent.click(screen.getByText('Edit'));
-    expect(onEdit).toHaveBeenCalledOnce();
-  });
-
-  it('offers my own tool approvals on any connected server, as a button on the card', () => {
-    const onToolApprovals = vi.fn();
-    renderInTheme(
-      <McpPersonalServerCard
-        instance={entry()}
-        isBusy={false}
-        onAuthenticate={noop}
-        onReauthenticate={noop}
-        onRemoveCredentials={noop}
-        onToolApprovals={onToolApprovals}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /Tool approvals$/ }));
-    expect(onToolApprovals).toHaveBeenCalledOnce();
-  });
-
-  it('keeps tool approvals in the menu while the card asks to connect', async () => {
-    const onToolApprovals = vi.fn();
-    renderInTheme(
-      <McpPersonalServerCard
-        instance={entry({ authMode: 'oauth', isAuthenticated: false, tools: [] })}
-        isBusy={false}
-        onAuthenticate={noop}
-        onReauthenticate={noop}
-        onRemoveCredentials={noop}
-        onToolApprovals={onToolApprovals}
-      />,
-    );
-
-    expect(screen.getByRole('button', { name: /Connect$/ })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Tool approvals$/ })).toBeNull();
-    const menu = screen.getAllByRole('button').find((button) => !/Connect$/.test(button.textContent ?? ''));
-    fireEvent.click(menu!);
-    fireEvent.click(await screen.findByText('Tool approvals'));
-    expect(onToolApprovals).toHaveBeenCalledOnce();
-  });
-
-  it('has no menu on an organization server that needs nothing from me', () => {
-    renderInTheme(
-      <McpPersonalServerCard
-        instance={entry()}
-        isBusy={false}
-        onAuthenticate={noop}
-        onReauthenticate={noop}
-        onRemoveCredentials={noop}
-      />,
-    );
-
-    expect(screen.queryByRole('button')).toBeNull();
-  });
-});
-
 describe('McpAddServerDialog', () => {
   it('offers remote catalog servers and a custom one, never a local command', () => {
     const onPickCustom = vi.fn();
@@ -330,11 +301,6 @@ describe('McpInstanceConfigPanel scope', () => {
         instances={[]}
         onOpenChange={noop}
         onSaved={noop}
-        onRequestDelete={noop}
-        busyInstanceId={null}
-        onAuthenticate={noop}
-        onReauthenticate={noop}
-        onDisconnect={noop}
       />,
     );
   }
@@ -352,7 +318,7 @@ describe('McpInstanceConfigPanel scope', () => {
     fireEvent.click(screen.getAllByText('Streamable HTTP').at(-1)!);
 
     choose('No authentication', 'API token');
-    expect(screen.queryByText('Use shared admin authentication for all users')).toBeNull();
+    expect(screen.queryByText('One shared credential for everyone')).toBeNull();
 
     const [nameInput] = screen.getAllByRole('textbox');
     fireEvent.change(nameInput, { target: { value: 'Mine' } });
@@ -379,6 +345,8 @@ describe('McpInstanceConfigPanel scope', () => {
     fireEvent.change(screen.getByPlaceholderText('https://example.com/mcp'), {
       target: { value: 'https://mcp.example.com/mcp' },
     });
+    expect(screen.queryByPlaceholderText('15')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }));
     const connect = screen.getByPlaceholderText('15');
     fireEvent.change(connect, { target: { value: '500' } });
     expect(screen.getByText('Enter a number from 1 to 45, or leave it blank for the default.')).toBeTruthy();
@@ -403,28 +371,135 @@ describe('McpInstanceConfigPanel scope', () => {
 
     expect(screen.getByText('STDIO (command)')).toBeTruthy();
     choose('No authentication', 'API token');
-    expect(screen.getByText('Use shared admin authentication for all users')).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /Each person uses their own/, checked: true })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: /One shared credential for everyone/, checked: false })).toBeTruthy();
   });
-});
 
-describe('McpInstanceConfigPanel — Tools tab', () => {
-  const SEARCH = { name: 'search', namespacedName: 'mcp_server_search', inputSchema: {}, kind: 'read' as const, kindSource: 'server' as const };
-  const CREATE = { name: 'create_issue', namespacedName: 'mcp_server_create_issue', inputSchema: {}, kind: 'write' as const, kindSource: 'none' as const };
-  const DELETE = { name: 'delete_issue', namespacedName: 'mcp_server_delete_issue', inputSchema: {}, kind: 'destructive' as const, kindSource: 'name' as const };
-  const PERSONAL = { scope: 'personal' as const };
-
-  function panelElement(editing: McpMyServerEntry, props: Partial<React.ComponentProps<typeof McpInstanceConfigPanel>> = {}) {
-    return (
+  it('tells the page a new server was created, so it can open it', async () => {
+    const onSaved = vi.fn();
+    renderInTheme(
       <McpInstanceConfigPanel
-        scope={editing.scope === 'personal' ? 'personal' : 'org'}
+        scope="personal"
+        customStdioAllowed={false}
+        state={{ open: true, mode: 'create', editingInstance: null, prefillTemplate: null }}
+        templates={[]}
+        instances={[]}
+        onOpenChange={noop}
+        onSaved={onSaved}
+      />,
+    );
+
+    const [nameInput] = screen.getAllByRole('textbox');
+    fireEvent.change(nameInput, { target: { value: 'Mine' } });
+    fireEvent.change(screen.getByPlaceholderText('https://example.com/mcp'), { target: { value: 'https://mcp.example.com/mcp' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith({ id: 'new-1', created: true }));
+  });
+
+  it('asks whose credentials people use in plain words, and saves the shared choice', async () => {
+    renderPanel('org', false);
+    choose('No authentication', 'API token');
+
+    expect(screen.queryByText('Use shared admin authentication for all users')).toBeNull();
+    expect(screen.getByRole('radiogroup', { name: 'How people sign in' })).toBeTruthy();
+    fireEvent.click(screen.getByText('One shared credential for everyone'));
+    const [nameInput] = screen.getAllByRole('textbox');
+    fireEvent.change(nameInput, { target: { value: 'Team' } });
+    fireEvent.change(screen.getByPlaceholderText('https://example.com/mcp'), { target: { value: 'https://mcp.example.com/mcp' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(mcpApi.createInstance).toHaveBeenCalledOnce());
+    expect(mcpApi.createInstance.mock.calls[0][0]).toMatchObject({ authMode: 'api_token', useAdminAuth: true });
+  });
+
+  it('names the catalog server being added, and keeps an OAuth client the provider does not need under Advanced', async () => {
+    mcpApi.discoverOAuthMetadata.mockResolvedValue({ supportsDcr: true, metadataFound: true, scopesSupported: [] });
+    renderInTheme(
+      <McpInstanceConfigPanel
+        scope="org"
+        customStdioAllowed={false}
+        state={{ open: true, mode: 'create', editingInstance: null, prefillTemplate: template({ defaultUrl: 'https://mcp.remote.example.com/mcp' }) }}
+        templates={[]}
+        instances={[]}
+        onOpenChange={noop}
+        onSaved={noop}
+      />,
+    );
+
+    expect(screen.getAllByText('Add Remote One').length).toBeGreaterThan(0);
+    await waitFor(() => expect(mcpApi.discoverOAuthMetadata).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText('Client ID')).toBeNull());
+    const advanced = screen.getByRole('button', { name: /Advanced/ });
+    fireEvent.click(advanced);
+    expect(screen.getByText('Client ID')).toBeTruthy();
+
+    // Half an OAuth client blocks Save, so Advanced stays open to say why.
+    const clientId = screen.getByPlaceholderText('Enter client ID');
+    fireEvent.change(clientId, { target: { value: 'abc' } });
+    fireEvent.click(advanced);
+    expect(screen.getByText('Enter both the client ID and client secret, or leave both blank.')).toBeTruthy();
+
+    fireEvent.change(clientId, { target: { value: '' } });
+    fireEvent.click(advanced);
+    expect(screen.queryByText('Client ID')).toBeNull();
+  });
+
+  it('keeps description and timeouts under Advanced, open when the server already uses them', () => {
+    renderPanel('org');
+    expect(screen.queryByText('Description')).toBeNull();
+    cleanup();
+
+    const editing = entry({ url: 'https://mcp.example.com/mcp', callTimeoutSeconds: 120 });
+    renderInTheme(
+      <McpInstanceConfigPanel
+        scope="org"
+        customStdioAllowed
         state={{ open: true, mode: 'edit', editingInstance: editing, prefillTemplate: null }}
         templates={[]}
         instances={[editing]}
-        customStdioAllowed={false}
         onOpenChange={noop}
         onSaved={noop}
-        onRequestDelete={noop}
-        busyInstanceId={null}
+      />,
+    );
+    expect(screen.getByDisplayValue('120')).toBeTruthy();
+    expect(screen.getByText('Description')).toBeTruthy();
+  });
+
+  it('edits a server with its settings only: its tools are on the server page', () => {
+    const editing = entry({ url: 'https://mcp.example.com/mcp' });
+    renderInTheme(
+      <McpInstanceConfigPanel
+        scope="org"
+        customStdioAllowed
+        state={{ open: true, mode: 'edit', editingInstance: editing, prefillTemplate: null }}
+        templates={[]}
+        instances={[editing]}
+        onOpenChange={noop}
+        onSaved={noop}
+      />,
+    );
+
+    expect(screen.queryByRole('tab')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'More actions' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeTruthy();
+  });
+});
+
+describe('McpServerPage', () => {
+  const SEARCH = { name: 'search', namespacedName: 'mcp_server_search', inputSchema: {}, kind: 'read' as const, kindSource: 'server' as const };
+  const CREATE = { name: 'create_issue', namespacedName: 'mcp_server_create_issue', inputSchema: {}, kind: 'write' as const, kindSource: 'none' as const };
+  const DELETE = { name: 'delete_issue', namespacedName: 'mcp_server_delete_issue', inputSchema: {}, kind: 'destructive' as const, kindSource: 'name' as const };
+
+  function pageElement(instance: McpMyServerEntry, props: Partial<React.ComponentProps<typeof McpServerPage>> = {}) {
+    return (
+      <McpServerPage
+        instance={instance}
+        templates={[]}
+        isAdmin
+        rulesEditable={false}
+        isBusy={false}
+        onBack={noop}
         onAuthenticate={noop}
         onReauthenticate={noop}
         onDisconnect={noop}
@@ -433,15 +508,13 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
     );
   }
 
-  function renderEditing(editing: McpMyServerEntry, props: Partial<React.ComponentProps<typeof McpInstanceConfigPanel>> = {}) {
-    const handlers = { onOpenChange: vi.fn(), onReauthenticate: vi.fn(), ...props };
-    renderInTheme(panelElement(editing, handlers));
+  function renderPage(instance: McpMyServerEntry, props: Partial<React.ComponentProps<typeof McpServerPage>> = {}) {
+    const handlers = { onBack: vi.fn(), onReauthenticate: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn(), onDisconnect: vi.fn(), ...props };
+    renderInTheme(pageElement(instance, handlers));
     return handlers;
   }
 
-  function openTools() {
-    fireEvent.mouseDown(screen.getByRole('tab', { name: /^Tools/ }));
-  }
+  const status = () => screen.getByTestId('mcp-server-status');
 
   function apiError(statusCode: number, message: string) {
     return { type: ErrorType.SERVER_ERROR, message, statusCode };
@@ -453,12 +526,9 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
     mcpApi.getInstanceTools.mockResolvedValue({ tools: [SEARCH, CREATE, DELETE], syncedAt: Date.now() - 120_000 });
   });
 
-  describe('an organization server', () => {
+  describe('on the team page', () => {
     it('lists its tools read-only, grouped, and says organization rules are in the Enterprise Edition', async () => {
-      renderEditing(entry({ createdBy: '' }));
-      // Radix draws a tab's label twice: "Tools Tools".
-      expect(screen.getByRole('tab', { name: /^Tools Tools$/ })).toBeTruthy();
-      openTools();
+      renderPage(entry({ createdBy: '' }));
 
       const list = await screen.findByTestId('mcp-tool-list');
       expect(within(list).getByText('Delete issue').getAttribute('title')).toBe('delete_issue');
@@ -475,8 +545,7 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
     });
 
     it('refreshes live', async () => {
-      renderEditing(entry({ createdBy: '' }));
-      openTools();
+      renderPage(entry({ createdBy: '' }));
       await screen.findByTestId('mcp-tool-list');
 
       fireEvent.click(screen.getByRole('button', { name: 'Refresh the tool list' }));
@@ -486,12 +555,11 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
 
     it("says when the list couldn't load, and tries again", async () => {
       mcpApi.getInstanceTools.mockRejectedValueOnce(apiError(502, "Couldn't load this MCP server's tools."));
-      renderEditing(entry({ createdBy: '' }));
-      openTools();
+      renderPage(entry({ createdBy: '' }));
 
       const alert = await screen.findByRole('alert');
       expect(within(alert).getByText("Couldn't load the tool list")).toBeTruthy();
-      expect(within(screen.getByTestId('mcp-panel-status')).getByText("Can't reach server")).toBeTruthy();
+      expect(within(status()).getByText("Can't reach server")).toBeTruthy();
 
       fireEvent.click(within(alert).getByRole('button', { name: /Try again/ }));
       expect(await screen.findByTestId('mcp-tool-list')).toBeTruthy();
@@ -499,29 +567,70 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
 
     it('shows an expired sign-in with Reauthenticate when the server refuses the sign-in', async () => {
       mcpApi.getInstanceTools.mockRejectedValueOnce(apiError(409, 'Reconnect needed'));
-      const handlers = renderEditing(entry({ createdBy: '', authMode: 'oauth', isAuthenticated: true }));
-      openTools();
+      const handlers = renderPage(entry({ createdBy: '', authMode: 'oauth', isAuthenticated: true }));
 
       expect(await screen.findByText('Sign-in expired')).toBeTruthy();
-      expect(within(screen.getByTestId('mcp-panel-status')).getByText('Reconnect needed')).toBeTruthy();
+      expect(within(status()).getByText('Reconnect needed')).toBeTruthy();
       fireEvent.click(screen.getAllByRole('button', { name: 'Reauthenticate' })[0]);
       expect(handlers.onReauthenticate).toHaveBeenCalled();
     });
 
+    const asksForSignIn = () => apiError(409, "This server asks for a sign-in, but it's set to No authentication.");
+
+    it('a server set to No authentication that asks for a sign-in says so, and Edit server opens its settings', async () => {
+      mcpApi.getInstanceTools.mockRejectedValueOnce(asksForSignIn());
+      const handlers = renderPage(entry({ createdBy: '', isAuthenticated: true }));
+
+      expect(await screen.findByText('This server asks for a sign-in')).toBeTruthy();
+      expect(within(status()).getByText('Sign-in needed')).toBeTruthy();
+      expect(screen.queryByText("Couldn't load the tool list")).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Edit server' }));
+      expect(handlers.onEdit).toHaveBeenCalled();
+      expect(handlers.onReauthenticate).not.toHaveBeenCalled();
+    });
+
+    it('the sign-in answer wins over an older listing that only timed out', async () => {
+      mcpApi.getInstanceTools.mockRejectedValueOnce(asksForSignIn());
+      renderPage(entry({ createdBy: '', isAuthenticated: true, toolsErrorCode: 'timeout', toolsTimedOut: true }));
+
+      expect(await screen.findByText('This server asks for a sign-in')).toBeTruthy();
+      expect(within(status()).getByText('Sign-in needed')).toBeTruthy();
+    });
+
     it('lists the tools again once someone signs in again', async () => {
       mcpApi.getInstanceTools.mockRejectedValueOnce(apiError(409, 'Reconnect needed'));
-      const editing = entry({ createdBy: '', authMode: 'oauth', isAuthenticated: true, connectedAt: 1 });
-      const { rerender } = render(<Theme>{panelElement(editing)}</Theme>);
-      openTools();
+      const instance = entry({ createdBy: '', authMode: 'oauth', isAuthenticated: true, connectedAt: 1 });
+      const { rerender } = render(<Theme>{pageElement(instance)}</Theme>);
       expect(await screen.findByText('Sign-in expired')).toBeTruthy();
 
-      rerender(<Theme>{panelElement(editing, { instances: [{ ...editing, connectedAt: 2 }] })}</Theme>);
+      rerender(<Theme>{pageElement({ ...instance, connectedAt: 2 })}</Theme>);
 
       expect(await screen.findByTestId('mcp-tool-list')).toBeTruthy();
       expect(screen.queryByText('Sign-in expired')).toBeNull();
     });
 
-    it("never shows one server's list in another server's panel", async () => {
+    it('an expired sign-in wins over an older listing that only timed out', async () => {
+      mcpApi.getInstanceTools.mockRejectedValueOnce(apiError(409, 'Reconnect needed'));
+      renderPage(entry({ createdBy: '', authMode: 'oauth', isAuthenticated: true, toolsErrorCode: 'timeout', toolsTimedOut: true }));
+
+      expect(await screen.findByText('Sign-in expired')).toBeTruthy();
+      expect(within(status()).getByText('Reconnect needed')).toBeTruthy();
+    });
+
+    it('reads the list again after a new sign-in, even when the last read worked', async () => {
+      mcpApi.getInstanceTools.mockResolvedValueOnce({ tools: [CREATE], syncedAt: Date.now() });
+      const instance = entry({ createdBy: '', authMode: 'oauth', isAuthenticated: true, connectedAt: 1 });
+      const { rerender } = render(<Theme>{pageElement(instance)}</Theme>);
+      expect(within(await screen.findByTestId('mcp-tool-list')).getByText('Create issue')).toBeTruthy();
+
+      mcpApi.getInstanceTools.mockResolvedValueOnce({ tools: [SEARCH], syncedAt: Date.now() });
+      rerender(<Theme>{pageElement({ ...instance, connectedAt: 2 })}</Theme>);
+
+      await waitFor(() => expect(within(screen.getByTestId('mcp-tool-list')).queryByText('Create issue')).toBeNull());
+      expect(mcpApi.getInstanceTools).toHaveBeenCalledTimes(2);
+    });
+
+    it("never shows one server's list on another server's page", async () => {
       let answerA: (value: unknown) => void = () => {};
       mcpApi.getInstanceTools.mockImplementation((id: string) =>
         id === 'inst-a'
@@ -532,21 +641,10 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
       );
       const a = entry({ _id: 'inst-a', name: 'Server A', createdBy: '' });
       const b = entry({ _id: 'inst-b', name: 'Server B', createdBy: '' });
-      const panel = (editing: McpMyServerEntry, open: boolean) => (
-        <Theme>
-          {panelElement(editing, {
-            instances: [a, b],
-            state: { open, mode: 'edit', editingInstance: editing, prefillTemplate: null },
-          })}
-        </Theme>
-      );
-      const { rerender } = render(panel(a, true));
-      openTools();
+      const { rerender } = render(<Theme>{pageElement(a)}</Theme>);
       await waitFor(() => expect(mcpApi.getInstanceTools).toHaveBeenCalledWith('inst-a', { cached: true }));
 
-      rerender(panel(a, false));
-      rerender(panel(b, true));
-      openTools();
+      rerender(<Theme>{pageElement(b)}</Theme>);
       expect(within(await screen.findByTestId('mcp-tool-list')).getByText('Create issue')).toBeTruthy();
 
       answerA({ tools: [SEARCH, DELETE], syncedAt: Date.now() });
@@ -555,20 +653,31 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
     });
 
     it('asks to sign in before listing tools', async () => {
-      renderEditing(entry({ createdBy: '', authMode: 'oauth', isAuthenticated: false }));
-      openTools();
+      renderPage(entry({ createdBy: '', authMode: 'oauth', isAuthenticated: false }));
 
       expect(await screen.findByText("Sign in to see this server's tools.")).toBeTruthy();
       expect(screen.getByTestId('enterprise-feature-notice')).toBeTruthy();
       expect(mcpApi.getInstanceTools).not.toHaveBeenCalled();
     });
+
+    it('names the catalog entry it came from, and says when that entry was replaced', () => {
+      renderPage(entry({ createdBy: '', typeId: 'old', isCustom: false }), {
+        templates: [
+          template({ typeId: 'old', displayName: 'Old Slack', replacedBy: 'slack' }),
+          template({ typeId: 'slack', displayName: 'Slack' }),
+        ],
+      });
+
+      expect(screen.getByText(/^Old Slack · /)).toBeTruthy();
+      expect(screen.getByText('No longer maintained. Add Slack instead.')).toBeTruthy();
+    });
   });
 
-  describe("the owner's personal server", () => {
+  describe('on the personal page', () => {
+    const personal = { rulesEditable: true, isAdmin: false };
+
     it('edits their own rules, grouped, starting each tool from what it does to data', async () => {
-      renderEditing(entry({ createdBy: '', ...PERSONAL }));
-      expect(screen.getByRole('tab', { name: /^Tools & approvals/ })).toBeTruthy();
-      openTools();
+      renderPage(entry({ createdBy: '' }), personal);
 
       const search = within(await screen.findByRole('radiogroup', { name: 'search' }));
       expect(search.getByRole('radio', { name: 'Pre-approved', checked: true })).toBeTruthy();
@@ -579,8 +688,7 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
     });
 
     it('counts unsaved changes, discards them, and saves', async () => {
-      renderEditing(entry({ createdBy: '', ...PERSONAL }));
-      openTools();
+      renderPage(entry({ createdBy: '' }), personal);
 
       const create = within(await screen.findByRole('radiogroup', { name: 'create_issue' }));
       fireEvent.click(create.getByRole('radio', { name: 'Pre-approved' }));
@@ -599,55 +707,28 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
       expect(await screen.findByText('All rules saved')).toBeTruthy();
     });
 
-    it('asks before closing with unsaved rule changes, and keeps them across tabs', async () => {
-      const handlers = renderEditing(entry({ createdBy: '', ...PERSONAL }));
-      openTools();
+    it('asks before leaving with unsaved rule changes', async () => {
+      const handlers = renderPage(entry({ createdBy: '' }), personal);
       fireEvent.click(within(await screen.findByRole('radiogroup', { name: 'create_issue' })).getByRole('radio', { name: 'Deny' }));
 
-      fireEvent.mouseDown(screen.getByRole('tab', { name: /^Configuration/ }));
-      openTools();
-      expect(screen.getByText('1 unsaved change')).toBeTruthy();
-
-      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+      fireEvent.click(screen.getByRole('button', { name: /MCP servers/ }));
       expect(await screen.findByText('Discard unsaved rule changes?')).toBeTruthy();
-      expect(handlers.onOpenChange).not.toHaveBeenCalledWith(false);
-      fireEvent.click(screen.getByRole('button', { name: 'Discard' }));
-      expect(handlers.onOpenChange).toHaveBeenCalledWith(false);
+      expect(handlers.onBack).not.toHaveBeenCalled();
+      fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Discard' }));
+      expect(handlers.onBack).toHaveBeenCalled();
     });
 
-    it('asks about unsaved rule changes when the configuration is saved', async () => {
-      const editing = entry({ createdBy: '', url: 'https://mcp.example.com/mcp', ...PERSONAL });
-      mcpApi.updateInstance.mockResolvedValue({ ...editing });
-      const handlers = renderEditing(editing);
-      openTools();
-      fireEvent.click(within(await screen.findByRole('radiogroup', { name: 'create_issue' })).getByRole('radio', { name: 'Deny' }));
+    it('goes back straight away when nothing is unsaved', async () => {
+      const handlers = renderPage(entry({ createdBy: '' }), personal);
+      await screen.findByRole('radiogroup', { name: 'create_issue' });
 
-      fireEvent.mouseDown(screen.getByRole('tab', { name: /^Configuration/ }));
-      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-
-      expect(await screen.findByText('Discard unsaved rule changes?')).toBeTruthy();
-      expect(mcpApi.updateInstance).toHaveBeenCalled();
-      expect(handlers.onOpenChange).not.toHaveBeenCalledWith(false);
-    });
-
-    it('Escape closes the discard prompt, not the panel behind it', async () => {
-      const handlers = renderEditing(entry({ createdBy: '', ...PERSONAL }));
-      openTools();
-      fireEvent.click(within(await screen.findByRole('radiogroup', { name: 'create_issue' })).getByRole('radio', { name: 'Deny' }));
-      fireEvent.keyDown(document.body, { key: 'Escape' });
-      expect(await screen.findByText('Discard unsaved rule changes?')).toBeTruthy();
-
-      fireEvent.keyDown(screen.getByRole('alertdialog'), { key: 'Escape' });
-
-      await waitFor(() => expect(screen.queryByText('Discard unsaved rule changes?')).toBeNull());
-      expect(handlers.onOpenChange).not.toHaveBeenCalledWith(false);
-      expect(screen.getByText('1 unsaved change')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: /MCP servers/ }));
+      expect(handlers.onBack).toHaveBeenCalled();
     });
 
     it('keeps rules saved by name editable before signing in', async () => {
       mcpApi.getMyToolRules.mockResolvedValue({ tools: { delete_repo: 'ask' } });
-      renderEditing(entry({ createdBy: '', authMode: 'oauth', isAuthenticated: false, ...PERSONAL }));
-      openTools();
+      renderPage(entry({ createdBy: '', authMode: 'oauth', isAuthenticated: false }), personal);
 
       expect(await screen.findByText("Sign in to see this server's tools.")).toBeTruthy();
       const row = within(await screen.findByRole('radiogroup', { name: 'delete_repo' }));
@@ -659,62 +740,84 @@ describe('McpInstanceConfigPanel — Tools tab', () => {
       await waitFor(() => expect(mcpApi.updateMyToolRules).toHaveBeenCalledWith('inst-1', { tools: {} }));
       expect(mcpApi.getInstanceTools).not.toHaveBeenCalled();
     });
-  });
-});
 
-describe('McpInstanceConfigPanel — More actions', () => {
-  function renderEditing(editing: McpMyServerEntry) {
-    const handlers = { onRequestDelete: vi.fn(), onDisconnect: vi.fn(), onReauthenticate: vi.fn() };
-    renderInTheme(
-      <McpInstanceConfigPanel
-        scope="org"
-        state={{ open: true, mode: 'edit', editingInstance: editing, prefillTemplate: null }}
-        templates={[]}
-        instances={[editing]}
-        customStdioAllowed={false}
-        onOpenChange={noop}
-        onSaved={noop}
-        busyInstanceId={null}
-        onAuthenticate={noop}
-        {...handlers}
-      />,
-    );
-    return handlers;
-  }
+    it('leaves a refused shared credential to an admin', async () => {
+      mcpApi.getInstanceTools.mockRejectedValueOnce(apiError(409, 'Reconnect needed'));
+      renderPage(entry({ createdBy: '', authMode: 'api_token', useAdminAuth: true, isAuthenticated: true }), personal);
 
-  function openMenu() {
-    fireEvent.keyDown(screen.getByRole('button', { name: 'More actions' }), { key: 'Enter' });
-  }
+      expect(await within(status()).findByText('Waiting for admin')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /^(Connect|Reauthenticate)$/ })).toBeNull();
+    });
 
-  it('disconnects only after asking', async () => {
-    const editing = entry({ createdBy: '', authMode: 'oauth', isAuthenticated: true, url: 'https://mcp.example.com/mcp' });
-    const handlers = renderEditing(editing);
-    openMenu();
+    it("says when their rules couldn't load, without a save bar", async () => {
+      mcpApi.getMyToolRules.mockRejectedValueOnce(apiError(500, 'Rules are unavailable right now.'));
+      renderPage(entry({ createdBy: '' }), personal);
 
-    fireEvent.click(await screen.findByRole('menuitem', { name: /Disconnect/ }));
-    expect(handlers.onDisconnect).not.toHaveBeenCalled();
-    expect(await screen.findByText('Disconnect Server?')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
-    expect(handlers.onDisconnect).toHaveBeenCalledWith(editing);
+      expect(await screen.findByText('Rules are unavailable right now.')).toBeTruthy();
+      expect(screen.queryByTestId('mcp-rules-footer')).toBeNull();
+      expect(within(await screen.findByTestId('mcp-tool-list')).getByText('Create issue')).toBeTruthy();
+    });
+
+    it('offers no Edit on a server someone else added', () => {
+      renderPage(entry({ createdBy: '' }), { ...personal, onEdit: undefined, onDelete: undefined });
+      expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+    });
   });
 
-  it('removes the server through the page', async () => {
-    const editing = entry({ createdBy: '' });
-    const handlers = renderEditing(editing);
-    openMenu();
+  describe('just added', () => {
+    it('says the next step is to sign in, and goes away when dismissed', () => {
+      const onDismissAdded = vi.fn();
+      renderPage(entry({ name: 'Jira', authMode: 'oauth', isAuthenticated: false }), { justAdded: true, onDismissAdded });
 
-    fireEvent.click(await screen.findByRole('menuitem', { name: /Delete server/ }));
-    expect(handlers.onRequestDelete).toHaveBeenCalledWith(editing);
+      expect(within(screen.getByTestId('mcp-server-added')).getByText('Jira is added. Sign in below so its tools can run.')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+      expect(onDismissAdded).toHaveBeenCalled();
+    });
+
+    it('says it is ready when nothing is left to do', () => {
+      renderPage(entry({ name: 'Docs', createdBy: '' }), { justAdded: true });
+      expect(screen.getByText('Docs is added and ready to use.')).toBeTruthy();
+    });
+
+    it('is not shown on a server opened from the list', () => {
+      renderPage(entry({ createdBy: '' }));
+      expect(screen.queryByTestId('mcp-server-added')).toBeNull();
+    });
   });
 
-  it('copies the server URL', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
-    renderEditing(entry({ createdBy: '', url: 'https://mcp.example.com/mcp' }));
-    openMenu();
+  describe('More actions', () => {
+    function openMenu() {
+      fireEvent.keyDown(screen.getByRole('button', { name: 'More actions' }), { key: 'Enter' });
+    }
 
-    fireEvent.click(await screen.findByRole('menuitem', { name: /Copy server URL/ }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://mcp.example.com/mcp'));
+    it('disconnects only after asking', async () => {
+      const handlers = renderPage(entry({ createdBy: '', authMode: 'oauth', isAuthenticated: true, url: 'https://mcp.example.com/mcp' }));
+      openMenu();
+
+      fireEvent.click(await screen.findByRole('menuitem', { name: /Disconnect/ }));
+      expect(handlers.onDisconnect).not.toHaveBeenCalled();
+      expect(await screen.findByText('Disconnect Server?')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+      expect(handlers.onDisconnect).toHaveBeenCalled();
+    });
+
+    it('removes the server through the page', async () => {
+      const handlers = renderPage(entry({ createdBy: '' }));
+      openMenu();
+
+      fireEvent.click(await screen.findByRole('menuitem', { name: /Delete server/ }));
+      expect(handlers.onDelete).toHaveBeenCalled();
+    });
+
+    it('copies the server URL', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+      renderPage(entry({ createdBy: '', url: 'https://mcp.example.com/mcp' }));
+      openMenu();
+
+      fireEvent.click(await screen.findByRole('menuitem', { name: /Copy server URL/ }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://mcp.example.com/mcp'));
+    });
   });
 });
 
@@ -733,11 +836,6 @@ describe('McpInstanceConfigPanel edit', () => {
         instances={[editing]}
         onOpenChange={noop}
         onSaved={noop}
-        onRequestDelete={noop}
-        busyInstanceId={null}
-        onAuthenticate={noop}
-        onReauthenticate={noop}
-        onDisconnect={noop}
       />,
     );
 

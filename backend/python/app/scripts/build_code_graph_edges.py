@@ -39,9 +39,12 @@ load_dotenv()
 
 from app.config.configuration_service import ConfigurationService  # noqa: E402
 from app.config.providers.encrypted_store import EncryptedKeyValueStore  # noqa: E402
-from app.modules.code_graph import edge_build_trigger  # noqa: E402
+from app.core.org_context import for_org  # noqa: E402
+from app.core.org_jobs import for_each_org  # noqa: E402
+from app.modules.code_graph import deleted_files, edge_build_trigger  # noqa: E402
 from app.modules.code_graph.build_state import (  # noqa: E402
     BuildStateStore,
+    PendingBuild,
     graph_status,
     needs_full_build,
 )
@@ -60,6 +63,7 @@ from app.services.vector_db.rebuild_state import (  # noqa: E402
 from app.utils.logger import create_logger  # noqa: E402
 
 logger = create_logger("build_code_graph_edges")
+_JOB = "build_code_graph_edges"
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -71,6 +75,12 @@ async def run(args: argparse.Namespace) -> int:
         return await _list(provider, args.org_id)
     if args.explain:
         return await _explain(provider, args.org_id, args.record_group_id)
+    # One repo's build reads and writes only its org's data; the graph runs every statement under one org.
+    with for_org(args.org_id, job=_JOB):
+        return await _build(args, config_service, provider)
+
+
+async def _build(args: argparse.Namespace, config_service: ConfigurationService, provider: object) -> int:
     facts_source = BlobCodeFactsSource(
         BlobStorage(logger, config_service, provider), provider, logger
     )
@@ -118,6 +128,7 @@ async def run(args: argparse.Namespace) -> int:
             else await store.begin(args.org_id, args.connector_id, args.record_group_id, lock[1])
         )
 
+        deleted = await deleted_files.pending(provider, args.org_id, args.record_group_id)
         touched: set[str] | None = None
         if not args.full:
             last_build = start_state.last_build
@@ -125,7 +136,7 @@ async def run(args: argparse.Namespace) -> int:
                 touched = await edge_build_trigger.records_updated_since(
                     provider, args.org_id, args.record_group_id, last_build
                 )
-                if not touched:
+                if not touched and not deleted.keys:
                     logger.info("No file changed since the last edge build; nothing to do.")
                     if not args.dry_run:
                         await store.settle_built(
@@ -134,7 +145,8 @@ async def run(args: argparse.Namespace) -> int:
                             advance_watermark=False, full=False,
                         )
                     return 0
-                logger.info("Incremental run: %d file(s) changed since last build", len(touched))
+                logger.info("Incremental run: %d file(s) changed and %d deleted since last build",
+                            len(touched), len(deleted.keys))
             else:
                 logger.info("Full build: owed, never built, or built by another code graph version")
 
@@ -143,6 +155,7 @@ async def run(args: argparse.Namespace) -> int:
             org_id=args.org_id,
             record_group_id=args.record_group_id,
             touched_record_ids=touched,
+            deleted_names=deleted.names,
             facts_source=facts_source,
             dry_run=args.dry_run,
             log=logger,
@@ -160,11 +173,13 @@ async def run(args: argparse.Namespace) -> int:
                     result.facts_missing,
                 )
             # Advance the marker only on success -- a failed run must not skip files.
-            await store.settle_built(
+            settled = await store.settle_built(
                 args.org_id, args.record_group_id, lease_token=lock[1], start=start_state,
                 started_at_ms=started_at_ms, advance_watermark=not result.facts_missing,
                 full=touched is None, result=result,
             )
+            if settled and not result.facts_missing:
+                await deleted_files.forget(provider, deleted.keys, logger)
         return 0
     finally:
         if renewal is not None:
@@ -200,20 +215,36 @@ def _print_summary(result: EdgeBuildResult, *, dry_run: bool) -> None:
 
 
 async def _list(provider: object, org_id: str | None) -> int:
-    """Every repo's graph state, one line each: what is built, owed, failing."""
-    builds = await BuildStateStore(provider).all()
-    rows = [b for b in builds if not org_id or b.org_id == org_id]
+    """Every repo's graph state (of ``org_id``, or of every org), one line each: what is built, owed, failing."""
+    rows: list[PendingBuild] = []
+
+    async def read(org: str) -> None:
+        rows.extend(await BuildStateStore(provider).all(org))
+    if org_id:
+        with for_org(org_id, job=_JOB):
+            await read(org_id)
+        failed: list[str] = []
+    else:
+        failed = await for_each_org(provider, _JOB, read, logger, raise_on_error=True)
     print(f"{'record group':40} {'org':24} {'status':20} {'last build':>14} {'tries':>5}  error")
     for b in sorted(rows, key=lambda b: (b.org_id, b.record_group_id)):
         s = b.state
         print(f"{b.record_group_id:40} {b.org_id:24} {graph_status(s).value:20} "
               f"{s.last_build or '-':>14} {s.attempts:>5}  {s.last_error or ''}")
     print(f"\n{len(rows)} repo(s)")
+    if failed:
+        print(f"Could not read the repos of {len(failed)} org(s): {', '.join(failed)}", file=sys.stderr)
+        return 1
     return 0
 
 
 async def _explain(provider: object, org_id: str, record_group_id: str) -> int:
     """Why one repo's graph is in the state it is in, and what a build would do now."""
+    with for_org(org_id, job=_JOB):
+        return await _explain_in_org(provider, org_id, record_group_id)
+
+
+async def _explain_in_org(provider: object, org_id: str, record_group_id: str) -> int:
     state = await BuildStateStore(provider).read(org_id, record_group_id)
     if state is None:
         print("No build was ever asked for this repo.")

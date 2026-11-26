@@ -161,7 +161,11 @@ async def test_no_record_with_every_name_is_an_empty_scope(listings: dict[str, A
 
 
 @pytest.mark.asyncio
-async def test_a_name_listed_only_in_part_says_so(listings: dict[str, Any]) -> None:
+async def test_a_name_listed_only_in_part_says_so(
+    listings: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A full page of readable records, with more after it.
+    monkeypatch.setattr(records_module, "RECORDS_PER_ENTITY", 2)
     listings["cap"] = 2
     graph = _Graph({"a": {f"r{i}": [0] for i in range(5)}, "b": {f"r{i}": [0] for i in range(5)}})
     scope = await readable_records(graph, CONTEXT, [_link("A", "a"), _link("B", "b")], match_all=True)
@@ -170,13 +174,26 @@ async def test_a_name_listed_only_in_part_says_so(listings: dict[str, Any]) -> N
 
 
 @pytest.mark.asyncio
-async def test_any_says_when_a_popular_name_was_searched_only_in_its_newest_records(listings: dict[str, Any]) -> None:
+async def test_any_says_when_a_popular_name_was_searched_only_in_its_newest_records(
+    listings: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A full page of readable records, with more after it.
+    monkeypatch.setattr(records_module, "RECORDS_PER_ENTITY", 2)
     listings["cap"] = 2
     graph = _Graph({"a": {f"r{i}": [0] for i in range(5)}, "b": {"r9": [0]}})
     scope = await readable_records(graph, CONTEXT, [_link("A", "a"), _link("B", "b")], match_all=False)
     assert [n.count_label for n in scope.per_name] == ["2+", "1"]
     assert "'A': more than" in scope.note and "only the newest were searched" in scope.note
     assert "'B'" not in scope.note
+
+
+@pytest.mark.asyncio
+async def test_a_listing_that_stops_short_of_a_full_page_counts_only_what_it_listed(listings: dict[str, Any]) -> None:
+    # The scan ran out on records the user cannot read; "more" would count those.
+    listings["cap"] = 2
+    graph = _Graph({"a": {f"r{i}": [0] for i in range(5)}})
+    scope = await readable_records(graph, CONTEXT, [_link("A", "a")], match_all=False)
+    assert [n.count_label for n in scope.per_name] == ["2"] and scope.note == ""
 
 
 @pytest.mark.asyncio

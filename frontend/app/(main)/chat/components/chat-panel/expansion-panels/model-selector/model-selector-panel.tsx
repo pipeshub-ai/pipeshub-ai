@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { Flex, Text, Badge, Spinner, RadioGroup, Button } from '@radix-ui/themes';
+import { Flex, Text, Badge, Spinner, RadioGroup, Button, Checkbox } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useRouter } from 'next/navigation';
@@ -9,6 +9,7 @@ import Image from 'next/image';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useChatStore, ctxKeyFromAgent, ASSISTANT_CTX } from '@/chat/store';
 import { fetchModelsForContext, OrgModelsFetchError } from '@/chat/utils/fetch-models-for-context';
+import { ChatApi, modelChoiceKey, type UnavailableModels } from '@/chat/api';
 import {
   PROVIDER_FRIENDLY_NAMES,
   MODEL_DESCRIPTIONS,
@@ -24,6 +25,10 @@ import {
   type ReasoningEffort,
 } from '@/chat/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { ModelSelectorExtraOptions, modelUnavailableReasons } from '@/config';
+import { CompareToggle, useCompareAvailable } from '@/chat/compare/components/compare-picker-toggle';
+import { useCompareStore } from '@/chat/compare/compare-store';
+import { MAX_COMPARE_MODELS } from '@/chat/compare/types';
 
 // Exported so other chat surfaces (e.g. the chat-input toolbar trigger) can
 // render a matching "· High" style indicator without redefining labels.
@@ -85,6 +90,10 @@ interface ModelSelectorPanelProps {
   hideHeader?: boolean;
   /** Optional agent ID - when provided, shows only agent-configured models */
   agentId?: string | null;
+  /** Show the edition's entries beside the configured models. Off where a configured model must be chosen. */
+  allowExtraOptions?: boolean;
+  /** Enables Compare picks. Pass only where a model click should start a compare turn. */
+  allowCompare?: boolean;
 }
 
 function ModelLogo({ provider }: { provider: string }) {
@@ -104,6 +113,8 @@ export function ModelSelectorPanel({
   onModelSelect,
   hideHeader = false,
   agentId,
+  allowExtraOptions = true,
+  allowCompare = false,
 }: ModelSelectorPanelProps) {
   const { t } = useTranslation();
   const router = useRouter();
@@ -121,6 +132,18 @@ export function ModelSelectorPanel({
 
   const [isLoading, setIsLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
+  // G-41 and the edition's reasons: models the person may not pick here, shown as unavailable.
+  const [unavailable, setUnavailable] = useState<UnavailableModels>(() => ({ group: new Set(), reasons: new Map() }));
+
+  useEffect(() => {
+    let cancelled = false;
+    void ChatApi.fetchUnavailableModels(modelUnavailableReasons).then((blocked) => {
+      if (!cancelled) setUnavailable(blocked);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [ctxKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -175,8 +198,24 @@ export function ModelSelectorPanel({
   // to leak between contexts (e.g. picking default in assistant silently
   // locked that model into every agent the user visited).
 
+  const compareAvailableForCtx = useCompareAvailable(ctxKey);
+  const compareAvailable = allowCompare && compareAvailableForCtx;
+  const compareOn = useCompareStore((s) => s.enabled) && compareAvailable;
+  const comparePicked = useCompareStore((s) => s.models);
+  const toggleCompareModel = useCompareStore((s) => s.toggleModel);
+
   const handleSelect = useCallback(
     (model: AvailableLlmModel) => {
+      const override = {
+        modelKey: model.modelKey,
+        modelName: model.modelName,
+        modelFriendlyName: model.modelFriendlyName || model.modelName,
+        modelProvider: model.provider,
+      };
+      if (compareOn) {
+        toggleCompareModel(override);
+        return;
+      }
       onModelSelect({
         modelKey: model.modelKey,
         modelName: model.modelName,
@@ -184,7 +223,7 @@ export function ModelSelectorPanel({
         modelProvider: model.provider,
       });
     },
-    [onModelSelect]
+    [onModelSelect, compareOn, toggleCompareModel]
   );
 
   // Determine which model is "active" — match on both modelKey and modelName
@@ -237,6 +276,10 @@ export function ModelSelectorPanel({
         </Flex>
       )}
 
+      {!isLoading && !error && compareAvailable && (
+        <CompareToggle models={models} selectedModel={selectedModel} />
+      )}
+
       {/* Reasoning effort selector — rendered above the scrollable list so it
           stays visible regardless of how many models the panel contains. */}
       {!isLoading && !error && showReasoningEffort && (
@@ -272,12 +315,12 @@ export function ModelSelectorPanel({
             <MaterialIcon 
               name="error_outline" 
               size={32} 
-              color="var(--red-9)" 
+              color="var(--red-11)" 
             />
             <Text 
               size="2" 
               style={{ 
-                color: 'var(--red-9)', 
+                color: 'var(--red-11)', 
                 textAlign: 'center',
                 maxWidth: '300px',
                 lineHeight: '1.5'
@@ -300,17 +343,39 @@ export function ModelSelectorPanel({
           </Flex>
         )}
 
-        {!isLoading && !error && models.map((model) => (
-          <ModelItem
-            key={`${model.modelKey}::${model.modelName}`}
-            model={model}
-            isSelected={model.modelKey === activeKey && model.modelName === activeName}
-            onSelect={handleSelect}
-          />
-        ))}
+        {!isLoading && !error && allowExtraOptions && (
+          <ModelSelectorExtraOptions models={models} selectedModel={selectedModel} onModelSelect={onModelSelect} />
+        )}
+
+        {!isLoading && !error && models.map((model) => {
+          const picked = comparePicked.some((m) => m.modelKey === model.modelKey && m.modelName === model.modelName);
+          return (
+            <ModelItem
+              key={`${model.modelKey}::${model.modelName}`}
+              model={model}
+              isSelected={compareOn ? picked : model.modelKey === activeKey && model.modelName === activeName}
+              multi={compareOn}
+              // At the limit the rest stay off; deselecting one frees a slot to swap.
+              disabled={compareOn && !picked && comparePicked.length >= MAX_COMPARE_MODELS}
+              onSelect={handleSelect}
+              unavailableReason={unavailableReason(t, unavailable, model)}
+            />
+          );
+        })}
       </Flex>
     </Flex>
   );
+}
+
+/** Why `model` cannot be picked here, or null: a group limit first, then the edition's reason. */
+function unavailableReason(
+  t: TFunction,
+  unavailable: UnavailableModels,
+  model: Pick<AvailableLlmModel, 'modelKey' | 'modelName'>,
+): string | null {
+  if (unavailable.group.has(model.modelKey)) return t('chat.modelUnavailableGroup');
+  const reason = unavailable.reasons.get(modelChoiceKey(model.modelKey, model.modelName));
+  return reason === undefined ? null : t(reason);
 }
 
 // ─── Reasoning effort selector (shown only for isReasoning models) ───
@@ -379,7 +444,7 @@ export function ReasoningEffortSelector({ value, onSelect, agentDefault, modelDe
           );
         })}
       </Flex>
-      <Text size="1" style={{ color: 'var(--slate-10)' }}>
+      <Text size="1" style={{ color: 'var(--slate-11)' }}>
         {value
           ? t('chat.reasoningEffort.overrideHint', 'Click again to use the default.')
           : usesModelDefault
@@ -402,9 +467,23 @@ interface ModelItemProps {
   model: AvailableLlmModel;
   isSelected: boolean;
   onSelect: (model: AvailableLlmModel) => void;
+  /** Compare mode: several models can be picked, so the row is a checkbox. */
+  multi?: boolean;
+  disabled?: boolean;
+  /** Why the model cannot be picked (MG-15); null: it can. */
+  unavailableReason?: string | null;
 }
 
-function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
+function ModelItem({
+  model,
+  isSelected,
+  onSelect,
+  multi = false,
+  disabled = false,
+  unavailableReason = null,
+}: ModelItemProps) {
+  const unavailable = unavailableReason !== null;
+  const off = disabled || unavailable;
   const [isHovered, setIsHovered] = useState(false);
   // Provider always comes through from the API. If we don't have a curated
   // friendly name for it in PROVIDER_FRIENDLY_NAMES, fall back to splitting
@@ -423,13 +502,30 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
     <Flex
       align="center"
       justify="between"
-      onClick={() => onSelect(model)}
+      onClick={off ? undefined : () => onSelect(model)}
+      aria-disabled={off || undefined}
+      data-testid={unavailable ? 'chat-model-unavailable' : undefined}
+      {...(multi
+        ? {
+            role: 'checkbox',
+            'aria-checked': isSelected,
+            'aria-disabled': off,
+            tabIndex: off ? -1 : 0,
+            onKeyDown: (e: React.KeyboardEvent) => {
+              if (!off && (e.key === 'Enter' || e.key === ' ')) {
+                e.preventDefault();
+                onSelect(model);
+              }
+            },
+          }
+        : {})}
       style={{
         padding: 'var(--space-3) var(--space-4)',
         borderRadius: 'var(--radius-1)',
         border: '1px solid var(--olive-3)',
         backgroundColor: 'var(--olive-2)',
-        cursor: 'pointer',
+        cursor: off ? 'not-allowed' : 'pointer',
+        opacity: unavailable ? 0.6 : disabled ? 0.5 : 1,
       }}
     >
       {/* Left: all content left-aligned */}
@@ -449,7 +545,7 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
                 height={4}
                 style={{ flexShrink: 0 }}
               />
-              <Text size="1" style={{ color: 'var(--slate-10)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 by {providerName}
               </Text>
             </>
@@ -461,6 +557,15 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
           <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '1.4' }}>
             {description}
           </Text>
+        )}
+
+        {unavailable && (
+          <Flex align="center" gap="1">
+            <MaterialIcon name="public_off" size={14} color="var(--slate-11)" />
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
+              {unavailableReason}
+            </Text>
+          </Flex>
         )}
 
         {/* Tags */}
@@ -484,6 +589,14 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
       </Flex>
 
       {/* Right: Radio indicator — vertically centered */}
+      {multi ? (
+        <Checkbox
+          checked={isSelected}
+          tabIndex={-1}
+          aria-hidden="true"
+          style={{ flexShrink: 0, marginLeft: 'var(--space-3)', pointerEvents: 'none' }}
+        />
+      ) : (
       <RadioGroup.Root
         value={isSelected ? 'selected' : ''}
         style={{
@@ -495,6 +608,7 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
       >
         <RadioGroup.Item value="selected" />
       </RadioGroup.Root>
+      )}
     </Flex>
   );
 }

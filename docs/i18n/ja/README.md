@@ -53,6 +53,56 @@
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> は、企業のナレッジを接続し、引用付きの説明可能な検索を提供し、各システムをまたいでワークフローを自動化する、オープンソースかつセルフホスト可能な AI ネイティブの実行レイヤーです。
 
+### PipesHub の仕組み
+
+PipesHub は、ドキュメント、会話、構造化データ、Wiki、チケット、コードを横断する**統合コンテキストレイヤー**を構築します。コネクターは各ソースを権限情報とともに同期します。インデックスパイプラインはコンテンツを解析・チャンク分割・埋め込みし、レコード、人物、エンティティをナレッジグラフで結び付けます。
+
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
+質問に答えるのは、単発の「検索してから生成」ではなく**エージェントループ**です。エージェントは計画し、ツールを呼び出し、結果を読み、根拠がそろうまで続けます：
+
+- **ハイブリッド検索** — セマンティック検索とキーワード検索を組み合わせ、意味と完全一致の両方を捉えます。
+- **Grep / パターンマッチング** — 正確な識別子、エラーメッセージ、チケットキー、コードシンボル。
+- **ナレッジグラフのナビゲーション** — ドキュメント、人物、チケット、プルリクエスト、スレッド間のつながりをたどります。
+- **ドキュメントの読み込み** — 一致した 1 チャンクに頼らず、ソース全体を開きます。
+
+すべてのツール呼び出しは質問したユーザーの権限でフィルタリングされ、すべての回答は根拠となったブロックを引用します。
+
+
+| | Top-k チャンク RAG | PipesHub |
+| --- | --- | --- |
+| **エージェントが最初に見るもの** | 数個のテキストチャンク | 各レコードの名前、場所、メタデータ、要約、そして一致したブロック |
+| **さらに掘り下げる方法** | できない：1 つの質問につき検索は 1 回 | ハイブリッド検索、レコードへの `grep`/`find`、フォルダーナビゲーション、ナレッジグラフ検索をループで実行 |
+| **構造** | チャンク化で失われる | すべてのソースが Blocks になる：セクション、行とセルを持つテーブル、スレッド、コード、スキーマ付きの SQL テーブル |
+| **権限** | インデックス作成時に近似されることが多い | ツール呼び出しのたびに、リクエストしたユーザーについてソースシステムの権限と照合 |
+| **引用** | チャンク単位（あれば） | ブロック単位：ページ、テーブルのセル、行、スライド、行番号。捏造された引用は除去 |
 
 ## 機能
 

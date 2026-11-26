@@ -1,13 +1,13 @@
-"""`PipesHubAgentFactory.create()` entity-tool grant: `search_entities` is
-granted from the first turn, `find_records_by_entity` starts hidden until
-`search_entities` runs (or an earlier turn used an entity tool), and both are
-hidden when no entity vector store is wired. The unlock hook itself is
-covered in `test_progressive_entity_tools.py`.
+"""`PipesHubAgentFactory.create()` entity-tool grant: `search_entities` and
+`find_records_by_entity` are granted from the first turn (a chat's tool list is
+fixed at its first request, R4), and both are hidden when no entity vector
+store is wired. The unlock hook itself is covered in
+`test_progressive_entity_tools.py`.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,6 +20,9 @@ from app.agents.agent_loop.hooks.progressive_tools import (
     SEARCH_ENTITIES_TOOL_NAME,
 )
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
+
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
 
 
 class _FakeKnowledgeGraphToolset:
@@ -53,25 +56,20 @@ class _FakeKnowledgeGraphToolset:
         return "ok"
 
 
-def _patch_knowledgegraph_toolset_registry() -> tuple[Any, Any]:
+def _patch_knowledgegraph_toolset_registry() -> AbstractContextManager[Any]:
     fake_registry = MagicMock()
     fake_registry.get_all_toolsets.return_value = {
         "knowledgegraph": {
             "class": _FakeKnowledgeGraphToolset,
             "isInternal": True,
+            "provider": "platform",
             "description": "Knowledge graph",
             "essential": True,
         },
     }
-    return (
-        patch(
-            "app.agents.registry.toolset_registry.get_toolset_registry",
-            return_value=fake_registry,
-        ),
-        patch(
-            "app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory",
-            return_value=None,
-        ),
+    return patch(
+        "app.agents.registry.toolset_registry.get_toolset_registry",
+        return_value=fake_registry,
     )
 
 
@@ -90,8 +88,7 @@ async def _create(
     )
     if with_store:
         context.tool_state["entity_vector_store"] = MagicMock()
-    registry_patch, factory_patch = _patch_knowledgegraph_toolset_registry()
-    with registry_patch, factory_patch:
+    with _patch_knowledgegraph_toolset_registry():
         agent, runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
             context, context.llm, mode, query="hello",
         )
@@ -100,12 +97,14 @@ async def _create(
 
 @pytest.mark.asyncio
 class TestEntityToolGrant:
-    async def test_search_entities_granted_find_records_deferred(self) -> None:
+    async def test_search_entities_and_find_records_granted_from_the_start(self) -> None:
+        """R4: the chat's tool list is fixed at its first request, so find_records_by_entity is in it with
+        search_entities (its description says it takes an entityId from search_entities)."""
         _context, agent, runtime = await _create()
 
         assert SEARCH_ENTITIES_TOOL_NAME in agent.spec.tool_names
         assert runtime.tool_registry.has(PROGRESSIVE_FIND_RECORDS_TOOL_NAME)
-        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME not in agent.spec.tool_names
+        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME in agent.spec.tool_names
         assert "knowledgegraph__search" in agent.spec.tool_names
 
     async def test_entity_tools_hidden_without_entity_store(self) -> None:
@@ -150,3 +149,49 @@ class TestEntityToolGrant:
         assert any(
             name.startswith("progressive_entity_tools.") for name in qualnames
         ), qualnames
+
+
+@pytest.mark.asyncio
+class TestExplorerEntityToolGrant:
+    """Composed modes: the exploration child holds the entity tools under the
+    same gating as the parent, and the parent keeps them."""
+
+    async def test_explorer_gets_both_entity_tools_from_its_first_request(self) -> None:
+        """R4, as for the parent: the child's tool list is fixed at its first request."""
+        _context, agent, runtime = await _create("react")
+
+        explorer = runtime.tool_registry.resolve_by_name("internal_exploration_agent")._spec
+        assert SEARCH_ENTITIES_TOOL_NAME in explorer.tool_names
+        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME in explorer.tool_names
+        assert SEARCH_ENTITIES_TOOL_NAME in agent.spec.tool_names
+
+    async def test_explorer_gets_no_entity_tools_without_an_entity_store(self) -> None:
+        _context, _agent, runtime = await _create("react", with_store=False)
+
+        explorer = runtime.tool_registry.resolve_by_name("internal_exploration_agent")._spec
+        assert SEARCH_ENTITIES_TOOL_NAME not in explorer.tool_names
+        assert SEARCH_ENTITIES_TOOL_NAME not in explorer.system_prompt
+
+    async def test_the_explorers_own_entity_search_unlocks_find_records_for_it(self) -> None:
+        from app.agent_loop_lib.tools.registry import ToolRegistry
+        from app.agents.actions.knowledge_graph.ops.entity_filters import (
+            ENTITY_INDEX_CACHE_KEY,
+        )
+        from app.agents.agent_loop.hooks.progressive_tools import (
+            progressive_entity_tools,
+        )
+        from tests.unit.agents.adapter.test_progressive_entity_tools import (
+            _SEARCH_ENTITIES_PATH,
+            _noop_next,
+            _result_ctx,
+            _tool_scope,
+        )
+
+        context, _agent, runtime = await _create("react")
+        explorer = runtime.tool_registry.resolve_by_name("internal_exploration_agent")._spec
+        context.tool_state[ENTITY_INDEX_CACHE_KEY] = {"e1": {"type": "named_entity", "name": "Acme"}}
+        ctx = _result_ctx(_tool_scope(explorer, ToolRegistry()), tool_path=_SEARCH_ENTITIES_PATH)
+
+        await progressive_entity_tools(context)(ctx, _noop_next)
+
+        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME in explorer.tool_names

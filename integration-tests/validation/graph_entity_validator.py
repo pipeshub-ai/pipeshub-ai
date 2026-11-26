@@ -16,6 +16,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
+from urllib.parse import unquote_plus, urlsplit
 
 from pydantic import BaseModel
 
@@ -72,13 +73,16 @@ GraphEntityKind = Literal[  # ``entity`` values accepted by ``assert_graph_entit
 ]
 
 # Things integration tests often cannot know ahead of time or that change after sync.
-# indexing_status, parsing_status, queued_at and processing_started_at belong to the
-# indexing pipeline, which keeps moving them after the connector hands the record over.
+# indexing_status, extraction_status, parsing_status, queued_at and processing_started_at
+# belong to the indexing pipeline, which keeps moving them after the connector hands the record over.
 # parent_record_type and record_group_type are write-time hints (edge creation, record-group
 # linkage); Record.to_arango_base_record never serializes them, so they always read back None.
 _RECORD_DEFAULT_SKIP: Final[frozenset[str]] = frozenset({
-    "id", "org_id", "indexing_status", "parsing_status", "queued_at", "processing_started_at",
+    "id", "org_id", "indexing_status", "extraction_status", "parsing_status", "queued_at",
+    "processing_started_at",
     "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type",
+    # Store-minted life id (RECORD_INCARNATION_WRITE); expected records do not set it.
+    "incarnation_id",
     # Write-time permission hints (Record model), never persisted on the node.
     "inherit_permissions_from_group", "rewrite_permissions",
 })
@@ -100,11 +104,46 @@ _DEFAULT_SKIP_COMPARE_BY_ENTITY: Final[dict[str, frozenset[str]]] = {
 }
 
 
+_GOOGLE_FILE_HOSTS: Final[frozenset[str]] = frozenset({"docs.google.com", "drive.google.com"})
+
+
+def _comparable_weburl(url: object) -> object:
+    """``url`` without Google's ``ouid``, which Drive adds to an Office file's webViewLink
+    on some reads of the same file and not on others.
+
+    Only the raw ``ouid`` pairs are cut, so every other byte still has to match:
+    decoding the query would make ``%20`` equal ``+``.
+    """
+    if not isinstance(url, str) or urlsplit(url).hostname not in _GOOGLE_FILE_HOSTS:
+        return url
+    head, mark, rest = url.partition("?")
+    if not mark:
+        return url
+    query, hash_mark, fragment = rest.partition("#")
+    pairs = query.split("&")
+    kept = [pair for pair in pairs if unquote_plus(pair.partition("=")[0]) != "ouid"]
+    if len(kept) == len(pairs):
+        return url
+    return f"{head}{'?' if kept else ''}{'&'.join(kept)}{hash_mark}{fragment}"
+
+
 def _field_values_equal(key: str, expected: object, actual: object) -> bool:
-    """Return True if expected and actual match for this field (special case for empty semantic_metadata)."""
+    """Return True if expected and actual match for this field (special cases for empty
+    semantic_metadata, cleared edition_fields keys and Google file links)."""
     if key == "semantic_metadata" and expected in (None, {}) and actual in (None, {}):
         return True
+    if key == "weburl":
+        return _comparable_weburl(expected) == _comparable_weburl(actual)
+    if key == "edition_fields":
+        return _held_edition_fields(expected) == _held_edition_fields(actual)
     return expected == actual
+
+
+def _held_edition_fields(value: object) -> object:
+    """``value`` as the stored record reads back: a key written as ``None`` clears it, and no keys reads as ``None``."""
+    if not isinstance(value, dict):
+        return value
+    return {k: v for k, v in value.items() if v is not None} or None
 
 
 def _merge_schemas(base: ResponseSchema, layer: ResponseSchema) -> ResponseSchema:

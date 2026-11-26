@@ -1,9 +1,21 @@
 import { z } from 'zod';
+import { sessionRepositorySchema } from '../../agent-harness/domain/repository';
+import { runGatesSchema } from '../../agent-harness/domain/run-gates';
+import { contract } from '../../agent-harness/contracts/zod-contract';
+import {
+  NAMED_ENTITY_KINDS,
+  REQUEST_FILTER_KEYS,
+  requestFiltersSchema,
+} from '../../../libs/validators/request-filters';
+import { keywordSearchBudgetSchema } from '../../../libs/validators/keyword-search-budget';
 import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
-import { PIPESHUB_CHAT_MODE, REASONING_EFFORT_VALUES } from '../constants/constants';
+import {
+  PIPESHUB_CHAT_MODE,
+  REASONING_EFFORT_VALUES,
+} from '../constants/constants';
 import {
   messageForUnknownOption,
   messageWhenMissing,
@@ -13,8 +25,16 @@ import {
   guidCheck,
   integerCheck,
 } from '../../../libs/utils/zod-formats';
+import {
+  createExtensionRegistry,
+  listedReleaseNames,
+} from '../../control-plane';
+import {
+  MAX_ROLE_MODELS,
+  ROLE_KEY,
+} from '../../agent-harness/domain/agent-definition';
 
-export { REASONING_EFFORT_VALUES };
+export { NAMED_ENTITY_KINDS, REASONING_EFFORT_VALUES, REQUEST_FILTER_KEYS };
 
 // ---------------------------------------------------------------------------
 // Primitive validators
@@ -91,205 +111,11 @@ const appliedFiltersSchema = z
   })
   .optional();
 
-// Built-in named-entity kinds; mirrors EntityKind in
-// backend/python/app/modules/named_entities/domain/kinds.py.
-export const NAMED_ENTITY_KINDS = [
-  'person',
-  'person_type',
-  'organization',
-  'event',
-  'product',
-  'skill',
-  'location',
-  'city',
-  'state',
-  'country_region',
-  'address',
-  'date',
-  'date_range',
-  'date_time',
-  'duration',
-  'currency',
-  'percentage',
-  'age',
-  'dimension',
-  'email',
-  'url',
-  'phone',
-  'ip',
-] as const;
-
-const finiteNumber = z.number();
-
-const rangeChecked = <T extends z.ZodRawShape>(
-  shape: T,
-  low: string,
-  high: string,
-): z.ZodObject<T, z.core.$strict> =>
-  z
-    .object(shape)
-    .strict()
-    .superRefine((value: Record<string, unknown>, ctx) => {
-      const start = value[low];
-      const end = value[high];
-      if (typeof start === 'number' && typeof end === 'number' && start > end) {
-        ctx.addIssue({
-          code: 'custom',
-          message: `${low} must be less than or equal to ${high}`,
-        });
-      }
-    });
-
-// Epoch milliseconds, or an ISO-8601 date / date-time (a date alone is UTC midnight).
-const instant = z.union([
-  z.number().check(integerCheck()),
-  z
-    .string()
-    .trim()
-    .min(1)
-    .transform((value, ctx) => {
-      const parsed = Date.parse(value);
-      if (Number.isNaN(parsed)) {
-        ctx.addIssue({
-          code: 'custom',
-          // Non-fatal, as in zod 3: the union reports this message instead of
-          // a generic "isn't valid".
-          continue: true,
-          message: 'must be epoch milliseconds or an ISO-8601 date',
-        });
-        return z.NEVER;
-      }
-      return parsed;
-    }),
-]);
-
-/**
- * Experimental. Every constraint must hold for the same record: an amount and
- * a date match a record that mentions both, not one entity that is both.
- */
-const entityFiltersSchema = z
-  .object({
-    kinds: z
-      .array(z.string().trim().toLowerCase().pipe(z.enum(NAMED_ENTITY_KINDS)))
-      .min(1)
-      .max(NAMED_ENTITY_KINDS.length)
-      .optional(),
-    name: z
-      .string()
-      .trim()
-      .min(1, { message: 'name must not be blank' })
-      .max(256)
-      .optional(),
-    entityIds: z
-      .array(z.string().check(guidCheck()))
-      .min(1)
-      .max(100)
-      .optional(),
-    mentionedDate: rangeChecked(
-      { from: instant.optional(), to: instant.optional() },
-      'from',
-      'to',
-    ).optional(),
-    amount: rangeChecked(
-      {
-        min: finiteNumber.optional(),
-        max: finiteNumber.optional(),
-        currency: z
-          .string()
-          .trim()
-          .toUpperCase()
-          .regex(/^[A-Z]{3}$/, {
-            message: 'currency must be a three-letter ISO 4217 code',
-          })
-          .optional(),
-      },
-      'min',
-      'max',
-    ).optional(),
-    quantity: rangeChecked(
-      {
-        min: finiteNumber.optional(),
-        max: finiteNumber.optional(),
-        dimension: z
-          .string()
-          .trim()
-          .toLowerCase()
-          .regex(/^[a-z_]{1,32}$/)
-          .optional(),
-      },
-      'min',
-      'max',
-    ).optional(),
-    // Fractions: 0.125 is 12.5%.
-    percent: rangeChecked(
-      { min: finiteNumber.optional(), max: finiteNumber.optional() },
-      'min',
-      'max',
-    ).optional(),
-  })
-  .strict();
-
-/** Most ids one request may select, across every filter key. */
-const MAX_FILTER_IDS = 200;
-
-const filtersShape = {
-  apps: z.array(appOrKbIdSchema).optional(),
-  kb: z.array(appOrKbIdSchema).optional(),
-  entityFilters: entityFiltersSchema.optional(),
-  // Reserved for the typed filter tree that will replace entityFilters.
-  where: z
-    .unknown()
-    .refine((value) => value === undefined, {
-      message: 'filters.where is not supported yet',
-    })
-    .optional(),
-  recordGroups: z.array(appOrKbIdSchema).optional(),
-  records: z.array(appOrKbIdSchema).optional(),
-  recordsExact: z.array(appOrKbIdSchema).optional(),
-};
-
-/** Keys a client may send in `filters` (`where` is reserved and always refused). */
-export const REQUEST_FILTER_KEYS = Object.keys(filtersShape).filter(
-  (key) => key !== 'where',
-);
-
-/**
- * Filter object reused across search/message/regenerate flows: whole apps
- * (`apps`, with `kb` as its older name for collections) and selections below
- * app level — record groups (with the groups nested in them), folders or
- * records (with everything under them) and single records — plus `entityFilters`. Classification
- * names (departments, topics...) are internal-only for now. A key outside this list is refused with the allowed list.
- */
-const filtersSchema = z
-  .object(filtersShape)
-  .loose()
-  .superRefine((filters, ctx) => {
-    const unknown = Object.keys(filters).filter(
-      (key) => !Object.prototype.hasOwnProperty.call(filtersShape, key),
-    );
-    if (unknown.length > 0) {
-      ctx.addIssue({
-        code: 'custom',
-        message: `Unknown filter key(s): ${unknown.join(', ')}. Allowed keys: ${REQUEST_FILTER_KEYS.join(', ')}`,
-      });
-    }
-  })
-  .refine(
-    (filters) =>
-      Object.values(filters).reduce<number>(
-        (count, ids) => count + (Array.isArray(ids) ? ids.length : 0),
-        0,
-      ) <= MAX_FILTER_IDS,
-    { message: `At most ${MAX_FILTER_IDS} ids may be selected in one request` },
-  )
-  .optional();
+const filtersSchema = requestFiltersSchema;
 
 /** Model selection fields shared across search, message, regenerate, etc. */
 const modelFieldsSchema = {
-  modelKey: z
-    .string()
-    .min(1, { message: 'Model key is required' })
-    .optional(),
+  modelKey: z.string().min(1, { message: 'Model key is required' }).optional(),
   modelName: z
     .string()
     .min(1, { message: 'Model name is required' })
@@ -372,7 +198,7 @@ const retrievalContextFieldsSchema = {
  * chat body that runs a search, or Zod strips it.
  */
 const keywordSearchFieldsSchema = {
-  keywordSearchBudget: z.enum(['short', 'full']).optional(),
+  keywordSearchBudget: keywordSearchBudgetSchema.optional(),
 };
 
 /** Body of `POST .../cancel` — one schema for both the assistant and agent
@@ -411,6 +237,8 @@ const messageIdParam = { messageId: objectId('message ID') };
 const agentKeyParam = {
   agentKey: z.string().min(1, { message: 'Agent key is required' }),
 };
+/** The agent authority's cap on a version's note (`app/agents/versions.py` NOTE_MAX_CHARS). */
+const AGENT_VERSION_NOTE_MAX = 500;
 const webSearchProviderParam = {
   provider: z
     .string()
@@ -419,10 +247,7 @@ const webSearchProviderParam = {
     .transform((value) => value.toLowerCase()),
 };
 const modelUsageParam = {
-  model_key: z
-    .string()
-    .trim()
-    .min(1, { message: 'Model key is required' }),
+  model_key: z.string().trim().min(1, { message: 'Model key is required' }),
 };
 
 // ---------------------------------------------------------------------------
@@ -447,41 +272,137 @@ const chatQuerySchema = z
   });
 
 const enterpriseSearchCreateBodySchema = z.object({
-    query: chatQuerySchema,
-    recordIds: z.array(objectId('record ID')).optional(),
-    filters: filtersSchema,
-    appliedFilters: appliedFiltersSchema,
-    attachments: z.array(attachmentRefSchema).optional(),
-    chatMode: z.enum(PIPESHUB_CHAT_MODE).optional(),
-    // Only honored when creating a *new* conversation — see resolveProjectLink
-    // (enterprise_search/utils/project-context.ts). Ignored on follow-up turns.
-    projectId: objectId('project ID').optional(),
-    projectVisibility: z.enum(['private', 'project']).optional(),
-    ...modelFieldsSchema,
-    ...contextFieldsSchema,
-    ...retrievalContextFieldsSchema,
+  query: chatQuerySchema,
+  recordIds: z.array(objectId('record ID')).optional(),
+  filters: filtersSchema,
+  appliedFilters: appliedFiltersSchema,
+  attachments: z.array(attachmentRefSchema).optional(),
+  chatMode: z.enum(PIPESHUB_CHAT_MODE).optional(),
+  // Only honored when creating a *new* conversation — see resolveProjectLink
+  // (enterprise_search/utils/project-context.ts). Ignored on follow-up turns.
+  projectId: objectId('project ID').optional(),
+  projectVisibility: z.enum(['private', 'project']).optional(),
+  ...modelFieldsSchema,
+  ...contextFieldsSchema,
+  ...retrievalContextFieldsSchema,
   ...keywordSearchFieldsSchema,
 });
+
+/** Opt-in: this turn is also being answered by a second model (Compare models); the stream announces the question's id early. */
+const compareTurnSchema = z.boolean().optional();
 
 export const enterpriseSearchCreateSchema = z.object({
   body: enterpriseSearchCreateBodySchema,
 });
 
-/** Public `/conversations/stream` modes. The route always requires an explicit mode. */
+/** The assistant's chat modes on its public routes. */
 export const UNIVERSAL_STREAM_CHAT_MODES = [
   'agent',
   'internal_search',
   'web_search',
 ] as const;
 
-const universalStreamChatModeSchema = z.enum(UNIVERSAL_STREAM_CHAT_MODES, {
+/**
+ * The one definition of `chatMode` for the assistant's public chat routes
+ * (QA6-F5): a new chat, a follow-up and a regenerate refuse the same values.
+ * The stream routes require a mode; a regenerate may leave it out.
+ */
+export const assistantChatModeSchema = z.enum(UNIVERSAL_STREAM_CHAT_MODES, {
   error: 'Invalid chat mode',
 });
 
+/**
+ * Which harness a chat turn asks for. `durable`: the assistant's Agent mode
+ * asks for the harness (ASSIST1). `legacy`: the chat switch asks for the
+ * classic path (CTL-7). The server decides either way.
+ */
+export const assistantHarnessSchema = z.enum(['durable', 'legacy']).optional();
+
+/** What a stored assistant conversation reads as when its mode is one no chat route accepts any more. */
+export const DEFAULT_ASSISTANT_CHAT_MODE: (typeof UNIVERSAL_STREAM_CHAT_MODES)[number] =
+  'internal_search';
+
+const ACCEPTED_SOMEWHERE: ReadonlySet<string> = new Set<string>([
+  ...UNIVERSAL_STREAM_CHAT_MODES,
+  ...Object.values(PIPESHUB_CHAT_MODE),
+]);
+
+/**
+ * A stored assistant conversation's mode as the server gives it to a client
+ * (QA6-F5), decided here only. A mode some chat route still accepts is served
+ * as stored, an `agent:<strategy>` of an older client as `agent`, and
+ * anything else (a retired mode such as `image`) as the default, so the
+ * client's next request is one the routes take.
+ */
+export const servedAssistantChatMode = (stored: string): string => {
+  if (ACCEPTED_SOMEWHERE.has(stored)) return stored;
+  return stored.startsWith('agent:') ? 'agent' : DEFAULT_ASSISTANT_CHAT_MODE;
+};
+
+/** `conversation` with its stored mode as served; one that stores no mode is unchanged. */
+export const withServedAssistantMode = <
+  T extends { modelInfo?: unknown } | null | undefined,
+>(
+  conversation: T,
+): T => {
+  const modelInfo = conversation?.modelInfo as
+    { chatMode?: unknown } | null | undefined;
+  const stored = modelInfo?.chatMode;
+  if (typeof stored !== 'string' || stored === '') return conversation;
+  return {
+    ...conversation,
+    modelInfo: { ...modelInfo, chatMode: servedAssistantChatMode(stored) },
+  };
+};
+
+/**
+ * The coding engine for the conversation a turn creates (CMDUI2): an engine kind or `none`, in
+ * `PUT …/coding-engine`'s format. The agent harness checks it as that route does; only create routes take it.
+ */
+export const newChatCodingEngineSchema = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9_.-]{0,63}$/, "Engine isn't in the right format")
+  .optional();
+
+/**
+ * GIT-FLOW (WP-26): the GitHub repository for the conversation a turn creates (the composer chip), in
+ * `PUT …/repository`'s format. The agent harness checks it as that route does; only create routes take it.
+ */
+export const newChatRepositorySchema = sessionRepositorySchema.optional();
+
+/**
+ * G-03..G-05: the run gates a turn asks for (a dry run, plan approval, a verify gate). Only the agent harness
+ * enforces them; a gated turn it does not serve is refused, never run on today's loop.
+ */
+export const turnGatesSchema = contract(runGatesSchema).optional();
+
 export const enterpriseSearchStreamCreateSchema = z.object({
   body: enterpriseSearchCreateBodySchema.extend({
-    chatMode: universalStreamChatModeSchema,
+    chatMode: assistantChatModeSchema,
+    compareTurn: compareTurnSchema,
+    harness: assistantHarnessSchema,
+    gates: turnGatesSchema,
+    codingEngine: newChatCodingEngineSchema,
+    repository: newChatRepositorySchema,
   }),
+});
+
+/**
+ * The Slack bot's own fields on the assistant's internal chat routes, which the agent routes take unvalidated: who is
+ * behind its service credential (the caller context), the thread the turn came from (ADR-OWD-09 D-SLACK-ASK), and the
+ * Agent mode's request for the agent harness. Without them the validation dropped each one before the route read it.
+ */
+const slackTurnFieldsSchema = {
+  callerDisplayName: z.string().optional(),
+  callerEmail: z.string().optional(),
+  slackThread: z
+    .object({ channel: z.string(), threadTs: z.string() })
+    .optional(),
+  harness: assistantHarnessSchema,
+};
+
+export const slackStreamCreateSchema = z.object({
+  body: enterpriseSearchCreateBodySchema.extend(slackTurnFieldsSchema),
 });
 
 // ---------------------------------------------------------------------------
@@ -496,14 +417,54 @@ export const conversationTitleParamsSchema = conversationIdParamsSchema.extend({
   body: titleBodySchema,
 });
 
+/**
+ * POST /conversations/:id/share. `accessLevel` is part of the contract (OWD-19: `write` makes a collaborator who
+ * sends their own turns); the body is strict so a field the route does not take is refused, never silently dropped
+ * (R38AUTHZ-FU-1: a non-strict object stripped `accessLevel`, so every write share was stored as read).
+ */
 export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
-  body: z.object({ userIds: userIdsSchema }),
+  body: z
+    .object({
+      userIds: userIdsSchema,
+      accessLevel: z.enum(['read', 'write']).optional(),
+    })
+    .strict(),
+});
+
+/** POST /conversations/:id/unshare: only who to remove; any other field changes nothing, so it is dropped. */
+export const conversationUnshareParamsSchema =
+  conversationIdParamsSchema.extend({
+    body: z.object({ userIds: userIdsSchema }),
+  });
+
+/** "Continue privately" (SS3): one fork per key; a repeat answers the same copy. */
+const forkBodySchema = z
+  .object({
+    idempotencyKey: z
+      .string()
+      .regex(
+        /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/,
+        'idempotencyKey must be 1-128 letters, digits, _ . : -',
+      ),
+  })
+  .strict();
+
+/** Schema for POST /:conversationId/fork. */
+export const conversationForkSchema = conversationIdParamsSchema.extend({
+  body: forkBodySchema,
+});
+
+/** Schema for POST /:agentKey/conversations/:conversationId/fork. */
+export const agentConversationForkSchema = z.object({
+  params: z.object({ ...agentKeyParam, ...conversationIdParam }),
+  body: forkBodySchema,
 });
 
 /** Schema for POST /:conversationId/cancel — cooperatively stop an in-flight assistant run. */
-export const cancelConversationStreamParamsSchema = conversationIdParamsSchema.extend({
-  body: cancelRunBodySchema,
-});
+export const cancelConversationStreamParamsSchema =
+  conversationIdParamsSchema.extend({
+    body: cancelRunBodySchema,
+  });
 
 /** `projectId: null` unlinks — see `setConversationProject`, es_controller.ts. */
 export const conversationProjectLinkSchema = conversationIdParamsSchema.extend({
@@ -514,11 +475,12 @@ export const conversationProjectLinkSchema = conversationIdParamsSchema.extend({
   }),
 });
 
-export const conversationProjectVisibilitySchema = conversationIdParamsSchema.extend({
-  body: z.object({
-    visibility: z.enum(['private', 'project']),
-  }),
-});
+export const conversationProjectVisibilitySchema =
+  conversationIdParamsSchema.extend({
+    body: z.object({
+      visibility: z.enum(['private', 'project']),
+    }),
+  });
 
 export const agentConversationProjectLinkSchema = z.object({
   params: z.object({ ...agentKeyParam, ...conversationIdParam }),
@@ -548,7 +510,8 @@ export const agentConversationParamsSchema = z.object({
 });
 
 /** Schema for DELETE /:agentKey/conversations/:conversationId — delete one agent conversation. */
-export const deleteAgentConversationParamsSchema = agentConversationParamsSchema;
+export const deleteAgentConversationParamsSchema =
+  agentConversationParamsSchema;
 
 export const agentConversationTitleParamsSchema =
   agentConversationParamsSchema.extend({
@@ -612,25 +575,38 @@ export const getAgentConversationByIdSchema = z.object({
       .optional()
       .transform((value) => (value === 'asc' ? 'asc' : 'desc')),
     startDate: z
-      .preprocess((value) => (value === '' ? undefined : value), z.string().optional())
+      .preprocess(
+        (value) => (value === '' ? undefined : value),
+        z.string().optional(),
+      )
       .refine(
         (value) => !value || !isNaN(new Date(value).getTime()),
         'Invalid start date format',
       ),
     endDate: z
-      .preprocess((value) => (value === '' ? undefined : value), z.string().optional())
+      .preprocess(
+        (value) => (value === '' ? undefined : value),
+        z.string().optional(),
+      )
       .refine(
         (value) => !value || !isNaN(new Date(value).getTime()),
         'Invalid end date format',
       ),
     messageType: z
-      .preprocess((value) => (value === '' ? undefined : value), z.string().optional())
+      .preprocess(
+        (value) => (value === '' ? undefined : value),
+        z.string().optional(),
+      )
       .refine(
         (value) =>
           !value ||
-          ['user_query', 'bot_response', 'error', 'feedback', 'system'].includes(
-            value,
-          ),
+          [
+            'user_query',
+            'bot_response',
+            'error',
+            'feedback',
+            'system',
+          ].includes(value),
         'Invalid message type. Must be one of: user_query, bot_response, error, feedback, system',
       ),
   }),
@@ -641,14 +617,14 @@ export const getAgentConversationByIdSchema = z.object({
 // ---------------------------------------------------------------------------
 
 const addMessageBodySchema = z.object({
-    query: chatQuerySchema,
-    filters: filtersSchema,
-    appliedFilters: appliedFiltersSchema,
-    attachments: z.array(attachmentRefSchema).optional(),
-    chatMode: z.enum(PIPESHUB_CHAT_MODE).optional(),
-    ...modelFieldsSchema,
-    ...contextFieldsSchema,
-    ...retrievalContextFieldsSchema,
+  query: chatQuerySchema,
+  filters: filtersSchema,
+  appliedFilters: appliedFiltersSchema,
+  attachments: z.array(attachmentRefSchema).optional(),
+  chatMode: z.enum(PIPESHUB_CHAT_MODE).optional(),
+  ...modelFieldsSchema,
+  ...contextFieldsSchema,
+  ...retrievalContextFieldsSchema,
   ...keywordSearchFieldsSchema,
 });
 
@@ -657,26 +633,51 @@ export const addMessageParamsSchema = z.object({
   body: addMessageBodySchema,
 });
 
+export const slackAddMessageStreamSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: addMessageBodySchema.extend(slackTurnFieldsSchema),
+});
+
 export const addMessageStreamParamsSchema = z.object({
   params: z.object(conversationIdParam),
   body: addMessageBodySchema.extend({
-    chatMode: universalStreamChatModeSchema,
+    chatMode: assistantChatModeSchema,
+    compareTurn: compareTurnSchema,
+    harness: assistantHarnessSchema,
+    gates: turnGatesSchema,
   }),
 });
 
-/** Public `/agents/{agentKey}/conversations/...` streams support quick mode only. */
-export const AGENT_CHAT_MODES = ['quick'] as const;
+/**
+ * An agent's chat modes on its conversation routes (LAT1: every mode on the
+ * existing routes). The server routes each: the loop modes run durably,
+ * planExecute (and its old name `verification`) on today's loop.
+ */
+export const AGENT_CHAT_MODES = [
+  'quick',
+  'auto',
+  'react',
+  'deep',
+  'planExecute',
+  'verification',
+] as const;
 
-const agentChatModeSchema = z.literal('quick', {
+const agentChatModeSchema = z.enum(AGENT_CHAT_MODES, {
   error: 'Invalid chat mode',
 });
 
 const agentAddMessageBodySchema = addMessageBodySchema.extend({
   chatMode: agentChatModeSchema,
+  harness: assistantHarnessSchema,
+  gates: turnGatesSchema,
 });
 
 const agentStreamCreateBodySchema = enterpriseSearchCreateBodySchema.extend({
   chatMode: agentChatModeSchema,
+  harness: assistantHarnessSchema,
+  gates: turnGatesSchema,
+  codingEngine: newChatCodingEngineSchema,
+  repository: newChatRepositorySchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -724,54 +725,34 @@ export const agentAddMessageSchema = z.object({
 /** Defensive max length for long agent text fields (not enforced by Python). */
 const agentLongTextSchema = z.string().max(100_000);
 
-const agentToolRefSchema = z
-  .object({
-    name: z.string().trim().min(1),
-    fullName: z.string().trim().min(1).optional(),
-    description: z.string().max(10_000).optional(),
-  });
-
-/**
- * Toolset names exposed by the Python registry (non-internal) and used by agent builder payloads.
- * Keep this list aligned with OpenAPI `AgentCreateToolsetName`.
- */
-export const AGENT_CREATE_TOOLSET_NAMES = [
-  'calendar',
-  'clickup',
-  'confluence',
-  'confluencedatacenter',
-  'docs',
-  'drive',
-  'github',
-  'gmail',
-  'jira',
-  'jiradatacenter',
-  'lumos',
-  'mariadb',
-  'onedrive',
-  'outlook',
-  'redshift',
-  'salesforce',
-  'sharepoint',
-  'sheets',
-  'slack',
-  'teams',
-  'zoom',
-] as const;
-
-const agentToolsetNameSchema = z.enum(AGENT_CREATE_TOOLSET_NAMES, {
-  error: 'Invalid toolset name',
+const agentToolRefSchema = z.object({
+  name: z.string().trim().min(1),
+  fullName: z.string().trim().min(1).optional(),
+  description: z.string().max(10_000).optional(),
 });
 
-const agentToolsetSchema = z
-  .object({
-    name: z.string().trim().pipe(agentToolsetNameSchema),
-    displayName: z.string().max(200).optional(),
-    type: z.string().max(100).optional(),
-    instanceId: z.string().max(256).optional(),
-    instanceName: z.string().max(200).optional(),
-    tools: z.array(agentToolRefSchema).optional(),
-  });
+/**
+ * The listed toolsets of the release catalog (generated from the Python registry,
+ * C-29 keeps it current); OpenAPI `AgentCreateToolsetName` lists the same names.
+ */
+export const AGENT_CREATE_TOOLSET_NAMES: readonly string[] = listedReleaseNames(
+  createExtensionRegistry(),
+  'toolset',
+);
+
+const agentToolsetNameSchema = z.enum(
+  AGENT_CREATE_TOOLSET_NAMES as [string, ...string[]],
+  { error: 'Invalid toolset name' },
+);
+
+const agentToolsetSchema = z.object({
+  name: z.string().trim().pipe(agentToolsetNameSchema),
+  displayName: z.string().max(200).optional(),
+  type: z.string().max(100).optional(),
+  instanceId: z.string().max(256).optional(),
+  instanceName: z.string().max(200).optional(),
+  tools: z.array(agentToolRefSchema).optional(),
+});
 
 /**
  * One attached MCP server instance reference (see Python's `_parse_mcp_servers`,
@@ -899,11 +880,10 @@ const readAgentKnowledgeFilters = (
   return limit;
 };
 
-const agentKnowledgeSchema = z
-  .object({
-    connectorId: z.string().trim().min(1),
-    filters: z.unknown().transform(readAgentKnowledgeFilters).optional(),
-  });
+const agentKnowledgeSchema = z.object({
+  connectorId: z.string().trim().min(1),
+  filters: z.unknown().transform(readAgentKnowledgeFilters).optional(),
+});
 
 const agentSkillSchema = z
   .object({
@@ -912,31 +892,30 @@ const agentSkillSchema = z
       .min(1, { message: 'Skill name is required' })
       .max(64, { message: 'Skill name must be 64 characters or fewer' })
       .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
-        message: 'Skill name must be lowercase alphanumeric with single hyphens',
+        message:
+          'Skill name must be lowercase alphanumeric with single hyphens',
       }),
   })
   .strict();
 
 const agentModelEntrySchema = z.union([
   z.string().trim().min(1),
-  z
-    .object({
-      modelKey: z.string().trim().min(1),
-      modelName: z.string().optional(),
-      isReasoning: z.boolean().optional(),
-      provider: z.string().optional(),
-    }),
+  z.object({
+    modelKey: z.string().trim().min(1),
+    modelName: z.string().optional(),
+    isReasoning: z.boolean().optional(),
+    provider: z.string().optional(),
+  }),
 ]);
 
 const agentWebSearchSchema = z.union([
   z.string().trim().min(1),
-  z
-    .object({
-      provider: z.string().trim().min(1),
-      providerKey: z.string().max(256).optional(),
-      providerLabel: z.string().max(200).optional(),
-      iconPath: z.string().max(500).optional(),
-    }),
+  z.object({
+    provider: z.string().trim().min(1),
+    providerKey: z.string().max(256).optional(),
+    providerLabel: z.string().max(200).optional(),
+    iconPath: z.string().max(500).optional(),
+  }),
 ]);
 
 const AGENT_REASONING_MODEL_REQUIRED_MESSAGE =
@@ -969,6 +948,53 @@ const agentModelsOptionalSchema = z
       });
     }
   });
+
+/**
+ * An engine agent's settings (AG1), passed to the agents module, which parses
+ * the narrowing and checks it against the org's engine ceiling. Here only the
+ * shape: an object or null, and an account id or null.
+ */
+const agentEngineFields = {
+  engineProfile: z
+    .union([z.null(), z.record(z.string(), z.unknown())])
+    .optional(),
+  modelAccountId: z.union([z.null(), z.string().min(1).max(300)]).optional(),
+};
+
+/**
+ * The model each sub-agent role calls (MA1), passed to the agents module,
+ * which checks every entry is a configured LLM. Here only the shape.
+ */
+const agentRoleModelFields = {
+  roleModels: z
+    .record(
+      z.string().regex(ROLE_KEY, { message: 'Invalid role key' }),
+      z
+        .object({
+          modelKey: z.string().min(1),
+          modelName: z.string().min(1),
+          provider: z.string().min(1),
+        })
+        .strict(),
+    )
+    .refine((roles) => Object.keys(roles).length <= MAX_ROLE_MODELS, {
+      message: `At most ${String(MAX_ROLE_MODELS)} roles`,
+    })
+    .optional(),
+};
+
+/**
+ * An agent's own run gates (G-03..G-05) and environment (C20.18), passed to the agents module, which parses each and
+ * refuses what it does not accept (a secret-looking variable, an unknown gate). Here only the shape: an object, or `{}`
+ * or null to clear a stored one. Without them listed here the body's parse dropped both, so a builder save that
+ * named them stored neither.
+ */
+const agentHarnessFields = {
+  gates: z.union([z.null(), z.record(z.string(), z.unknown())]).optional(),
+  environment: z
+    .union([z.null(), z.record(z.string(), z.unknown())])
+    .optional(),
+};
 
 const createAgentBodySchema = z.object({
   name: z
@@ -1005,6 +1031,9 @@ const createAgentBodySchema = z.object({
     .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
     .optional(),
   sendUserContext: z.boolean().optional(),
+  ...agentEngineFields,
+  ...agentRoleModelFields,
+  ...agentHarnessFields,
 });
 
 export const createAgentSchema = z.object({
@@ -1068,6 +1097,13 @@ const updateAgentBodySchema = z.object({
     .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
     .optional(),
   sendUserContext: z.boolean().optional(),
+  ...agentEngineFields,
+  ...agentRoleModelFields,
+  ...agentHarnessFields,
+  /** A save publishes the agent's next version unless this is false: then it stays a draft (OWD-14). */
+  publish: z.boolean().optional(),
+  /** What changed, kept on the version this save publishes. */
+  versionNote: z.string().max(AGENT_VERSION_NOTE_MAX).optional(),
 });
 
 export const updateAgentSchema = z.object({
@@ -1075,6 +1111,36 @@ export const updateAgentSchema = z.object({
   body: updateAgentBodySchema.extend({
     apiToolsetTools: agentApiToolsetToolsSchema,
   }),
+});
+
+// ---------------------------------------------------------------------------
+// Agent versions (OWD-14): list, read, publish the draft, roll back
+// ---------------------------------------------------------------------------
+
+const agentVersionParam = {
+  ...agentKeyParam,
+  version: z.coerce.number().int().min(1).max(2_147_483_647),
+};
+const agentVersionNoteBody = z
+  .object({ note: z.string().max(AGENT_VERSION_NOTE_MAX).optional() })
+  .strict();
+
+export const listAgentVersionsSchema = z.object({
+  params: z.object(agentKeyParam),
+});
+
+export const getAgentVersionSchema = z.object({
+  params: z.object(agentVersionParam),
+});
+
+export const publishAgentVersionSchema = z.object({
+  params: z.object(agentKeyParam),
+  body: agentVersionNoteBody.optional(),
+});
+
+export const rollbackAgentVersionSchema = z.object({
+  params: z.object(agentVersionParam),
+  body: agentVersionNoteBody.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -1132,7 +1198,13 @@ export const listAgentsQuerySchema = z.object({
           });
         }
       }),
-    sort_by: z.string().trim().min(1).max(100).optional().default('updatedAtTimestamp'),
+    sort_by: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .optional()
+      .default('updatedAtTimestamp'),
     sort_order: z.enum(['asc', 'desc']).optional().default('desc'),
   }),
 });
@@ -1171,7 +1243,8 @@ const regenerateBodySchema = z.object({
       message: 'Answers must be the card answers ("User selections: ...")',
     })
     .optional(),
-  chatMode: z.string().min(1, { message: 'Chat mode is required' }).optional(),
+  chatMode: assistantChatModeSchema.optional(),
+  harness: assistantHarnessSchema,
   ...modelFieldsSchema,
   ...contextFieldsSchema,
 });
@@ -1324,24 +1397,175 @@ export const enterpriseSearchSearchSchema = z.object({
     // the date records are placed by. Left out, bounds on one date over more
     // than a month run as a timeline on it; 'off' is always a plain ranked search.
     timeline: z.enum(['created', 'modified', 'off']).optional(),
+    // false runs the search without saving it to the caller's search history;
+    // the response then has no `searchId`.
+    saveHistory: z.boolean().optional(),
   }),
 });
 
 /** POST /api/v1/retrieve: chunks with citations, for a developer's own RAG. */
 export const enterpriseSearchRetrieveSchema = z.object({
+  body: z
+    .object({
+      // Spaces alone are no query: refused as an empty one is, with the same
+      // words a missing query gets.
+      query: z
+        .string()
+        .max(100000, {
+          message: 'Query exceeds maximum length of 100000 characters',
+        })
+        .refine((query) => query.trim().length > 0, {
+          message: 'Query is required.',
+        }),
+      filters: filtersSchema,
+      // Chunks, not records; the AI service defaults to 8.
+      limit: z.number().int().min(1).max(50).optional(),
+      createdAfter: searchDateSchema,
+      createdBefore: searchDateSchema,
+      modifiedAfter: searchDateSchema,
+      modifiedBefore: searchDateSchema,
+      maxChunksPerRecord: z.number().int().min(1).max(50).optional(),
+      rewriteQuery: z.boolean().optional(),
+    })
+    // A misspelt field (`maxChunkPerRecord`, `rewrite_query`) is refused by
+    // name rather than ignored, so the caller learns it had no effect.
+    .strict(),
+});
+
+/**
+ * Exact-text search. The pattern is literal text unless `regex` is true; the
+ * AI service refuses what it cannot run (back-references, an invalid
+ * expression) and answers 400 with the reason.
+ */
+export const enterpriseSearchGrepSchema = z.object({
   body: z.object({
-    query: z.string().min(1, { message: 'Query is required' }).max(100000, {
-      message: 'Query exceeds maximum length of 100000 characters',
-    }),
+    pattern: z
+      .string()
+      .min(1, { message: 'A pattern is required' })
+      .max(500, { message: 'A pattern must be at most 500 characters' })
+      .refine((value) => !/[\r\n\0]/.test(value), {
+        message: 'A pattern must be one line',
+      }),
+    regex: z.boolean().optional(),
+    caseSensitive: z.boolean().optional(),
     filters: filtersSchema,
-    // Chunks, not records; the AI service defaults to 8.
-    limit: z.number().int().min(1).max(50).optional(),
-    createdAfter: searchDateSchema,
-    createdBefore: searchDateSchema,
-    modifiedAfter: searchDateSchema,
-    modifiedBefore: searchDateSchema,
-    maxChunksPerRecord: z.number().int().min(1).max(50).optional(),
-    rewriteQuery: z.boolean().optional(),
+    paths: z.array(z.string().min(1).max(256)).max(20).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    contextLines: z.number().int().min(0).max(10).optional(),
+    maxMatchesPerRecord: z.number().int().min(1).max(50).optional(),
+    timeBudgetMs: z.number().int().min(500).max(30000).optional(),
+  }),
+});
+
+const ENTITY_TYPES = [
+  'department',
+  'category',
+  'subcategory',
+  'topic',
+  'language',
+  'record_group',
+  'record',
+  'named_entity',
+] as const;
+// Any entity a search returns: a search can be narrowed to people and
+// organizations, and `records` lists theirs; `neighbors` cannot expand them.
+const RECORD_ENTITY_TYPES = [
+  ...ENTITY_TYPES,
+  'person',
+  'organization',
+] as const;
+
+export const enterpriseSearchEntitiesSchema = z.object({
+  body: z.object({
+    query: z.string().min(1, { message: 'A query is required' }).max(500),
+    entityTypes: z.array(z.enum(RECORD_ENTITY_TYPES)).max(10).optional(),
+    namedEntityKinds: z.array(z.string().min(1).max(64)).max(10).optional(),
+    limit: z.number().int().min(1).max(25).optional(),
+  }),
+});
+
+export const enterpriseSearchEntityNeighborsSchema = z.object({
+  body: z.object({
+    entityId: z.string().min(1).max(256),
+    entityType: z.enum(ENTITY_TYPES),
+    recordTypes: z.array(z.string().min(1).max(64)).max(20).optional(),
+    recordLimit: z.number().int().min(1).max(50).optional(),
+    relatedLimit: z.number().int().min(1).max(50).optional(),
+    cursor: z.string().max(64).optional(),
+  }),
+});
+
+const optionalIds = (max: number): z.ZodOptional<z.ZodArray<z.ZodString>> =>
+  z.array(z.string().min(1).max(256)).max(max).optional();
+const pageCursor = z.string().min(1).max(4096).optional();
+const pageLimit = z.number().int().min(1).max(50).optional();
+
+export const enterpriseSearchEntityRecordsSchema = z.object({
+  body: z.object({
+    entityId: z.string().min(1).max(256),
+    entityType: z.enum(RECORD_ENTITY_TYPES),
+    recordTypes: z.array(z.string().min(1).max(64)).max(20).optional(),
+    limit: pageLimit,
+    cursor: pageCursor,
+  }),
+});
+
+export const enterpriseSearchCoMentionedSchema = z.object({
+  body: z.object({
+    entityIds: z.array(z.string().min(1).max(256)).min(1).max(20),
+    kinds: z.array(z.string().min(1).max(64)).max(20).optional(),
+    limit: pageLimit,
+  }),
+});
+
+export const enterpriseSearchRecordsByPersonSchema = z.object({
+  body: z.object({
+    person: z.string().min(1, { message: 'A person is required' }).max(320),
+    roles: z.array(z.string().min(1).max(32)).max(20).optional(),
+    recordTypes: z.array(z.string().min(1).max(64)).max(20).optional(),
+    limit: pageLimit,
+    cursor: pageCursor,
+  }),
+});
+
+export const enterpriseSearchRecordsByValueSchema = z.object({
+  body: z.object({
+    kinds: z.array(z.string().min(1).max(64)).max(20).optional(),
+    name: z.string().min(1).max(200).optional(),
+    entityIds: optionalIds(20),
+    dateFrom: z.string().min(1).max(64).optional(),
+    dateTo: z.string().min(1).max(64).optional(),
+    amountMin: z.number().optional(),
+    amountMax: z.number().optional(),
+    currency: z.string().min(1).max(16).optional(),
+    quantityMin: z.number().optional(),
+    quantityMax: z.number().optional(),
+    dimension: z.string().min(1).max(64).optional(),
+    percentMin: z.number().optional(),
+    percentMax: z.number().optional(),
+    recordTypes: z.array(z.string().min(1).max(64)).max(20).optional(),
+    sourceIds: optionalIds(50),
+    limit: pageLimit,
+    cursor: pageCursor,
+  }),
+});
+
+export const enterpriseSearchRecordsByEntitiesSchema = z.object({
+  body: z.object({
+    mentions: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(200),
+          kind: z.string().min(1).max(64).optional(),
+        }),
+      )
+      .min(1, { message: 'At least one name is required' })
+      // The AI service looks up at most 5 names (linking.mentions.MAX_MENTIONS).
+      .max(5),
+    match: z.enum(['any', 'all']).optional(),
+    query: z.string().max(1000).optional(),
+    limit: pageLimit,
+    maxChunksPerRecord: pageLimit,
   }),
 });
 
@@ -1457,81 +1681,89 @@ export const listAllArchivesAgentConversationQuerySchema = z.object({
   params: z.object({
     ...agentKeyParam,
   }),
-  query: z.object({
-    page: z
-      .preprocess((arg) => {
-        if (arg === undefined || arg === '') {
-          return undefined;
-        }
-        const parsed = parseInt(String(arg), 10);
-        return Number.isNaN(parsed) ? undefined : parsed;
-      }, z.number().optional())
-      .transform((value) => {
-        if (value === undefined || value < 1) {
-          return 1;
-        }
-        return value;
-      }),
-    limit: z
-      .preprocess((arg) => {
-        if (arg === undefined || arg === '') {
-          return undefined;
-        }
-        const parsed = parseInt(String(arg), 10);
-        return Number.isNaN(parsed) ? undefined : parsed;
-      }, z.number().optional())
-      .transform((value) => {
-        if (value === undefined || value < 1 || value > 100) {
-          return 20;
-        }
-        return value;
-      }),
-    sortBy: z
-      .string()
-      .optional()
-      .transform((value) =>
-        value === 'createdAt' || value === 'lastActivityAt' || value === 'title'
-          ? value
-          : undefined,
-      ),
-    sortOrder: z
-      .string()
-      .optional()
-      .transform((value) => (value === 'asc' || value === 'desc' ? value : undefined)),
-    search: z
-      .string()
-      .max(1000, { message: 'Search parameter too long (max 1000 characters)' })
-      .optional()
-      .superRefine((value, ctx) => {
-        if (!value) {
-          return;
-        }
+  query: z
+    .object({
+      page: z
+        .preprocess((arg) => {
+          if (arg === undefined || arg === '') {
+            return undefined;
+          }
+          const parsed = parseInt(String(arg), 10);
+          return Number.isNaN(parsed) ? undefined : parsed;
+        }, z.number().optional())
+        .transform((value) => {
+          if (value === undefined || value < 1) {
+            return 1;
+          }
+          return value;
+        }),
+      limit: z
+        .preprocess((arg) => {
+          if (arg === undefined || arg === '') {
+            return undefined;
+          }
+          const parsed = parseInt(String(arg), 10);
+          return Number.isNaN(parsed) ? undefined : parsed;
+        }, z.number().optional())
+        .transform((value) => {
+          if (value === undefined || value < 1 || value > 100) {
+            return 20;
+          }
+          return value;
+        }),
+      sortBy: z
+        .string()
+        .optional()
+        .transform((value) =>
+          value === 'createdAt' ||
+          value === 'lastActivityAt' ||
+          value === 'title'
+            ? value
+            : undefined,
+        ),
+      sortOrder: z
+        .string()
+        .optional()
+        .transform((value) =>
+          value === 'asc' || value === 'desc' ? value : undefined,
+        ),
+      search: z
+        .string()
+        .max(1000, {
+          message: 'Search parameter too long (max 1000 characters)',
+        })
+        .optional()
+        .superRefine((value, ctx) => {
+          if (!value) {
+            return;
+          }
 
-        try {
-          validateNoXSS(value, 'search parameter');
-          validateNoFormatSpecifiers(value, 'search parameter');
-        } catch (error: any) {
-          ctx.addIssue({
-            code: 'custom',
-            message: error.message,
-          });
-        }
-      }),
-    startDate: z
-      .string()
-      .optional()
-      .refine(
-        (value) => !value || !isNaN(new Date(value).getTime()),
-        'Invalid start date format',
-      ),
-    endDate: z
-      .string()
-      .optional()
-      .refine(
-        (value) => !value || !isNaN(new Date(value).getTime()),
-        'Invalid end date format',
-      ),
-  }).strict(),
+          try {
+            validateNoXSS(value, 'search parameter');
+            validateNoFormatSpecifiers(value, 'search parameter');
+          } catch (error: any) {
+            ctx.addIssue({
+              code: 'custom',
+              message: error.message,
+            });
+          }
+        }),
+      startDate: z
+        .string()
+        .optional()
+        .refine(
+          (value) => !value || !isNaN(new Date(value).getTime()),
+          'Invalid start date format',
+        ),
+      endDate: z
+        .string()
+        .optional()
+        .refine(
+          (value) => !value || !isNaN(new Date(value).getTime()),
+          'Invalid end date format',
+        ),
+    })
+    .strict(),
 });
 
 /** Schema for GET /conversations/show/archives — list archived conversations. */
@@ -1596,7 +1828,7 @@ const recordIdParam = {
     .trim()
     .min(1, { message: 'recordId is required' })
     .max(256, { message: 'recordId is too long' }),
-}
+};
 
 const attachmentUploadBodySchema = z.object({
   conversationId: z
@@ -1604,7 +1836,9 @@ const attachmentUploadBodySchema = z.object({
       (v) => (typeof v === 'string' ? v.trim() : v),
       z.union([
         z.literal(''),
-        z.string().regex(OBJECT_ID_REGEX, { message: 'Invalid conversation ID format' }),
+        z.string().regex(OBJECT_ID_REGEX, {
+          message: 'Invalid conversation ID format',
+        }),
       ]),
     )
     .nullable()
@@ -1626,4 +1860,28 @@ export const agentAttachmentUploadSchema = z.object({
 
 export const agentAttachmentRecordIdParamsSchema = z.object({
   params: z.object({ ...agentKeyParam, ...recordIdParam }),
+});
+
+// ---------------------------------------------------------------------------
+// Compare models: a hidden branch conversation answers the same question
+// ---------------------------------------------------------------------------
+
+/** `compare/branch` body: the saved question to re-ask in the branch. */
+export const compareBranchParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: z.object({ userMessageId: objectId('message ID') }),
+});
+
+export const compareListParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+});
+
+/** `compare/choose` body: `primary` keeps the conversation's own answer, a branch id swaps that branch's turn in. */
+export const compareChooseParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: z.object({
+    choice: z.string().regex(/^(primary|[a-f0-9]{24})$/i, {
+      message: "choice must be 'primary' or a branch conversation ID",
+    }),
+  }),
 });

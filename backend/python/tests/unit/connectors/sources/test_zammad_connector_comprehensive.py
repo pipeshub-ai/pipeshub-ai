@@ -119,20 +119,21 @@ class TestDetermineVisibility:
     def test_none_returns_draft(self, zammad_connector):
         assert zammad_connector._determine_visibility({}) == "DRAFT"
 
-    def test_published_takes_priority(self, zammad_connector):
+    def test_archived_takes_priority(self, zammad_connector):
+        # Archiving keeps published_at and internal_at; Zammad tests archived first.
         result = zammad_connector._determine_visibility({
             "published_at": "2024-01-01",
             "internal_at": "2024-01-01",
             "archived_at": "2024-01-01",
         })
-        assert result == "PUBLIC"
+        assert result == "ARCHIVED"
 
-    def test_internal_over_archived(self, zammad_connector):
+    def test_archived_over_internal(self, zammad_connector):
         result = zammad_connector._determine_visibility({
             "internal_at": "2024-01-01",
             "archived_at": "2024-01-01",
         })
-        assert result == "INTERNAL"
+        assert result == "ARCHIVED"
 
 
 # ===========================================================================
@@ -439,14 +440,26 @@ class TestAbstractMethods:
 
     async def test_test_connection_and_access_success(self, zammad_connector):
         mock_ds = MagicMock()
-        mock_ds.list_groups = AsyncMock(return_value=_make_response(success=True))
+        ok = _make_response(success=True)
+        ok.status_code = 200
+        mock_ds.get_current_user = AsyncMock(return_value=ok)
+        mock_ds.list_users = AsyncMock(return_value=ok)
+        mock_ds.list_groups = AsyncMock(return_value=ok)
+        mock_ds.list_roles = AsyncMock(return_value=ok)
         zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         result = await zammad_connector.test_connection_and_access()
         assert result is True
 
     async def test_test_connection_and_access_failure(self, zammad_connector):
         mock_ds = MagicMock()
-        mock_ds.list_groups = AsyncMock(return_value=_make_response(success=False, message="Auth failed"))
+        ok = _make_response(success=True)
+        ok.status_code = 200
+        failed = _make_response(success=False, message="Server error")
+        failed.status_code = 500
+        mock_ds.get_current_user = AsyncMock(return_value=ok)
+        mock_ds.list_users = AsyncMock(return_value=ok)
+        mock_ds.list_groups = AsyncMock(return_value=failed)
+        mock_ds.list_roles = AsyncMock(return_value=ok)
         zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         result = await zammad_connector.test_connection_and_access()
         assert result is False
@@ -584,7 +597,7 @@ class TestConvertHtmlImagesToBase64:
         )
         zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         zammad_connector.data_source = MagicMock()
-        result = await zammad_connector._convert_html_images_to_base64(html)
+        result = await zammad_connector._convert_html_images_to_base64(html, {42: 100})
         assert "data:image/png;base64," in result
 
     async def test_attachment_download_failure_skipped(self, zammad_connector):
@@ -595,7 +608,7 @@ class TestConvertHtmlImagesToBase64:
         )
         zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         zammad_connector.data_source = MagicMock()
-        result = await zammad_connector._convert_html_images_to_base64(html)
+        result = await zammad_connector._convert_html_images_to_base64(html, {42: 100})
         # Should keep original src
         assert "/api/v1/attachments/42" in result
 

@@ -40,6 +40,7 @@ class FakeGraph:
         self.pending_queries: list[tuple[int, int]] = []
         self.mention_copies: list[tuple[str, str]] = []
         self.mention_copy_error: Exception | None = None
+        self.read_errors: set[str] = set()
 
     async def copy_named_entity_mentions(self, source: str, target: str) -> int:
         if self.mention_copy_error is not None:
@@ -47,10 +48,12 @@ class FakeGraph:
         self.mention_copies.append((source, target))
         return 1
 
-    async def get_records_by_virtual_record_id(self, vrid: str) -> list[str]:
+    async def get_records_by_virtual_record_id(self, vrid: str, **_kw: object) -> list[str]:
         return list(self.siblings.get(vrid, []))
 
-    async def get_document(self, key: str, collection: str) -> dict | None:
+    async def get_document(self, key: str, collection: str, **_kw: object) -> dict | None:
+        if key in self.read_errors:
+            raise ConnectionError("graph unavailable")
         doc = self.docs.get(key)
         return dict(doc) if doc is not None else None
 
@@ -78,7 +81,7 @@ class FakeGraph:
     ) -> list[dict]:
         self.pending_queries.append((due_before_ms, limit))
         rows = [
-            {"_key": k, RECONCILE_ATTEMPTS_FIELD: d.get(RECONCILE_ATTEMPTS_FIELD), DUE_AT: d.get(DUE_AT)}
+            {"_key": k, "orgId": d.get("orgId"), RECONCILE_ATTEMPTS_FIELD: d.get(RECONCILE_ATTEMPTS_FIELD), DUE_AT: d.get(DUE_AT)}
             for k, d in sorted(self.docs.items())
             if d.get(DUPLICATE_RECONCILE_PENDING_FIELD) is True
             and (d.get(DUE_AT) or 0) < due_before_ms
@@ -108,12 +111,88 @@ def _group(graph: FakeGraph, *, primary: str = "p1", siblings: tuple[str, ...] =
 
 
 class TestReconciler:
+    async def test_the_membership_sync_runs_for_the_records_org(self) -> None:
+        """The retry sweep binds no org; the vector write must still name one."""
+        from app.core import org_context
+
+        graph = FakeGraph()
+        _group(graph, org="org-7")
+        seen: list[str] = []
+
+        async def _sync(vrid: str) -> None:
+            seen.append(org_context.current_org_id())
+
+        reconciler, _ = _reconciler(graph, membership=_sync)
+        assert await reconciler.reconcile("p1", "vr1") is True
+        assert seen == ["org-7"]
+
     async def test_copies_and_syncs_every_sibling(self) -> None:
         graph = FakeGraph()
         _group(graph, siblings=("s1", "s2"))
         reconciler, sink = _reconciler(graph)
         assert await reconciler.reconcile("p1", "vr1") is True
         assert [c.args[0]["_key"] for c in sink.sync_entities_for_duplicate.await_args_list] == ["s1", "s2"]
+
+    async def test_a_copy_left_waiting_for_first_use_takes_the_outcome(self) -> None:
+        graph = FakeGraph()
+        _group(graph, siblings=("s1", "s2", "s3"), extractionStatus="COMPLETED")
+        graph.docs["s1"].update(indexingStatus="COMPLETED", extractionStatus="NOT_STARTED")
+        graph.docs["s2"].update(indexingStatus="COMPLETED", extractionStatus="FAILED")
+        graph.docs["s3"].update(indexingStatus="COMPLETED", extractionStatus="NOT_STARTED", orgId="org-2")
+        reconciler, _ = _reconciler(graph)
+        await reconciler.reconcile("p1", "vr1")
+        assert ("s1", {"extractionStatus": "COMPLETED"}) in graph.updates
+        assert graph.docs["s2"]["extractionStatus"] == "FAILED"
+        assert graph.docs["s3"]["extractionStatus"] == "NOT_STARTED"
+
+    async def test_a_failed_taxonomy_copy_leaves_the_copy_waiting(self) -> None:
+        graph = FakeGraph()
+        _group(graph, extractionStatus="COMPLETED")
+        graph.docs["s1"].update(indexingStatus="COMPLETED", extractionStatus="NOT_STARTED")
+        graph.copy_ok["s1"] = False
+        reconciler, _ = _reconciler(graph)
+        assert await reconciler.reconcile("p1", "vr1") is False
+        assert graph.docs["s1"]["extractionStatus"] == "NOT_STARTED"
+
+    async def test_a_copy_that_moved_to_a_new_revision_keeps_its_status(self) -> None:
+        graph = FakeGraph()
+        _group(graph, extractionStatus="COMPLETED")
+        graph.docs["s1"].update(indexingStatus="COMPLETED", extractionStatus="NOT_STARTED", contentRev="r1")
+        reconciler, _ = _reconciler(graph)
+        original_get = graph.get_document
+
+        async def moved_after_read(key: str, collection: str, **kw: object) -> dict | None:
+            doc = await original_get(key, collection, **kw)
+            if key == "s1":
+                graph.docs["s1"]["contentRev"] = "r2"
+            return doc
+
+        graph.get_document = moved_after_read  # type: ignore[method-assign]
+        assert await reconciler.reconcile("p1", "vr1") is False
+        assert graph.docs["s1"]["extractionStatus"] == "NOT_STARTED"
+
+    async def test_a_failed_read_fails_the_reconcile(self) -> None:
+        graph = FakeGraph()
+        _group(graph, extractionStatus="COMPLETED")
+        graph.read_errors.add("s1")
+        reconciler, _ = _reconciler(graph)
+        assert await reconciler.reconcile("p1", "vr1") is False
+
+    async def test_a_failed_primary_leaves_copies_for_its_next_try(self) -> None:
+        graph = FakeGraph()
+        _group(graph, extractionStatus="FAILED")
+        graph.docs["s1"].update(indexingStatus="COMPLETED", extractionStatus="NOT_STARTED")
+        reconciler, _ = _reconciler(graph)
+        await reconciler.reconcile("p1", "vr1")
+        assert graph.docs["s1"]["extractionStatus"] == "NOT_STARTED"
+
+    async def test_a_primary_still_waiting_lends_no_outcome(self) -> None:
+        graph = FakeGraph()
+        _group(graph, extractionStatus="NOT_STARTED")
+        graph.docs["s1"].update(indexingStatus="COMPLETED", extractionStatus="NOT_STARTED")
+        reconciler, _ = _reconciler(graph)
+        await reconciler.reconcile("p1", "vr1")
+        assert graph.updates == []
 
     async def test_named_entity_mentions_follow_the_taxonomy_copy(self) -> None:
         graph = FakeGraph()
@@ -206,6 +285,67 @@ class TestRetrySweep:
         assert doc[DUPLICATE_RECONCILE_PENDING_FIELD] is False
         assert doc[RECONCILE_ATTEMPTS_FIELD] == 0 and doc[DUE_AT] is None
         assert graph.pending_queries == [(NOW, 10)]
+
+    async def test_each_row_is_followed_up_under_its_own_org_and_a_row_with_none_is_skipped(self) -> None:
+        from app.core.org_context import current_org_id
+
+        graph = FakeGraph()
+        _pending(graph)
+        graph.docs["p2"] = {**graph.docs["p1"], "_key": "p2", "orgId": "org-2"}
+        graph.docs["p3"] = {**graph.docs["p1"], "_key": "p3", "orgId": None}
+        seen: dict[str, str] = {}
+        read = graph.get_document
+
+        async def get_document(key, collection, **kw: object) -> dict | None:
+            seen.setdefault(key, current_org_id())
+            return await read(key, collection, **kw)
+
+        graph.get_document = get_document  # type: ignore[method-assign]
+        reconciler, _ = _reconciler(graph)
+        await _sweep(graph, reconciler)
+        assert (seen["p1"], seen["p2"], "p3" in seen) == (graph.docs["p1"]["orgId"], "org-2", False)      # p3 has no organisation: nothing ran for it
+
+    async def test_rows_with_no_org_are_dropped_and_do_not_fill_the_page(self) -> None:
+        """Skipped and left pending, a page of them would take every later pass's place and the rows behind them would never be read."""
+        graph = FakeGraph()
+        _pending(graph)
+        for key in ("a1", "a2"):
+            graph.docs[key] = {**graph.docs["p1"], "_key": key, "orgId": None}
+        reconciler, _ = _reconciler(graph)
+
+        async def sweep() -> int:
+            return await retry_pending_duplicate_reconciles(
+                graph_provider=graph, reconciler=reconciler, logger=LOGGER, page_size=2, now_ms=lambda: NOW,
+            )
+
+        assert await sweep() == 0                                      # the page held the two rows with no org
+        assert graph.docs["a1"][DUPLICATE_RECONCILE_PENDING_FIELD] is False and graph.docs["a2"][DUPLICATE_RECONCILE_PENDING_FIELD] is False
+        assert await sweep() == 1                                      # the row behind them is read now
+        assert graph.docs["p1"][DUPLICATE_RECONCILE_PENDING_FIELD] is False
+
+    @pytest.mark.parametrize("applied", [False, RuntimeError("write failed")])
+    async def test_a_row_with_no_org_is_counted_as_dropped_only_once_its_flag_is_cleared(self, applied: object) -> None:
+        from unittest.mock import patch
+
+        graph = FakeGraph()
+        _pending(graph)
+        graph.docs["a1"] = {**graph.docs["p1"], "_key": "a1", "orgId": None}
+        graph.update_node_fields_if_match = AsyncMock(side_effect=[applied] if isinstance(applied, Exception) else None, return_value=applied)  # type: ignore[method-assign]
+        reconciler, _ = _reconciler(graph)
+        with patch("app.modules.indexing.duplicate_reconcile.record_recovery_org_pass") as counted:
+            await _sweep(graph, reconciler)
+        counted.assert_not_called()
+
+    async def test_a_row_with_no_org_whose_flag_was_cleared_is_counted(self) -> None:
+        from unittest.mock import patch
+
+        graph = FakeGraph()
+        _pending(graph)
+        graph.docs["a1"] = {**graph.docs["p1"], "_key": "a1", "orgId": None}
+        reconciler, _ = _reconciler(graph)
+        with patch("app.modules.indexing.duplicate_reconcile.record_recovery_org_pass") as counted:
+            await _sweep(graph, reconciler)
+        counted.assert_called_once_with("duplicate_reconcile", "no_org_row")
 
     async def test_not_yet_due_is_left_alone(self) -> None:
         graph = FakeGraph()

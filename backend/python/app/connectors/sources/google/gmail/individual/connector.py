@@ -1,7 +1,6 @@
 import asyncio
 import functools
 import io
-import os
 import re
 import tempfile
 import uuid
@@ -108,6 +107,7 @@ from app.sources.client.google.google import GOOGLE_HTTP_NUM_RETRIES, GoogleClie
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 from app.utils.filename_utils import temp_path_for
+from app.utils.pdf_stream_conversion import libreoffice_to_pdf
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -128,6 +128,13 @@ _GMAIL_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
     .with_description("Sync emails and messages from Gmail")\
     .with_categories(["Email"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0), as before.
+        rate_limit=100,
+        max_retries=0,
+    )\
     .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
@@ -338,6 +345,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 self.gmail_data_source = GoogleGmailDataSource(
                     self.gmail_client.get_client(),
                     executor=self._gmail_executor,
+                    resilience=self.resilience,
                 )
 
                 self.logger.info(
@@ -1104,80 +1112,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
         return ""
 
     async def _convert_to_pdf(self, file_path: str, temp_dir: str) -> str:
-        """
-        Helper function to convert file to PDF using LibreOffice.
-
-        Args:
-            file_path: Path to the file to convert
-            temp_dir: Temporary directory for output
-
-        Returns:
-            Path to the converted PDF file
-        """
-        pdf_path = os.path.join(temp_dir, f"{Path(file_path).stem}.pdf")
-
-        try:
-            conversion_cmd = [
-                "soffice",
-                "--headless",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                temp_dir,
-                file_path,
-            ]
-            process = await asyncio.create_subprocess_exec(
-                *conversion_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            # Add timeout to communicate
-            try:
-                conversion_output, conversion_error = await asyncio.wait_for(
-                    process.communicate(), timeout=30.0
-                )
-            except asyncio.TimeoutError:
-                # Make sure to terminate the process if it times out
-                process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    process.kill()  # Force kill if termination takes too long
-                self.logger.error("LibreOffice conversion timed out after 30 seconds")
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="PDF conversion timed out"
-                )
-
-            if process.returncode != 0:
-                error_msg = f"LibreOffice conversion failed: {conversion_error.decode('utf-8', errors='replace')}"
-                self.logger.error(error_msg)
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="Failed to convert file to PDF"
-                )
-
-            if os.path.exists(pdf_path):
-                return pdf_path
-            else:
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="PDF conversion failed - output file not found"
-                )
-        except asyncio.TimeoutError:
-            # This catch is for any other timeout that might occur
-            self.logger.error("Timeout during PDF conversion")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="PDF conversion timed out"
-            )
-        except Exception as conv_error:
-            self.logger.error(f"Error during conversion: {str(conv_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Error converting file to PDF"
-            )
+        """Convert ``file_path``, an absolute path inside a private temp dir, to PDF."""
+        return await libreoffice_to_pdf(file_path, temp_dir)
 
     async def _stream_from_drive(
         self,

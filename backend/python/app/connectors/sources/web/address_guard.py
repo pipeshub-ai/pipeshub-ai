@@ -106,12 +106,12 @@ async def is_unsafe_url(url: str) -> bool:
     return False
 
 
-def _check(host: str, address: str, *, allow_private: bool = False) -> None:
+def _check(host: str, address: str, *, allow_private: bool = False, allowed_hosts: bool = True) -> None:
     try:
         ip = ipaddress.ip_address(address)
     except ValueError as e:
         raise UnsafeAddressError(f"{host!r} resolves to an unusable address") from e
-    if _host_allowed(host):
+    if allowed_hosts and _host_allowed(host):
         _refuse_never_allowed(host, ip)
         return
     if allow_private:
@@ -126,14 +126,15 @@ class GuardedResolver(AbstractResolver):
     """aiohttp resolver that refuses a host resolving to a blocked address. The connection is made
     to the addresses returned here, so the check and the connect see the same answer."""
 
-    def __init__(self, *, allow_private: bool = False) -> None:
+    def __init__(self, *, allow_private: bool = False, allowed_hosts: bool = True) -> None:
         self._resolver = DefaultResolver()
         self._allow_private = allow_private
+        self._allowed_hosts = allowed_hosts
 
     async def resolve(self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET) -> list[ResolveResult]:
         results = await self._resolver.resolve(host, port, family)
         for result in results:
-            _check(host, result["host"], allow_private=self._allow_private)
+            _check(host, result["host"], allow_private=self._allow_private, allowed_hosts=self._allowed_hosts)
         return results
 
     async def close(self) -> None:
@@ -141,32 +142,45 @@ class GuardedResolver(AbstractResolver):
 
 
 async def _guard_request(
-    request: ClientRequest, handler: ClientHandlerType, *, allow_private: bool = False,
+    request: ClientRequest, handler: ClientHandlerType, *, allow_private: bool = False, public_https_only: bool = False,
 ) -> ClientResponse:
     """Runs for every request the session sends, redirects included. aiohttp connects to an IP
     literal without asking the resolver, so literals are checked here."""
     parts = urlsplit(str(request.url))
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise UnsafeAddressError(f"Only http and https URLs can be fetched, not {parts.scheme!r}")
+    if public_https_only and parts.scheme != "https":
+        # A 307 keeps the POST body, which can carry the client secret and a code or token.
+        raise UnsafeAddressError(f"Only https URLs can be fetched here, not {parts.scheme!r}")
     try:
         ipaddress.ip_address(parts.hostname)
     except ValueError:
         return await handler(request)
-    _check(parts.hostname, parts.hostname, allow_private=allow_private)
+    _check(parts.hostname, parts.hostname, allow_private=allow_private, allowed_hosts=not public_https_only)
     return await handler(request)
 
 
-def guarded_session_kwargs(*, allow_private: bool = False) -> dict[str, object]:
+def guarded_session_kwargs(*, allow_private: bool = False, public_https_only: bool = False) -> dict[str, object]:
     """The ``aiohttp.ClientSession`` arguments that keep its requests, and the redirects it
     follows, on public addresses.
 
     ``allow_private`` relaxes that to the deployment's rule for hosts users type (see
     ``app.utils.url_fetcher.private_addresses_blocked``): the deployment's network is allowed,
     this server, link-local and cloud metadata addresses never.
+
+    ``public_https_only`` is for addresses a person typed for their own use: every request,
+    redirects included, must be https to a public address, and ``WEB_CONNECTOR_ALLOWED_HOSTS``
+    (internal hosts an admin opened to the Web connector) does not apply. It overrides
+    ``allow_private``.
     """
+    allow_private = allow_private and not public_https_only
     return {
-        "connector": aiohttp.TCPConnector(resolver=GuardedResolver(allow_private=allow_private)),
-        "middlewares": (functools.partial(_guard_request, allow_private=allow_private),),
+        "connector": aiohttp.TCPConnector(
+            resolver=GuardedResolver(allow_private=allow_private, allowed_hosts=not public_https_only)
+        ),
+        "middlewares": (
+            functools.partial(_guard_request, allow_private=allow_private, public_https_only=public_https_only),
+        ),
     }
 
 

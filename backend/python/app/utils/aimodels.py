@@ -52,6 +52,7 @@ from app.utils.model_egress import (
     parse_answers,
     private_allowed_for,
 )
+from app.utils.openai_hosts import is_openai_api_url
 from app.utils.url_fetcher import (
     PRIVATE_ADDRESS_SWITCH_ENV,
     IPAddress,
@@ -417,6 +418,9 @@ class STTProvider(Enum):
     OPENROUTER = "openRouter"
 
 MAX_OUTPUT_TOKENS = 4096
+# Every chat model's client timeout (per read: a stream that trickles never trips it). Test rigs that call
+# live models build their clients with it too, so a stalled connection fails there as it does here (P4.9).
+DEFAULT_LLM_TIMEOUT_S = 360.0
 MAX_OUTPUT_TOKENS_CLAUDE_MODERN = 16384
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
 
@@ -480,7 +484,9 @@ _BEDROCK_READ_TIMEOUT_S = 120
 _BEDROCK_MAX_ATTEMPTS = 2
 
 
-def _bedrock_client_config() -> "BotocoreConfig":
+def _bedrock_client_config(sdk_retries: int | None = None) -> "BotocoreConfig":
+    """botocore's config for a Bedrock client. ``sdk_retries`` (not None) fixes the retries botocore makes on its own,
+    over the ``PIPESHUB_BEDROCK_MAX_ATTEMPTS`` default (``total_max_attempts`` counts the first request)."""
     from botocore.config import Config
 
     return Config(
@@ -490,16 +496,20 @@ def _bedrock_client_config() -> "BotocoreConfig":
         read_timeout=env_int(
             "PIPESHUB_BEDROCK_READ_TIMEOUT", _BEDROCK_READ_TIMEOUT_S, lo=5, hi=900,
         ),
-        retries={
-            "mode": "standard",
-            "max_attempts": env_int(
-                "PIPESHUB_BEDROCK_MAX_ATTEMPTS", _BEDROCK_MAX_ATTEMPTS, lo=1, hi=5,
-            ),
-        },
+        retries=(
+            {"mode": "standard", "total_max_attempts": sdk_retries + 1}
+            if sdk_retries is not None
+            else {
+                "mode": "standard",
+                "max_attempts": env_int("PIPESHUB_BEDROCK_MAX_ATTEMPTS", _BEDROCK_MAX_ATTEMPTS, lo=1, hi=5),
+            }
+        ),
     )
 
 
-def _create_bedrock_client(configuration: dict[str, Any], service_name: str = "bedrock-runtime") -> BaseClient:
+def _create_bedrock_client(
+    configuration: dict[str, Any], service_name: str = "bedrock-runtime", sdk_retries: int | None = None,
+) -> BaseClient:
     """Create a boto3 Bedrock client with proper credential handling.
 
     Tries credentials in this order:
@@ -527,7 +537,7 @@ def _create_bedrock_client(configuration: dict[str, Any], service_name: str = "b
         )
         session = boto3.Session(region_name=region)
 
-    return session.client(service_name, config=_bedrock_client_config())
+    return session.client(service_name, config=_bedrock_client_config(sdk_retries))
 
 
 def _create_vertex_credentials(service_account_json: str) -> Any:
@@ -624,14 +634,8 @@ def _set_openai_client_limits_kwargs(
 # Google, Cohere, Voyage, Nvidia, ...) requires plain strings and rejects token
 # arrays with a 400. tiktoken's vocabulary is OpenAI-specific anyway, so the
 # token IDs would be meaningless to a non-OpenAI model even where accepted.
-_TOKEN_ARRAY_EMBEDDING_HOSTS = frozenset({"api.openai.com"})
-
-
 def _accepts_token_array_embedding_input(base_url: str | None) -> bool:
-    if not base_url:
-        return False
-    host = urlparse(base_url).hostname
-    return bool(host) and host.lower() in _TOKEN_ARRAY_EMBEDDING_HOSTS
+    return is_openai_api_url(base_url)
 
 
 def iter_model_names(configuration: Mapping[str, Any] | None) -> list[str]:
@@ -690,12 +694,19 @@ def openai_async_client_kwargs(configuration: Mapping[str, Any]) -> dict[str, An
     return kwargs
 
 
-def get_embedding_model(provider: str, config: dict[str, Any], model_name: str | None = None) -> Embeddings:
-    embeddings = _get_embedding_model_impl(provider, config, model_name)
+def get_embedding_model(
+    provider: str, config: dict[str, Any], model_name: str | None = None, sdk_retries: int | None = None,
+) -> Embeddings:
+    """Build the embeddings client of a configured provider. ``sdk_retries`` is how many times its SDK repeats a failed
+    request on its own (``None``: the SDK's default). Providers whose clients are already built without retries
+    (every OpenAI-protocol one, see ``_set_openai_client_limits_kwargs``) keep that whatever the value."""
+    embeddings = _get_embedding_model_impl(provider, config, model_name, sdk_retries)
     return _decorate_embeddings(embeddings, provider, model_name, config)
 
 
-def _get_embedding_model_impl(provider: str, config: dict[str, Any], model_name: str | None = None) -> Embeddings:
+def _get_embedding_model_impl(
+    provider: str, config: dict[str, Any], model_name: str | None = None, sdk_retries: int | None = None,
+) -> Embeddings:
     configuration = config['configuration']
     require_allowed_endpoint(configuration.get("endpoint"))
     is_default = config.get("isDefault")
@@ -751,10 +762,10 @@ def _get_embedding_model_impl(provider: str, config: dict[str, Any], model_name:
     elif provider == EmbeddingProvider.COHERE.value:
         from langchain_cohere import CohereEmbeddings
 
-        return CohereEmbeddings(
-            model=model_name,
-            cohere_api_key=configuration['apiKey'],
-        )
+        cohere_kwargs: dict[str, Any] = {"model": model_name, "cohere_api_key": configuration['apiKey']}
+        if sdk_retries is not None:
+            cohere_kwargs["max_retries"] = sdk_retries + 1  # its tenacity layer counts attempts
+        return _limit_cohere_retries(CohereEmbeddings(**cohere_kwargs), sdk_retries)
 
 
     elif provider == EmbeddingProvider.DEFAULT.value:
@@ -763,11 +774,14 @@ def _get_embedding_model_impl(provider: str, config: dict[str, Any], model_name:
 
     elif provider == EmbeddingProvider.FIREWORKS.value:
         from langchain_fireworks import FireworksEmbeddings
-        return _guard_clients(FireworksEmbeddings(
+        fireworks_embeddings = FireworksEmbeddings(
             model=model_name,
             api_key=configuration['apiKey'],
             base_url=configuration['endpoint'],
-        ), ("client",), configuration['endpoint'])
+        )
+        if sdk_retries is not None:
+            fireworks_embeddings.client.max_retries = sdk_retries  # an OpenAI client: read on every request
+        return _guard_clients(fireworks_embeddings, ("client",), configuration['endpoint'])
 
     elif provider == EmbeddingProvider.GEMINI.value:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
@@ -790,7 +804,8 @@ def _get_embedding_model_impl(provider: str, config: dict[str, Any], model_name:
         )
 
     elif provider == EmbeddingProvider.JINA_AI.value:
-        from langchain_community.embeddings.jina import JinaEmbeddings
+        from app.utils.custom_embeddings import JinaEmbeddings
+
         return JinaEmbeddings(
             model_name=model_name,
             jina_api_key=configuration['apiKey'],
@@ -803,6 +818,8 @@ def _get_embedding_model_impl(provider: str, config: dict[str, Any], model_name:
             model=model_name,
             api_key=configuration['apiKey'],
         )
+        if sdk_retries is not None:
+            mistral_kwargs["max_retries"] = sdk_retries + 1  # its tenacity layer counts attempts
         _set_embedding_dimensions_kwarg(mistral_kwargs, dimensions)
         return MistralAIEmbeddings(**mistral_kwargs)
 
@@ -845,7 +862,7 @@ def _get_embedding_model_impl(provider: str, config: dict[str, Any], model_name:
     elif provider == EmbeddingProvider.AWS_BEDROCK.value:
         from langchain_aws import BedrockEmbeddings
 
-        bedrock_client = _create_bedrock_client(configuration)
+        bedrock_client = _create_bedrock_client(configuration, sdk_retries=sdk_retries)
         return BedrockEmbeddings(
             model_id=model_name,
             client=bedrock_client,
@@ -920,15 +937,17 @@ def _get_embedding_model_impl(provider: str, config: dict[str, Any], model_name:
             base_url=configuration['endpoint'],
         )
         _set_embedding_dimensions_kwarg(together_kwargs, dimensions)
+        if sdk_retries is not None:
+            together_kwargs["max_retries"] = sdk_retries
         return _guard_clients(TogetherEmbeddings(**together_kwargs), _OPENAI_RESOURCE_CLIENTS, configuration.get("endpoint"))
 
     elif provider == EmbeddingProvider.VOYAGE.value:
         from app.utils.custom_embeddings import VoyageEmbeddings
 
-        return VoyageEmbeddings(
-            model=model_name,
-            voyage_api_key=configuration['apiKey'],
-        )
+        voyage_kwargs: dict[str, Any] = {"model": model_name, "voyage_api_key": configuration['apiKey']}
+        if sdk_retries is not None:
+            voyage_kwargs["max_retries"] = sdk_retries + 1  # its tenacity layer counts attempts
+        return VoyageEmbeddings(**voyage_kwargs)
 
     elif provider == EmbeddingProvider.VERTEX_AI.value:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
@@ -1190,9 +1209,8 @@ _RESPONSES_API_PROVIDERS = frozenset({
 # OpenAI's own API is also reachable through the generic OpenAI-compatible
 # provider (endpoint set to https://api.openai.com/v1), which hits the same
 # Chat Completions restriction, so the decision is endpoint-aware and not
-# provider-only. Only OpenAI's official host is matched — a self-hosted or
+# provider-only. Only OpenAI's official hosts are matched — a self-hosted or
 # proxy endpoint that merely speaks the OpenAI protocol has no /v1/responses.
-_OPENAI_RESPONSES_API_HOSTS = frozenset({"api.openai.com"})
 
 
 def _is_openai_custom_endpoint(provider: str, base_url: str | None) -> bool:
@@ -1206,10 +1224,7 @@ def _is_openai_custom_endpoint(provider: str, base_url: str | None) -> bool:
 
 
 def _targets_openai_responses_api(base_url: str | None) -> bool:
-    if not base_url:
-        return False
-    host = urlparse(base_url).hostname
-    return bool(host) and host.lower() in _OPENAI_RESPONSES_API_HOSTS
+    return is_openai_api_url(base_url)
 
 
 # Qwen 3.8+ Chat Completions rejects OpenAI's 'xhigh'. That is a model-
@@ -1494,11 +1509,21 @@ def _reasoning_effort_kwargs(
         return {}
 
     effort_input = reasoning_effort or model_default_reasoning_effort(config) or DEFAULT_REASONING_EFFORT
-    if effort_input == "none":
+    if effort_input == "none" and not config.get("allowDisabledReasoning"):
         # "none" is no longer offered as a UI choice (see the docstring
         # above) — floor it unconditionally rather than only when a
         # REASONING_MANDATORY fact happens to be learned for this model.
+        # allowDisabledReasoning is for internal calls that want no reasoning at all.
         effort_input = REASONING_MANDATORY_FALLBACK_EFFORT
+
+    if effort_input == "none" and provider == LLMProvider.ANTHROPIC.value:
+        off = _claude_thinking_off(model_name)
+        if off == "omit":
+            # Any effort value would ask this model to think.
+            return {}
+        if off != "lowest":
+            return {"thinking": {"type": off}}
+        effort_input = "low"
 
     if provider == LLMProvider.OLLAMA.value:
         return {"reasoning": _OLLAMA_EFFORT_MAP.get(effort_input, effort_input)}
@@ -1697,6 +1722,33 @@ def _bedrock_anthropic_uses_adaptive_thinking(model_name: str | None) -> bool:
     return bool(re.search(r"claude.*4[-_.]([67]|[6-9]\d)", lowered))
 
 
+def _claude_thinking_off(model_name: str | None) -> str:
+    """How to ask a Claude model for no thinking.
+
+    ``omit``: it only thinks when asked (Claude 4.8 and older), so send no
+    thinking fields. ``disabled``: Claude 5 and Haiku 5.5 think adaptively when
+    the field is left out but accept ``thinking.type=disabled``.
+    ``between_tools``: Sonnet 5.5 rejects ``disabled`` and takes this instead.
+    ``lowest``: Opus 5.5 and later, Fable and Mythos always think; the lowest
+    effort is the closest they come.
+    """
+    lowered = (model_name or "").lower()
+    if any(token in lowered for token in ("fable", "mythos")):
+        return "lowest"
+    parsed = _parse_claude_version(model_name)
+    if parsed is None:
+        return "omit"
+    tier, major, minor = parsed
+    if major < 5:
+        return "omit"
+    at_least_5_5 = major > 5 or (minor or 0) >= 5
+    if tier == "opus" and at_least_5_5:
+        return "lowest"
+    if tier == "sonnet" and at_least_5_5:
+        return "between_tools"
+    return "disabled"
+
+
 def _resolve_bedrock_effort_input(reasoning_effort: str | None, config: dict[str, Any]) -> str:
     """Normalize UI effort for Bedrock, flooring explicit ``none`` to low.
 
@@ -1706,7 +1758,7 @@ def _resolve_bedrock_effort_input(reasoning_effort: str | None, config: dict[str
     model is flagged ``isReasoning``.
     """
     effort_input = reasoning_effort or model_default_reasoning_effort(config) or DEFAULT_REASONING_EFFORT
-    if effort_input == "none":
+    if effort_input == "none" and not config.get("allowDisabledReasoning"):
         return REASONING_MANDATORY_FALLBACK_EFFORT
     return effort_input
 
@@ -1744,6 +1796,13 @@ def _bedrock_additional_model_request_fields(
     if provider == LLMProvider.ANTHROPIC.value or (
         model_name and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
     ):
+        if effort_input == "none":
+            off = _claude_thinking_off(model_name)
+            if off == "omit":
+                return {}
+            if off != "lowest":
+                return {"thinking": {"type": off}}
+            effort_input = "low"
         if _bedrock_anthropic_uses_adaptive_thinking(model_name):
             effort = _ANTHROPIC_EFFORT_MAP.get(effort_input, effort_input)
             return {
@@ -1762,6 +1821,8 @@ def _bedrock_additional_model_request_fields(
         }
 
     if _bedrock_is_nova_2(model_name):
+        if effort_input == "none":
+            return {}
         effort = _BEDROCK_NOVA_EFFORT_MAP.get(effort_input, effort_input)
         return {
             "reasoningConfig": {
@@ -1924,13 +1985,65 @@ def resolve_bedrock_provider(configured: str | None, model_name: str | None) -> 
     return configured or _detect_bedrock_provider(model_name)
 
 
+# Retries the SDK client of an indexing call makes on its own. Indexing sends paid requests that the gateways
+# (``LLMGateway``, ``EmbeddingGateway``) repeat under one policy, so an SDK that also retried would multiply the
+# sends of one logical call. Every indexing call site passes this to its model factory.
+INDEXING_SDK_RETRIES = 0
+
+# Providers whose wrapper counts the first request as an attempt: "no retries" is one attempt.
+_SDK_ATTEMPT_COUNTING_PROVIDERS = frozenset({LLMProvider.GEMINI.value, LLMProvider.VERTEX_AI.value})
+# Providers whose client has no retry layer of its own to switch off.
+_SDK_NO_RETRY_LAYER_PROVIDERS = frozenset({LLMProvider.OLLAMA.value})
+
+
+def _sdk_retry_kwargs(provider: str, sdk_retries: int | None) -> dict[str, Any]:
+    """The kwarg that gives a chat model's SDK client ``sdk_retries`` retries; empty when the caller keeps the SDK's own
+    default (``None``) or the client has no retry layer. Bedrock's retries live in its botocore config instead
+    (``_bedrock_client_config``), and Cohere's in the HTTP client (``_limit_cohere_retries``)."""
+    if sdk_retries is None or provider in _SDK_NO_RETRY_LAYER_PROVIDERS:
+        return {}
+    if sdk_retries < 0:
+        raise ValueError(f"sdk_retries must be >= 0, got {sdk_retries}")
+    if provider in _SDK_ATTEMPT_COUNTING_PROVIDERS:
+        return {"max_retries": sdk_retries + 1}
+    return {"max_retries": sdk_retries}
+
+
+def _limit_cohere_retries(model: _SdkModel, sdk_retries: int | None) -> _SdkModel:
+    """Cohere's SDK retries 408, 429 and 5xx twice per request unless the request says otherwise, and its LangChain
+    wrapper has no field for it: default the ``max_retries`` request option of both HTTP clients."""
+    if sdk_retries is None:
+        return model
+    for name in ("client", "async_client"):
+        sdk_client = getattr(model, name, None)
+        wrapper = getattr(sdk_client, "_client_wrapper", None)
+        http = getattr(wrapper, "httpx_client", None)
+        if http is None:
+            continue
+        for method in ("request", "stream"):
+            inner = getattr(http, method, None)
+            if inner is None:
+                continue
+
+            def limited(*args: Any, _inner: Any = inner, request_options: Any = None, **kwargs: Any) -> Any:  # noqa: ANN401
+                options = dict(request_options or {})
+                options.setdefault("max_retries", sdk_retries)
+                return _inner(*args, request_options=options, **kwargs)
+
+            setattr(http, method, limited)
+    return model
+
+
 def get_generator_model(
     provider: str,
     config: dict[str, Any],
     model_name: str | None = None,
     reasoning_effort: str | None = None,
+    sdk_retries: int | None = None,
 ) -> BaseChatModel:
-    model = _get_generator_model_impl(provider, config, model_name, reasoning_effort)
+    """Build the chat model of a configured provider. ``sdk_retries`` is how many times its SDK client repeats a failed
+    request on its own (``None``: the SDK's default; indexing call sites pass ``INDEXING_SDK_RETRIES``)."""
+    model = _get_generator_model_impl(provider, config, model_name, reasoning_effort, sdk_retries)
     return _decorate_chat_model(model, provider, model_name, config)
 
 
@@ -1939,6 +2052,7 @@ def _get_generator_model_impl(
     config: dict[str, Any],
     model_name: str | None = None,
     reasoning_effort: str | None = None,
+    sdk_retries: int | None = None,
 ) -> BaseChatModel:
     configuration = config['configuration']
     require_allowed_endpoint(configuration.get("endpoint"))
@@ -1969,7 +2083,8 @@ def _get_generator_model_impl(
         f"reasoning_effort={reasoning_effort}, api_mode={api_mode}"
     )
 
-    DEFAULT_LLM_TIMEOUT = 360.0
+    DEFAULT_LLM_TIMEOUT = DEFAULT_LLM_TIMEOUT_S
+    retries = _sdk_retry_kwargs(provider, sdk_retries)
     if provider == LLMProvider.ANTHROPIC.value:
         from langchain_anthropic import ChatAnthropic
 
@@ -1983,6 +2098,7 @@ def _get_generator_model_impl(
         )
         if _anthropic_supports_sampling_params(model_name):
             anthropic_kwargs["temperature"] = 0.2
+        anthropic_kwargs.update(retries)
         anthropic_kwargs.update(
             _reasoning_effort_kwargs(
                 reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
@@ -2023,7 +2139,7 @@ def _get_generator_model_impl(
             additional_fields=additional_fields,
         )
 
-        bedrock_client = _create_bedrock_client(configuration)
+        bedrock_client = _create_bedrock_client(configuration, sdk_retries=sdk_retries)
 
         bedrock_kwargs: Dict[str, Any] = dict(
             model_id=model_name,
@@ -2070,6 +2186,7 @@ def _get_generator_model_impl(
                 api_key=configuration.get("apiKey"),
                 max_tokens=configuration.get("maxTokens", max_tokens),
             )
+            azure_claude_kwargs.update(retries)
             if _anthropic_supports_sampling_params(model_name):
                 azure_claude_kwargs["temperature"] = temperature
             azure_claude_kwargs.update(
@@ -2097,6 +2214,7 @@ def _get_generator_model_impl(
             # `_RESPONSES_API_PROVIDERS` set — only an actual gpt-5.x model
             # name or an `api.openai.com` base_url still routes it through
             # the Responses API.
+            azure_ai_openai_kwargs.update(retries)
             azure_ai_openai_kwargs.update(
                 _reasoning_effort_kwargs(
                     reasoning_effort, config, provider=provider,
@@ -2118,6 +2236,7 @@ def _get_generator_model_impl(
             azure_deployment=configuration["deploymentName"],
             stream_usage=True,
         )
+        azure_openai_kwargs.update(retries)
         azure_openai_kwargs.update(
             _reasoning_effort_kwargs(
                 reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
@@ -2127,12 +2246,12 @@ def _get_generator_model_impl(
 
     elif provider == LLMProvider.COHERE.value:
         from langchain_cohere import ChatCohere
-        return ChatCohere(
+        return _limit_cohere_retries(ChatCohere(
                 model=model_name,
                 temperature=0.2,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 cohere_api_key=configuration["apiKey"],
-            )
+            ), sdk_retries)
     elif provider == LLMProvider.FIREWORKS.value:
         from langchain_fireworks import ChatFireworks
 
@@ -2142,6 +2261,7 @@ def _get_generator_model_impl(
             timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
             api_key=configuration["apiKey"],
         )
+        fireworks_kwargs.update(retries)
         fireworks_kwargs.update(
             _reasoning_effort_kwargs(
                 reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
@@ -2160,6 +2280,7 @@ def _get_generator_model_impl(
             max_retries=2,
             google_api_key=configuration["apiKey"],
         )
+        gemini_llm_kwargs.update(retries)
         gemini_llm_kwargs.update(
             _reasoning_effort_kwargs(
                 reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
@@ -2175,6 +2296,7 @@ def _get_generator_model_impl(
                 temperature=0.2,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
+                **retries,
             )
 
     elif provider == LLMProvider.MINIMAX.value:
@@ -2190,6 +2312,7 @@ def _get_generator_model_impl(
             base_url="https://api.minimax.io/v1",
             stream_usage=True,
         )
+        minimax_kwargs.update(retries)
         minimax_kwargs.update(
             _reasoning_effort_kwargs(
                 reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
@@ -2205,6 +2328,7 @@ def _get_generator_model_impl(
                 temperature=0.2,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
+                **retries,
             )
 
     elif provider == LLMProvider.OLLAMA.value:
@@ -2247,6 +2371,7 @@ def _get_generator_model_impl(
         )
         if openai_endpoint:
             openai_kwargs["base_url"] = openai_endpoint
+        openai_kwargs.update(retries)
         openai_kwargs.update(
             _reasoning_effort_kwargs(
                 reasoning_effort, config, provider=provider, base_url=openai_endpoint,
@@ -2268,6 +2393,7 @@ def _get_generator_model_impl(
             timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
             api_key=configuration["apiKey"],
         )
+        xai_kwargs.update(retries)
         xai_kwargs.update(
             _reasoning_effort_kwargs(
                 reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
@@ -2284,6 +2410,7 @@ def _get_generator_model_impl(
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
                 base_url=configuration["endpoint"],
+                **retries,
             ), _OPENAI_ROOT_CLIENTS + _OPENAI_RESOURCE_CLIENTS, configuration["endpoint"])  # it builds a client for each
 
     elif provider == LLMProvider.OPENAI_COMPATIBLE.value:
@@ -2297,6 +2424,7 @@ def _get_generator_model_impl(
             base_url=configuration["endpoint"],
             stream_usage=True,  # Enable token usage tracking for Opik
         )
+        openai_compat_kwargs.update(retries)
         openai_compat_kwargs.update(_reasoning_effort_kwargs(
             reasoning_effort, config, provider=provider,
             base_url=configuration["endpoint"], model_name=model_name, api_mode=api_mode,
@@ -2314,6 +2442,7 @@ def _get_generator_model_impl(
             base_url=configuration["endpoint"],
             stream_usage=True,
         )
+        lm_studio_kwargs.update(retries)
         lm_studio_kwargs.update(_reasoning_effort_kwargs(
             reasoning_effort, config, provider=provider,
             base_url=configuration["endpoint"], model_name=model_name, api_mode=api_mode,
@@ -2331,6 +2460,7 @@ def _get_generator_model_impl(
             base_url=configuration["endpoint"],
             stream_usage=True,
         )
+        litellm_proxy_kwargs.update(retries)
         litellm_proxy_kwargs.update(_reasoning_effort_kwargs(
             reasoning_effort, config, provider=provider,
             base_url=configuration["endpoint"], model_name=model_name, api_mode=api_mode,
@@ -2349,6 +2479,7 @@ def _get_generator_model_impl(
             base_url=OPENROUTER_BASE_URL,
             stream_usage=True,
         )
+        openrouter_kwargs.update(retries)
         openrouter_kwargs.update(_reasoning_effort_kwargs(
             reasoning_effort, config, provider=provider,
             base_url=OPENROUTER_BASE_URL, model_name=model_name, api_mode=api_mode,
@@ -2382,6 +2513,7 @@ def _get_generator_model_impl(
             timeout=DEFAULT_LLM_TIMEOUT,
             max_retries=2,
         )
+        vertex_llm_kwargs.update(retries)
         vertex_llm_kwargs.update(
             _reasoning_effort_kwargs(
                 reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
@@ -2397,6 +2529,7 @@ async def get_generator_model_async(
     config: dict[str, Any],
     model_name: str | None = None,
     reasoning_effort: str | None = None,
+    sdk_retries: int | None = None,
 ) -> BaseChatModel:
     """Async-safe wrapper around :func:`get_generator_model`.
 
@@ -2407,9 +2540,9 @@ async def get_generator_model_async(
     """
     if provider == LLMProvider.AWS_BEDROCK.value:
         return await asyncio.to_thread(
-            get_generator_model, provider, config, model_name, reasoning_effort
+            get_generator_model, provider, config, model_name, reasoning_effort, sdk_retries
         )
-    return get_generator_model(provider, config, model_name, reasoning_effort)
+    return get_generator_model(provider, config, model_name, reasoning_effort, sdk_retries)
 
 
 # ---------------------------------------------------------------------------

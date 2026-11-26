@@ -16,13 +16,16 @@ import difflib
 import json
 import logging
 import re
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.agents.actions.jira.attachments import JiraIssueAttachments
 from app.agents.actions.response_transformer import ResponseTransformer
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.attachment_delivery import attachment_display_parameter, has_text
+from app.agents.actions.util.attachments import attachment_record_ids_parameter
 from app.agents.actions.util.tool_summaries import (
     args_template,
     confirmation,
@@ -31,12 +34,19 @@ from app.agents.actions.util.tool_summaries import (
 )
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
-from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
+    ToolsetBuilder,
+    ToolsetCategory,
+)
 from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.jira.jira import JiraClient
 from app.sources.external.jira.jira import JiraDataSource
+
+if TYPE_CHECKING:
+    from app.modules.agents.qna.chat_state import ChatState
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +55,20 @@ logger = logging.getLogger(__name__)
 _JAVA_BEAN_RE = re.compile(r"@[0-9a-f]{4,}\[")
 # LexoRank ordering token (the "rank" system field), e.g. "0|i0004v:".
 _LEXORANK_RE = re.compile(r"^0\|[a-z0-9]+:?$")
+
+# Options listed per field in get_create_issue_fields; the rest are counted, not shown.
+_MAX_LISTED_ALLOWED_VALUES = 20
+
+
+def _unlisted_option_hint(field: dict[str, Any], pass_via: str) -> str:
+    """How to pass an option get_create_issue_fields left out, in the shape the field takes."""
+    if pass_via == "named_parameter":
+        return "To use one, pass its name to the named parameter as Jira shows it."
+    is_list = field.get("schema_type") == "array"
+    kind = field.get("schema_items") if is_list else field.get("schema_type")
+    key = "name" if kind in ("version", "priority", "component", "user", "group") else "value"
+    shape = "{'" + key + "': '<label>'}"
+    return f"To use one, pass its label in custom_fields as {f'[{shape}]' if is_list else shape}."
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +327,10 @@ def _jira_dc_comment_label(comment: dict[str, Any]) -> str:
     return name or "comment"
 
 
-@ToolsetBuilder("Jira Data Center")\
+_DC_INLINE_NOTE = "Images are shown in the text; other files are linked."
+
+
+@ToolsetBuilder("Jira Data Center", provider=ToolProvider.CONNECTOR)\
     .in_group("Atlassian")\
     .with_description(
         "Jira Data Center / Server integration for issue tracking and project "
@@ -387,8 +414,10 @@ def _jira_dc_comment_label(comment: dict[str, Any]) -> str:
 class JiraDataCenter:
     """Jira Data Center / Server tool exposed to agents using ``JiraDataSource`` (v2)."""
 
-    def __init__(self, client: JiraClient) -> None:
+    def __init__(self, client: JiraClient, *, state: "ChatState | None" = None) -> None:
         self.client = JiraDataSource(client)
+        self.chat_state = state
+        self._attachments = JiraIssueAttachments(self.client, state, flavor="data_center")
         self._site_url: Optional[str] = None
         self._field_schema_cache: Optional[dict[str, dict[str, str]]] = None
         self._create_fields_cache: dict[str, list[dict[str, Any]]] = {}
@@ -592,7 +621,7 @@ class JiraDataCenter:
 
     def _parse_allowed_values(self, raw: list[Any]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
-        for av in raw[:20]:
+        for av in raw:
             if not isinstance(av, dict):
                 continue
             entry: dict[str, Any] = {}
@@ -704,12 +733,15 @@ class JiraDataCenter:
                 if not field_id:
                     continue
                 meta_schema = f.get("schema") or {}
+                values = self._parse_allowed_values(f.get("allowedValues") or [])
                 fields_by_id[field_id] = {
                     "field_id": field_id,
                     "name": f.get("name", field_id),
                     "required": bool(f.get("required", False)),
                     "schema_type": meta_schema.get("type", "string"),
-                    "allowed_values": self._parse_allowed_values(f.get("allowedValues") or []),
+                    "schema_items": meta_schema.get("items"),
+                    "allowed_values": values[:_MAX_LISTED_ALLOWED_VALUES],
+                    "allowed_values_omitted": max(0, len(values) - _MAX_LISTED_ALLOWED_VALUES),
                     "has_default_value": bool(f.get("hasDefaultValue", False)),
                     "operations": f.get("operations") or [],
                 }
@@ -956,7 +988,7 @@ class JiraDataCenter:
             "authenticated user. Use as a first-step health check before other Jira Data Center actions."
         ),
         parameters=[],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="utility")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="utility"), Tag(key="effect", value="read")],
     )
     async def validate_connection(self) -> tuple[bool, str]:
         try:
@@ -985,7 +1017,7 @@ class JiraDataCenter:
             "'me'/'my' before building JQL such as `assignee = currentUser()`."
         ),
         parameters=[],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_current_user(self) -> tuple[bool, str]:
         try:
@@ -1030,7 +1062,7 @@ class JiraDataCenter:
             ToolParameter(name="project_key", type=ParameterType.STRING, description="The key of the Jira project (e.g., 'PA')", required=True),
             ToolParameter(name="issue_type_name", type=ParameterType.STRING, description="The name of the issue type (e.g., 'Task', 'Bug', 'Story')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_create_issue_fields(self, project_key: str, issue_type_name: str) -> tuple[bool, str]:
         try:
@@ -1092,6 +1124,11 @@ class JiraDataCenter:
                 avs = f.get("allowed_values") or []
                 if avs:
                     out["allowed_values"] = avs
+                omitted = f.get("allowed_values_omitted")
+                if omitted:
+                    out["more_values"] = (
+                        f"{omitted} more options are not listed. {_unlisted_option_hint(f, out['pass_via'])}"
+                    )
                 if f.get("has_default_value"):
                     out["has_default_value"] = True
                     out["note"] = "Jira will auto-fill this field if not provided"
@@ -1144,12 +1181,47 @@ class JiraDataCenter:
             ToolParameter(name="components", type=ParameterType.ARRAY, description="List of component names", required=False),
             ToolParameter(name="parent_key", type=ParameterType.STRING, description="Parent issue key for sub-tasks", required=False),
             ToolParameter(name="custom_fields", type=ParameterType.OBJECT, description="Additional fields as {field_id: value} from get_create_issue_fields", required=False),
+            attachment_record_ids_parameter(required=False),
+            attachment_display_parameter(inline_note=_DC_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template('Creating Jira issue in {project_key}: "{summary}"', "project_key", "summary"),
         result_summary=entity_summary(lambda e: f"Created {e.get('key', '?')}"),
     )
     async def create_issue(
+        self,
+        project_key: str,
+        summary: str,
+        issue_type_name: str,
+        description: str | None = None,
+        assignee_name: str | None = None,
+        assignee_query: str | None = None,
+        priority_name: str | None = None,
+        labels: list[str] | None = None,
+        components: list[str] | None = None,
+        parent_key: str | None = None,
+        custom_fields: dict[str, Any] | None = None,
+        attachment_record_ids: list[str] | None = None,
+        attachment_display: str | None = None,
+    ) -> tuple[bool, str]:
+        """Create a new issue, then attach any requested files"""
+        if not attachment_record_ids:
+            return await self._create_issue(
+                project_key, summary, issue_type_name, description, assignee_name,
+                assignee_query, priority_name, labels, components, parent_key, custom_fields,
+            )
+
+        return await self._attachments.create_with_files(
+            attachment_record_ids,
+            attachment_display,
+            self._normalize_description(description) if description else description,
+            lambda text: self._create_issue(
+                project_key, summary, issue_type_name, text, assignee_name,
+                assignee_query, priority_name, labels, components, parent_key, custom_fields,
+            ),
+        )
+
+    async def _create_issue(
         self,
         project_key: str,
         summary: str,
@@ -1275,7 +1347,8 @@ class JiraDataCenter:
             "\n"
             "Status changes are resolved through Jira workflow transitions automatically.\n"
             "\n"
-            "Always include at least one field to change alongside issue_key."
+            "Always include at least one field to change alongside issue_key, or files to attach in "
+            "attachment_record_ids."
         ),
         parameters=[
             ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
@@ -1291,12 +1364,87 @@ class JiraDataCenter:
             ToolParameter(name="components", type=ParameterType.ARRAY, description="List of component names", required=False),
             ToolParameter(name="status", type=ParameterType.STRING, description="Target status to transition to (e.g., 'In Progress', 'Done')", required=False),
             ToolParameter(name="custom_fields", type=ParameterType.OBJECT, description="Additional fields as {field_id: value}", required=False),
+            attachment_record_ids_parameter(required=False),
+            attachment_display_parameter(inline_note=_DC_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Updating Jira issue {issue_key}", "issue_key"),
         result_summary=entity_summary(lambda e: f"Updated {e.get('key', '?')}"),
     )
     async def update_issue(
+        self,
+        issue_key: str,
+        summary: str | None = None,
+        description: str | None = None,
+        issue_type_name: str | None = None,
+        assignee_name: str | None = None,
+        assignee_query: str | None = None,
+        reporter_name: str | None = None,
+        reporter_query: str | None = None,
+        priority_name: str | None = None,
+        labels: list[str] | None = None,
+        components: list[str] | None = None,
+        status: str | None = None,
+        custom_fields: dict[str, Any] | None = None,
+        attachment_record_ids: list[str] | None = None,
+        attachment_display: str | None = None,
+    ) -> tuple[bool, str]:
+        """Update an existing issue, then attach any requested files"""
+        changes = (
+            summary, description, issue_type_name, assignee_name, assignee_query,
+            reporter_name, reporter_query, priority_name, labels, components, status, custom_fields,
+        )
+        if not attachment_record_ids:
+            return await self._update_issue(issue_key, *changes)
+
+        # A description that is blank once placeholders are removed is not a change: on its
+        # own it would fail the update ("No updates provided") before any file is sent.
+        new_description = self._normalize_description(description) if has_text(description) else None
+
+        async def _update(text: str | None) -> tuple[bool, str]:
+            return await self._update_issue(issue_key, summary, text, *changes[2:])
+
+        # Empty values ("", [], {}) are skipped by `_update_issue` the same way, so they are
+        # not changes either.
+        field_changes = (summary, new_description, *changes[2:])
+        return await self._attachments.update_with_files(
+            issue_key,
+            attachment_record_ids,
+            attachment_display,
+            new_description,
+            _update if any(field_changes) else None,
+        )
+
+    @tool(
+        path="/tools/jira_data_center/add_attachments",
+        short_description="Attach files to an existing Jira Data Center issue",
+        description=(
+            "Attach files the user shared (chat uploads, Slack files, knowledge base files) to an existing "
+            "Jira Data Center issue. Pass their record IDs in attachment_record_ids. To also change fields, "
+            "use update_issue with attachment_record_ids instead."
+        ),
+        parameters=[
+            ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
+            attachment_record_ids_parameter(required=True),
+            attachment_display_parameter(inline_note=_DC_INLINE_NOTE),
+        ],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
+        args_summary=args_template("Attaching files to {issue_key}", "issue_key"),
+        result_summary=confirmation("Files attached to {issue_key}", "issue_key"),
+    )
+    async def add_attachments(
+        self,
+        issue_key: str,
+        attachment_record_ids: list[str],
+        attachment_display: str | None = None,
+    ) -> tuple[bool, str]:
+        return await self.update_issue(
+            issue_key,
+            attachment_record_ids=attachment_record_ids,
+            attachment_display=attachment_display,
+        )
+
+    async def _update_issue(
         self,
         issue_key: str,
         summary: Optional[str] = None,
@@ -1501,7 +1649,7 @@ class JiraDataCenter:
         short_description="Get all Jira Data Center projects",
         description="Get all Jira Data Center projects accessible by the current user.",
         parameters=[],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda args: "Fetching Jira Data Center projects",
         result_summary=list_summary(("data",), _jira_dc_project_label, "project"),
     )
@@ -1533,7 +1681,7 @@ class JiraDataCenter:
         parameters=[
             ToolParameter(name="project_key", type=ParameterType.STRING, description="Project key (e.g., 'PA')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching Jira project {project_key}", "project_key"),
         result_summary=entity_summary(_jira_dc_project_label),
     )
@@ -1566,7 +1714,7 @@ class JiraDataCenter:
         parameters=[
             ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching Jira issue {issue_key}", "issue_key"),
         result_summary=entity_summary(lambda e: f"Fetched {_jira_dc_issue_label(e)}"),
     )
@@ -1633,7 +1781,7 @@ class JiraDataCenter:
             ToolParameter(name="jql", type=ParameterType.STRING, description="JQL query string with time filter", required=True),
             ToolParameter(name="maxResults", type=ParameterType.INTEGER, description="Max results to return (default 50)", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Jira issues: "{jql}"', "jql"),
         result_summary=list_summary("issues", _jira_dc_issue_label, "issue"),
     )
@@ -1684,16 +1832,39 @@ class JiraDataCenter:
     @tool(
         path="/tools/jira_data_center/add_comment",
         short_description="Add a comment to a Jira Data Center issue",
-        description="Add a comment (plain text / wiki markup) to an existing Jira Data Center issue.",
+        description=(
+            "Add a comment (plain text / wiki markup) to an existing Jira Data Center issue. Files in "
+            "attachment_record_ids are attached to the issue (Jira has no comment attachments); with "
+            "attachment_display='inline' the comment shows them."
+        ),
         parameters=[
             ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
             ToolParameter(name="comment", type=ParameterType.STRING, description="Comment text (plain text / wiki markup)", required=True),
+            attachment_record_ids_parameter(required=False),
+            attachment_display_parameter(inline_note=_DC_INLINE_NOTE),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Adding comment to {issue_key}", "issue_key"),
         result_summary=confirmation("Comment added to {issue_key}", "issue_key"),
     )
-    async def add_comment(self, issue_key: str, comment: str) -> tuple[bool, str]:
+    async def add_comment(
+        self,
+        issue_key: str,
+        comment: str,
+        attachment_record_ids: list[str] | None = None,
+        attachment_display: str | None = None,
+    ) -> tuple[bool, str]:
+        if not attachment_record_ids:
+            return await self._add_comment(issue_key, comment)
+        return await self._attachments.comment_with_files(
+            issue_key,
+            attachment_record_ids,
+            attachment_display,
+            comment,
+            lambda body: self._add_comment(issue_key, body),
+        )
+
+    async def _add_comment(self, issue_key: str, comment: str) -> tuple[bool, str]:
         try:
             if not comment or not str(comment).strip():
                 return False, json.dumps({"error": "Comment text is required and cannot be empty"})
@@ -1727,7 +1898,7 @@ class JiraDataCenter:
         parameters=[
             ToolParameter(name="issue_key", type=ParameterType.STRING, description="Issue key (e.g., 'PA-123')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching comments for {issue_key}", "issue_key"),
         result_summary=list_summary("comments", _jira_dc_comment_label, "comment"),
     )
@@ -1768,7 +1939,7 @@ class JiraDataCenter:
             ToolParameter(name="query", type=ParameterType.STRING, description="Search query (name or email)", required=True),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Max results (default 20)", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Jira users: "{query}"', "query"),
         result_summary=list_summary(("data", "results"), _jira_dc_user_label, "user"),
     )
@@ -1820,7 +1991,7 @@ class JiraDataCenter:
         parameters=[
             ToolParameter(name="project_key", type=ParameterType.STRING, description="Project key (e.g., 'PA')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_project_metadata(self, project_key: str) -> tuple[bool, str]:
         try:

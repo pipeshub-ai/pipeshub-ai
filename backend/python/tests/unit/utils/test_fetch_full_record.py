@@ -1,6 +1,7 @@
 """Tests for app.utils.fetch_full_record — record fetching tools."""
 
 from collections.abc import Iterator
+from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,7 +12,30 @@ from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     matches_visibility,
 )
-from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from harness_core.knowledge.publications import ReadGrant
+from tests.support.record_access import InMemoryRecordAccess
+
+
+def _r1_owned(graph: Any, *, access: bool = True) -> Any:  # noqa: ANN401
+    """The graph answers record access from the shared fake: user ``u1`` of ``org-1`` owns ``r1`` (or not)."""
+    graph.access = InMemoryRecordAccess().user("u1", "org-1")
+    if access:
+        graph.access.readable("u1", "org-1", "r1")
+    return graph.access.serve(graph)
+
+
+class _Readable:
+    """A read gate that admits every record: these cases are about what a served record carries (H1 FR covers
+    the decision itself, ``test_fetch_full_record_access.py``)."""
+
+    async def decide(self, record_id: str) -> str:
+        return "own"
+
+    async def decide_grants(self, record_ids: list[str]) -> dict[str, ReadGrant]:
+        return dict.fromkeys(record_ids, ReadGrant("own"))
+
+
+ALLOW = _Readable()
 
 
 class TestFetchFullRecordArgs:
@@ -121,7 +145,8 @@ class TestEnrichSqlTableWithFkRelations:
     def _caller_may_open_every_table(self) -> Iterator[None]:
         """The access check passes every table for a caller with an identity, as for an admin.
         A test about the access check patches its own."""
-        def check(_provider, ids, user_id, org_id) -> set[str]:
+        def check(_provider, ids, user_id, org_id, **_) -> set[str]:
+            """Check."""
             return set(ids) if user_id and org_id else set()
 
         with patch("app.utils.fetch_full_record.accessible_node_ids", AsyncMock(side_effect=check)):
@@ -409,6 +434,71 @@ class TestApplyLiveTicketContextMetadata:
         check.assert_awaited_once_with(graph_provider, {"k1", "k2"}, "u1", "org")
 
 
+class TestReadableIssueIdsFailClosed:
+    async def _fn(self, lookup, *, user_id: str = "u1", org_id: str = "org") -> tuple:
+        from app.utils.fetch_full_record import _apply_live_ticket_context_metadata
+
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={})
+        graph_provider.get_record_key_by_external_id = AsyncMock(side_effect=lookup)
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk"})
+        graph_provider.check_access = AsyncMock(
+            side_effect=lambda user_key, org, node_ids: MagicMock(node_ids=set(node_ids), placeholder_ids=frozenset())
+        )
+        ticket = MagicMock(spec=TicketRecord)
+        ticket.to_llm_context_with_live_fields = AsyncMock(return_value="x")
+        with patch("app.utils.fetch_full_record.create_record_instance_from_dict", return_value=ticket):
+            await _apply_live_ticket_context_metadata(
+                {"id": "ticket-1", "record_type": "TICKET"}, config_service=MagicMock(),
+                graph_provider=graph_provider, frontend_url=None, org_id=org_id, user_id=user_id,
+            )
+        return ticket.to_llm_context_with_live_fields.await_args.kwargs["readable_issue_ids"], graph_provider
+
+    @pytest.mark.asyncio
+    async def test_graph_lookups_for_referenced_issues_run_at_most_16_at_a_time(self) -> None:
+        import asyncio
+
+        running = peak = 0
+
+        async def lookup(ext: str, _conn: str) -> str:
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.005)
+            running -= 1
+            return f"k{ext}"
+
+        fn, graph_provider = await self._fn(lookup)
+        assert await fn("conn", {str(i) for i in range(100)}) == {str(i) for i in range(100)}
+        assert 1 < peak <= 16
+        graph_provider.check_access.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_graph_lookup_admits_no_issue(self) -> None:
+        async def lookup(ext: str, _conn: str) -> str:
+            if ext == "2":
+                raise RuntimeError("graph down")
+            return f"k{ext}"
+
+        fn, graph_provider = await self._fn(lookup)
+        with pytest.raises(RuntimeError):  # the live-context caller catches this and names nothing
+            await fn("conn", {"1", "2"})
+        graph_provider.check_access.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user_id, org_id", [("", "org"), ("u1", ""), ("", "")])
+    async def test_missing_user_or_org_admits_no_issue(self, user_id: str, org_id: str) -> None:
+        fn, graph_provider = await self._fn(lambda ext, _conn: f"k{ext}", user_id=user_id, org_id=org_id)
+        assert await fn("conn", {"1", "2"}) == set()
+        graph_provider.check_access.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_issue_that_was_never_synced_is_not_admitted(self) -> None:
+        fn, graph_provider = await self._fn(lambda ext, _conn: None if ext == "9" else f"k{ext}")
+        assert await fn("conn", {"1", "9"}) == {"1"}
+        assert graph_provider.check_access.await_args.kwargs["node_ids"] == {"k1"}
+
+
 class TestResolverPassesViewerToLiveTicketCheck:
     @pytest.mark.asyncio
     async def test_resolver_enrich_passes_org_and_user(self) -> None:
@@ -439,7 +529,7 @@ class TestFetchMultipleRecordsImpl:
         """These cases are about enrichment and resolution, not access."""
         with patch(
             "app.utils.fetch_full_record.accessible_node_ids",
-            new=AsyncMock(side_effect=lambda _gp, ids, _user, _org: set(ids)),
+            new=AsyncMock(side_effect=lambda _gp, ids, _user, _org, **_: set(ids)),
         ):
             yield
 
@@ -451,7 +541,7 @@ class TestFetchMultipleRecordsImpl:
             "vr1": {"id": "r1", "record_name": "test1", "content": "Record 1 data"},
             "vr2": {"id": "r2", "record_name": "test2", "content": "Record 2 data"},
         }
-        result = await _fetch_multiple_records_impl(["r1", "r2"], records_map)
+        result = await _fetch_multiple_records_impl(["r1", "r2"], records_map, gate=ALLOW)
         assert result["ok"] is True
         assert len(result["records"]) == 2
 
@@ -478,6 +568,7 @@ class TestFetchMultipleRecordsImpl:
                 ["r1"],
                 records_map,
                 graph_provider=graph_provider,
+                gate=ALLOW,
             )
 
         assert result["ok"] is True
@@ -491,7 +582,7 @@ class TestFetchMultipleRecordsImpl:
 
         records_map = {}
         graph_provider = AsyncMock()
-        graph_provider.check_record_access_with_details = AsyncMock(return_value=True)
+        _r1_owned(graph_provider)
         graph_provider.get_document = AsyncMock(return_value={
             "indexingStatus": ProgressStatus.COMPLETED.value,
             "virtualRecordId": "vrid-1",
@@ -539,7 +630,7 @@ class TestFetchMultipleRecordsImpl:
         records_map = {
             "vr1": {"id": "r1", "record_name": "test", "content": "data"},
         }
-        result = await _fetch_multiple_records_impl(["r1", "r_missing"], records_map)
+        result = await _fetch_multiple_records_impl(["r1", "r_missing"], records_map, gate=ALLOW)
         assert result["ok"] is True
         assert len(result["records"]) == 1
         assert "r_missing" in result["not_available_ids"]
@@ -577,7 +668,7 @@ class TestFetchMultipleRecordsImpl:
             "vr1": None,
             "vr2": {"id": "r2", "record_name": "test", "content": "data"},
         }
-        result = await _fetch_multiple_records_impl(["r2"], records_map)
+        result = await _fetch_multiple_records_impl(["r2"], records_map, gate=ALLOW)
         assert result["ok"] is True
         assert len(result["records"]) == 1
 
@@ -589,7 +680,7 @@ class TestFetchMultipleRecordsImpl:
             "vr1": {"id": "products", "record_name": "products", "record_type": "SQL_TABLE"},
         }
         result = await _fetch_multiple_records_impl(
-            ["products"], records_map, graph_provider=_shop(), org_id="org-1"
+            ["products"], records_map, graph_provider=_shop(), org_id="org-1", gate=ALLOW
         )
 
         assert result["ok"] is True
@@ -607,7 +698,7 @@ class TestFetchMultipleRecordsImpl:
         }
         result = await _fetch_multiple_records_impl(
             ["orders", "products"], records_map,
-            graph_provider=_shop(trashed=("customers", "suppliers")), org_id="org-1",
+            graph_provider=_shop(trashed=("customers", "suppliers")), org_id="org-1", gate=ALLOW,
         )
 
         by_id = {rec["id"]: rec for rec in result["records"]}
@@ -626,7 +717,7 @@ class TestFetchMultipleRecordsImpl:
         records_map = {
             "vr1": {"id": "r1", "record_name": "test", "record_type": "SQL_TABLE"},
         }
-        result = await _fetch_multiple_records_impl(["r1"], records_map)
+        result = await _fetch_multiple_records_impl(["r1"], records_map, gate=ALLOW)
 
         assert result["ok"] is True
         rec = result["records"][0]
@@ -642,7 +733,7 @@ class TestFetchMultipleRecordsImpl:
         graph_provider = AsyncMock()
 
         result = await _fetch_multiple_records_impl(
-            ["r1"], records_map, graph_provider=graph_provider
+            ["r1"], records_map, graph_provider=graph_provider, gate=ALLOW
         )
 
         assert result["ok"] is True
@@ -656,7 +747,7 @@ class TestFetchMultipleRecordsImpl:
 
         records_map = {}
         graph_provider = AsyncMock()
-        graph_provider.check_record_access_with_details = AsyncMock(return_value=True)
+        _r1_owned(graph_provider)
         graph_provider.get_document = AsyncMock(return_value={
             "indexingStatus": ProgressStatus.COMPLETED.value,
             "virtualRecordId": "vrid-1",
@@ -695,7 +786,7 @@ class TestFetchMultipleRecordsImpl:
 
         records_map = {}
         graph_provider = _shop(trashed=("customers",))
-        graph_provider.check_record_access_with_details = AsyncMock(return_value=True)
+        InMemoryRecordAccess().user("u1", "org-1").readable("u1", "org-1", "orders").serve(graph_provider)
         graph_provider.get_document = AsyncMock(return_value={
             "indexingStatus": ProgressStatus.COMPLETED.value,
             "virtualRecordId": "vrid-1",
@@ -736,7 +827,7 @@ class TestFetchMultipleRecordsImpl:
             "vr1": {"id": "suppliers", "record_name": "suppliers", "recordType": "SQL_TABLE"},
         }
         result = await _fetch_multiple_records_impl(
-            ["suppliers"], records_map, graph_provider=_shop(), org_id="org-1"
+            ["suppliers"], records_map, graph_provider=_shop(), org_id="org-1", gate=ALLOW
         )
 
         assert result["ok"] is True
@@ -766,15 +857,7 @@ class TestFetchMultipleRecordsImplGraphFallback:
         gp.config_service.get_config = AsyncMock(
             return_value=endpoints if endpoints is not None else {},
         )
-        gp.check_record_access_with_details = AsyncMock(
-            return_value={"record": {"_key": "r1"}} if access else None,
-        )
-        gp.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
-        gp.check_access = AsyncMock(
-            side_effect=lambda _user_key, _org_id, node_ids=(), **_: AccessCheck(
-                node_ids=frozenset(node_ids) if access else frozenset(),
-            ),
-        )
+        _r1_owned(gp, access=access)
         return gp
 
     @pytest.mark.asyncio
@@ -893,6 +976,41 @@ class TestFetchMultipleRecordsImplGraphFallback:
             )
 
         assert seen == [url]
+
+    @pytest.mark.parametrize(("limit", "named"), [
+        (None, "Board finance"),
+        ({"apps": ["app-1"], "recordGroups": [], "records": []}, "Board finance"),
+        ({"apps": [], "recordGroups": [], "records": ["r1"]}, None),
+    ])
+    @pytest.mark.parametrize("in_map", [False, True])
+    @pytest.mark.asyncio
+    async def test_a_record_read_by_id_names_its_connector_inside_the_limit(self, in_map, limit, named) -> None:
+        """A record read here was never named by search; its citation showed no source name."""
+        from app.utils import fetch_full_record as ffr
+
+        doc = {"indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1", "connectorId": "app-1"}
+        graph_provider = self._make_graph_provider()
+        graph_provider.get_document = AsyncMock(side_effect=lambda *a, **kw: (
+            {"_key": "app-1", "name": "Board finance"} if "apps" in (*a, *kw.values()) else dict(doc)
+        ))
+        results_map = {"vrid-1": {"id": "r1", **doc}} if in_map else {}
+        seen: list[str | None] = []
+
+        async def _fake_get_record(vrid, results_map, _blob, _org, graph_map, *args, **kwargs) -> None:
+            seen.append(graph_map[vrid].get("connectorInstanceName"))
+            results_map[vrid] = {"id": "r1", "record_name": "budget.xlsx"}
+
+        with patch.object(ffr, "BlobStorage") as blob_cls, patch.object(
+            ffr, "get_record", new=AsyncMock(side_effect=_fake_get_record),
+        ):
+            blob_cls.return_value = MagicMock(config_service=graph_provider.config_service)
+            result = await ffr._fetch_multiple_records_impl(
+                ["r1"], results_map, org_id="org-1", graph_provider=graph_provider, user_id="u1",
+                connection_sources=limit,
+            )
+
+        assert result["ok"] is True
+        assert seen == [named]
 
     @pytest.mark.asyncio
     async def test_graph_fallback_endpoint_config_exception(self):
@@ -1026,15 +1144,7 @@ class TestColdPathAccessControl:
         gp = MagicMock()
         gp.config_service = MagicMock()
         gp.config_service.get_config = AsyncMock(return_value={})
-        gp.check_record_access_with_details = AsyncMock(
-            return_value={"record": {"_key": "r1"}} if access else None,
-        )
-        gp.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
-        gp.check_access = AsyncMock(
-            side_effect=lambda _user_key, _org_id, node_ids=(), **_: AccessCheck(
-                node_ids=frozenset(node_ids) if access else frozenset(),
-            ),
-        )
+        _r1_owned(gp, access=access)
         gp.get_document = AsyncMock(return_value={
             "indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1",
         })
@@ -1082,23 +1192,23 @@ class TestColdPathAccessControl:
         assert result["ok"] is False
         graph_provider.get_document.assert_not_awaited()
 
+    @pytest.mark.parametrize("access", [True, False])
     @pytest.mark.asyncio
-    async def test_records_in_the_map_are_checked_in_one_batch_not_per_id(self) -> None:
-        """The map is not only filled by ACL-filtered search (attachments and FK
-        enrichment write to it too), so its entries are checked as well: once,
-        for all ids together."""
+    async def test_records_already_in_the_map_are_re_checked(self, access) -> None:
+        """H1 (P2.13 FW-4): more than an ACL-filtered search writes the map, and an
+        entry outlives a revocation, so a map hit is checked as a miss is."""
         from app.utils import fetch_full_record as ffr
 
-        graph_provider = self._graph_provider(access=True)
+        graph_provider = self._graph_provider(access=access)
 
         result = await ffr._fetch_multiple_records_impl(
             ["r1"], {"vr1": {"id": "r1", "record_name": "test", "content": "data"}},
             org_id="org-1", graph_provider=graph_provider, user_id="u1",
         )
 
-        assert result["ok"] is True
-        graph_provider.check_access.assert_awaited_once()
-        graph_provider.check_record_access_with_details.assert_not_awaited()
+        assert result["ok"] is access
+        assert graph_provider.access.asked_about == [("u1", "org-1", "r1")]
+        graph_provider.get_document.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_denied_record_in_the_map_is_not_served(self) -> None:
@@ -1136,7 +1246,11 @@ class TestCreateFetchFullRecordTool:
         from app.utils.fetch_full_record import create_fetch_full_record_tool
 
         records_map = {"vr1": {"id": "r1", "record_name": "test", "content": "data"}}
-        tool = create_fetch_full_record_tool(records_map)
+        graph_provider = AsyncMock()
+        graph_provider.config_service = MagicMock()
+        graph_provider.config_service.get_config = AsyncMock(return_value={})
+        _r1_owned(graph_provider)
+        tool = create_fetch_full_record_tool(records_map, org_id="org-1", graph_provider=graph_provider, user_id="u1")
         result = await tool.ainvoke({"record_ids": ["r1"], "reason": "test"})
         assert result["ok"] is True
 
@@ -1218,5 +1332,6 @@ class TestCreateFetchFullRecordTool:
         assert call_args.kwargs["graph_provider"] is mock_gp
         assert call_args.kwargs["blob_store"] is mock_bs
         assert call_args.kwargs["org_id"] == "org-1"
+
 
 

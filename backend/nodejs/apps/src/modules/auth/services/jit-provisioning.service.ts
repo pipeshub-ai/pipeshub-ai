@@ -1,12 +1,14 @@
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
+import { audit } from '../../../libs/services/audit';
+import { authRefusal } from '../utils/sign-in-audit';
 // From the schema module, not the config barrel: the barrel re-exports the auth
 // routers, whose controllers import this service, so importing it here made the
 // two depend on each other. The schema module returns whatever `users` model is
 // already registered, which is the same object the barrel would give.
-import { Users } from '../../user_management/schema/users.schema';
-import { UserGroups } from '../../user_management/schema/userGroup.schema';
+import { getUserRepository } from '../../../libs/repositories/user';
+import { getGroupRepository } from '../../../libs/repositories/group';
 import {
   EntitiesEventProducer,
   EventType,
@@ -30,8 +32,9 @@ export type JitProvider = 'google' | 'microsoft';
 export class JitProvisioningService {
   constructor(
     @inject('Logger') private logger: Logger,
-    @inject('EntitiesEventProducer') private eventService: EntitiesEventProducer,
-  ) { }
+    @inject('EntitiesEventProducer')
+    private eventService: EntitiesEventProducer,
+  ) {}
 
   /**
    * Provision a new user via JIT from a Google or Microsoft sign-in.
@@ -43,36 +46,28 @@ export class JitProvisioningService {
     orgId: string,
     provider: JitProvider,
   ) {
-    this.logger.info(`Auto-provisioning user from ${provider}`, { email, orgId });
-
-
     // Check if user was previously deleted
-    const deletedUser = await Users.findOne({
-      email,
-      orgId,
-      isDeleted: true,
-    });
-    if (deletedUser) {
-      throw new BadRequestError(
-        'User account deleted by admin. Please contact your admin to restore your account.',
+    if (await getUserRepository().hasRemovedAccount(orgId, email)) {
+      // The sign-in line carries this refusal; provisioning audits only what it created.
+      throw authRefusal(
+        new BadRequestError(
+          'User account deleted by admin. Please contact your admin to restore your account.',
+        ),
+        'account_removed',
       );
     }
 
-    const newUser = new Users({
+    const newUser = await getUserRepository().create(orgId, {
       email,
       ...userDetails,
-      orgId,
       hasLoggedIn: true,
       isDeleted: false,
     });
 
-    await newUser.save();
-
     // Add to everyone group
-    await UserGroups.updateOne(
-      { orgId, type: 'everyone', isDeleted: false },
-      { $addToSet: { users: newUser._id } },
-    );
+    await getGroupRepository().addToEveryone(orgId, newUser._id, {
+      liveOnly: true,
+    });
 
     // Publish user creation event
     try {
@@ -82,7 +77,7 @@ export class JitProvisioningService {
         timestamp: Date.now(),
         payload: {
           orgId: orgId.toString(),
-          userId: newUser._id.toString(),
+          userId: newUser._id,
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
@@ -97,12 +92,14 @@ export class JitProvisioningService {
       await this.eventService.stop();
     }
 
-    this.logger.info(`User auto-provisioned successfully via ${provider}`, {
-      userId: newUser._id,
-      email,
+    audit('auth.jit_provision', {
+      actor: newUser._id,
+      org: orgId,
+      outcome: 'success',
+      authMethod: provider,
     });
 
-    return newUser.toObject();
+    return newUser;
   }
 
   /**
@@ -128,7 +125,10 @@ export class JitProvisioningService {
   /**
    * Extract user details from a Microsoft decoded token
    */
-  extractMicrosoftUserDetails(decodedToken: any, email: string): JitUserDetails {
+  extractMicrosoftUserDetails(
+    decodedToken: any,
+    email: string,
+  ): JitUserDetails {
     const firstName = decodedToken?.given_name;
     const lastName = decodedToken?.family_name;
     const displayName = decodedToken?.name;

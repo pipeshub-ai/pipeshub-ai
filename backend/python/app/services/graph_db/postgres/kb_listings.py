@@ -1,0 +1,463 @@
+"""What is inside a knowledge base (its root, a folder), the artifact gallery, agent templates and the legacy hub app.
+
+The callers decide who may open a collection or a folder (``get_user_kb_permission``); these methods list what the graph holds for the ids they are given,
+in the ambient org, and the artifact gallery starts from the user's own grant. Every method resolves the ambient org first (before
+any ``try``); every statement is a literal with bound parameters, an optional filter being a null-when-absent bound value.
+"""
+from __future__ import annotations
+
+import json
+import uuid
+from typing import TYPE_CHECKING, Any
+
+from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
+from app.core.org_context import current_org_id
+from app.schema.node_validator import SchemaValidationError
+from app.services.graph_db.postgres.base import PgBase, _arango, _doc
+from app.services.graph_db.postgres.kg import hierarchy as kg_hier
+from app.services.graph_db.postgres.kg import kb_folder as kg_kb_folder
+from app.services.graph_db.postgres.kg import kb_root as kg_kb_root
+from app.utils import error_class
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from app.core.db import Tx
+
+_KB = Connectors.KNOWLEDGE_BASE.value
+_TEMPLATES = CollectionNames.AGENT_TEMPLATES.value
+_ORG_FIELD = "orgId"  # the org property of a stored record, returned as a field; the org of a call is the ambient one
+# a grant with any other role (an unknown or stale one) opens nothing: fail closed, unlike the other stores, which show the template
+_TEMPLATE_ROLES = ["OWNER", "ORGANIZER", "WRITER", "READER"]
+_SORT_KEYS = {"name": 1, "created_at": 2, "updated_at": 3, "size": 4}
+
+# The folders on a knowledge base's root ($2) and, below, those in a folder ($2), each page's folders with how many subfolders and live records each holds: counted for
+# the page's folders only (``cnt`` after the page), not for every folder before it is cut.
+_KB_FOLDERS = """/* pipeshub:graph.children_kb_folders */ WITH fo AS (
+      SELECT r.id, r.doc FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false
+        AND r.doc->>'mimeType' = ANY($3::text[]) AND r.doc->>'orgId' = $1
+        AND EXISTS (SELECT 1 FROM graph.edges b JOIN graph.nodes k ON k.org_id = b.org_id AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = $7
+                    WHERE b.org_id = r.org_id AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = r.id AND b.to_coll = 'apps' AND b.to_id = $2)
+        AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = r.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
+                        AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)
+        AND ($4::text IS NULL OR position(lower($4::text) IN lower(r.doc->>'recordName')) > 0))
+    SELECT (SELECT count(*) FROM fo) AS total, p.doc, cnt.subs, cnt.recs, p.rn FROM (SELECT 1) one
+    LEFT JOIN LATERAL (SELECT x.id, x.doc, row_number() OVER (ORDER BY x.doc->>'recordName' COLLATE "C", x.id) AS rn FROM fo x
+                       ORDER BY x.doc->>'recordName' COLLATE "C", x.id OFFSET $5 LIMIT $6) p ON true
+    LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE c.doc->>'mimeType' = ANY($3::text[])) AS subs,
+                              count(*) FILTER (WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND NOT (c.doc->>'mimeType' = ANY($3::text[]))) AS recs
+                       FROM graph.edges ce JOIN graph.nodes c ON c.org_id = ce.org_id AND c.coll = 'records' AND c.id = ce.to_id
+                       WHERE ce.org_id = $1 AND ce.coll = 'nodeRelations' AND ce.doc->>'relationshipType' = 'PARENT_CHILD' AND ce.from_coll = 'records'
+                         AND ce.from_id = p.id AND ce.to_coll = 'records') cnt ON true ORDER BY p.rn"""
+_FOLDER_FOLDERS = """/* pipeshub:graph.children_folder_folders */ WITH fo AS (
+      SELECT s.id, s.doc, sf.doc->>'path' AS path FROM graph.nodes fr
+      JOIN graph.edges e ON e.org_id = fr.org_id AND e.coll = 'nodeRelations' AND e.doc->>'relationshipType' = 'PARENT_CHILD' AND e.from_coll = 'records'
+        AND e.from_id = fr.id AND e.to_coll = 'records'
+      JOIN graph.nodes s ON s.org_id = fr.org_id AND s.coll = 'records' AND s.id = e.to_id
+      JOIN LATERAL (SELECT f.doc FROM graph.edges te JOIN graph.nodes f ON f.org_id = te.org_id AND f.coll = 'files' AND f.id = te.to_id
+                    WHERE te.org_id = s.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = s.id AND f.doc->>'isFile' = 'false'
+                    ORDER BY f.id LIMIT 1) sf ON true
+      WHERE fr.org_id = $1 AND fr.coll = 'records' AND fr.id = $2
+        AND EXISTS (SELECT 1 FROM graph.edges te JOIN graph.nodes f ON f.org_id = te.org_id AND f.coll = 'files' AND f.id = te.to_id AND f.doc->>'isFile' = 'false'
+                    WHERE te.org_id = fr.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = fr.id)
+        AND ($3::text IS NULL OR position(lower($3::text) IN lower(s.doc->>'recordName')) > 0))
+    SELECT (SELECT count(*) FROM fo) AS total, p.doc, p.path, cnt.subs, cnt.recs, p.rn FROM (SELECT 1) one
+    LEFT JOIN LATERAL (SELECT x.id, x.doc, x.path, row_number() OVER (ORDER BY x.doc->>'recordName' COLLATE "C", x.id) AS rn FROM fo x
+                       ORDER BY x.doc->>'recordName' COLLATE "C", x.id OFFSET $4 LIMIT $5) p ON true
+    LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE cf.doc->>'isFile' = 'false') AS subs,
+                              count(*) FILTER (WHERE coalesce((c.doc->>'isDeleted')::boolean, false) = false AND (cf.id IS NULL OR cf.doc->>'isFile' <> 'false')) AS recs
+                       FROM graph.edges ce JOIN graph.nodes c ON c.org_id = ce.org_id AND c.coll = 'records' AND c.id = ce.to_id
+                       LEFT JOIN LATERAL (SELECT f.id, f.doc FROM graph.edges te JOIN graph.nodes f ON f.org_id = te.org_id AND f.coll = 'files' AND f.id = te.to_id
+                                          WHERE te.org_id = c.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = c.id ORDER BY f.id LIMIT 1) cf ON true
+                       WHERE ce.org_id = $1 AND ce.coll = 'nodeRelations' AND ce.doc->>'relationshipType' = 'PARENT_CHILD' AND ce.from_coll = 'records'
+                         AND ce.from_id = p.id AND ce.to_coll = 'records') cnt ON true ORDER BY p.rn"""
+# The records directly on a knowledge base's root ($2), with the filters every one of them offers and a page in the asked order ($9 the key, $10 ascending).
+_ROOT_RECORDS = """/* pipeshub:graph.children_records */ WITH recs AS (
+      SELECT r.id, r.doc FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false AND r.doc->>'orgId' = $1
+        AND NOT (r.doc->>'mimeType' = ANY($3::text[]))
+        AND EXISTS (SELECT 1 FROM graph.edges b JOIN graph.nodes k ON k.org_id = b.org_id AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = $13
+                    WHERE b.org_id = r.org_id AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = r.id AND b.to_coll = 'apps' AND b.to_id = $2)
+        AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = r.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
+                        AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)
+        AND ($4::text IS NULL OR position(lower($4::text) IN lower(r.doc->>'recordName')) > 0 OR position(lower($4::text) IN lower(r.doc->>'externalRecordId')) > 0)
+        AND ($5::text[] IS NULL OR r.doc->>'recordType' = ANY($5::text[])) AND ($6::text[] IS NULL OR r.doc->>'origin' = ANY($6::text[]))
+        AND ($7::text[] IS NULL OR r.doc->>'connectorName' = ANY($7::text[])) AND ($8::text[] IS NULL OR r.doc->>'indexingStatus' = ANY($8::text[])))
+    SELECT s.total, s.rtypes, s.origins, s.connectors, s.statuses, p.doc, p.fdoc, p.rn FROM
+      (SELECT count(*) AS total,
+              coalesce(array_agg(DISTINCT doc->>'recordType') FILTER (WHERE doc->>'recordType' IS NOT NULL), '{}') AS rtypes,
+              coalesce(array_agg(DISTINCT doc->>'origin') FILTER (WHERE doc->>'origin' IS NOT NULL), '{}') AS origins,
+              coalesce(array_agg(DISTINCT coalesce(doc->>'connectorName', 'KNOWLEDGE_BASE')), '{}') AS connectors,
+              coalesce(array_agg(DISTINCT doc->>'indexingStatus') FILTER (WHERE doc->>'indexingStatus' IS NOT NULL), '{}') AS statuses FROM recs) s
+      LEFT JOIN LATERAL (SELECT q.doc, q.rn, (SELECT ff.doc FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = te.org_id AND ff.coll = 'files' AND ff.id = te.to_id
+                                              WHERE te.org_id = $1 AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = q.id ORDER BY ff.id LIMIT 1) AS fdoc
+                         FROM (SELECT x.id, x.doc, row_number() OVER (ORDER BY
+            (CASE WHEN $9::int = 1 AND $10::boolean THEN x.doc->>'recordName' END) COLLATE "C" ASC, (CASE WHEN $9::int = 1 AND NOT $10::boolean THEN x.doc->>'recordName' END) COLLATE "C" DESC,
+            (CASE WHEN $9::int = 2 AND $10::boolean THEN x.doc->'createdAtTimestamp' END) ASC, (CASE WHEN $9::int = 2 AND NOT $10::boolean THEN x.doc->'createdAtTimestamp' END) DESC,
+            (CASE WHEN $9::int = 3 AND $10::boolean THEN x.doc->'updatedAtTimestamp' END) ASC, (CASE WHEN $9::int = 3 AND NOT $10::boolean THEN x.doc->'updatedAtTimestamp' END) DESC,
+            (CASE WHEN $9::int = 4 AND $10::boolean THEN (SELECT sf.doc->'sizeInBytes' FROM graph.edges se JOIN graph.nodes sf ON sf.org_id = se.org_id AND sf.coll = 'files' AND sf.id = se.to_id
+                    WHERE se.org_id = $1 AND se.coll = 'isOfType' AND se.from_coll = 'records' AND se.from_id = x.id ORDER BY sf.id LIMIT 1) END) ASC,
+            (CASE WHEN $9::int = 4 AND NOT $10::boolean THEN (SELECT sf.doc->'sizeInBytes' FROM graph.edges se JOIN graph.nodes sf ON sf.org_id = se.org_id AND sf.coll = 'files' AND sf.id = se.to_id
+                    WHERE se.org_id = $1 AND se.coll = 'isOfType' AND se.from_coll = 'records' AND se.from_id = x.id ORDER BY sf.id LIMIT 1) END) DESC, x.id) AS rn
+                               FROM recs x ORDER BY rn OFFSET $11 LIMIT $12) q) p ON true ORDER BY p.rn"""
+# The records in the folder $2 (each child by a PARENT_CHILD relation from it, read from its relations) that are not folders, as the root's statement lists them.
+_FOLDER_RECORDS = """/* pipeshub:graph.children_folder_records */ WITH recs AS (
+      SELECT r.id, r.doc FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false
+        AND r.id IN (SELECT p.to_id FROM graph.edges p JOIN graph.nodes pn ON pn.org_id = p.org_id AND pn.coll = 'records' AND pn.id = p.from_id
+                     WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD' AND p.from_coll = 'records'
+                       AND p.from_id = $2 AND p.to_coll = 'records')
+        AND NOT EXISTS (SELECT 1 FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = te.org_id AND ff.coll = 'files' AND ff.id = te.to_id AND ff.doc->>'isFile' = 'false'
+                        WHERE te.org_id = r.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = r.id)
+        AND ($3::text IS NULL OR position(lower($3::text) IN lower(r.doc->>'recordName')) > 0 OR position(lower($3::text) IN lower(r.doc->>'externalRecordId')) > 0)
+        AND ($4::text[] IS NULL OR r.doc->>'recordType' = ANY($4::text[])) AND ($5::text[] IS NULL OR r.doc->>'origin' = ANY($5::text[]))
+        AND ($6::text[] IS NULL OR r.doc->>'connectorName' = ANY($6::text[])) AND ($7::text[] IS NULL OR r.doc->>'indexingStatus' = ANY($7::text[])))
+    SELECT s.total, s.rtypes, s.origins, s.connectors, s.statuses, p.doc, p.fdoc, p.rn FROM
+      (SELECT count(*) AS total,
+              coalesce(array_agg(DISTINCT doc->>'recordType') FILTER (WHERE doc->>'recordType' IS NOT NULL), '{}') AS rtypes,
+              coalesce(array_agg(DISTINCT doc->>'origin') FILTER (WHERE doc->>'origin' IS NOT NULL), '{}') AS origins,
+              coalesce(array_agg(DISTINCT coalesce(doc->>'connectorName', 'KNOWLEDGE_BASE')), '{}') AS connectors,
+              coalesce(array_agg(DISTINCT doc->>'indexingStatus') FILTER (WHERE doc->>'indexingStatus' IS NOT NULL), '{}') AS statuses FROM recs) s
+      LEFT JOIN LATERAL (SELECT q.doc, q.rn, (SELECT ff.doc FROM graph.edges te JOIN graph.nodes ff ON ff.org_id = te.org_id AND ff.coll = 'files' AND ff.id = te.to_id
+                                              WHERE te.org_id = $1 AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = q.id ORDER BY ff.id LIMIT 1) AS fdoc
+                         FROM (SELECT x.id, x.doc, row_number() OVER (ORDER BY
+            (CASE WHEN $8::int = 1 AND $9::boolean THEN x.doc->>'recordName' END) COLLATE "C" ASC, (CASE WHEN $8::int = 1 AND NOT $9::boolean THEN x.doc->>'recordName' END) COLLATE "C" DESC,
+            (CASE WHEN $8::int = 2 AND $9::boolean THEN x.doc->'createdAtTimestamp' END) ASC, (CASE WHEN $8::int = 2 AND NOT $9::boolean THEN x.doc->'createdAtTimestamp' END) DESC,
+            (CASE WHEN $8::int = 3 AND $9::boolean THEN x.doc->'updatedAtTimestamp' END) ASC, (CASE WHEN $8::int = 3 AND NOT $9::boolean THEN x.doc->'updatedAtTimestamp' END) DESC,
+            (CASE WHEN $8::int = 4 AND $9::boolean THEN (SELECT sf.doc->'sizeInBytes' FROM graph.edges se JOIN graph.nodes sf ON sf.org_id = se.org_id AND sf.coll = 'files' AND sf.id = se.to_id
+                    WHERE se.org_id = $1 AND se.coll = 'isOfType' AND se.from_coll = 'records' AND se.from_id = x.id ORDER BY sf.id LIMIT 1) END) ASC,
+            (CASE WHEN $8::int = 4 AND NOT $9::boolean THEN (SELECT sf.doc->'sizeInBytes' FROM graph.edges se JOIN graph.nodes sf ON sf.org_id = se.org_id AND sf.coll = 'files' AND sf.id = se.to_id
+                    WHERE se.org_id = $1 AND se.coll = 'isOfType' AND se.from_coll = 'records' AND se.from_id = x.id ORDER BY sf.id LIMIT 1) END) DESC, x.id) AS rn
+                               FROM recs x ORDER BY rn OFFSET $10 LIMIT $11) q) p ON true ORDER BY p.rn"""
+
+
+def _file(f: Any) -> dict | None:  # noqa: ANN401
+    if not f:
+        return None
+    d = _doc(f)
+    return {"id": d.get("id"), "name": d.get("name"), "extension": d.get("extension"), "mimeType": d.get("mimeType"), "sizeInBytes": d.get("sizeInBytes"),
+            "webUrl": d.get("webUrl"), "isFile": d.get("isFile"), "path": d.get("path")}
+
+
+def _child_record(doc: Any, fdoc: Any) -> dict:  # noqa: ANN401
+    d = _doc(doc)
+    return {"id": d.get("id"), "recordName": d.get("recordName"), "name": d.get("recordName"), "recordType": d.get("recordType"),
+            "externalRecordId": d.get("externalRecordId"), "origin": d.get("origin"), "connectorName": d.get("connectorName") or "KNOWLEDGE_BASE",
+            "indexingStatus": d.get("indexingStatus"), "version": d.get("version"), "isLatestVersion": d.get("isLatestVersion", True),
+            "createdAtTimestamp": d.get("createdAtTimestamp"), "updatedAtTimestamp": d.get("updatedAtTimestamp"),
+            "sourceCreatedAtTimestamp": d.get("sourceCreatedAtTimestamp"), "sourceLastModifiedTimestamp": d.get("sourceLastModifiedTimestamp"),
+            "webUrl": d.get("webUrl"), "orgId": d.get(_ORG_FIELD), "type": "record", "fileRecord": _file(fdoc)}
+
+
+def _folder_item(doc: Any, subs: int, recs: int, parent_id: str | None, path: str | None = None) -> dict:  # noqa: ANN401
+    d = _doc(doc)
+    out = {"id": d.get("id"), "name": d.get("recordName"), "level": 1, "parent_id": parent_id, "webUrl": d.get("webUrl"), "recordGroupId": d.get("connectorId"),
+           "type": "folder", "createdAtTimestamp": d.get("createdAtTimestamp"), "updatedAtTimestamp": d.get("updatedAtTimestamp"),
+           "counts": {"subfolders": subs, "records": recs, "totalItems": subs + recs}, "hasChildren": subs > 0 or recs > 0}
+    return {**out, "path": path} if parent_id is not None else out
+
+
+def _filters(row: Any) -> dict:  # noqa: ANN401
+    return {"recordTypes": sorted(row["rtypes"]), "origins": sorted(row["origins"]), "connectors": sorted(row["connectors"]), "indexingStatus": sorted(row["statuses"])}
+
+
+def _artifact(rec: Any, art: Any, perm: Any) -> dict:  # noqa: ANN401
+    r, a, p = _doc(rec), _doc(art), _doc(perm)
+    return {"id": r.get("id"), "recordName": r.get("recordName"), "recordType": r.get("recordType"), "mimeType": r.get("mimeType"), "sizeInBytes": r.get("sizeInBytes"),
+            "version": r.get("version"), "createdAtTimestamp": r.get("createdAtTimestamp"), "updatedAtTimestamp": r.get("updatedAtTimestamp"),
+            "artifactDoc": {k: a.get(k) for k in ("name", "artifactType", "conversationId", "visibility", "mimeType", "sizeInBytes", "logicalName", "contentHash",
+                                                  "versions", "description", "sourceTool", "isTemporary")},
+            "permission": {"role": p.get("role"), "type": p.get("type")}}
+
+
+class KbListingsMixin(PgBase):
+    async def _children(self, kb_id: str, folder_id: str | None, skip: int, limit: int, level: int, search: str | None, record_types: list[str] | None,
+                        origins: list[str] | None, connectors: list[str] | None, indexing_status: list[str] | None, sort_by: str, sort_order: str,
+                        transaction: str | None) -> dict:
+        """The folders and then the records directly in the collection (``folder_id`` None) or in the folder, folders first: the page takes folders from ``skip``
+        and fills what is left of ``limit`` with records. For a connector the typed graph serves, the collection's root takes its candidates from it (``kg.kb_root``) and a
+        folder is listed from its children's rows there (``kg.kb_folder``)."""
+        org = current_org_id()
+        try:
+            skip, limit = max(skip, 0), max(limit, 0)
+            key, asc = _SORT_KEYS.get(sort_by, 1), sort_order.upper() != "DESC"
+
+            async def read(tx: Tx, ids: list[str] | None, fold: tuple[int, int, bool] | None = None) -> dict:
+                """The page, from the root candidates ``ids`` or the folder's row ``fold`` (sk, app sk, typed as a folder: the typed graph's), or with neither from the graph (the walk)."""
+                if folder_id is None:
+                    kb = await tx.fetchrow("/* pipeshub:graph.children_kb */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = $2", org, kb_id)
+                    if not kb:
+                        return {"success": False, "reason": "Knowledge base not found", "code": 404}
+                    args = (org, kb_id, FOLDER_MIME_TYPES, search or None, skip, limit, _KB)
+                    rows = await (tx.fetch(_KB_FOLDERS, *args) if ids is None else tx.fetch(kg_kb_root.FOLDERS, *args, ids))
+                    container = _doc(kb["doc"])
+                    box = {"id": container.get("id"), "name": container.get("groupName") or container.get("name"), "path": "/", "type": "kb",
+                           "webUrl": f"/kb/{container.get('id')}", "recordGroupId": container.get("id")}
+                else:
+                    box = None
+                    rows = await (tx.fetch(_FOLDER_FOLDERS, org, folder_id, search or None, skip, limit) if fold is None else
+                                  tx.fetch(kg_kb_folder.FOLDERS, org, fold[0], fold[1], search or None, skip, limit, fold[2]))
+                    if fold:
+                        kg_kb_folder.checked(rows, "odd", "sub_odd")
+                total_folders = rows[0]["total"]
+                folders = [_folder_item(r["doc"], r["subs"], r["recs"], folder_id, r["path"] if folder_id else None) for r in rows if r["doc"] is not None]
+                if skip < total_folders:
+                    rskip, rlimit = 0, max(limit - len(folders), 0)
+                else:
+                    rskip, rlimit = skip - total_folders, limit
+                filters = (search or None, record_types or None, origins or None, connectors or None, indexing_status or None, key, asc, rskip, rlimit)
+                if folder_id is not None:
+                    recs = await (tx.fetch(_FOLDER_RECORDS, org, folder_id, *filters) if fold is None else tx.fetch(kg_kb_folder.RECORDS_PAGE, org, fold[0], fold[1], *filters))
+                    if fold:
+                        kg_kb_folder.checked(recs, "odd")
+                else:
+                    args = (org, kb_id, FOLDER_MIME_TYPES, *filters, _KB)
+                    recs = await (tx.fetch(_ROOT_RECORDS, *args) if ids is None else tx.fetch(kg_kb_root.RECORDS, *args, ids))
+                records = [_child_record(r["doc"], r["fdoc"]) for r in recs if r["doc"] is not None]
+                total_records = recs[0]["total"]
+                out = {"success": True, "folders": folders, "records": records, "totalCount": total_folders + total_records, "availableFilters": _filters(recs[0])}
+                if box:
+                    return {**out, "container": box, "level": level, "paginationMode": "folders_first",
+                            "counts": {"folders": len(folders), "records": len(records), "totalItems": len(folders) + len(records),
+                                       "totalFolders": total_folders, "totalRecords": total_records}}
+                return {**out, "counts": {"folders": total_folders, "records": total_records, "totalItems": total_folders + total_records,
+                                          "foldersShown": len(folders), "recordsShown": len(records)}}
+
+            async def walk(tx: Tx) -> dict:
+                return await read(tx, None)
+
+            async def typed(tx: Tx) -> dict:      # what kg holds and the page in one snapshot
+                if folder_id is None:
+                    return await read(tx, await kg_kb_root.candidates(tx, org, kb_id))
+                return await read(tx, None, await kg_kb_folder.folder(tx, org, kb_id, folder_id))
+            if (got := await kg_hier.answer(self, "kb_folder" if folder_id else "kb_root", transaction, typed, walk=walk)) is not None:
+                return got
+            return await self._q(walk, transaction)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="_children")
+            return {"success": False, "reason": str(e)}
+
+    async def get_kb_children(self, kb_id: str, skip: int, limit: int, level: int = 1, search: str | None = None, record_types: list[str] | None = None,
+                              origins: list[str] | None = None, connectors: list[str] | None = None, indexing_status: list[str] | None = None,
+                              sort_by: str = "name", sort_order: str = "asc", transaction: str | None = None) -> dict:
+        current_org_id()
+        return await self._children(kb_id, None, skip, limit, level, search, record_types, origins, connectors, indexing_status, sort_by, sort_order, transaction)
+
+    async def get_folder_children(self, kb_id: str, folder_id: str, skip: int, limit: int, level: int = 1, search: str | None = None,
+                                  record_types: list[str] | None = None, origins: list[str] | None = None, connectors: list[str] | None = None,
+                                  indexing_status: list[str] | None = None, sort_by: str = "name", sort_order: str = "asc", transaction: str | None = None) -> dict:
+        """The caller must validate that the folder is in the knowledge base (``validate_folder_in_kb``): the listing reads the folder by id."""
+        current_org_id()
+        return await self._children(kb_id, folder_id, skip, limit, level, search, record_types, origins, connectors, indexing_status, sort_by, sort_order, transaction)
+
+    # ---- the artifact gallery ---------------------------------------------------------------------------------------
+    async def list_accessible_artifacts(self, user_id: str, org_id: str, skip: int, limit: int, search: str | None, artifact_types: list[str] | None,
+                                        conversation_id: str | None, date_from: int | None, date_to: int | None, sort_by: str, sort_order: str,
+                                        ownership: str = "all") -> tuple[list[dict], dict[str, int]]:
+        """The visible artifacts the user holds a grant on, by the user's own USER grant alone (no team, no group). ``counts`` ignore ``ownership``."""
+        org = current_org_id()
+        key = {"name": 1, "updatedAtTimestamp": 3, "artifactType": 4}.get(sort_by, 2)
+        own = {"mine": 1, "shared": 2}.get(ownership, 0)
+
+        async def go(tx: Tx) -> tuple[list[dict], dict[str, int]]:
+            rows = await tx.fetch("""/* pipeshub:graph.list_accessible_artifacts */ WITH g AS (
+                  SELECT rec.id, rec.doc AS rdoc, art.doc AS adoc, perm.doc AS pdoc, coalesce(perm.doc->>'role' = 'OWNER', false) AS owned
+                  FROM graph.nodes u JOIN graph.edges perm ON perm.org_id = u.org_id AND perm.coll = 'permission' AND perm.from_coll = 'users' AND perm.from_id = u.id
+                      AND perm.to_coll = 'records' AND perm.doc->>'type' = 'USER'
+                    JOIN graph.nodes rec ON rec.org_id = u.org_id AND rec.coll = 'records' AND rec.id = perm.to_id
+                    JOIN graph.edges te ON te.org_id = u.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = rec.id AND te.to_coll = 'artifacts'
+                    JOIN graph.nodes art ON art.org_id = u.org_id AND art.coll = 'artifacts' AND art.id = te.to_id
+                  WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2 AND rec.doc->>'orgId' = $3 AND rec.doc->>'recordType' = 'ARTIFACT'
+                    AND coalesce((rec.doc->>'isDeleted')::boolean, false) = false AND art.doc->>'artifactType' <> 'TOOL_RESULT'
+                    AND coalesce((art.doc->>'isTemporary')::boolean, false) = false AND coalesce(art.doc->>'visibility', 'VISIBLE') = 'VISIBLE'
+                    AND ($4::text IS NULL OR position(lower($4::text) IN lower(coalesce(art.doc->>'name', ''))) > 0 OR position(lower($4::text) IN lower(coalesce(art.doc->>'logicalName', ''))) > 0)
+                    AND ($5::text[] IS NULL OR art.doc->>'artifactType' = ANY($5::text[])) AND ($6::text IS NULL OR art.doc->>'conversationId' = $6)
+                    AND ($7::bigint IS NULL OR (rec.doc->>'createdAtTimestamp')::numeric >= $7) AND ($8::bigint IS NULL OR (rec.doc->>'createdAtTimestamp')::numeric <= $8))
+                SELECT g.rdoc, g.adoc, g.pdoc FROM g WHERE ($9::int = 0 OR ($9::int = 1 AND g.owned) OR ($9::int = 2 AND NOT g.owned))
+                ORDER BY (CASE WHEN $10::int = 1 AND $11::boolean THEN g.adoc->>'name' END) COLLATE "C" ASC, (CASE WHEN $10::int = 1 AND NOT $11::boolean THEN g.adoc->>'name' END) COLLATE "C" DESC,
+                         (CASE WHEN $10::int = 2 AND $11::boolean THEN g.rdoc->'createdAtTimestamp' END) ASC, (CASE WHEN $10::int = 2 AND NOT $11::boolean THEN g.rdoc->'createdAtTimestamp' END) DESC,
+                         (CASE WHEN $10::int = 3 AND $11::boolean THEN g.rdoc->'updatedAtTimestamp' END) ASC, (CASE WHEN $10::int = 3 AND NOT $11::boolean THEN g.rdoc->'updatedAtTimestamp' END) DESC,
+                         (CASE WHEN $10::int = 4 AND $11::boolean THEN g.adoc->>'artifactType' END) COLLATE "C" ASC, (CASE WHEN $10::int = 4 AND NOT $11::boolean THEN g.adoc->>'artifactType' END) COLLATE "C" DESC, g.id
+                OFFSET $12 LIMIT $13""", org, user_id, org_id, search or None, artifact_types, conversation_id or None, date_from or None, date_to or None, own, key,
+                                  (sort_order or "").lower() == "asc", max(skip, 0), max(limit, 0))
+            tallies = await tx.fetch("""/* pipeshub:graph.list_accessible_artifacts_counts */ WITH g AS (
+                  SELECT rec.id, rec.doc AS rdoc, art.doc AS adoc, perm.doc AS pdoc, coalesce(perm.doc->>'role' = 'OWNER', false) AS owned
+                  FROM graph.nodes u JOIN graph.edges perm ON perm.org_id = u.org_id AND perm.coll = 'permission' AND perm.from_coll = 'users' AND perm.from_id = u.id
+                      AND perm.to_coll = 'records' AND perm.doc->>'type' = 'USER'
+                    JOIN graph.nodes rec ON rec.org_id = u.org_id AND rec.coll = 'records' AND rec.id = perm.to_id
+                    JOIN graph.edges te ON te.org_id = u.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = rec.id AND te.to_coll = 'artifacts'
+                    JOIN graph.nodes art ON art.org_id = u.org_id AND art.coll = 'artifacts' AND art.id = te.to_id
+                  WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2 AND rec.doc->>'orgId' = $3 AND rec.doc->>'recordType' = 'ARTIFACT'
+                    AND coalesce((rec.doc->>'isDeleted')::boolean, false) = false AND art.doc->>'artifactType' <> 'TOOL_RESULT'
+                    AND coalesce((art.doc->>'isTemporary')::boolean, false) = false AND coalesce(art.doc->>'visibility', 'VISIBLE') = 'VISIBLE'
+                    AND ($4::text IS NULL OR position(lower($4::text) IN lower(coalesce(art.doc->>'name', ''))) > 0 OR position(lower($4::text) IN lower(coalesce(art.doc->>'logicalName', ''))) > 0)
+                    AND ($5::text[] IS NULL OR art.doc->>'artifactType' = ANY($5::text[])) AND ($6::text IS NULL OR art.doc->>'conversationId' = $6)
+                    AND ($7::bigint IS NULL OR (rec.doc->>'createdAtTimestamp')::numeric >= $7) AND ($8::bigint IS NULL OR (rec.doc->>'createdAtTimestamp')::numeric <= $8))
+                SELECT g.owned, count(*) AS total FROM g GROUP BY g.owned""", org, user_id, org_id, search or None, artifact_types,
+                                     conversation_id or None, date_from or None, date_to or None)
+            counts = {"mine": 0, "shared": 0}
+            for t in tallies:
+                counts["mine" if t["owned"] else "shared"] += int(t["total"])
+            return [_artifact(r["rdoc"], r["adoc"], r["pdoc"]) for r in rows], counts
+        return await self._q(go, None)
+
+    async def get_artifact_detail(self, user_id: str, org_id: str, artifact_id: str) -> dict | None:
+        """One visible artifact the user holds a grant on, or None."""
+        org = current_org_id()
+        r = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.get_artifact_detail */ SELECT rec.doc AS rdoc, art.doc AS adoc, perm.doc AS pdoc
+            FROM graph.nodes u JOIN graph.edges perm ON perm.org_id = u.org_id AND perm.coll = 'permission' AND perm.from_coll = 'users' AND perm.from_id = u.id
+                AND perm.to_coll = 'records' AND perm.to_id = $4 AND perm.doc->>'type' = 'USER'
+              JOIN graph.nodes rec ON rec.org_id = u.org_id AND rec.coll = 'records' AND rec.id = perm.to_id
+              JOIN graph.edges te ON te.org_id = u.org_id AND te.coll = 'isOfType' AND te.from_coll = 'records' AND te.from_id = rec.id AND te.to_coll = 'artifacts'
+              JOIN graph.nodes art ON art.org_id = u.org_id AND art.coll = 'artifacts' AND art.id = te.to_id
+            WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2 AND rec.doc->>'orgId' = $3 AND rec.doc->>'recordType' = 'ARTIFACT'
+              AND coalesce((rec.doc->>'isDeleted')::boolean, false) = false AND art.doc->>'artifactType' <> 'TOOL_RESULT'
+              AND coalesce((art.doc->>'isTemporary')::boolean, false) = false AND coalesce(art.doc->>'visibility', 'VISIBLE') = 'VISIBLE' LIMIT 1""",
+                                                  org, user_id, org_id, artifact_id), None)
+        return _artifact(r["rdoc"], r["adoc"], r["pdoc"]) if r else None
+
+    # ---- agent templates and the legacy hub app ---------------------------------------------------------------------
+    async def get_template(self, template_id: str, user_id: str, transaction: str | None = None) -> dict | None:
+        """The template with the user's access: their own USER grant first, else a grant to a team they belong to. A deleted template, no grant, a
+        failed read: None."""
+        org = current_org_id()
+        try:
+            r = await self._q(lambda tx: tx.fetchrow("""/* pipeshub:graph.get_template */ SELECT t.doc, a.access, a.role, a.pid, a.created, a.updated FROM graph.nodes t,
+                LATERAL (SELECT 'INDIVIDUAL' AS access, p.doc->>'role' AS role, p.doc->>'id' AS pid, p.doc->'createdAtTimestamp' AS created, p.doc->'updatedAtTimestamp' AS updated, 0 AS ord, 0 AS rk
+                           FROM graph.nodes u JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id
+                             AND p.to_coll = 'agentTemplates' AND p.to_id = t.id AND p.doc->>'type' = 'USER' AND p.doc->>'role' = ANY($4::text[])
+                           WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2
+                         UNION ALL
+                         SELECT 'TEAM', g.doc->>'role', g.doc->>'id', g.doc->'createdAtTimestamp', g.doc->'updatedAtTimestamp', 1,
+                                CASE g.doc->>'role' WHEN 'OWNER' THEN 4 WHEN 'ORGANIZER' THEN 3 WHEN 'WRITER' THEN 2 WHEN 'READER' THEN 1 ELSE 0 END
+                           FROM graph.nodes u JOIN graph.edges m ON m.org_id = u.org_id AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = u.id
+                             AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER'
+                             JOIN graph.nodes tm ON tm.org_id = u.org_id AND tm.coll = 'teams' AND tm.id = m.to_id
+                             JOIN graph.edges g ON g.org_id = u.org_id AND g.coll = 'permission' AND g.from_coll = 'teams' AND g.from_id = tm.id
+                             AND g.to_coll = 'agentTemplates' AND g.to_id = t.id AND g.doc->>'type' = 'TEAM' AND g.doc->>'role' = ANY($4::text[])
+                           WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2
+                         ORDER BY ord, rk DESC, pid LIMIT 1) a
+                WHERE t.org_id = $1 AND t.coll = 'agentTemplates' AND t.id = $3 AND coalesce((t.doc->>'isDeleted')::boolean, false) = false""",
+                                                      org, user_id, template_id, _TEMPLATE_ROLES), transaction)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_template")
+            return None
+        return _with_access(r) if r else None
+
+    async def get_all_agent_templates(self, user_id: str, transaction: str | None = None) -> list[dict]:
+        """The live templates the user holds a grant on (``access_type`` USER) or reaches through a team they are in (TEAM, the highest team role), once each,
+        their own grants first; a failed read is an empty list."""
+        org = current_org_id()
+        try:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_all_agent_templates */ SELECT * FROM (
+                  SELECT DISTINCT ON (t.id) t.id, t.doc, gr.access, gr.role, gr.pid, gr.created, gr.updated, gr.ord FROM (
+                      SELECT p.to_id AS tid, 'USER' AS access, p.doc->>'role' AS role, p.doc->>'id' AS pid, p.doc->'createdAtTimestamp' AS created,
+                             p.doc->'updatedAtTimestamp' AS updated, 0 AS ord, 0 AS rk
+                        FROM graph.nodes u JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id
+                          AND p.to_coll = 'agentTemplates' AND p.doc->>'type' = 'USER' AND p.doc->>'role' = ANY($3::text[])
+                        WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2
+                      UNION ALL
+                      SELECT g.to_id, 'TEAM', g.doc->>'role', g.doc->>'id', g.doc->'createdAtTimestamp', g.doc->'updatedAtTimestamp', 1,
+                             CASE g.doc->>'role' WHEN 'OWNER' THEN 4 WHEN 'ORGANIZER' THEN 3 WHEN 'WRITER' THEN 2 WHEN 'READER' THEN 1 ELSE 0 END
+                        FROM graph.nodes u JOIN graph.edges m ON m.org_id = u.org_id AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = u.id
+                          AND m.to_coll = 'teams' AND m.doc->>'type' = 'USER'
+                          JOIN graph.nodes tm ON tm.org_id = u.org_id AND tm.coll = 'teams' AND tm.id = m.to_id
+                          JOIN graph.edges g ON g.org_id = u.org_id AND g.coll = 'permission' AND g.from_coll = 'teams' AND g.from_id = tm.id
+                          AND g.to_coll = 'agentTemplates' AND g.doc->>'type' = 'TEAM' AND g.doc->>'role' = ANY($3::text[])
+                        WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2) gr
+                  JOIN graph.nodes t ON t.org_id = $1 AND t.coll = 'agentTemplates' AND t.id = gr.tid AND coalesce((t.doc->>'isDeleted')::boolean, false) = false
+                  ORDER BY t.id, gr.ord, gr.rk DESC, gr.pid) x
+                ORDER BY x.ord, x.id""", org, user_id, _TEMPLATE_ROLES), transaction)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_all_agent_templates")
+            return []
+        return [_with_access(r) for r in rows]
+
+    async def _template_owned(self, template_id: str, user_id: str, transaction: str | None) -> bool:
+        """Whether the user's own grant on the live template is OWNER (a team's is not enough, as on the other stores)."""
+        org = current_org_id()
+        return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.template_owned */ SELECT 1 FROM graph.nodes u
+            JOIN graph.edges p ON p.org_id = u.org_id AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = u.id AND p.to_coll = 'agentTemplates'
+              AND p.to_id = $3 AND p.doc->>'role' = 'OWNER'
+            JOIN graph.nodes t ON t.org_id = u.org_id AND t.coll = 'agentTemplates' AND t.id = p.to_id AND coalesce((t.doc->>'isDeleted')::boolean, false) = false
+            WHERE u.org_id = $1 AND u.coll = 'users' AND u.id = $2 LIMIT 1""", org, user_id, template_id), transaction))
+
+    async def update_agent_template(self, template_id: str, template_updates: dict[str, Any], user_id: str, transaction: str | None = None) -> bool | None:
+        """Write the allowed fields of the update when the user owns the live template; False when not."""
+        current_org_id()
+        try:
+            if not await self._template_owned(template_id, user_id, transaction):
+                self.logger.warning("User %s is not the owner of template %s", user_id, template_id)
+                return False
+            data = {"updatedAtTimestamp": get_epoch_timestamp_in_ms(), "updatedByUserId": user_id,
+                    **{f: template_updates[f] for f in ("name", "description", "startMessage", "systemPrompt", "tools", "models", "memory", "tags") if f in template_updates}}
+            return await self.update_node(template_id, _TEMPLATES, data, transaction=transaction)
+        except SchemaValidationError:
+            raise
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_agent_template")
+            return False
+
+    async def delete_agent_template(self, template_id: str, user_id: str, transaction: str | None = None) -> bool | None:
+        """Mark the live template deleted when the user owns it; False when not."""
+        current_org_id()
+        try:
+            if not await self._template_owned(template_id, user_id, transaction):
+                self.logger.warning("User %s is not the owner of template %s", user_id, template_id)
+                return False
+            return await self.update_node(template_id, _TEMPLATES, {"isDeleted": True, "deletedAtTimestamp": get_epoch_timestamp_in_ms(), "deletedByUserId": user_id},
+                                          transaction=transaction)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_agent_template")
+            return False
+
+    async def clone_agent_template(self, template_id: str, transaction: str | None = None) -> str | None:
+        """A copy of the template under a new key, active and not deleted, with no owner and no grants; None for a missing template."""
+        current_org_id()
+        try:
+            template = await self.get_document(template_id, _TEMPLATES, transaction=transaction)
+            if template is None:
+                return None
+            key, now = str(uuid.uuid4()), get_epoch_timestamp_in_ms()
+            template.update({"_key": key, "id": key, "isActive": True, "isDeleted": False, "deletedAtTimestamp": None, "deletedByUserId": None,
+                             "updatedAtTimestamp": now, "updatedByUserId": None, "createdAtTimestamp": now, "createdBy": None})
+            return key if await self.batch_upsert_nodes([template], _TEMPLATES, transaction=transaction) else None
+        except SchemaValidationError:
+            raise
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="clone_agent_template")
+            return None
+
+    async def delete_kb_hub_app(self, org_id: str) -> bool:
+        """Delete the org's legacy hub app node with every edge on it, unless a belongsTo or permission edge still points at it (then False)."""
+        org = current_org_id()
+        hub = f"knowledgeBase_{org_id}"
+        try:
+            async def go(tx: Tx) -> bool:
+                refs = await tx.fetchval("""/* pipeshub:graph.delete_kb_hub_app_refs */ SELECT count(*) FROM graph.edges e WHERE e.org_id = $1 AND e.coll IN ('belongsTo', 'permission')
+                    AND e.to_coll = 'apps' AND e.to_id = $2""", org, hub)
+                if refs:
+                    self.logger.error(f"❌ Refusing to delete legacy KB hub app {hub}: still referenced by belongsTo/permission edges")
+                    return False
+                await tx.execute("""/* pipeshub:graph.delete_kb_hub_app_edges */ DELETE FROM graph.edges e WHERE e.org_id = $1
+                    AND ((e.from_coll = 'apps' AND e.from_id = $2) OR (e.to_coll = 'apps' AND e.to_id = $2))""", org, hub)
+                await tx.execute("/* pipeshub:graph.delete_kb_hub_app */ DELETE FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps' AND n.id = $2", org, hub)
+                return True
+            return await self._q(go, None, write=True)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="delete_kb_hub_app")
+            return False
+
+
+def _scalar(v: Any) -> Any:  # noqa: ANN401
+    return json.loads(v) if isinstance(v, str) else v
+
+
+def _with_access(r: Any) -> dict:  # noqa: ANN401
+    """A template row with the user's access to it: how they reach it, the grant and what it lets them do. Edit and delete need the user's own OWNER
+    grant (``_template_owned``), so a team's grant or a direct writer's says no to both."""
+    role = r["role"]
+    owner = r["access"] in ("USER", "INDIVIDUAL") and role == "OWNER"
+    return {**_arango(_doc(r["doc"]), _TEMPLATES), "access_type": r["access"], "user_role": role, "permission_id": r["pid"],
+            "permission_created_at": _scalar(r["created"]), "permission_updated_at": _scalar(r["updated"]), "can_edit": owner,
+            "can_delete": owner, "can_share": role in ("OWNER", "ORGANIZER"), "can_view": True}

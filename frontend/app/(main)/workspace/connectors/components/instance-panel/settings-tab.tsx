@@ -44,12 +44,9 @@ export function SettingsTab({
   const syncInterval = getSyncIntervalLabel(t, config ?? undefined);
   const isScheduled = config?.config?.sync?.selectedStrategy === 'SCHEDULED';
 
-  const creatorEntry = useUserDirectoryEntry(instance.createdBy);
-  const creatorNameFromDirectory =
-    creatorEntry?.fullName.trim() ? creatorEntry.fullName.trim() : null;
-  const creatorAvatarUrl = creatorEntry?.resolvedUserId
-    ? `/api/v1/users/${creatorEntry.resolvedUserId}/dp`
-    : null;
+  const creator = useUserDirectoryEntry(instance.createdBy);
+  const creatorNameFromDirectory = creator?.name?.trim() || null;
+  const creatorAvatarUrl = creator?.profilePicture ?? null;
 
   const displayCreatorName =
     creatorNameFromDirectory ?? instance.enabledBy?.name ?? null;
@@ -196,7 +193,7 @@ export function SettingsTab({
               </Text>
               <ReadOnlyField value={syncStrategy} />
             </Flex>
-            <Text size="1" weight="medium" style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" weight="medium" style={{ color: 'var(--gray-11)' }}>
               <Trans
                 i18nKey="workspace.connectors.settingsTab.syncStrategySettingsHint"
                 values={{
@@ -218,7 +215,7 @@ export function SettingsTab({
                 </Text>
                 <ReadOnlyField value={syncInterval} />
               </Flex>
-              <Text size="1" weight="medium" style={{ color: 'var(--gray-10)' }}>
+              <Text size="1" weight="medium" style={{ color: 'var(--gray-11)' }}>
                 {t('workspace.connectors.configTab.syncIntervalHelper', { name: instance.name })}
               </Text>
             </Flex>
@@ -291,7 +288,7 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
         size="1"
         weight="medium"
         style={{
-          color: 'var(--gray-10)',
+          color: 'var(--gray-11)',
           width: isMobile ? 'auto' : 164,
           flexShrink: 0,
         }}

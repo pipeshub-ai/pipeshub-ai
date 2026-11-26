@@ -14,7 +14,7 @@ from collections import Counter
 import pytest
 
 from tests.integration.test_revision_retention_storage_e2e import (  # noqa: F401
-    TARGETS, _Lifecycle, graph, life, target, logger,
+    STORED_RUN, TARGETS, _Lifecycle, graph, life, target, logger,
 )
 
 # Module marks are not inherited through the fixture import, so the skip is repeated.
@@ -46,7 +46,7 @@ async def test_guarded_delete_racing_a_rewrite_never_strands_a_written_set(life:
         async def write():
             await asyncio.sleep(delay_w)
             try:
-                return await life.writer.write_revision(record, life.org_id, vrid, rev, record.block_containers)
+                return await life.writer.write_revision(record, life.org_id, vrid, rev, record.block_containers, stored_run=STORED_RUN)
             except Exception as exc:  # refused by a live claim: the sink logs and counts it failed
                 refusals[type(exc).__name__ + ":" + str(exc)[-60:]] += 1
                 return None

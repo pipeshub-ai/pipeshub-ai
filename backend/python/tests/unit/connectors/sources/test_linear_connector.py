@@ -123,6 +123,7 @@ def _make_connector():
     data_entities_processor.org_id = "org-1"
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_app_users = AsyncMock()
+    data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
@@ -334,7 +335,7 @@ class TestLinearConnectorFilterOptions:
         connector = _make_connector()
         connector.data_source = MagicMock()
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(
+        mock_ds.execute_operation = AsyncMock(
             return_value=_mock_teams_response(
                 [
                     {"id": "team-1", "name": "Engineering", "key": "ENG"},
@@ -629,6 +630,7 @@ def _make_connector_cov():
     data_entities_processor.org_id = "org-1"
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_app_users = AsyncMock()
+    data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
@@ -1436,7 +1438,7 @@ class TestLinearSyncIssuesForTeams:
         assert failed == []
         # ...and once its whole list is stored, the checkpoint (kept under the team's
         # id) moves to the moment the run started.
-        assert c.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1_700_000_000_000
+        assert c.issues_sync_point.store["team_issues_v2_team-1"]["last_sync_time"] == 1_700_000_000_000
 
     @pytest.mark.asyncio
     async def test_sync_issues_error_continues(self):
@@ -1446,7 +1448,7 @@ class TestLinearSyncIssuesForTeams:
         team_rg2, perms2 = _make_team_record_group("team-2", "DES")
 
         async def read(key) -> dict:
-            if key == "team_issues_team-1":
+            if key == "team_issues_v2_team-1":
                 raise Exception("checkpoint error")
             return {}
 
@@ -1464,8 +1466,8 @@ class TestLinearSyncIssuesForTeams:
         assert full_sync_team_ids == {"team-2"}
         assert fetch.call_count == 1
         assert fetch.call_args.kwargs["team_id"] == "team-2"
-        assert "team_issues_team-1" not in c.issues_sync_point.store
-        assert c.issues_sync_point.store["team_issues_team-2"]["last_sync_time"] == 1_700_000_000_000
+        assert "team_issues_v2_team-1" not in c.issues_sync_point.store
+        assert c.issues_sync_point.store["team_issues_v2_team-2"]["last_sync_time"] == 1_700_000_000_000
 
     @pytest.mark.asyncio
     async def test_sync_issues_auth_error_stops_the_sync(self) -> None:
@@ -1968,20 +1970,20 @@ class TestLinearFilterOptions:
         c.data_source = MagicMock()
         mock_ds = MagicMock()
         # Linear applies the search; it returns only what matched.
-        mock_ds.teams = AsyncMock(return_value=_mock_teams_response_cov(
+        mock_ds.execute_operation = AsyncMock(return_value=_mock_teams_response_cov(
             [{"id": "t1", "name": "Engineering", "key": "ENG"}],
             has_next=False,
         ))
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await c.get_filter_options("team_ids", search="  eng ")
-        mock_ds.teams.assert_awaited_once_with(
-            first=20,
-            after=None,
-            filter={"or": [
+        mock_ds.execute_operation.assert_awaited_once_with("teamList", {
+            "first": 20,
+            "after": None,
+            "filter": {"or": [
                 {"name": {"containsIgnoreCase": "eng"}},
                 {"key": {"containsIgnoreCase": "eng"}},
             ]},
-        )
+        })
         assert len(result.options) == 1
         assert "Engineering" in result.options[0].label
 
@@ -1990,7 +1992,7 @@ class TestLinearFilterOptions:
         c = _make_connector_cov()
         c.data_source = MagicMock()
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(return_value=_mock_teams_response_cov(
+        mock_ds.execute_operation = AsyncMock(return_value=_mock_teams_response_cov(
             [
                 {"id": "t1", "name": "Engineering", "key": "ENG"},
                 {"id": "t2", "name": "Design", "key": "DES"},
@@ -1999,7 +2001,7 @@ class TestLinearFilterOptions:
         ))
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await c.get_filter_options("team_ids")
-        mock_ds.teams.assert_awaited_once_with(first=20, after=None, filter=None)
+        mock_ds.execute_operation.assert_awaited_once_with("teamList", {"first": 20, "after": None, "filter": None})
         assert [o.id for o in result.options] == ["t1", "t2"]
 
     @pytest.mark.asyncio
@@ -2010,7 +2012,7 @@ class TestLinearFilterOptions:
         failed = MagicMock()
         failed.success = False
         failed.message = "API error"
-        mock_ds.teams = AsyncMock(return_value=failed)
+        mock_ds.execute_operation = AsyncMock(return_value=failed)
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             with pytest.raises(RuntimeError, match="Failed to fetch team options"):
                 await c.get_filter_options("team_ids")
@@ -2717,6 +2719,7 @@ def _make_connector_fullcov():
     data_entities_processor.org_id = "org-1"
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_app_users = AsyncMock()
+    data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
@@ -4924,13 +4927,13 @@ class TestSyncIssuesForTeams:
         assert kwargs["last_sync_time"] is None
         assert kwargs["run"].started_at == 1705400000000
         assert kwargs["failures"] == []
-        assert connector.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1705400000000
+        assert connector.issues_sync_point.store["team_issues_v2_team-1"]["last_sync_time"] == 1705400000000
 
     @pytest.mark.asyncio
     async def test_sync_issues_incremental_reads_since_last_run_with_overlap(self) -> None:
         connector = _make_connector_fullcov()
         connector._now = MagicMock(return_value=1705400000000)
-        connector.issues_sync_point.store["team_issues_team-1"] = {"last_sync_time": 1705300000000}
+        connector.issues_sync_point.store["team_issues_v2_team-1"] = {"last_sync_time": 1705300000000}
         rg, perms = _make_team_record_group_fullcov()
 
         async def fake_batch_gen(**kwargs) -> AsyncIterator[list]:
@@ -4946,12 +4949,40 @@ class TestSyncIssuesForTeams:
 
         assert mock_fetch.call_args.kwargs["last_sync_time"] == 1705300000000 - 60_000
         assert result == (set(), [])
-        assert connector.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1705400000000
+        assert connector.issues_sync_point.store["team_issues_v2_team-1"]["last_sync_time"] == 1705400000000
+
+    @pytest.mark.asyncio
+    async def test_a_team_synced_before_archived_issues_were_listed_is_listed_in_full_once(self) -> None:
+        connector = _make_connector_fullcov()
+        connector._now = MagicMock(return_value=1705400000000)
+        connector.issues_sync_point.store["team_issues_team-1"] = {"last_sync_time": 1705300000000}
+        rg, perms = _make_team_record_group_fullcov()
+
+        async def fake_batch_gen(**kwargs) -> AsyncIterator[list]:
+            if False:
+                yield []
+
+        with patch.object(
+            connector, "_fetch_issues_for_team_batch", side_effect=lambda **kw: fake_batch_gen(**kw),
+        ) as mock_fetch:
+            assert await connector._sync_issues_for_teams([(rg, perms)]) == ({"team-1"}, [])
+            assert mock_fetch.call_args.kwargs["last_sync_time"] is None
+            await connector._sync_issues_for_teams([(rg, perms)])
+
+        assert mock_fetch.call_args.kwargs["last_sync_time"] == 1705400000000 - 60_000
+
+    @pytest.mark.asyncio
+    async def test_the_change_probe_counts_archived_issues(self) -> None:
+        connector = _make_connector_fullcov()
+        connector._api.call = AsyncMock(return_value={"issues": {"nodes": [{"id": "i1"}]}})
+
+        assert await LinearConnector._team_has_changes(connector, "team-1", 1705300000000) is True
+        assert connector._api.call.await_args.args[1]["includeArchived"] is True
 
     @pytest.mark.asyncio
     async def test_sync_issues_resumes_an_interrupted_run(self) -> None:
         connector = _make_connector_fullcov()
-        connector.issues_sync_point.store["team_issues_team-1"] = {
+        connector.issues_sync_point.store["team_issues_v2_team-1"] = {
             "last_sync_time": 0,
             "resume_cursor": "cursor-7",
             "resume_since": 0,
@@ -4975,7 +5006,7 @@ class TestSyncIssuesForTeams:
         assert run.resumed is True
         assert run.is_full is True
         # Finishing a resumed run moves the checkpoint to when that run began.
-        saved = connector.issues_sync_point.store["team_issues_team-1"]
+        saved = connector.issues_sync_point.store["team_issues_v2_team-1"]
         assert saved["last_sync_time"] == 1705350000000
         assert saved["resume_cursor"] == ""
 
@@ -4983,7 +5014,7 @@ class TestSyncIssuesForTeams:
     async def test_sync_issues_holds_checkpoint_when_issues_could_not_be_stored(self) -> None:
         connector = _make_connector_fullcov()
         connector._now = MagicMock(return_value=1705400000000)
-        connector.issues_sync_point.store["team_issues_team-1"] = {"last_sync_time": 1705300000000}
+        connector.issues_sync_point.store["team_issues_v2_team-1"] = {"last_sync_time": 1705300000000}
         rg, perms = _make_team_record_group_fullcov()
 
         async def fake_batch_gen(**kwargs) -> AsyncIterator[list]:
@@ -5003,7 +5034,7 @@ class TestSyncIssuesForTeams:
         # Three syncs in a row keep the checkpoint and report the team; the fourth
         # gives up on the issue and moves on.
         assert [failed for _, failed in outcomes] == [["Engineering"]] * 3 + [[]]
-        saved = connector.issues_sync_point.store["team_issues_team-1"]
+        saved = connector.issues_sync_point.store["team_issues_v2_team-1"]
         assert saved["last_sync_time"] == 1705400000000
         assert saved["held_runs"] == 0
 
@@ -5012,7 +5043,7 @@ class TestSyncIssuesForTeams:
         connector = _make_connector_fullcov()
         connector.data_source = MagicMock()
         connector._now = MagicMock(return_value=1705400000000)
-        connector.issues_sync_point.store["team_issues_team-1"] = {"last_sync_time": 1705300000000}
+        connector.issues_sync_point.store["team_issues_v2_team-1"] = {"last_sync_time": 1705300000000}
         rg, perms = _make_team_record_group_fullcov()
         rg2, perms2 = _make_team_record_group_fullcov(team_id="team-2", name="Design", key="DES")
 
@@ -5034,8 +5065,8 @@ class TestSyncIssuesForTeams:
         # untouched; the next team is still synced.
         assert failed == ["Engineering"]
         assert full == {"team-2"}
-        assert connector.issues_sync_point.store["team_issues_team-1"] == {"last_sync_time": 1705300000000}
-        assert connector.issues_sync_point.store["team_issues_team-2"]["last_sync_time"] == 1705400000000
+        assert connector.issues_sync_point.store["team_issues_v2_team-1"] == {"last_sync_time": 1705300000000}
+        assert connector.issues_sync_point.store["team_issues_v2_team-2"]["last_sync_time"] == 1705400000000
         connector.data_entities_processor.on_new_records.assert_awaited_once()
 
 
@@ -5097,8 +5128,8 @@ class TestSyncProjectsForTeams:
         # Projects are listed once for all synced teams, ten at a time.
         scope_filter = {"accessibleTeams": {"some": {"id": {"in": ["team-0", "team-1"]}}}}
         assert [c.kwargs for c in mock_ds.projects.await_args_list] == [
-            {"first": 10, "after": None, "filter": scope_filter},
-            {"first": 10, "after": "cursor-1", "filter": scope_filter},
+            {"first": 10, "after": None, "filter": scope_filter, "includeArchived": True},
+            {"first": 10, "after": "cursor-1", "filter": scope_filter, "includeArchived": True},
         ]
         # Each listed project is read in full; one that yields nothing is not stored.
         assert [c.args for c in mock_to_records.await_args_list] == [
@@ -5639,7 +5670,7 @@ class TestGetTeamOptions:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(
+        mock_ds.execute_operation = AsyncMock(
             return_value=_mock_paginated(
                 "teams",
                 [
@@ -5660,14 +5691,14 @@ class TestGetTeamOptions:
             )
 
         # Linear does the matching, on name or key, so paging stays correct.
-        mock_ds.teams.assert_awaited_once_with(
-            first=2,
-            after="cursor-1",
-            filter={"or": [
+        mock_ds.execute_operation.assert_awaited_once_with("teamList", {
+            "first": 2,
+            "after": "cursor-1",
+            "filter": {"or": [
                 {"name": {"containsIgnoreCase": "eng"}},
                 {"key": {"containsIgnoreCase": "eng"}},
             ]},
-        )
+        })
         # What Linear returned is shown as is: a key match is not filtered away.
         assert [o.label for o in result.options] == ["Engineering (ENG)", "Platform (PENG)"]
         assert result.has_more is True
@@ -5679,7 +5710,7 @@ class TestGetTeamOptions:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(
+        mock_ds.execute_operation = AsyncMock(
             return_value=_mock_response(success=False, message="Error")
         )
 

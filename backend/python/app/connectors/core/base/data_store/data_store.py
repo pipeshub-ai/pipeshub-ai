@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from logging import Logger
-from typing import TYPE_CHECKING, Any, AsyncContextManager, Optional
+from typing import Any, AsyncContextManager, Optional
 
 from app.models.entities import (
     AppMetadata,
@@ -18,8 +19,6 @@ from app.models.entities import (
 from app.models.permission import Permission
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
-if TYPE_CHECKING:
-    from app.connectors.core.base.sync_point.sync_point import SyncPoint
 
 class DataStoreProvider(ABC):
     logger: Logger
@@ -95,7 +94,8 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def get_record_by_external_id(
-        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL,
+        *, raise_on_error: bool = False,
     ) -> Optional[Record]:
         pass
 
@@ -205,7 +205,16 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str,
+    ) -> Optional[User]:
+        """The user of org ``org_id`` with this address; the org is required, an address is unique only within an org."""
+        pass
+
+    @abstractmethod
+    async def get_users_by_emails(
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict[str, User]:
         pass
 
     @abstractmethod
@@ -242,6 +251,11 @@ class BaseDataStore(ABC):
         """A failed read raises only with ``raise_on_error``; otherwise it answers ``[]``."""
         pass
 
+    async def get_app_user_links(self, org_id: str, connector_id: str) -> list[dict]:
+        """``{"id", "sourceUserId"}`` of every user of the org linked to the connector, guests
+        included. A failed read raises."""
+        raise NotImplementedError
+
     @abstractmethod
     async def get_app_user_by_email(self, email: str, connector_id: str) -> Optional[AppUser]:
         pass
@@ -262,6 +276,14 @@ class BaseDataStore(ABC):
     async def get_person_by_email(
         self, email: str, org_id: str, *, raise_on_error: bool = False
     ) -> Optional[Person]:
+        pass
+
+    @abstractmethod
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
+        pass
+
+    @abstractmethod
+    async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
         pass
 
     @abstractmethod
@@ -293,7 +315,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_users(self, org_id: str, active: bool = True) -> list[User]:
+    async def get_users(self, org_id: str, active: bool = True, *, raise_on_error: bool = False) -> list[User]:
         pass
 
     @abstractmethod
@@ -321,8 +343,17 @@ class BaseDataStore(ABC):
         pass
 
     async def remove_user_access_to_connector(self, connector_id: str, user_id: str) -> int:
-        """Delete the user's own PERMISSION edges to this connector's records, record groups and user groups.
+        """Delete the user's own PERMISSION edges to this connector's records, record groups, user groups and roles.
         Returns how many were deleted."""
+        raise NotImplementedError
+
+    async def remove_unlinked_user_access_to_connector(self, connector_id: str) -> int:
+        """Delete every user's own PERMISSION edges to this connector's nodes when the user is not linked to the connector
+        (no USER_APP_RELATION edge), checked in the same statement. Returns how many were deleted."""
+        raise NotImplementedError
+
+    async def get_user_granted_records(self, connector_id: str, user_id: str) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on (``id``, ``externalRecordId``, ``recordType``)."""
         raise NotImplementedError
 
     @abstractmethod
@@ -350,7 +381,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_record_group_permissions(self, record_group_id: str, permissions: list[Permission], connector_id: str) -> None:
+    async def batch_upsert_record_group_permissions(self, record_group_id: str, permissions: list[Permission], connector_id: str, org_id: str) -> None:
         pass
 
     @abstractmethod
@@ -358,7 +389,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_app_users(self, users: list[AppUser]) -> None:
+    async def batch_upsert_app_users(self, users: list[AppUser], org_id: str) -> None:
         pass
 
     @abstractmethod
@@ -379,23 +410,25 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def create_sync_point(self, sync_point: "SyncPoint") -> None:
+    async def create_sync_point(self, sync_point_key: str, sync_point_data: dict) -> None:
         pass
 
     @abstractmethod
-    async def delete_sync_point(self, sync_point: "SyncPoint") -> None:
+    async def delete_sync_point(self, sync_point_key: str) -> None:
         pass
 
     @abstractmethod
-    async def read_sync_point(self, sync_point: "SyncPoint") -> None:
+    async def read_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> dict | None:
         pass
 
     @abstractmethod
-    async def update_sync_point(self, sync_point: "SyncPoint") -> None:
+    async def update_sync_point(self, sync_point_key: str, sync_point_data: dict) -> None:
         pass
 
     @abstractmethod
-    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_from_node(
+        self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False,
+    ) -> list[dict]:
         pass
 
     @abstractmethod
@@ -427,7 +460,9 @@ class BaseDataStore(ABC):
         from_id: str,
         from_collection: str,
         collection: str,
-        relationship_types: list[str]
+        relationship_types: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> int:
         """
         Delete edges from a record by relationship types.
@@ -460,6 +495,22 @@ class BaseDataStore(ABC):
     async def delete_edges_between_collections(
         self, from_id: str, from_collection: str, edge_collection: str, to_collection: str
     ) -> None:
+        pass
+
+    @abstractmethod
+    async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str) -> int:
+        """Delete the record's ``entityRelations`` edges of ``origin`` to
+        ``to_collection``; see ``IGraphDBProvider.delete_record_entity_relations``."""
+        pass
+
+    @abstractmethod
+    async def replace_record_entity_relations(
+        self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+        *, keep_edge_types: Collection[str] = (),
+    ) -> None:
+        """Replace the record's ``entityRelations`` edges of ``origin`` to
+        ``to_collections`` with ``edges``, atomically; see
+        ``IGraphDBProvider.replace_record_entity_relations``."""
         pass
 
     @abstractmethod
@@ -523,6 +574,14 @@ class BaseDataStore(ABC):
 
 class TransactionStore(BaseDataStore):
     """Abstract transaction-aware data store that operates within a transaction context"""
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        """Whether *error* rolled this transaction back cleanly so it can be run again."""
+        return False
+
+    async def publish_with_commit(self, producer: Any, topic: str, messages: list[tuple[str | None, dict]]) -> bool:  # noqa: ANN401
+        """Publish *messages* inside this transaction; False when the store cannot, and the caller publishes after the commit."""
+        return False
 
     @abstractmethod
     async def commit(self) -> None:

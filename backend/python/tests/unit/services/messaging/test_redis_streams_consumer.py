@@ -20,6 +20,8 @@ import pytest
 from app.core import envelope, org_context
 from app.services.messaging.config import RedisStreamsConfig, StreamMessage
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
+from tests.support.undecodable_json import UNDECODABLE
+from tests.unit.services.messaging.message_log_helpers import in_delivery
 
 
 @pytest.fixture
@@ -108,21 +110,7 @@ class TestInitialize:
                 await c.initialize()
 
 
-class TestEphemeralGroupCreation:
-    """Where a group starts reading matters: a disposable group is recreated on every
-    process start, so anchoring it at the head would replay all retained history."""
-
-    @pytest.mark.asyncio
-    async def test_disposable_group_starts_at_the_tail(self, logger, config) -> None:
-        config.ephemeral_group = True
-        c = RedisStreamsConsumer(logger, config)
-        mock_redis = AsyncMock()
-
-        with patch.object(c._provider, "create_client", return_value=mock_redis):
-            await c.initialize()
-
-        assert mock_redis.xgroup_create.call_args.kwargs["id"] == "$"
-
+class TestGroupCreation:
     @pytest.mark.asyncio
     async def test_stable_group_still_starts_at_the_head(self, logger, config) -> None:
         """Unchanged for entity/sync/records: they must still see retained history."""
@@ -213,11 +201,11 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        result = await consumer._process_message_with_classification(
+        result = await in_delivery(consumer._process_message_with_classification(
             "test-stream",
             "1-0",
             {"value": json.dumps({"eventType": "TEST", "payload": {"id": 1}})},
-        )
+        ))
 
         assert result == (True, False)
         handler.assert_awaited_once()
@@ -231,9 +219,9 @@ class TestProcessMessage:
         consumer.message_handler = handler
 
         inner = json.dumps({"eventType": "test", "payload": {"key": "val"}})
-        result = await consumer._process_message_with_classification(
+        result = await in_delivery(consumer._process_message_with_classification(
             "s", "1-0", {"value": json.dumps(inner)}
-        )
+        ))
 
         assert result == (True, False)
         called_msg = handler.call_args[0][0]
@@ -241,19 +229,20 @@ class TestProcessMessage:
         assert called_msg.payload == {"key": "val"}
 
     @pytest.mark.asyncio
-    async def test_returns_false_for_invalid_json(self, consumer):
+    @pytest.mark.parametrize("value", ["not-json{{{", *UNDECODABLE.values()], ids=["syntax", *UNDECODABLE])
+    async def test_returns_false_for_invalid_json(self, consumer, value):
         consumer.message_handler = AsyncMock()
-        result = await consumer._process_message_with_classification(
-            "s", "1-0", {"value": "not-json{{{"}
-        )
+        result = await in_delivery(consumer._process_message_with_classification(
+            "s", "1-0", {"value": value}
+        ))
         assert result == (False, True)
 
     @pytest.mark.asyncio
     async def test_returns_false_when_no_handler(self, consumer):
         consumer.message_handler = None
-        result = await consumer._process_message_with_classification(
+        result = await in_delivery(consumer._process_message_with_classification(
             "s", "1-0", {"value": json.dumps({"eventType": "test", "payload": {"k": "v"}})}
-        )
+        ))
         assert result == (False, True)
 
     @pytest.mark.asyncio
@@ -262,7 +251,7 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        result = await consumer._process_message_with_classification("s", "1-0", {"value": "{}"})
+        result = await in_delivery(consumer._process_message_with_classification("s", "1-0", {"value": "{}"}))
 
         # StreamMessage(**{}) will fail validation (missing eventType, payload)
         assert result[0] is False
@@ -271,9 +260,9 @@ class TestProcessMessage:
     @pytest.mark.asyncio
     async def test_returns_false_on_handler_exception(self, consumer):
         consumer.message_handler = AsyncMock(side_effect=Exception("handler error"))
-        result = await consumer._process_message_with_classification(
+        result = await in_delivery(consumer._process_message_with_classification(
             "s", "1-0", {"value": json.dumps({"eventType": "test", "payload": {"k": "v"}})}
-        )
+        ))
         assert result[0] is False
 
     @pytest.mark.asyncio
@@ -282,7 +271,7 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        result = await consumer._process_message_with_classification("s", "1-0", {"_init": "1"})
+        result = await in_delivery(consumer._process_message_with_classification("s", "1-0", {"_init": "1"}))
 
         assert result == (True, False)
         handler.assert_not_awaited()
@@ -293,7 +282,7 @@ class TestProcessMessage:
         handler = AsyncMock(return_value=True)
         consumer.message_handler = handler
 
-        result = await consumer._process_message_with_classification("s", "1-0", {})
+        result = await in_delivery(consumer._process_message_with_classification("s", "1-0", {}))
 
         assert result == (True, False)
         handler.assert_not_awaited()
@@ -303,7 +292,7 @@ class TestProcessMessage:
         """When JSON parses to None (literal null), message should be skipped."""
         consumer.message_handler = AsyncMock(return_value=True)
 
-        result = await consumer._process_message_with_classification("s", "1-0", {"value": "null"})
+        result = await in_delivery(consumer._process_message_with_classification("s", "1-0", {"value": "null"}))
 
         assert result == (False, True)
         consumer.message_handler.assert_not_awaited()
@@ -471,7 +460,6 @@ class TestStop:
         """
         mock_redis = AsyncMock()
         consumer.redis = mock_redis
-        consumer.config.ephemeral_group = False
         consumer.running = True
         consumer.consume_task = None
 
@@ -479,40 +467,6 @@ class TestStop:
 
         mock_redis.xgroup_delconsumer.assert_not_awaited()
         mock_redis.xgroup_destroy.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_stop_destroys_only_a_disposable_group(self, consumer) -> None:
-        """A per-process group is destroyed; Redis never expires groups by itself."""
-        mock_redis = AsyncMock()
-        consumer.redis = mock_redis
-        consumer.config.ephemeral_group = True
-        consumer.running = True
-        consumer.consume_task = None
-
-        await consumer.stop()
-
-        mock_redis.xgroup_destroy.assert_awaited_once_with(
-            consumer.config.topics[0], consumer.config.group_id,
-        )
-
-    @pytest.mark.asyncio
-    async def test_group_is_destroyed_before_the_client_closes(self, consumer) -> None:
-        """Order matters: the consume loop's own cleanup() closes the client, so a
-        destroy issued afterwards would silently no-op against a closed connection."""
-        calls = []
-        mock_redis = AsyncMock()
-        mock_redis.xgroup_destroy = AsyncMock(side_effect=lambda *a, **k: calls.append("destroy"))
-        mock_redis.aclose = AsyncMock(side_effect=lambda *a, **k: calls.append("aclose"))
-        consumer.redis = mock_redis
-        consumer.config.ephemeral_group = True
-        consumer.running = True
-        consumer.consume_task = None
-
-        await consumer.stop()
-
-        assert calls == ["destroy", "aclose"], calls
-        # Nulled, so a second cleanup (loop finally + stop) cannot double-issue.
-        assert consumer.redis is None
 
     @pytest.mark.asyncio
     async def test_stop_without_redis(self, consumer):
@@ -1332,7 +1286,9 @@ class TestOrgContextWrapper:
             return True
 
         consumer.message_handler = handler
-        result = await consumer._process_message_with_classification("topic-a", "1-0", {"value": json.dumps(fields)})
+        result = await in_delivery(
+            consumer._process_message_with_classification("topic-a", "1-0", {"value": json.dumps(fields)})
+        )
         return result, seen
 
     async def test_signed_message_binds_the_signed_org_and_resets_after(self, consumer) -> None:

@@ -13,6 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
+from app.connectors.core.base.error.stream_errors import SOURCE_REFUSAL_HEADER
 from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
@@ -23,18 +24,25 @@ from app.connectors.core.registry.filters import (
     FilterType,
     MultiselectOperator,
 )
+from app.connectors.core.registry.folder_scope import FILE_SHARE_PATHS
 from app.connectors.sources.network_share.entry import DirectoryEntry, ShareInfo
 from app.connectors.sources.network_share.errors import (
+    AccessDeniedError,
     NetworkShareAuthError,
     ShareListingError,
+    ShareWalkIncompleteError,
 )
 from app.connectors.sources.network_share.record_mapper import revision_id
 from app.connectors.sources.smb.connector import SmbConnector
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType, User
 from app.models.permission import EntityType, PermissionType
+from app.services.notification.types import NotificationType
 from app.sources.client.smb.smb import REPARSE_POINT, SmbClient
 from tests.unit.connectors.sources.test_network_share_walker import (
     FakeNetworkShareDataSource,
+    InsensitiveShare,
+    _folder_filter,
+    _share_tree,
 )
 
 NOW = datetime(2024, 6, 1, tzinfo=timezone.utc)
@@ -510,23 +518,27 @@ class TestSmbConnectorSync:
         smb_connector.configured_share = SHARE
         stored = _file_record(ext_id=f"{SHARE}/a.txt", revision="old")
         mock_processor.get_records_by_record_type = AsyncMock(return_value=[stored])
-        await smb_connector.run_sync()
+        with pytest.raises(ShareWalkIncompleteError):
+            await smb_connector.run_sync()
         mock_processor.on_record_deleted.assert_not_awaited()
         smb_connector.record_sync_point.update_sync_point.assert_not_awaited()
         assert smb_connector.notify.await_args.kwargs["title"] == "SMB: Sync could not read the share"
         assert SHARE in smb_connector.notify.await_args.kwargs["message"]
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_one_unreadable_subfolder_does_not_notify(self, mock_filters, smb_connector, mock_processor):
+    async def test_one_unreadable_subfolder_fails_the_run_with_one_notice(self, mock_filters, smb_connector, mock_processor):
         mock_filters.return_value = _empty_filters()
         smb_connector.data_source = _ds(
             tree={(SHARE, ""): [_entry("locked", is_directory=True, file_id=5)]},
             fail_dirs={(SHARE, "locked")},
         )
         smb_connector.configured_share = SHARE
-        await smb_connector.run_sync()
+        with pytest.raises(ShareWalkIncompleteError):
+            await smb_connector.run_sync()
         mock_processor.on_record_deleted.assert_not_awaited()
-        smb_connector.notify.assert_not_awaited()
+        smb_connector.notify.assert_awaited_once()
+        assert smb_connector.notify.await_args.kwargs["title"] == "SMB: Some folders could not be read"
+        assert not smb_connector.full_sync_coverage().complete
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_a_failed_subfolder_keeps_only_its_own_records(self, mock_filters, smb_connector, mock_processor):
@@ -541,7 +553,8 @@ class TestSmbConnectorSync:
         sibling = _file_record(ext_id=f"{SHARE}/flaky-old.txt", revision="old", record_id="sibling")
         gone = _file_record(ext_id=f"{SHARE}/gone.txt", revision="old", record_id="gone")
         mock_processor.get_records_by_record_type = AsyncMock(return_value=[inside, sibling, gone])
-        await smb_connector.run_sync()
+        with pytest.raises(ShareWalkIncompleteError):
+            await smb_connector.run_sync()
         deleted = {call.args[0] for call in mock_processor.on_record_deleted.await_args_list}
         assert deleted == {"sibling", "gone"}
 
@@ -570,7 +583,8 @@ class TestSmbConnectorSync:
         smb_connector.configured_share = SHARE
         stored = _file_record(ext_id=f"{SHARE}/a.txt", revision="old")
         mock_processor.get_records_by_record_type = AsyncMock(return_value=[stored])
-        await smb_connector.run_sync()
+        with pytest.raises(ShareWalkIncompleteError):
+            await smb_connector.run_sync()
         mock_processor.on_record_deleted.assert_not_awaited()
         assert smb_connector.notify.await_args.kwargs["title"] == "SMB: Sync could not read the share"
 
@@ -582,7 +596,8 @@ class TestSmbConnectorSync:
         mock_processor.on_new_records = AsyncMock(side_effect=RuntimeError("graph unavailable"))
         stored = _file_record(ext_id=f"{SHARE}/b.txt", revision="old")
         mock_processor.get_records_by_record_type = AsyncMock(return_value=[stored])
-        await smb_connector.run_sync()
+        with pytest.raises(ShareWalkIncompleteError):
+            await smb_connector.run_sync()
         mock_processor.on_record_deleted.assert_not_awaited()
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
@@ -684,13 +699,17 @@ class TestSmbConnectorSync:
         assert upserted[f"{SHARE}/2/set.json"] == "sibling"
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_personal_scope_owner_permission(self, mock_filters, smb_connector, mock_processor):
+    async def test_personal_scope_owner_permission(
+        self, mock_filters, smb_connector, mock_processor, mock_data_store_provider
+    ):
         mock_filters.return_value = _empty_filters()
         smb_connector.creator_email = "user@test.com"
         ds = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
         smb_connector.data_source = ds
         smb_connector.configured_share = SHARE
         await smb_connector.run_sync()
+        # A cached creator email is not looked up again.
+        mock_data_store_provider.transaction.return_value.get_user_by_user_id.assert_not_awaited()
         mock_processor.on_new_app_users.assert_awaited()
         mock_processor.ensure_team_app_edge.assert_not_awaited()
         batch = mock_processor.on_new_records.await_args.args[0]
@@ -721,6 +740,38 @@ class TestSmbConnectorSync:
         _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
         assert [(p.type, p.entity_type, p.external_id) for p in group_perms] == [
             (PermissionType.READ, EntityType.ORG, "org-1")
+        ]
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_failed_creator_lookup_keeps_the_stored_share_grants(
+        self, mock_filters, smb_connector, mock_processor, mock_data_store_provider
+    ):
+        mock_filters.return_value = _empty_filters()
+        tx = mock_data_store_provider.transaction.return_value
+        tx.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("store down"))
+        smb_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
+        smb_connector.configured_share = SHARE
+        await smb_connector.run_sync()
+        tx.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert group_perms is None
+        assert smb_connector.creator_email is None
+        mock_processor.on_new_records.assert_awaited()
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_creator_lookup_that_failed_at_init_is_retried_at_sync(
+        self, mock_filters, smb_connector, mock_processor, mock_data_store_provider
+    ):
+        mock_filters.return_value = _empty_filters()
+        tx = mock_data_store_provider.transaction.return_value
+        smb_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
+        smb_connector.configured_share = SHARE
+        assert smb_connector.creator_email is None
+        await smb_connector.run_sync()
+        tx.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert [(p.type, p.entity_type, p.email) for p in group_perms] == [
+            (PermissionType.OWNER, EntityType.USER, "user@test.com")
         ]
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
@@ -888,6 +939,81 @@ class TestSmbConnectorStreamAndFilters:
         assert exc.value.status_code == 404
         assert "no longer exists" in exc.value.detail
         ds.read_file.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("failure", "status"),
+        [
+            # stat needs less than read, so a file the account may not read passes it.
+            (AccessDeniedError(SHARE, "no-access/secret.txt", "STATUS_ACCESS_DENIED"), 403),
+            (FileNotFoundError("no-access/secret.txt"), 404),
+            (NetworkShareAuthError("files.example refused the user name or password."), 409),
+        ],
+    )
+    async def test_a_file_that_fails_to_open_answers_with_its_own_status(
+        self, smb_connector, failure, status, caplog
+    ):
+        path = "no-access/secret.txt"
+        smb_connector.data_source = FakeNetworkShareDataSource(
+            stats={(SHARE, path): _entry("secret.txt", file_id=7)},
+            files={(SHARE, path): failure},
+        )
+        record = _file_record(ext_id=f"{SHARE}/{path}", revision="r")
+        with caplog.at_level(logging.WARNING), pytest.raises(HTTPException) as exc:
+            await smb_connector.stream_record(record)
+        assert exc.value.status_code == status
+        if status == 403:
+            # The indexer stores a refusal as the reason and does not retry it.
+            assert exc.value.headers.get(SOURCE_REFUSAL_HEADER) == "1"
+        # The server's reason is logged once, as an expected refusal: no traceback.
+        logged = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert [(r.levelno, r.exc_info) for r in logged] == [(logging.WARNING, None)]
+        assert str(failure) in logged[0].getMessage()
+
+    @pytest.mark.parametrize(
+        ("ntstatus", "status"),
+        [(0xC0000022, 403), (0xC0000034, 404), (0xC000006D, 409)],
+    )
+    async def test_the_servers_status_on_open_is_answered_and_logged(
+        self, smb_connector, ntstatus, status, caplog
+    ):
+        from smbprotocol.exceptions import SMBOSError
+
+        from app.sources.external.smb.smb import SmbDataSource
+
+        fake = MagicMock()
+        fake.stat.return_value = MagicMock(
+            st_mode=stat.S_IFREG | 0o644, st_size=5, st_ctime=0.0, st_mtime=0.0, st_ino=7, st_file_attributes=0
+        )
+        fake.open_file.side_effect = SMBOSError(ntstatus, r"\\10.0.0.5\share\no-access\secret.txt")
+        client = SmbClient(server="10.0.0.5", username="u", password="p", share=SHARE)
+        smb_connector.data_source = SmbDataSource(client)
+        record = _file_record(ext_id=f"{SHARE}/no-access/secret.txt", revision="r")
+        with (
+            patch.object(client, "_smbclient", return_value=fake),
+            caplog.at_level(logging.WARNING),
+            pytest.raises(HTTPException) as exc,
+        ):
+            await smb_connector.stream_record(record)
+        assert exc.value.status_code == status
+        assert f"0x{ntstatus:08x}" in caplog.records[-1].getMessage()
+
+    async def test_any_other_open_failure_is_a_logged_500(self, smb_connector, caplog):
+        smb_connector.data_source = FakeNetworkShareDataSource(
+            stats={(SHARE, "locked.docx"): _entry("locked.docx", file_id=9)},
+            files={(SHARE, "locked.docx"): OSError("STATUS_SHARING_VIOLATION")},
+        )
+        with caplog.at_level(logging.ERROR), pytest.raises(HTTPException) as exc:
+            await smb_connector.stream_record(_file_record(ext_id=f"{SHARE}/locked.docx", revision="r"))
+        assert exc.value.status_code == 500
+        assert [r.exc_info[0] for r in caplog.records if r.levelno == logging.ERROR] == [OSError]
+
+    async def test_a_readable_file_streams_its_content(self, smb_connector):
+        smb_connector.data_source = FakeNetworkShareDataSource(
+            stats={(SHARE, "a.txt"): _entry("a.txt", file_id=8)},
+            files={(SHARE, "a.txt"): b"hello"},
+        )
+        response = await smb_connector.stream_record(_file_record(ext_id=f"{SHARE}/a.txt", revision="r"))
+        assert [chunk async for chunk in response.body_iterator] == [b"hello"]
 
     async def test_directory_is_not_downloadable(self, smb_connector):
         smb_connector.data_source = FakeNetworkShareDataSource()
@@ -1117,3 +1243,210 @@ class TestSmbExtensionFilter:
         smb_connector.configured_share = SHARE
         await smb_connector.run_sync()
         assert _synced_names(mock_processor) == ["c.pdf"]
+
+
+class TestSmbSyncOutcome:
+    """A sync that did not read everything must not report success, and must not let a full sync unlink."""
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_refused_sign_in_notifies_an_auth_error_and_fails_the_run(
+        self, mock_filters, smb_connector, mock_processor
+    ):
+        mock_filters.return_value = _empty_filters()
+        smb_connector.data_source = _ds(
+            tree={(SHARE, ""): [_entry("hr", is_directory=True, file_id=5)]},
+            refused_dirs={(SHARE, "hr")},
+        )
+        smb_connector.configured_share = SHARE
+        mock_processor.get_records_by_record_type = AsyncMock(
+            return_value=[_file_record(ext_id=f"{SHARE}/hr/a.txt", revision="r")]
+        )
+        with pytest.raises(NetworkShareAuthError):
+            await smb_connector.run_sync()
+        mock_processor.on_record_deleted.assert_not_awaited()
+        smb_connector.notify.assert_awaited_once()
+        kwargs = smb_connector.notify.await_args.kwargs
+        assert kwargs["type"] == NotificationType.CONNECTOR_AUTH_ERROR
+        assert kwargs["title"] == "SMB: Sign-in refused"
+        assert "user name or password" in kwargs["message"]
+
+    async def test_a_full_sync_before_any_walk_unlinks_nothing(self, smb_connector):
+        assert not smb_connector.full_sync_coverage().complete
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_walk_that_read_everything_lets_a_full_sync_unlink(self, mock_filters, smb_connector):
+        mock_filters.return_value = _empty_filters()
+        smb_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt", file_id=5)]})
+        smb_connector.configured_share = SHARE
+        await smb_connector.run_sync()
+        assert smb_connector.full_sync_coverage().complete
+        smb_connector.notify.assert_not_awaited()
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_an_unreachable_share_unlinks_nothing_on_a_full_sync(self, mock_filters, smb_connector):
+        mock_filters.return_value = _empty_filters()
+        smb_connector.data_source = _ds(fail_dirs={(SHARE, "")})
+        smb_connector.configured_share = SHARE
+        with pytest.raises(ShareWalkIncompleteError):
+            await smb_connector.run_sync()
+        assert not smb_connector.full_sync_coverage().complete
+
+    async def test_a_refused_sign_in_while_streaming_asks_to_reconnect(self, smb_connector):
+        ds = FakeNetworkShareDataSource()
+        ds.stat = AsyncMock(side_effect=NetworkShareAuthError("files.example refused the user name or password."))
+        smb_connector.data_source = ds
+        record = _file_record(ext_id=f"{SHARE}/a.txt", revision="r")
+        with pytest.raises(HTTPException) as exc:
+            await smb_connector.stream_record(record)
+        # Never our own 401: the frontend reads that as the PipesHub session ending.
+        assert exc.value.status_code == 409
+        assert "Reconnect" in exc.value.detail
+
+    async def test_a_wrong_password_at_init_is_reported_in_plain_words(self, smb_connector, mock_config_service):
+        with patch(
+            "app.connectors.sources.smb.connector.SmbClient.build_from_services",
+            AsyncMock(side_effect=NetworkShareAuthError("files.example refused the user name or password.")),
+        ):
+            assert await smb_connector.init() is False
+        kwargs = smb_connector.notify.await_args.kwargs
+        assert kwargs["title"] == "SMB: Authentication failed"
+        assert kwargs["message"] == "files.example refused the user name or password."
+
+
+def _folder_filters(*values: str):
+    return (FilterCollection(filters=[_folder_filter(*values)]), FilterCollection())
+
+
+def _customers(**kwargs) -> FakeNetworkShareDataSource:
+    paths = [f"customer/{name}/{folder}/f.txt" for name in ("acme", "beta") for folder in ("quotes", "invoices")]
+    kwargs.setdefault("shares", [ShareInfo(name=SHARE, share_type="disk")])
+    return InsensitiveShare(tree=_share_tree(*paths, share=SHARE), **kwargs)
+
+
+class TestSmbFolderPatterns:
+    @pytest.fixture(autouse=True)
+    def _nothing_stored_in_the_share(self, mock_processor):
+        mock_processor.get_records_in_record_group = AsyncMock(return_value=[])
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_complete_walk_flags_a_pattern_that_matched_nothing(self, mock_filters, smb_connector):
+        mock_filters.return_value = _folder_filters("custmer/*/quotes")
+        smb_connector.data_source = _customers()
+        smb_connector.configured_share = SHARE
+        await smb_connector.run_sync()
+        [item] = smb_connector.last_action_items
+        assert item.code == "folder_filter_unmatched"
+        assert item.title == "Folder pattern matched nothing"
+        assert '"custmer/*/quotes"' in item.message
+        assert item.params == {"count": "1", "values": '"custmer/*/quotes"'}
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_the_flag_is_shown_once_however_many_runs_find_it(self, mock_filters, smb_connector):
+        mock_filters.return_value = _folder_filters("custmer/*/quotes")
+        smb_connector.data_source = _customers()
+        smb_connector.configured_share = SHARE
+        await smb_connector.run_sync()
+        await smb_connector.run_sync()
+        assert [i.code for i in smb_connector.last_action_items] == ["folder_filter_unmatched"]
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_an_incomplete_walk_leaves_the_flag_as_it_was(self, mock_filters, smb_connector):
+        mock_filters.return_value = _folder_filters("custmer/*/quotes", "customer/*/quotes")
+        smb_connector.data_source = _customers(fail_dirs={(SHARE, "customer/beta")})
+        smb_connector.configured_share = SHARE
+        with pytest.raises(ShareWalkIncompleteError):
+            await smb_connector.run_sync()
+        assert smb_connector.last_action_items is None
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_corrected_pattern_clears_the_flag(self, mock_filters, smb_connector):
+        smb_connector.data_source = _customers()
+        smb_connector.configured_share = SHARE
+        mock_filters.return_value = _folder_filters("custmer/*/quotes")
+        await smb_connector.run_sync()
+        mock_filters.return_value = _folder_filters("customer/*/quotes")
+        await smb_connector.run_sync()
+        assert smb_connector.last_action_items == []
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_the_walk_and_the_clean_up_compare_names_as_the_share_does(
+        self, mock_filters, smb_connector, mock_processor
+    ):
+        mock_filters.return_value = _folder_filters("Customer\\*\\QUOTES")
+        smb_connector.data_source = _customers()
+        smb_connector.configured_share = SHARE
+        with patch("app.connectors.sources.network_share.operations.clean_up_scope", new_callable=AsyncMock) as clean:
+            await smb_connector.run_sync()
+        scope = clean.await_args.args[4]
+        assert scope.rules == FILE_SHARE_PATHS
+        assert [p.raw for p in scope.patterns] == ["Customer/*/QUOTES"]
+        written = {r.external_record_id for call in mock_processor.on_new_records.await_args_list for r, _ in call.args[0]}
+        assert written == {
+            f"{SHARE}/Customer", f"{SHARE}/Customer/acme", f"{SHARE}/Customer/acme/quotes",
+            f"{SHARE}/Customer/acme/quotes/f.txt", f"{SHARE}/Customer/beta", f"{SHARE}/Customer/beta/quotes",
+            f"{SHARE}/Customer/beta/quotes/f.txt",
+        }
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_nothing_is_cleaned_up_after_an_incomplete_walk(self, mock_filters, smb_connector):
+        mock_filters.return_value = _folder_filters("customer/*/quotes")
+        smb_connector.data_source = _customers(fail_dirs={(SHARE, "customer/beta")})
+        smb_connector.configured_share = SHARE
+        with patch("app.connectors.sources.network_share.operations.clean_up_scope", new_callable=AsyncMock) as clean:
+            with pytest.raises(ShareWalkIncompleteError):
+                await smb_connector.run_sync()
+        clean.assert_not_awaited()
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_second_spelling_of_a_saved_folder_is_removed_once(self, mock_filters, smb_connector, mock_processor):
+        # Both values name one folder of a share; it is walked once, under the outer spelling.
+        mock_filters.return_value = _folder_filters("Reports", "reports/2026")
+        smb_connector.data_source = InsensitiveShare(
+            tree=_share_tree("Reports/2026/x.txt", share=SHARE), shares=[ShareInfo(name=SHARE, share_type="disk")]
+        )
+        smb_connector.configured_share = SHARE
+        inner = _file_record(ext_id=f"{SHARE}/reports/2026/x.txt", revision="old", record_id="inner")
+        outer = _file_record(ext_id=f"{SHARE}/Reports/2026/x.txt", revision="old", record_id="outer")
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[inner, outer])
+        await smb_connector.run_sync()
+        assert [c.args[0] for c in mock_processor.on_record_deleted.await_args_list] == ["inner"]
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_denied_folder_above_a_saved_folder_removes_nothing_under_it(
+        self, mock_filters, smb_connector, mock_processor
+    ):
+        mock_filters.return_value = _folder_filters("dept/secret/keep", "*/archive")
+        smb_connector.data_source = _ds(
+            tree=_share_tree("dept/secret/keep/a.txt", "c/archive/z.txt", share=SHARE),
+            denied_dirs={(SHARE, "dept/secret")},
+        )
+        smb_connector.configured_share = SHARE
+        stored = _file_record(ext_id=f"{SHARE}/dept/secret/keep/a.txt", revision="old", record_id="kept")
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[stored])
+        with pytest.raises(ShareWalkIncompleteError):
+            await smb_connector.run_sync()
+        mock_processor.on_record_deleted.assert_not_awaited()
+
+
+class TestNarrowingAFolderPattern:
+    async def test_what_a_narrower_pattern_leaves_out_is_removed_and_the_way_to_it_kept(self):
+        from app.config.constants.arangodb import MimeTypes
+        from app.connectors.core.registry.folder_scope import (
+            remove_records_outside_scope,
+        )
+        from app.connectors.sources.network_share.filters import share_folder_scope
+
+        folders = ["customer", "customer/acme", "customer/acme/quotes", "customer/beta", "customer/beta/quotes"]
+        files = ["customer/acme/quotes/a.txt", "customer/beta/quotes/b.txt"]
+        records = [
+            _file_record(ext_id=f"{SHARE}/{path}", revision="r", record_id=path) for path in folders + files
+        ]
+        for record in records[: len(folders)]:
+            record.mime_type = MimeTypes.FOLDER.value
+        processor = MagicMock()
+        processor.get_records_in_record_group = AsyncMock(return_value=records)
+        processor.on_record_deleted = AsyncMock()
+        narrowed = share_folder_scope(FilterCollection(filters=[_folder_filter("Customer/ACME/quotes")]))
+        await remove_records_outside_scope(processor, "smb-1", SHARE, narrowed, logging.getLogger("test"))
+        removed = {c.args[0] for c in processor.on_record_deleted.await_args_list}
+        assert removed == {"customer/beta", "customer/beta/quotes", "customer/beta/quotes/b.txt"}

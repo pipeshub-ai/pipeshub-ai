@@ -1,7 +1,11 @@
 import { Container } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
-import { AuthMiddleware, DELEGATION_AVAILABLE } from '../../../config';
+import {
+  AuthMiddleware,
+  DELEGATION_AVAILABLE,
+  dynamicClientOrg,
+} from '../../../config';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -16,6 +20,8 @@ import { ServiceTokenService } from '../services/service-token.service';
 import { DelegationService } from '../services/delegation.service';
 import { TokenExchangeService } from '../services/token-exchange.service';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
+import { AgentRegistrationService } from '../services/agent-registration.service';
+import { AgentRegistrationController } from '../controller/agent-registration.controller';
 import { OAuthDeviceService } from '../services/oauth.device.service';
 import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service';
 import { OAuthAppController } from '../controller/oauth.app.controller';
@@ -216,6 +222,7 @@ export class OAuthProviderContainer {
         oauthAppService,
         scopeValidatorService,
         appConfig,
+        dynamicClientOrg,
       );
       container
         .bind<OAuthDcrService>('OAuthDcrService')
@@ -242,12 +249,28 @@ export class OAuthProviderContainer {
         .bind<OAuthDeviceService>('OAuthDeviceService')
         .toConstantValue(oauthDeviceService);
 
+      const agentRegistrationService = new AgentRegistrationService(
+        logger,
+        oauthAppService,
+        oauthTokenService,
+        scopeValidatorService,
+        firstPartyDeviceAppService,
+        appConfig,
+      );
+      container
+        .bind<AgentRegistrationService>('AgentRegistrationService')
+        .toConstantValue(agentRegistrationService);
+      container
+        .bind<AgentRegistrationController>('AgentRegistrationController')
+        .toConstantValue(
+          new AgentRegistrationController(agentRegistrationService),
+        );
+
       // Initialize Controllers
       container
         .bind<OAuthAppController>('OAuthAppController')
         .toDynamicValue(() => {
           return new OAuthAppController(
-            logger,
             oauthAppService,
             oauthTokenService,
             scopeValidatorService,
@@ -255,7 +278,7 @@ export class OAuthProviderContainer {
         });
 
       container.bind<PatController>('PatController').toDynamicValue(() => {
-        return new PatController(logger, patService, scopeValidatorService);
+        return new PatController(patService, scopeValidatorService);
       });
 
       container
@@ -270,6 +293,7 @@ export class OAuthProviderContainer {
             oauthDcrService,
             oauthDeviceService,
             tokenExchangeService,
+            agentRegistrationService,
           );
         });
 

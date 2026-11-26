@@ -13,6 +13,7 @@ import { OAuthApp } from '../../../src/modules/oauth_provider/schema/oauth.app.s
 import { ServiceAccountDelegation } from '../../../src/modules/oauth_provider/schema/service-account-delegation.schema'
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
 import { PAT_TOKEN_PREFIX } from '../../../src/modules/oauth_provider/constants/constants'
+import { NO_APP_CREATOR } from '../../../src/libs/repositories/oauth-app'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -534,6 +535,139 @@ describe('AuthMiddleware', () => {
         oauthClientId: 'client123',
       })
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
+      expect(req.user).to.not.have.property('knowledgeLimit')
+    })
+
+    it('SYNCMAIN2: carries a limited OAuth app token\'s signed limit on req.user for the harness, apart from a PAT\'s', async () => {
+      sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'client123', iss: 'https://example.com' })
+      const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: [] }
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1', orgId: 'org1', client_id: 'client123', scope: 'kb:read', knowledgeLimit,
+      })
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'test@example.com', fullName: 'T', role: 'member' }))
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+
+      await authMiddleware.authenticate(req, createMockResponse(), createMockNext())
+
+      expect(req.user.oauthAppKnowledgeLimit).to.deep.equal(knowledgeLimit)
+      expect(req.user).to.not.have.property('knowledgeLimit')
+    })
+
+    it("puts a personal access token's current knowledge limit on req.user", async () => {
+      const limit = { apps: [], recordGroups: ['rg-1'], records: [] }
+      sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'pat-system:org1', iss: 'https://example.com' })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1', orgId: 'org1', client_id: 'pat-system:org1', scope: 'kb:read', knowledgeLimit: limit,
+      })
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'test@example.com', role: 'member' }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phpat_token' } })
+      await authMiddleware.authenticate(req, createMockResponse(), createMockNext())
+
+      expect(req.user.knowledgeLimit).to.deep.equal(limit)
+    })
+
+    it('marks a personal access token with no limit as seeing everything (null)', async () => {
+      sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'pat-system:org1', iss: 'https://example.com' })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1', orgId: 'org1', client_id: 'pat-system:org1', scope: 'kb:read',
+      })
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'test@example.com', role: 'member' }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phpat_token' } })
+      await authMiddleware.authenticate(req, createMockResponse(), createMockNext())
+
+      expect(req.user.knowledgeLimit).to.equal(null)
+    })
+
+    it("leaves an OAuth app token's req.user without a knowledge limit", async () => {
+      sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'client123', iss: 'https://example.com' })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1', orgId: 'org1', client_id: 'client123', scope: 'kb:read',
+        knowledgeLimit: { apps: ['a'], recordGroups: [], records: [] },
+      })
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'test@example.com', role: 'member' }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      await authMiddleware.authenticate(req, createMockResponse(), createMockNext())
+
+      expect(req.user).to.not.have.property('knowledgeLimit')
+    })
+
+    describe('a token bound to /mcp', () => {
+      const MCP = 'https://example.com/mcp'
+
+      beforeEach(() => {
+        mockOAuthTokenService.mcpResource = MCP
+        sinon.stub(jwt, 'decode').returns({
+          tokenType: 'oauth',
+          client_id: 'client123',
+          iss: 'https://example.com',
+        })
+        mockOAuthTokenService.verifyAccessToken.resolves({
+          userId: 'user1',
+          orgId: 'org1',
+          client_id: 'client123',
+          scope: 'kb:read',
+          aud: MCP,
+        })
+        sinon.stub(Users, 'findOne').returns(
+          createMockQuery({ email: 'test@example.com', role: 'member' }),
+        )
+      })
+
+      const run = async (req: any) => {
+        const next = createMockNext()
+        await authMiddleware.authenticate(req, createMockResponse(), next)
+        return next.firstCall.args[0]
+      }
+
+      it('is refused on another API route', async () => {
+        const error = await run(
+          createMockRequest({
+            headers: { authorization: 'Bearer oauth-token' },
+            baseUrl: '/api/v1/knowledgeBase',
+            path: '/',
+          }),
+        )
+        expect(error).to.be.instanceOf(UnauthorizedError)
+        expect(error.message).to.equal('This token is only valid at /mcp')
+      })
+
+      it('is accepted at /mcp', async () => {
+        const error = await run(
+          createMockRequest({
+            headers: { authorization: 'Bearer oauth-token' },
+            baseUrl: '/mcp',
+            path: '/',
+          }),
+        )
+        expect(error).to.be.undefined
+      })
+
+      it('is refused on the role lookup without the relay header', async () => {
+        const error = await run(
+          createMockRequest({
+            method: 'GET',
+            headers: { authorization: 'Bearer oauth-token' },
+            baseUrl: '/api/v1/users',
+            path: '/me/role',
+          }),
+        )
+        expect(error).to.be.instanceOf(UnauthorizedError)
+      })
+
+      it('is accepted on an API call relayed by an /mcp tool call', async () => {
+        tokenService.isMcpRelay.returns(true)
+        const error = await run(
+          createMockRequest({
+            headers: { authorization: 'Bearer oauth-token' },
+            baseUrl: '/api/v1/knowledgeBase',
+            path: '/',
+          }),
+        )
+        expect(error).to.be.undefined
+      })
     })
 
     it('should reject an OAuth token that carries no scopes', async () => {
@@ -995,7 +1129,7 @@ describe('AuthMiddleware', () => {
         accountType: 'premium',
       })
 
-      const appQuery = createMockQuery({ createdBy: { toString: () => 'db-owner-id' } })
+      const appQuery = createMockQuery({ createdBy: 'db-owner-id' })
       sinon.stub(OAuthApp, 'findOne').returns(appQuery)
 
       const userQuery = createMockQuery({ email: 'o@example.com', fullName: 'O' })
@@ -1009,6 +1143,29 @@ describe('AuthMiddleware', () => {
 
       expect(next.firstCall.args).to.have.length(0)
       expect(req.user.userId).to.equal('db-owner-id')
+    })
+
+    it('refuses a client_credentials token of an app no person created, instead of acting as nobody', async () => {
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'client123',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'client123',
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: 'kb:read',
+      })
+      sinon.stub(OAuthApp, 'findOne').returns(createMockQuery({ createdBy: NO_APP_CREATOR }))
+      const users = sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'o@example.com' }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      const next = createMockNext()
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(users.called).to.equal(false)
     })
 
     it('should throw when OAuth app missing for client_credentials without createdBy', async () => {
@@ -1193,6 +1350,32 @@ describe('AuthMiddleware', () => {
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args).to.have.length(0)
       expect(req.tokenPayload).to.deep.equal(decoded)
+    })
+
+    it('passes an audience requirement to scoped token verification', async () => {
+      const decoded = {
+        orgId: 'org1',
+        workerId: 'worker1',
+        aud: 'pipeshub-agent-harness',
+        scopes: ['agent-run:claim'],
+      }
+      tokenService.verifyScopedToken.resolves(decoded)
+      const middleware = authMiddleware.scopedTokenValidator(
+        'agent-run:claim',
+        'pipeshub-agent-harness',
+      )
+      const req = createMockRequest({ headers: { authorization: 'Bearer scoped-token' } })
+      const next = createMockNext()
+
+      await middleware(req, createMockResponse(), next)
+
+      expect(tokenService.verifyScopedToken.calledOnceWithExactly(
+        'scoped-token',
+        'agent-run:claim',
+        'pipeshub-agent-harness',
+      )).to.be.true
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args).to.have.length(0)
     })
 
     it('should call next with error when no token provided', async () => {

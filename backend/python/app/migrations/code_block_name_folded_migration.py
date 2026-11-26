@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.core.org_context import system
+
 if TYPE_CHECKING:
     from logging import Logger
 
@@ -32,8 +34,10 @@ async def run_code_block_name_folded_backfill(
     if isinstance(flag, dict) and flag.get("done") is True:
         return 0
     total = 0
-    while updated := await graph_provider.backfill_block_name_folded(_BATCH):
-        total += updated
+    # Started detached with no context: an org-scoped store reaches every organisation only under a system context.
+    with system("code_block_name_folded_backfill"):
+        while updated := await graph_provider.backfill_block_name_folded(_BATCH):
+            total += updated
     try:
         await config_service.set_config(MIGRATION_FLAG_KEY, {"done": True, "blocks": total})
     except Exception:

@@ -24,9 +24,12 @@ from pydantic import BaseModel, Field
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
 from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.harness.knowledge.read_gate import RecordReadGate
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
     from app.config.configuration_service import ConfigurationService
     from app.modules.transformers.blob_storage import BlobStorage
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -150,7 +153,8 @@ async def user_can_access_node(
     except Exception as e:
         logger.warning("Access check failed for node %s: %s", node_id, e)
         return False
-    return node is not None
+    # A placeholder is listed for browsing but is not a record to open: it is refused like one the user cannot read.
+    return node is not None and node.get("isPlaceholder") is not True
 
 
 class FetchSlackThreadArgs(BaseModel):
@@ -196,6 +200,7 @@ async def _fetch_record_by_id(
     blob_store: Optional["BlobStorage"],
     org_id: Optional[str],
     virtual_record_id_to_result: Dict[str, Any],
+    connection_sources: Mapping[str, Iterable[str]] | None,
 ) -> Optional[Dict[str, Any]]:
     """
     Fetch a record by its graph record id.
@@ -248,8 +253,9 @@ async def _fetch_record_by_id(
             }
         }
 
-        from app.utils.chat_helpers import get_record
+        from app.utils.chat_helpers import attach_connector_instance_names, get_record
 
+        await attach_connector_instance_names(graph_provider, virtual_to_record_map.values(), connection_sources)
         await get_record(
             vrid,
             virtual_record_id_to_result,
@@ -515,22 +521,41 @@ _MISSING_BLOB_ERROR = {
 }
 
 
-async def _readable_ids(
+async def _within_scope(
     graph_provider: "IGraphDBProvider",
     ids: set[str],
     user_id: str | None,
-    user_key: str,
+    org_id: str,
+    scope_state: dict[str, Any],
+) -> set[str]:
+    """Of ``ids``, those the turn's scope admits (main #4255), publications laid over it (S11)."""
+    from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
+    from app.harness.knowledge.scope_overlay import published_within_scope
+
+    user_key = await resolve_user_key(graph_provider, user_id)
+    if not user_key:
+        return set()
+    asked = sorted(ids)
+    inside = await ids_within_scope(scope_state, graph_provider, user_key, org_id, asked)
+    # The read gate serves a published id only through a live publication.
+    inside |= await published_within_scope(
+        scope_state, graph_provider, user_key, org_id, [i for i in asked if i not in inside]
+    )
+    return inside
+
+
+async def _readable_ids(
+    graph_provider: "IGraphDBProvider",
+    ids: set[str],
+    gate: RecordReadGate,
+    user_id: str | None,
     org_id: str,
     scope_state: dict[str, Any] | None,
 ) -> set[str]:
-    """Of ``ids``, those the user may access and the turn's scope admits."""
-    from app.utils.chat_helpers import accessible_node_ids
-
-    allowed = await accessible_node_ids(graph_provider, ids, user_id or "", org_id)
-    if scope_state is not None:
-        from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
-
-        allowed &= await ids_within_scope(scope_state, graph_provider, user_key, org_id, sorted(allowed))
+    """Of ``ids``, those ``gate`` lets the user read in full and the turn's scope admits."""
+    allowed = await _readable(gate, sorted(ids)) if ids else set()
+    if scope_state is not None and allowed:
+        allowed &= await _within_scope(graph_provider, allowed, user_id, org_id, scope_state)
     return allowed
 
 
@@ -542,27 +567,31 @@ async def _read_channel_record(
     blob_store: "BlobStorage",
     org_id: str,
     user_id: str | None,
-    user_key: str,
+    gate: RecordReadGate,
     scope_state: dict[str, Any] | None,
     not_a_thread: dict[str, Any],
 ) -> dict[str, Any]:
     """A Slack record in no single thread, then the threads its messages started.
 
     The record itself is checked before it is read, and every reply goes
-    through the same permission-filtered listing and access check as a thread
-    read; replies the user may not see are left out without a trace.
+    through the same read gate and scope check as a thread read; replies the
+    user may not see are left out without a trace.
     """
     if record_id not in await _readable_ids(
-        graph_provider, {record_id}, user_id, user_key, org_id, scope_state,
+        graph_provider, {record_id}, gate, user_id, org_id, scope_state,
     ):
         return not_a_thread
 
+    from app.modules.retrieval.selection_scope import connection_sources_of
+
+    limit = connection_sources_of((scope_state or {}).get("filters"))
     own = await _fetch_record_by_id(
         record_id,
         graph_provider=graph_provider,
         blob_store=blob_store,
         org_id=org_id,
         virtual_record_id_to_result=virtual_record_id_to_result,
+        connection_sources=limit,
     )
     in_record = _message_timestamps(own)
     timestamps = list(dict.fromkeys(channel.get("timestamps", []) + in_record))[:MAX_MESSAGES_CHECKED]
@@ -586,7 +615,6 @@ async def _read_channel_record(
                 connector_id=channel["connector_id"],
                 org_id=org_id,
                 depth=0,
-                user_key=user_key,
             )
         except Exception as e:
             logger.error(
@@ -600,7 +628,7 @@ async def _read_channel_record(
         if (rid := _record_key(r)) and rid != record_id
     }
     allowed = (
-        await _readable_ids(graph_provider, reply_ids, user_id, user_key, org_id, scope_state)
+        await _readable_ids(graph_provider, reply_ids, gate, user_id, org_id, scope_state)
         if reply_ids else set()
     )
 
@@ -619,6 +647,7 @@ async def _read_channel_record(
                 blob_store=blob_store,
                 org_id=org_id,
                 virtual_record_id_to_result=virtual_record_id_to_result,
+                connection_sources=limit,
             )
             if record:
                 replies.append(record)
@@ -634,13 +663,11 @@ async def _read_channel_record(
             "record_count": len(replies),
         })
 
-    from app.modules.retrieval.selection_scope import connection_sources_of
     from app.utils.chat_helpers import (
         enrich_read_records_with_address_links,
         keep_record_text_inside_connection,
     )
 
-    limit = connection_sources_of((scope_state or {}).get("filters"))
     await enrich_read_records_with_address_links(
         found_records, graph_provider, org_id, user_id=user_id, connection_sources=limit,
     )
@@ -693,6 +720,7 @@ async def _fetch_thread_records_impl(
     blob_store: Optional["BlobStorage"] = None,
     org_id: Optional[str] = None,
     config_service: Optional["ConfigurationService"] = None,
+    gate: RecordReadGate | None = None,
     user_id: str | None = None,
     scope_state: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
@@ -711,37 +739,16 @@ async def _fetch_thread_records_impl(
     retrieval mutates state; when ``config_service`` and ``graph_provider`` are set,
     a ``BlobStorage`` instance is created on demand (same pattern as ``execute_query``).
 
-    ``record_id`` comes from the model, so it is untrusted: the record must be in
-    the caller's org and accessible to the user, and the thread listing is
-    permission-filtered for them.
+    ``record_id`` comes from the model, so it is untrusted, and the thread's records are written into the
+    request's record map: only records ``gate`` (the requesting user, as ``fetch_full_record`` checks them)
+    may read in full and the turn's scope admits are returned. A record the user may not read reads as one
+    that is not in a thread.
     """
     if not graph_provider:
         return {
             "ok": False,
             "error": "Slack thread tool requires graph_provider (graph DB).",
         }
-
-    effective_org = (org_id or "").strip()
-    if not effective_org:
-        return {
-            "ok": False,
-            "error": "Slack thread tool could not determine org_id from the chat.",
-        }
-
-    user_key = await resolve_user_key(graph_provider, user_id)
-    if not user_key:
-        return {
-            "ok": False,
-            "error": "Slack thread tool could not resolve the current user.",
-        }
-
-    # Same error for missing and forbidden, so the tool doesn't confirm a record exists.
-    if not await user_can_access_node(graph_provider, record_id, user_key, effective_org):
-        return {
-            "ok": False,
-            "error": f"Record '{record_id}' was not found or you don't have access to it.",
-        }
-
     not_a_thread = {
         "ok": False,
         "error": (
@@ -750,6 +757,20 @@ async def _fetch_thread_records_impl(
             f"message or thread reply."
         ),
     }
+    # Built here when the caller passed none, as fetch_full_record's reader does: the record-read route
+    # (thread mode) calls this with the user only, and without a gate every read was "not a thread".
+    if gate is None and org_id and user_id:
+        gate = RecordReadGate(graph_provider, org_id, user_id)
+    if gate is None or not await _opens(gate, record_id):
+        return not_a_thread
+
+    effective_org = (org_id or "").strip()
+    if not effective_org:
+        return {
+            "ok": False,
+            "error": "Slack thread tool could not determine org_id from the chat.",
+        }
+
     resolved = await _resolve_thread_record_group(record_id, graph_provider)
     if not resolved:
         channel = await _resolve_slack_channel_record(record_id, graph_provider)
@@ -766,7 +787,7 @@ async def _fetch_thread_records_impl(
             blob_store=effective_blob,
             org_id=effective_org,
             user_id=user_id,
-            user_key=user_key,
+            gate=gate,
             scope_state=scope_state,
             not_a_thread=not_a_thread,
         )
@@ -786,19 +807,20 @@ async def _fetch_thread_records_impl(
             connector_id=connector_id,
             org_id=effective_org,
             depth=0,
-            user_key=user_key,
         )
     except Exception as e:
         logger.error(f"get_records_by_record_group failed for thread {thread_rg_id}: {e}")
         return {"ok": False, "error": f"Failed to list thread records: {e}"}
 
-    thread_ids = {rid for r in thread_records or [] if (rid := _record_key(r))}
-    allowed = await _readable_ids(
-        graph_provider, thread_ids | {record_id}, user_id, user_key, effective_org, scope_state,
-    )
-    if record_id not in allowed:
-        return not_a_thread
-    thread_records = [r for r in thread_records if _record_key(r) in allowed]
+    if scope_state is not None:
+        # The turn's scope bounds the thread too (main #4255): a record outside it reads as not in a thread.
+        inside = await _within_scope(
+            graph_provider, {rid for r in thread_records or [] if (rid := _record_key(r))} | {record_id},
+            user_id, effective_org, scope_state,
+        )
+        if record_id not in inside:
+            return not_a_thread
+        thread_records = [r for r in thread_records if _record_key(r) in inside]
 
     if not thread_records:
         return {
@@ -809,12 +831,18 @@ async def _fetch_thread_records_impl(
             "thread_external_record_group_id": resolved.get("external_record_group_id"),
         }
 
+    from app.modules.retrieval.selection_scope import connection_sources_of
+
+    limit = connection_sources_of((scope_state or {}).get("filters"))
     found_records: List[Dict[str, Any]] = []
     skipped: List[str] = []
 
-    for r in thread_records:
-        rid = _record_key(r)
-        if not rid:
+    metas = [_model_to_dict(r) for r in thread_records]
+    thread_ids = [rid for rid in (meta.get("id") or meta.get("_key") for meta in metas) if rid]
+    readable = await _readable(gate, thread_ids)
+    for rid in thread_ids:
+        if rid not in readable:
+            # Left out without a trace: listing it would tell the model a record it may not read exists.
             continue
 
         record = await _fetch_record_by_id(
@@ -823,6 +851,7 @@ async def _fetch_thread_records_impl(
             blob_store=effective_blob,
             org_id=effective_org,
             virtual_record_id_to_result=virtual_record_id_to_result,
+            connection_sources=limit,
         )
         if record:
             found_records.append(record)
@@ -834,13 +863,11 @@ async def _fetch_thread_records_impl(
 
     # A reply that pasted a pull request's or a ticket's link shows it, with
     # whether and when it merged or closed.
-    from app.modules.retrieval.selection_scope import connection_sources_of
     from app.utils.chat_helpers import (
         enrich_read_records_with_address_links,
         keep_record_text_inside_connection,
     )
 
-    limit = connection_sources_of((scope_state or {}).get("filters"))
     await enrich_read_records_with_address_links(
         found_records, graph_provider, effective_org, user_id=user_id, connection_sources=limit,
     )
@@ -861,6 +888,19 @@ async def _fetch_thread_records_impl(
     }
 
 
+async def _opens(gate: RecordReadGate, record_id: str) -> bool:
+    """A record the user may read in full: their own, or under a ``full`` publication."""
+    return record_id in await _readable(gate, [record_id])
+
+
+async def _readable(gate: RecordReadGate, record_ids: list[str]) -> set[str]:
+    """The ids the user may read in full, decided in one batch. A check the graph could not answer propagates
+    (main #6059): answering "not a thread" or "not readable" for a thread it simply could not read would be wrong,
+    and the tool's result then carries the error's fixed text, never the driver's."""
+    decided = await gate.decide_many(record_ids)
+    return {rid for rid, decision in decided.items() if decision in ("own", "published_full")}
+
+
 def create_fetch_slack_thread_tool(
     virtual_record_id_to_result: Dict[str, Any],
     org_id: Optional[str] = None,
@@ -869,12 +909,11 @@ def create_fetch_slack_thread_tool(
     config_service: Optional["ConfigurationService"] = None,
     tool_state: Optional[Dict[str, Any]] = None,
     user_id: str | None = None,
+    caller_user_id: str | None = None,
 ) -> Callable:
     """Factory for the fetch_slack_thread tool with runtime deps injected.
 
     Args:
-        user_id: The chat user's external ``userId``. Required: without it
-            every call fails, because thread access is checked per user.
         virtual_record_id_to_result: Shared map of vrid -> built record dict.
             Newly fetched thread records are inserted here so subsequent tool
             calls (e.g. fetch_full_record) reuse the same instances.
@@ -891,6 +930,8 @@ def create_fetch_slack_thread_tool(
             `utils/chat_helpers.py`. Slack records go through the same
             retrieval-block shortening as everything else, so a `record_id`
             copied from context may be a short "R<n>" label.
+        user_id: The retrieval principal; without one no thread is read.
+        caller_user_id: A service-account agent's caller (see ``RecordReadGate``).
     """
 
     @tool("fetch_slack_thread", args_schema=FetchSlackThreadArgs)
@@ -944,6 +985,11 @@ def create_fetch_slack_thread_tool(
                 record_id_shortener = tool_state.get("record_id_shortener")
                 if record_id_shortener is not None:
                     record_id = record_id_shortener.resolve(record_id)
+            gate = (
+                RecordReadGate(graph_provider, org_id, user_id, caller_user_id=caller_user_id)
+                if graph_provider is not None and org_id and user_id
+                else None
+            )
             return await _fetch_thread_records_impl(
                 record_id=record_id,
                 virtual_record_id_to_result=virtual_record_id_to_result,
@@ -951,6 +997,7 @@ def create_fetch_slack_thread_tool(
                 blob_store=blob_store,
                 org_id=org_id,
                 config_service=config_service,
+                gate=gate,
                 user_id=user_id,
                 scope_state=tool_state,
             )

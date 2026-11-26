@@ -172,6 +172,34 @@ def test_export_and_load_move_one_org_without_losing_a_row(conns, tmp_path):
         admin.execute("DELETE FROM kt.cfg WHERE k IN ('empty', 'null')")
 
 
+def test_an_export_reads_every_table_in_one_snapshot(conns, tmp_path):
+    """Derived rows (counters, frequencies, keys) must agree with the rows they derive from: a write that commits while the export runs
+    is in every exported table or in none."""
+    org_db, admin, migrate, backup = conns
+
+    class Committing:
+        """The backup connection, with another session committing a row of ORG_B's last-exported table right after the first table's copy."""
+
+        def __init__(self, conn) -> None:
+            self.conn, self.copies = conn, 0
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.conn, name)
+
+        def cursor(self, *a, **kw):
+            self.copies += 1
+            if self.copies == 2:
+                admin.execute("INSERT INTO kt.events (org_id, created_at, note) VALUES (%s, '2026-01-15', 'late')", (ORG_B,))
+            return self.conn.cursor(*a, **kw)
+
+    try:
+        order = restore_window.export_org(migrate, Committing(backup), ORG_B, tmp_path)
+        assert order.index("kt.events") > 0
+        assert "late" not in (tmp_path / "kt.events.csv").read_text()                # committed after the export's snapshot
+    finally:
+        admin.execute("DELETE FROM kt.events WHERE note = 'late'")
+
+
 def test_closing_after_an_interrupted_open_brings_the_logins_back(conns):
     org_db, admin, migrate, backup = conns
     admin.execute("ALTER ROLE pipeshub_node_login NOLOGIN; ALTER ROLE pipeshub_jobs NOLOGIN")      # as if open died after switching off

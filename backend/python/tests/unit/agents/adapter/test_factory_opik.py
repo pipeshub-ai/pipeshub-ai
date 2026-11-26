@@ -9,23 +9,15 @@ SAME env-var check, so they can never disagree."""
 
 from __future__ import annotations
 
-import contextlib
-from types import SimpleNamespace
-from typing import Any
-from unittest.mock import patch
-
 import pytest
 
 from app.agent_loop_lib.transport.opik_tracing import OpikTracingTransport
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.output_cap_transport import OutputCappedTransport
+from app.agents.agent_loop.usage_transport import UsageReportingTransport
+from tests.support.opik_client import opik_spans_offline
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
-
-
-@contextlib.contextmanager
-def _fake_span_cm(**_kwargs: Any):
-    yield SimpleNamespace()
 
 
 @pytest.fixture(autouse=True)
@@ -66,11 +58,14 @@ def _no_real_opik_network_calls():
     which would otherwise make a genuine (and, in a sandboxed test run,
     failing) network call to Opik — stub the two real entry points
     process-wide for this module so no test here ever reaches the network."""
-    with (
-        patch("opik.start_as_current_span", side_effect=lambda **kw: _fake_span_cm(**kw)),
-        patch("opik.start_as_current_trace", side_effect=lambda **kw: _fake_span_cm(**kw)),
-    ):
+    with opik_spans_offline():
         yield
+
+
+def _under_usage_reporting(transport: object) -> object:
+    """Every request transport reports usage and logs `llm_call.end`; the layer under it is what Opik wraps."""
+    assert isinstance(transport, UsageReportingTransport)
+    return transport._inner
 
 
 def _under_output_cap(transport: object) -> type:
@@ -92,7 +87,7 @@ class TestFactoryOpikWiring:
             context, context.llm, "react", query="hello",
         )
 
-        transport = runtime.transport_registry.resolve("langchain")
+        transport = _under_usage_reporting(runtime.transport_registry.resolve("langchain"))
         assert isinstance(transport, OpikTracingTransport)
 
     async def test_factory_sets_opik_enabled_on_runtime(
@@ -118,7 +113,7 @@ class TestFactoryOpikWiring:
             context, context.llm, "react", query="hello",
         )
 
-        transport = runtime.transport_registry.resolve("langchain")
+        transport = _under_usage_reporting(runtime.transport_registry.resolve("langchain"))
         assert _under_output_cap(transport) is LangChainTransport
         assert runtime.opik_enabled is False
         assert runtime.opik_project_name is None
@@ -135,7 +130,7 @@ class TestFactoryOpikWiring:
         )
 
         assert runtime.opik_enabled is True
-        transport = runtime.transport_registry.resolve("langchain")
+        transport = _under_usage_reporting(runtime.transport_registry.resolve("langchain"))
         assert isinstance(transport, OpikTracingTransport)
 
     async def test_project_name_none_when_opik_configured_but_no_project_env(
@@ -170,7 +165,7 @@ class TestFactoryOpikWiring:
             context, context.llm, "planExecute", query="hello",
         )
 
-        transport = runtime.transport_registry.resolve("langchain")
+        transport = _under_usage_reporting(runtime.transport_registry.resolve("langchain"))
         assert isinstance(transport, OpikTracingTransport)
 
     async def test_plan_execute_mode_shared_transport_unwrapped_when_opik_not_configured(
@@ -183,5 +178,5 @@ class TestFactoryOpikWiring:
             context, context.llm, "planExecute", query="hello",
         )
 
-        transport = runtime.transport_registry.resolve("langchain")
+        transport = _under_usage_reporting(runtime.transport_registry.resolve("langchain"))
         assert _under_output_cap(transport) is LangChainTransport

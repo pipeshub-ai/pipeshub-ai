@@ -87,6 +87,7 @@ from app.connectors.api.router import (
 )
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.models.entities import RecordType
+from tests.support.record_access import InMemoryRecordAccess
 
 _ROUTER = "app.connectors.api.router"
 _TEAM_CONNECTOR = "app.connectors.sources.google.drive.team.connector"
@@ -287,7 +288,7 @@ class TestDeleteRecordGaps:
         """When result has no eventData, no kafka publish but still returns success."""
         req = _mock_request()
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={"success": True, "connector": "c1", "timestamp": 123})
         kafka = AsyncMock()
 
@@ -300,7 +301,7 @@ class TestDeleteRecordGaps:
         """eventData present but no payload key -- skip publish."""
         req = _mock_request()
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(
             return_value={"success": True, "eventData": {"eventType": "x"}, "connector": "c1"}
         )
@@ -314,7 +315,7 @@ class TestDeleteRecordGaps:
         """Non-HTTP exception becomes a 500."""
         req = _mock_request()
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(side_effect=RuntimeError("db down"))
         kafka = AsyncMock()
 
@@ -327,7 +328,7 @@ class TestDeleteRecordGaps:
         """Kafka publish failure is logged but doesn't raise."""
         req = _mock_request()
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {"eventType": "deleted", "payload": {"id": "rec-1"}, "topic": "t"},
@@ -830,14 +831,14 @@ class TestGetConnectorInstanceConfigGaps:
 
     @pytest.mark.asyncio
     async def test_config_not_found_returns_empty(self):
-        """When config is not in etcd (raises exception), return default empty config."""
+        """When config is not in etcd (the read answers None), return default empty config."""
         registry = AsyncMock()
         registry.get_connector_instance = AsyncMock(return_value={
             "type": "GOOGLE_DRIVE", "name": "My Drive", "scope": "personal",
             "createdBy": "user-1", "authType": "OAUTH",
         })
         config_service = MagicMock()
-        config_service.get_config = AsyncMock(side_effect=RuntimeError("not found"))
+        config_service.get_config = AsyncMock(return_value=None)
 
         container = MagicMock()
         container.logger = MagicMock(return_value=logging.getLogger("test"))
@@ -955,7 +956,7 @@ class TestStreamRecordOrgMismatch:
             None,  # re-fetch with record's org_id
         ])
         gp.get_record_by_id = AsyncMock(return_value=record)
-        gp.check_record_access_with_details = AsyncMock(return_value=True)
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1").serve(gp)
 
         container = MagicMock()
         container.logger = MagicMock(return_value=logging.getLogger("test"))
@@ -979,7 +980,7 @@ class TestGetRecordByIdGaps:
     async def test_no_access_raises_404(self):
         """When has_access is falsy, it raises 404."""
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1").serve(gp)
         req = _mock_request()
 
         with pytest.raises(HTTPException) as exc_info:
@@ -989,23 +990,28 @@ class TestGetRecordByIdGaps:
 
     @pytest.mark.asyncio
     async def test_exception_raises_500(self):
+        # An unexpected failure after the access check; a failed access check or record read is a 503
+        # (test_record_read_outage.py, test_record_gate_reads.py).
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(side_effect=RuntimeError("db err"))
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1").serve(gp)
+        gp.get_document = AsyncMock(return_value={})
         req = _mock_request()
 
-        with pytest.raises(HTTPException) as exc_info:
+        with patch("app.connectors.api.router.refuse_hidden_demo_record", AsyncMock(side_effect=RuntimeError("bug"))), \
+             pytest.raises(HTTPException) as exc_info:
             await get_record_by_id("rec-1", req, graph_provider=gp)
         assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_has_access_returns_data(self):
         gp = AsyncMock()
-        access_data = {"recordId": "rec-1", "hasAccess": True}
-        gp.check_record_access_with_details = AsyncMock(return_value=access_data)
+        access = InMemoryRecordAccess().readable("user-1", "org-1", "rec-1")
+        access.serve(gp)
         req = _mock_request()
 
         result = await get_record_by_id("rec-1", req, graph_provider=gp)
-        assert result == access_data
+        # No revision on the record, so no stage states (main #3270).
+        assert result == {**await access.check_record_access_with_details("user-1", "org-1", "rec-1"), "stageStates": []}
 
 
 # ============================================================================
@@ -1413,11 +1419,19 @@ class TestCreateOrUpdateOAuthConfigGaps:
         assert saved[0]["userId"] == "u1"
 
     @pytest.mark.asyncio
-    async def test_creator_can_update_app_that_only_records_created_by(self):
-        """Apps saved from the OAuth Apps page have createdBy; older ones only userId."""
+    @pytest.mark.parametrize(
+        ("record", "updated"),
+        [
+            # A person's own app: its owner changes it.
+            ({"ownerUserId": "u1"}, True),
+            # The org's app, even one this member once created: only an admin changes it.
+            ({"createdBy": "u1"}, False),
+        ],
+    )
+    async def test_only_an_app_s_owner_or_an_admin_updates_it(self, record, updated):
         from app.connectors.api.router import _create_or_update_oauth_config
 
-        existing = {"_id": "app-1", "orgId": "o1", "createdBy": "u1", "config": {"clientId": "old"}}
+        existing = {"_id": "app-1", "orgId": "o1", "config": {"clientId": "old"}, **record}
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(return_value=[existing])
         config_service.set_config = AsyncMock()
@@ -1436,11 +1450,9 @@ class TestCreateOrUpdateOAuthConfigGaps:
                 logger=logging.getLogger("test"),
             )
 
-        assert result == "app-1"
         saved = config_service.set_config.call_args.args[1]
-        assert len(saved) == 1
-        assert saved[0]["config"]["clientId"] == "new"
-        assert saved[0]["updatedBy"] == "u1"
+        assert saved[0]["config"]["clientId"] == ("new" if updated else "old")
+        assert (result == "app-1") is updated
 
     @pytest.mark.asyncio
     async def test_handle_oauth_config_creation_passes_scope_through(self):
@@ -1463,10 +1475,10 @@ class TestCreateOrUpdateOAuthConfigGaps:
                 auth_type="OAUTH",
                 base_url="",
                 logger=logging.getLogger("test"),
-                connector_scope="personal",
+                connector_scope="team",
             )
 
-        assert mock_create.call_args.kwargs["connector_scope"] == "personal"
+        assert mock_create.call_args.kwargs["connector_scope"] == "team"
 
     @pytest.mark.asyncio
     async def test_update_existing_with_matching_id_and_org(self):
@@ -1773,6 +1785,44 @@ class TestUpdateFiltersSyncConfigGaps:
         assert updates[ConnectorStateKeys.PENDING_FULL_SYNC] is True
 
     @pytest.mark.asyncio
+    async def test_a_branch_change_alone_does_not_set_pending_full_sync(self) -> None:
+        """The full resync deleted the code checkpoint and the code graph's build
+        state: the whole repo was walked again and every edge rebuilt."""
+        registry = AsyncMock()
+        instance = {
+            "type": "GITHUB", "scope": "team", "createdBy": "user-1",
+            "isActive": False, "name": "Code",
+        }
+        registry.update_connector_instance = AsyncMock(return_value={"_key": "c1"})
+        repos = {"repo_ids": {"operator": "in", "value": ["acme/widgets"]}}
+        old_config = {"filters": {"sync": {"values": {
+            **repos, "branch": {"operator": "in", "type": "select", "value": ["main"]}}}}}
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value=old_config)
+        config_service.set_config = AsyncMock()
+        container = MagicMock()
+        container.logger = MagicMock(return_value=logging.getLogger("test"))
+        container.config_service = MagicMock(return_value=config_service)
+        req = _mock_request(
+            connector_registry=registry,
+            container=container,
+            body={"filters": {"sync": {"values": {
+                **repos, "branch": {"operator": "in", "type": "select", "value": ["release"]}}}}},
+        )
+
+        with patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock, return_value=instance):
+            with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
+                with patch(f"{_ROUTER}._validate_sync_filter_selections", new_callable=AsyncMock):
+                    with patch(f"{_ROUTER}._trim_connector_config", side_effect=lambda x: x):
+                        result = await update_connector_instance_filters_sync_config("c1", req)
+
+        assert result["syncFiltersChanged"] is False
+        updates = registry.update_connector_instance.call_args[1]["updates"]
+        assert ConnectorStateKeys.PENDING_FULL_SYNC not in updates
+        saved = config_service.set_config.await_args.args[1]
+        assert saved["filters"]["sync"]["values"]["branch"]["value"] == ["release"]
+
+    @pytest.mark.asyncio
     async def test_does_not_set_pending_full_sync_when_filters_unchanged(self):
         """Verify that pendingFullSync is not set when sync filters don't change."""
 
@@ -2048,7 +2098,9 @@ class TestCreateConnectorInstanceConfigAuthMissing:
             is_admin=True,
         )
 
-        with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
+        # The named app is checked before the connector exists; this test is about storing its config.
+        with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock), \
+                patch(f"{_ROUTER}._validate_oauth_app_before_creation", new_callable=AsyncMock):
             with patch(f"{_ROUTER}._prepare_connector_config", new_callable=AsyncMock, return_value={"auth": {}, "sync": {}, "filters": {}}):
                 result = await create_connector_instance(req, graph_provider=gp)
         assert result["success"] is True
@@ -2713,7 +2765,7 @@ class TestDeleteRecordEventPublish:
     async def test_success_with_event_data_published(self):
         req = _mock_request()
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={
             "success": True,
             "eventData": {"eventType": "deleted", "payload": {"id": "rec-1"}, "topic": "t"},
@@ -2731,7 +2783,7 @@ class TestDeleteRecordEventPublish:
     async def test_failure_result_raises_http_exception(self):
         req = _mock_request()
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(return_value={"record": {"origin": "UPLOAD"}})
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-1", origin="UPLOAD").serve(gp)
         gp.delete_record = AsyncMock(return_value={
             "success": False, "reason": "not found", "code": 404,
         })
@@ -3247,7 +3299,7 @@ class TestHandleOAuthConfigCreation:
             oauth_config_id=None, auth_type="API_TOKEN",
             base_url="", logger=logging.getLogger("test"),
         )
-        assert result is None
+        assert result.app_id is None
 
     @pytest.mark.asyncio
     async def test_no_credentials_with_oauth_app_id_returns_id(self):
@@ -3263,7 +3315,7 @@ class TestHandleOAuthConfigCreation:
                 oauth_config_id="oid-1", auth_type="OAUTH",
                 base_url="", logger=logging.getLogger("test"),
             )
-        assert result == "oid-1"
+        assert result.app_id == "oid-1"
 
     @pytest.mark.asyncio
     async def test_no_credentials_no_oauth_id_returns_none(self):
@@ -3279,7 +3331,7 @@ class TestHandleOAuthConfigCreation:
                 oauth_config_id=None, auth_type="OAUTH",
                 base_url="", logger=logging.getLogger("test"),
             )
-        assert result is None
+        assert result.app_id is None
 
 
 # ============================================================================
@@ -3537,7 +3589,7 @@ class TestStreamRecordAccessDenied:
         gp.get_document = AsyncMock(return_value={"_key": "org-1"})
         record = _mock_record(org_id="org-1")
         gp.get_record_by_id = AsyncMock(return_value=record)
-        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        InMemoryRecordAccess().user("user-1", "org-1").record("rec-1", "org-1").serve(gp)
 
         req = _mock_request(graph_provider=gp)
         config_service = AsyncMock()

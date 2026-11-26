@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -147,7 +147,14 @@ export function CollectionsTab({
   const { t } = useTranslation();
   const mainChatConnectorDefaultHint = useMainChatConnectorDefaultHint();
 
+  // Page over only the roots this tab shows: a mixed first page can hold no collection at all.
+  const origins = filterMode === 'collections' ? 'COLLECTION' : filterMode === 'connectors' ? 'CONNECTOR' : undefined;
+  // Switching tabs refetches; a slower answer for the previous tab must not land in this one.
+  const fetchGenRef = useRef(0);
+
   const fetchCollections = useCallback(async () => {
+    const gen = ++fetchGenRef.current;
+    const isStale = () => gen !== fetchGenRef.current;
     try {
       setIsLoading(true);
       setHasError(false);
@@ -169,7 +176,8 @@ export function CollectionsTab({
         let pagesFetched = 0;
         while (hasMore && pagesFetched < MAX_ROOT_PAGES_RESTRICT_MODE) {
           pagesFetched += 1;
-          const res = await ChatApi.listCollectionsForChat({ cursor, limit: ROOT_APPS_PAGE_LIMIT });
+          const res = await ChatApi.listCollectionsForChat({ cursor, limit: ROOT_APPS_PAGE_LIMIT, origins });
+          if (isStale()) return;
           const batch = transformToCollectionItems(res.knowledgeBases);
           for (const c of batch) {
             if (seen.has(c.id)) continue;
@@ -199,7 +207,8 @@ export function CollectionsTab({
         setCollectionNamesCache(nameMap);
         setCollectionMetaCache(metaMap);
       } else {
-        const res = await ChatApi.listCollectionsForChat({ limit: ROOT_APPS_PAGE_LIMIT });
+        const res = await ChatApi.listCollectionsForChat({ limit: ROOT_APPS_PAGE_LIMIT, origins });
+        if (isStale()) return;
         const items = transformToCollectionItems(res.knowledgeBases);
         setCollections(items);
         setRootsListMeta(mergeRootsListMeta(res, res.knowledgeBases.length, null));
@@ -213,21 +222,25 @@ export function CollectionsTab({
         setCollectionMetaCache(metaMap);
       }
     } catch (err) {
+      if (isStale()) return;
       setHasError(true);
       console.error('Error fetching collections for chat:', err);
     } finally {
-      setIsLoading(false);
+      if (!isStale()) setIsLoading(false);
     }
-  }, [restrictToKbIds, setCollectionNamesCache, setCollectionMetaCache]);
+  }, [restrictToKbIds, origins, setCollectionNamesCache, setCollectionMetaCache]);
 
   const loadMoreApps = useCallback(async () => {
     if (!rootsListMeta?.hasMore || loadingMoreApps) return;
     setLoadingMoreApps(true);
+    const gen = fetchGenRef.current;
     try {
       const res = await ChatApi.listCollectionsForChat({
         cursor: rootsListMeta.nextCursor,
         limit: ROOT_APPS_PAGE_LIMIT,
+        origins,
       });
+      if (gen !== fetchGenRef.current) return;
       const newItems = transformToCollectionItems(res.knowledgeBases);
       setCollections((prev) => {
         const seen = new Set(prev.map((c) => c.id));
@@ -252,12 +265,13 @@ export function CollectionsTab({
         setCollectionMetaCache(metaMap);
       }
     } catch (err) {
+      if (gen !== fetchGenRef.current) return;
       setHasError(true);
       console.error('Error loading more hub apps for chat:', err);
     } finally {
-      setLoadingMoreApps(false);
+      if (gen === fetchGenRef.current) setLoadingMoreApps(false);
     }
-  }, [rootsListMeta, loadingMoreApps, setCollectionNamesCache, setCollectionMetaCache]);
+  }, [rootsListMeta, loadingMoreApps, origins, setCollectionNamesCache, setCollectionMetaCache]);
 
   useEffect(() => {
     fetchCollections();
@@ -339,7 +353,7 @@ export function CollectionsTab({
           <MaterialIcon
             name="search"
             size={ICON_SIZES.PRIMARY}
-            color="var(--slate-9)"
+            color="var(--slate-11)"
           />
           <input
             type="text"
@@ -363,7 +377,7 @@ export function CollectionsTab({
       </Flex>
 
       {queryTooShort && (
-        <Text size="1" style={{ color: 'var(--neutral-a10)', padding: '0 var(--space-1)', flexShrink: 0 }}>
+        <Text size="1" style={{ color: 'var(--neutral-a11)', padding: '0 var(--space-1)', flexShrink: 0 }}>
           {t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })}
         </Text>
       )}
@@ -401,7 +415,7 @@ export function CollectionsTab({
 
         {hasError && !isLoading && (
           <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
-            <Text size="2" style={{ color: 'var(--red-9)' }}>
+            <Text size="2" style={{ color: 'var(--red-11)' }}>
               {t('chat.failedToLoadCollections')}
             </Text>
           </Flex>
@@ -412,7 +426,7 @@ export function CollectionsTab({
           flatKbItems.length === 0 ? (
             searchingServer ? null : (
             <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
-              <Text size="2" style={{ color: 'var(--slate-9)' }}>
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>
                 {searchQuery ? t('message.noCollections') : t('chat.noCollectionsAvailable')}
               </Text>
             </Flex>
@@ -429,7 +443,7 @@ export function CollectionsTab({
         {/* ── Normal mode (connectors / all): time-grouped root rows ── */}
         {filterMode !== 'collections' && !isLoading && !hasError && !queryTooShort && groupedCollections.length === 0 && !searchingServer && (
           <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
-            <Text size="2" style={{ color: 'var(--slate-9)' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
               {searchQuery || collections.length > 0
                 ? t(filterMode === 'connectors' ? 'chat.noConnectorsFound' : 'message.noCollections')
                 : t('chat.noCollectionsAvailable')}
@@ -456,7 +470,7 @@ export function CollectionsTab({
                     fontWeight: 400,
                     lineHeight: 'var(--line-height-1)',
                     letterSpacing: '0.04px',
-                    color: 'var(--olive-9)',
+                    color: 'var(--olive-11)',
                   }}
                 >
                   {label}

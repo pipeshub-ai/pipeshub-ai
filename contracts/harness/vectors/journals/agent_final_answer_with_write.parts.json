@@ -1,0 +1,33 @@
+{
+ "scenario": "agent_final_answer_with_write",
+ "parts": [
+  {
+   "type": "text",
+   "content": "The Q3 report is exported.",
+   "runId": "run-golden",
+   "isFinal": true
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-export",
+   "toolName": "goldendocs__export_report",
+   "args": "{\"name\": \"q3\"}",
+   "status": "completed",
+   "runId": "run-golden",
+   "argsSummary": "Export Report: \"q3\"",
+   "resultPreview": "{\"name\": \"q3\", \"rows\": 3}",
+   "resultSummary": "Completed successfully"
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-final",
+   "toolName": "final_answer",
+   "args": "{\"answer_markdown\": \"The Q3 report is exported.\", \"confidence\": \"High\"}",
+   "status": "completed",
+   "runId": "run-golden",
+   "argsSummary": "Final Answer — answer_markdown: \"The Q3 report is exported.\", confidence: \"High\"",
+   "resultPreview": "{\"answer_markdown\": \"The Q3 report is exported.\", \"sources_used\": [], \"unavailable_sources\": [], \"confidence\": \"High\", \"confidence_reason\": null}",
+   "resultSummary": "Completed successfully"
+  }
+ ]
+}

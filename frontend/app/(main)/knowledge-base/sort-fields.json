@@ -1,0 +1,4 @@
+{
+  "collections": ["name", "createdAt", "updatedAt", "size", "type"],
+  "allRecords": ["name", "size", "createdAt", "updatedAt", "origin"]
+}

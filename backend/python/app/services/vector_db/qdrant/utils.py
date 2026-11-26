@@ -6,12 +6,10 @@ from qdrant_client.http.models import (  # type: ignore
     Batch,
     FieldCondition,
     Filter,
-    Fusion,
-    FusionQuery,
     MatchAny,
+    MatchExcept,
     MatchValue,
     MinShould,
-    Prefetch,
     QuantizationSearchParams,
     QueryRequest,
     SearchParams,
@@ -19,12 +17,13 @@ from qdrant_client.http.models import (  # type: ignore
     ValuesCount,
 )
 
-from app.services.vector_db.filters import canonical_filter_key
+from app.services.vector_db.filters import build_generic_conditions, canonical_filter_key
+from app.services.vector_db import scope_expr as sx
+from app.services.vector_db.fusion import rrf
 from app.services.vector_db.models import (
     FieldCondition as GenericFieldCondition,
     FilterExpression,
     FilterValue,
-    FusionMethod,
     HybridSearchRequest,
     SearchResult,
     SparseVector,
@@ -42,11 +41,13 @@ DEFAULT_OVERSAMPLING = 1.5
 MAX_HNSW_EF = 4096
 MAX_OVERSAMPLING = 4.0
 MAX_HNSW_EF_CONSTRUCT = 4096
-# RRF gives many results the same score (a dense-only hit and a keyword-only hit
-# of the same rank tie). Qdrant orders ties differently on every call, so the
-# request asks for a little more than the caller wants and the provider re-sorts
-# with a fixed tie-break before cutting.
+# Qdrant orders equal scores differently on every call, so each leg asks for a
+# little more than its fusion depth and is re-sorted with a fixed tie-break
+# before the cut: a tie at the cut-off is not dropped at random.
 TIE_MARGIN = 2
+# A leg whose margin is all tied with the point at its cut is read again, twice as
+# deep each time, up to this many points.
+MAX_TIE_READ = 4096
 
 
 def env_number(name: str, default: float, minimum: float, maximum: float, cast: type) -> float:
@@ -98,14 +99,13 @@ class QdrantUtils:
                 continue
             field_key = canonical_filter_key(key)
             if isinstance(value, (list, tuple)):
-                filtered = [v for v in value if v is not None]
-                if filtered:
-                    conditions.append(
-                        FieldCondition(
-                            key=field_key,
-                            match=MatchAny(any=filtered),
-                        )
+                # An empty list matches nothing; Qdrant's MatchAny(any=[]) does.
+                conditions.append(
+                    FieldCondition(
+                        key=field_key,
+                        match=MatchAny(any=[v for v in value if v is not None]),
                     )
+                )
             elif QdrantUtils._is_valid_value(value):
                 conditions.append(
                     FieldCondition(
@@ -118,22 +118,7 @@ class QdrantUtils:
     @staticmethod
     def build_conditions_generic(filters: Dict[str, Any]) -> List[GenericFieldCondition]:
         """Build generic FieldCondition list (provider-neutral) from a key→value dict."""
-        conditions: List[GenericFieldCondition] = []
-        for key, value in filters.items():
-            if value is None:
-                continue
-            field_key = canonical_filter_key(key)
-            if isinstance(value, (list, tuple)):
-                filtered = [v for v in value if v is not None]
-                if filtered:
-                    conditions.append(
-                        GenericFieldCondition(key=field_key, values=filtered)
-                    )
-            elif QdrantUtils._is_valid_value(value):
-                conditions.append(
-                    GenericFieldCondition(key=field_key, value=value)
-                )
-        return conditions
+        return build_generic_conditions(filters)
 
     @staticmethod
     def _is_valid_value(value: FilterValue) -> bool:
@@ -257,50 +242,109 @@ class QdrantUtils:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def search_request_to_qdrant(req: HybridSearchRequest) -> QueryRequest:
-        prefetch_list = []
-        if req.dense_query is not None:
-            prefetch_list.append(
-                Prefetch(
-                    query=req.dense_query,
-                    using="dense",
-                    limit=req.limit * 2,
-                    params=dense_search_params(),
-                )
-            )
-        if req.sparse_query is not None:
-            prefetch_list.append(
-                Prefetch(
-                    query=QdrantSparseVector(
-                        indices=req.sparse_query.indices,
-                        values=req.sparse_query.values,
-                    ),
-                    using="sparse",
-                    limit=req.limit * 2,
-                )
-            )
+    def scope_node(node: "sx.Node") -> FieldCondition | Filter:
+        """A scope tree (:mod:`~app.services.vector_db.scope_expr`) as a Qdrant condition. An empty ``should`` matches EVERY point in Qdrant, so
+        FALSE is a match on an empty list (which matches none), never an empty ``should``."""
+        if isinstance(node, sx.Has):
+            return FieldCondition(key=node.field, match=MatchAny(any=list(node.values)))
+        if isinstance(node, sx.Is):
+            return FieldCondition(key=node.field, match=MatchValue(value=node.value))
+        if isinstance(node, sx.Within):       # one of the values, and none outside them (MatchExcept on an array: any element outside)
+            return Filter(must=[FieldCondition(key=node.field, match=MatchAny(any=list(node.values)))],
+                          must_not=[FieldCondition(key=node.field, match=MatchExcept(**{"except": list(node.values)}))])
+        if isinstance(node, sx.All):
+            return Filter(must=[QdrantUtils.scope_node(p) for p in node.parts]) if node.parts else Filter(must=[])
+        if isinstance(node, sx.Some):
+            if not node.parts:
+                return FieldCondition(key="metadata.orgId", match=MatchAny(any=[]))
+            return Filter(should=[QdrantUtils.scope_node(p) for p in node.parts])
+        return Filter(must_not=[QdrantUtils.scope_node(node.part)])
 
+    @staticmethod
+    def search_request_to_qdrant(req: HybridSearchRequest) -> list[QueryRequest]:
+        """The request's legs (dense, then sparse) as Qdrant queries without payloads; fused by ``fuse_legs``."""
         qdrant_filter = (
             QdrantUtils.filter_expression_to_qdrant(req.filter)
             if req.filter is not None
             else None
         )
-
-        # Only RRF is supported; default to RRF if anything else is requested
-        fusion = Fusion.RRF
-
-        return QueryRequest(
-            prefetch=prefetch_list,
-            query=FusionQuery(fusion=fusion),
-            with_payload=req.with_payload,
-            limit=req.limit + TIE_MARGIN,
-            filter=qdrant_filter,
-        )
+        if req.scope_filter is not None:
+            # ANDed with the request's own filter, never in its place
+            sx.check_size(req.scope_filter, "Qdrant")
+            scope = QdrantUtils.scope_node(sx.admits(req.scope_filter))
+            qdrant_filter = Filter(must=[scope] if qdrant_filter is None else [qdrant_filter, scope])
+        # Each leg is searched with the whole filter, as Qdrant applies a fusion
+        # query's filter to its prefetches: a leg's candidates are its best
+        # ``limit * 2`` after the filter.
+        legs: list[QueryRequest] = []
+        if req.dense_query is not None:
+            legs.append(
+                QueryRequest(
+                    query=req.dense_query,
+                    using="dense",
+                    limit=req.limit * 2 + TIE_MARGIN,
+                    params=dense_search_params(),
+                    filter=qdrant_filter,
+                    with_payload=False,
+                )
+            )
+        if req.sparse_query is not None:
+            legs.append(
+                QueryRequest(
+                    query=QdrantSparseVector(
+                        indices=req.sparse_query.indices,
+                        values=req.sparse_query.values,
+                    ),
+                    using="sparse",
+                    limit=req.limit * 2 + TIE_MARGIN,
+                    filter=qdrant_filter,
+                    with_payload=False,
+                )
+            )
+        return legs
 
     @staticmethod
-    def stable_top(points: list[Any], limit: int) -> list[Any]:
-        """Order by (-score, id) and keep ``limit``: equal scores come back in the same order every time."""
-        return sorted(points, key=lambda p: (-(p.score or 0.0), str(p.id)))[:limit]
+    def fuse_legs(legs: list[list[Any]], limit: int) -> list[tuple[str, float]]:
+        """``(id, score)`` of the best ``limit`` points over the legs' answers, fused by RRF.
+
+        Fused here rather than by Qdrant: Qdrant orders equal scores inside a leg
+        differently on every call, and a tie that flips moves a point one place in
+        that leg and changes its fused score. Each leg keeps Qdrant's order with its
+        ties put in id order (``stable_ties``), and is cut to the depth Qdrant fuses
+        (``limit * 2``), so the same query gives the same points and scores every
+        time. The scores are Qdrant's own: ``1 / (2 + index)`` summed over the legs
+        a point is in.
+        """
+        ranked = [[str(p.id) for p in QdrantUtils.stable_ties(points)[: limit * 2]] for points in legs]
+        return rrf(ranked, limit)
+
+    @staticmethod
+    def stable_ties(points: list[Any]) -> list[Any]:
+        """Qdrant's order, with each run of equal scores put in id order.
+
+        Qdrant answers best first in the collection's own sense (higher for cosine
+        and dot, lower for Euclid), so no direction is imposed here: only equal
+        scores, whose order Qdrant does not fix, are reordered.
+        """
+        out: list[Any] = []
+        start = 0
+        while start < len(points):
+            end = start
+            while end < len(points) and points[end].score == points[start].score:
+                end += 1
+            out.extend(sorted(points[start:end], key=lambda p: str(p.id)))
+            start = end
+        return out
+
+    @staticmethod
+    def tie_at_cut(points: list[Any], depth: int, asked: int) -> bool:
+        """Whether a leg may hold more points tied with the one at its fusion ``depth``
+        than the ``asked`` it returned: it returned all it was asked for, and its last
+        point scores the same as the point at the cut. Which of the tied points made it
+        into the answer is then Qdrant's choice, so the leg is read deeper."""
+        if depth < 1 or len(points) < asked or len(points) < depth:
+            return False
+        return points[depth - 1].score == points[-1].score
 
     @staticmethod
     def qdrant_result_to_search_result(scored_point: Any) -> SearchResult:

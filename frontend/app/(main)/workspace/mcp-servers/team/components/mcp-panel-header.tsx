@@ -5,11 +5,20 @@ import { useTranslation } from 'react-i18next';
 import { DropdownMenu, Flex, IconButton, Text } from '@radix-ui/themes';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { McpLogoImage } from '../../components/mcp-logo-image';
 import { mcpStatusLook, type McpConnectionState } from '../../connection-state';
 import type { McpMyServerEntry } from '../../types';
 
-/** The edit panel's title: the server's icon and name, and how it is doing. */
-export function McpPanelTitle({ instance, state }: { instance: McpMyServerEntry; state: McpConnectionState | 'disabled' }) {
+/** The edit panel's title: the server's icon (its uploaded `logo`, if any) and name, and how it is doing. */
+export function McpPanelTitle({
+  instance,
+  state,
+  logo,
+}: {
+  instance: McpMyServerEntry;
+  state: McpConnectionState | 'disabled';
+  logo?: string | null;
+}) {
   const { t } = useTranslation();
   const look = state === 'disabled' ? { color: 'gray' as const, key: 'workspace.mcpServers.status.disabled' } : mcpStatusLook(state);
   return (
@@ -25,7 +34,11 @@ export function McpPanelTitle({ instance, state }: { instance: McpMyServerEntry;
           flexShrink: 0,
         }}
       >
-        <ConnectorIcon type={resolveConnectorType(instance.typeId || instance.name)} size={18} color="var(--gray-11)" />
+        {logo ? (
+          <McpLogoImage src={logo} size={18} />
+        ) : (
+          <ConnectorIcon type={resolveConnectorType(instance.typeId || instance.name)} size={18} color="var(--gray-11)" />
+        )}
       </Flex>
       <Flex direction="column" style={{ minWidth: 0 }}>
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }} truncate>
@@ -79,7 +92,7 @@ export function McpServerActionsMenu({ entries, container }: { entries: McpMenuE
             ) : entry.kind === 'info' ? (
               <DropdownMenu.Item disabled>
                 <Flex align="center" gap="2">
-                  <MaterialIcon name={entry.icon} size={16} color="var(--gray-10)" />
+                  <MaterialIcon name={entry.icon} size={16} color="var(--gray-11)" />
                   <Text size="1" style={{ color: 'var(--gray-11)' }}>
                     {entry.label}
                   </Text>
@@ -96,7 +109,7 @@ export function McpServerActionsMenu({ entries, container }: { entries: McpMenuE
                   <Flex direction="column">
                     <Text size="2">{entry.label}</Text>
                     {entry.description && (
-                      <Text size="1" style={{ color: entry.danger ? 'var(--red-10)' : 'var(--gray-10)' }}>
+                      <Text size="1" style={{ color: entry.danger ? 'var(--red-11)' : 'var(--gray-11)' }}>
                         {entry.description}
                       </Text>
                     )}

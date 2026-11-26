@@ -324,6 +324,8 @@ class _HopWalk:
     validators_for: Callable[[str], Awaitable[dict | None]] | None
     max_bytes: int | None
     browser_like: bool = True
+    # False: every hop is sent without cookies, those an earlier hop set included.
+    keep_cookies: bool = True
 
 
 class _RequestsLike(Protocol):
@@ -516,6 +518,7 @@ async def _walk_hops(
     walk: _HopWalk,
     get: Callable[[str, dict, PublicTarget | None], Awaitable[_Hop]],
     strategy: str,
+    forget_cookies: Callable[[], None] | None = None,
 ) -> FetchResponse | None:
     """Follow redirects with ``get`` (one request per hop, on one connection), asking
     ``allow_hop`` before each target is requested. Each hop goes to the address the guard
@@ -531,6 +534,8 @@ async def _walk_hops(
         )
         if walk.validators_for is not None:
             headers.update(await walk.validators_for(current) or {})
+        if not walk.keep_cookies and forget_cookies is not None:
+            forget_cookies()
         hop = await get(current, headers, pin)
         if hop.url and urldefrag(hop.url).url != urldefrag(current).url:
             # The client went somewhere on its own; that page is already fetched, so check it
@@ -558,6 +563,24 @@ async def _walk_hops(
             final_url=current, strategy=strategy,
         )
     return too_many_redirects_response(walk.url)
+
+
+_SKIP_REASON_HEADER = "X-Fetch-Skip-Reason"
+# The answers this module makes itself; a site's own response may carry any header.
+_GUARD_STRATEGIES = frozenset({"address_guard", "redirect_guard", "size_guard"})
+# What the log says for each refusal the fetcher makes itself.
+_SKIP_REASONS = {
+    "too_many_redirects": "it redirects in a loop, or more times than the limit",
+    "unsafe_address": "it is on a private or internal address",
+    "max_size_exceeded": "it is larger than the size limit",
+}
+
+
+def refusal_reason(result: FetchResponse) -> str | None:
+    """Why the fetcher refused this URL itself (a loop, a private address, too large), or None
+    when the response is the site's own answer."""
+    reason = result.headers.get(_SKIP_REASON_HEADER) if result.strategy in _GUARD_STRATEGIES else None
+    return _SKIP_REASONS.get(reason, reason) if reason else None
 
 
 def unsafe_address_response(url: str) -> FetchResponse:
@@ -605,7 +628,7 @@ async def _hops_aiohttp(
             return _Hop(response.status, hop_headers, bytes(body))
 
     try:
-        return await _walk_hops(walk, get, "aiohttp")
+        return await _walk_hops(walk, get, "aiohttp", lambda: session.cookie_jar.clear())
     except asyncio.TimeoutError:
         logger.warning("⚠️ [aiohttp] Timeout fetching %s", walk.url)
     except (aiohttp.ClientError, OSError) as e:
@@ -783,7 +806,7 @@ async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) 
             )
 
         try:
-            return await _walk_hops(walk, get, f"curl_cffi({profile}, h2=True)")
+            return await _walk_hops(walk, get, f"curl_cffi({profile}, h2=True)", lambda s=session: s.cookies.clear())
         except FetchPoolBusy:
             raise  # another profile would wait for the same threads
         except Exception:
@@ -838,7 +861,7 @@ async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logge
         )
 
     try:
-        return await _walk_hops(walk, get, "cloudscraper")
+        return await _walk_hops(walk, get, "cloudscraper", lambda: scraper.cookies.clear())
     except FetchPoolBusy:
         raise
     except Exception:
@@ -867,6 +890,7 @@ async def fetch_url_with_fallback(
     validators_for: Callable[[str], Awaitable[dict | None]] | None = None,
     browser_like: bool = True,
     rate_limit_wait_s: float = RATE_LIMIT_WAIT_BUDGET,
+    keep_cookies: bool = True,
 ) -> Optional[FetchResponse]:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -912,6 +936,8 @@ async def fetch_url_with_fallback(
                                    aiohttp only, and takes a 403 as the site's answer.
         rate_limit_wait_s:         How long this fetch may wait out 429/503s and bot blocks in total;
                                    past it the last answer is returned for the caller to handle.
+        keep_cookies:              False sends every hop without cookies, those an earlier hop set
+                                   included (a model's page read, G-23); the crawl keeps them.
     Returns:
         FetchResponse on success or non-retryable error, None if all strategies fail.
     """
@@ -953,6 +979,7 @@ async def fetch_url_with_fallback(
         validators_for=validators_for,
         max_bytes=max_size_mb * 1024 * 1024 if max_size_mb is not None else None,
         browser_like=browser_like,
+        keep_cookies=keep_cookies,
     )
     all_strategies: List[Tuple[str, Callable[..., Coroutine[Any, Any, Optional[FetchResponse]]]]] = [
         ("curl_cffi(H2)", lambda: _hops_curl_cffi(walk, timeout, logger)),
@@ -1035,6 +1062,20 @@ async def fetch_url_with_fallback(
 
                 # ---- SUCCESS ----
                 if status < HttpStatusCode.BAD_REQUEST.value:
+                    return result
+
+                # ---- Our own refusal (a redirect loop, a private address, too large) ----
+                # Its status is made up here (508 for a loop): not the site's answer.
+                skip_reason = refusal_reason(result)
+                if skip_reason:
+                    # The refusal is about where the walk ended (a redirect may lead
+                    # a public page to a private address), not where it started.
+                    target = result.final_url or url
+                    logger.warning(
+                        "⚠️ [%s] Skipping %s%s: %s",
+                        strategy_name, target, f" (reached from {url})" if target != url else "",
+                        skip_reason,
+                    )
                     return result
 
                 # ---- 429 / 503: Rate limited or CDN overload -> exponential backoff, same attempt ----

@@ -13,17 +13,32 @@ service, under a Redis leader lease like the trash purge.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.configuration_service import delete_config_confirmed
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
-from app.connectors.services.connector_intents import ConnectorIntentStore
-from app.core.org_context import for_org
+from app.connectors.core.base.user_access import delete_all_connections
+from app.connectors.services.connector_intents import (
+    ConnectorIntentStore,
+    exists_in_any_org,
+    held_by_another_org,
+)
+from app.connectors.services.vector_cleanup_events import (
+    build_connector_cleanup_events,
+    build_gone_connector_cleanup_events,
+    log_cleanup_publish_failure,
+)
+from app.connectors.sources.localKB.handlers.delete_lease import lease_is_held
+from app.core.org_context import for_org, spawn_in_request
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
+from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
 from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -32,6 +47,7 @@ if TYPE_CHECKING:
     from logging import Logger
 
     from app.config.configuration_service import ConfigurationService
+    from app.connectors.services.kafka_service import KafkaService
     from app.modules.indexing.vector_membership_backfill import LeaderLock
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -50,6 +66,9 @@ STALE_MS = 24 * 60 * 60 * 1000
 TICK_SECONDS = 5 * 60.0
 STARTUP_GRACE_SECONDS = 120.0
 LEASE_TTL_SECONDS = 30 * 60
+# The leader lock is renewed this often while a KB delete is finished, so a long delete never
+# lets a second replica start the same one.
+HEARTBEAT_SECONDS = 5 * 60.0
 _MAX_BACKOFF_MULTIPLIER = 4
 
 
@@ -67,8 +86,8 @@ async def record_pending_storage_release(
     await _STORE.record(config_service, org_id=org_id, connector_id=connector_id, now_ms=now_ms)
 
 
-async def clear_pending_storage_release(config_service: ConfigurationService, connector_id: str) -> bool:
-    return await _STORE.clear(config_service, connector_id)
+async def clear_pending_storage_release(config_service: ConfigurationService, intent: dict[str, Any]) -> bool:
+    return await _STORE.clear(config_service, intent)
 
 
 async def list_pending_storage_releases(config_service: ConfigurationService) -> list[dict[str, Any]]:
@@ -82,14 +101,19 @@ def retry_delay_ms(attempts: int) -> int:
 async def delete_connector_credentials(
     logger: Logger, config_service: ConfigurationService, connector_id: str,
 ) -> bool:
-    """Whether the connector's credentials are gone. Never raises."""
-    key = f"/services/connectors/{connector_id}/config"
+    """Whether the connector's credentials, and every other key it kept under its own
+    directory, are gone. Never raises."""
+    directory = f"/services/connectors/{connector_id}/"
+    key = f"{directory}config"
     try:
-        # delete_config answers False rather than raising, and Redis answers
-        # False for a key an earlier attempt already deleted.
-        if await config_service.delete_config(key) or await config_service.get_config(
-            key, raise_on_error=True
-        ) is None:
+        # Each user's own credential for a per-user connector goes with the connector's.
+        users_gone = await delete_all_connections(config_service, connector_id)
+        gone = await delete_config_confirmed(config_service, key) and users_gone
+        # What a connector stored for itself between syncs (Slack's pending threads, metadata
+        # schemas) belongs to no other connector and would outlive this one.
+        for leftover in await config_service.list_keys_in_directory(directory):
+            gone = await delete_config_confirmed(config_service, leftover) and gone
+        if gone:
             return True
     except Exception:
         logger.warning("Connector credentials not confirmed deleted | connector=%s", connector_id, exc_info=True)
@@ -112,6 +136,14 @@ async def release_connector_storage(
     """Run one release and settle its intent: cleared when it completed,
     rescheduled with backoff when it did not. ``org_config_service`` holds the
     connector's credentials; None when it has none (a KB). Never raises."""
+    unread = False
+    if intent is None:
+        # Read before the release: a delete recorded while it runs is not settled by it.
+        try:
+            intent = await _STORE.read(config_service, org_id, connector_id)
+        except Exception:
+            unread = True
+            logger.warning("Storage release intent not read | org=%s connector=%s", org_id, connector_id, exc_info=True)
     try:
         result = await helper.release_connector_storage(org_id, connector_id)
         completed = result.completed
@@ -125,11 +157,14 @@ async def release_connector_storage(
         completed = False
     try:
         if completed:
-            if await clear_pending_storage_release(config_service, connector_id):
+            if not unread and (intent is None or await clear_pending_storage_release(config_service, intent)):
                 logger.info("Storage release intent cleared | org=%s connector=%s", org_id, connector_id)
-            else:
-                logger.warning("Storage release intent not cleared | org=%s connector=%s", org_id, connector_id)
-            return True
+                return True
+            # Held back like a failed attempt: released again at once, it would keep every later intent waiting.
+            logger.warning("Storage release intent not cleared | org=%s connector=%s", org_id, connector_id)
+            completed = False
+        if unread:
+            return False  # what was recorded is still there
         current = intent or {"orgId": org_id, "connectorId": connector_id, "requestedAt": now_ms()}
         attempts = int(current.get("attempts") or 0)
         wait = retry_delay_ms(attempts)
@@ -158,8 +193,16 @@ class StorageReleaseReconciler:
         lock: LeaderLock,
         now_ms: Callable[[], int] = get_epoch_timestamp_in_ms,
         config_service_for: Callable[[str], Awaitable[ConfigurationService]] | None = None,
+        finish_kb_delete: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+        finish_connector_delete: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+        lease_held: Callable[[str], Awaitable[bool]] | None = None,
+        heartbeat_seconds: float = HEARTBEAT_SECONDS,
     ) -> None:
         self.logger = logger
+        self.finish_kb_delete = finish_kb_delete
+        self.finish_connector_delete = finish_connector_delete
+        self.lease_held = lease_held
+        self.heartbeat_seconds = heartbeat_seconds
         self.graph = graph_provider
         self.config_service = config_service
         self.lock = lock
@@ -167,10 +210,12 @@ class StorageReleaseReconciler:
         self.config_service_for = config_service_for
 
     async def tick(self) -> str:
-        """``not_leader``, ``idle``, ``released``, ``retrying`` or ``dropped``."""
+        """``not_leader``, ``idle``, ``released``, ``retrying``, ``dropped`` or ``deleted``."""
         if not await self.lock.try_acquire():
             return "not_leader"
         now = self.now_ms()
+        unread: Exception | None = None
+        read_any = False
         for intent in await list_pending_storage_releases(self.config_service):
             requested = int(intent.get("requestedAt") or 0)
             if not intent.get("attempts") and requested > now - GRACE_MS:
@@ -181,12 +226,51 @@ class StorageReleaseReconciler:
             if not org_id:
                 self.logger.warning("Storage release intent has no org; skipped | connector=%s", connector_id)
                 continue
-            # Raised, not None: a failed read must never pass for a gone app.
-            app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
-            if app is not None:
-                if app.get("status") == APP_STATUS_DELETING or requested > now - STALE_MS:
+            # Raised, not None: a failed read must never pass for a gone app. Read in the intent's org: a store that
+            # scopes reads by org answers None for an id only another org holds, and the others answer its app.
+            try:
+                with for_org(org_id, job="storage_release"):
+                    app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+                if app is None:
+                    # Credentials are keyed by the connector alone, so an id another org holds keeps them: the read
+                    # above answers None for it in a store that scopes reads by org. Only whether it exists is used.
+                    elsewhere = await exists_in_any_org(self.graph, connector_id)
+            except Exception as e:
+                # Kept, and no other org's release waits for it.
+                unread = e
+                self.logger.warning(
+                    "Storage release kept; its connector could not be read | org=%s connector=%s error=%s",
+                    org_id, connector_id, type(e).__name__,
+                )
+                continue
+            read_any = True
+            if app is not None and held_by_another_org(app, org_id):
+                self.logger.warning(
+                    "Storage release skipped; the connector is another org's | org=%s connector=%s", org_id, connector_id,
+                )
+                if requested > now - STALE_MS:
                     continue
-                await clear_pending_storage_release(self.config_service, connector_id)
+                # It can never be settled.
+                if await clear_pending_storage_release(self.config_service, intent):
+                    return "dropped"
+                continue
+            if app is not None:
+                if app.get("status") == APP_STATUS_DELETING:
+                    finisher = self.finish_kb_delete if app.get("type") == Connectors.KNOWLEDGE_BASE.value else self.finish_connector_delete
+                    if finisher is None:
+                        continue
+                    outcome = await self._finish_kb_delete(finisher, intent, org_id, connector_id)
+                    if outcome is None:
+                        continue
+                    return outcome
+                if requested > now - STALE_MS:
+                    continue
+                if not await clear_pending_storage_release(self.config_service, intent):
+                    # "dropped" would look again at once, and find the same intent before the later ones.
+                    self.logger.warning(
+                        "Storage release intent not cleared | org=%s connector=%s", org_id, connector_id,
+                    )
+                    continue
                 self.logger.info(
                     "Storage release intent dropped; the connector still exists | org=%s connector=%s",
                     org_id, connector_id,
@@ -197,7 +281,7 @@ class StorageReleaseReconciler:
                 org_id, connector_id, int(intent.get("attempts") or 0),
             )
             try:
-                org_config = (
+                org_config = None if elsewhere else (
                     await self.config_service_for(org_id) if self.config_service_for else self.config_service
                 )
             except Exception:
@@ -205,10 +289,7 @@ class StorageReleaseReconciler:
                     "Storage release kept for retry; the org's config is unavailable | org=%s connector=%s",
                     org_id, connector_id, exc_info=True,
                 )
-                await _STORE.reschedule(
-                    self.config_service, intent,
-                    next_attempt_at=now + retry_delay_ms(int(intent.get("attempts") or 0)),
-                )
+                await self._reschedule(intent, now)
                 return "retrying"
             helper = StorageCleanupHelper(self.logger, self.graph, self.config_service)
             try:
@@ -221,7 +302,107 @@ class StorageReleaseReconciler:
             finally:
                 await helper.close()
             return "released" if done else "retrying"
+        if unread is not None and not read_any:
+            # The store, not one connector: the loop backs off.
+            raise unread
         return "idle"
+
+
+    async def _finish_kb_delete(self, finisher: Callable[[str, str], Awaitable[dict[str, Any]]], intent: dict[str, Any], org_id: str, kb_id: str) -> str | None:
+        """Complete the delete of a KB or connector stuck DELETING, after the grace period. None: a delete is under way."""
+        # A hint only: correctness never depends on it (the cascade is idempotent).
+        if self.lease_held is not None and await self.lease_held(kb_id):
+            return None
+        self.logger.info("KB delete resumed | org=%s kb=%s attempts=%d", org_id, kb_id, int(intent.get("attempts") or 0))
+
+        async def keep_leadership() -> None:
+            while True:
+                await asyncio.sleep(self.heartbeat_seconds)
+                try:
+                    await self.lock.refresh()
+                except Exception:
+                    self.logger.warning("Could not renew the storage-release leader lock", exc_info=True)
+
+        heartbeat = spawn_in_request(keep_leadership(), name="storage-release-heartbeat")
+        try:
+            # This loop runs detached, with no ambient org; the delete's org-checked graph calls need the intent's.
+            with for_org(org_id, job="storage_release"):
+                result = await finisher(org_id, kb_id)
+        except Exception:
+            self.logger.exception("KB delete could not be resumed | org=%s kb=%s", org_id, kb_id)
+            result = {"success": False}
+        finally:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await heartbeat
+        if result.get("success"):
+            # The storage release is owed still; the next pass finds the KB gone and runs it.
+            return "deleted"
+        await self._reschedule(intent, self.now_ms())
+        return "retrying"
+
+    async def _reschedule(self, intent: dict[str, Any], now: int) -> None:
+        """An intent that cannot be updated stays as it is, and is tried again at the next tick."""
+        try:
+            await _STORE.reschedule(
+                self.config_service, intent, next_attempt_at=now + retry_delay_ms(int(intent.get("attempts") or 0)),
+            )
+        except Exception:
+            self.logger.warning("Storage release intent not updated | connector=%s", intent.get("connectorId"), exc_info=True)
+
+
+def _kb_finisher(
+    logger: Logger,
+    graph_provider: IGraphDBProvider,
+    kafka_service: KafkaService,
+    config_service: ConfigurationService,
+) -> Callable[[str, str], Awaitable[dict[str, Any]]]:
+    # Deferred: the KB service imports this module.
+    from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+
+    return KnowledgeBaseService(logger, graph_provider, kafka_service, config_service=config_service).finish_delete
+
+
+def _connector_finisher(
+    logger: Logger,
+    graph_provider: IGraphDBProvider,
+    kafka_service: KafkaService,
+) -> Callable[[str, str], Awaitable[dict[str, Any]]]:
+    """The rest of a connector delete whose event could not finish it: the graph delete (it picks up where it stopped), then the vector-cleanup events.
+    The storage release is the next pass's. Never raises."""
+    async def finish(org_id: str, connector_id: str) -> dict[str, Any]:
+        try:
+            try:
+                result = await graph_provider.delete_connector_instance(connector_id=connector_id, org_id=org_id)
+            finally:
+                await notify_principals_changed(org_id)
+            if result.get("success"):
+                events = build_connector_cleanup_events(
+                    org_id=org_id, connector_id=connector_id,
+                    vector_membership_backfilled=result.get("vector_membership_backfilled", False),
+                    vector_membership_backfill_exhausted=result.get("vector_membership_backfill_exhausted", False),
+                    connector_name=result.get("connector_name"), record_group_ids=result.get("record_group_ids"),
+                    virtual_record_ids=result.get("virtual_record_ids", []),
+                )
+            elif await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) is None:
+                # Gone already (its answer was lost, or a redelivery finished it). No app doc to name it by: the name only picks
+                # a collection, and the purge spans them all.
+                events = build_gone_connector_cleanup_events(org_id=org_id, connector_id=connector_id, connector_name=None)
+            else:
+                return {"success": False}
+            for event in events:
+                try:
+                    if await kafka_service.publish_event("record-events", event) is False:
+                        raise RuntimeError("the message broker did not accept the event")
+                except Exception as e:
+                    log_cleanup_publish_failure(logger, event, f"connector {connector_id}", e)
+            await free_lane_of_deleted_connector(logger, connector_id)
+            return {"success": True}
+        except Exception:
+            logger.exception("Connector delete could not be finished | org=%s connector=%s", org_id, connector_id)
+            return {"success": False}
+
+    return finish
 
 
 async def run_storage_release_loop(
@@ -251,10 +432,15 @@ async def run_storage_release_loop(
                     logger=logger, graph_provider=graph_provider,
                     config_service=app_container.config_service(), lock=lock,
                     config_service_for=config_service_for,
+                    finish_kb_delete=_kb_finisher(
+                        logger, graph_provider, app_container.kafka_service(), app_container.config_service(),
+                    ),
+                    finish_connector_delete=_connector_finisher(logger, graph_provider, app_container.kafka_service()),
+                    lease_held=lambda kb_id: lease_is_held(app_container.config_service(), kb_id),
                 )
                 outcome = await reconciler.tick()
                 backoff = 1
-                if outcome in ("released", "dropped"):
+                if outcome in ("released", "dropped", "deleted"):
                     # More may be due; look again without waiting a full tick.
                     continue
             except asyncio.CancelledError:

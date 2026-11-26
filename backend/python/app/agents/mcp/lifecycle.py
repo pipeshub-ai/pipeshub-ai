@@ -3,7 +3,8 @@ an organization.
 
 Every function is best-effort: a delete that fails is logged and the rest still run, because the
 caller has usually already committed the change that made the data stale (the user, agent or org
-is gone) and has nothing to roll back. Each returns the keys it removed.
+is gone) and has nothing to roll back. Each returns the keys it removed. The exception is
+`purge_instance_credentials`, which raises: its caller is about to save a new target.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from app.agents.constants.mcp_server_constants import (
     MCP_ROOT,
     get_mcp_instance_credentials_prefix,
     get_mcp_instance_path,
+    get_mcp_logo_path,
     get_mcp_oauth_client_config_path,
     get_mcp_oauth_states_prefix,
     get_mcp_org_user_instances_prefix,
@@ -22,6 +24,8 @@ from app.agents.constants.mcp_server_constants import (
     get_mcp_user_instances_prefix,
 )
 from app.agents.mcp import service as mcp_service
+from app.config.configuration_service import delete_config_or_raise
+from app.utils import error_class
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
@@ -73,29 +77,55 @@ async def _list(config_service: ConfigurationService, prefix: str) -> list[str]:
 
 async def purge_instance_credentials(config_service: ConfigurationService, instance_id: str) -> list[str]:
     """Every user's and agent's credentials for the instance, its shared DCR client and any
-    authorization still in flight. The admin's static OAuth app config is kept."""
+    authorization still in flight. The admin's static OAuth app config is kept.
+
+    Not best-effort: raises when anything may still be stored (a listing that failed, a delete the
+    store refused), after trying every key, so a new target is never saved next to the old one's
+    secrets.
+    """
     refresh_service = _refresh_service()
     if refresh_service:
         refresh_service.cancel_refresh_tasks_for_instance(instance_id)
 
-    removed: list[str] = []
-    for key in await _list(config_service, get_mcp_instance_credentials_prefix(instance_id)):
-        await _delete(config_service, key, removed)
-    await _delete(config_service, get_mcp_shared_dcr_client_path(instance_id), removed)
+    unlisted: list[Exception] = []
 
-    for key in await _list(config_service, get_mcp_oauth_states_prefix()):
-        state = await config_service.get_config(key, default=None)
+    async def listed(prefix: str) -> list[str]:
+        try:
+            return list(await config_service.list_keys_in_directory(prefix))
+        except Exception as e:
+            # Still delete what was found, then raise: a server delete has already dropped the record, so
+            # nothing could reach these keys later.
+            unlisted.append(e)
+            return []
+
+    keys = await listed(get_mcp_instance_credentials_prefix(instance_id))
+    keys.append(get_mcp_shared_dcr_client_path(instance_id))
+    for key in await listed(get_mcp_oauth_states_prefix()):
+        try:
+            state = await config_service.get_config(key, default=None, raise_on_error=True)
+        except Exception:
+            # Unreadable (any org's): no callback can use it either, and skipping it could hide ours. A store
+            # that is down fails its delete too, so the purge still raises.
+            keys.append(key)
+            continue
         if isinstance(state, dict) and state.get("instanceId") == instance_id:
-            await _delete(config_service, key, removed)
-    return removed
+            keys.append(key)
+    await error_class.attempt_each(keys, lambda key: delete_config_or_raise(config_service, key), "MCP credentials")
+    if unlisted:
+        raise unlisted[0]
+    return keys
 
 
 async def delete_instance_data(config_service: ConfigurationService, instance: dict[str, Any]) -> list[str]:
     """The instance record and everything stored for it."""
     removed: list[str] = []
     await _delete(config_service, mcp_service.instance_record_path(instance), removed)
-    removed += await purge_instance_credentials(config_service, instance["_id"])
+    try:
+        removed += await purge_instance_credentials(config_service, instance["_id"])
+    except Exception as e:
+        logger.warning(f"Could not remove every credential of MCP instance {instance['_id']}: {e}")
     await _delete(config_service, get_mcp_oauth_client_config_path(instance["_id"]), removed)
+    await _delete(config_service, get_mcp_logo_path(instance["_id"]), removed)
     return removed
 
 

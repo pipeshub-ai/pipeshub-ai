@@ -11,10 +11,37 @@ Provides async wrapper methods for PostgreSQL operations:
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict
 
+from app.connectors.core.sql.key_flags import (
+    KeyDefinition,
+    KeyFlags,
+    key_flags,
+    primary_key_columns,
+)
+from app.connectors.core.sql.profiling import (  # noqa: F401 (re-exported)
+    TOP_VALUE_MAX_CHARS,
+    TOP_VALUES_LIMIT,
+    ColumnKind,
+    ColumnProfile,
+    ColumnStats,
+    distinct_and_ratio_from_counts,
+    frequency,
+    looks_like_contact_value,
+    looks_personal,
+    parse_table_column_stats_row,
+    range_eligible,
+    screen_top_values,
+    set_top_values,
+    top_values_from_counts,
+    vocabulary_eligible,
+)
+from app.connectors.core.sql.profiling import (
+    detect_numeric_text as detect_kind_numeric_text,
+)
 from app.sources.client.postgres.postgres import PostgreSQLClient, PostgreSQLResponse
 
 logger = logging.getLogger(__name__)
@@ -49,9 +76,13 @@ _FOREIGN_KEYS_QUERY = """
     JOIN pg_attribute fa ON fa.attrelid = con.confrelid AND fa.attnum = k.fattnum
     WHERE con.contype = 'f'
       AND n.nspname = $1
-      AND c.relname = $2
+      AND c.relname = $2{top_level}
     ORDER BY con.conname, k.ord;
 """
+
+# A foreign key to a partitioned table is cloned once per partition
+# (pg_constraint.conparentid set, PostgreSQL 11 on); only the declared one counts.
+_TOP_LEVEL_CONSTRAINTS = " AND con.conparentid = 0"
 
 
 def quote_ident(name: str) -> str:
@@ -65,15 +96,15 @@ _RUNNING_BYTES = "_pipeshub_running_bytes"
 _ROW_ALIAS = "_pipeshub_row"
 
 
-def _order_list(alias: str, columns: List[str]) -> str:
+def _order_list(alias: str, columns: list[str]) -> str:
     return ", ".join(f"{alias}.{quote_ident(col)}" for col in columns)
 
 
 def _sample_query(
     schema_name: str,
     table_name: str,
-    limit: Optional[int],
-    order_by: Optional[List[str]],
+    limit: int | None,
+    order_by: list[str] | None,
     *,
     by_row_text: bool = False,
 ) -> str:
@@ -109,6 +140,25 @@ def _byte_capped_query(sample: str, max_bytes: int, row_order: str) -> str:
     """
 
 
+def build_table_column_stats_sql(
+    schema: str,
+    table: str,
+    column_names: list[str],
+) -> str:
+    """One heap scan: row count + COUNT(DISTINCT) + null counts per column."""
+    tbl = f"{quote_ident(schema)}.{quote_ident(table)}"
+    parts = ["COUNT(*) AS total_rows"]
+    # Positional aliases: a name-based alias longer than PostgreSQL's 63-byte
+    # identifier limit is truncated, so long names lost their stats or collided.
+    for pos, name in enumerate(column_names):
+        if not name:
+            continue
+        col = quote_ident(name)
+        parts.append(f"COUNT(DISTINCT {col}) AS d{pos}")
+        parts.append(f"SUM(CASE WHEN {col} IS NULL THEN 1 ELSE 0 END) AS n{pos}")
+    return f"SELECT {', '.join(parts)} FROM {tbl}"
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models for structured data returned by PostgreSQL queries
 # All use extra='allow' so unexpected columns from the DB are preserved.
@@ -117,35 +167,38 @@ def _byte_capped_query(sample: str, max_bytes: int, row_order: str) -> str:
 class DatabaseInfo(BaseModel):
     model_config = ConfigDict(extra='allow')
     name: str = ""
-    encoding: Optional[str] = None
-    collation: Optional[str] = None
-    size: Optional[str] = None
+    encoding: str | None = None
+    collation: str | None = None
+    size: str | None = None
 
 
 class SchemaInfo(BaseModel):
     model_config = ConfigDict(extra='allow')
     name: str = ""
-    owner: Optional[str] = None
+    owner: str | None = None
 
 
 class TableListEntry(BaseModel):
     model_config = ConfigDict(extra='allow')
     name: str = ""
-    type: Optional[str] = None
+    type: str | None = None
 
 
 class ColumnInfo(BaseModel):
     model_config = ConfigDict(extra='allow')
     name: str = ""
-    data_type: Optional[str] = None
-    udt_name: Optional[str] = None
-    character_maximum_length: Optional[int] = None
-    numeric_precision: Optional[int] = None
-    numeric_scale: Optional[int] = None
-    datetime_precision: Optional[int] = None
+    data_type: str | None = None
+    udt_name: str | None = None
+    character_maximum_length: int | None = None
+    numeric_precision: int | None = None
+    numeric_scale: int | None = None
+    datetime_precision: int | None = None
     nullable: bool = False
-    default: Optional[str] = None
+    default: str | None = None
+    is_primary_key: bool = False
     is_unique: bool = False
+    is_part_of_composite_primary_key: bool = False
+    is_part_of_composite_unique: bool = False
 
 
 class CheckConstraintInfo(BaseModel):
@@ -158,15 +211,16 @@ class TableDetail(BaseModel):
     """Result of get_table_info: table metadata + columns + constraints."""
     model_config = ConfigDict(extra='allow')
     name: str = ""
-    type: Optional[str] = None
-    columns: List[ColumnInfo] = []
-    check_constraints: List[CheckConstraintInfo] = []
+    type: str | None = None
+    columns: list[ColumnInfo] = []
+    primary_keys: list[str] = []
+    check_constraints: list[CheckConstraintInfo] = []
 
 
 class ViewInfo(BaseModel):
     model_config = ConfigDict(extra='allow')
     name: str = ""
-    definition: Optional[str] = None
+    definition: str | None = None
 
 
 class ForeignKeyInfo(BaseModel):
@@ -190,9 +244,9 @@ class DDLResult(BaseModel):
 
 class ConnectionTestResult(BaseModel):
     model_config = ConfigDict(extra='allow')
-    version: Optional[str] = None
-    database: Optional[str] = None
-    user: Optional[str] = None
+    version: str | None = None
+    database: str | None = None
+    user: str | None = None
 
 
 class TableStats(BaseModel):
@@ -205,6 +259,13 @@ class TableStats(BaseModel):
     n_tup_ins: int = 0
     n_tup_upd: int = 0
     n_tup_del: int = 0
+    # ANALYZE runs, manual and automatic: a change means fresher pg_stats.
+    analyze_count: int = 0
+    # pg_class.oid: unchanged by a rename or a move to another schema.
+    oid: int = 0
+    # pg_class.relfilenode, or a digest of the partitions' for a partitioned
+    # table: changes when the rows are rewritten wholesale, as TRUNCATE does.
+    storage_id: str = ""
 
 
 # Internal models used only by the DDL builder
@@ -215,7 +276,7 @@ class _DDLColumnDef(BaseModel):
     qualified_table: str = ""
     data_type: str = ""
     not_null: bool = False
-    default_value: Optional[str] = None
+    default_value: str | None = None
     ordinal: int = 0
 
 
@@ -224,6 +285,341 @@ class _DDLConstraintDef(BaseModel):
     constraint_name: str = ""
     quoted_name: str = ""
     definition: str = ""
+
+
+class _TableKeyRow(TypedDict):
+    key_type: Literal["primary", "unique"]
+    key_width: int
+    column_names: list[str]
+
+
+_TABLE_KEYS_QUERY = """
+    WITH target AS (
+        SELECT c.oid
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p')
+    ),
+    constraint_keys AS (
+        SELECT
+            CASE con.contype WHEN 'p' THEN 'primary' ELSE 'unique' END AS key_type,
+            cardinality(con.conkey) AS key_width,
+            array_agg(a.attname ORDER BY ord.k) AS column_names
+        FROM pg_constraint con
+        JOIN target t ON con.conrelid = t.oid
+        JOIN pg_index i ON i.indexrelid = con.conindid
+        CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS ord(attnum, k)
+        JOIN pg_attribute a
+          ON a.attrelid = con.conrelid
+         AND a.attnum = ord.attnum
+         AND NOT a.attisdropped
+        WHERE con.contype IN ('p', 'u')
+          AND pg_get_expr(i.indpred, i.indrelid) IS NULL
+        GROUP BY con.oid, con.contype
+    ),
+    index_only_keys AS (
+        SELECT
+            'unique' AS key_type,
+            -- indkey lists the INCLUDE columns after the key ones; only the
+            -- first indnkeyatts are the key (PostgreSQL 11, as conparentid).
+            i.indnkeyatts AS key_width,
+            array_agg(a.attname ORDER BY ord.k) AS column_names
+        FROM pg_index i
+        JOIN target t ON i.indrelid = t.oid
+        CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS ord(attnum, k)
+        JOIN pg_attribute a
+          ON a.attrelid = i.indrelid
+         AND a.attnum = ord.attnum
+         AND NOT a.attisdropped
+        WHERE i.indisunique
+          AND ord.k <= i.indnkeyatts
+          AND pg_get_expr(i.indpred, i.indrelid) IS NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM pg_constraint con
+              WHERE con.conindid = i.indexrelid
+                AND con.contype IN ('p', 'u')
+          )
+        GROUP BY i.indexrelid, i.indnkeyatts
+    )
+    SELECT key_type, key_width, column_names FROM constraint_keys
+    UNION ALL
+    SELECT key_type, key_width, column_names FROM index_only_keys;
+"""
+
+
+def _key_definitions(keys: list[_TableKeyRow]) -> list[KeyDefinition]:
+    """The keys whose column list came back whole; one listing fewer columns
+    than its width lost a dropped column and is left out."""
+    return [
+        KeyDefinition(kind=key["key_type"], columns=tuple(key["column_names"]))
+        for key in keys
+        if key.get("column_names") and len(key["column_names"]) == (key.get("key_width") or 0)
+    ]
+
+
+def apply_key_metadata_to_columns(
+    columns: list[ColumnInfo],
+    keys: list[_TableKeyRow],
+) -> None:
+    """Set PK/unique flags on columns from pg_catalog key definitions."""
+    flags = key_flags((col.name for col in columns), _key_definitions(keys))
+    for col in columns:
+        if not col.name:
+            continue
+        col_flags = flags.get(col.name, KeyFlags())
+        col.is_primary_key = col_flags.is_primary_key
+        col.is_unique = col_flags.is_unique
+        col.is_part_of_composite_primary_key = col_flags.is_part_of_composite_primary_key
+        col.is_part_of_composite_unique = col_flags.is_part_of_composite_unique
+
+
+def primary_key_columns_from_key_defs(keys: list[_TableKeyRow]) -> list[str]:
+    """Return ordered PK column names from pg_catalog key definitions."""
+    return primary_key_columns(_key_definitions(keys))
+
+
+# Columns without usable pg_stats get their top values from a GROUP BY scan
+# each; past these limits they get none.
+TOP_VALUES_SCAN_MAX_ROWS = 1_000_000
+TOP_VALUES_MAX_SCANS_PER_TABLE = 10
+# MIN/MAX of every numeric and date/time column in one unsorted scan.
+MIN_MAX_SCAN_MAX_CELLS = 50_000_000
+
+_NUMERIC_TYPES = frozenset({"smallint", "integer", "bigint", "numeric", "real", "double precision"})
+_TEMPORAL_TYPES = frozenset({
+    "date",
+    "timestamp without time zone",
+    "timestamp with time zone",
+    "time without time zone",
+    "time with time zone",
+})
+_TEXT_TYPES = frozenset({"text", "character varying", "character", "name"})
+_TEXT_UDTS = frozenset({"citext"})
+# Binary, structured or geometric values are not a vocabulary, and a box
+# array separates its elements with ';', which the array parser doesn't read.
+_NO_TOP_VALUE_TYPES = frozenset({
+    "bytea", "ARRAY", "json", "jsonb", "xml", "tsvector", "tsquery",
+    "point", "line", "lseg", "box", "path", "polygon", "circle",
+    # Network addresses identify machines and, through them, people.
+    "inet", "cidr", "macaddr", "macaddr8",
+})
+
+# Profiling reads the source's tables during sync: a scan must not wait
+# behind a DDL lock (and so block the application queued after it), run
+# unbounded, or render dates by the session's locale.
+PROFILING_QUERY_SETTINGS = {
+    "statement_timeout": "30s",
+    "lock_timeout": "2s",
+    "DateStyle": "ISO, MDY",
+    "TimeZone": "UTC",
+}
+
+# A partitioned table or inheritance parent has its stats for the whole tree
+# under inherited = true, which is what a SELECT from it reads.
+_COLUMN_STATISTICS_QUERY = """
+    SELECT
+        c.reltuples::float8 AS reltuples,
+        s.attname AS column_name,
+        s.null_frac::float8 AS null_frac,
+        s.n_distinct::float8 AS n_distinct,
+        s.most_common_vals::text AS most_common_vals,
+        s.most_common_freqs::float8[] AS most_common_freqs,
+        s.histogram_bounds::text AS histogram_bounds
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    LEFT JOIN LATERAL (
+        SELECT DISTINCT ON (st.attname)
+            st.attname, st.null_frac, st.n_distinct,
+            st.most_common_vals, st.most_common_freqs, st.histogram_bounds
+        FROM pg_stats st
+        WHERE st.schemaname = n.nspname AND st.tablename = c.relname
+        ORDER BY st.attname, st.inherited DESC
+    ) s ON true
+    WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p');
+"""
+
+
+class PgColumnStatistics(BaseModel):
+    """A column's pg_stats row, with its arrays parsed."""
+    model_config = ConfigDict(extra='allow')
+    column_name: str = ""
+    null_frac: float | None = None
+    n_distinct: float | None = None
+    most_common_vals: list[str | None] | None = None
+    most_common_freqs: list[float] | None = None
+    histogram_bounds: list[str | None] | None = None
+
+
+class TableColumnStatistics(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    # pg_class.reltuples: -1 (or 0 before PostgreSQL 14) until first analyzed.
+    reltuples: float | None = None
+    columns: dict[str, PgColumnStatistics] = {}
+
+
+def parse_pg_array_literal(literal: str | None) -> list[str | None] | None:
+    """Elements of a one-dimensional array in PostgreSQL's text form.
+
+    ``{a,"b,c","say \\"hi\\"",NULL}`` gives ``["a", "b,c", 'say "hi"', None]``;
+    a quoted ``"NULL"`` is the string. Returns None for anything else,
+    multi-dimensional arrays included.
+    """
+    if literal is None:
+        return None
+    text = literal.strip()
+    if text.startswith("["):
+        # Dimension decoration, e.g. [0:2]={...}
+        _, _, text = text.partition("=")
+        text = text.strip()
+    if len(text) < 2 or text[0] != "{" or text[-1] != "}":
+        return None
+    body = text[1:-1]
+    if not body.strip():
+        return []
+
+    values: list[str | None] = []
+    i, end = 0, len(body)
+    while True:
+        while i < end and body[i].isspace():
+            i += 1
+        if i < end and body[i] == '"':
+            chars: list[str] = []
+            i += 1
+            while i < end and body[i] != '"':
+                if body[i] == "\\":
+                    i += 1
+                    if i >= end:
+                        return None
+                chars.append(body[i])
+                i += 1
+            if i >= end:
+                return None
+            i += 1
+            values.append("".join(chars))
+            while i < end and body[i].isspace():
+                i += 1
+        else:
+            start = i
+            while i < end and body[i] != ",":
+                if body[i] in '{}"\\':
+                    return None
+                i += 1
+            token = body[start:i].strip()
+            if not token:
+                return None
+            values.append(None if token.upper() == "NULL" else token)
+        if i >= end:
+            return values
+        if body[i] != ",":
+            return None
+        i += 1
+
+
+# No equality operator: COUNT(DISTINCT) on one fails the whole stats query.
+_NO_EQUALITY_UDTS = frozenset({"json", "xml", "point", "line", "lseg", "box", "path", "polygon", "circle"})
+
+
+def countable_column_names(columns: list[ColumnInfo]) -> list[str]:
+    """Names of the columns :func:`build_table_column_stats_sql` can count."""
+    return [
+        c.name for c in columns
+        if c.name and (c.udt_name or "").lstrip("_") not in _NO_EQUALITY_UDTS
+    ]
+
+
+def _column_kind(column: ColumnInfo) -> ColumnKind | None:
+    data_type = column.data_type or ""
+    if data_type in _NUMERIC_TYPES:
+        return "numeric"
+    if data_type in _TEMPORAL_TYPES:
+        return "temporal"
+    if data_type in _TEXT_TYPES or (column.udt_name or "") in _TEXT_UDTS:
+        return "text"
+    return None
+
+
+def estimate_distinct_and_ratio(
+    exact: dict[str, Any] | None,
+    pg: PgColumnStatistics | None,
+    row_count: float | None,
+) -> tuple[float | None, float | None]:
+    """Distinct count, and distinct values per non-null row.
+
+    Exact when the sync counted them, ``row_count`` then being the counted
+    total; else from pg_stats, where a negative n_distinct is a fraction of
+    all rows and null_frac the share of nulls.
+    """
+    if row_count is None or row_count <= 0:
+        return None, None
+    if exact and exact.get("distinct_count") is not None and exact.get("null_count") is not None:
+        return distinct_and_ratio_from_counts(exact["distinct_count"], exact["null_count"], row_count)
+    if pg is not None and pg.n_distinct:
+        distinct = pg.n_distinct if pg.n_distinct > 0 else -pg.n_distinct * row_count
+        non_null = row_count * (1.0 - (pg.null_frac or 0.0))
+    else:
+        return None, None
+    if non_null <= 0:
+        return distinct, None
+    return distinct, distinct / non_null
+
+
+def top_values_eligible(
+    column: ColumnInfo,
+    distinct_count: float | None,
+    non_null_ratio: float | None,
+) -> bool:
+    return vocabulary_eligible(
+        name=column.name,
+        is_unique=column.is_unique,
+        is_primary_key=column.is_primary_key,
+        is_part_of_composite_primary_key=column.is_part_of_composite_primary_key,
+        excluded_type=(column.data_type or "") in _NO_TOP_VALUE_TYPES,
+        distinct_count=distinct_count,
+        non_null_ratio=non_null_ratio,
+    )
+
+
+def top_values_from_pg_stats(pg: PgColumnStatistics) -> tuple[list[str], list[float]] | None:
+    """Every most common value and its share of non-null rows, unscreened.
+
+    pg_stats gives each value's share of all rows, nulls included.
+    """
+    values, freqs = pg.most_common_vals, pg.most_common_freqs
+    if not values or not freqs or len(values) != len(freqs):
+        return None
+    non_null = 1.0 - (pg.null_frac or 0.0)
+    if non_null <= 0:
+        return None
+    pairs = [(v, frequency(f / non_null)) for v, f in zip(values, freqs) if v is not None and f is not None]
+    if not pairs:
+        return None
+    return [v for v, _ in pairs], [s for _, s in pairs]
+
+
+def detect_numeric_text(column: ColumnInfo, observed: list[str | None]) -> bool | None:
+    """Whether every observed value of a text column is a number."""
+    return detect_kind_numeric_text(_column_kind(column), observed)
+
+
+def _column_statistics_from_rows(rows: list[dict[str, Any]]) -> TableColumnStatistics:
+    statistics = TableColumnStatistics()
+    for row in rows:
+        if statistics.reltuples is None and row.get("reltuples") is not None:
+            statistics.reltuples = float(row["reltuples"])
+        name = row.get("column_name")
+        if not name:
+            continue
+        statistics.columns[name] = PgColumnStatistics(
+            column_name=name,
+            null_frac=row.get("null_frac"),
+            n_distinct=row.get("n_distinct"),
+            most_common_vals=parse_pg_array_literal(row.get("most_common_vals")),
+            most_common_freqs=list(row["most_common_freqs"]) if row.get("most_common_freqs") else None,
+            histogram_bounds=parse_pg_array_literal(row.get("histogram_bounds")),
+        )
+    return statistics
+
 
 class PostgreSQLDataSource:
     """PostgreSQL DataSource for database operations.
@@ -239,7 +635,15 @@ class PostgreSQLDataSource:
         """
         logger.debug("🔧 [PostgreSQLDataSource] __init__ called")
         self._client = client
+        self._has_conparentid: bool | None = None
         logger.info("🔧 [PostgreSQLDataSource] Initialized successfully")
+
+    async def _top_level_constraints(self) -> str:
+        """The filter that leaves out per-partition clones, where the server has them."""
+        if self._has_conparentid is None:
+            rows = await self._client.execute_query("SHOW server_version_num")
+            self._has_conparentid = int(rows[0]["server_version_num"]) >= 110000
+        return _TOP_LEVEL_CONSTRAINTS if self._has_conparentid else ""
     
     def get_data_source(self) -> "PostgreSQLDataSource":
         """Return the data source instance."""
@@ -248,6 +652,20 @@ class PostgreSQLDataSource:
     def get_client(self) -> PostgreSQLClient:
         """Return the underlying PostgreSQL client."""
         return self._client
+
+    async def _fetch_table_key_definitions(self, schema: str, table: str) -> list[_TableKeyRow]:
+        rows = await self._client.execute_query(_TABLE_KEYS_QUERY, (schema, table))
+        keys: list[_TableKeyRow] = []
+        for row in rows:
+            column_names = row.get("column_names") or []
+            if isinstance(column_names, str):
+                column_names = [column_names]
+            keys.append({
+                "key_type": row.get("key_type"),
+                "key_width": int(row.get("key_width") or 0),
+                "column_names": list(column_names),
+            })
+        return keys
     
     async def list_databases(self) -> PostgreSQLResponse:
         """List all accessible databases.
@@ -285,7 +703,7 @@ class PostgreSQLDataSource:
                 message="Failed to list databases"
             )
     
-    async def list_schemas(self, database: Optional[str] = None) -> PostgreSQLResponse:
+    async def list_schemas(self, database: str | None = None) -> PostgreSQLResponse:
         """List all schemas in the current database.
         
         Args:
@@ -334,15 +752,21 @@ class PostgreSQLDataSource:
         """
         logger.debug(f"🔧 [PostgreSQLDataSource] list_tables called for schema: {schema}")
         
+        # A partition is part of its parent table, not a table of its own:
+        # listed separately, each would be indexed and could be queried for a
+        # partial answer. information_schema reports partitions as BASE TABLE.
         query = """
             SELECT
-                table_name as name,
-                table_schema as schema,
-                table_type as type
-            FROM information_schema.tables
-            WHERE table_schema = $1
-              AND table_type = 'BASE TABLE'
-            ORDER BY table_name;
+                t.table_name as name,
+                t.table_schema as schema,
+                t.table_type as type
+            FROM information_schema.tables t
+            JOIN pg_namespace n ON n.nspname = t.table_schema
+            JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = t.table_name
+            WHERE t.table_schema = $1
+              AND t.table_type = 'BASE TABLE'
+              AND NOT c.relispartition
+            ORDER BY t.table_name;
         """
         
         try:
@@ -403,17 +827,6 @@ class PostgreSQLDataSource:
             WHERE c.table_schema = $1 AND c.table_name = $2
             ORDER BY c.ordinal_position;
         """
-        
-        # Columns that are part of a UNIQUE constraint
-        unique_query = """
-            SELECT DISTINCT a.attname AS column_name
-        """ + _CONSTRAINTS_OF_TABLE + """
-            JOIN pg_attribute a
-              ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
-            WHERE con.contype = 'u'
-              AND n.nspname = $1
-              AND c.relname = $2;
-        """
 
         # CHECK constraints (NOT NULL is not one; it has its own contype)
         check_query = """
@@ -436,23 +849,21 @@ class PostgreSQLDataSource:
                     message=f"Table {schema}.{table} not found"
                 )
 
-            columns_raw, unique_cols_raw, check_raw = await asyncio.gather(
+            columns_raw, check_raw, key_defs = await asyncio.gather(
                 self._client.execute_query(columns_query, (schema, table)),
-                self._client.execute_query(unique_query, (schema, table)),
                 self._client.execute_query(check_query, (schema, table)),
+                self._fetch_table_key_definitions(schema, table),
             )
 
-            unique_column_names = {row['column_name'] for row in unique_cols_raw}
-
             columns = [ColumnInfo.model_validate(row) for row in columns_raw]
-            for col in columns:
-                col.is_unique = col.name in unique_column_names
+            apply_key_metadata_to_columns(columns, key_defs)
             
             check_constraints = [CheckConstraintInfo.model_validate(row) for row in check_raw]
             
             table_detail = TableDetail.model_validate({
                 **table_info_raw[0],
                 'columns': columns,
+                'primary_keys': primary_key_columns_from_key_defs(key_defs),
                 'check_constraints': check_constraints,
             })
             
@@ -522,9 +933,8 @@ class PostgreSQLDataSource:
         """
         logger.debug(f"🔧 [PostgreSQLDataSource] get_foreign_keys called for {schema}.{table}")
         
-        query = _FOREIGN_KEYS_QUERY
-
         try:
+            query = _FOREIGN_KEYS_QUERY.format(top_level=await self._top_level_constraints())
             results = await self._client.execute_query(query, (schema, table))
             foreign_keys = [ForeignKeyInfo.model_validate(row) for row in results]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(foreign_keys)} foreign keys")
@@ -554,21 +964,11 @@ class PostgreSQLDataSource:
         """
         logger.debug(f"🔧 [PostgreSQLDataSource] get_primary_keys called for {schema}.{table}")
         
-        query = """
-            SELECT a.attname AS column_name
-        """ + _CONSTRAINTS_OF_TABLE + """
-            CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
-            JOIN pg_attribute a
-              ON a.attrelid = con.conrelid AND a.attnum = k.attnum
-            WHERE con.contype = 'p'
-              AND n.nspname = $1
-              AND c.relname = $2
-            ORDER BY k.ord;
-        """
-        
+
         try:
-            results = await self._client.execute_query(query, (schema, table))
-            primary_keys = [PrimaryKeyInfo.model_validate(row) for row in results]
+            key_defs = await self._fetch_table_key_definitions(schema, table)
+            pk_columns = primary_key_columns_from_key_defs(key_defs)
+            primary_keys = [PrimaryKeyInfo(column_name=name) for name in pk_columns]
             logger.debug(f"🔧 [PostgreSQLDataSource] Found {len(primary_keys)} primary key columns")
             
             return PostgreSQLResponse(
@@ -723,14 +1123,229 @@ class PostgreSQLDataSource:
                 message="Connection test failed"
             )
 
+    async def get_database_oid(self) -> int:
+        """``pg_database.oid`` of the connected database.
+
+        A database dropped and created again under its name gets a new one, and
+        its tables new oids that can collide with the old database's.
+        """
+        rows = await self._client.execute_query(
+            "SELECT oid FROM pg_database WHERE datname = current_database()",
+        )
+        return int(rows[0]["oid"])
+
+    async def fetch_table_row_count(
+        self,
+        schema_name: str,
+        table_name: str,
+    ) -> int | None:
+        """Return exact row count via COUNT(*)."""
+        row_count, _stats = await self.fetch_table_row_and_column_stats(
+            schema_name,
+            table_name,
+            [],
+        )
+        return row_count
+
+    async def fetch_table_row_and_column_stats(
+        self,
+        schema_name: str,
+        table_name: str,
+        column_names: list[str],
+    ) -> tuple[int | None, tuple[int, list[dict[str, Any]]] | None]:
+        """One heap scan for row count and per-column distinct/null stats."""
+        sql = build_table_column_stats_sql(schema_name, table_name, column_names)
+        try:
+            results = await self._client.execute_query(sql, local_settings=PROFILING_QUERY_SETTINGS)
+            if not results:
+                logger.warning(
+                    "🔧 [PostgreSQLDataSource] table stats query failed for %s.%s: %s",
+                    schema_name,
+                    table_name,
+                    "no rows returned",
+                )
+                return None, None
+            total_rows, stats_list = parse_table_column_stats_row(
+                results[0],
+                column_names,
+            )
+            return total_rows, (total_rows, stats_list)
+        except Exception as e:
+            logger.warning(
+                "🔧 [PostgreSQLDataSource] table stats query failed for %s.%s: %s",
+                schema_name,
+                table_name,
+                e,
+            )
+            return None, None
+
+    async def fetch_column_statistics(
+        self,
+        schema_name: str,
+        table_name: str,
+    ) -> TableColumnStatistics | None:
+        """A table's pg_stats rows and reltuples, read from the catalog only.
+
+        Returns None if the catalog can't be read. A table never analyzed
+        comes back with no columns.
+        """
+        try:
+            rows = await self._client.execute_query(
+                _COLUMN_STATISTICS_QUERY, (schema_name, table_name), local_settings=PROFILING_QUERY_SETTINGS,
+            )
+            return _column_statistics_from_rows(rows)
+        except Exception as e:
+            logger.warning(
+                "🔧 [PostgreSQLDataSource] column statistics query failed for %s.%s: %s",
+                schema_name,
+                table_name,
+                e,
+            )
+            return None
+
+    async def profile_columns(
+        self,
+        schema_name: str,
+        table_name: str,
+        columns: list[ColumnInfo],
+        statistics: TableColumnStatistics,
+        *,
+        row_count: int | None = None,
+        exact_stats: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, ColumnProfile]:
+        """Value profile of each column, by name.
+
+        ``row_count`` is the table's row count, the counted one whenever
+        ``exact_stats`` is given; None means unknown, and reltuples stands in.
+        ``exact_stats`` maps a column name to its counts from
+        :func:`parse_table_column_stats_row`; without them the pg_stats
+        estimates decide which columns get top values. A table counted empty
+        gets no values, since its pg_stats describe rows that are gone.
+        Never raises: a column that can't be profiled is left out.
+        """
+        if row_count is None and statistics.reltuples and statistics.reltuples > 0:
+            row_count = int(statistics.reltuples)
+        profiled_at = int(time.time() * 1000)
+        named = [c for c in columns if c.name]
+        if row_count == 0:
+            return {c.name: ColumnProfile(profiled_at=profiled_at) for c in named}
+
+        ranges = await self._fetch_ranges(schema_name, table_name, named, row_count)
+        profiles: dict[str, ColumnProfile] = {}
+        observed: dict[str, list[str | None]] = {}
+        to_count: list[ColumnInfo] = []
+        for column in named:
+            try:
+                pg = statistics.columns.get(column.name)
+                profile = ColumnProfile(profiled_at=profiled_at)
+                profile.min_value, profile.max_value = ranges.get(column.name, (None, None))
+                observed[column.name] = (
+                    (pg.most_common_vals or []) + (pg.histogram_bounds or []) if pg is not None else []
+                )
+                distinct, ratio = estimate_distinct_and_ratio(
+                    (exact_stats or {}).get(column.name), pg, row_count
+                )
+                if top_values_eligible(column, distinct, ratio):
+                    candidates = top_values_from_pg_stats(pg) if pg is not None else None
+                    if candidates is None:
+                        to_count.append(column)
+                    else:
+                        set_top_values(profile, candidates)
+                profile.numeric_text = detect_numeric_text(column, observed[column.name])
+                profiles[column.name] = profile
+            except Exception as e:
+                logger.warning(
+                    "🔧 [PostgreSQLDataSource] profiling %s.%s.%s failed: %s",
+                    schema_name,
+                    table_name,
+                    column.name,
+                    e,
+                )
+
+        if row_count is None or row_count > TOP_VALUES_SCAN_MAX_ROWS:
+            return profiles
+        for column in to_count[:TOP_VALUES_MAX_SCANS_PER_TABLE]:
+            profile = profiles.get(column.name)
+            if profile is None:
+                continue
+            try:
+                counted = await self._count_top_values(schema_name, table_name, column.name)
+            except Exception as e:
+                logger.warning(
+                    "🔧 [PostgreSQLDataSource] counting top values of %s.%s.%s failed: %s",
+                    schema_name,
+                    table_name,
+                    column.name,
+                    e,
+                )
+                continue
+            candidates = top_values_from_counts(counted)
+            if candidates is not None:
+                set_top_values(profile, candidates)
+            profile.numeric_text = detect_numeric_text(
+                column, observed[column.name] + [row.get("value") for row in counted]
+            )
+        return profiles
+
+    async def _fetch_ranges(
+        self,
+        schema_name: str,
+        table_name: str,
+        columns: list[ColumnInfo],
+        row_count: int | None,
+    ) -> dict[str, tuple[str | None, str | None]]:
+        """Exact MIN and MAX of the numeric and date/time columns, in one scan
+        that needs no sort. Empty when the table's size is unknown or too big:
+        pg_stats extremes come from a sample and miss the real ones."""
+        ranged = [c for c in columns if range_eligible(_column_kind(c), c.name)]
+        if not ranged or row_count is None or row_count * len(ranged) > MIN_MAX_SCAN_MAX_CELLS:
+            return {}
+        parts = ", ".join(
+            f"min({quote_ident(c.name)})::text AS min_{i}, max({quote_ident(c.name)})::text AS max_{i}"
+            for i, c in enumerate(ranged)
+        )
+        query = f"SELECT {parts} FROM {quote_ident(schema_name)}.{quote_ident(table_name)}"
+        try:
+            rows = await self._client.execute_query(query, local_settings=PROFILING_QUERY_SETTINGS)
+        except Exception as e:
+            logger.warning(
+                "🔧 [PostgreSQLDataSource] min/max query failed for %s.%s: %s",
+                schema_name,
+                table_name,
+                e,
+            )
+            return {}
+        if not rows:
+            return {}
+        return {c.name: (rows[0].get(f"min_{i}"), rows[0].get(f"max_{i}")) for i, c in enumerate(ranged)}
+
+    async def _count_top_values(
+        self,
+        schema_name: str,
+        table_name: str,
+        column_name: str,
+    ) -> list[dict[str, Any]]:
+        """Most common non-null values with their counts, for a column pg_stats
+        lists none for. Values seen once are left out, so a column of mostly
+        unique values yields little. ``total`` is every non-null row."""
+        col = quote_ident(column_name)
+        query = (
+            f"SELECT value, n, total FROM ("
+            f"SELECT {col}::text AS value, count(*) AS n, sum(count(*)) OVER () AS total "
+            f"FROM {quote_ident(schema_name)}.{quote_ident(table_name)} "
+            f"WHERE {col} IS NOT NULL GROUP BY 1"
+            f") counted WHERE n > 1 ORDER BY n DESC, value LIMIT {TOP_VALUES_LIMIT}"
+        )
+        return await self._client.execute_query(query, local_settings=PROFILING_QUERY_SETTINGS)
+
     async def fetch_table_rows(
         self,
         schema_name: str,
         table_name: str,
-        limit: Optional[int] = None,
-        order_by: Optional[List[str]] = None,
-        max_bytes: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        limit: int | None = None,
+        order_by: list[str] | None = None,
+        max_bytes: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Return up to ``limit`` rows from a table (full row scan capped).
 
         Args:
@@ -762,13 +1377,37 @@ class PostgreSQLDataSource:
             row.pop(_RUNNING_BYTES, None)
         return rows
 
+    async def fetch_column_value_counts(
+        self,
+        schema_name: str,
+        table_name: str,
+        column_name: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """A column's ``limit`` most common values as ``{"value", "count"}``.
+
+        NULL counts as a value. Values are compared as text, so columns of types
+        without an equality operator (json) group too.
+
+        Raises:
+            The driver's exception: the result is streamed to the user, where an
+            empty list would read as a column with no values.
+        """
+        value = f"{quote_ident(column_name)}::text"
+        query = (
+            f"SELECT {value} AS value, COUNT(*) AS count "
+            f"FROM {quote_ident(schema_name)}.{quote_ident(table_name)} "
+            f"GROUP BY 1 ORDER BY 2 DESC, 1 NULLS LAST LIMIT {int(limit)}"
+        )
+        return await self._client.execute_query(query, local_settings=PROFILING_QUERY_SETTINGS)
+
     async def get_sample_hash(
         self,
         schema_name: str,
         table_name: str,
-        limit: Optional[int] = None,
-        order_by: Optional[List[str]] = None,
-        max_bytes: Optional[int] = None,
+        limit: int | None = None,
+        order_by: list[str] | None = None,
+        max_bytes: int | None = None,
     ) -> PostgreSQLResponse:
         """MD5 of a table's row sample, capped like ``fetch_table_rows``, computed server-side.
 
@@ -805,12 +1444,13 @@ class PostgreSQLDataSource:
             logger.error(f"🔧 [PostgreSQLDataSource] is_in_recovery failed: {e}")
             return PostgreSQLResponse(success=False, error=str(e), message="Failed to read recovery state")
 
-    async def get_columns(self, schemas: Optional[List[str]] = None) -> PostgreSQLResponse:
+    async def get_columns(self, schemas: list[str] | None = None) -> PostgreSQLResponse:
         """Columns of every table in ``schemas`` (all user schemas if None), in one query.
 
-        Same per-column fields as ``get_table_info``, plus ``schema_name`` and
-        ``table_name``. Lets change detection read a whole catalog without a
-        round trip per table.
+        Same per-column fields as ``get_table_info``, plus ``schema_name``,
+        ``table_name`` and ``attnum`` (which a rename leaves alone, so it says
+        which column a new name belongs to). Lets change detection read a whole
+        catalog without a round trip per table.
         """
         if schemas is not None and len(schemas) == 0:
             return PostgreSQLResponse(success=True, data=[])
@@ -827,6 +1467,7 @@ class PostgreSQLDataSource:
                 col.table_schema AS schema_name,
                 col.table_name,
                 col.column_name AS name,
+                col.ordinal_position::int AS attnum,
                 col.data_type,
                 col.udt_name,
                 col.character_maximum_length,
@@ -854,7 +1495,83 @@ class PostgreSQLDataSource:
             logger.error(f"🔧 [PostgreSQLDataSource] get_columns failed: {e}")
             return PostgreSQLResponse(success=False, error=str(e), message="Failed to get columns")
 
-    async def get_primary_keys_by_table(self, schemas: Optional[List[str]] = None) -> PostgreSQLResponse:
+    async def get_constraint_hashes(self, schemas: list[str] | None = None) -> PostgreSQLResponse:
+        """A digest of each table's keys and constraints, in one query.
+
+        Covers primary, unique, foreign-key and check constraints, and unique
+        indexes that back no constraint. A foreign key's definition names the
+        table it references, so renaming that table changes the digest of
+        every table pointing at it. A table with none of these has no row.
+
+        ``constraint_shape`` digests the same keys with no name in them:
+        columns by attnum, a referenced table by oid, expressions as stored.
+        A rename of the table, of a column or of a constraint, or of a table
+        it references, leaves it as it was.
+        """
+        if schemas is not None and len(schemas) == 0:
+            return PostgreSQLResponse(success=True, data=[])
+
+        query = """
+            WITH definitions AS (
+                SELECT con.conrelid AS relid,
+                       con.contype::text || ':' || con.conname || ':' || pg_get_constraintdef(con.oid) AS definition,
+                       concat_ws(':', con.contype::text, con.conkey::text, con.confrelid::text,
+                                 con.confkey::text, con.confupdtype::text, con.confdeltype::text,
+                                 con.confmatchtype::text, con.conbin::text) AS shape
+                FROM pg_constraint con
+                WHERE con.contype IN ('p', 'u', 'f', 'c') AND con.conrelid <> 0{top_level}
+                UNION ALL
+                SELECT i.indrelid, 'i:' || ic.relname || ':' || pg_get_indexdef(i.indexrelid),
+                       concat_ws(':', 'i', i.indkey::text, i.indexprs::text, i.indpred::text)
+                FROM pg_index i
+                JOIN pg_class ic ON ic.oid = i.indexrelid
+                WHERE i.indisunique
+                  -- A foreign key's conindid is the unique index it references, not one it is backed by.
+                  AND NOT EXISTS (
+                      SELECT 1 FROM pg_constraint con
+                      WHERE con.conindid = i.indexrelid AND con.contype IN ('p', 'u', 'x')
+                  )
+            )
+            SELECT n.nspname AS schema_name,
+                   c.relname AS table_name,
+                   md5(string_agg(d.definition, '|' ORDER BY d.definition)) AS constraint_hash,
+                   md5(string_agg(d.shape, '|' ORDER BY d.shape)) AS constraint_shape
+            FROM definitions d
+            JOIN pg_class c ON c.oid = d.relid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+        """
+        if schemas:
+            query += " AND n.nspname = ANY($1::text[])"
+        query += " GROUP BY n.nspname, c.relname ORDER BY n.nspname, c.relname;"
+
+        try:
+            query = query.replace("{top_level}", await self._top_level_constraints())
+            rows = await self._client.execute_query(query, (list(schemas),) if schemas else None)
+            return PostgreSQLResponse(success=True, data=rows)
+        except Exception as e:
+            logger.error(f"🔧 [PostgreSQLDataSource] get_constraint_hashes failed: {e}")
+            return PostgreSQLResponse(success=False, error=str(e), message="Failed to get constraints")
+
+    async def get_referencing_tables(self, oids: list[int]) -> PostgreSQLResponse:
+        """The tables with a foreign key to one of these (by ``pg_class.oid``)."""
+        if not oids:
+            return PostgreSQLResponse(success=True, data=[])
+        try:
+            query = (
+                "SELECT DISTINCT n.nspname AS schema_name, c.relname AS table_name"
+                + _CONSTRAINTS_OF_TABLE
+                + " WHERE con.contype = 'f' AND con.confrelid = ANY($1::oid[])"
+                + await self._top_level_constraints()
+                + " ORDER BY 1, 2;"
+            )
+            rows = await self._client.execute_query(query, ([int(oid) for oid in oids],))
+            return PostgreSQLResponse(success=True, data=rows)
+        except Exception as e:
+            logger.error(f"🔧 [PostgreSQLDataSource] get_referencing_tables failed: {e}")
+            return PostgreSQLResponse(success=False, error=str(e), message="Failed to get referencing tables")
+
+    async def get_primary_keys_by_table(self, schemas: list[str] | None = None) -> PostgreSQLResponse:
         """Primary-key columns of every table in ``schemas``, in key order, in one query."""
         if schemas is not None and len(schemas) == 0:
             return PostgreSQLResponse(success=True, data=[])
@@ -878,7 +1595,7 @@ class PostgreSQLDataSource:
             logger.error(f"🔧 [PostgreSQLDataSource] get_primary_keys_by_table failed: {e}")
             return PostgreSQLResponse(success=False, error=str(e), message="Failed to get primary keys")
 
-    async def get_table_stats(self, schemas: Optional[List[str]] = None) -> PostgreSQLResponse:
+    async def get_table_stats(self, schemas: list[str] | None = None) -> PostgreSQLResponse:
         """Get table statistics for change detection.
         
         Fetches row count estimates and cumulative DML counters from pg_stat_user_tables.
@@ -924,20 +1641,31 @@ class PostgreSQLDataSource:
                        sum(st.n_tup_del) AS n_tup_del
                 FROM partition_tree t JOIN pg_stat_all_tables st ON st.relid = t.relid
                 GROUP BY t.root
+            ),
+            partition_storage AS (
+                SELECT t.root,
+                       md5(string_agg(pc.relfilenode::text, ',' ORDER BY pc.oid)) AS storage_id
+                FROM partition_tree t JOIN pg_class pc ON pc.oid = t.relid
+                GROUP BY t.root
             )
             SELECT
                 n.nspname AS schema_name,
                 c.relname AS table_name,
                 c.relkind::text AS kind,
+                c.oid::bigint AS oid,
+                coalesce(ps.storage_id, c.relfilenode::text) AS storage_id,
                 coalesce(pt.n_live_tup, st.n_live_tup, 0)::bigint AS n_live_tup,
                 coalesce(pt.n_tup_ins, st.n_tup_ins, 0)::bigint AS n_tup_ins,
                 coalesce(pt.n_tup_upd, st.n_tup_upd, 0)::bigint AS n_tup_upd,
-                coalesce(pt.n_tup_del, st.n_tup_del, 0)::bigint AS n_tup_del
+                coalesce(pt.n_tup_del, st.n_tup_del, 0)::bigint AS n_tup_del,
+                (coalesce(st.analyze_count, 0) + coalesce(st.autoanalyze_count, 0))::bigint AS analyze_count
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             LEFT JOIN pg_stat_all_tables st ON st.relid = c.oid
             LEFT JOIN partition_totals pt ON pt.root = c.oid
+            LEFT JOIN partition_storage ps ON ps.root = c.oid
             WHERE c.relkind IN ('r', 'p')
+              AND NOT c.relispartition
               AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
               AND n.nspname !~ '^pg_(toast_)?temp_'
               AND (

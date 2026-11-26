@@ -12,6 +12,13 @@ export class HttpError extends BaseError {
   }
 }
 
+/**
+ * A 4xx that normal operation produces, such as the loser of a claim race. The
+ * domain has already logged the decision with its reason, so the error
+ * middleware records it at info instead of as an error with a stack.
+ */
+export class ExpectedRefusalError extends HttpError {}
+
 export class BadRequestError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super('BAD_REQUEST', message, HTTP_STATUS.BAD_REQUEST, metadata);
@@ -23,6 +30,12 @@ export class UnauthorizedError extends HttpError {
     super('UNAUTHORIZED', message, HTTP_STATUS.UNAUTHORIZED, metadata);
   }
 }
+/**
+ * A 401 for a credential the request submitted (a sign-in code, a password, a
+ * CAPTCHA, an identity-provider token) that is wrong, expired or already used.
+ * Answered like any 401; logged as bad_request, since no session expired.
+ */
+export class WrongCredentialError extends UnauthorizedError {}
 export class GoneError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super('GONE', message, HTTP_STATUS.GONE, metadata);
@@ -57,9 +70,26 @@ export class NotFoundError extends HttpError {
   }
 }
 
+/** A buffer write to a document that a newer stored write has replaced (404, so callers that treat a missing document upload a replacement). */
+export class DocumentRetiredError extends BaseError {
+  constructor(
+    message = 'Document has been replaced and takes no in-place writes',
+  ) {
+    super('DOCUMENT_RETIRED', message, HTTP_STATUS.NOT_FOUND, {
+      logLevel: 'warn',
+    });
+  }
+}
+
 export class ConflictError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super('CONFLICT', message, HTTP_STATUS.CONFLICT, metadata);
+  }
+}
+
+export class PreconditionFailedError extends HttpError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super('PRECONDITION_FAILED', message, 412, metadata);
   }
 }
 
@@ -114,6 +144,17 @@ export class UnprocessableEntityError extends HttpError {
       'UNPROCESSABLE_ENTITY',
       message,
       HTTP_STATUS.UNPROCESSABLE_ENTITY,
+      metadata,
+    );
+  }
+}
+
+export class UnsupportedMediaTypeError extends HttpError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super(
+      'UNSUPPORTED_MEDIA_TYPE',
+      message,
+      HTTP_STATUS.UNSUPPORTED_MEDIA_TYPE,
       metadata,
     );
   }

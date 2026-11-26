@@ -34,6 +34,7 @@ from helper.admin_route_table import (
     PYTHON_CONDITIONAL_ADMIN,
 )
 from helper.admin_routes import (
+    NODE_SRC,
     admin_routes_in_file,
     discover_admin_routes,
     discover_python_admin_handlers,
@@ -229,6 +230,18 @@ def test_a_router_mounted_outside_app_ts_is_found(tmp_path: Path) -> None:
     }
 
 
+def test_a_router_handed_through_a_switch_is_found_at_its_prefix(tmp_path: Path) -> None:
+    _write(tmp_path, "app.ts", """
+        export const SWITCHED_PREFIX = '/api/v1/switched';
+        this.app.use(
+          SWITCHED_PREFIX,
+          whenHarnessSwitchedOn(createSwitchedRouter(this.container)),
+        );
+        this.app.use('/api/v1/twice', wrap(other(createNestedRouter(container))));
+    """)
+    assert router_mounts(tmp_path) == {"createSwitchedRouter": {"/api/v1/switched"}}
+
+
 def _conditional_rows() -> dict[str, ConditionalRoute]:
     return {route.handler: route for route in CONDITIONAL_ROUTES}
 
@@ -250,13 +263,19 @@ def test_every_conditional_admin_handler_has_live_cases() -> None:
 
 
 def test_each_conditional_row_calls_the_route_its_handler_serves() -> None:
-    """The gateway may serve a handler under a longer path; the end of it must match."""
+    """The gateway may serve a handler under a longer path; the end of it must match. A
+    row the gateway serves under another path names the one it forwards to, which the
+    gateway's source must call."""
     served = discover_python_admin_handlers()
+    node_source = "\n".join(path.read_text(encoding="utf-8") for path in NODE_SRC.rglob("*.ts"))
     wrong = []
     for handler, route in _conditional_rows().items():
         method, _, path = served[handler].partition(" ")
         ending = re.sub(r"\\\{\w+\\\}", "[^/]+", re.escape(path.removeprefix("/api/v1"))) + "$"
-        called = re.sub(r"\{\w+\}", "x", route.path)
+        called = re.sub(r"\{\w+\}", "x", route.forwards_to or route.path)
+        forwarded = route.forwards_to.split("{", 1)[0].rstrip("/")
+        if forwarded and forwarded not in node_source:
+            wrong.append(f"{handler}: the gateway's source never calls {forwarded}")
         if route.method != method or not re.search(ending, called):
             wrong.append(f"{handler} serves {served[handler]}; its row calls {route.id}")
     assert not wrong, "Rows that call a different route than the handler they name:\n  " + "\n  ".join(wrong)
@@ -376,3 +395,56 @@ def test_placeholders_are_found_and_filled_at_any_depth() -> None:
     value = {"a": "{one}/x", "b": [{"c": ("{two}", 3)}], "d": None}
     assert placeholders(value) == {"one", "two"}
     assert fill(value, str.upper) == {"a": "ONE/x", "b": [{"c": ("TWO", 3)}], "d": None}
+
+
+def test_each_router_in_a_file_gets_its_own_prefix(tmp_path: Path) -> None:
+    _write(tmp_path, "app.ts", """
+        export const OTHER_PATH = '/api/v1/other';
+        app.use('/api/v1/first', createFirstRouter(container));
+        app.use(OTHER_PATH, createSecondRouter(container));
+    """)
+    _write(tmp_path, "two.routes.ts", """
+        export function createFirstRouter(container: Container) {
+          const router = Router();
+          router.get('/:id', userAdminCheck, handler);
+          return router;
+        }
+
+        export function createSecondRouter(container: Container) {
+          const router = Router();
+          router.put('/:id', userAdminCheck, handler);
+          return router;
+        }
+    """)
+    assert {(r.method, r.path) for r in discover_admin_routes(tmp_path)} == {
+        ("GET", "/api/v1/first/:id"), ("PUT", "/api/v1/other/:id"),
+    }
+
+
+@pytest.mark.parametrize("mount", [
+    "app.use(somePath(), createGatedRouter(container));",  # not a literal or a constant
+    "app.use(TWO_VALUES, createGatedRouter(container));",  # a constant with two values
+], ids=["call", "ambiguous-constant"])
+def test_an_admin_router_whose_prefix_cannot_be_read_is_named(tmp_path: Path, mount: str) -> None:
+    _write(tmp_path, "app.ts", f"""
+        app.use('/api/v1/open', createOpenRouter(container));
+        {mount}
+    """)
+    _write(tmp_path, "a.ts", "export const TWO_VALUES = '/api/v1/a';\n")
+    _write(tmp_path, "b.ts", "export const TWO_VALUES = '/api/v1/b';\n")
+    # The router with no admin check needs no prefix; only the gated one is reported.
+    _write(tmp_path, "mixed.routes.ts", """
+        export function createOpenRouter(container: Container) {
+          const router = Router();
+          router.get('/', handler);
+          return router;
+        }
+
+        export function createGatedRouter(container: Container) {
+          const router = Router();
+          router.delete('/:id', userAdminCheck, handler);
+          return router;
+        }
+    """)
+    with pytest.raises(AssertionError, match=r"mixed\.routes\.ts \(createGatedRouter\)"):
+        discover_admin_routes(tmp_path)

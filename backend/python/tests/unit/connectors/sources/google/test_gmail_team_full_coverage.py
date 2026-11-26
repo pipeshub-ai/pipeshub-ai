@@ -16,6 +16,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
@@ -223,7 +224,7 @@ class TestInit:
     @pytest.mark.asyncio
     async def test_init_no_auth(self, connector):
         connector.config_service.get_config = AsyncMock(return_value={"auth": {}})
-        with pytest.raises(ValueError, match="Service account credentials not found"):
+        with pytest.raises(ConnectorInitError, match="Service account credentials not found"):
             await connector.init()
 
     @pytest.mark.asyncio
@@ -231,7 +232,7 @@ class TestInit:
         connector.config_service.get_config = AsyncMock(return_value={
             "auth": {"someKey": "someValue"},
         })
-        with pytest.raises(ValueError, match="Admin email not found"):
+        with pytest.raises(ConnectorInitError, match="Admin email not found"):
             await connector.init()
 
 

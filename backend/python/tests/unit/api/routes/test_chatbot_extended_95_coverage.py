@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors
 from app.models.blocks import BlockType
+from tests.support.record_access import InMemoryRecordAccess
 
 
 # ---------------------------------------------------------------------------
@@ -78,194 +79,14 @@ async def test_build_text_blocks_parses_markdown():
     )
 
 
-@pytest.mark.parametrize("needs_ocr_per_page,len_pages,expect", [
-    (True, 1, True),
-    (False, 2, False),
-])
-def test_pdf_has_any_ocr_page_mocked_doc(needs_ocr_per_page, len_pages, expect):
-    """ocr_count / total >= 0.5 when all scanned pages."""
-    from app.api.routes.chatbot import _pdf_has_any_ocr_page
-
-    mock_pages = [MagicMock() for _ in range(len_pages)]
-    mock_pdf = MagicMock()
-    mock_pdf.pages = mock_pages
-
-    class FakePDFOpen:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def __enter__(self):
-            return mock_pdf
-
-        def __exit__(self, *_):
-            pass
-
-    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen), patch(
-        "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync",
-        return_value=[120] * len_pages,
-    ):
-        with patch(
-            "app.api.routes.chatbot.OCRStrategy.needs_ocr",
-            return_value=needs_ocr_per_page,
-        ):
-            assert _pdf_has_any_ocr_page(b"%PDF-x") is expect
-
-
-def test_pdf_has_any_empty_doc():
-    from app.api.routes.chatbot import _pdf_has_any_ocr_page
-
-    mock_pdf = MagicMock()
-    mock_pdf.pages = []
-
-    class FakePDFOpen:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def __enter__(self):
-            return mock_pdf
-
-        def __exit__(self, *_):
-            pass
-
-    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen), patch(
-        "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync", return_value=[],
-    ):
-        assert _pdf_has_any_ocr_page(b"%PDF-empty") is False
-
-
-def _fake_pdfplumber_open(page_count: int) -> type:
-    mock_pdf = MagicMock()
-    mock_pdf.pages = [MagicMock() for _ in range(page_count)]
-
-    class FakePDFOpen:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def __enter__(self) -> MagicMock:
-            return mock_pdf
-
-        def __exit__(self, *_) -> None:
-            pass
-
-    return FakePDFOpen
-
-
-class TestPdfOcrDecisionUsesTheTextLayer:
-    """PP-256: pdfplumber spent over a minute deciding that a report whose glyphs
-    were drawn as vector paths had no text. pdfium's per-page character counts
-    settle textless pages first; pdfplumber's heuristic sees only pages with text."""
-
-    def test_pages_without_a_text_layer_never_reach_pdfplumber(self) -> None:
-        from app.api.routes.chatbot import _pdf_has_any_ocr_page
-
-        with patch("app.api.routes.chatbot.pdfplumber.open", _fake_pdfplumber_open(3)), patch(
-            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync", return_value=[0, 0, 0],
-        ), patch("app.api.routes.chatbot.OCRStrategy.needs_ocr") as needs_ocr:
-            assert _pdf_has_any_ocr_page(b"%PDF-x") is True
-
-        needs_ocr.assert_not_called()
-
-    @pytest.mark.parametrize("pages_needing_ocr,expect", [(0, False), (1, True)])
-    def test_pages_with_text_keep_the_existing_heuristic(
-        self, pages_needing_ocr: int, expect: bool,
-    ) -> None:
-        """One textless page of four plus the heuristic's verdict on the other three."""
-        from app.api.routes.chatbot import _pdf_has_any_ocr_page
-
-        verdicts = [True] * pages_needing_ocr + [False] * (3 - pages_needing_ocr)
-        with patch("app.api.routes.chatbot.pdfplumber.open", _fake_pdfplumber_open(4)), patch(
-            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync",
-            return_value=[0, 40, 300, 12],
-        ), patch(
-            "app.api.routes.chatbot.OCRStrategy.needs_ocr", side_effect=verdicts,
-        ) as needs_ocr:
-            assert _pdf_has_any_ocr_page(b"%PDF-x") is expect
-
-        assert needs_ocr.call_count == 3
-
-    @pytest.mark.parametrize(
-        "char_counts",
-        [RuntimeError("pdfium could not open it"), [[0]]],
-        ids=["pdfium-error", "page-count-mismatch"],
-    )
-    def test_every_page_gets_the_heuristic_when_pdfium_cannot_help(
-        self, char_counts: object,
-    ) -> None:
-        from app.api.routes.chatbot import _pdf_has_any_ocr_page
-
-        with patch("app.api.routes.chatbot.pdfplumber.open", _fake_pdfplumber_open(3)), patch(
-            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync", side_effect=char_counts,
-        ), patch(
-            "app.api.routes.chatbot.OCRStrategy.needs_ocr", return_value=False,
-        ) as needs_ocr:
-            assert _pdf_has_any_ocr_page(b"%PDF-x") is False
-
-        assert needs_ocr.call_count == 3
-
-    def test_a_real_pdf_of_vector_shapes_is_sent_to_ocr(self) -> None:
-        pytest.importorskip("reportlab")
-        from io import BytesIO
-
-        from reportlab.lib.pagesizes import letter
-        from reportlab.pdfgen import canvas
-
-        from app.api.routes.chatbot import _pdf_has_any_ocr_page
-        from app.modules.parsers.pdf import pdf_rasterizer
-        from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-
-        buf = BytesIO()
-        c = canvas.Canvas(buf, pagesize=letter)
-        for _ in range(2):
-            c.rect(72, 600, 200, 100, fill=1)
-            c.showPage()
-        c.drawString(72, 700, "A page with a real text layer")
-        c.showPage()
-        c.save()
-
-        # The worker runs in-process here; the pool only adds process isolation.
-        with patch(
-            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync",
-            side_effect=pdf_rasterizer._worker_count_chars_from_bytes,
-        ), patch.object(OCRStrategy, "needs_ocr", wraps=OCRStrategy.needs_ocr) as needs_ocr:
-            assert _pdf_has_any_ocr_page(buf.getvalue()) is True
-
-        assert needs_ocr.call_count == 1
-
-
-def test_pdf_page_count_fixture():
-    from app.api.routes.chatbot import _pdf_page_count
-
-    mock_pdf = MagicMock()
-    mock_pdf.pages = [MagicMock() for _ in range(5)]
-
-    class FakePDFOpen:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def __enter__(self):
-            return mock_pdf
-
-        def __exit__(self, *_):
-            pass
-
-    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen):
-        assert _pdf_page_count(b"%PDF-x") == 5
-
-
 def test_build_pdf_image_blocks_one_page():
     from app.api.routes.chatbot import _build_pdf_image_blocks
 
-    mock_image = MagicMock()
-
-    with patch(
-        "app.api.routes.chatbot.render_all_pages_as_pil_from_bytes_sync",
-        return_value=[mock_image],
-    ) as mock_render:
-        bc = _build_pdf_image_blocks(b"%PDF-sample")
-        assert len(bc.blocks) == 1
-        assert bc.blocks[0].type == BlockType.IMAGE
-        mock_render.assert_called_once_with(b"%PDF-sample", resolution=144)
-        mock_image.save.assert_called_once()
+    bc = _build_pdf_image_blocks([b"\x89PNG"])
+    assert len(bc.blocks) == 1
+    assert bc.blocks[0].type == BlockType.IMAGE
+    assert bc.blocks[0].data == {"uri": "data:image/png;base64,iVBORw=="}
+    assert bc.blocks[0].citation_metadata.page_number == 1
 
 
 @pytest.mark.asyncio
@@ -402,11 +223,11 @@ def _permission_graph(edges=None):
 
     gp = AsyncMock()
     gp.get_user_by_user_id = AsyncMock(
-        side_effect=lambda user_id: {"_key": f"key-{user_id}", "orgId": "org-1"}
+        side_effect=lambda user_id, **_: {"_key": f"key-{user_id}", "orgId": "org-1"}
     )
     gp.get_edge = AsyncMock(side_effect=_get_edge)
     # Every record here is a chat attachment of the grantor's org.
-    gp.get_document = AsyncMock(side_effect=lambda record_id, _collection: {
+    gp.get_document = AsyncMock(side_effect=lambda record_id, _collection, **_: {
         "orgId": "org-1", "origin": "UPLOAD", "connectorId": "attachments_org-1",
     })
     gp.batch_create_edges = AsyncMock()
@@ -463,7 +284,7 @@ async def test_grant_attachment_permissions_skips_unknown_users_and_empty_payloa
 
     gp = _permission_graph({("key-owner", "rec-1"): "OWNER"})
     gp.get_user_by_user_id = AsyncMock(
-        side_effect=lambda user_id: None if user_id == "ghost" else {"_key": f"key-{user_id}", "orgId": "org-1"}
+        side_effect=lambda user_id, **_: None if user_id == "ghost" else {"_key": f"key-{user_id}", "orgId": "org-1"}
     )
 
     with patch.object(cr.logger, "warning", MagicMock()):
@@ -486,7 +307,7 @@ async def test_grant_attachment_permissions_skips_users_of_another_org() -> None
 
     gp = _permission_graph({("key-owner", "rec-1"): "OWNER"})
     gp.get_user_by_user_id = AsyncMock(
-        side_effect=lambda user_id: {"_key": f"key-{user_id}", "orgId": "org-2" if user_id == "outsider" else "org-1"}
+        side_effect=lambda user_id, **_: {"_key": f"key-{user_id}", "orgId": "org-2" if user_id == "outsider" else "org-1"}
     )
 
     with patch.object(cr.logger, "warning", MagicMock()):
@@ -562,40 +383,77 @@ async def test_get_artifact_record_ids_for_conversation_paginates_in_stable_orde
     assert first_kwargs["raise_on_error"] is True
 
 
-@pytest.mark.asyncio
-async def test_grant_artifact_permissions_grants_once_then_is_a_read_only_no_op():
-    from app.api.routes.chatbot import grant_artifact_permissions
+def _artifact_graph(edges) -> AsyncMock:
+    """`_permission_graph` whose records are the conversation's two artifacts and one KB file."""
+    from types import SimpleNamespace
 
-    edges = {("key-owner", "artifact-1"): "OWNER", ("key-owner", "artifact-2"): "OWNER"}
+    from app.models.entities import RecordType
+
     gp = _permission_graph(edges)
     gp.get_documents_paginated = AsyncMock(
         return_value=[{"_key": "artifact-1"}, {"_key": "artifact-2"}]
     )
-    body = {"conversationId": "conv-1", "userIds": ["viewer"]}
+    records = {
+        rid: SimpleNamespace(id=rid, org_id="org-1", record_type=RecordType.ARTIFACT)
+        for rid in ("artifact-1", "artifact-2")
+    }
+    records["kb-1"] = SimpleNamespace(id="kb-1", org_id="org-1", record_type=RecordType.FILE)
+    gp.get_typed_records_batch = AsyncMock(
+        side_effect=lambda ids: {rid: records[rid] for rid in ids if rid in records}
+    )
+    InMemoryRecordAccess().readable("viewer", "org-1", "kb-1").user("owner", "org-1").record(
+        "kb-secret", "org-1"
+    ).serve(gp)
+    return gp
+
+
+@pytest.mark.asyncio
+async def test_grant_artifact_permissions_grants_nothing_without_provenance_and_revokes_old_grants() -> None:
+    """AV-9: no artifact records its sources yet, so sharing grants no READER, and
+    a READER granted before the check existed is removed; OWNER is untouched."""
+    from app.api.routes.chatbot import grant_artifact_permissions
+
+    gp = _artifact_graph({
+        ("key-owner", "artifact-1"): "OWNER",
+        ("key-owner", "artifact-2"): "OWNER",
+        ("key-viewer", "artifact-1"): "READER",
+    })
+    body = {"conversationId": "conv-1", "userIds": ["viewer", "owner"]}
 
     out = await grant_artifact_permissions(_json_request(body), gp, _GRANTOR_CLAIMS)
 
-    assert out["granted"] == 2
-    assert gp.get_documents_paginated.await_args.kwargs["filters"] == {
-        "orgId": "org-1",
-        "conversationId": "conv-1",
-    }
-    assert sorted(_edge_pairs(gp.batch_create_edges.await_args)) == [
-        ("key-viewer", "artifact-1"),
-        ("key-viewer", "artifact-2"),
-    ]
+    assert out == {"granted": 0, "revoked": 1}
+    gp.batch_create_edges.assert_not_awaited()
+    assert _edge_pairs(gp.batch_delete_edges.await_args) == [("key-viewer", "artifact-1")]
 
-    # Shared viewer reopens the conversation: edges already exist, nothing is written.
-    gp_caught_up = _permission_graph({
-        **edges,
-        ("key-viewer", "artifact-1"): "READER",
-        ("key-viewer", "artifact-2"): "READER",
-    })
-    gp_caught_up.get_documents_paginated = gp.get_documents_paginated
-    out_again = await grant_artifact_permissions(_json_request(body), gp_caught_up, _GRANTOR_CLAIMS)
 
-    assert out_again["granted"] == 0
-    gp_caught_up.batch_create_edges.assert_not_awaited()
+@pytest.mark.asyncio
+async def test_grant_artifact_permissions_grants_what_provenance_allows_once() -> None:
+    """AV-10: READER only on the artifact whose sources the viewer can read; a reopen writes nothing."""
+    from app.api.routes import chatbot
+    from app.services.artifact_registry.viewer_access import ArtifactViewerAccess
+
+    class Provenance:
+        async def sources_of(self, org_id, artifact_ids) -> dict[str, frozenset[str] | None]:
+            known = {"artifact-1": frozenset({"kb-1"}), "artifact-2": frozenset({"kb-secret"})}
+            return {aid: known.get(aid) for aid in artifact_ids}
+
+    edges = {("key-owner", "artifact-1"): "OWNER", ("key-owner", "artifact-2"): "OWNER"}
+    gp = _artifact_graph(edges)
+    body = {"conversationId": "conv-1", "userIds": ["viewer"]}
+    with patch.object(chatbot, "artifact_viewer_access", lambda graph: ArtifactViewerAccess(graph, Provenance())):
+        out = await chatbot.grant_artifact_permissions(_json_request(body), gp, _GRANTOR_CLAIMS)
+
+        assert out == {"granted": 1, "revoked": 0}
+        assert _edge_pairs(gp.batch_create_edges.await_args) == [("key-viewer", "artifact-1")]
+        assert gp.batch_create_edges.await_args.args[0][0]["role"] == "READER"
+
+        caught_up = _artifact_graph({**edges, ("key-viewer", "artifact-1"): "READER"})
+        again = await chatbot.grant_artifact_permissions(_json_request(body), caught_up, _GRANTOR_CLAIMS)
+
+    assert again == {"granted": 0, "revoked": 0}
+    caught_up.batch_create_edges.assert_not_awaited()
+    caught_up.batch_delete_edges.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -608,7 +466,7 @@ async def test_grant_artifact_permissions_short_circuits_without_users_or_artifa
     out = await grant_artifact_permissions(
         _json_request({"conversationId": "conv-1", "userIds": []}), gp, _GRANTOR_CLAIMS
     )
-    assert out["granted"] == 0
+    assert out == {"granted": 0, "revoked": 0}
     gp.get_documents_paginated.assert_not_awaited()
 
     out_no_artifacts = await grant_artifact_permissions(
@@ -1210,7 +1068,7 @@ async def test_upload_pdf_regular_and_scan_cap():
             with patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=pym):
 
 
-                with patch("app.api.routes.chatbot._pdf_has_any_ocr_page", return_value=False):
+                with patch("app.api.routes.chatbot.needs_ocr_and_page_count", return_value=(False, 1)):
 
 
                     with patch(
@@ -1400,33 +1258,29 @@ async def test_upload_pdf_regular_and_scan_cap():
 
 
 
-                with patch("app.api.routes.chatbot._pdf_has_any_ocr_page", return_value=True):
-
-
-
-
-                    with patch(
-
-                        "app.api.routes.chatbot._pdf_page_count",
-
-                        return_value=OCR_IMAGE_PAGE_CAP + 1,
-
-                    ):
-
-
-                        with pytest.raises(HTTPException) as exc:
+                with patch(
+                    "app.api.routes.chatbot.needs_ocr_and_page_count",
+                    return_value=(True, OCR_IMAGE_PAGE_CAP + 1),
+                ):
 
 
 
 
 
-                            await upload_chat_attachments(rr_bad, gp_bad, AsyncMock())
+
+                    with pytest.raises(HTTPException) as exc:
 
 
 
 
 
-                        assert "too many scanned pages" in str(exc.value.detail)
+                        await upload_chat_attachments(rr_bad, gp_bad, AsyncMock())
+
+
+
+
+
+                    assert "too many scanned pages" in str(exc.value.detail)
 
 
 
@@ -1689,7 +1543,6 @@ async def test_delete_chat_attachment_early_and_full():
 
 
 
-    gp.delete_nodes = AsyncMock()
 
 
 
@@ -1698,7 +1551,7 @@ async def test_delete_chat_attachment_early_and_full():
 
 
 
-    await delete_chat_attachment("rid", rr, gp)
+    await delete_chat_attachment("rid", rr, gp, MagicMock())
 
 
 
@@ -1707,7 +1560,7 @@ async def test_delete_chat_attachment_early_and_full():
 
     gp.delete_nodes_and_edges.assert_awaited()
 
-    gp.delete_nodes.assert_awaited()
+    assert gp.delete_nodes_and_edges.await_count == 2
 
 
 
@@ -1906,49 +1759,48 @@ async def test_upload_pdf_ocr_success_small_doc():
             with patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=pym):
 
 
-                with patch("app.api.routes.chatbot._pdf_has_any_ocr_page", return_value=True):
-
-
-                    with patch("app.api.routes.chatbot._pdf_page_count", return_value=5):
-
-
-                        with patch(
-
-
-                            "app.api.routes.chatbot._build_pdf_image_blocks",
+                with patch("app.api.routes.chatbot.needs_ocr_and_page_count", return_value=(True, 5)):
 
 
 
 
+                    with patch(
 
 
-                            return_value=BlocksContainer(blocks=[], block_groups=[]),
+                        "app.api.routes.chatbot.render_all_pages_as_png",
 
 
 
 
 
-                        ):
+
+                        return_value=[],
 
 
-                            with patch("app.api.routes.chatbot.convert_record_dict_to_record",
-
-                                      return_value=fakerec):
 
 
-                                with patch("app.api.routes.chatbot.TransformContext",
+
+                    ):
 
 
-                                           MagicMock(side_effect=lambda **_: MagicMock())):
+                        with patch("app.api.routes.chatbot.convert_record_dict_to_record",
+
+                                  return_value=fakerec):
 
 
-                                    with patch("app.api.routes.chatbot.SinkOrchestrator",
+                            with patch("app.api.routes.chatbot.TransformContext",
 
 
-                                               return_value=orch):
+                                       MagicMock(side_effect=lambda **_: MagicMock())):
 
 
-                                        await upload_chat_attachments(rr, gp, AsyncMock())
+                                with patch("app.api.routes.chatbot.SinkOrchestrator",
+
+
+                                           return_value=orch):
+
+
+                                    await upload_chat_attachments(rr, gp, AsyncMock())
 
 
     orch.index.assert_awaited()
@@ -2067,7 +1919,7 @@ async def test_upload_pdf_parse_generic_failure():
             with patch("app.api.routes.chatbot.PDFPlumberOpenCVProcessor", return_value=pym):
 
 
-                with patch("app.api.routes.chatbot._pdf_has_any_ocr_page", return_value=False):
+                with patch("app.api.routes.chatbot.needs_ocr_and_page_count", return_value=(False, 1)):
 
 
                     with pytest.raises(HTTPException) as ex:

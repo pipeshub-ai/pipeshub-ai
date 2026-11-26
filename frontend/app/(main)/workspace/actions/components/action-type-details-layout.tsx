@@ -1,7 +1,7 @@
 'use client';
 
 import { useTranslation } from 'react-i18next';
-import { Box, Button, Callout, Flex, Heading, SegmentedControl, Spinner, Text, TextField } from '@radix-ui/themes';
+import { Box, Button, Callout, Flex, Heading, Spinner, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
@@ -13,7 +13,8 @@ import { useBrand } from '@/lib/branding';
 import { ToolsetInstanceRowCard } from './toolset-instance-row-card';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 
 export type ActionInstanceAuthTab = 'all' | 'authenticated' | 'not_authenticated';
 
@@ -117,7 +118,7 @@ export function ActionTypeDetailsLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 32,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
         paddingBottom: 64,
         paddingInline: pagePaddingX(100),
         overflowY: 'auto',
@@ -145,7 +146,7 @@ export function ActionTypeDetailsLayout({
             {scopeBackLabel}
           </Text>
         </button>
-        <MaterialIcon name="chevron_right" size={14} color="var(--gray-9)" />
+        <MaterialIcon name="chevron_right" size={14} color="var(--gray-11)" />
         <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {title}
         </Text>
@@ -262,18 +263,11 @@ export function ActionTypeDetailsLayout({
 
       {instanceFilter ? (
         <Flex align="center" justify="between" gap="4" wrap="wrap" style={{ width: '100%' }}>
-          <SegmentedControl.Root
-            size="2"
+          <SegmentedTabs
             value={instanceFilter.tab}
-            disabled={listRefreshing}
-            onValueChange={(v) => instanceFilter.onTabChange(v as ActionInstanceAuthTab)}
-          >
-            {tabItems.map((item) => (
-              <SegmentedControl.Item key={item.value} value={item.value}>
-                {item.label}
-              </SegmentedControl.Item>
-            ))}
-          </SegmentedControl.Root>
+            onValueChange={(v) => instanceFilter.onTabChange(v)}
+            items={tabItems.map((item) => ({ value: item.value, label: item.label, disabled: listRefreshing }))}
+          />
           <TextField.Root
             placeholder={t('workspace.actions.typeDetail.searchInstances')}
             value={instanceFilter.search}
@@ -282,7 +276,7 @@ export function ActionTypeDetailsLayout({
             style={{ minWidth: 220, maxWidth: 360, flex: '0 1 360px' }}
           >
             <TextField.Slot side="right">
-              <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+              <MaterialIcon name="search" size={16} color="var(--gray-11)" />
             </TextField.Slot>
           </TextField.Root>
         </Flex>
@@ -291,13 +285,13 @@ export function ActionTypeDetailsLayout({
       {isLoading && instances.length === 0 ? (
         <Flex align="center" justify="center" gap="3" style={{ paddingTop: 80 }}>
           <Spinner size="2" style={{ color: 'var(--gray-11)' }} />
-          <Text size="2" style={{ color: 'var(--gray-9)' }}>
+          <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.actions.loading')}
           </Text>
         </Flex>
       ) : !isLoading && instances.length === 0 ? (
         <Flex direction="column" align="center" justify="center" gap="2" style={{ paddingTop: 80 }}>
-          <MaterialIcon name="extension" size={48} color="var(--gray-9)" />
+          <MaterialIcon name="extension" size={48} color="var(--gray-11)" />
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.actions.typeDetail.empty')}
           </Text>
@@ -306,8 +300,8 @@ export function ActionTypeDetailsLayout({
         <Box style={{ width: '100%' }}>
           {listRefreshing ? (
             <Flex align="center" gap="2" mb="3" role="status" aria-live="polite">
-              <Spinner size="1" style={{ color: 'var(--gray-10)' }} />
-              <Text size="1" style={{ color: 'var(--gray-10)', letterSpacing: '0.02em' }}>
+              <Spinner size="1" style={{ color: 'var(--gray-11)' }} />
+              <Text size="1" style={{ color: 'var(--gray-11)', letterSpacing: '0.02em' }}>
                 {t('workspace.actions.typeDetail.refreshingList')}
               </Text>
             </Flex>

@@ -1,0 +1,60 @@
+# Union-rule records under a limited-access folder (a shared drive): the Union row must keep a scope restricted by
+# its rule in the exclusion set, and a multi-parent page that inherits only its restricted parent.
+- id: SCOPES-ADV-07
+  title: Shared drive readable by all staff; a limited-access folder for legal; files inside inherit the folder
+  source: review of the viewer scopes (Union row, drive_access.py item_inherits_parent with inheritedPermissionsDisabled)
+  rule: union
+  world:
+    principals:
+      - {id: staff}
+      - {id: lawyer}
+      - {id: g:all, kind: group}
+      - {id: g:legal, kind: group}
+    nodes:
+      - {id: app, kind: app, app_type: DRIVE}
+      - {id: sd, kind: group, connector: app, rule: OPEN, parents: [app], inherits: [app], belongs: [app]}
+      - {id: open, kind: record, connector: app, rule: OPEN, parents: [sd], inherits: [sd], belongs: [sd]}
+      - {id: limited, kind: record, connector: app, rule: OPEN, parents: [sd], belongs: [sd]}
+      - {id: contract, kind: record, connector: app, rule: OPEN, parents: [limited], inherits: [limited], belongs: [sd]}
+      - {id: shared, kind: record, connector: app, rule: OPEN, parents: [limited], belongs: [sd]}
+    grants:
+      - [g:all, sd]
+      - [g:legal, limited]
+      - [staff, shared]
+    memberships:
+      - [staff, g:all]
+      - [lawyer, g:all]
+      - [lawyer, g:legal]
+    gates:
+      - [staff, app]
+      - [lawyer, app]
+  expect:
+    verdicts:
+      staff: {open: admit, limited: deny, contract: deny, shared: admit}
+      lawyer: {limited: admit, contract: admit, shared: deny}
+  tags: [regression, scopes, union]
+- id: SCOPES-ADV-08
+  title: A page with two parents, inheriting only the restricted one; the other parent is readable
+  source: review of the viewer scopes (is pruning restricted scopes with no readable ancestor sound?)
+  rule: intersection
+  world:
+    principals:
+      - {id: v}
+      - {id: g:t, kind: group}
+    nodes:
+      - {id: app, kind: app, app_type: CONFLUENCE}
+      - {id: S, kind: group, connector: app, rule: RESTRICTED, parents: [app], inherits: [app], belongs: [app]}
+      - {id: T, kind: group, connector: app, rule: RESTRICTED, parents: [app], inherits: [app], belongs: [app]}
+      - {id: r, kind: record, connector: app, rule: RESTRICTED, parents: [S], inherits: [S], belongs: [S]}
+      - {id: p, kind: record, connector: app, rule: STRICT, parents: [T], inherits: [T], belongs: [T]}
+      - {id: X, kind: record, connector: app, rule: STRICT, parents: [r, p], inherits: [r], belongs: [S]}
+    grants:
+      - [g:t, T]
+    memberships:
+      - [v, g:t]
+    gates:
+      - [v, app]
+  expect:
+    verdicts:
+      v: {T: admit, p: admit, S: deny, r: deny, X: deny}
+  tags: [regression, scopes, pruning]

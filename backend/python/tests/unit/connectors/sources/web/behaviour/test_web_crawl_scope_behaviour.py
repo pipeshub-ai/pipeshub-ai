@@ -299,3 +299,53 @@ async def test_a_query_page_stored_before_keys_were_sorted_is_updated_not_duplic
 
     list_records = [r for r in db.records.values() if "/list" in r.external_record_id]
     assert [(r.id, r.external_record_id) for r in list_records] == [(stored.id, "http://site.test/list?a=1&b=2")]
+
+
+async def test_links_to_robots_txt_and_sitemaps_are_not_stored_as_pages(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    """Found on a real site: a footer link to /robots.txt became a record that then failed to index."""
+    crawler_files = [
+        "/ROBOTS.TXT", "/robots.txt/", "/sitemap.xml?x=1", "/blog/sitemap-posts.xml.gz",
+        "/post-sitemap.xml", "/Page-Sitemap.XML",
+    ]
+    site.add("http://site.test/robots.txt", Page(body=b"User-agent: *\nAllow: /\n", content_type="text/plain"))
+    site.html(START_URL, "Home", "/robots.txt", "/sitemap.xml", *crawler_files, "/docs/robots.txt", "/docs/feed.xml")
+    for path in ["/sitemap.xml", *crawler_files]:
+        site.add(f"http://site.test{path}", Page(body=b"<urlset/>", content_type="application/xml"))
+    site.add("http://site.test/docs/robots.txt", Page(body=b"Robots, explained", content_type="text/plain"))
+    site.add("http://site.test/docs/feed.xml", Page(body=b"<rss/>", content_type="application/xml"))
+
+    await (await make_connector()).run_sync()
+
+    assert not {"http://site.test/robots.txt", "http://site.test/sitemap.xml"} & _page_urls(db)
+    for path in crawler_files:
+        assert site.gets(f"http://site.test{path}") == 0, path
+    # Only the site's root robots.txt is the crawler's; same-named files elsewhere are ordinary links.
+    assert site.gets("http://site.test/docs/robots.txt") == 1
+    assert site.gets("http://site.test/docs/feed.xml") == 1
+
+
+async def test_a_redirect_landing_on_robots_txt_is_not_stored(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.add("http://site.test/robots.txt", Page(body=b"User-agent: *\nAllow: /\n", content_type="text/plain"))
+    site.html(START_URL, "Home", "/crawlers")
+    site.redirect("http://site.test/crawlers", "/robots.txt", status=301)
+
+    await (await make_connector()).run_sync()
+
+    assert _page_urls(db) == {START_URL}
+
+
+async def test_html_sitemap_pages_are_stored_like_any_page(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    pages = ["/sitemap", "/sitemap.html", "/docs/sitemap/", "/my-sitemap-guide"]
+    site.html(START_URL, "Home", *pages)
+    for path in pages:
+        site.html(f"http://site.test{path}", "Site map")
+
+    await (await make_connector()).run_sync()
+
+    assert _page_urls(db) == {START_URL, *(f"http://site.test{path}" for path in pages)}

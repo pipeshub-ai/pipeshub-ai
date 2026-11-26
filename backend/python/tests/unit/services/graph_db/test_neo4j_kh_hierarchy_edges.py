@@ -25,10 +25,17 @@ _EVERY_STEP = re.compile(
 )
 
 
+# A count of every edge out of a node, which Neo4j reads from the node's degree: a bound on its children that lists and names nothing.
+_DEGREE = re.compile(r"COUNT \{ \(\w+\)-\[:NODE_RELATION\]->\(\) \}")
+
+
 def _untyped_hops(query: str) -> list[str]:
     """NODE_RELATION hops of a statement that do not test the relationship type."""
     loose = []
+    degrees = {m.start() + m.group(0).index("[") for m in _DEGREE.finditer(query)}
     for match in _HOP.finditer(query):
+        if match.start() in degrees:
+            continue
         following = query[match.end():match.end() + 400]
         if match.group("many"):
             typed = _EVERY_STEP.search(following)
@@ -122,8 +129,8 @@ class TestListingHelpersWalkOnlyHierarchyEdges:
 
     async def test_the_groups_under_a_declared_group(self) -> None:
         provider = _provider(state=False)
-        await provider._kh_v3_declared_groups(["g1"], None)
-        _assert_only_hierarchy(provider, walks=1)
+        await provider._kh_v3_declared_scope(["g1"], "app1", ["g1"], None, None)
+        _assert_only_hierarchy(provider, walks=2)
 
     async def test_the_granted_children_of_the_app(self) -> None:
         provider = _provider(state=False)

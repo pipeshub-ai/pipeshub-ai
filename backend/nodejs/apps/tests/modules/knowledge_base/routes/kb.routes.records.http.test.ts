@@ -19,6 +19,9 @@ import {
   startKbHarness,
 } from './kb-http-harness'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
+import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
+import { Logger } from '../../../../src/libs/services/logger.service'
+import { captureLogRecords, newRequestId, recordsOf } from '../../../helpers/log-capture'
 
 const TRACEBACK = {
   detail:
@@ -145,7 +148,41 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
       const r = await call(h, 'GET', `/record/${RECORD_ID}`, { token })
 
       expect(r.status).to.equal(404)
-      expect(errorMessage(r)).to.equal(`Record ${RECORD_ID} not found`)
+      expect(errorMessage(r)).to.equal('Record not found')
+    })
+
+    it('a record id that is an email: the 404 and every line of the request leave it out', async () => {
+      const email = 'n5n-fake-ada@example.com'
+      const requestId = newRequestId('kb-record-email')
+      const records = captureLogRecords()
+      const middlewareLogger = (ErrorMiddleware as any).logger
+      // Another file may have replaced the root since ErrorMiddleware took its logger at load.
+      ;(ErrorMiddleware as any).logger = Logger.getInstance({ service: 'ErrorMiddleware' })
+      try {
+        h.backend.on('GET', `/api/v1/records/${encodeURIComponent(email)}`, {
+          status: 404,
+          body: { detail: 'You do not have access to this record' },
+        })
+
+        const r = await call(h, 'GET', `/record/${email}`, { token, headers: { 'x-request-id': requestId } })
+        const deadline = Date.now() + 5000
+        while (Date.now() < deadline && !recordsOf(records, requestId).some((l) => l.message === 'http.request.end')) {
+          await new Promise((resolve) => setImmediate(resolve))
+        }
+
+        expect(r.status).to.equal(404)
+        expect(errorMessage(r)).to.equal('Record not found')
+        expect(forwarded('GET', `/api/v1/records/${encodeURIComponent(email)}`)).to.have.length(1)
+        const lines = recordsOf(records, requestId)
+        const errorLine = lines.find((l) => l.message === 'http.request.error')!
+        expect(errorLine.metadata.params).to.deep.equal({ recordId: '[not an id]' })
+        expect(errorLine.metadata.error.message).to.equal('Record not found')
+        // An Error's message and stack are not enumerable: spell them out so the scan sees them.
+        const text = JSON.stringify(lines, (_k, v: unknown) => (v instanceof Error ? { ...Object.fromEntries(Object.entries(v)), message: v.message, stack: v.stack } : v))
+        expect(text).to.not.include('n5n-fake-ada')
+      } finally {
+        ;(ErrorMiddleware as any).logger = middlewareLogger
+      }
     })
 
     it('lists who has access to a knowledge base', async () => {
@@ -181,9 +218,7 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
       expect(h.backend.calls).to.deep.equal([])
     })
 
-    it("passes on the source's wait time when a file is rate limited", async function () {
-      // The shared axios instance retries a 429 after its Retry-After, three times.
-      this.timeout(15000)
+    it("passes on the source's wait time when a file is rate limited", async () => {
       h.backend.on('GET', `/api/v1/stream/record/${RECORD_ID}`, {
         status: 429,
         headers: { 'retry-after': '1' },
@@ -435,8 +470,38 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
       expect(Object.fromEntries(sent.query)).to.deep.equal({ page: '2', limit: '10' })
     })
 
-    for (const q of ['page=0', 'page=-1', 'page=abc', 'page=1.5', 'page=9999999999', 'limit=0', 'limit=101', 'page=1&page=2']) {
-      it(`refuses ${q} before asking the connector service`, async () => {
+    it('passes on the cursor of the page before', async () => {
+      h.backend.on('GET', TRASH, { status: 200, body: page })
+
+      const r = await call(h, 'GET', `/${KB_ID}/trash?page=3&limit=10&cursor=eyJrYiI6ImsifQ`, { token })
+
+      expect(r.status).to.equal(200)
+      expect(Object.fromEntries(forwarded('GET', TRASH)[0]!.query)).to.deep.equal({ page: '3', limit: '10', cursor: 'eyJrYiI6ImsifQ' })
+    })
+
+    it('answers a page number past the cap with its own code and the way to page further', async () => {
+      const detail = 'Page numbers reach the first 10,000 deleted items. To go further, ask for the next page with the nextCursor of the page before it.'
+      h.backend.on('GET', TRASH, { status: 400, body: { detail, errorCode: 'PAGE_BEYOND_LIMIT' } })
+
+      const r = await call(h, 'GET', `/${KB_ID}/trash?page=401`, { token })
+
+      expect(r.status).to.equal(400)
+      expect(errorMessage(r)).to.equal(detail)
+      expect(JSON.stringify(r.body)).to.include('HTTP_PAGE_BEYOND_LIMIT')
+    })
+
+    it('keeps any other 400 a plain bad request', async () => {
+      h.backend.on('GET', TRASH, { status: 400, body: { detail: 'Start again from the first page.' } })
+
+      const r = await call(h, 'GET', `/${KB_ID}/trash?cursor=abc`, { token })
+
+      expect(r.status).to.equal(400)
+      expect(JSON.stringify(r.body)).to.not.include('PAGE_BEYOND_LIMIT')
+    })
+
+    for (const q of ['page=0', 'page=-1', 'page=abc', 'page=1.5', 'page=9999999999', 'limit=0', 'limit=101', 'page=1&page=2',
+      'cursor=', `cursor=${'x'.repeat(1025)}`, 'cursor=a&cursor=b']) {
+      it(`refuses ${q.slice(0, 40)} before asking the connector service`, async () => {
         const r = await call(h, 'GET', `/${KB_ID}/trash?${q}`, { token })
         expect(r.status).to.equal(400)
         expect(h.backend.calls).to.deep.equal([])
@@ -521,6 +586,17 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
       expect(r.status).to.equal(503)
       expect(r.headers.get('retry-after')).to.equal('7')
       expect(errorMessage(r)).to.equal('This part of PipesHub is briefly unavailable. Please try again in 7 seconds.')
+    })
+
+    it('passes a listing the graph store could not answer through as a 503 with its wait time', async () => {
+      const unreachable = "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
+      h.backend.on('GET', '/api/v1/knowledge-hub/nodes', { status: 503, headers: { 'retry-after': '5' }, body: { detail: unreachable } })
+
+      const r = await call(h, 'GET', '/knowledge-hub/nodes', { token })
+
+      expect(r.status).to.equal(503)
+      expect(r.headers.get('retry-after')).to.equal('5')
+      expect(errorMessage(r)).to.equal(unreachable)
     })
   })
 

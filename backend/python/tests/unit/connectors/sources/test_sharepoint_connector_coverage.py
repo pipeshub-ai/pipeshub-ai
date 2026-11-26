@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
@@ -208,7 +209,7 @@ class TestSharePointInitCertificate:
                 "privateKey": "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----",
             }
         })
-        with pytest.raises(ValueError, match="Failed to set up certificate"):
+        with pytest.raises(ConnectorInitError, match="could not be read"):
             await c.init()
 
     @pytest.mark.asyncio
@@ -223,7 +224,7 @@ class TestSharePointInitCertificate:
                 "privateKey": 12345,
             }
         })
-        with pytest.raises(ValueError, match="Failed to set up certificate"):
+        with pytest.raises(ConnectorInitError, match="could not be read"):
             await c.init()
 
     @pytest.mark.asyncio
@@ -635,7 +636,9 @@ class TestSharePointSyncUserGroups:
         mock_http = AsyncMock()
         mock_http.__aenter__ = AsyncMock(return_value=mock_http)
         mock_http.__aexit__ = AsyncMock(return_value=False)
+        # _get_sharepoint_access_token imports the credential itself, so it is patched where that import reads it
         with patch(f"{MODULE}.ClientSecretCredential", return_value=cred_ctx), \
+             patch("azure.identity.aio.ClientSecretCredential", return_value=cred_ctx), \
              patch(f"{MODULE}.httpx.AsyncClient", return_value=mock_http):
             await c._sync_user_groups()
         dep.on_new_user_groups.assert_not_awaited()
@@ -666,7 +669,9 @@ class TestSharePointSyncUserGroups:
         cred_ctx = MagicMock()
         cred_ctx.__aenter__ = AsyncMock(return_value=AsyncMock())
         cred_ctx.__aexit__ = AsyncMock(return_value=False)
+        # _get_sharepoint_access_token imports the credential itself, so it is patched where that import reads it
         with patch(f"{MODULE}.ClientSecretCredential", return_value=cred_ctx), \
+             patch("azure.identity.aio.ClientSecretCredential", return_value=cred_ctx), \
              patch(f"{MODULE}.httpx.AsyncClient", return_value=mock_http):
             await c._sync_user_groups()
         dep.on_new_user_groups.assert_not_awaited()
@@ -1524,7 +1529,7 @@ class TestSharePointRunSyncMultiBatch:
         c.certificate_path = None
         c.client = MagicMock()
         c.msgraph_client = MagicMock()
-        c.msgraph_client.get_all_users = AsyncMock(return_value=[])
+        c._sync_users = AsyncMock()  # the users are not what this run test is about
 
         def _site(suffix: str):
             site = MagicMock()

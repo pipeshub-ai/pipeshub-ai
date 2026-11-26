@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon, FilterDropdown, DateRangePicker, type DateFilterType } from '@/app/components/ui';
 import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
+import { scrollEdgeFade, useScrollEdges } from '@/lib/hooks/use-scroll-edges';
 import { useKnowledgeBaseStore } from '../store';
 import { useTranslation } from 'react-i18next';
 import type {
@@ -17,6 +18,7 @@ import type {
 } from '../types';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
+import { KbSortMenu } from './kb-sort-menu';
 
 interface KBFilterBarProps {
   pageViewMode: PageViewMode;
@@ -62,6 +64,8 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
   const isMobile = useIsMobile();
   // Below desktop the chips scroll in one row instead of wrapping a lone chip.
   const scrollRow = useIsBelowDesktop();
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const edges = useScrollEdges(scrollerRef);
   const {
     // Collections mode state and actions
     filter,
@@ -74,6 +78,11 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
     // Table data for available filters
     tableData,
     allRecordsTableData,
+    // Sort (shared with the sortable column headers)
+    sort,
+    setSort,
+    allRecordsSort,
+    setAllRecordsSort,
   } = useKnowledgeBaseStore();
 
   const isCollectionsMode = pageViewMode === 'collections';
@@ -146,16 +155,16 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
       IN_PROGRESS: 'var(--slate-11)',
       FAILED: 'var(--red-11)',
       NOT_STARTED: 'var(--sky-11)',
-      QUEUED: 'var(--blue-9)',
-      PAUSED: 'var(--slate-9)',
+      QUEUED: 'var(--blue-11)',
+      PAUSED: 'var(--slate-11)',
       FILE_TYPE_NOT_SUPPORTED: 'var(--amber-11)',
-      AUTO_INDEX_OFF: 'var(--slate-8)',
-      EMPTY: 'var(--slate-9)',
-      ENABLE_MULTIMODAL_MODELS: 'var(--slate-9)',
+      AUTO_INDEX_OFF: 'var(--slate-11)',
+      EMPTY: 'var(--slate-11)',
+      ENABLE_MULTIMODAL_MODELS: 'var(--slate-11)',
       PASSWORD_PROTECTED: 'var(--amber-11)',
-      CONNECTOR_DISABLED: 'var(--slate-9)',
+      CONNECTOR_DISABLED: 'var(--slate-11)',
     };
-    return colorMap[status] || 'var(--slate-9)';
+    return colorMap[status] || 'var(--slate-11)';
   };
 
   // Dynamic type options from API
@@ -301,18 +310,22 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
 
   const scroller = (
     <Flex
+      ref={scrollerRef}
       align="center"
       gap="2"
       className={scrollRow ? 'kb-filter-bar-mobile no-scrollbar' : undefined}
+      data-testid="kb-filter-chips"
+      data-more-start={scrollRow && edges.start ? 'true' : undefined}
+      data-more-end={scrollRow && edges.end ? 'true' : undefined}
       style={
         scrollRow
-          ? { flex: 1, minWidth: 0, overflowX: 'auto', flexWrap: 'nowrap' }
+          ? { flex: 1, minWidth: 0, overflowX: 'auto', flexWrap: 'nowrap', ...scrollEdgeFade(edges) }
           : {
               minHeight: 0,
               padding: '8px 16px',
               borderBottom: '1px solid var(--olive-3)',
               backgroundColor: 'var(--olive-2)',
-              backdropFilter: 'blur(8px)',
+              backdropFilter: 'var(--frost-filter-subtle)',
               flexWrap: 'wrap',
             }
       }
@@ -407,6 +420,12 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
         defaultDateType="between"
       />
 
+      {/* Sort applies at once, like the column headers; it follows the last filter */}
+      <KbSortMenu
+        value={isCollectionsMode ? sort : allRecordsSort}
+        onChange={(next) => (isCollectionsMode ? setSort(next) : setAllRecordsSort(next))}
+      />
+
       {!scrollRow && actions}
     </Flex>
   );
@@ -423,7 +442,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
         padding: isMobile ? 'var(--space-2)' : '8px 16px',
         borderBottom: '1px solid var(--olive-3)',
         backgroundColor: 'var(--olive-2)',
-        backdropFilter: 'blur(8px)',
+        backdropFilter: 'var(--frost-filter-subtle)',
       }}
     >
       {scroller}

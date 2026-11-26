@@ -1,26 +1,49 @@
 import json
 import re
 import uuid
+from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.api.middlewares.auth import require_scopes, require_service_token
+from app.agents.capability_sync import sync_capabilities
+from app.api.middlewares.auth import (
+    require_scopes,
+    require_service_token,
+    service_token_org,
+)
 from app.api.middlewares.caller_role import fetch_caller_role
+from app.api.routes.control_plane_directory import directory_events
 from app.config.constants.arangodb import CollectionNames
+from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, TokenScopes
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
-from app.services.cache.invalidation_hooks import notify_connector_sync_completed
+from app.core.org_context import (
+    MissingOrgContext,
+    SystemContextNotAllowed,
+    current_org_id,
+)
+from app.services.cache.invalidation_hooks import (
+    notify_connector_sync_completed,
+    notify_principals_changed,
+)
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+from app.services.personal_instance_erasure import (
+    PersonalDataRemainsError,
+    erase_personal_instances,
+)
 from app.utils.logger import create_logger
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_user_or_503
+from app.utils.user_lookup import caller_node_ensurer, get_user_or_503
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
 if TYPE_CHECKING:
+    from logging import Logger
+
     from app.connectors.core.base.data_store.data_store import TransactionStore
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 _log = create_logger(__name__)
 router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
@@ -57,23 +80,98 @@ async def get_services(request: Request) -> Dict[str, Any]:
     }
 
 
+TEAM_NAME_TAKEN = "A team with this name already exists. Choose a different name."
+TEAM_NAME_REQUIRED = "Give the team a name."
+ROLE_WRITE_FAILED = action_failed("update these people's roles")
+
+
+def _clean_team_name(raw: object) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise HTTPException(status_code=400, detail=TEAM_NAME_REQUIRED)
+    return raw.strip()
+
+
+async def _refuse_taken_team_name(
+    graph_provider: "IGraphDBProvider",
+    org_id: str,
+    name: str,
+    logger: "Logger",
+    exclude_team_id: str | None = None,
+) -> None:
+    """409 when another team in the org already has this name, ignoring case.
+
+    Best effort: two creates racing each other can both pass, since the graph
+    stores have no shared unique constraint we could lean on. A lookup that
+    fails lets the write through rather than blocking every team change.
+    """
+    try:
+        clash = await graph_provider.find_team_by_name(
+            org_id=org_id, name=name, exclude_team_id=exclude_team_id,
+        )
+    except Exception as exc:
+        logger.warning("Could not check whether team name is taken: %s", exc)
+        return
+    if clash:
+        raise HTTPException(status_code=409, detail=TEAM_NAME_TAKEN)
+
+
+async def _authorize_team_change(
+    graph_provider: "IGraphDBProvider",
+    *,
+    team_id: str,
+    user_key: str,
+    org_id: str | None,
+    is_org_admin: bool,
+    action: str,
+) -> dict | None:
+    """The caller's permission edge on the team, once they may change it.
+
+    A team that is not there and a team this caller has nothing to do with get
+    the same answer, so the status code cannot be used to discover which team
+    ids exist. An administrator may change any team in their own org, and only
+    their own: the team document is not org-scoped, so its orgId is checked.
+    """
+    team = await graph_provider.get_document(team_id, CollectionNames.TEAMS.value)
+    permission = await graph_provider.get_edge(
+        user_key,
+        CollectionNames.USERS.value,
+        team_id,
+        CollectionNames.TEAMS.value,
+        CollectionNames.PERMISSION.value
+    )
+    admin_of_team_org = is_org_admin and bool(team) and bool(org_id) and team.get("orgId") == org_id
+    if not team or not (permission or admin_of_team_org):
+        raise HTTPException(status_code=404, detail=not_found("This team"))
+    if admin_of_team_org:
+        return permission
+    # Someone with a role on the team already knows it exists, so telling them
+    # they are not the owner gives nothing away and is the honest answer.
+    if permission.get("role") != "OWNER":
+        raise HTTPException(status_code=403, detail=f"User does not have permission to {action} this team")
+    return permission
+
+
 async def _validate_owner_removal(
     graph_provider,
     team_id: str,
     user_ids_to_remove: list,
-    logger
-) -> None:
+    logger,
+    transaction: str | None = None,
+) -> int:
     """
     Validate that removing owners won't leave the team without any owners.
-    Raises HTTPException if validation fails.
+    Raises HTTPException if validation fails; returns how many owners the removal takes.
     """
     if not user_ids_to_remove:
-        return
+        return 0
+    # The check inside the transaction repeats this decision on every attempt; the early check logs it.
+    log = logger.info if transaction is None else logger.debug
 
     # Get owner removal info using graph provider
     validation_data = await graph_provider.get_team_owner_removal_info(
         team_id=team_id,
-        user_ids=user_ids_to_remove
+        user_ids=user_ids_to_remove,
+        transaction=transaction,
     )
 
     owners_being_removed = validation_data.get("owners_being_removed", [])
@@ -86,32 +184,42 @@ async def _validate_owner_removal(
                 status_code=400,
                 detail="Cannot remove all owners from the team. At least one owner must remain."
             )
-        logger.info(f"Removing {len(owners_being_removed)} Owner(s) from team {team_id} (remaining owners: {remaining_owners})")
+        log(f"Removing {len(owners_being_removed)} Owner(s) from team {team_id} (remaining owners: {remaining_owners})")
+    return len(owners_being_removed)
 
 
 async def _validate_and_filter_owner_updates(
     graph_provider,
     team_id: str,
     valid_user_roles: list,
-    logger
+    logger,
+    *,
+    removing: Collection[str] = (),
+    owners_removed: int = 0,
+    transaction: str | None = None,
 ) -> tuple[list, int]:
     """
     Validate owner role updates and filter out unchanged owners.
     Returns (filtered_updates, total_owner_count).
     Raises HTTPException if validation fails.
     """
+    log = logger.info if transaction is None else logger.debug  # as in _validate_owner_removal
     # Get team info, current permissions, and owner count using graph provider
     user_ids_to_check = [ur.get("userId") for ur in valid_user_roles]
     result_data = await graph_provider.get_team_permissions_and_owner_count(
         team_id=team_id,
-        user_ids=user_ids_to_check
+        user_ids=user_ids_to_check,
+        transaction=transaction,
     )
 
     if not result_data or not result_data.get("team"):
         raise HTTPException(status_code=404, detail="Team not found")
 
-    current_permissions = result_data.get("permissions", {})
-    total_owner_count = result_data.get("owner_count", 0)
+    # Judged as the team will be once this request's removals are made: a removed person has no role left to change.
+    current_permissions = {
+        user_id: role for user_id, role in result_data.get("permissions", {}).items() if user_id not in removing
+    }
+    total_owner_count = result_data.get("owner_count", 0) - owners_removed
 
     # Filter out unchanged Owners and validate
     filtered_updates = []
@@ -134,7 +242,7 @@ async def _validate_and_filter_owner_updates(
 
     # Early exit if no updates needed
     if not filtered_updates:
-        logger.info("No user role updates needed (all Owners unchanged)")
+        log("No user role updates needed (all Owners unchanged)")
         return [], total_owner_count
 
     # Bulk Operation Prevention: Cannot perform bulk operations on Owner permissions
@@ -155,9 +263,39 @@ async def _validate_and_filter_owner_updates(
                     status_code=400,
                     detail="Cannot remove all owners from the team. At least one owner must remain."
                 )
-            logger.info(f"Downgrading Owner {owner_user_id} to {owner_update.get('role')} on team {team_id} (remaining owners: {total_owner_count - 1})")
+            log(f"Downgrading Owner {owner_user_id} to {owner_update.get('role')} on team {team_id} (remaining owners: {total_owner_count - 1})")
 
     return filtered_updates, total_owner_count
+
+
+async def _owner_rules_allow(
+    graph_provider: "IGraphDBProvider",
+    team_id: str,
+    remove_keys: list,
+    valid_user_roles: list,
+    logger: "Logger",
+    transaction: str | None = None,
+) -> list:
+    """The role changes to write, once removing these people and making these changes still leaves the team an owner.
+    Raises the owner rules' 400s (and 404 for a team that is gone)."""
+    owners_removed = await _validate_owner_removal(graph_provider, team_id, remove_keys, logger, transaction)
+    if not valid_user_roles:
+        return []
+    role_changes, _ = await _validate_and_filter_owner_updates(
+        graph_provider, team_id, valid_user_roles, logger,
+        removing=set(remove_keys), owners_removed=owners_removed, transaction=transaction,
+    )
+    return role_changes
+
+
+async def _principals_changed() -> None:
+    """Move the viewer-scope version after a team write. Runs in `finally`, so it must not raise: with no org bound
+    (`current_org_id` asserts one) the global counter moves, which is wider and therefore safe."""
+    try:
+        org_id: str | None = current_org_id()
+    except (MissingOrgContext, SystemContextNotAllowed, AssertionError):
+        org_id = None
+    await notify_principals_changed(org_id)
 
 
 @router.post("/team", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
@@ -178,12 +316,14 @@ async def create_team(request: Request) -> JSONResponse:
     user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    team_name = _clean_team_name(body_dict.get("name"))
+    await _refuse_taken_team_name(graph_provider, current_org_id(), team_name, logger)
     # Generate a unique key for the team
     team_key = str(uuid.uuid4())
 
     team_body = {
         "_key": team_key,
-        "name": body_dict.get("name"),
+        "name": team_name,
         "description": body_dict.get("description"),
         "createdBy": user['_key'],
         "orgId": user_info.get("orgId"),
@@ -266,6 +406,9 @@ async def create_team(request: Request) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error in create_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=action_failed("create this team")) from e
+    finally:
+        # Membership edges decide what people can read; the viewer-scope cache version moves with them.
+        await _principals_changed()
     logger.info(f"Team created successfully: {team_body}")
 
     # The team is committed by now. The providers answer None to a failed read, and
@@ -300,6 +443,9 @@ async def create_team(request: Request) -> JSONResponse:
             "canManageMembers": True,
         }
 
+    await directory_events(request).team_membership_changed(
+        current_org_id(), team_key, [creator_mongo_id, *member_mongo_ids]
+    )
     return JSONResponse(
         status_code=200,
         content={
@@ -324,13 +470,19 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     try:
-        # Use interface method to get team with users
+        is_org_admin = await _caller_is_an_administrator(request)
+        # Same answer for a team that is not there and one the caller is not
+        # in, so team ids cannot be probed. The lookup below is org-scoped,
+        # which is what bounds an administrator to their own org.
+        if not is_org_admin and not await _caller_is_in_team(graph_provider, user['_key'], team_id):
+            raise HTTPException(status_code=404, detail=not_found("This team"))
         result = await graph_provider.get_team_with_users(
             team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'],
-            include_service_accounts=await _team_members_include_service_accounts(request),
+            include_service_accounts=is_org_admin,
+            is_org_admin=is_org_admin,
         )
         if not result:
-            raise HTTPException(status_code=404, detail="Team not found")
+            raise HTTPException(status_code=404, detail=not_found("This team"))
 
         return JSONResponse(
             status_code=200,
@@ -348,7 +500,7 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
 
 @router.put("/team/{team_id}", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def update_team(request: Request, team_id: str) -> JSONResponse:
-    """Update a team - OWNER role. Supports updating name, description, and managing members"""
+    """Update a team - OWNER role or org admin. Supports updating name, description, and managing members"""
     services = await get_services(request)
     graph_provider = services["graph_provider"]
     logger = services["logger"]
@@ -361,23 +513,19 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Check if user has permission to update the team
-    permission = await graph_provider.get_edge(
-        user['_key'],
-        CollectionNames.USERS.value,
-        team_id,
-        CollectionNames.TEAMS.value,
-        CollectionNames.PERMISSION.value
+    org_id = current_org_id()
+    is_org_admin = await _caller_is_an_administrator(request)
+    permission = await _authorize_team_change(
+        graph_provider,
+        team_id=team_id,
+        user_key=user['_key'],
+        org_id=org_id,
+        is_org_admin=is_org_admin,
+        action="update",
     )
-    if not permission:
-        raise HTTPException(status_code=403, detail="User does not have permission to update this team")
-
-    if permission.get("role") != "OWNER":
-        raise HTTPException(status_code=403, detail="User does not have permission to update this team")
 
     body = await request.body()
     body_dict = json.loads(body.decode('utf-8'))
-    logger.info(f"Updating team: {body_dict}")
 
     # Filter out None values to avoid overwriting with null
     updates = {
@@ -385,16 +533,14 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
     }
 
     if body_dict.get("name") is not None:
-        updates["name"] = body_dict.get("name")
+        team_name = _clean_team_name(body_dict.get("name"))
+        await _refuse_taken_team_name(graph_provider, org_id, team_name, logger, exclude_team_id=team_id)
+        updates["name"] = team_name
     if body_dict.get("description") is not None:
         updates["description"] = body_dict.get("description")
 
+    members_written = False       # the version moves only when a membership write was attempted
     try:
-        # Update team basic info (always update timestamp)
-        result = await graph_provider.update_node(team_id, CollectionNames.TEAMS.value, updates)
-        if not result:
-            raise HTTPException(status_code=404, detail="Team not found")
-
         # Handle member additions and removals (Mongo userId on wire; resolve once)
         add_user_roles = body_dict.get("addUserRoles", [])  # Array of {userId, role}
         remove_user_mongo_ids = [
@@ -405,6 +551,11 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         if not add_user_roles and body_dict.get("addUserIds"):
             default_role = body_dict.get("role", "READER")
             add_user_roles = [{"userId": uid, "role": default_role} for uid in body_dict.get("addUserIds", [])]
+        # Counts only: the body holds the team's name, its description and people's ids.
+        logger.info(
+            "Updating team %s: rename=%s, adding %d, removing %d, changing %d roles", team_id, "name" in updates,
+            len(add_user_roles), len(remove_user_mongo_ids), len(update_user_roles),
+        )
 
         unique_mongo_ids: set[str] = set()
         unique_mongo_ids.update(remove_user_mongo_ids)
@@ -429,75 +580,104 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                 logger.error("Team member lookup failed: %s", exc, exc_info=True)
                 raise HTTPException(status_code=400, detail=PEOPLE_GONE) from exc
 
-        # Remove users if specified
-        if remove_user_mongo_ids:
-            remove_graph_keys = [mongo_to_key[mid] for mid in remove_user_mongo_ids]
-            await _validate_owner_removal(graph_provider, team_id, remove_graph_keys, logger)
-            deleted_list = await graph_provider.delete_team_member_edges(
-                team_id=team_id,
-                user_ids=remove_graph_keys
-            )
-            if deleted_list:
-                logger.info(f"Removed {len(deleted_list)} users from team {team_id}")
+        # Every check runs before the first write, so a refused request changes nothing.
+        remove_graph_keys = [mongo_to_key[mid] for mid in remove_user_mongo_ids]
+        valid_user_roles = [
+            {
+                "userId": mongo_to_key[user_role.get("userId")],
+                "role": user_role.get("role"),
+            }
+            for user_role in update_user_roles
+            if user_role.get("userId") and user_role.get("role")
+        ]
+        if update_user_roles and not valid_user_roles:
+            logger.warning("No valid user roles to update")
+        await _owner_rules_allow(graph_provider, team_id, remove_graph_keys, valid_user_roles, logger)
 
-        # Update individual user roles if specified (batch update)
-        if update_user_roles:
-            valid_user_roles = [
-                {
-                    "userId": mongo_to_key[user_role.get("userId")],
-                    "role": user_role.get("role"),
-                }
-                for user_role in update_user_roles
-                if user_role.get("userId") and user_role.get("role")
-            ]
+        # Add users if specified, skipping the caller's own edge so their role is
+        # kept; an administrator who is not yet in the team has none to keep.
+        caller_mongo_id = user_info.get("userId")
+        user_team_edges = []
+        for user_role in add_user_roles:
+            mongo_id = user_role.get("userId")
+            role = user_role.get("role", "READER")
+            if not mongo_id or (mongo_id == caller_mongo_id and permission):
+                continue
+            user_team_edges.append({
+                "from_id": mongo_to_key[mongo_id],
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": team_id,
+                "to_collection": CollectionNames.TEAMS.value,
+                "type": "USER",
+                "role": role,
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            })
 
-            if not valid_user_roles:
-                logger.warning("No valid user roles to update")
-            else:
-                filtered_updates, total_owner_count = await _validate_and_filter_owner_updates(
-                    graph_provider, team_id, valid_user_roles, logger
+        applied: list[str] = []       # logged once the transaction commits, not for an attempt it rolls back
+        role_conflict: BaseException | None = None
+
+        async def write_update(tx_store: "TransactionStore") -> None:
+            nonlocal members_written, role_conflict
+            applied.clear()
+            txn = tx_store.txn
+            # The team node first: every team edit writes it before anything else, so its write lock (Neo4j, PostgreSQL)
+            # or write conflict (ArangoDB) fences the owner rules below against another edit of the same team.
+            if not await graph_provider.update_node(team_id, CollectionNames.TEAMS.value, updates, transaction=txn):
+                raise HTTPException(status_code=404, detail="Team not found")
+            # Judged again on what this attempt commits against: a re-run must not replay a decision another edit has since made wrong.
+            role_changes = await _owner_rules_allow(graph_provider, team_id, remove_graph_keys, valid_user_roles, logger, txn)
+            if remove_graph_keys:
+                members_written = True
+                deleted_list = await graph_provider.delete_team_member_edges(
+                    team_id=team_id, user_ids=remove_graph_keys, transaction=txn,
                 )
-
-                if filtered_updates:
-                    try:
-                        updated_permissions = await graph_provider.batch_update_team_member_roles(
-                            team_id=team_id,
-                            user_roles=filtered_updates,
-                            timestamp=get_epoch_timestamp_in_ms()
-                        )
-                        logger.info(f"Updated {len(updated_permissions)} user roles in batch")
-                    except Exception as e:
-                        logger.error(f"Error updating user roles in batch: {str(e)}")
-                        raise HTTPException(status_code=500, detail=action_failed("update these people's roles"))
-
-        # Add users if specified (excluding creator to preserve OWNER role)
-        if add_user_roles:
-            creator_mongo_id = user_info.get("userId")
-            user_team_edges = []
-            for user_role in add_user_roles:
-                mongo_id = user_role.get("userId")
-                role = user_role.get("role", "READER")
-                if not mongo_id or mongo_id == creator_mongo_id:
-                    continue
-                user_team_edges.append({
-                    "from_id": mongo_to_key[mongo_id],
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_id": team_id,
-                    "to_collection": CollectionNames.TEAMS.value,
-                    "type": "USER",
-                    "role": role,
-                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                })
-
+                if deleted_list:
+                    applied.append(f"Removed {len(deleted_list)} users from team {team_id}")
+            if role_changes:
+                members_written = True
+                try:
+                    updated_permissions = await graph_provider.batch_update_team_member_roles(
+                        team_id=team_id,
+                        user_roles=role_changes,
+                        timestamp=get_epoch_timestamp_in_ms(),
+                        transaction=txn,
+                    )
+                except Exception as e:
+                    if graph_provider.is_write_conflict(e):
+                        role_conflict = e
+                        raise  # the transaction's owner runs the whole block again
+                    raise HTTPException(status_code=500, detail=ROLE_WRITE_FAILED) from e
+                applied.append(f"Updated {len(updated_permissions)} user roles in batch")
             if user_team_edges:
-                result = await graph_provider.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
-                if result:
-                    logger.info(f"Added {len(user_team_edges)} users to team {team_id}")
+                members_written = True
+                if await graph_provider.batch_create_edges(
+                    user_team_edges, CollectionNames.PERMISSION.value, transaction=txn,
+                ):
+                    applied.append(f"Added {len(user_team_edges)} users to team {team_id}")
+
+        # One unit: a write that fails partway leaves the team as it was. Each write is keyed by the
+        # team and the person, so a re-run after a write conflict ends in the same change.
+        # shortcut: NEO4J_CREATE_TRANSACTIONS=false commits each write alone, so a failed one keeps the earlier ones; upgrade if that mode is run on purpose.
+        try:
+            await GraphDataStore(logger, graph_provider).execute_idempotent_in_transaction(write_update, explicit=True)
+        except HTTPException:
+            raise
+        except Exception as e:
+            # The transaction already logged the failure when it rolled back. A role write that kept
+            # colliding answers what main answered for it.
+            detail = ROLE_WRITE_FAILED if e is role_conflict else "Failed to update team"
+            raise HTTPException(status_code=500, detail=detail) from e
+        for line in applied:
+            logger.info(line)
+
+        if unique_mongo_ids:
+            await directory_events(request).team_membership_changed(current_org_id(), team_id, sorted(unique_mongo_ids))
 
         # Return updated team with users
         updated_team = await graph_provider.get_team_with_users(
             team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'],
+            is_org_admin=is_org_admin,
         )
 
         return JSONResponse(
@@ -513,10 +693,14 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error in update_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update team")
+    finally:
+        # Members may have been added, removed or re-roled before an error: move the version either way.
+        if members_written:
+            await _principals_changed()
 
 @router.delete("/team/{team_id}", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def delete_team(request: Request, team_id: str) -> JSONResponse:
-    """Delete a team and all its permissions - requires OWNER role"""
+    """Delete a team and all its permissions - requires OWNER role or org admin"""
     services = await get_services(request)
     graph_provider = services["graph_provider"]
     logger = services["logger"]
@@ -533,27 +717,16 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
     if org_id and team_id == f"all_{org_id}":
         raise HTTPException(status_code=403, detail="The default All team cannot be deleted")
 
-    team = await graph_provider.get_document(team_id, CollectionNames.TEAMS.value)
-    permission = await graph_provider.get_edge(
-        user['_key'],
-        CollectionNames.USERS.value,
-        team_id,
-        CollectionNames.TEAMS.value,
-        CollectionNames.PERMISSION.value
+    # Deleting twice is a plain "not found" rather than an apparent permissions
+    # failure: deleting a team removes its permission edges with it.
+    await _authorize_team_change(
+        graph_provider,
+        team_id=team_id,
+        user_key=user['_key'],
+        org_id=org_id,
+        is_org_admin=await _caller_is_an_administrator(request),
+        action="delete",
     )
-
-    # A team that is not there and a team this caller has nothing to do with get
-    # the same answer, so the status code cannot be used to discover which team
-    # ids exist. It also makes deleting twice a plain "not found" rather than an
-    # apparent permissions failure: deleting a team removes its permission edges
-    # with it, so afterwards both of these are empty.
-    if not team or not permission:
-        raise HTTPException(status_code=404, detail=not_found("This team"))
-
-    # Someone with a role on the team already knows it exists, so telling them
-    # they are not the owner gives nothing away and is the honest answer.
-    if permission.get("role") != "OWNER":
-        raise HTTPException(status_code=403, detail="User does not have permission to delete this team")
 
     logger.info(f"Deleting team: {team_id}")
 
@@ -565,6 +738,8 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
         result = await graph_provider.delete_nodes([team_id], CollectionNames.TEAMS.value)
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
+        # No member list: Node drops every cached membership that lists the team.
+        await directory_events(request).team_membership_changed(org_id, team_id, [])
 
         return JSONResponse(
             status_code=200,
@@ -578,6 +753,8 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error in delete_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete team")
+    finally:
+        await _principals_changed()
 
 @router.get("/user/teams", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_user_teams(
@@ -589,7 +766,7 @@ async def get_user_teams(
     created_after: Optional[int] = Query(None, description="Filter teams created after this timestamp (ms)"),
     created_before: Optional[int] = Query(None, description="Filter teams created before this timestamp (ms)")
 ) -> JSONResponse:
-    """Get all teams that the current user is a member of"""
+    """The teams the current user is a member of; every team in the org for an administrator"""
     services = await get_services(request)
     graph_provider = services["graph_provider"]
     logger = services["logger"]
@@ -619,7 +796,9 @@ async def get_user_teams(
                 )
             graph_created_by = creator_user["_key"]
 
-        # Use interface method to get user teams
+        # An administrator manages every team in the org, so sees them all;
+        # anyone else sees the teams they are in.
+        is_org_admin = await _caller_is_an_administrator(request)
         result_list, total_count = await graph_provider.get_user_teams(
             user_key=user['_key'],
             search=search,
@@ -628,7 +807,9 @@ async def get_user_teams(
             created_by=graph_created_by,
             created_after=created_after,
             created_before=created_before,
-            include_service_accounts=await _team_members_include_service_accounts(request),
+            include_service_accounts=is_org_admin,
+            org_id=current_org_id(),
+            is_org_admin=is_org_admin,
         )
 
         if not result_list:
@@ -688,31 +869,15 @@ async def _caller_is_an_administrator(request: Request) -> bool:
         return False
 
 
-async def _team_members_include_service_accounts(request: Request) -> bool:
-    """Whether a team's member list should name machine identities.
-
-    Every account is added to the organisation's All team when it is created,
-    service accounts included (`_get_or_create_all_team_and_add_user` on
-    `userAdded`), and each member row carries the `userId` that binds an agent
-    to one, next to the address that identifies it as a machine. Team
-    membership is how a service account is granted what it can read, and the
-    screens that manage it are administrators'; so is seeing it here.
-
-    No opt-in flag, unlike the people directory: the team screen an
-    administrator opens has to show them, and there is nobody else to ask.
-
-    The three routes that read a team's members: one team, that team's member
-    page, and the teams a user is in.
-
-    Not the read-back after creating or changing a team. That is the caller
-    being shown what they just wrote, and it is filtered the plain way, so an
-    administrator's `memberCount` there can be short by the service accounts in
-    the team. The screens read members from `/team/{id}/users`, which is
-    administrator-aware, so what they display is right either way; making the
-    read-back agree would put an admin check on two write routes, and the live
-    suite has no way to exercise one on a route that writes.
-    """
-    return await _caller_is_an_administrator(request)
+async def _caller_is_in_team(graph_provider: "IGraphDBProvider", user_key: str, team_id: str) -> bool:
+    permission = await graph_provider.get_edge(
+        user_key,
+        CollectionNames.USERS.value,
+        team_id,
+        CollectionNames.TEAMS.value,
+        CollectionNames.PERMISSION.value
+    )
+    return bool(permission)
 
 
 async def _may_list_service_accounts(request: Request, *, asked: bool) -> bool:
@@ -826,7 +991,9 @@ async def get_team_users(
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
-        # Use interface method to get team users
+        is_org_admin = await _caller_is_an_administrator(request)
+        if not is_org_admin and not await _caller_is_in_team(graph_provider, user['_key'], team_id):
+            raise HTTPException(status_code=404, detail=not_found("This team"))
         result = await graph_provider.get_team_users(
             team_id=team_id,
             org_id=user_info.get("orgId"),
@@ -834,11 +1001,11 @@ async def get_team_users(
             search=search,
             page=page,
             limit=limit,
-            include_service_accounts=await _team_members_include_service_accounts(request),
+            include_service_accounts=is_org_admin,
         )
 
         if not result:
-            raise HTTPException(status_code=404, detail="Team not found")
+            raise HTTPException(status_code=404, detail=not_found("This team"))
 
         total_count = result.get("memberCount", 0)
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
@@ -864,6 +1031,25 @@ async def get_team_users(
     except Exception as e:
         logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team users")
+
+
+@router.post("/internal/user-node")
+async def ensure_user_node_internal(
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.USER_NODE_ENSURE)),
+) -> JSONResponse:
+    """Write a brand-new caller's graph user for the query service, before its userAdded event arrives here.
+
+    Only for the user and org the service token names (the query service sends its request's verified caller); the
+    data is Node's live records of exactly that user and org, so a deleted, disabled or other-org account writes
+    nothing.
+    """
+    org_id, user_id = service_token_org(claims), claims.get("userId")
+    if not user_id:
+        raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="This route needs a user-bound token")
+    ensure = caller_node_ensurer()
+    if ensure is None:
+        raise HTTPException(status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail="Not ready yet")
+    return JSONResponse(status_code=200, content={"written": await ensure(org_id, str(user_id))})
 
 
 @router.patch(
@@ -915,3 +1101,38 @@ async def update_user_email(
     except Exception as e:
         logger.error(f"Error updating graph user email: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update user email")
+
+
+class PersonalInstancesEraseRequest(BaseModel):
+    """Whose personal instances to erase: one user of the token's org, or (no user) every member's."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    userId: str | None = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+
+
+@router.post(
+    "/internal/personal-instances/erase",
+    dependencies=[Depends(require_service_token(TokenScopes.PRINCIPAL_ERASE))],
+)
+async def erase_personal_instances_route(request: Request, body: PersonalInstancesEraseRequest) -> JSONResponse:
+    """Erase a deleted user's personal toolset and MCP instances, or every member's of a deleted org (C-14).
+
+    Node's user and org deletion call it before the principal is marked deleted, and again after a
+    failure; the org is the token's, never the body's. 503 while any key of the principal remains.
+    """
+    logger = (await get_services(request))["logger"]
+    org_id = service_token_org(request.state.user)
+    config_service = request.app.container.config_service()
+    try:
+        erased = await erase_personal_instances(config_service, org_id, body.userId)
+    except PersonalDataRemainsError as e:
+        logger.warning("personal_instances.erase_incomplete orgId=%s remaining=%d", org_id, len(e.remaining))
+        raise HTTPException(status_code=503, detail="Some of the data could not be erased yet; try again") from e
+    except Exception as e:
+        logger.error("personal_instances.erase_failed orgId=%s errorType=%s", org_id, type(e).__name__)
+        raise HTTPException(status_code=503, detail="The data could not be erased yet; try again") from e
+    if body.userId is not None:
+        # The control plane drops the user's installations now; a deleted org's go with its stores.
+        await sync_capabilities(config_service, org_id)
+    return JSONResponse(status_code=200, content=erased)

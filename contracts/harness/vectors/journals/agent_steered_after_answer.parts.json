@@ -1,0 +1,22 @@
+{
+ "scenario": "agent_steered_after_answer",
+ "parts": [
+  {
+   "type": "text",
+   "content": "You get 25 days of paid leave a year.",
+   "runId": "run-golden"
+  },
+  {
+   "type": "user_input",
+   "content": "And sick leave?",
+   "messageSeq": 1,
+   "runId": "run-golden"
+  },
+  {
+   "type": "text",
+   "content": "Sick leave is separate: 10 days a year.",
+   "runId": "run-golden",
+   "isFinal": true
+  }
+ ]
+}

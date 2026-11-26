@@ -6,8 +6,17 @@ import { UserGroupController } from '../../../../src/modules/user_management/con
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
+import { UniqueConstraintError } from '../../../../src/libs/repositories/errors';
 import { BadRequestError } from '../../../../src/libs/errors/http.errors';
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
+
+// A query the repository can read with or without `.lean()` / `.exec()`.
+const chain = (v: unknown): any =>
+  Object.assign(Promise.resolve(v), {
+    lean: () => chain(v),
+    exec: () => Promise.resolve(v),
+    select: () => chain(v),
+  });
 
 describe('UserGroupController', () => {
   let controller: UserGroupController;
@@ -184,7 +193,7 @@ describe('UserGroupController', () => {
             g.isDeleted === cast.isDeleted &&
             (!('orgId' in cast) || g.orgId.equals(cast.orgId as mongoose.Types.ObjectId)),
         );
-        return Promise.resolve(match ?? null);
+        return chain(match ?? null);
       }) as unknown as typeof UserGroups.findOne);
 
     beforeEach(() => {
@@ -232,6 +241,7 @@ describe('UserGroupController', () => {
       ];
 
       sinon.stub(UserGroups, 'find').returns({
+        sort: sinon.stub().returnsThis(),
         skip: sinon.stub().returns({
           limit: sinon.stub().returns({
             lean: sinon.stub().returns({
@@ -257,6 +267,7 @@ describe('UserGroupController', () => {
 
     it('should filter groups by search query', async () => {
       sinon.stub(UserGroups, 'find').returns({
+        sort: sinon.stub().returnsThis(),
         skip: sinon.stub().returns({
           limit: sinon.stub().returns({
             lean: sinon.stub().returns({
@@ -279,6 +290,7 @@ describe('UserGroupController', () => {
 
     it('escapes regex metacharacters in the group search query (OT-9)', async () => {
       sinon.stub(UserGroups, 'find').returns({
+        sort: sinon.stub().returnsThis(),
         skip: sinon.stub().returns({
           limit: sinon.stub().returns({
             lean: sinon.stub().returns({
@@ -465,7 +477,7 @@ describe('UserGroupController', () => {
             (filter.name === undefined || g.name === filter.name) &&
             (typeof filter._id === 'string' ? g._id === filter._id : g._id !== filter._id.$ne),
         );
-        return Promise.resolve(match ?? null);
+        return chain(match ?? null);
       }) as unknown as typeof UserGroups.findOne);
     });
 
@@ -569,7 +581,7 @@ describe('UserGroupController', () => {
         const match = committed.find(
           (g) => g.orgId.equals(org) && g.isDeleted === filter.isDeleted && g.committedName === filter.name,
         );
-        return Promise.resolve(match ?? null);
+        return chain(match ?? null);
       }) as unknown as typeof UserGroups.findOne);
       sinon.stub(UserGroups.prototype, 'save').callsFake(function (this: { _id: mongoose.Types.ObjectId; name: string; orgId: mongoose.Types.ObjectId }) {
         return commit(String(this._id), this.name, this.orgId).then(() => this);
@@ -618,12 +630,12 @@ describe('UserGroupController', () => {
         name?: string;
         isDeleted: boolean;
       }) => {
-        if (typeof filter._id === 'string') return Promise.resolve(load(filter._id));
+        if (typeof filter._id === 'string') return chain(load(filter._id));
         const excluded = filter._id.$ne;
         const match = committed.find(
           (g) => g._id !== excluded && g.isDeleted === filter.isDeleted && g.committedName === filter.name,
         );
-        return Promise.resolve(match ?? null);
+        return chain(match ?? null);
       }) as unknown as typeof UserGroups.findOne);
 
       const results = await Promise.allSettled([
@@ -653,7 +665,10 @@ describe('UserGroupController', () => {
         await controller.createUserGroup(req, res);
         expect.fail('Should have thrown an error');
       } catch (error: unknown) {
-        expect(error).to.equal(slugClash);
+        // Typed by the repository, with the key name only; not turned into the name message.
+        expect(error).to.be.instanceOf(UniqueConstraintError);
+        expect((error as UniqueConstraintError).metadata?.key).to.equal('slug');
+        expect(error).to.not.be.instanceOf(BadRequestError);
       }
     });
   });
@@ -673,8 +688,9 @@ describe('UserGroupController', () => {
       };
 
       const findOne = sinon.stub(UserGroups, 'findOne');
-      findOne.onFirstCall().resolves(mockGroup as any);
-      findOne.onSecondCall().resolves(null);
+      findOne.onFirstCall().returns(chain(mockGroup));
+      findOne.onSecondCall().returns(chain(null));
+      findOne.onThirdCall().returns(chain(mockGroup));
 
       await controller.updateGroup(req, res);
 
@@ -697,8 +713,9 @@ describe('UserGroupController', () => {
       };
 
       const findOne = sinon.stub(UserGroups, 'findOne');
-      findOne.onFirstCall().resolves(mockGroup as any);
-      findOne.onSecondCall().resolves(null);
+      findOne.onFirstCall().returns(chain(mockGroup));
+      findOne.onSecondCall().returns(chain(null));
+      findOne.onThirdCall().returns(chain(mockGroup));
 
       await controller.updateGroup(req, res);
 
@@ -735,7 +752,7 @@ describe('UserGroupController', () => {
       req.params.groupId = 'nonexistent';
       req.body = { name: 'New Name' };
 
-      sinon.stub(UserGroups, 'findOne').resolves(null);
+      sinon.stub(UserGroups, 'findOne').callsFake((() => chain(null)) as any);
 
       try {
         await controller.updateGroup(req, res);
@@ -749,10 +766,10 @@ describe('UserGroupController', () => {
       req.params.groupId = 'g1';
       req.body = { name: 'New Name' };
 
-      sinon.stub(UserGroups, 'findOne').resolves({
+      sinon.stub(UserGroups, 'findOne').callsFake((() => chain({
         type: 'admin',
         isDeleted: false,
-      } as any);
+      })) as any);
 
       try {
         await controller.updateGroup(req, res);
@@ -766,10 +783,10 @@ describe('UserGroupController', () => {
       req.params.groupId = 'g1';
       req.body = { name: 'New Name' };
 
-      sinon.stub(UserGroups, 'findOne').resolves({
+      sinon.stub(UserGroups, 'findOne').callsFake((() => chain({
         type: 'everyone',
         isDeleted: false,
-      } as any);
+      })) as any);
 
       try {
         await controller.updateGroup(req, res);
@@ -791,9 +808,7 @@ describe('UserGroupController', () => {
         save: sinon.stub().resolves(),
       };
 
-      sinon.stub(UserGroups, 'findOne').returns({
-        exec: sinon.stub().resolves(mockGroup),
-      } as any);
+      sinon.stub(UserGroups, 'findOne').callsFake((() => chain(mockGroup)) as any);
 
       await controller.deleteGroup(req, res);
 
@@ -805,9 +820,7 @@ describe('UserGroupController', () => {
     it('should throw NotFoundError when group not found', async () => {
       req.params.groupId = 'nonexistent';
 
-      sinon.stub(UserGroups, 'findOne').returns({
-        exec: sinon.stub().resolves(null),
-      } as any);
+      sinon.stub(UserGroups, 'findOne').callsFake((() => chain(null)) as any);
 
       try {
         await controller.deleteGroup(req, res);
@@ -820,12 +833,10 @@ describe('UserGroupController', () => {
     it('should throw ForbiddenError when deleting non-custom group', async () => {
       req.params.groupId = 'g1';
 
-      sinon.stub(UserGroups, 'findOne').returns({
-        exec: sinon.stub().resolves({
+      sinon.stub(UserGroups, 'findOne').callsFake((() => chain({
           type: 'admin',
           isDeleted: false,
-        }),
-      } as any);
+        })) as any);
 
       try {
         await controller.deleteGroup(req, res);
@@ -846,9 +857,7 @@ describe('UserGroupController', () => {
         save: sinon.stub().resolves(),
       };
 
-      sinon.stub(UserGroups, 'findOne').returns({
-        exec: sinon.stub().resolves(mockGroup),
-      } as any);
+      sinon.stub(UserGroups, 'findOne').callsFake((() => chain(mockGroup)) as any);
 
       await controller.deleteGroup(req, res);
 
@@ -1121,7 +1130,7 @@ describe('UserGroupController', () => {
       ];
 
       sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves(mockGroups),
+        select: sinon.stub().returns({ sort: sinon.stub().resolves(mockGroups) }),
       } as any);
 
       await controller.getGroupsForUser(req, res);

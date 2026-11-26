@@ -136,4 +136,45 @@ describe('POST /userAccount/authenticate over HTTP', () => {
       SIGN_IN_METHOD_NOT_ALLOWED,
     );
   });
+
+  it('lets the sign-in page load many times without spending the sign-in attempts', async () => {
+    // The default limit is 10 a minute; a page load starts a sign-in each time.
+    for (let i = 0; i < 12; i += 1) {
+      expect((await post('/userAccount/initAuth', {})).status, `page load ${i + 1}`).to.equal(200);
+    }
+    const started = await post('/userAccount/initAuth', { email: 'alice@acme.test' });
+
+    const res = await post(
+      '/userAccount/authenticate',
+      { method: 'samlSso', credentials: {}, email: 'alice@acme.test' },
+      { 'x-session-token': String(started.headers.get('x-session-token')) },
+    );
+
+    expect(res.status).to.equal(400);
+  });
+
+  it('still refuses an 11th sign-in attempt in a minute', async () => {
+    const started = await post('/userAccount/initAuth', { email: 'alice@acme.test' });
+    const attempt = () =>
+      post(
+        '/userAccount/authenticate',
+        { method: 'samlSso', credentials: {}, email: 'alice@acme.test' },
+        { 'x-session-token': String(started.headers.get('x-session-token')) },
+      );
+    for (let i = 0; i < 10; i += 1) {
+      expect((await attempt()).status, `attempt ${i + 1}`).to.equal(400);
+    }
+
+    expect((await attempt()).status).to.equal(429);
+  });
+
+  it('still limits how fast sign-ins can be started', async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 61; i += 1) {
+      statuses.push((await post('/userAccount/initAuth', {})).status);
+    }
+
+    expect(statuses.slice(0, 60).every((s) => s === 200)).to.equal(true);
+    expect(statuses[60]).to.equal(429);
+  });
 });

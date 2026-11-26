@@ -17,7 +17,12 @@ from __future__ import annotations
 
 import ast
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
+
+import pytest
+
+from tests.support.app_tree import sources
 
 SOURCES = Path(__file__).resolve().parents[4] / "app" / "connectors" / "sources"
 
@@ -49,11 +54,15 @@ FLAG_CHECKING_HARD_DELETERS: set[str] = set()
 # Whole-collection delete: a hard delete by design, as in the soft-delete design (section 6).
 KB_DELETE = {"localKB/handlers/kb_service.py": {"delete_connector_instance"}}
 
+# A push whose create committed after the knowledge base was marked DELETING removes that
+# record itself, because the cascade may have collected before it: the record belongs to a
+# knowledge base being hard-deleted (as KB_DELETE above), and nobody was ever shown it.
+KB_DELETE_COMPENSATION = {"localKB/push/service.py": ("_undo_create_in_deleted_kb", "delete_nodes_and_edges")}
 
-def _called_names(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+def _called_names(module: ast.AST) -> set[str]:
     names: set[str] = set()
-    for node in ast.walk(tree):
+    for node in ast.walk(module):
         if isinstance(node, ast.Call):
             func = node.func
             if isinstance(func, ast.Attribute):
@@ -63,11 +72,83 @@ def _called_names(path: Path) -> set[str]:
     return names
 
 
-def _calls_by_module() -> dict[str, set[str]]:
+# Every module is parsed once, and both scans below take what they need from that one tree. No prefilter: the
+# raw-delete rule also reads string values, which can be split or escaped, so no text test is sound for it.
+# One pass over app/connectors/sources is several seconds on an idle core and a multiple of that under load.
+pytestmark = pytest.mark.timeout(120)
+
+
+def _raw_delete_references(tree: ast.AST, approved: str | None = None) -> set[str]:
+    """The raw hard deletes a module mentions outside the ``approved`` function.
+
+    A mention is a call through an attribute or a bare name, an import, an alias
+    (``drop = graph.delete_nodes_and_edges``) or the name as a string (``getattr``), so a call
+    that goes round the attribute check is still seen. The approved function's body is left out.
+    """
+    names: set[str] = set()
+
+    def visit(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if approved and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == approved:
+                continue
+            if isinstance(child, ast.Attribute):
+                names.add(child.attr)
+            elif isinstance(child, ast.Name):
+                names.add(child.id)
+            elif isinstance(child, ast.alias):
+                names.add(child.name)
+            elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+                names.add(child.value)
+            visit(child)
+
+    visit(tree)
+    return names & RAW_HARD_DELETES
+
+
+def _scan_modules(files: "tuple[tuple[Path, str], ...]", root: Path) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     calls: dict[str, set[str]] = {}
-    for path in sorted(SOURCES.rglob("*.py")):
-        calls[path.relative_to(SOURCES).as_posix()] = _called_names(path)
-    return calls
+    raw: dict[str, set[str]] = {}
+    for path, text in files:
+        module = path.relative_to(root).as_posix()
+        parsed = ast.parse(text, filename=str(path))
+        calls[module] = _called_names(parsed)
+        raw[module] = _raw_delete_references(parsed, KB_DELETE_COMPENSATION.get(module, (None, None))[0])
+    return calls, raw
+
+
+@lru_cache(maxsize=1)
+def _scan_sources() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """One pass per process; the tests share it and only read it."""
+    return _scan_modules(sources(SOURCES), SOURCES)
+
+
+def _calls_by_module() -> dict[str, set[str]]:
+    return _scan_sources()[0]
+
+
+def _raw_deletes_by_module() -> dict[str, set[str]]:
+    return _scan_sources()[1]
+
+
+def test_the_compensating_hard_delete_is_in_its_function() -> None:
+    for module, (function, call) in KB_DELETE_COMPENSATION.items():
+        tree = ast.parse((SOURCES / module).read_text(encoding="utf-8"))
+        (fn,) = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == function]
+        # The exemption is the function's body, so it has to contain the call it exempts.
+        assert _raw_delete_references(fn) == {call}, (module, function)
+
+
+def test_the_scan_for_raw_deletes_sees_every_way_to_call_one() -> None:
+    for source in (
+        "async def other(g):\n    await g.delete_nodes_and_edges([1], 'records')\n",
+        "from x import delete_nodes_and_edges\nasync def other():\n    await delete_nodes_and_edges([1])\n",
+        "async def other(g):\n    drop = g.delete_nodes_and_edges\n    await drop([1])\n",
+        "async def other(g):\n    await getattr(g, 'delete_nodes_and_edges')([1])\n",
+    ):
+        tree = ast.parse(source + "async def approved(g):\n    await g.delete_nodes_and_edges([2])\n")
+        assert _raw_delete_references(tree, "approved") == {"delete_nodes_and_edges"}, source
+    only_approved = ast.parse("async def approved(g):\n    await g.delete_nodes_and_edges([2])\n")
+    assert _raw_delete_references(only_approved, "approved") == set()
 
 
 def test_the_scan_sees_the_connectors() -> None:
@@ -80,9 +161,9 @@ def test_the_scan_sees_the_connectors() -> None:
 
 def test_only_flag_checking_connectors_call_a_raw_hard_delete() -> None:
     offenders = {
-        module: sorted(names & RAW_HARD_DELETES)
-        for module, names in _calls_by_module().items()
-        if names & RAW_HARD_DELETES and module not in FLAG_CHECKING_HARD_DELETERS
+        module: sorted(names)
+        for module, names in _raw_deletes_by_module().items()
+        if names and module not in FLAG_CHECKING_HARD_DELETERS
     }
     assert offenders == {}, (
         "These connectors remove records without the trash. Use on_record_deleted, "
@@ -116,3 +197,45 @@ def test_the_only_whole_connector_delete_is_the_collection_delete() -> None:
         if "delete_connector_instance" in names
     }
     assert whole == KB_DELETE
+
+
+# Forms of a raw delete the old scan saw: all must be seen, with no text prefilter in the way.
+_RAW_FORMS = {
+    "attr": "async def f(g):\n    await g.delete_nodes_and_edges([1])\n",
+    "fullwidth_attr": "async def f(g):\n    await g.\uff44elete_record_by_key(1)\n",
+    "getattr_plain": "async def f(g):\n    await getattr(g, 'delete_record_by_key')('k')\n",
+    "getattr_concat": "async def f(g):\n    await getattr(g, 'delete_record' '_by_key')('k')\n",
+    "getattr_concat_parens": "async def f(g):\n    await getattr(g, ('delete_'\n    'single_record'))(1)\n",
+    "getattr_hex_escape": "async def f(g):\n    await getattr(g, 'delete_record_by_ke\\x79')('k')\n",
+    "getattr_oct_escape": "async def f(g):\n    await getattr(g, 'delete_record_by_ke\\171')('k')\n",
+    "getattr_unicode_escape": "async def f(g):\n    await getattr(g, 'delete_record_by_ke\\u0079')('k')\n",
+    "getattr_named_escape": "async def f(g):\n    await getattr(g, 'delete_record_by_key\\N{LOW LINE}'[:-1])('k')\n",
+    "import_alias": "from x import delete_nodes_and_edges as d\n",
+}
+_EXPECTED_RAW = {
+    "attr": {"delete_nodes_and_edges"},
+    "fullwidth_attr": {"delete_record_by_key"},
+    "getattr_plain": {"delete_record_by_key"},
+    "getattr_concat": {"delete_record_by_key"},
+    "getattr_concat_parens": {"delete_single_record"},
+    "getattr_hex_escape": {"delete_record_by_key"},
+    "getattr_oct_escape": {"delete_record_by_key"},
+    "getattr_unicode_escape": {"delete_record_by_key"},
+    "getattr_named_escape": set(),  # a slice of a longer string is not the name; the old scan agreed
+    "import_alias": {"delete_nodes_and_edges"},
+}
+
+
+def _old_raw(text: str) -> set[str]:
+    return _raw_delete_references(ast.parse(text))
+
+
+@pytest.mark.parametrize("form", sorted(_RAW_FORMS))
+def test_the_module_scan_finds_every_planted_raw_delete_form_as_the_old_scan_did(tmp_path: Path, form: str) -> None:
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "connector.py").write_text(_RAW_FORMS[form], encoding="utf-8")
+    (tmp_path / "good.py").write_text("async def f(p):\n    await p.on_record_deleted(1)\n", encoding="utf-8")
+    calls, raw = _scan_modules(sources(tmp_path), tmp_path)
+    assert raw == {"bad/connector.py": _old_raw(_RAW_FORMS[form]), "good.py": set()}
+    assert raw["bad/connector.py"] == _EXPECTED_RAW[form]
+    assert "on_record_deleted" in calls["good.py"]

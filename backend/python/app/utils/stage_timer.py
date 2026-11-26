@@ -90,13 +90,13 @@ class StageTimer:
         suffix = " ".join(f"{k}={v}" for k, v in extra.items() if v is not None)
         with contextlib.suppress(Exception):
             logger.info(
-                "⏱ %s total=%.0fms | %s%s",
+                "%s total=%.0fms | %s%s",
                 label, self.total_ms, parts, f" | {suffix}" if suffix else "",
             )
 
 
 class RunTimer:
-    """Span timings for one agent run, written as one line when the run ends.
+    """Span timings for one agent run, summarised on the run's end line.
 
     Unlike `StageTimer`'s marks, spans are measured independently: tool calls
     can run in parallel and the pattern-match wait happens inside a tool call,
@@ -107,24 +107,26 @@ class RunTimer:
     `start(key, name)` / `stop(key)` time a span between two events that share
     a key (a turn number, a tool-call id); `stop` without a matching `start` is
     ignored. `record(name, ms)` adds a span measured elsewhere. A span still
-    open when `emit()` runs (a model call that raised, a tool cut off by a
-    client disconnect) is logged too, timed up to that moment and marked
-    ``(open)``. `emit()` is safe to call more than once; only the first call
-    logs.
+    open when `summary()` runs (a model call that raised, a tool cut off by a
+    client disconnect) is included too, timed up to that moment and marked
+    ``(open)``. `total_ms` counts from construction whether or not timing is on.
     """
 
-    __slots__ = ("_enabled", "_t0", "_open", "_spans", "_emitted")
+    __slots__ = ("_enabled", "_t0", "_open", "_spans")
 
     def __init__(self, *, enabled: bool | None = None) -> None:
         self._enabled = timing_enabled() if enabled is None else enabled
         self._t0 = time.perf_counter()
         self._open: dict[Hashable, tuple[str, float]] = {}
         self._spans: list[tuple[str, float]] = []
-        self._emitted = False
 
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    @property
+    def total_ms(self) -> float:
+        return (time.perf_counter() - self._t0) * 1000.0
 
     @property
     def spans(self) -> list[tuple[str, float]]:
@@ -149,24 +151,18 @@ class RunTimer:
             return
         self._spans.append((name, ms))
 
-    def emit(self, logger: "logging.Logger", label: str, **extra: object) -> None:
-        if not self._enabled or self._emitted:
-            return
-        self._emitted = True
+    def summary(self) -> str | None:
+        """``llm_turn_1=812ms tool:retrieval=4130ms(open)``: finished spans in the
+        order they finished, then open ones. ``None`` when disabled or empty."""
+        if not self._enabled:
+            return None
         now = time.perf_counter()
-        total_ms = (now - self._t0) * 1000.0
         finished = [f"{name}={ms:.0f}ms" for name, ms in self._spans]
         unfinished = [
             f"{name}={(now - started) * 1000.0:.0f}ms(open)"
             for name, started in self._open.values()
         ]
-        parts = " ".join(finished + unfinished)
-        suffix = " ".join(f"{k}={v}" for k, v in extra.items() if v is not None)
-        with contextlib.suppress(Exception):
-            logger.info(
-                "⏱ %s total=%.0fms | %s%s",
-                label, total_ms, parts, f" | {suffix}" if suffix else "",
-            )
+        return " ".join(finished + unfinished) or None
 
 
 @contextlib.contextmanager

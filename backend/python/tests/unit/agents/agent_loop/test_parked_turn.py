@@ -175,3 +175,16 @@ async def test_a_long_result_is_kept_cut() -> None:
 
     kept_result = store.values[_KEY]["messages"][1]["content"]
     assert kept_result.endswith("[result cut]") and len(kept_result) < 21_000
+
+
+async def test_an_unreadable_kept_turn_is_one_line_without_its_content(caplog) -> None:
+    store = _Store()
+    await _keep_question(store)
+    store.values[_KEY]["messages"][0] = {"role": "user", "content": {"words": "the person's own words"}}
+
+    with caplog.at_level("DEBUG", logger=parked_turn.logger.name):
+        assert await parked_turn.restore(_context(store), await _history(*_as_the_history_has_it()), call_id="q1") is None
+
+    (record,) = [r for r in caplog.records if r.getMessage() == "parked_turn.read_failed"]
+    assert getattr(record, "error_type", None) and getattr(record, "error_message", None) is None
+    assert "the person's own words" not in (record.exc_text or "") + str(vars(record))

@@ -21,6 +21,8 @@
  * ```
  */
 
+export { AccessNotices } from './access-notice';
+export { NoAccessPage } from './no-access-page';
 export { Toast } from './toast';
 export { ToastContainer } from './toast-container';
 export { toast } from '@/lib/store/toast-store';

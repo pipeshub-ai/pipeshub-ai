@@ -17,30 +17,51 @@ from rows the user has no access to.
 from __future__ import annotations
 
 import asyncio
+import time
+import weakref
 from collections import Counter
-from dataclasses import dataclass
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.connectors.sources.localKB.handlers.kh_merge import PartitionFeed, merge_pages
+from app.connectors.sources.localKB.handlers.kh_merge import (
+    PartitionFeed,
+    key_for,
+    merge_pages,
+)
 from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingBusy,
+    KnowledgeHubListingNotReady,
     KnowledgeHubListingTooLarge,
 )
+from app.utils.env_config import env_int
 from app.utils.kh_cursor import (
     Boundary,
+    CursorError,
     KnowledgeHubCursor,
     LivePartitions,
     decode,
     encode,
 )
+from app.utils.request_deadline import seconds_left
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 # Connector queries one search page runs at once: a tenant can have hundreds of
 # connectors, and each page would otherwise put all their queries on the graph
 # together. A caller can pass another positive limit, or None for no cap.
 DEFAULT_MAX_CONCURRENCY = 8
+
+# Connector queries all the searches of this process run at once. Each holds
+# transaction memory from the one pool the database has, and searches that each
+# keep under the cap above still add up past it: the pool runs out and every
+# search in it is refused. Past this many, a query waits for a turn, at most
+# until its request's deadline (then the search is answered busy). 0: no limit.
+SHARED_MAX_CONCURRENCY = env_int("KH_LISTING_PAGES_MAX", 8)
+_shared_gates: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = weakref.WeakKeyDictionary()
 
 
 @dataclass(frozen=True)
@@ -52,6 +73,12 @@ class SearchPage:
     end_index: int
     next_cursor: str | None
     prev_cursor: str | None
+    # ``total`` may not be exact (usually lower; see ``totalCapped`` in the API spec).
+    total_capped: bool = False
+    # Connectors left out of this page because their copy in the typed graph is not made yet (the others are listed).
+    not_ready: list[str] = field(default_factory=list)
+    # The cursor to go on with when this page has no rows because the scan stopped at a bound; None on every other page.
+    scan_cursor: str | None = None
 
 
 def _connector_key(app_id: str) -> str:
@@ -85,7 +112,7 @@ async def search_page(
     if cursor_token:
         cursor = decode(
             cursor_token, secret, expected_user_id=user_id, expected_org_id=org_id
-        )
+        ).with_fresh_counts()
         # The cursor decides sort and filters; only `include` comes from the
         # request. A page that honoured a conflicting sort would resume a
         # keyset from an order that no longer applies and silently skip rows.
@@ -117,22 +144,57 @@ async def search_page(
         allowed = set(wanted)
         connectors = [app_id for app_id in connectors if app_id in allowed]
     keys = [_connector_key(app_id) for app_id in connectors]
-    targets = _targets(connectors, keys, cursor)
+    # A connector not ready when the listing began stays out of every page of it, ready or not since: its rows before the boundary would never be
+    # read, and the total carried from the first page does not count it. A new listing (no cursor) takes it in.
+    left_out = set(cursor.not_ready or ()) if cursor else set()
+    targets = [app_id for app_id in _targets(connectors, keys, cursor) if app_id not in left_out]
 
     # The total is counted once, on the first page, and then carried in the
     # cursor. A node belongs to one connector, so the counts sum to the total.
     reuse_total = cursor is not None and cursor.total is not None
+    # A carried total that aged out: the page's own query would count only the rows past its boundary, so the whole listing is counted again.
+    recount = cursor is not None and not reuse_total
     results = await _run(
         provider, targets,
         org_id=org_id, access=access, limit=limit,
         sort_field=sort_field, sort_dir=sort_dir, filters=filters,
         after=cursor.boundary.as_after() if cursor else None,
-        direction=direction, include_total=not reuse_total,
+        direction=direction, include_total=not reuse_total and not recount,
         max_concurrency=max_concurrency,
         user_key=user_key, grants_read=grants_read, max_depth=max_depth,
     )
+    counted = results
+    if recount:
+        recounted = [app_id for app_id in connectors if app_id not in left_out]
+        counted = await _run(
+            provider, recounted,
+            org_id=org_id, access=access, limit=1,
+            sort_field=sort_field, sort_dir=sort_dir, filters=filters,
+            after=None, direction="next", include_total=True,
+            max_concurrency=max_concurrency,
+            user_key=user_key, grants_read=None if grants_read is None else {}, max_depth=max_depth,
+        )
     if grants_read is not None:
         access = {**access, "by_connector": grants_read}
+    refused = {app_id for app_id, payload in zip(targets, results) if payload.get("notReady")}
+    # The recount also reads connectors the page skipped (they ran out): one not ready there would count as 0 and carry an understated total.
+    recount_refused = {app_id for app_id, payload in zip(recounted, counted) if payload.get("notReady")} if recount else set()
+    if cursor is not None and (refused - left_out or recount_refused):
+        # A connector this listing counted and has been listing stopped being ready: its rows past the boundary cannot be read, so the total carried from the first
+        # page is no longer this listing's. The cursor is refused (the caller answers 400, as for any cursor that no longer applies) and the listing starts again,
+        # counted afresh, with the connector named as not ready. Before the not-ready answer below: a caller retries that one with the same cursor.
+        raise CursorError("a source of this listing is being prepared again; start the listing from its first page")
+    if targets and len(refused) == len(targets):
+        raise KnowledgeHubListingNotReady            # nothing to list at all: say so instead of an empty page
+    left_out |= refused
+    not_ready = [app_id for app_id in connectors if app_id in left_out]
+
+    # A connector that stopped looking before it had a page (a bound on its scan) says where it got to (``resume``). Its rows are complete up to there and nothing is known past it, so the
+    # page holds no row beyond the nearest such position: the next page starts there, and a page with no rows still has somewhere to go.
+    stalled = resume_boundary(results, descending=descending, reverse=direction == "prev")
+    if stalled is not None:
+        kept = [[r for r in p["rows"] if not _past(r, stalled, descending=descending, reverse=direction == "prev")] for p in results]
+        results = [{**p, "rows": k, "hasMore": bool(p["hasMore"] or p.get("resume") or len(k) < len(p["rows"]))} for p, k in zip(results, kept, strict=True)]
 
     merged = merge_pages(
         [
@@ -162,15 +224,17 @@ async def search_page(
     live = {
         _connector_key(app_id)
         for app_id, payload in zip(targets, results)
-        if payload["hasMore"] or _connector_key(app_id) not in merged.exhausted
+        if not payload.get("notReady") and (payload["hasMore"] or _connector_key(app_id) not in merged.exhausted)
     }
 
     if reuse_total:
-        total, counts = cursor.total, cursor.counts_by_type
+        total, counts, total_capped, counted_at = cursor.total, cursor.counts_by_type, cursor.total_capped, cursor.counted_at_ms
     else:
-        total = sum(payload.get("total") or 0 for payload in results)
+        counted_at = int(time.time() * 1000)
+        total = sum(payload.get("total") or 0 for payload in counted)
+        total_capped = any(payload.get("totalCapped") for payload in counted)
         counts_counter: Counter[str] = Counter()
-        for payload in results:
+        for payload in counted:
             counts_counter.update(payload.get("counts") or {})
         counts = dict(counts_counter)
 
@@ -194,6 +258,7 @@ async def search_page(
                 direction=next_direction,
                 items_seen=items_seen,
                 total=total,
+                total_capped=total_capped,
                 counts_by_type=counts,
                 filters=filters,
                 sort_by=sort_field,
@@ -202,27 +267,30 @@ async def search_page(
                 user_id=user_id,
                 org_id=org_id,
                 limit_apps=limit_apps,
+                not_ready=sorted(left_out),
+                counted_at_ms=counted_at,
             ),
             secret,
         )
 
     has_next = more_beyond if direction == "next" else True
     has_prev = (cursor is not None) if direction == "next" else more_beyond
+    total, total_capped = at_least_shown(total, seen_before + len(merged.rows), capped=total_capped)
 
     next_cursor = prev_cursor = None
-    if merged.rows:
+    if merged.rows or stalled is not None:
         if has_next:
             # A page reached by going back knows nothing about which connectors
             # still hold rows *ahead* of it, so it carries no live set and the
             # next page queries them all — correct, only less selective.
             next_cursor = issue(
-                merged.last, "next", seen_before + len(merged.rows),
+                merged.last or Boundary.of(stalled), "next", seen_before + len(merged.rows),
                 live if direction == "next" else None,
             )
         if has_prev:
             # Going back never carries a live set: a connector that ran out
             # going forward can still hold rows behind the boundary.
-            prev_cursor = issue(merged.first, "prev", seen_before, None)
+            prev_cursor = issue(merged.first or Boundary.of(stalled), "prev", seen_before, None)
 
     return SearchPage(
         rows=merged.rows,
@@ -232,7 +300,32 @@ async def search_page(
         end_index=seen_before + len(merged.rows),
         next_cursor=next_cursor,
         prev_cursor=prev_cursor,
+        total_capped=total_capped,
+        not_ready=not_ready,
+        scan_cursor=(next_cursor if direction == "next" else prev_cursor) if not merged.rows and stalled is not None else None,
     )
+
+
+def at_least_shown(total: int, shown: int, *, capped: bool) -> tuple[int, bool]:
+    """A total below the rows a listing has shown so far (a capped count asks the access check about a bounded number of candidates, so it can admit
+    fewer than a page that read on) is raised to them, as a lower bound; any other total is kept. Not exact at a walk's last page either: a provider
+    can end a page with rows it did not ask about, so the rows shown are not proof of the whole."""
+    return (shown, True) if total < shown else (total, capped)
+
+
+def resume_boundary(results: list[dict[str, Any]], *, descending: bool, reverse: bool) -> dict[str, Any] | None:
+    """The nearest position a connector stopped scanning at, or None when every connector gave all it had asked for."""
+    stops = [p["resume"] for p in results if p.get("resume")]
+    if not stops:
+        return None
+    keyed = [(key_for(s, descending=descending), s) for s in stops]
+    return (max if reverse else min)(keyed, key=lambda k: k[0])[1]
+
+
+def _past(row: dict[str, Any], stop: dict[str, Any], *, descending: bool, reverse: bool) -> bool:
+    """Whether the row lies beyond the stop in the direction of the page."""
+    a, b = key_for(row, descending=descending), key_for(stop, descending=descending)
+    return a < b if reverse else b < a
 
 
 def _targets(
@@ -280,7 +373,9 @@ async def _run(
     each page reads its connector's grants itself and leaves them there."""
     gate = _gate(max_concurrency)
     granted = access.get("by_connector") or {}
-    own_grants = {} if grants_read is None else {"user_key": user_key, "grants_out": grants_read}
+    # Every connector's grants, or the user to read them: the walk from one App can pass through a node of another, whose grant counts.
+    own_grants = ({"user_key": user_key, "grants_by_connector": granted} if grants_read is None
+                  else {"user_key": user_key, "grants_out": grants_read})
 
     async def run(app_id: str) -> dict[str, Any]:
         async def call() -> dict[str, Any]:
@@ -304,10 +399,14 @@ async def _run(
                 **own_grants,
             )
 
-        if gate is None:
-            return await call()
-        async with gate:
-            return await call()
+        try:
+            if gate is None:
+                async with _shared_turn():
+                    return await call()
+            async with gate, _shared_turn():
+                return await call()
+        except KnowledgeHubListingNotReady:
+            return {"rows": [], "hasMore": False, "total": 0, "counts": {}, "notReady": True}
 
     # A TaskGroup cancels its siblings when one raises, so a failed connector
     # does not leave the rest querying for a page nobody will return.
@@ -316,7 +415,7 @@ async def _run(
             tasks = [group.create_task(run(app_id)) for app_id in targets]
     except ExceptionGroup as failures:
         # A connector too large to list (or busy) fails the page as itself, not as a group nobody maps to a message.
-        refused = failures.subgroup(lambda e: isinstance(e, (KnowledgeHubListingTooLarge, KnowledgeHubListingBusy)))
+        refused = failures.subgroup(lambda e: isinstance(e, (KnowledgeHubListingTooLarge, KnowledgeHubListingBusy, KnowledgeHubListingNotReady)))
         if refused is not None:
             raise refused.exceptions[0] from None
         raise
@@ -328,3 +427,23 @@ def _gate(max_concurrency: int | None) -> asyncio.Semaphore | None:
     if max_concurrency is None or max_concurrency <= 0:
         return None
     return asyncio.Semaphore(max_concurrency)
+
+
+@asynccontextmanager
+async def _shared_turn() -> AsyncIterator[None]:
+    """A turn under ``SHARED_MAX_CONCURRENCY``, or busy at the request's deadline."""
+    if SHARED_MAX_CONCURRENCY <= 0:
+        yield
+        return
+    loop = asyncio.get_running_loop()
+    shared = _shared_gates.get(loop)
+    if shared is None:
+        shared = _shared_gates[loop] = asyncio.Semaphore(SHARED_MAX_CONCURRENCY)
+    try:
+        await asyncio.wait_for(shared.acquire(), seconds_left())
+    except TimeoutError:
+        raise KnowledgeHubListingBusy(timed_out=True) from None
+    try:
+        yield
+    finally:
+        shared.release()

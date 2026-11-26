@@ -8,6 +8,7 @@ import { ChatSuggestion } from '@/chat/types';
 import { buildConnectorsUrl } from '@/app/(main)/workspace/connectors/utils/build-connectors-url';
 import { useRestrictedQuestionAccess } from '@/app/(main)/workspace/connectors/demo-data/use-restricted-question';
 import { useDemoSwitch } from '@/app/(main)/workspace/connectors/demo-data/use-demo-switch';
+import { AboutDemoDataLink } from '@/app/(main)/workspace/connectors/demo-data/components';
 
 const EMAIL_SLOT = '\u2063';
 
@@ -70,6 +71,8 @@ export function DemoSuggestions({ isAdmin, isMobile, onPick }: DemoSuggestionsPr
             {t('chat.demoHide')}
           </button>
         </Link>
+        {' · '}
+        <AboutDemoDataLink isAdmin={isAdmin} />
       </Text>
       <Flex
         direction={isMobile ? 'column' : 'row'}
@@ -94,7 +97,7 @@ export function DemoSuggestions({ isAdmin, isMobile, onPick }: DemoSuggestionsPr
           return (
             <Flex key={s.id} direction="column" align="center" gap="1" style={{ width: isMobile ? '100%' : undefined }}>
               {chip}
-              <Text size="1" style={{ color: 'var(--slate-10)', textAlign: 'center', maxWidth: 420 }}>
+              <Text size="1" style={{ color: 'var(--slate-11)', textAlign: 'center', maxWidth: 420 }}>
                 {lockedHint}
               </Text>
             </Flex>

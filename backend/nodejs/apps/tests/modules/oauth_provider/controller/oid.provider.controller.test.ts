@@ -17,6 +17,7 @@ describe('OIDCProviderController', () => {
     delete process.env.PIPESHUB_ENABLE_DCR
     delete process.env.PIPESHUB_ENABLE_DEVICE_GRANT
     mockOAuthTokenService = {
+      mcpResource: 'http://localhost:3000/mcp',
       getAlgorithm: sinon.stub().returns('HS256'),
       getPublicKey: sinon.stub().returns(undefined),
       getKeyId: sinon.stub().returns(undefined),
@@ -70,7 +71,7 @@ describe('OIDCProviderController', () => {
       expect(config.grant_types_supported).to.include(
         'urn:ietf:params:oauth:grant-type:device_code',
       )
-      expect(config.registration_endpoint).to.equal(undefined)
+      expect(config.registration_endpoint).to.include('/register')
       expect(config.device_authorization_endpoint).to.include(
         '/device_authorization',
       )
@@ -110,11 +111,32 @@ describe('OIDCProviderController', () => {
       )
     })
 
-    it('should advertise registration_endpoint only when DCR is enabled', async () => {
-      process.env.PIPESHUB_ENABLE_DCR = 'true'
+    it('should advertise registration_endpoint by default', async () => {
       await controller.openidConfiguration({} as any, mockRes, mockNext)
       const config = mockRes.json.firstCall.args[0]
       expect(config.registration_endpoint).to.include('/register')
+    })
+
+    it('should omit registration_endpoint when DCR is disabled', async () => {
+      process.env.PIPESHUB_ENABLE_DCR = 'false'
+      await controller.openidConfiguration({} as any, mockRes, mockNext)
+      const config = mockRes.json.firstCall.args[0]
+      expect(config.registration_endpoint).to.equal(undefined)
+    })
+
+    it('advertises client ID metadata documents unless PIPESHUB_ENABLE_CIMD is false', async () => {
+      const saved = process.env.PIPESHUB_ENABLE_CIMD
+      try {
+        delete process.env.PIPESHUB_ENABLE_CIMD
+        await controller.openidConfiguration({} as any, mockRes, mockNext)
+        expect(mockRes.json.lastCall.args[0].client_id_metadata_document_supported).to.equal(true)
+        process.env.PIPESHUB_ENABLE_CIMD = 'false'
+        await controller.openidConfiguration({} as any, mockRes, mockNext)
+        expect(mockRes.json.lastCall.args[0].client_id_metadata_document_supported).to.equal(undefined)
+      } finally {
+        if (saved === undefined) delete process.env.PIPESHUB_ENABLE_CIMD
+        else process.env.PIPESHUB_ENABLE_CIMD = saved
+      }
     })
 
     it('should omit device grant metadata when the device grant is disabled', async () => {
@@ -129,13 +151,13 @@ describe('OIDCProviderController', () => {
       expect(mockFirstPartyDeviceAppService.getOrCreate.called).to.be.false
     })
 
-    it('should not advertise registration_endpoint for truthy values other than true', async () => {
-      for (const value of ['TRUE', '1', 'yes', 'on']) {
+    it('should advertise registration_endpoint for any value but false', async () => {
+      for (const value of ['', 'true', 'FALSE', '0', 'off']) {
         process.env.PIPESHUB_ENABLE_DCR = value
         mockRes.json.resetHistory()
         await controller.openidConfiguration({} as any, mockRes, mockNext)
         const config = mockRes.json.firstCall.args[0]
-        expect(config.registration_endpoint, value).to.equal(undefined)
+        expect(config.registration_endpoint, value).to.include('/register')
       }
     })
   })
@@ -163,6 +185,109 @@ describe('OIDCProviderController', () => {
       const meta = mockRes.json.firstCall.args[0]
       expect(meta.pipeshub_device_client_id).to.equal(undefined)
       expect(mockFirstPartyDeviceAppService.getOrCreate.called).to.be.false
+    })
+  })
+
+  // /auth.md: an agent's instructions for getting a credential, built from the same settings as discovery.
+  describe('authMd', () => {
+    const md = async (extra: (origin: string) => string[] = () => []) => {
+      const res = { type: sinon.stub().returnsThis(), send: sinon.stub() }
+      await controller.authMd({} as any, res as any, mockNext, extra)
+      expect(res.type.firstCall.args[0]).to.include('text/markdown')
+      return res.send.firstCall.args[0] as string
+    }
+
+    it('gives the device sign-in with this instance\'s client id and endpoints, and the MCP endpoint', async () => {
+      const out = await md()
+      expect(out).to.include('client_id=pipeshub-agent')
+      expect(out).to.include('http://localhost:3000/api/v1/oauth2/device_authorization')
+      expect(out).to.include('pipeshub login --url http://localhost:3000 --no-wait')
+      expect(out).to.include('`http://localhost:3000/mcp`')
+      expect(out).to.include('resource_metadata="http://localhost:3000/.well-known/oauth-protected-resource/mcp"')
+    })
+
+    // The scope is spelled out: the listed scopes, plus offline_access only where it is offered, so the token can refresh.
+    it('gives a raw device sign-in the exact scope, with offline_access only where it is offered', async () => {
+      mockAppConfig.mcpScopes = ['offline_access', 'kb:read', 'semantic:write']
+      let out = await md()
+      expect(out).to.include('`scope=semantic:write kb:read offline_access`')
+      expect(out).to.include('plus `offline_access` so it can refresh')
+      expect(out).to.include('comes with a refresh token')
+      expect(out).to.include('grant_type=refresh_token')
+      // Refresh tokens rotate; reusing a spent one revokes the sign-in.
+      expect(out).to.include('keep the `refresh_token` from the device-code response')
+      expect(out).to.include('store it in place of the old one')
+      // A pending poll is HTTP 400; a client that stops on 400 never finishes.
+      expect(out).to.include('authorization_pending`: keep polling')
+      expect(out).to.include('slow_down')
+      mockAppConfig.mcpScopes = ['kb:read']
+      out = await md()
+      expect(out).to.include('`scope=kb:read`')
+      expect(out).to.not.include('offline_access')
+      expect(out).to.not.include('refresh token')
+      expect(out).to.not.include('and refreshes it')
+    })
+
+    it('lists only the agent scopes this instance offers', async () => {
+      mockAppConfig.mcpScopes = ['openid', 'kb:read', 'semantic:write', 'org:admin']
+      const out = await md()
+      expect(out).to.include('`semantic:write`, `kb:read`')
+      expect(out).to.not.include('org:admin')
+    })
+
+    it('leaves out the device sign-in when it is off, and offers registration only with DCR on', async () => {
+      process.env.PIPESHUB_ENABLE_DEVICE_GRANT = 'false'
+      process.env.PIPESHUB_ENABLE_DCR = 'false'
+      let out = await md()
+      expect(out).to.not.include('device_authorization')
+      expect(out).to.not.include('/register')
+      expect(out).to.include('Personal access tokens')
+      process.env.PIPESHUB_ENABLE_DCR = 'true'
+      out = await md()
+      expect(out).to.include('http://localhost:3000/api/v1/oauth2/register')
+    })
+
+    // An agent that reads only auth.md must learn the registration discovery advertises, and never one it doesn't.
+    it('offers email sign-up exactly when discovery advertises agent_auth', async () => {
+      const discovery = async () => {
+        const res = { json: sinon.stub(), status: sinon.stub().returnsThis(), setHeader: sinon.stub() }
+        await controller.openidConfiguration({} as any, res as any, mockNext)
+        return res.json.firstCall.args[0]
+      }
+      let out = await md()
+      expect((await discovery()).agent_auth).to.exist
+      expect(out).to.include('`service_auth`')
+      expect(out).to.include('http://localhost:3000/api/v1/agent/identity')
+      expect(out).to.include('grant_type=urn:workos:agent-auth:grant-type:claim')
+      expect(out).to.include('grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer')
+      expect(out).to.include('lasts 30 days')
+      expect(out).to.not.include('anonymous')
+      // The code lapses long before the claim window: without the restart step an agent polls a dead link for a day.
+      expect(out).to.include('polling keeps answering `authorization_pending` after they lapse')
+      expect(out).to.include('{"claim_token": "<claim_token>", "email": "<the same email>"}')
+      expect(out).to.include('`claim_attempt`')
+      // A 401 sends an email sign-up back to its assertion, not to signing in again.
+      expect(out).to.match(/- `401`: .*identity_assertion.*jwt-bearer/)
+      process.env.PIPESHUB_ENABLE_DEVICE_GRANT = 'false'
+      out = await md()
+      expect((await discovery()).agent_auth).to.not.exist
+      expect(out).to.not.include('/agent/identity')
+      expect(out).to.not.include('service_auth')
+      expect(out).to.not.include('identity_assertion')
+    })
+
+    it('adds the edition\'s sections after the built-in ways in', async () => {
+      const out = await md((origin) => [`### Extra way in for ${origin}`])
+      expect(out).to.include('### Extra way in for http://localhost:3000')
+      expect(out.indexOf('### Extra way in')).to.be.greaterThan(out.indexOf('### A personal access token'))
+    })
+
+    it('passes a failure to next instead of answering', async () => {
+      mockFirstPartyDeviceAppService.getOrCreate.rejects(new Error('db down'))
+      const res = { type: sinon.stub().returnsThis(), send: sinon.stub() }
+      await controller.authMd({} as any, res as any, mockNext, () => [])
+      expect(mockNext.calledOnce).to.be.true
+      expect(res.send.called).to.be.false
     })
   })
 

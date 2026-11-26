@@ -41,14 +41,13 @@ export function SearchBar({
       direction="column"
       style={{
         backgroundColor: 'var(--effects-translucent)',
-        backdropFilter: 'blur(8px)',
+        backdropFilter: 'var(--frost-filter-subtle)',
         borderBottom: '1px solid var(--olive-3)',
       }}
     >
       <Flex
         align="center"
         style={{
-          height: 'var(--space-10)',
           padding: 'var(--space-1) var(--space-3) var(--space-1) var(--space-2)',
         }}
       >
@@ -91,6 +90,7 @@ export function SearchBar({
 
           {/* Close Button */}
           <IconButton
+            aria-label={t('common.close')}
             variant="ghost"
             size="1"
             color="gray"

@@ -1,7 +1,12 @@
 import { z } from 'zod';
-import { OAuthGrantType } from '../schema/oauth.app.schema';
+import { OAuthGrantType } from '../../../libs/repositories/oauth-app/types';
+import {
+  AGENT_CLAIM_GRANT,
+  JWT_BEARER_GRANT,
+} from '../constants/agent-auth.constants';
 import { messageForUnknownOption } from '../../../libs/utils/validation.utils';
 import {
+  emailCheck,
   guidCheck,
   integerCheck,
   urlCheck,
@@ -59,6 +64,10 @@ export const knowledgeLimitSchema = z
  */
 const codeChallengePattern = /^[A-Za-z0-9\-_]{43,128}$/;
 
+const resourceParam = z
+  .union([z.string().max(2048), z.array(z.string().max(2048)).max(10)])
+  .optional();
+
 export const authorizeQuerySchema = z.object({
   query: z.object({
     response_type: z.enum(
@@ -82,6 +91,8 @@ export const authorizeQuerySchema = z.object({
       )
       .optional(),
     nonce: z.string().optional(),
+    // RFC 8707: the resource the token will be for. Read at the token endpoint.
+    resource: resourceParam,
   }),
 });
 
@@ -107,6 +118,15 @@ export const authorizeConsentSchema = z.object({
   }),
 });
 
+// A client id, secret, code or token never holds a control character, and PostgreSQL cannot store a NUL: refused here as
+// the client's 400, before a store read turns it into our own failure.
+// eslint-disable-next-line no-control-regex
+export const NO_CONTROL_CHARACTERS = /^[^\u0000-\u001f\u007f]*$/;
+const credential = (): z.ZodString =>
+  z
+    .string()
+    .regex(NO_CONTROL_CHARACTERS, 'Must not contain control characters');
+
 export const tokenSchema = z.object({
   body: z.object({
     grant_type: z.enum([
@@ -115,20 +135,27 @@ export const tokenSchema = z.object({
       OAuthGrantType.REFRESH_TOKEN,
       OAuthGrantType.DEVICE_CODE,
       OAuthGrantType.TOKEN_EXCHANGE,
+      AGENT_CLAIM_GRANT,
+      JWT_BEARER_GRANT,
     ]),
-    code: z.string().optional(),
+    code: credential().optional(),
     redirect_uri: z.string().check(urlCheck()).optional(),
     // RFC 6749: client_id is required but can also come from Authorization header
-    client_id: z.string().min(1).optional(),
-    client_secret: z.string().optional(),
-    refresh_token: z.string().optional(),
+    client_id: credential().min(1).optional(),
+    client_secret: credential().optional(),
+    refresh_token: credential().optional(),
     scope: z.string().optional(),
     // RFC 7636: code_verifier must match the pattern [A-Za-z0-9-._~]{43,128}
     code_verifier: z
       .string()
       .regex(codeVerifierPattern, 'Invalid code_verifier format')
       .optional(),
-    device_code: z.string().min(1).optional(),
+    device_code: credential().min(1).optional(),
+    // RFC 8707: the resource the token is for; repeatable in a form body.
+    resource: resourceParam,
+    // auth.md agent registration
+    claim_token: z.string().min(1).max(256).optional(),
+    assertion: z.string().min(1).max(4096).optional(),
     // RFC 8693 token exchange. Bounded here so an oversized body is refused
     // before any of it is parsed as a token; `requested_subject` holds a user
     // id or an email address, so it is capped at the schema's email length.
@@ -179,21 +206,51 @@ export const deviceConsentSchema = z.object({
   }),
 });
 
+// auth.md agent registration. `type` is checked by the service, which answers an unknown one with the protocol's own error codes.
+export const agentIdentitySchema = z.object({
+  body: z.object({
+    type: z.string().max(64).optional(),
+    login_hint: z.string().max(320).optional(),
+  }),
+});
+
+export const agentClaimSchema = z.object({
+  body: z.object({
+    claim_token: z.string().min(1).max(256),
+    email: z.string().max(320).check(emailCheck()),
+  }),
+});
+
+export const agentClaimVerifySchema = z.object({
+  body: z.object({ claim_attempt_token: z.string().min(1).max(256) }),
+});
+
+export const agentClaimCompleteSchema = z.object({
+  body: z.object({
+    claim_attempt_token: z.string().min(1).max(256),
+    user_code: z.string().max(32).optional(),
+    action: z.enum(['approve', 'deny']),
+    // The scope names the claim page showed; an approval records exactly these.
+    scopes: z.array(z.string().max(64)).max(64).optional(),
+  }),
+});
+
 export const revokeSchema = z.object({
   body: z.object({
-    token: z.string().min(1),
+    token: credential().min(1),
     token_type_hint: z.enum(['access_token', 'refresh_token']).optional(),
-    client_id: z.string().min(1),
-    client_secret: z.string().optional(),
+    // Absent for the agent flow, whose tokens are their own credential.
+    client_id: credential().min(1).optional(),
+    client_secret: credential().optional(),
   }),
 });
 
 export const introspectSchema = z.object({
   body: z.object({
-    token: z.string().min(1),
+    token: credential().min(1),
     token_type_hint: z.enum(['access_token', 'refresh_token']).optional(),
-    client_id: z.string().min(1),
-    client_secret: z.string().optional(),
+    client_id: credential().min(1),
+    client_secret: credential().optional(),
   }),
 });
 
@@ -350,5 +407,10 @@ export const listAppsQuerySchema = z.object({
       .optional(),
     status: z.enum(['active', 'suspended', 'revoked']).optional(),
     search: z.string().optional(),
+    createdBy: z.string().regex(mongoIdRegex, 'Invalid user ID').optional(),
   }),
+});
+
+export const agentRegistrationIdSchema = z.object({
+  params: z.object({ id: z.string().regex(/^reg_[0-9a-f]{24}$/) }),
 });

@@ -99,8 +99,11 @@ curl -X POST "$NODE_URL/api/v1/configurationManager/ai-models/providers" \
 | OpenAI | `gpt-6-luna` | `POST {base}/decisions` (default base `https://api.openai.com/v1`) |
 | Azure OpenAI (Microsoft Foundry) | a `Microsoft-Decision-1` deployment, addressed by deployment name | `POST {endpoint}/providers/microsoft/v1/systemone` (System One format), `api-key` header |
 | TypeSafe | `jev-latest`, `jev-preview`, `jev-1.14.0`, `jev-1.13.0` | `POST {base}/v1/systemone` (default base `https://api.typesafe.ai`) |
+| OpenRouter | `typesafe/jev-1.13` and other decision models OpenRouter serves | `POST https://openrouter.ai/api/alpha/decisions` (System One format). Its chat completions endpoint refuses decision models |
+| LiteLLM Proxy | a decision model in the proxy's `model_list`, by its alias | `POST {endpoint}/decisions` (OpenAI format); LiteLLM translates for TypeSafe, OpenRouter and Azure |
+| OpenAI Compatible | any model a server serves on the OpenAI Decisions API | `POST {endpoint}/decisions` |
 
-Saving a model runs one yes/no question against it. Model discovery (`POST .../ai-models/discover` with `capability: "decision"`) lists TypeSafe's Jev models, `gpt-6-luna` on OpenAI, and `Microsoft-Decision-1` on Azure OpenAI, which is then no longer offered as a chat model. Code uses the default decision model through `get_decision_model_instance` (`app/utils/llm.py`), which returns `None` when none is configured:
+Saving a model runs one yes/no question against it. Model discovery (`POST .../ai-models/discover` with `capability: "decision"`) lists TypeSafe's Jev models, `gpt-6-luna` on OpenAI, and `Microsoft-Decision-1` on Azure OpenAI, which is then no longer offered as a chat model. The gateways don't say which of their models are decision models, so on OpenRouter, LiteLLM Proxy and OpenAI Compatible you type the model name. Code uses the default decision model through `get_decision_model_instance` (`app/utils/llm.py`), which returns `None` when none is configured:
 
 ```python
 from app.services.ai_models.decision import ChoiceQuestion, DecisionOption
@@ -120,9 +123,33 @@ if built:
 
 All questions in one `decide` call share the input; a question that depends on an earlier answer needs a second call. An answer the provider declines comes back with `refused=True`; one the response does not contain comes back with `missing=True` (usually a wrong endpoint or format). Failures raise `DecisionModelError`. Rate limits and overload (429, 500, 502, 503, 504, 529) are retried up to twice, unless the provider asks to wait more than 5 seconds.
 
+## Local embedding model memory
+
+The bundled embedding server (`app/embedding_main.py`) holds a local model in memory only while something uses it.
+
+- **Startup.** It reads the saved embedding settings and warms the default local model only when the default entry (else the first) uses a local provider (`default`, `huggingFace`, `sentenceTransformers`), or when no embedding model is saved. With a hosted provider, or when the settings cannot be read, it skips the warm-up and loads the model on the first request that needs it (the first request pays the load, a few seconds for the default model).
+- **Idle unload.** A model unused for `EMBEDDING_SERVER_MODEL_IDLE_SECONDS` (default 900; `0` keeps it loaded) is dropped, then `gc` and `malloc_trim` hand the memory back. A request in flight keeps its model; the next request reloads it. `/health` reports `healthy` whenever the server is up; `loaded_models` lists what is resident.
+- **Weight precision.** `EMBEDDING_SERVER_PRECISION=int8` is an explicit opt-in (`auto`, the default, keeps the usual 32-bit floating-point weights, called fp32). It stores the large weight matrices of the transformer as 8-bit integers in a file that is memory-mapped: about 0.85 GiB less memory in use for `BAAI/bge-large-en-v1.5` (1.27 GiB against 2.13 GiB after encoding, no higher peak) and about 12 percent slower encoding (14.4 s against 12.8 s for one batch). Search stays close to fp32 but is not identical: the top result is the same as fp32 for 96.4 to 98.4 percent of queries (about 3.5 percent get another first result), top-10 overlap is 0.97 to 0.98, and accuracy on near-duplicate hard negatives is within noise. An index remembers the precision it was built with: while the embedding server and the index disagree, events that write vectors wait (nothing fails), and the Services page says so. To switch, set the value, restart the embedding server, then in Workspace > Connectors run "Clean up embeddings" and "Reindex embeddings"; the cleanup deletes the whole search index, and search finds nothing until the reindex has finished. To go back, set the old value again and the waiting events continue within ten minutes. Stop indexing instances of an older version before opting in: they do not check. See [indexing-service.md](./indexing-service.md#414-embedding-weight-precision).
+- **One copy per model.** The cache is keyed by model name alone, so `trust_remote_code` never loads the same weights twice. Requests that set it are still refused with 403 unless `EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true`.
+
 ## Query instruction (BGE, experimental, off by default)
 
 Set `EMBEDDING_QUERY_INSTRUCTION=true` to enable; unset, queries are sent unchanged. Ranking evidence is mixed (dense gains, hybrid neutral, one slice regressed), so it stays opt-in. When on, BGE v1/v1.5 English embedding models (`bge-small|base|large[-en][-v1.5]`, local or hosted, by the configured model id) expect `Represent this sentence for searching relevant passages: ` in front of search *queries*. `app/utils/query_instruction.py` (`instruct_query`) adds it on the dense query embedding in chunk search (`retrieval_service.py`), entity search and the skill index. Passages and chunks are embedded as-is at index time, so stored vectors are unchanged, and the sparse (BM25) query is never prefixed. bge-m3 and the zh models are left alone, as is every non-BGE model. New query-embedding paths should call `instruct_query`.
+
+## Model-call placement (MG-15)
+
+Whether an org's model calls may go to a given model is an extension point that refuses nothing in this build. Every model call PipesHub makes for an org asks it first: agent runs, classic chat and search, the Slack bot (which streams the chat and agent routes), indexing and extraction (table and image descriptions, VLM OCR, classification, entities), embeddings at index and query time, image generation, speech and the decision model.
+
+**The extension points.**
+
+- `ModelPlacementPort` (`backend/python/app/utils/model_placement.py`): the verdict `app/utils/llm.py` asks (`require_placement`, `require_embeddings_placement`) before it builds any model or embedding client (`build_chat_model`, `build_embeddings`, `get_llm`, `get_llm_for_role`, …). A holder of a built embedding client asks again before each use. Default `ALLOW_EVERY_MODEL`: every call is allowed and its region is not known.
+- `RunModelPlacement` (`backend/python/app/harness/run_policy/ports.py`): what a run's resolved model policy is handed through before its routes are used. Default `NO_RUN_MODEL_PLACEMENT`: the policy is handed out as is.
+- `ModelRegions` (`backend/python/harness_core/models/placement.py`): where a route's calls are served and which region pins an org's narrowing holds, asked by the model gateway's guard. Default `NO_MODEL_REGIONS`: no region, no pin.
+- `ModelPlacementSource` (Node, `backend/nodejs/apps/src/modules/agent-harness/ports/model-access.ts`, bound to `AGENT_HARNESS_MODEL_PLACEMENT`): what the model picker shows beyond each choice's own members. Unbound: nothing more.
+
+`backend/python/tests/unit/harness/policy/test_placement_ports.py` (RSP-1..RSP-5) holds the defaults. `tests/cohesion/test_mg15_one_model_funnel.py` fails when a model client is built anywhere but `app/utils/llm.py`, and `tests/cohesion/test_mg15_one_placement_funnel.py` when a run's model route is built outside the placement funnel; the admin's model health checks (`app/api/routes/health.py`, a fixed probe with no org content) are the named exception.
+
+**When a call is refused.** `require_placement` raises `ModelNotAllowedError` with the error code the verdict names: chat and the Slack bot say nothing was sent to the model and to pick another or ask a workspace admin; background work says the file was not processed and an admin can choose another model. Rules that cannot be read send nothing: the call fails as a provider outage (`LLMUnavailableError`) and is retried.
 
 ## Where to change it
 
@@ -130,7 +157,7 @@ Set `EMBEDDING_QUERY_INSTRUCTION=true` to enable; unset, queries are sent unchan
 | --- | --- |
 | Provider form fields | `backend/python/app/config/ai_models/providers/` |
 | List-model strategies | `backend/python/app/services/ai_models/discovery/` |
-| Runtime model construction | `backend/python/app/utils/aimodels.py` |
+| Runtime model construction | `backend/python/app/utils/aimodels.py`, built only through `backend/python/app/utils/llm.py` (placement check) |
 | Stored document and batch save | `backend/nodejs/apps/src/modules/configuration_manager/` |
 | Picker and onboarding | `frontend/app/(main)/workspace/ai-models/` |
 | Decision model clients | `backend/python/app/services/ai_models/decision/` |

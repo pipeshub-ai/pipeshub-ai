@@ -306,3 +306,67 @@ class TestEstimation:
             },
         }
         assert estimate_record_chars(record) < 1_000
+
+
+class TestGroupedRowHits:
+    BLOCKS = [{"id": f"row-{i}", "index": i} for i in range(6)]
+
+    @staticmethod
+    def _response(*metas: dict) -> dict:
+        return {"searchResults": [{"metadata": {"virtualRecordId": "v1", **m}} for m in metas]}
+
+    def test_a_grouped_point_hits_every_row_it_lists(self) -> None:
+        from app.utils.record_block_selection import _hits_from_search
+
+        response = self._response(
+            {"blockIndex": 1, "rowBlockIds": ["row-1", "row-2", "row-3"]}, {"blockIndex": 5},
+        )
+        assert _hits_from_search(response, "v1", self.BLOCKS) == [1, 2, 3, 5]
+
+    def test_rows_are_not_repeated_and_unknown_ids_are_dropped(self) -> None:
+        from app.utils.record_block_selection import _hits_from_search
+
+        response = self._response(
+            {"blockIndex": 2, "rowBlockIds": ["row-2", "gone", "row-3"]},
+            {"blockIndex": 3, "rowBlockIds": ["row-3", "row-4"]},
+        )
+        assert _hits_from_search(response, "v1", self.BLOCKS) == [2, 3, 4]
+
+    def test_a_point_is_placed_by_its_block_id_not_its_stored_index(self) -> None:
+        """A reconciled update keeps a block's point: blocks inserted above it move the block, and the index it stored is stale."""
+        from app.utils.record_block_selection import _hits_from_search
+
+        assert _hits_from_search(self._response({"blockId": "row-4", "blockIndex": 3}), "v1", self.BLOCKS) == [4]
+
+    def test_a_point_for_a_block_no_longer_in_the_record_is_skipped(self) -> None:
+        from app.utils.record_block_selection import _hits_from_search
+
+        assert _hits_from_search(self._response({"blockId": "gone", "blockIndex": 2}), "v1", self.BLOCKS) == []
+
+    def test_a_grouped_point_whose_first_row_is_gone_is_placed_by_the_rows_it_still_has(self) -> None:
+        from app.utils.record_block_selection import _hits_from_search
+
+        blocks = [b for b in self.BLOCKS if b["id"] != "row-1"]
+        response = self._response({"blockId": "row-1", "blockIndex": 1, "rowBlockIds": ["row-1", "row-2", "row-3"]})
+        assert _hits_from_search(response, "v1", blocks) == [1, 2], "rows 2 and 3, now at positions 1 and 2"
+
+    def test_a_grouped_point_none_of_whose_rows_is_left_is_skipped(self) -> None:
+        from app.utils.record_block_selection import _hits_from_search
+
+        response = self._response({"blockId": "gone-1", "blockIndex": 1, "rowBlockIds": ["gone-1", "gone-2"]})
+        assert _hits_from_search(response, "v1", self.BLOCKS) == []
+
+    def test_a_point_without_a_block_id_keeps_its_stored_index(self) -> None:
+        from app.utils.record_block_selection import _hits_from_search
+
+        assert _hits_from_search(self._response({"blockIndex": 2}), "v1", self.BLOCKS) == [2]
+
+    def test_without_blocks_the_stored_index_is_all_there_is(self) -> None:
+        from app.utils.record_block_selection import _hits_from_search
+
+        assert _hits_from_search(self._response({"blockId": "row-4", "blockIndex": 3}), "v1") == [3]
+
+    def test_without_blocks_a_grouped_point_is_its_first_row(self) -> None:
+        from app.utils.record_block_selection import _hits_from_search
+
+        assert _hits_from_search(self._response({"blockIndex": 1, "rowBlockIds": ["row-1", "row-2"]}), "v1") == [1]

@@ -1,6 +1,8 @@
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import { immer } from 'zustand/middleware/immer';
 import { devtools } from 'zustand/middleware';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import type {
   Connector,
   ConnectorScope,
@@ -35,6 +37,8 @@ export type ConnectorOAuthAppListRow = {
   oauth_instance_name?: string;
   config?: Record<string, unknown>;
   appGroup?: string;
+  /** The caller's own OAuth app, which only they can see and use. */
+  personal?: boolean;
 };
 
 type OAuthAppsListPhase = 'idle' | 'loading' | 'ready';
@@ -508,10 +512,13 @@ export const useConnectorsStore = create<ConnectorsState>()(
           }
         }),
 
-      bumpCatalogRefresh: () =>
+      bumpCatalogRefresh: () => {
         set((s) => {
           s.catalogRefreshToken += 1;
-        }),
+        });
+        revalidateSwrNamespace(SWR_NS.teamConnectorLists);
+        revalidateSwrNamespace(SWR_NS.connectorConfigs);
+      },
 
       bumpOAuthAuthorizeUiEpoch: () =>
         set((s) => {
@@ -897,10 +904,10 @@ export const useConnectorsStore = create<ConnectorsState>()(
           delete s.localSyncStatuses[connectorId];
         }),
 
+      // Configs stay, keyed by instance: reopening a type page within the SWR window shows them with no request.
       clearInstanceData: () =>
         set((s) => {
           s.instances = [];
-          s.instanceConfigs = {};
           s.instanceStats = {};
           s.localSyncStatuses = {};
         }),
@@ -973,3 +980,5 @@ export const useConnectorsStore = create<ConnectorsState>()(
     { name: 'connectors-store' }
   )
 );
+
+resetStoreOnSessionEnd(useConnectorsStore);

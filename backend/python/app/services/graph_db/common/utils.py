@@ -1,11 +1,16 @@
+import contextlib
+import json
+import os
 import re
-from collections.abc import Iterable
+import uuid
+from collections.abc import Collection, Iterable
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    EntityRelations,
     OriginTypes,
     RecordRelations,
 )
@@ -68,6 +73,11 @@ KB_ROLE_PRIORITY: dict[str, int] = {
 # against a cycle, not a product limit: a cascade that stopped at 20 left
 # anything deeper behind.
 CONTAINMENT_MAX_DEPTH = 1000
+
+# Folders ``list_user_knowledge_bases`` returns per collection, the first by id;
+# ``foldersTruncated`` says more exist; browsing the collection pages through
+# them all.
+KB_LIST_FOLDERS_CAP = 100
 
 # Records considered per entity when listing an entity's records, taken
 # before the newest-first sort. Without a bound, a language or broad category
@@ -246,6 +256,165 @@ class PermittedEntityRows(EntityCandidateRows):
         )
 
 
+# An engine agent's settings on the agent document (AG1). The narrowing is stored as JSON text on
+# both backends: a Neo4j property cannot hold a map, and Arango's PATCH would merge a stored object
+# with the new one, so a narrowing that drops a dimension could never be written.
+AGENT_ENGINE_PROFILE_FIELD = "engineProfile"
+AGENT_MODEL_ACCOUNT_FIELD = "modelAccountId"
+AGENT_ENGINE_FIELDS = (AGENT_ENGINE_PROFILE_FIELD, AGENT_MODEL_ACCOUNT_FIELD)
+# The team whose layer narrows the agent's runs and whose admins manage it (CPD-9); a team id or null.
+AGENT_OWNER_TEAM_FIELD = "ownerTeam"
+# The model each sub-agent role runs on (MA1), stored as JSON text for the reasons the narrowing is: replacing
+# the map must be able to drop a role.
+AGENT_ROLE_MODELS_FIELD = "roleModels"
+# The agent's own run gates (WP-31 D: plan approval, checks), JSON text for the same reason: a save that drops a
+# gate must be able to drop it.
+AGENT_GATES_FIELD = "gates"
+# The agent's environment for its engine runs (C20.18, WP-100), JSON text for the same reason: a save that drops a
+# variable or a cache folder must be able to drop it.
+AGENT_ENVIRONMENT_FIELD = "environment"
+AGENT_JSON_TEXT_FIELDS = (AGENT_ENGINE_PROFILE_FIELD, AGENT_ROLE_MODELS_FIELD, AGENT_GATES_FIELD, AGENT_ENVIRONMENT_FIELD)
+
+
+def encode_agent_engine_profile(value: object) -> object:
+    """The stored form of an agent's ``engineProfile``: canonical JSON text for an object."""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return value
+
+
+def decode_agent_engine_profile(agent: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``agent`` with its stored ``engineProfile`` text read back as JSON, in place. Text that does
+    not parse is kept as is, so the run definition refuses it as invalid rather than run the loop."""
+    if not agent:
+        return agent
+    stored = agent.get(AGENT_ENGINE_PROFILE_FIELD)
+    if isinstance(stored, str):
+        with contextlib.suppress(ValueError):
+            agent[AGENT_ENGINE_PROFILE_FIELD] = json.loads(stored)
+    return agent
+
+
+def encode_agent_json_fields(document: dict[str, Any]) -> None:
+    """``document`` with each setting it names that is stored as JSON text in its stored form, in place."""
+    for field in AGENT_JSON_TEXT_FIELDS:
+        if field in document:
+            document[field] = encode_agent_engine_profile(document[field])
+
+
+def decode_agent_json_fields(agent: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``agent`` with every setting stored as JSON text read back as JSON, in place. Text that does not parse is
+    kept as is, so its reader refuses it rather than take it for unset."""
+    if not agent:
+        return agent
+    for field in AGENT_JSON_TEXT_FIELDS:
+        stored = agent.get(field)
+        if isinstance(stored, str):
+            with contextlib.suppress(ValueError):
+                agent[field] = json.loads(stored)
+    return agent
+
+
+# The agent document fields a save may change; tools, knowledge, toolsets and MCP servers are edges, not fields.
+AGENT_UPDATABLE_FIELDS = (
+    "name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount",
+    "serviceAccountUserId", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools",
+    *AGENT_ENGINE_FIELDS, AGENT_OWNER_TEAM_FIELD, AGENT_ROLE_MODELS_FIELD, AGENT_GATES_FIELD, AGENT_ENVIRONMENT_FIELD,
+)
+
+
+def agent_model_entries(raw_models: object) -> list[str] | None:
+    """The stored ``models`` of an agent save: ``<modelKey>[_<modelName>]`` strings, first occurrence kept; None when the save
+    names no list (the stored value stays), ``[]`` for an explicit null."""
+    if raw_models is None:
+        return []
+    if not isinstance(raw_models, list):
+        return None
+    entries: list[str] = []
+    for model in raw_models:
+        if isinstance(model, dict):
+            key, name = model.get("modelKey"), model.get("modelName", "")
+        elif isinstance(model, str):
+            key, _, name = model.partition("_")
+        else:
+            continue
+        if key:
+            entry = f"{key}_{name}" if name else key
+            if entry not in entries:
+                entries.append(entry)
+    return entries
+
+
+def agent_update_document(agent_updates: dict[str, Any], user_id: str, now_ms: int) -> dict[str, Any]:
+    """What an agent save writes to the stored agent: the updatable fields it names (JSON-text settings in their stored form),
+    the normalised model list, and who saved it when."""
+    document: dict[str, Any] = {"updatedAtTimestamp": now_ms, "updatedBy": user_id}
+    for field in AGENT_UPDATABLE_FIELDS:
+        if field in agent_updates:
+            document[field] = agent_updates[field]
+    encode_agent_json_fields(document)
+    if "models" in agent_updates:
+        models = agent_model_entries(agent_updates["models"])
+        if models is not None:
+            document["models"] = models
+    return document
+
+# A person (User node) as a listable entity: the connector-written relations
+# linking a person to a record, by the direction they are stored in.
+PERSON_ENTITY_TYPE = "person"
+PERSON_EDGES_TO_USER: tuple[str, ...] = tuple(r.value for r in (
+    EntityRelations.ASSIGNED_TO, EntityRelations.REPORTED_BY,
+    EntityRelations.CREATED_BY, EntityRelations.LEAD_BY,
+    EntityRelations.AUTHORED_BY, EntityRelations.OWNED_BY,
+    EntityRelations.REVIEWED_BY, EntityRelations.ADDRESSED_TO,
+    EntityRelations.LAST_MODIFIED_BY, EntityRelations.SHARED_WITH,
+))
+PERSON_EDGES_FROM_USER: tuple[str, ...] = tuple(r.value for r in (
+    EntityRelations.MENTIONED_IN, EntityRelations.INVOLVED_IN,
+))
+
+
+_FULL_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s.]+")
+
+
+def is_full_address(text: str) -> bool:
+    """Whether ``text`` is one whole email address, not a fragment such as "@acme" or "acme.com"."""
+    return _FULL_ADDRESS.fullmatch(text) is not None
+
+
+def person_query_ref(ref: dict[str, Any]) -> dict[str, list[str]]:
+    """The person fields of a ``person`` ref as a candidate query reads them:
+    its user ids, and its edge types kept to the allow-list of each direction
+    (Record->User ``outTypes``, User->Record ``inTypes``). A ref naming
+    neither (a person entity from search) links by every person relation."""
+    person_ids = list(dict.fromkeys(str(i) for i in ref.get("personIds") or () if i))
+    # A person from search is a User node: the ref id stands for it when no node list is given.
+    user_ids = list(dict.fromkeys(str(i) for i in ref.get("userIds") or ([] if person_ids else [ref.get("id")]) if i))
+    if "outTypes" not in ref and "inTypes" not in ref:
+        return {"userIds": user_ids, "personIds": person_ids,
+                "outTypes": list(PERSON_EDGES_TO_USER), "inTypes": list(PERSON_EDGES_FROM_USER)}
+    return {
+        "userIds": user_ids,
+        "personIds": person_ids,
+        "outTypes": [t for t in PERSON_EDGES_TO_USER if t in (ref.get("outTypes") or ())],
+        "inTypes": [t for t in PERSON_EDGES_FROM_USER if t in (ref.get("inTypes") or ())],
+    }
+
+
+def within_param(within: list[dict[str, list[str]]] | None) -> list[dict[str, list[str]]] | None:
+    """Scopes for a candidate query's ``within`` bind variable: each
+    ``{"apps", "groups", "records"}`` with every key present and only string
+    ids, or None when there is no limit. An empty list is a limit too; it is
+    kept as one empty scope, so it admits nothing instead of everything."""
+    if within is None:
+        return None
+    scopes = [
+        {key: [str(i) for i in (scope.get(key) or []) if i] for key in ("apps", "groups", "records")}
+        for scope in within
+    ]
+    return scopes or [{"apps": [], "groups": [], "records": []}]
+
+
 def dedupe_agents_by_id(rows: Optional[List[Dict[str, Any]]]) -> List[str]:
     """
     Collapse a list of ``{agentId, agentName}`` rows into a list of agent names,
@@ -381,13 +550,106 @@ TRASH_STATE_FIELDS = (
     "trashedExternalRecordId",
 )
 
+# Record fields a write to an existing record never changes. ``createdAtTimestamp`` is when PipesHub first stored the
+# record; ``incarnationId`` names the life of the record's vertex and changes only in ``restore_records``. Both are written when
+# the vertex is inserted. Insert-only applies to the ``records`` collection, not to its type documents or any other collection.
+INSERT_ONLY_RECORD_FIELDS = ("createdAtTimestamp", "incarnationId")
+
+# Trash state is written only by the trash API and ``restore_records``: an upsert onto an existing record leaves it alone
+# (it would otherwise untrash a record without the incarnation reset a restore gives).
+RECORD_UPDATE_DROPPED_FIELDS = (*INSERT_ONLY_RECORD_FIELDS, "isDeleted", *TRASH_STATE_FIELDS)
+
+
+def _env_on(name: str, default: str) -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def record_created_at_insert_only() -> bool:
+    """``RECORD_CREATED_AT_INSERT_ONLY`` (default on): the stores keep a record's stored ``createdAtTimestamp``. It adds no
+    field, so an older process cannot refuse it; off restores the merge-everything write."""
+    return _env_on("RECORD_CREATED_AT_INSERT_ONLY", "true")
+
+
+def record_incarnation_write() -> bool:
+    """``RECORD_INCARNATION_WRITE`` (default off in the release that adds ``incarnationId``): the store mints the id at
+    insert, ``restore_records`` resets it, and the orphan guard compares it. A process on an older closed ArangoDB record schema
+    refuses a record carrying a field it does not know, so the field is accepted by the schema first and written one release later."""
+    return _env_on("RECORD_INCARNATION_WRITE", "false")
+
+
+def new_incarnation_id() -> str:
+    return uuid.uuid4().hex
+
+
+def positive_min(stored: Any, incoming: Any) -> Any:  # noqa: ANN401
+    """The earlier of two timestamps, ignoring any that is not a positive number (a parser that returns 0 must not freeze 1970)."""
+    ok = [v for v in (stored, incoming) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0]
+    return min(ok) if ok else stored
+
+
+def record_update_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """The part of a record document an upsert may write onto an existing record."""
+    if not record_created_at_insert_only():
+        # the older merge-everything write, except that an update never writes the incarnation id: only an insert and a restore do
+        return {k: v for k, v in doc.items() if k != "incarnationId"}
+    return {k: v for k, v in doc.items() if k not in RECORD_UPDATE_DROPPED_FIELDS}
+
+
+def merge_same_id_record_docs(earlier: dict[str, Any], later: dict[str, Any]) -> dict[str, Any]:
+    """Two documents written for one new record in one batch, as one: the later row wins for every key, except
+    ``createdAtTimestamp``, which is the earliest positive value given (the rule a placeholder's promotion uses). The same on every store."""
+    merged = {**earlier, **later}
+    if "createdAtTimestamp" in earlier and "createdAtTimestamp" in later:
+        merged["createdAtTimestamp"] = positive_min(earlier["createdAtTimestamp"], later["createdAtTimestamp"])
+    return merged
+
+
+def collapse_repeated_records(records: list[Any]) -> list[Any]:
+    """The records of one ``batch_upsert_records`` call with each id once, by the rule every store applies to repeated ids: the last row
+    is the record written (its type, so its type document and edge are written once, and its fields), with ``createdAtTimestamp`` the
+    earliest positive value any row gave and a promotion mark if any row had one. Order follows each id's first appearance."""
+    if not record_created_at_insert_only():
+        return records                  # the switch restores the older write: rows are written as given, in order
+    ids = [getattr(record, "id", None) for record in records]
+    if None in ids or len(set(ids)) == len(ids):
+        return records
+    groups: dict[Any, list[Any]] = {}
+    for record in records:
+        groups.setdefault(record.id, []).append(record)          # one pass; a dict keeps each id's first appearance first
+    out: list[Any] = []
+    for rows in groups.values():
+        merged = rows[-1].model_copy()
+        dates = [r.created_at for r in rows if isinstance(r.created_at, int) and r.created_at > 0]
+        merged.created_at = min(dates) if dates else rows[-1].created_at
+        merged._promotes_stub = any(r._promotes_stub for r in rows)
+        merged._known_new = all(r._known_new for r in rows)
+        out.append(merged)
+    return out
+
+
+def record_insert_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """The document written when the vertex does not exist: the caller's, without any incarnation id it carries, and with a freshly
+    minted one when ``RECORD_INCARNATION_WRITE`` is on. A carried id (a copy from a stored or deleted record) never starts a vertex.
+
+    With ``RECORD_CREATED_AT_INSERT_ONLY`` off nothing is minted on any store: that switch restores the older write, which knew no
+    incarnation id, so the older and the newer behaviour never both stand for a record."""
+    out = {k: v for k, v in doc.items() if k != "incarnationId"} if "incarnationId" in doc else doc
+    if record_incarnation_write() and record_created_at_insert_only():
+        return {**out, "incarnationId": new_incarnation_id()}
+    return out
+
+
 # Bookkeeping the services keep on a stored record for their own use: the trash
 # state (the record endpoint refuses a trashed record, and a restore clears it),
-# when a rate-limit wait began, the stranded sweep's re-sends and the duplicate
-# taxonomy copy. No client reads them, and the record endpoint's response
+# when a rate-limit wait began, the stranded sweep's re-sends, the record processing diagnostics
+# (`firstQueuedAt`, `failedAt`, `indexingAttempts`, `pageCount`) and the duplicate
+# taxonomy copy, the mark a push leaves for indexing, and the projected property values with their controls
+# (`recordProps`, `propsSet`, `propsGen`, `propsSrc`, `propsVer`; on Neo4j the values are flat `p_<name>` keys,
+# dropped by `api_record` too). No client reads them, and the record endpoint's response
 # schema rejects fields it does not list, so the endpoint leaves these out.
 # `deletedByUserId` predates the trash and is documented, so it stays in.
 INTERNAL_RECORD_FIELDS = frozenset({
+    "incarnationId",
     "deletedAtTimestamp",
     "deleteSource",
     "deleteBatchId",
@@ -395,17 +657,67 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "purgeLastError",
     "trashedExternalRecordId",
     "rateLimitedSince",
+    "deferredUntilMs",
+    "rateLimitedSinceMs",
+    "refreshIntentId",
+    "refreshIntentAtMs",
+    "refreshDoneId",
     "lastRepublishedAt",
     "republishCount",
+    "firstQueuedAt",
+    "failedAt",
+    "indexingAttempts",
+    "pageCount",
+    "indexedMd5",
+    "pendingTaxonomyRefs",
     "duplicateReconcilePending",
     "duplicateReconcileAttempts",
+    "extractionDeferred",
     "duplicateReconcileDueAt",
+    "pushOrigin",
+    "recordProps",
+    "propsSet",
+    "propsGen",
+    "propsSrc",
+    "propsVer",
+    "pendingVirtualRecordId",
+    "indexedParser",
+    "indexedParserAt",
+    "indexedParserVrid",
+    "indexedParserSource",
+    "embedVrid",
+    "embedRev",
+    "embedKey",
+    "embedDigest",
+    "embedTotal",
+    "embedDeliveryId",
+    "embedStartedMs",
+    "embedSeconds",
+    "embedUncounted",
+    "embedDone",
 })
 
+#: A projected property value on a Neo4j record node (``p_<name>``); never part of a record the API returns.
+_PROJECTED_PROPERTY_KEY = re.compile(r"^p_[a-zA-Z0-9_]{1,64}$")
 
-def api_record(record: dict[str, Any]) -> dict[str, Any]:
-    """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``."""
-    return {key: value for key, value in record.items() if key not in INTERNAL_RECORD_FIELDS}
+
+def api_record(record: dict[str, Any], *, keep: Collection[str] = ()) -> dict[str, Any]:
+    """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``.
+
+    ``keep`` names fields a response documents although they are internal elsewhere (the trash
+    fields on the record update response); only those are left in.
+    """
+    return {
+        key: value for key, value in record.items()
+        if (key not in INTERNAL_RECORD_FIELDS or key in keep) and not _PROJECTED_PROPERTY_KEY.match(key)
+    }
+
+
+def api_records(records: list[object] | dict[str, object]) -> list[object] | dict[str, object]:
+    """``api_record`` over a list of stored records, or over the values of a map of them."""
+    if isinstance(records, dict):
+        return {key: api_record(value) if isinstance(value, dict) else value for key, value in records.items()}
+    return [api_record(value) if isinstance(value, dict) else value for value in records]
 
 
 # A Recently deleted row for a multi-select delete names this many of its other items.
@@ -427,10 +739,15 @@ def restore_items(
     items: list[dict[str, Any]] = []
     reclaims: list[dict[str, str]] = []
     for item in restores:
-        fields = dict(item.get("set") or {})
+        # the trash state is cleared by the restore: a caller's value for it is not written back over the clearing
+        fields = {k: v for k, v in dict(item.get("set") or {}).items() if k != "isDeleted" and k not in TRASH_STATE_FIELDS}
         if external_id := item.get("reclaimExternalRecordId"):
             fields["externalRecordId"] = external_id
             reclaims.append({"id": item["id"], "ext": external_id})
+        if record_incarnation_write():
+            # every restore from the trash starts a new incarnation: the vectors went at the trash, so a run that
+            # began before it serves a deleted incarnation. Written in the restore's own statement, never through an upsert.
+            fields["incarnationId"] = new_incarnation_id()
         items.append({"id": item["id"], "set": fields})
     if reclaims and not connector_id:
         raise ValueError("restore_records needs connector_id to take an external id back")
@@ -555,6 +872,21 @@ def cleans_taxonomy_points(record: dict[str, Any]) -> bool:
     )
 
 
+def taxonomy_refs_from_links(links: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, str]]]:
+    """``{record key: [{"id", "type"}]}`` from the rows of ``get_record_taxonomy_links``, deduplicated per record."""
+    refs: dict[str, list[dict[str, str]]] = {}
+    for link in links:
+        entity_type = TAXONOMY_ENTITY_TYPE_BY_COLLECTION.get(link.get("collection"))
+        record_key, entity_id = link.get("recordId"), link.get("entityId")
+        if not entity_type or not record_key or not entity_id:
+            continue
+        ref = {"id": str(entity_id), "type": entity_type}
+        bucket = refs.setdefault(str(record_key), [])
+        if ref not in bucket:
+            bucket.append(ref)
+    return refs
+
+
 async def record_taxonomy_refs(
     graph: "IGraphDBProvider", record_keys: Iterable[str], logger: Logger,
 ) -> dict[str, list[dict[str, str]]]:
@@ -577,17 +909,7 @@ async def record_taxonomy_refs(
             len(keys), exc,
         )
         return {}
-    refs: dict[str, list[dict[str, str]]] = {}
-    for link in links:
-        entity_type = TAXONOMY_ENTITY_TYPE_BY_COLLECTION.get(link.get("collection"))
-        record_key, entity_id = link.get("recordId"), link.get("entityId")
-        if not entity_type or not record_key or not entity_id:
-            continue
-        ref = {"id": str(entity_id), "type": entity_type}
-        bucket = refs.setdefault(str(record_key), [])
-        if ref not in bucket:
-            bucket.append(ref)
-    return refs
+    return taxonomy_refs_from_links(links)
 
 
 async def deleted_record_taxonomy_refs(
@@ -612,17 +934,22 @@ def jira_issue_browse_url_regex(issue_key: str) -> str:
     return f".*{re.escape(f'/browse/{issue_key}')}(?:[/?#].*)?$"
 
 
-async def org_id_from_app_edge(graph_provider: "IGraphDBProvider", app_id: str) -> str | None:
+async def org_id_from_app_edge(
+    graph_provider: "IGraphDBProvider", app_id: str, *, raise_on_error: bool = False
+) -> str | None:
     """The org an app belongs to, from its org-app edge.
 
     Connector apps created before ``orgId`` was stored on the document have
     their org only on this edge. Neo4j returns a bare id in ``from_id``;
     Arango a document handle in ``_from`` ("organizations/<key>").
+    ``raise_on_error=True`` raises a failed edge read instead of answering None.
     """
-    edges = await graph_provider.get_edges_to_node(
-        f"{CollectionNames.APPS.value}/{app_id}",
-        CollectionNames.ORG_APP_RELATION.value,
-    )
+    node_id = f"{CollectionNames.APPS.value}/{app_id}"
+    # Only passed when set, so the default call is unchanged for every caller and test double.
+    if raise_on_error:
+        edges = await graph_provider.get_edges_to_node(node_id, CollectionNames.ORG_APP_RELATION.value, raise_on_error=True)
+    else:
+        edges = await graph_provider.get_edges_to_node(node_id, CollectionNames.ORG_APP_RELATION.value)
     for edge in edges or []:
         if not isinstance(edge, dict):
             continue

@@ -44,8 +44,8 @@ class UsageLedger:
     labelled by its source: `main`, `sub_agent:<name>`, `single_shot:<name>`,
     `auto_compact`, `plan_critic`, `result_critic`, `planner`, `replanner`
     (from the request's transports, see `UsageReportingTransport`),
-    `grep_generation` and `entity_linking`. Only wired when the request opted
-    in, so a normal request records nothing."""
+    `grep_generation` and `entity_linking`. Filled for every request: the turn's
+    `agent_turn.end` line sums it, and the `run_usage` frame stays opt-in."""
 
     entries: list[tuple[str, TokenUsage]] = field(default_factory=list)
 
@@ -58,7 +58,7 @@ def llm_usage_reporter(
 ) -> Callable[[BaseMessage], None] | None:
     """The `on_llm_usage` callback for a model call a tool makes itself:
     reports into the request's `UsageLedger` under `source`, or None when the
-    request did not opt in."""
+    state carries no ledger."""
     ledger = state.get("usage_ledger") if state else None
     if not isinstance(ledger, UsageLedger):
         return None

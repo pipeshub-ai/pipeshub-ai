@@ -17,7 +17,7 @@ class DateRangeValue(_Value):
     start_ms: int | None = None
     end_ms: int | None = None
     timex: str = ""
-    granularity: Literal["year", "quarter", "month", "week", "day", "hour", "minute"] = "day"
+    granularity: Literal["year", "half", "quarter", "month", "week", "day", "hour", "minute"] = "day"
     anchored: bool = False
     anchor_source: str = ""
     ambiguous: bool = False
@@ -34,6 +34,8 @@ class MoneyValue(_Value):
     value_type: Literal["money"] = "money"
     amount: Decimal
     amount_float: float
+    # The high end of a range ("$5-10M"); ``amount`` is then its low end.
+    amount_high: Decimal | None = None
     currency: str
     currency_ambiguous: bool = False
 

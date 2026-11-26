@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import {
+  HEADER_MCP_RELAY,
   newAnonRoot,
   runWithRequestContext,
   sanitizeRootId,
@@ -83,17 +84,24 @@ const createRequestContext = (req: Request): RequestContext => {
 
 /**
  * Express middleware to attach request context to the req object.
- * Note: Request ID is just for tracking and debugging purposes. Does not expose anything to end users.
+ * The request id is for tracking and debugging. It is sent back in the
+ * `X-Request-Id` response header, so a caller can quote it when reporting a
+ * problem: the caller's own id when it sent a usable one, else a new `anon-` id.
  */
 export const requestContextMiddleware = (
   req: Request,
-  _res: Response,
+  res: Response,
   next: NextFunction
 ): void => {
   req.context = createRequestContext(req);
+  res.setHeader('X-Request-Id', req.context.requestId);
   // Bind the id for the whole request so the Logger tags every line.
+  const relay = req.headers[HEADER_MCP_RELAY];
   runWithRequestContext(
-    { rootId: req.context.requestId },
+    {
+      rootId: req.context.requestId,
+      ...(typeof relay === 'string' ? { mcpRelay: relay } : {}),
+    },
     () => next(),
   );
 };

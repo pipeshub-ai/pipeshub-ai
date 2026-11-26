@@ -19,6 +19,7 @@ import random
 import re
 import socket
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Literal, override
@@ -73,6 +74,10 @@ class FetchError(Exception):
 
 class UnresolvableHostError(FetchError):
     """The hostname has no addresses here — as opposed to addresses that are not allowed."""
+
+
+# The harness's name for the same error (MCP hub, MCP client and OAuth discovery catch it).
+UnresolvedHostError = UnresolvableHostError
 
 
 # Hostnames that must never be fetched (SSRF / metadata endpoints).
@@ -224,7 +229,10 @@ def _hostname_is_blocked(hostname: str, *, allow_private: bool = False) -> bool:
 
 
 def _check_static(
-    url: str, *, block_non_global: bool, allow_private: bool,
+    url: str,
+    *,
+    refuses_address: Callable[[IPAddress], bool],
+    refuses_hostname: Callable[[str], bool],
 ) -> tuple[str, str, int, IPAddress | None]:
     """Everything the policy can decide without DNS: scheme, hostname blocklist, port
     and a literal IP. Returns ``(scheme, hostname, port, literal_ip_or_None)``."""
@@ -241,18 +249,25 @@ def _check_static(
     except ValueError as e:
         raise FetchError("URL has an invalid port") from e
 
-    if _hostname_is_blocked(hostname, allow_private=allow_private):
+    if refuses_hostname(hostname):
         raise FetchError(f"Blocked unsafe URL hostname: {hostname}")
 
     try:
         literal_ip = ipaddress.ip_address(hostname)
     except ValueError:
         literal_ip = None
-    if literal_ip is not None and _ip_is_blocked(
-        literal_ip, block_non_global=block_non_global, allow_private=allow_private,
-    ):
+    if literal_ip is not None and refuses_address(literal_ip):
         raise FetchError(f"Blocked unsafe URL address: {literal_ip}")
     return parsed.scheme, hostname, port, literal_ip
+
+
+def _public_rule(
+    *, block_non_global: bool, allow_private: bool,
+) -> dict[str, Callable[..., bool]]:
+    return {
+        "refuses_address": partial(_ip_is_blocked, block_non_global=block_non_global, allow_private=allow_private),
+        "refuses_hostname": partial(_hostname_is_blocked, allow_private=allow_private),
+    }
 
 
 def check_http_url_without_resolving(
@@ -264,7 +279,7 @@ def check_http_url_without_resolving(
     Raises:
         FetchError: if the URL's scheme/hostname/port/literal address is disallowed.
     """
-    _check_static(url, block_non_global=block_non_global, allow_private=allow_private)
+    _check_static(url, **_public_rule(block_non_global=block_non_global, allow_private=allow_private))
 
 
 def resolve_public_http_target(
@@ -280,8 +295,25 @@ def resolve_public_http_target(
     Raises:
         FetchError: if the URL's scheme/hostname/port/resolved address is disallowed.
     """
+    return resolve_http_target(url, **_public_rule(block_non_global=block_non_global, allow_private=allow_private))
+
+
+def resolve_http_target(
+    url: str,
+    *,
+    refuses_address: Callable[[IPAddress], bool],
+    refuses_hostname: Callable[[str], bool],
+) -> PublicTarget:
+    """Resolve ``url`` once and reject it when its host name, or any address the name resolves to, is one the
+    caller's rule refuses. The answer names the addresses that were checked, for a caller that then connects
+    only to them (so a later DNS answer cannot move the connection).
+
+    Raises:
+        FetchError: a scheme other than http(s), no host, a bad port, an unresolvable name, or a refused
+            host name or address.
+    """
     scheme, hostname, port, literal_ip = _check_static(
-        url, block_non_global=block_non_global, allow_private=allow_private,
+        url, refuses_address=refuses_address, refuses_hostname=refuses_hostname,
     )
     if literal_ip is not None:
         return PublicTarget(scheme, hostname, port, (literal_ip,))
@@ -297,7 +329,7 @@ def resolve_public_http_target(
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
-        if _ip_is_blocked(ip, block_non_global=block_non_global, allow_private=allow_private):
+        if refuses_address(ip):
             raise FetchError(f"Blocked unsafe URL: hostname {hostname!r} resolves to {ip}")
         if ip not in addresses:
             addresses.append(ip)
@@ -311,7 +343,23 @@ class HostCheckError(ValueError):
     """A host a user typed may not be connected to. The message is written for that user."""
 
 
-async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[IPAddress]:
+def public_address_refusal(host: str) -> str:
+    """What a user is told when a personal connector's host is not a public address.
+
+    One text for every way a host can fail (private, loopback, link-local, metadata, an
+    unknown name or a lookup that timed out), so it says nothing about the network behind
+    the name.
+    """
+    return (
+        f'"{host}" is not a public server address. Personal connectors can only connect to '
+        "servers on public addresses. Ask an administrator to set up a team connector for "
+        "servers on your network."
+    )
+
+
+async def vetted_addresses(
+    host: str, *, lookup_timeout_s: float = 5.0, public_only: bool = False
+) -> list[IPAddress]:
     """The addresses to connect to for ``host`` (a database server, say), looked up once.
 
     Connect to these, not to ``host``: a second lookup could answer differently. The rule
@@ -320,15 +368,27 @@ async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[
     PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on. Empty for a Unix socket path the deployment
     allows, which has nothing to look up.
 
+    ``public_only`` is for a connector any user can create (personal scope): only public
+    addresses, whatever the deployment setting. It never loosens the deployment's rule.
+
     Raises:
         HostCheckError: the host is refused, doesn't resolve, or its lookup timed out. The
             message does not say what a name resolves to, which would describe the
             deployment's network.
     """
+    try:
+        return await _vetted_addresses(host, lookup_timeout_s, public_only=public_only)
+    except HostCheckError as e:
+        if public_only:
+            raise HostCheckError(public_address_refusal(host)) from e
+        raise
+
+
+async def _vetted_addresses(host: str, lookup_timeout_s: float, *, public_only: bool) -> list[IPAddress]:
     # model_egress imports this module.
     from app.utils.model_egress import parse_answers
 
-    allow_private = not private_addresses_blocked()
+    allow_private = not (public_only or private_addresses_blocked())
     private_reason = (
         f'"{host}" is a private or internal address, which this deployment does not allow '
         f"({PRIVATE_ADDRESS_SWITCH_ENV})."
@@ -356,11 +416,11 @@ async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[
         addresses = parse_answers(infos)
         if not addresses:
             raise HostCheckError(f'Could not find a server named "{host}". Check the host name.')
-    check_addresses(host, addresses)
+    check_addresses(host, addresses, public_only=public_only)
     return addresses
 
 
-def check_addresses(host: str, addresses: list[IPAddress]) -> None:
+def check_addresses(host: str, addresses: list[IPAddress], *, public_only: bool = False) -> None:
     """Apply ``vetted_addresses``' rule to addresses already looked up for ``host``.
 
     Raises:
@@ -369,11 +429,16 @@ def check_addresses(host: str, addresses: list[IPAddress]) -> None:
     # model_egress imports this module.
     from app.utils.model_egress import address_refusal
 
-    allow_private = not private_addresses_blocked()
-    _check_hostname(host, allow_private=allow_private)
-    reason = address_refusal(addresses, allow_private=allow_private)
-    if reason is not None:
-        raise HostCheckError(f'"{host}" is {reason}.')
+    allow_private = not (public_only or private_addresses_blocked())
+    try:
+        _check_hostname(host, allow_private=allow_private)
+        reason = address_refusal(addresses, allow_private=allow_private)
+        if reason is not None:
+            raise HostCheckError(f'"{host}" is {reason}.')
+    except HostCheckError as e:
+        if public_only:
+            raise HostCheckError(public_address_refusal(host)) from e
+        raise
 
 
 def _check_hostname(host: str, *, allow_private: bool) -> None:

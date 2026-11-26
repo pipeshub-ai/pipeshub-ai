@@ -21,8 +21,13 @@ from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
-from app.modules.demo_data.access import is_hidden_demo_record
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.modules.demo_data.access import refuse_hidden_demo_record
+from app.modules.pipeline.parse_now import ParseNow, optional_redis
 from app.modules.retrieval.selection_scope import within_connection
+from app.services.model_identity.boundary import principal_from_request_user
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.utils.chat_helpers import accessible_node_ids
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.fetch_slack_thread import (
@@ -31,6 +36,7 @@ from app.utils.fetch_slack_thread import (
     _resolve_thread_record_group,
 )
 from app.utils.not_indexed import not_indexed_note
+from app.utils.record_extract import extract_record
 from app.utils.record_reader import (
     DEFAULT_READ_CHARS,
     MAX_READ_CHARS,
@@ -38,6 +44,8 @@ from app.utils.record_reader import (
     read_record,
     read_thread,
 )
+from app.utils.user_lookup import get_document_or_503
+from app.utils.user_messages import DATABASE_UNREACHABLE
 
 if TYPE_CHECKING:
     from app.containers.query import QueryAppContainer
@@ -53,7 +61,6 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
     403, a switched-off demo record a 404. Returns the accessible ids, for the
     fetch to reuse."""
     container: QueryAppContainer = request.app.container
-    logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
     try:
@@ -63,23 +70,19 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record",
             )
-        doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
-        try:
-            hidden = await is_hidden_demo_record(
-                graph_provider, container.config_service(), org_id, user_id,
-                (doc or {}).get("connectorId"),
-            )
-        except Exception as exc:
-            logger.warning("demo data setting unreadable for user=%s: %s", user_id, exc)
-            hidden = False
-        if hidden:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+        doc = await get_document_or_503(graph_provider, record_id, CollectionNames.RECORDS.value)
+        await refuse_hidden_demo_record(
+            graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId"),
+        )
         await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
         return accessible
     except HTTPException:
         raise
+    except PermissionVerificationUnavailableError as exc:  # the access check could not be made: the record routes' 503
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail=DATABASE_UNREACHABLE, headers={"Retry-After": "5"},
+        ) from exc
     except Exception as exc:
-        logger.error("Error checking record access for %s: %s", record_id, exc)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to check record access",
@@ -93,6 +96,7 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
 async def read_record_content(
     record_id: str,
     request: Request,
+    *,
     mode: Literal["record", "thread"] = Query(
         "record",
         description=(
@@ -122,12 +126,27 @@ async def read_record_content(
         DEFAULT_READ_CHARS, ge=MIN_READ_CHARS, le=MAX_READ_CHARS,
         description="Most characters of content to return.",
     ),
+    extract: bool = Query(
+        False,
+        description=(
+            "Record mode, with `query`: return only the passages that answer `query`, copied "
+            "word for word by the model assigned to the `reader` role (else the default "
+            "model), and the tokens that call used. Falls back to the plain read when the "
+            "model cannot be reached."
+        ),
+    ),
 ) -> dict[str, Any]:
     container: QueryAppContainer = request.app.container
     logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
     graph_provider = await container.graph_provider()
+
+    if extract and (mode != "record" or not (query and query.strip()) or start_block is not None):
+        raise HTTPException(
+            status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
+            detail="`extract` reads one record for a `query`: send it with `query`, without `start_block` or thread mode.",
+        )
 
     accessible = await _check_access(request, graph_provider, record_id)
     blob_store = await container.blob_store()
@@ -225,6 +244,10 @@ async def read_record_content(
             user_id=user_id,
             connection_sources=connection_limit(request.state.user),
             accessible=accessible,
+            # A later page reads what the first left stored; it never starts a parse.
+            parse_now=None if start_block else ParseNow(
+                container.config_service(), logger, redis_provider=await optional_redis(container.config_service(), logger),
+            ),
         )
     except Exception as exc:
         logger.error("Error fetching record content for %s: %s", record_id, exc, exc_info=True)
@@ -238,15 +261,44 @@ async def read_record_content(
         # described rather than reported as missing.
         unindexed = (result.get("not_indexed_records") or {}).get(record_id)
         content = (
-            f"{unindexed['context']}\n\n{not_indexed_note(unindexed['status'])}"
+            f"{unindexed['context']}\n\n{not_indexed_note(unindexed['status'], preparing=unindexed.get('preparing'))}"
             if unindexed else "No record found"
         )
-        return {"content": content, "mode": "record", "recordId": record_id, "complete": True,
+        body = {"content": content, "mode": "record", "recordId": record_id, "complete": True,
                 "nextStartBlock": None, "chars": len(content), "maxChars": max_chars}
+        # `complete` stays true: the note is the whole answer for now, and no later block is waiting.
+        return {**body, "preparing": True} if unindexed and unindexed.get("preparing") == "waiting" else body
 
     retrieval_service = None
     if query and query.strip() and start_block is None:
         retrieval_service = await container.retrieval_service()
+    if extract and query:
+        try:
+            # The reader model runs for this user, on their identity and budget, as a search does.
+            async with call_scope(
+                principal_from_request_user(request.state.user),
+                Workload.SEARCH,
+                config_service=container.config_service(),
+                container=container,
+            ):
+                return await extract_record(
+                    result["records"][0],
+                    query=query.strip(),
+                    config_service=container.config_service(),
+                    retrieval_service=retrieval_service,
+                    user_id=user_id,
+                    org_id=org_id,
+                    logger=logger,
+                    fallback_chars=max_chars,
+                )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error("Error extracting from record %s: %s", record_id, exc, exc_info=True)
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Failed to format record content",
+            ) from exc
     try:
         return await read_record(
             result["records"][0],

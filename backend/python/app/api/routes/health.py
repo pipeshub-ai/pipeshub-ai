@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import ipaddress
 import os
+import re
 import shutil
 import socket
 from collections.abc import AsyncIterator, Awaitable
@@ -21,6 +22,8 @@ from pydantic import BaseModel, Field
 from app.agent_loop_lib.transport.provider_conflicts import is_api_shape_conflict
 from app.agents.agent_loop.langchain_transport import responses_api_copy
 from app.api.middlewares.auth import deny_service_tokens
+from app.config.constants.service import config_node_constants
+from app.core import org_context
 from app.services.ai_models.decision import PredicateQuestion, get_decision_model
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import call_scope
@@ -42,8 +45,20 @@ from app.utils.aimodels import (
     openai_async_client_kwargs,
     require_public_endpoint,
 )
+from app.utils.embedding_model_name import normalize_embedding_model_name
+from app.utils.log_redaction import redact_error_for_log
+from app.utils.openai_hosts import (
+    endpoint_path_problem,
+    is_openai_api_url,
+    openai_wrong_host,
+    openai_wrong_host_message,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_errors import bedrock_access_denied_cause, provider_error_code
+from app.utils.user_errors import (
+    bedrock_access_denied_cause,
+    provider_error_code,
+    provider_response_status,
+)
 from app.web.deadline import Deadline
 from app.web.errors import (
     AuthFailed,
@@ -57,6 +72,7 @@ from app.web.errors import (
     WebError,
 )
 from app.web.health import check_provider, provider_name
+from harness_core.models.capabilities import model_capabilities
 
 
 async def _bind_health_check_identity(request: Request) -> AsyncIterator[None]:
@@ -133,6 +149,9 @@ def _llm_health_check_needs_outbound(provider: str, configuration: dict[str, Any
 
 
 def _looks_like_connectivity_error(exc: BaseException) -> bool:
+    # A provider that answered was reached, whatever its text says ("upstream connection refused" on a 502).
+    if provider_response_status(exc) is not None:
+        return False
     # SDKs wrap the socket error: openai.APIConnectionError("Connection error.") from httpx.ConnectError.
     seen: set[int] = set()
     current: BaseException | None = exc
@@ -261,11 +280,126 @@ def _provider_display_name(provider: str | None) -> str:
     return (meta or {}).get("name") or provider or "the provider"
 
 
-# Failure messages are fixed text: exception and provider text go to the log only, never
-# into a response, where they could carry internals (hosts, request ids, stack frames).
+# Failure messages are fixed text. A hosted provider's own API answer is appended to them, filtered,
+# masked and capped (``_provider_reason``), because without it an admin cannot tell a quota from a
+# wrong key. Everything else -- PipesHub's exceptions, library errors, a self-hosted endpoint's
+# answer, which can carry a traceback or an internal host -- goes to the log only.
 EMBEDDING_UNAVAILABLE_MESSAGE = (
     "The embedding model couldn't start. Check it in Workspace > AI Models, then try again."
 )
+
+_PROVIDER_REASON_MAX_CHARS = 300
+_CREDENTIAL_NAME_PARTS = ("key", "secret", "token", "password", "credential")
+# Providers whose errors come from the vendor's own public API, keyed as `_normalize_provider_key` writes them.
+_HOSTED_PROVIDER_KEYS = frozenset(
+    {"openai", "azureopenai", "azureai", "anthropic", "gemini", "vertexai", "bedrock"}
+)
+# The SDKs those providers answer through; an exception from any other package is not their answer.
+_PROVIDER_SDK_PACKAGES = ("openai", "anthropic", "google", "botocore", "azure")
+_INTERNAL_TEXT = re.compile(
+    r"traceback|\bfile \"|\blocalhost\b|\.(?:internal|local|lan|svc|corp|intranet)\b",
+    re.IGNORECASE,
+)
+# Candidate IP literals, v4 or v6 (bracketed or with a port); `ipaddress` decides which are addresses.
+_ADDRESS_CANDIDATE = re.compile(r"[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*:[0-9A-Fa-f:.%]*|\b\d{1,3}(?:\.\d{1,3}){3}\b")
+# The endpoint hosts at which an answer is still the vendor's: OpenAI's API and Azure's public clouds.
+_AZURE_HOST_SUFFIXES = (".azure.com", ".azure.us", ".azure.cn")
+
+
+def _names_internal_address(text: str) -> bool:
+    for match in _ADDRESS_CANDIDATE.findall(text):
+        candidate = match.strip(".").removesuffix(":").split("%", 1)[0]
+        for literal in (candidate, candidate.rsplit(":", 1)[0]):
+            try:
+                address = ipaddress.ip_address(literal)
+            except ValueError:
+                continue
+            if not address.is_global:
+                return True
+            break
+    return False
+
+
+def _answers_from_vendor(provider_key: str, configuration: object) -> bool:
+    """Whether a call with these settings is answered by the vendor's API, not a server the customer runs.
+
+    The native OpenAI and Azure providers take an endpoint; pointed at a gateway or a self-hosted
+    server, the SDK error is that server's answer.
+    """
+    endpoint = configuration.get("endpoint") if isinstance(configuration, dict) else None
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        return True
+    endpoint = endpoint.strip()
+    if provider_key == "openai":
+        return is_openai_api_url(endpoint)
+    if provider_key in ("azureopenai", "azureai"):
+        try:
+            host = (urlparse(endpoint if "//" in endpoint else f"//{endpoint}").hostname or "").rstrip(".")
+        except ValueError:
+            return False
+        return host.endswith(_AZURE_HOST_SUFFIXES)
+    return True
+
+
+def _from_provider_sdk(exc: BaseException) -> bool:
+    module = type(exc).__module__ or ""
+    return any(module == package or module.startswith(package + ".") for package in _PROVIDER_SDK_PACKAGES)
+
+
+def _provider_reason(e: BaseException, model_config: dict) -> str | None:
+    """A hosted provider's own words for a failed model call, safe to show the admin who configured it.
+
+    Taken from the first exception in the chain that the provider's SDK raised, and only for a hosted
+    provider. Text that reads as a traceback or names an internal host or private address is dropped;
+    URLs, account ids, known key shapes and every credential value in these settings are masked, and
+    the text is capped.
+    """
+    provider_key = _normalize_provider_key(model_config.get("provider"))
+    if provider_key not in _HOSTED_PROVIDER_KEYS:
+        return None
+    if not _answers_from_vendor(provider_key, model_config.get("configuration")):
+        return None
+    seen: set[int] = set()
+    current: BaseException | None = e
+    text = ""
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if _from_provider_sdk(current):
+            text = " ".join(_extract_error_message(current).split())  # type: ignore[arg-type]
+            if text:
+                break
+        current = current.__cause__ or current.__context__
+    if not text or _INTERNAL_TEXT.search(text) or _names_internal_address(text):
+        return None
+    configuration = model_config.get("configuration")
+    if isinstance(configuration, dict):
+        for name, value in configuration.items():
+            if (
+                isinstance(value, str) and len(value) >= 4
+                and any(part in str(name).lower() for part in _CREDENTIAL_NAME_PARTS)
+            ):
+                text = text.replace(value, "[REDACTED]")
+    text = redact_error_for_log(text, max_len=len(text))
+    if len(text) > _PROVIDER_REASON_MAX_CHARS:
+        text = text[: _PROVIDER_REASON_MAX_CHARS - 1].rstrip() + "…"
+    return text or None
+
+
+def _with_provider_reason(message: str, provider: str | None, reason: str | None) -> str:
+    if not reason:
+        return message
+    return f"{message} {_provider_display_name(provider)} said: \"{reason}\""
+
+
+def _http_exception_response(he: HTTPException) -> JSONResponse:
+    """An ``HTTPException`` raised inside a check, as the JSON body the Node API reads its reason from.
+
+    A plain-text ``detail`` is wrapped: sent bare, it is a JSON string with no ``message`` to read.
+    """
+    detail = he.detail
+    if not isinstance(detail, dict):
+        detail = {"status": "error", "message": str(detail)}
+    return JSONResponse(status_code=he.status_code, content=detail)
 
 
 def _model_setup_failed_message(kind: str, provider: str | None) -> str:
@@ -282,6 +416,9 @@ def _rejected_settings_message(
     provider = _provider_display_name(model_config.get("provider"))
     configuration = model_config.get("configuration") or {}
     name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
+    wrong_host = openai_wrong_host(exc) if code == "auth_error" else None
+    if wrong_host is not None:
+        return openai_wrong_host_message(wrong_host, configuration.get("endpoint"), f"the API key for {name}")
     if _normalize_provider_key(model_config.get("provider")) == "bedrock":
         from app.utils.aimodels import (
             bedrock_inference_profile_hint,
@@ -358,20 +495,23 @@ def _rejected_settings_message(
 async def _model_setup_failed_response(
     kind: str, model_config: dict, model: str, e: Exception,
 ) -> JSONResponse:
-    """What a failed model check returns: 400 when the settings are wrong, 500 otherwise.
+    """What a failed model check returns: 400 when the admin has to change something, 502 when the
+    provider failed, 500 otherwise.
 
-    A wrong key, model name or endpoint is the admin's to fix, so it must not
-    read as a PipesHub fault; the dialog shows the message of a 4xx verbatim.
-    Only the classified code and fixed text are returned; callers log ``e``.
+    A wrong key, model name or endpoint, or an exhausted quota, is the admin's to fix, so it must not
+    read as a PipesHub fault; the dialog shows the message of a 4xx verbatim. Every message ends with
+    the provider's own words (``_provider_reason``); callers log ``e`` in full.
     """
     provider = model_config.get("provider")
     configuration = model_config.get("configuration") or {}
     if not isinstance(configuration, dict):
         configuration = {}
+    reason = _provider_reason(e, model_config)
+    name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
     code = provider_error_code(e)
     if code in _REJECTED_SETTINGS_CODES:
         return _config_error(
-            _rejected_settings_message(code, kind, model_config, model, e),
+            _with_provider_reason(_rejected_settings_message(code, kind, model_config, model, e), provider, reason),
             model_config, model, error_code=code,
         )
     if _looks_like_connectivity_error(e):
@@ -379,23 +519,61 @@ async def _model_setup_failed_response(
         if _llm_health_check_needs_outbound(provider or "", configuration) and not await _probe_outbound_connectivity():
             return _outbound_connectivity_error_response(provider or "", model)
         return _config_error(
-            f"Couldn't reach {_provider_display_name(provider)} at the endpoint in these settings. "
-            "Check the endpoint address and that PipesHub can connect to it, then try again.",
+            _with_provider_reason(
+                f"Couldn't reach {_provider_display_name(provider)} at the endpoint in these settings. "
+                "Check the endpoint address and that PipesHub can connect to it, then try again.",
+                provider, reason,
+            ),
             model_config, model, error_code="endpoint_unreachable",
+        )
+    if code == "quota_exceeded":
+        # OpenAI answers 429 for an empty balance as well as a rate limit; waiting only fixes the second.
+        return _config_error(
+            _with_provider_reason(
+                f"The {_provider_display_name(provider)} account for {name} is out of credit, so the test "
+                "call was turned down. The API key is fine: add credit or raise the usage limit in the "
+                "provider's billing settings, then try again.",
+                provider, reason,
+            ),
+            model_config, model, error_code=code,
+        )
+    if code == "rate_limit":
+        return _config_error(
+            _with_provider_reason(
+                f"{_provider_display_name(provider)} turned down the test call for {name} because of a "
+                "rate limit or an exhausted quota. Check the account's usage limits and billing, "
+                "or wait a minute, then try again.",
+                provider, reason,
+            ),
+            model_config, model, error_code=code,
+        )
+    if code == "server_error":
+        return JSONResponse(
+            status_code=502,
+            content={
+                "status": "error",
+                "message": _with_provider_reason(
+                    f"{_provider_display_name(provider)} had a problem answering the test call for {name}. "
+                    "This is usually temporary: try again in a few minutes.",
+                    provider, reason,
+                ),
+                "details": {"provider": provider, "model": model, "error_code": "provider_error"},
+            },
         )
     return JSONResponse(
         status_code=500,
         content={
             "status": "error",
-            "message": _model_setup_failed_message(kind, provider),
+            "message": _with_provider_reason(_model_setup_failed_message(kind, provider), provider, reason),
             "details": {"provider": provider, "model": model, "error_code": "model_check_failed"},
         },
     )
 
 
 def _is_settings_failure(e: BaseException) -> bool:
-    """Whether the provider refused the settings or could not be reached at all."""
-    return provider_error_code(e) in _REJECTED_SETTINGS_CODES or _looks_like_connectivity_error(e)
+    """Whether the provider refused the settings, has no credit left for them, or could not be reached at all."""
+    code = provider_error_code(e)
+    return code in _REJECTED_SETTINGS_CODES or code == "quota_exceeded" or _looks_like_connectivity_error(e)
 
 
 def _chosen_embedding_config(embedding_configs: list[dict]) -> dict:
@@ -483,6 +661,55 @@ async def _endpoint_refusal(config: dict) -> JSONResponse | None:
     return None
 
 
+def _endpoint_path_refusal(config: dict) -> JSONResponse | None:
+    """A 400 for an OpenAI-protocol endpoint that ends in an API operation path, else None."""
+    configuration = config.get("configuration")
+    if not isinstance(configuration, dict):
+        return None
+    problem = endpoint_path_problem(config.get("provider"), configuration.get("endpoint"))
+    if problem is None:
+        return None
+    return _config_error(
+        problem, config, configuration.get("model", ""), error_code="invalid_endpoint_path",
+    )
+
+
+async def _settings_refusal(model_type: str, config: dict) -> JSONResponse | None:
+    """A 400 for settings that need no provider call to reject, else None."""
+    return (
+        _endpoint_path_refusal(config)
+        or await _endpoint_refusal(config)
+        or _missing_credential_refusal(model_type, config)
+    )
+
+
+def _missing_credential_refusal(model_type: str, config: dict) -> JSONResponse | None:
+    """A 400 for a config whose required credential is empty, else None.
+
+    The provider SDKs fail on a blank key before any request ("Missing
+    credentials"), with an error that reads as PipesHub's fault. A field
+    cleared while editing a model reaches here as "".
+    """
+    from app.config.ai_models.providers import ai_model_registry
+    from app.config.ai_models.types import MODEL_TYPE_TO_CAPABILITY
+
+    configuration = config.get("configuration")
+    meta = ai_model_registry.get_provider(config.get("provider") or "")
+    if not isinstance(configuration, dict) or meta is None:
+        return None
+    for field in meta.get("fields", {}).get(MODEL_TYPE_TO_CAPABILITY.get(model_type, ""), []):
+        if not (field.get("required") and field.get("isSecret")):
+            continue
+        value = configuration.get(field["name"])
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return _config_error(
+                f"The {field.get('displayName') or field['name']} for {meta.get('name') or config.get('provider')} "
+                "is empty. Enter it in Workspace > AI Models, then try again.",
+                config, configuration.get("model", ""), error_code="missing_credentials",
+            )
+    return None
+
+
 def _config_error(
     message: str, config: dict, model_name: str, **extra: object
 ) -> JSONResponse:
@@ -565,11 +792,13 @@ def _get_test_image() -> str:
     return _TEST_IMAGE
 
 
-def _web_search_unhealthy(status_code: int, error: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={"status": "not healthy", "error": error, "timestamp": get_epoch_timestamp_in_ms()},
-    )
+def _web_search_unhealthy(status_code: int, error: str, error_type: str | None = None) -> JSONResponse:
+    content = {"status": "not healthy", "error": error, "timestamp": get_epoch_timestamp_in_ms()}
+    if error_type:
+        # Lets the caller tell a passing refusal (blocked, rate limited) from a real failure
+        # without matching the wording of the message.
+        content["errorType"] = error_type
+    return JSONResponse(status_code=status_code, content=content)
 
 
 _NOT_CONFIGURED_HINTS = {
@@ -593,12 +822,15 @@ def _web_search_failure(provider: str, error: WebError) -> JSONResponse:
     if isinstance(error, AuthFailed):
         return _web_search_unhealthy(400, f"{name} didn't accept the API key. Check the key in the web search settings, then try again.")
     if isinstance(error, RateLimited):
-        return _web_search_unhealthy(400, f"{name} is limiting requests right now. Wait a minute, then try again.")
+        return _web_search_unhealthy(
+            400, f"{name} is limiting requests right now. Wait a minute, then try again.", "rate_limited",
+        )
     if isinstance(error, QuotaExceeded):
         return _web_search_unhealthy(400, f"{name} says this account's search credits are used up. Check the plan, then try again.")
     if isinstance(error, Blocked):
         return _web_search_unhealthy(
             400, f"{name} blocked the test search as automated traffic. Try again later, or add a provider that uses an API key.",
+            "blocked",
         )
     if isinstance(error, UpstreamError) and error.status:
         return _web_search_unhealthy(
@@ -670,7 +902,7 @@ async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)
         )
 
     for llm_config in llm_configs:
-        response = await _endpoint_refusal(llm_config) or await perform_llm_health_check(llm_config, logger)
+        response = await _settings_refusal("llm", llm_config) or await perform_llm_health_check(llm_config, logger)
         if response.status_code != 200:
             return response
 
@@ -688,7 +920,7 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
     app = request.app
     logger = app.container.logger()
 
-    logger.info("Starting embedding health check", extra={"embedding_configs": embedding_configs})
+    logger.info("Starting embedding health check", extra={"count": len(embedding_configs)})
 
     retrieval_service = await app.container.retrieval_service()
     logger.info("Retrieved retrieval service")
@@ -758,24 +990,30 @@ async def verify_embedding_health(dense_embeddings, logger) -> int:
 
     return embedding_size
 
-def normalize_embedding_model_name(name: str | None) -> str | None:
-    """Normalize an embedding model name so the *same* model is comparable across providers.
-
-    The identical underlying model is referenced differently depending on the
-    serving provider, e.g. ``nomic-ai/nomic-embed-text`` (sentence-transformers)
-    vs ``nomic-embed-text`` (Ollama), or ``models/text-embedding-004`` (Gemini).
-    These all produce the same embeddings/dimension, so switching the provider
-    for the same model must NOT be treated as a breaking model change.
-
-    We lowercase and strip any provider/org namespace prefix (the part before the
-    last ``/``, which also covers the ``models/`` prefix).
-    """
-    if name is None:
+def _identity_of(config: dict | None) -> str | None:
+    """``provider:model`` of an embedding config, the way the entity store names what it embeds with (the first of a comma list)."""
+    if not config or not config.get("provider"):
         return None
-    normalized = name.strip().lower()
-    if "/" in normalized:
-        normalized = normalized.rsplit("/", 1)[-1]
-    return normalized
+    models = str((config.get("configuration") or {}).get("model") or "")
+    return f"{config['provider']}:{next((m.strip() for m in models.split(',') if m.strip()), '')}"
+
+
+async def _current_identity(retrieval_service: Any) -> str | None:  # noqa: ANN401
+    try:
+        ai_models = await retrieval_service.config_service.get_config(config_node_constants.AI_MODELS.value, use_cache=False)
+        configs = (ai_models or {}).get("embedding") or []
+        chosen = next((c for c in configs if c.get("isDefault", False)), configs[0] if configs else None)
+        return _identity_of(chosen)
+    except Exception:
+        return None
+
+
+EMBEDDING_CHANGE_UNSUPPORTED_CODE = "embedding_change_unsupported"      # the API gateway shows this refusal's own text
+
+
+def _spaces_per_org(retrieval_service: Any) -> bool:  # noqa: ANN401
+    caps = retrieval_service.vector_db_service.get_capabilities()
+    return getattr(caps, "spaces_per_org", False) is True
 
 
 async def handle_model_change(
@@ -785,7 +1023,9 @@ async def handle_model_change(
     existing_vector_size: int,
     points_count: int,
     embedding_size: int,
-    logger
+    logger,
+    current_identity: str | None = None,
+    new_identity: str | None = None,
 ) -> None:
     """Handle embedding model changes and collection recreation if needed."""
     current_model_name = normalize_embedding_model_name(current_model_name)
@@ -800,10 +1040,25 @@ async def handle_model_change(
         existing_vector_size != 0 and existing_vector_size != embedding_size
     )
 
-    if not model_name_changed and not dimension_mismatch:
+    # With one vector space per org, what the entity store stamps on its points is the full ``provider:model`` (and the dimension
+    # is compared above), so a provider switch for the "same" model is a change as well.
+    identity_changed = (
+        _spaces_per_org(retrieval_service)
+        and current_identity is not None
+        and new_identity is not None
+        and current_identity != new_identity
+    )
+
+    changed = model_name_changed or dimension_mismatch or identity_changed
+    # The survey sees records only and the identities come from the config: where either is unavailable, an unchanged answer proves
+    # nothing about the org's space (entity points of another dimension or provider may be in it), so the space itself is asked.
+    unknown = _spaces_per_org(retrieval_service) and (
+        existing_vector_size == 0 or current_identity is None or new_identity is None
+    )
+    if not changed and not unknown:
         return
 
-    if model_name_changed:
+    if changed and model_name_changed:
         logger.warning(
             f"Detected embedding model change: '{current_model_name}' -> '{new_model_name}'"
         )
@@ -812,6 +1067,45 @@ async def handle_model_change(
             f"Detected vector dimension mismatch: collection has {existing_vector_size}, "
             f"new model produces {embedding_size}"
         )
+
+    if _spaces_per_org(retrieval_service):
+        # The org's embedding space is tied to the model that first wrote to it, and it can hold entity points with no managed records
+        # collection (so no dimension above): the org's points decide, not the records survey. While the org holds no point at all (a
+        # model picked after the default one pinned an empty space) the change is allowed: the indexing service replaces the space on
+        # the first write that carries the new model, and the database refuses if a point exists by then. This is a read only.
+        identity = f"{new_identity}:{embedding_size}" if new_identity else None
+        current = f"{current_identity}:{existing_vector_size}" if current_identity and existing_vector_size else None
+        try:
+            holds_points = await retrieval_service.vector_db_service.org_holds_points()
+            # Going (back) to the model and dimension the space already takes changes nothing: an admin can always return to it.
+            accepts = not holds_points or await retrieval_service.vector_db_service.org_space_accepts(
+                identity, embedding_size, current
+            )
+        except Exception as e:  # a read that failed proves nothing: refuse (503) rather than let an unaccepted change through
+            raise CollectionSurveyError(f"could not read the organisation's vector space: {type(e).__name__}") from e
+        if accepts:
+            if existing_vector_size != 0 or not changed:
+                logger.info("The org's vector space accepts the embedding: allowed")
+                return
+        else:
+            logger.error(
+                "Rejected embedding change: the org's vector space is pinned to the previous model and there is no space flip yet."
+            )
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "status": "not healthy",
+                    "code": EMBEDDING_CHANGE_UNSUPPORTED_CODE,
+                    "error": (
+                        "The embedding model cannot be changed yet: this installation keeps "
+                        "vectors in PostgreSQL (pgvector), where each organisation's vector "
+                        "space is tied to the model that first indexed it, and existing "
+                        "data cannot be re-embedded in place. Keep the current embedding "
+                        "model, or set up a new installation to use another one."
+                    ),
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
 
     if points_count > 0:
         logger.error(
@@ -950,9 +1244,27 @@ async def check_collection_info(
     retrieval_service,
     dense_embeddings,
     embedding_size,
-    logger
+    logger,
+    new_config: dict | None = None,
 ) -> None:
     """Check and validate collection information using provider-neutral get_collection_info()."""
+    if _spaces_per_org(retrieval_service):
+        # The survey of such a provider is the calling org's: with no org bound it sees no space and no point, which would read as
+        # "nothing indexed" and let the change through. Fail closed.
+        try:
+            org_context.current_org_id()
+        except (org_context.MissingOrgContext, org_context.SystemContextNotAllowed):
+            logger.error("Refusing to validate the embedding change: no organisation is bound to this request")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "not healthy",
+                    "error": (
+                        "Could not tell which organisation's vector space this embedding model change affects, "
+                        "so it cannot be validated. Retry the request."
+                    ),
+                },
+            ) from None
     try:
         existing_vector_size, points_count = await survey_managed_collections(
             retrieval_service, logger
@@ -972,7 +1284,9 @@ async def check_collection_info(
             existing_vector_size,
             points_count,
             embedding_size,
-            logger
+            logger,
+            current_identity=await _current_identity(retrieval_service),
+            new_identity=_identity_of(new_config),
         )
 
     except HTTPException:
@@ -1005,7 +1319,7 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
     logger = request.app.container.logger()
     try:
         for embedding_config in embedding_configs:
-            refusal = await _endpoint_refusal(embedding_config)
+            refusal = await _settings_refusal("embedding", embedding_config)
             if refusal is not None:
                 return refusal
 
@@ -1016,7 +1330,10 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
         embedding_size = await verify_embedding_health(dense_embeddings, logger)
 
         # Check collection info and handle model changes
-        await check_collection_info(retrieval_service, dense_embeddings, embedding_size, logger)
+        await check_collection_info(
+            retrieval_service, dense_embeddings, embedding_size, logger,
+            new_config=_chosen_embedding_config(embedding_configs),
+        )
 
         # Initialize vector store as None
         retrieval_service.vector_store = None
@@ -1366,7 +1683,7 @@ async def perform_llm_health_check(
         )
     except HTTPException as he:
         logger.error("LLM health check failed for %s model %s: %s", provider, model_string, he)
-        return JSONResponse(status_code=he.status_code, content=he.detail)
+        return _http_exception_response(he)
     except Exception as e:
         logger.error(
             "LLM health check failed for %s model %s (%s): %s",
@@ -1385,6 +1702,14 @@ async def _check_one_llm(
     is_multimodal = bool(
         llm_config.get("isMultimodal", False) or configuration.get("isMultimodal", False)
     )
+    # A documented "no image input" (C13.03) is answered from the rows, without a call to the provider.
+    if is_multimodal and model_capabilities(model_name, configuration.get("endpoint")).image_input is False:
+        return _config_error(
+            "This model's endpoint does not accept image input.",
+            llm_config,
+            model_name,
+            hint="Uncheck Multimodal for this model, or choose a vision model.",
+        )
 
     llm_model = await asyncio.to_thread(
         get_generator_model, provider=provider, config=llm_config, model_name=model_name,
@@ -1551,6 +1876,7 @@ async def _probe_image_embedding(
 
 async def _check_collection_compatibility(
     request: Request, dense_embeddings: Embeddings, embedding_dimension: int, logger: Logger,
+    new_config: dict | None = None,
 ) -> JSONResponse | None:
     """Run the bulk route's collection guard for a single-model check.
 
@@ -1567,6 +1893,7 @@ async def _check_collection_compatibility(
     try:
         await check_collection_info(
             retrieval_service, dense_embeddings, embedding_dimension, logger,
+            new_config=new_config,
         )
     except HTTPException as he:
         detail = he.detail if isinstance(he.detail, dict) else {"message": str(he.detail)}
@@ -1712,13 +2039,13 @@ async def perform_embedding_health_check(
         # Only the model that will embed once saved may resize the collection.
         if embedding_config.get("becomesActive", True):
             collection_error = await _check_collection_compatibility(
-                request, active_model, active_dimension, logger,
+                request, active_model, active_dimension, logger, new_config=embedding_config,
             )
             if collection_error is not None:
                 return collection_error
         return checked
     except HTTPException as he:
-        return JSONResponse(status_code=he.status_code, content=he.detail)
+        return _http_exception_response(he)
     except Exception as e:
         logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with model {embedding_config.get('configuration', {}).get('model', '')} ({embedding_config.get('modelFriendlyName', '')}): {str(e)}", exc_info=True)
         return await _model_setup_failed_response(
@@ -2220,7 +2547,7 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
     try:
         logger.info(f"Health check endpoint called for {model_type}")
 
-        refusal = await _endpoint_refusal(model_config)
+        refusal = await _settings_refusal(model_type, model_config)
         if refusal is not None:
             return refusal
 

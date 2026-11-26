@@ -1,4 +1,4 @@
-import { generateUniqueSlug } from '../../../libs/utils/counter';
+import { generateUniqueSlug } from '../../../libs/repositories/slug/mongo';
 import { Document, Schema, Types, Model } from 'mongoose';
 import mongoose from 'mongoose';
 

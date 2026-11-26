@@ -26,6 +26,7 @@ from app.web.fetch.remote import MAX_BLOCK_CHARS, markdown_blocks, markdown_page
 from app.web.health import check_provider
 from app.web.search.brave import BraveSearch
 from app.web.search.firecrawl import FirecrawlSearch
+from app.web.search.keenable import KeenableSearch
 from app.web.search.searxng import SearxngSearch
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -123,6 +124,36 @@ class TestBrave:
         http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(401)))
         with pytest.raises(AuthFailed):
             await BraveSearch({"apiKey": "k"}, http).search("q", deadline())
+
+
+class TestKeenable:
+    async def test_keyless_uses_the_public_endpoint(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"results": [
+                {"url": "https://a.example/", "title": "A", "description": "d", "snippet": "s"},
+                {"url": "https://b.example/", "title": "B", "snippet": "x" * 900},
+            ]})
+
+        results = await KeenableSearch({}, httpx.AsyncClient(transport=httpx.MockTransport(handler))).search("q", deadline())
+        assert [(r.url, r.snippet) for r in results] == [("https://a.example/", "d"), ("https://b.example/", "x" * 500)]
+        assert str(seen[0].url) == "https://api.keenable.ai/v1/search/public"
+        assert seen[0].headers["X-Keenable-Title"] == "PipesHub"
+        assert "X-API-Key" not in seen[0].headers
+        assert json.loads(seen[0].content) == {"query": "q", "max_results": 10}
+
+    async def test_key_uses_the_keyed_endpoint(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"results": []})
+
+        await KeenableSearch({"apiKey": "k"}, httpx.AsyncClient(transport=httpx.MockTransport(handler))).search("q", deadline())
+        assert str(seen[0].url) == "https://api.keenable.ai/v1/search"
+        assert seen[0].headers["X-API-Key"] == "k"
 
 
 class TestFirecrawlSearch:
@@ -306,21 +337,30 @@ class TestOrder:
         {"provider": "bing", "configuration": {}},
     ]
 
-    def test_search_tries_the_chosen_then_the_other_searchers_then_the_free_ones(self) -> None:
+    def test_search_tries_the_chosen_then_the_other_searchers(self) -> None:
         selection = {"provider": "serper", "configuration": {"apiKey": "s"}, "providers": self.STORED}
-        assert [p.id for p in search_providers(selection)] == ["serper", "tavily", "firecrawl", "ddgs", "duckduckgo"]
+        assert [p.id for p in search_providers(selection)] == ["serper", "tavily", "firecrawl"]
 
-    def test_with_no_chosen_provider_the_stored_searchers_still_come_first(self) -> None:
+    def test_a_chosen_duckduckgo_runs_the_free_engines_first(self) -> None:
         selection = {"provider": "duckduckgo", "configuration": {}, "providers": self.STORED}
-        assert [p.id for p in search_providers(selection)] == ["tavily", "firecrawl", "ddgs", "duckduckgo"]
+        assert [p.id for p in search_providers(selection)] == ["ddgs", "duckduckgo", "tavily", "firecrawl"]
+
+    def test_a_stored_duckduckgo_is_tried_after_the_chosen_provider(self) -> None:
+        selection = {"provider": "serper", "configuration": {"apiKey": "s"},
+                     "providers": [{"provider": "duckduckgo", "configuration": {}}]}
+        assert [p.id for p in search_providers(selection)] == ["serper", "ddgs", "duckduckgo"]
+
+    def test_no_free_engine_runs_unless_duckduckgo_is_stored(self) -> None:
+        selection = {"provider": "serper", "configuration": {"apiKey": "s"}, "providers": self.STORED}
+        assert not {"ddgs", "duckduckgo"} & {p.id for p in search_providers(selection)}
 
     def test_firecrawl_chosen_searches_first(self) -> None:
         selection = {"provider": "firecrawl", "configuration": {"apiKey": "f"}, "providers": self.STORED}
-        assert [p.id for p in search_providers(selection)] == ["firecrawl", "tavily", "ddgs", "duckduckgo"]
+        assert [p.id for p in search_providers(selection)] == ["firecrawl", "tavily"]
 
     def test_a_page_reader_chosen_leaves_search_to_the_others(self) -> None:
         selection = {"provider": "crawl4ai", "configuration": {"baseUrl": "http://crawl4ai:11235"}, "providers": self.STORED}
-        assert [p.id for p in search_providers(selection)] == ["tavily", "firecrawl", "ddgs", "duckduckgo"]
+        assert [p.id for p in search_providers(selection)] == ["tavily", "firecrawl"]
 
     def test_pages_are_read_built_in_first_then_by_the_stored_readers(self) -> None:
         selection = {"provider": "serper", "configuration": {}, "providers": self.STORED}

@@ -2,10 +2,12 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { useAuthStore } from '@/config';
+import { takeSignInRefusal, useAuthStore } from '@/config';
 import { toast } from '@/lib/store/toast-store';
+import { i18n } from '@/lib/i18n';
 import { fetchAndSetCurrentUser } from '@/lib/auth/hydrate-user';
 import { AuthApi } from '../api';
+import { peekReturnTo } from '@/lib/auth/post-sign-in-return';
 import {
   getUserAccountApiErrorMessage,
   getUserAccountApiResponseMessage,
@@ -66,7 +68,7 @@ function getBlockedUntilDescription(error: unknown): string | undefined {
     return undefined;
   }
 
-  return `Try again after ${blockedUntilLocal}.`;
+  return i18n.t('auth.toasts.tryAgainAfter', { time: blockedUntilLocal });
 }
 
 function classifyAuthError(error: unknown): AuthErrorKind {
@@ -149,7 +151,12 @@ export function useAuthActions({
   /** Prevents overlapping Microsoft backend auth if onSuccess fired more than once. */
   const microsoftSignInInFlightRef = useRef(false);
 
-  const postAuthRedirectTo = redirectTo || '/chat';
+  // An address returnTo wins; else what the tab remembered (a session that expired on the page that asked).
+  // GuestGuard reads the same as the store flips to signed in, so this leaves it in place.
+  const afterSignIn = useCallback(
+    (): string => redirectTo || peekReturnTo() || '/chat',
+    [redirectTo],
+  );
   const clearError = useCallback(() => setError(null), []);
   const checkUserSession = useCallback(async (): Promise<boolean> => {
     return fetchAndSetCurrentUser();
@@ -166,7 +173,7 @@ export function useAuthActions({
       try {
         const response = await AuthApi.signInWithPassword(email, password);
 
-        if (response.accessToken && response.refreshToken) {
+        if (response.accessToken) {
           setTokens(response.accessToken, response.refreshToken);
           if (response.user) {
             setUser(response.user);
@@ -175,19 +182,20 @@ export function useAuthActions({
           if (typeof window !== 'undefined') {
             localStorage.setItem('pipeshub_last_email', email);
           }
-          router.push(postAuthRedirectTo);
+          router.push(afterSignIn());
         } else {
           setError({
             type: 'generic',
-            message: response.message ?? 'Unexpected response. Please try again.',
+            message: response.message ?? i18n.t('auth.toasts.unexpectedResponse'),
           });
         }
       } catch (err: unknown) {
         const kind = classifyAuthError(err);
+        if (takeSignInRefusal(err)) return;
         const bodyMsg = getUserAccountApiResponseMessage(err);
         const apiMsg = getUserAccountApiErrorMessage(
           err,
-          'Sign in failed. Please try again.',
+          i18n.t('auth.toasts.signInFailed'),
         );
 
         if (kind === 'accessRevoked') {
@@ -199,17 +207,17 @@ export function useAuthActions({
               showCloseButton: true,
             });
           } else {
-            toast.error('Your account has been disabled.', {
+            toast.error(i18n.t('auth.common.accountDisabled'), {
               description:
                 blockedUntilDescription ??
-                'You have entered incorrect credentials too many times',
+                i18n.t('auth.common.tooManyIncorrectCredentials'),
               duration: null,
               showCloseButton: true,
             });
           }
         } else if (kind === 'noPasswordSet') {
-          toast.info('No password set for this account.', {
-            description: 'Use Forgot Password below to set up your password.',
+          toast.info(i18n.t('auth.toasts.noPasswordSetTitle'), {
+            description: i18n.t('auth.toasts.noPasswordSetDescription'),
           });
         } else {
           toast.error(bodyMsg ?? apiMsg, { showCloseButton: true });
@@ -224,7 +232,7 @@ export function useAuthActions({
         setLoading(false);
       }
     },
-    [email, loading, postAuthRedirectTo, router, setTokens, setUser],
+    [email, loading, afterSignIn, router, setTokens, setUser],
   );
 
   // ── Forgot password ─────────────────────────────────────────────────────────
@@ -234,14 +242,13 @@ export function useAuthActions({
     setForgotLoading(true);
     try {
       await AuthApi.forgotPassword(email);
-      toast.success('Check your inbox', {
-        description:
-          'If an account exists for this email, a password reset link has been sent.',
+      toast.success(i18n.t('auth.toasts.checkInbox'), {
+        description: i18n.t('auth.toasts.resetLinkSent'),
       });
     } catch (err: unknown) {
       const rawMsg = rawApiErrorMessage(err);
-      toast.error('Could not request password reset', {
-        description: rawMsg || 'Please try again later.',
+      toast.error(i18n.t('auth.toasts.resetRequestFailed'), {
+        description: rawMsg || i18n.t('auth.toasts.tryAgainLater'),
       });
     } finally {
       setForgotLoading(false);
@@ -262,25 +269,26 @@ export function useAuthActions({
       setError(null);
       try {
         const response = await AuthApi.signInWithGoogle(credential);
-        if (response.accessToken && response.refreshToken) {
+        if (response.accessToken) {
           setTokens(response.accessToken, response.refreshToken);
           if (response.user) setUser(response.user);
           if (typeof window !== 'undefined') {
             localStorage.setItem('pipeshub_last_email', email);
           }
-          router.push(postAuthRedirectTo);
+          router.push(afterSignIn());
         } else {
           setError({
             type: 'generic',
-            message: response.message ?? 'Google sign-in failed. Please try again.',
+            message: response.message ?? i18n.t('auth.toasts.googleSignInFailed'),
           });
         }
       } catch (err: unknown) {
         const kind = classifyAuthError(err);
+        if (takeSignInRefusal(err)) return;
         const bodyMsg = getUserAccountApiResponseMessage(err);
         const apiMsg = getUserAccountApiErrorMessage(
           err,
-          'Google sign-in failed. Please try again.',
+          i18n.t('auth.toasts.googleSignInFailed'),
         );
         if (kind === 'accessRevoked') {
           const blockedUntilDescription = getBlockedUntilDescription(err);
@@ -291,8 +299,8 @@ export function useAuthActions({
               showCloseButton: true,
             });
           } else {
-            toast.error('Your account has been disabled.', {
-              description: blockedUntilDescription ?? 'Please contact your administrator.',
+            toast.error(i18n.t('auth.common.accountDisabled'), {
+              description: blockedUntilDescription ?? i18n.t('auth.toasts.contactAdmin'),
               duration: null,
               showCloseButton: true,
             });
@@ -305,7 +313,7 @@ export function useAuthActions({
         setGoogleLoading(false);
       }
     },
-    [email, googleLoading, postAuthRedirectTo, router, setTokens, setUser],
+    [email, googleLoading, afterSignIn, router, setTokens, setUser],
   );
 
   const sendLoginOtp = useCallback(async (): Promise<boolean> => {
@@ -314,15 +322,14 @@ export function useAuthActions({
     setError(null);
     try {
       await AuthApi.generateLoginOtp(email.trim());
-      toast.success('Check your email', {
-        description:
-          'If that email can sign in with a code, one is being sent. If nothing arrives in a few minutes, check your spam folder or try again later.',
+      toast.success(i18n.t('auth.toasts.checkEmail'), {
+        description: i18n.t('auth.toasts.otpSentDescription'),
       });
       return true;
     } catch (err: unknown) {
       const rawMsg = rawApiErrorMessage(err);
-      toast.error('Could not send verification code', {
-        description: rawMsg || 'Please try again later.',
+      toast.error(i18n.t('auth.toasts.otpSendFailed'), {
+        description: rawMsg || i18n.t('auth.toasts.tryAgainLater'),
       });
       // setError({
       //   type: 'generic',
@@ -342,7 +349,7 @@ export function useAuthActions({
       try {
         const response = await AuthApi.signInWithOtp(email.trim(), otp);
 
-        if (response.accessToken && response.refreshToken) {
+        if (response.accessToken) {
           setTokens(response.accessToken, response.refreshToken);
           if (response.user) {
             setUser(response.user);
@@ -350,7 +357,7 @@ export function useAuthActions({
           if (typeof window !== 'undefined') {
             localStorage.setItem('pipeshub_last_email', email.trim());
           }
-          router.push(postAuthRedirectTo);
+          router.push(afterSignIn());
           return;
         }
 
@@ -359,19 +366,19 @@ export function useAuthActions({
           response.allowedMethods &&
           response.allowedMethods.length > 0
         ) {
-          toast.info('Additional verification required', {
-            description: response.message ?? 'Complete the next step to continue.',
+          toast.info(i18n.t('auth.toasts.additionalVerification'), {
+            description: response.message ?? i18n.t('auth.toasts.completeNextStep'),
           });
           setError({
             type: 'generic',
-            message: response.message ?? 'Additional verification required.',
+            message: response.message ?? i18n.t('auth.toasts.additionalVerification'),
           });
           return;
         }
 
         const unexpectedMsg =
-          response.message ?? 'Unexpected response. Please try again.';
-        toast.error('Sign-in failed', {
+          response.message ?? i18n.t('auth.toasts.unexpectedResponse');
+        toast.error(i18n.t('auth.toasts.signInFailedTitle'), {
           description: unexpectedMsg,
         });
         setError({
@@ -380,10 +387,11 @@ export function useAuthActions({
         });
       } catch (err: unknown) {
         const kind = classifyAuthError(err);
+        if (takeSignInRefusal(err)) return;
         const bodyMsg = getUserAccountApiResponseMessage(err);
         const apiMsg = getUserAccountApiErrorMessage(
           err,
-          'Verification failed. Please try again.',
+          i18n.t('auth.toasts.verificationFailed'),
         );
 
         if (kind === 'accessRevoked') {
@@ -395,10 +403,10 @@ export function useAuthActions({
               showCloseButton: true,
             });
           } else {
-            toast.error('Your account has been disabled.', {
+            toast.error(i18n.t('auth.common.accountDisabled'), {
               description:
                 blockedUntilDescription ??
-                'You have entered incorrect credentials too many times',
+                i18n.t('auth.common.tooManyIncorrectCredentials'),
               duration: null,
               showCloseButton: true,
             });
@@ -415,7 +423,7 @@ export function useAuthActions({
         setOtpVerifyLoading(false);
       }
     },
-    [email, otpVerifyLoading, postAuthRedirectTo, router, setTokens, setUser],
+    [email, otpVerifyLoading, afterSignIn, router, setTokens, setUser],
   );
 
   const signInWithMicrosoft = useCallback(
@@ -426,25 +434,26 @@ export function useAuthActions({
       setError(null);
       try {
         const response = await AuthApi.signInWithMicrosoft(credentials);
-        if (response.accessToken && response.refreshToken) {
+        if (response.accessToken) {
           setTokens(response.accessToken, response.refreshToken);
           if (response.user) setUser(response.user);
           if (typeof window !== 'undefined') {
             localStorage.setItem('pipeshub_last_email', email);
           }
-          router.push(postAuthRedirectTo);
+          router.push(afterSignIn());
         } else {
           setError({
             type: 'generic',
-            message: response.message ?? 'Microsoft sign-in failed. Please try again.',
+            message: response.message ?? i18n.t('auth.toasts.microsoftSignInFailed'),
           });
         }
       } catch (err: unknown) {
         const kind = classifyAuthError(err);
+        if (takeSignInRefusal(err)) return;
         const bodyMsg = getUserAccountApiResponseMessage(err);
         const apiMsg = getUserAccountApiErrorMessage(
           err,
-          'Microsoft sign-in failed. Please try again.',
+          i18n.t('auth.toasts.microsoftSignInFailed'),
         );
         if (kind === 'accessRevoked') {
           const blockedUntilDescription = getBlockedUntilDescription(err);
@@ -455,8 +464,8 @@ export function useAuthActions({
               showCloseButton: true,
             });
           } else {
-            toast.error('Your account has been disabled.', {
-              description: blockedUntilDescription ?? 'Please contact your administrator.',
+            toast.error(i18n.t('auth.common.accountDisabled'), {
+              description: blockedUntilDescription ?? i18n.t('auth.toasts.contactAdmin'),
               duration: null,
               showCloseButton: true,
             });
@@ -470,7 +479,7 @@ export function useAuthActions({
         setMicrosoftLoading(false);
       }
     },
-    [email, microsoftLoading, postAuthRedirectTo, router, setTokens, setUser],
+    [email, microsoftLoading, afterSignIn, router, setTokens, setUser],
   );
 
   return {

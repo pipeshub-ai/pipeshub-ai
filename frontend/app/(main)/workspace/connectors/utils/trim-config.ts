@@ -1,5 +1,8 @@
 import { OAUTH_FORM_WANTS_NEW_REGISTRATION } from './auth-helpers';
 
+/** Values whose spaces may be part of the secret (the backend skips them too). */
+const UNTRIMMED_KEYS = new Set(['privateKeyPassphrase']);
+
 /**
  * Recursively trim string values in a connector config object.
  * Prevents leading/trailing whitespace in API tokens, URLs, credentials, etc.
@@ -11,7 +14,7 @@ export function trimConnectorConfig<T>(config: T): T {
     return Object.fromEntries(
       Object.entries(config as Record<string, unknown>).map(([k, v]) => [
         k,
-        trimConnectorConfig(v),
+        UNTRIMMED_KEYS.has(k) ? v : trimConnectorConfig(v),
       ])
     ) as T;
   }

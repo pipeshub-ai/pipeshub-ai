@@ -1,4 +1,5 @@
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import { parseKvObject } from '../../../libs/utils/kv-object.utils';
 import { storageTypes } from '../../configuration_manager/constants/constants';
 import { storageEtcdPaths } from '../constants/constants';
 
@@ -36,6 +37,7 @@ export async function configuredLocalStorageReplicaProblem(
   if (!problem) return null;
   const raw =
     (await keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-  const storageType = (JSON.parse(raw) as { storageType?: string }).storageType;
+  const storageType = (parseKvObject(raw) as { storageType?: string })
+    .storageType;
   return !storageType || storageType === storageTypes.LOCAL ? problem : null;
 }

@@ -1,5 +1,4 @@
 import { NextFunction, Request, Response } from 'express';
-import { Types } from 'mongoose';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import {
   AuthenticatedServiceRequest,
@@ -32,7 +31,12 @@ const orgIdForLog = (req: Request): string | undefined => {
   ];
   for (const value of candidates) {
     if (typeof value === 'string') return value;
-    if (value instanceof Types.ObjectId) return value.toHexString();
+    if (
+      value &&
+      typeof (value as { toHexString?: unknown }).toHexString === 'function'
+    ) {
+      return (value as { toHexString(): string }).toHexString();
+    }
   }
   return undefined;
 };
@@ -64,7 +68,6 @@ export const rejectClientConversationHistory = (
   logger.warn('Rejected client-supplied conversation history', {
     requestId: req.context?.requestId,
     orgId: orgIdForLog(req),
-    path: req.baseUrl + req.path,
     reason: CLIENT_HISTORY_REJECTED_REASON,
     entries: Array.isArray(history) ? history.length : undefined,
     valueType: Array.isArray(history) ? 'array' : typeof history,
@@ -73,7 +76,6 @@ export const rejectClientConversationHistory = (
   next(
     new BadRequestError(CLIENT_HISTORY_REJECTED_MESSAGE, {
       reason: CLIENT_HISTORY_REJECTED_REASON,
-      logLevel: 'warn',
     }),
   );
 };

@@ -19,7 +19,6 @@ from typing import Any
 from app.modules.agents.tool_domain import derive_tool_domain
 from app.utils.user_messages import where_to_authenticate
 
-
 # ---------------------------------------------------------------------------
 # Connector filter fetch (route handlers only — filters only, not full config)
 # ---------------------------------------------------------------------------
@@ -118,6 +117,8 @@ def format_connector_filter_lines(filters: dict[str, Any] | None) -> list[str]:
 #: (some of its folders or files). The prompt names such a source without its
 #: id: the id would let a tool reach the rest of it by name.
 PARTLY_SHARED_KEY = "partlyShared"
+# Marks the knowledge entry for a project's own (hidden) file collection.
+PROJECT_FILES_KEY = "projectFiles"
 
 def classify_knowledge_sources(
     agent_knowledge: list[dict[str, Any]],
@@ -175,6 +176,7 @@ def classify_knowledge_sources(
                 "connector_id": connector_id,
                 "source_type": "kb",
                 **({"partly_shared": True} if k.get(PARTLY_SHARED_KEY) else {}),
+                **({"project_files": True} if k.get(PROJECT_FILES_KEY) else {}),
             })
         elif connector_id:
             type_key = ktype.lower().split()[0] if ktype else ""
@@ -305,6 +307,11 @@ _MCP_FAILURE_GUIDANCE = {
     "blocked": "this deployment's security policy blocks it; only an administrator can change that",
     "timeout": "it didn't respond in time; this is usually temporary, so suggest trying again shortly",
     "unreachable": "it couldn't be reached or returned an error; this is usually temporary",
+    # WP-84: the server answered, without any of the tools this agent was given (``NO_TOOLS_OFFERED``).
+    "mcp_no_tools_offered": (
+        "it no longer offers the tools this agent was given; an administrator can review its tools in "
+        "Workspace → MCP Servers"
+    ),
 }
 _MCP_FAILURE_DEFAULT_GUIDANCE = "it failed to load this request"
 _MCP_SIGN_IN_HERE_GUIDANCE = (

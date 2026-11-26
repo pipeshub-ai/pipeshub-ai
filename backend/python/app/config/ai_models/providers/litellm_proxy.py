@@ -37,6 +37,7 @@ _LITELLM_ENDPOINT = AIModelField(
         ModelCapability.IMAGE_GENERATION,
         ModelCapability.TTS,
         ModelCapability.STT,
+        ModelCapability.DECISION,
     ]) \
     .with_icon("/icons/ai-models/litellm.svg") \
     .with_color("#0EA5E9") \
@@ -67,6 +68,10 @@ _LITELLM_ENDPOINT = AIModelField(
     .add_field(API_KEY, ModelCapability.STT) \
     .add_field(model_field("e.g. whisper-1"), ModelCapability.STT) \
     .add_field(FRIENDLY_NAME, ModelCapability.STT) \
+    .add_field(_LITELLM_ENDPOINT, ModelCapability.DECISION) \
+    .add_field(API_KEY, ModelCapability.DECISION) \
+    .add_field(model_field("e.g. jev, luna (a decision model in the proxy's model_list)"), ModelCapability.DECISION) \
+    .add_field(FRIENDLY_NAME, ModelCapability.DECISION) \
     , GATEWAY_CAPABILITIES).build_decorator()
 class LiteLLMProxyProvider:
     pass

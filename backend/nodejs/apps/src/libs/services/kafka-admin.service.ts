@@ -1,6 +1,11 @@
 import { Kafka, Admin, ITopicConfig, ITopicMetadata } from 'kafkajs';
 import { KafkaConfig } from '../types/kafka.types';
-import { BrokerTopic, IMessageAdmin, TopicDefinition } from '../types/messaging.types';
+import {
+  BrokerTopic,
+  IdleGroupSweepResult,
+  IMessageAdmin,
+  TopicDefinition,
+} from '../types/messaging.types';
 import {
   ENV_KAFKA_TOPIC_PARTITIONS,
   KAFKA_ADMIN_CLIENT_ID,
@@ -59,13 +64,17 @@ function partitionsSetExplicitly(): boolean {
  * fairness problem to solve.
  */
 export function buildRequiredTopics(): TopicDefinition[] {
+  // Title events are keyed by record id, and the priority lane carries the same events as
+  // record-events, so all three spread over partitions the same way.
+  const keyed = (topic: BrokerTopic): boolean =>
+    topic === BrokerTopic.RECORD_EVENTS ||
+    topic === BrokerTopic.RECORD_EVENTS_PRIORITY ||
+    topic === BrokerTopic.RECORD_TITLE_EVENTS;
   return Object.values(BrokerTopic).map((topic) => ({
     topic,
-    numPartitions:
-      topic === BrokerTopic.RECORD_EVENTS ? configuredPartitions() : 1,
+    numPartitions: keyed(topic) ? configuredPartitions() : 1,
     replicationFactor: 1,
-    growExisting:
-      topic === BrokerTopic.RECORD_EVENTS && partitionsSetExplicitly(),
+    growExisting: keyed(topic) && partitionsSetExplicitly(),
   }));
 }
 
@@ -243,6 +252,11 @@ export class KafkaAdminService implements IMessageAdmin {
     } finally {
       await this.admin.disconnect();
     }
+  }
+
+  /** The broker removes a group itself once it is empty and its offsets expire (`offsets.retention.minutes`). */
+  removeIdleGroups(): Promise<IdleGroupSweepResult> {
+    return Promise.resolve({ removed: [], left: [] });
   }
 
   /**

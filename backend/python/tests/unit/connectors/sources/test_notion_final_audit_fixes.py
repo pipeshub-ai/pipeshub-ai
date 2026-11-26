@@ -60,6 +60,7 @@ def _real_processor(conn: NotionConnector, children: list[Any]) -> DataSourceEnt
     proc.get_record_by_external_id = AsyncMock(return_value=_stored("p1"))
     proc.get_records_by_parent = AsyncMock(return_value=children)
     proc.on_new_records = AsyncMock()
+    proc.on_record_content_update = AsyncMock()
     proc.finish_full_sync_memberships = AsyncMock()
     conn.data_entities_processor = proc
     conn._transform_to_webpage_record = AsyncMock(side_effect=lambda obj, *_a, **_k: MagicMock(

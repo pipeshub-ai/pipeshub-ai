@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 
+import httpx
 import pytest
 
+from app.services.docling.client import DoclingClient, DoclingUnavailableError
 from app.services.resource_governor.controller import ResourceGovernor
 from app.services.resource_governor.feedback import (
     DownstreamFeedback,
@@ -17,10 +20,12 @@ from app.services.resource_governor.policy import (
     HEAVY_START_INTERVAL_SECONDS,
     MEM_HARD,
     MEM_SOFT,
+    YIELD_GROW_CONFIRM_SAMPLES,
     floor_for,
     pressure_floor,
     start_rate_limiter_params,
 )
+from app.services.resource_governor.yield_signal import YieldState
 
 
 class ScriptedProbe:
@@ -281,8 +286,9 @@ class TestResourceGovernorController:
             "cpu_throttled_ratio", "mem_pressure", "mem_limit_bytes",
             "mem_usable_bytes", "mem_working_set_raw_bytes", "mem_baseline_bytes",
             "worker_count", "ceilings", "fleet_ceilings", "limits", "in_use", "demand",
-            "downstream_feedback",
+            "downstream_feedback", "lanes",
             "mem_pressure_raw",
+            "record_memory", "download_ahead", "admission",
         }
         assert set(stats["limits"].keys()) == {pool.value for pool in Pool}
         assert set(stats["ceilings"].keys()) == {
@@ -350,6 +356,40 @@ class TestDownstreamFeedbackWiring:
             "throttles": {}, "timeouts": {}, "pool_exhaustions": {}, "unavailable": {},
         }
 
+    @pytest.mark.asyncio
+    async def test_a_docling_outage_shrinks_only_the_heavy_index_pool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The real client's exhausted retries reach the governor; only the pool whose records call Docling is braked."""
+        monkeypatch.delenv("PARSE_ADMISSION", raising=False)  # classes mode would build the shared Docling engine
+
+        class RefusingDocling(DoclingClient):
+            def _make_client(self) -> httpx.AsyncClient:
+                def refuse(request: httpx.Request) -> httpx.Response:
+                    raise httpx.ConnectError("connection refused", request=request)
+
+                return httpx.AsyncClient(transport=httpx.MockTransport(refuse))
+
+        feedback = DownstreamFeedback()
+        set_default_downstream_feedback(feedback)  # where BaseServiceClient reports
+        try:
+            governor = ResourceGovernor(
+                logger=logging.getLogger("test.downstream"),
+                probe=ScriptedProbe([_snap(8.0, mem_limit_gb=64.0, cpu_quota=16.0)]),
+                feedback=feedback,
+                clock=ManualClock(),
+            )
+            heavy, light = governor.limit(Pool.INDEX_HEAVY), governor.limit(Pool.INDEX_LIGHT)
+            docling = RefusingDocling(service_url="http://docling.invalid:8081", retry_delay=0.0)
+            with pytest.raises(DoclingUnavailableError):
+                await docling.parse_pdf("report.pdf", b"%PDF-1.7")
+            await governor._sample_once()
+        finally:
+            set_default_downstream_feedback(None)
+
+        assert governor.stats()["downstream_feedback"]["unavailable"] == {"DoclingService": 1}
+        assert governor.limit(Pool.INDEX_HEAVY) == max(pressure_floor(Pool.INDEX_HEAVY, governor.ceilings.index_heavy), heavy // 2)
+        assert governor.limit(Pool.INDEX_LIGHT) == light
+        assert light // 2 >= pressure_floor(Pool.INDEX_LIGHT, governor.ceilings.index_light)  # a halving would show
+
     def test_limit_reads_the_live_registry(self) -> None:
         governor = self._governor(DownstreamFeedback(), ManualClock())
         assert governor.limit(Pool.INDEX_HEAVY) == governor._registry.get(Pool.INDEX_HEAVY)
@@ -365,3 +405,211 @@ class TestDownstreamFeedbackWiring:
             assert governor._feedback is get_default_downstream_feedback()
         finally:
             set_default_downstream_feedback(None)
+
+
+@pytest.mark.asyncio
+class TestLaneBudgetWiring:
+    """PARSE_LANES=on: the governor owns the lane budget and feeds it (T52)."""
+
+    @pytest.fixture(autouse=True)
+    def _domain(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PARSE_LANES", "on")
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+        monkeypatch.setattr("app.services.resource_governor.controller.effective_cpu_count", lambda: 16)
+
+    def _governor(self, working_set_gb: float = 1.0) -> ResourceGovernor:
+        return ResourceGovernor(
+            logger=logging.getLogger("test.lanes"),
+            probe=ScriptedProbe([_snap(mem_pressure_working_set_gb=working_set_gb, mem_limit_gb=32, cpu_quota=16.0)]),
+            env_parse=16,
+        )
+
+    async def test_off_builds_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PARSE_LANES", "off")
+        governor = self._governor()
+        assert governor.lanes is None
+        assert governor.stats()["lanes"]["mode"] == "off"
+
+    async def test_incident_writes_the_domain_ledger(self) -> None:
+        first, second = self._governor(), self._governor()
+        try:
+            assert first.lanes is not None and second.lanes is not None
+            lanes = first.lanes.plan.lanes
+            assert lanes > 1 and second.lanes.cap() == lanes
+            first.report_memory_incident("a parse worker died")
+            deadline = time.monotonic() + 5  # the other process's view of the ledger is cached for a moment
+            while second.lanes.cap() == lanes and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert second.lanes.cap() == max(1, lanes // 2)
+        finally:
+            first.close()
+            second.close()
+
+    async def test_sampler_applies_the_brake_step(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        governor = self._governor(working_set_gb=31.0)  # raw pressure far over the soft limit
+        try:
+            assert governor.lanes is not None
+            calls: list[tuple[str, float | None]] = []
+            real = governor.lanes.brake_step
+
+            def spy(pressure: float | None = None) -> int | None:
+                import threading
+
+                calls.append((threading.current_thread().name, pressure))
+                return real(pressure)
+
+            monkeypatch.setattr(governor.lanes, "brake_step", spy)
+            before = governor.lanes.cap()
+            await governor._sample_once()
+            assert calls and calls[0][1] is not None and calls[0][1] > MEM_SOFT
+            assert calls[0][0] != "MainThread"  # off the event loop
+            assert governor.lanes.cap() < before
+        finally:
+            governor.close()
+
+    async def test_lanes_block_has_pool_gauges(self) -> None:
+        governor = self._governor()
+        try:
+            block = governor.stats()["lanes"]
+            assert block["mode"] == "on" and block["slots"] == "shared"
+            assert {"limit", "cap", "resident_limit", "standby", "run_in_use_domain", "resident_domain",
+                    "live_processes", "waiting", "wait_seconds_p95", "ledger", "pool", "explicit_private",
+                    "interactive_pool", "unleased"} <= set(block)
+            assert block["pool"] is None  # no pool has been built in this process
+        finally:
+            governor.close()
+
+    async def test_close_closes_the_budget(self) -> None:
+        governor = self._governor()
+        budget = governor.lanes
+        governor.close()
+        assert governor.lanes is None
+        with pytest.raises(Exception, match="closed"):
+            budget.try_acquire()  # type: ignore[union-attr]
+
+
+class FakeYieldSignal:
+    def __init__(self, active: bool = True, *, fail: bool = False) -> None:
+        self.state = YieldState(active=active, since=0.0 if active else None)
+        self.fail = fail
+        self.acks: list[tuple[int, bool]] = []
+        self.closed = False
+
+    def read_state(self) -> YieldState:
+        if self.fail:
+            raise OSError("unreadable")
+        return self.state
+
+    def ack(self, pid: int, now: float | None = None, *, at_floor: bool) -> bool:
+        self.acks.append((pid, at_floor))
+        return True
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestSandboxYield:
+    """The code sandbox's yield signal read once per sample."""
+
+    def _governor(self, signal: FakeYieldSignal, clock: ManualClock) -> ResourceGovernor:
+        return ResourceGovernor(
+            logger=logging.getLogger("test.yield"),
+            probe=ScriptedProbe([_snap(mem_pressure_working_set_gb=4.0, mem_limit_gb=32.0, cpu_quota=8.0)]),
+            feedback=DownstreamFeedback(),
+            sample_interval=15.0,
+            clock=clock,
+            yield_signal=signal,  # type: ignore[arg-type]
+        )
+
+    async def test_an_active_signal_shrinks_and_acks_with_this_pid(self) -> None:
+        import os
+
+        clock = ManualClock()
+        signal = FakeYieldSignal()
+        governor = self._governor(signal, clock)
+        before = {pool: governor.limit(pool) for pool in Pool}
+        await governor._sample_once()
+        assert governor.limit(Pool.INDEX_HEAVY) < before[Pool.INDEX_HEAVY]
+        assert governor.limit(Pool.HEAVY_PARSE) == max(
+            pressure_floor(Pool.HEAVY_PARSE, governor.ceiling(Pool.HEAVY_PARSE)), before[Pool.HEAVY_PARSE] - 1,
+        )
+        assert signal.acks == [(os.getpid(), False)]
+        stats = governor.stats()["yield_to_sandboxes"]
+        assert stats["active"] and stats["holdoff_samples"] == 4
+
+    async def test_the_ack_says_at_floor_once_every_yielding_pool_is(self) -> None:
+        clock = ManualClock()
+        signal = FakeYieldSignal()
+        governor = self._governor(signal, clock)
+        for _ in range(30):
+            clock.now += 15.0
+            await governor._sample_once()
+        for pool in (Pool.HEAVY_PARSE, Pool.INDEX_HEAVY, Pool.INDEX_LIGHT):
+            assert governor.limit(pool) == pressure_floor(pool, governor.ceiling(pool))
+        assert signal.acks[-1][1] is True
+
+    async def test_an_unreadable_signal_is_off_and_logged_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        clock = ManualClock()
+        signal = FakeYieldSignal(fail=True)
+        governor = self._governor(signal, clock)
+        before = governor.limit(Pool.INDEX_HEAVY)
+        with caplog.at_level(logging.WARNING, logger="test.yield"):
+            await governor._sample_once()
+            await governor._sample_once()
+        assert governor.limit(Pool.INDEX_HEAVY) >= before
+        assert signal.acks == []
+        assert caplog.text.count("yield signal cannot be read") == 1
+
+    async def test_an_inactive_signal_is_not_acked(self) -> None:
+        signal = FakeYieldSignal(active=False)
+        governor = self._governor(signal, ManualClock())
+        await governor._sample_once()
+        assert signal.acks == []
+        assert governor.stats()["yield_to_sandboxes"]["active"] is False
+
+    async def test_state_changes_are_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        signal = FakeYieldSignal()
+        governor = self._governor(signal, ManualClock())
+        with caplog.at_level(logging.INFO, logger="test.yield"):
+            await governor._sample_once()
+            signal.state = YieldState()
+            await governor._sample_once()
+        assert "slowing indexing" in caplog.text
+        assert "growth resumes after 60 s" in caplog.text
+        assert "heavy parse after" not in caplog.text
+        assert "yield=on" in caplog.text
+
+    async def test_a_yield_soon_after_release_logs_the_longer_heavy_parse_holdoff(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        clock = ManualClock()
+        signal = FakeYieldSignal()
+        governor = self._governor(signal, clock)
+
+        async def sample(active: bool) -> None:
+            signal.state = YieldState(active=active, since=0.0 if active else None)
+            await governor._sample_once()
+            clock.now += 15.0
+
+        with caplog.at_level(logging.INFO, logger="test.yield"):
+            await sample(True)
+            for _ in range(YIELD_GROW_CONFIRM_SAMPLES + 1):
+                await sample(False)
+            await sample(True)
+            await sample(False)
+        assert "growth resumes after 60 s, heavy parse after 120 s" in caplog.text
+        assert governor.stats()["yield_to_sandboxes"]["holdoff_samples"] == 2 * YIELD_GROW_CONFIRM_SAMPLES - 1
+
+    def test_without_a_signal_stats_have_no_yield_block(self) -> None:
+        governor = ResourceGovernor(
+            logger=logging.getLogger("test.yield"),
+            probe=ScriptedProbe([_snap(mem_pressure_working_set_gb=1.0)]),
+            clock=ManualClock(),
+        )
+        assert "yield_to_sandboxes" not in governor.stats()
+
+    def test_close_closes_the_signal(self) -> None:
+        signal = FakeYieldSignal()
+        governor = self._governor(signal, ManualClock())
+        governor.close()
+        assert signal.closed

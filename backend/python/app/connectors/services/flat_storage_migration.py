@@ -10,13 +10,14 @@ Walks storage's listing of flat documents, not the graph: only flat copies cost
 anything. One replica runs it (the Redis leader lock the connector sweeps use).
 Progress is kept per org in the KV store, so a restart resumes from the last
 page. A pass that hit failures is run again, up to MAX_PASSES; a copy with no
-record left to own it stays where it is.
+record left to own it stays where it is. A run that moved nothing at all is not
+recorded as done: the next start tries it again.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -26,6 +27,7 @@ from app.connectors.core.base.data_processor.storage_cleanup import (
     StorageCleanupHelper,
     choose_storage_owner,
 )
+from app.core.org_context import for_org, system
 from app.modules.artifacts.reader import record_artifact_reader
 from app.utils.storage_move import post_move_tree
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -41,6 +43,10 @@ PROGRESS_DIRECTORY = "/services/storageMigration/flatToHierarchical/"
 LEADER_KEY = "flat_storage_migration:leader"
 MAX_PASSES = 3
 _PAGE = 500
+_NAMED_FAILURES = 5
+_MAX_REASONS = 5
+# An error text can name the document it failed on; the rest share one entry.
+_MAX_TRACKED_REASONS = 50
 
 
 def _key(org_id: str) -> str:
@@ -62,6 +68,8 @@ class FlatStorageMigration:
         self.blob_storage = blob_storage
         self.lock = lock
         self.storage = StorageCleanupHelper(logger, graph_provider, config_service)
+        self._reasons: Counter[str] = Counter()
+        self._failures = 0
 
     async def run_all_orgs(self) -> bool:
         """True once every org is done; False when another replica leads or
@@ -69,10 +77,15 @@ class FlatStorageMigration:
         if not await self.lock.try_acquire():
             return False
         try:
-            for org in await self.graph_provider.get_all_orgs() or []:
+            with system("flat_storage_migration"):
+                orgs = await self.graph_provider.get_all_orgs() or []
+            for org in orgs:
                 org_id = org.get("id") or org.get("_key")
-                if org_id and not await self.run_org(str(org_id)):
-                    return False
+                if not org_id:
+                    continue
+                with for_org(str(org_id), job="flat_storage_migration"):
+                    if not await self.run_org(str(org_id)):
+                        return False
             return True
         finally:
             await self.storage.close()
@@ -83,8 +96,13 @@ class FlatStorageMigration:
         if not isinstance(progress, dict):
             progress = {}
         if progress.get("done"):
-            return True
+            if not progress.get("failed") or "movedBefore" in progress:
+                return True
+            # Ended by a version that gave up on a run that moved nothing, and did not tell one from another.
+            progress = {}
         headers, nodejs_endpoint, _ = await self.blob_storage._get_auth_and_config(org_id)
+        self._reasons.clear()
+        self._failures = 0
         while True:
             page = await self._flat_documents(nodejs_endpoint, headers, progress.get("after"))
             vrids = list(OrderedDict.fromkeys(
@@ -106,24 +124,50 @@ class FlatStorageMigration:
     async def _finish_pass(self, org_id: str, progress: dict[str, Any]) -> bool:
         failed = int(progress.get("failed") or 0)
         passes = int(progress.get("passes") or 0) + 1
+        moved_in_all = int(progress.get("movedBefore") or 0) + int(progress.get("moved") or 0)
+        partly_moved = int(progress.get("partlyMoved") or 0)
         if failed and passes < MAX_PASSES:
             self.logger.warning(
                 "Flat storage migration for org %s: %d copies failed to move; another pass (%d/%d)",
                 org_id, failed, passes + 1, MAX_PASSES,
             )
             # Copies that moved left the flat listing, so the next pass sees only the rest.
-            await self.config_service.set_config(_key(org_id), {"passes": passes})
+            await self.config_service.set_config(_key(org_id), {
+                "passes": passes, "movedBefore": moved_in_all, "partlyMoved": partly_moved,
+            })
             return await self.run_org(org_id)
+        if failed and not moved_in_all and not partly_moved:
+            # One shared cause, not a few bad copies: once it is fixed they can all move.
+            await self.config_service.set_config(_key(org_id), {"movedNothingAt": get_epoch_timestamp_in_ms()})
+            self.logger.error(
+                "Flat storage migration for org %s moved nothing: %d with no record to own them, "
+                "%d failed: %s; it runs again at the next start",
+                org_id, int(progress.get("unowned") or 0), failed, self._reason_text(),
+            )
+            return True
         done = {**progress, "after": None, "passes": passes, "done": True}
         await self.config_service.set_config(_key(org_id), done)
         log = self.logger.error if failed else self.logger.info
         log(
             "Flat storage migration for org %s finished: %d moved, %d with no record to own them, "
             "%d failed%s",
-            org_id, int(done.get("moved") or 0), int(done.get("unowned") or 0), failed,
-            "; those are relocated when their records are indexed again" if failed else "",
+            org_id, moved_in_all, int(done.get("unowned") or 0), failed,
+            f": {self._reason_text()}; those are relocated when their records are indexed again" if failed else "",
         )
         return True
+
+    def _note_failure(self, vrid: str, reason: str) -> None:
+        self._count_failures(reason)
+        if self._failures <= _NAMED_FAILURES:
+            self.logger.warning("Flat copy of vrid %s left in place for now: %s", vrid, reason)
+
+    def _count_failures(self, reason: str, copies: int = 1) -> None:
+        self._failures += copies
+        tracked = reason in self._reasons or len(self._reasons) < _MAX_TRACKED_REASONS
+        self._reasons[reason if tracked else "other reasons"] += copies
+
+    def _reason_text(self) -> str:
+        return ", ".join(f"{reason} ({n})" for reason, n in self._reasons.most_common(_MAX_REASONS)) or "reason not recorded"
 
     async def _flat_documents(
         self, nodejs_endpoint: str, headers: dict[str, str], after: str | None,
@@ -146,11 +190,12 @@ class FlatStorageMigration:
     ) -> dict[str, int]:
         from app.modules.transformers.blob_storage import get_shared_session
 
-        counts = {"moved": 0, "unowned": 0, "failed": 0}
+        counts = {"moved": 0, "unowned": 0, "failed": 0, "partlyMoved": 0}
         try:
             holders = await self.graph_provider.get_virtual_record_holders(vrids, org_id)
         except Exception as e:
             self.logger.warning("Flat storage migration: could not read holders of a page: %s", e)
+            self._count_failures(f"could not read the records holding them: {type(e).__name__}", len(vrids))
             counts["failed"] = len(vrids)
             return counts
         for vrid in vrids:
@@ -161,15 +206,27 @@ class FlatStorageMigration:
                     continue
                 path = await self.storage._owner_storage_path(owner)
                 if not path:
+                    self._note_failure(vrid, "no storage path for the owning record")
                     counts["failed"] += 1
                     continue
                 result = await post_move_tree(
                     get_shared_session(), nodejs_endpoint, headers, f"records/{vrid}", path,
                     virtual_record_ids=[vrid],
                 )
-                counts["moved" if result.get("moved") and not result.get("failed") else "failed"] += 1
+                if result.get("moved") and not result.get("failed"):
+                    counts["moved"] += 1
+                    continue
+                # A copy is several documents. One that moved only some is a failed copy, but not "moved nothing".
+                if result.get("moved"):
+                    counts["partlyMoved"] += 1
+                self._note_failure(
+                    vrid,
+                    "the storage service could not move every document" if result.get("failed")
+                    else "the storage service moved nothing",
+                )
+                counts["failed"] += 1
             except Exception as e:
-                self.logger.warning("Flat copy of vrid %s left in place for now: %s", vrid, e)
+                self._note_failure(vrid, f"{type(e).__name__}: {str(e)[:120]}")
                 counts["failed"] += 1
         return counts
 

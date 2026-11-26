@@ -145,6 +145,12 @@ export const smtpConfigSchema = z.object({
   }),
 });
 
+export const smtpEnabledSchema = z.object({
+  body: z.object({
+    enabled: z.boolean(),
+  }),
+});
+
 export const azureAdConfigSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'Azure client ID is required' }),
@@ -238,11 +244,53 @@ export const platformSettingsSchema = z.object({
       .check(integerCheck())
       .positive()
       .max(1024 * 1024 * 1024, { message: 'Max 1GB per file' }) // safety upper bound
-      .describe('Max per-file upload size in bytes'),
+      .optional()
+      .describe(
+        'Max per-file upload size in bytes; when omitted the stored value is kept',
+      ),
     featureFlags: z
       .record(z.string(), z.boolean())
       .default({})
-      .describe('Feature flags map, e.g., { ENABLE_WORKFLOW_BUILDER: true }'),
+      .describe(
+        'Flags the admin changed, e.g. { ENABLE_MCP: true }: a flag set to its release default follows that default; flags not sent keep their stored choice',
+      ),
+    notices: z
+      .object({
+        durableAgentDefault: z
+          .enum(['adopted', 'kept', 'dismissed'])
+          .optional(),
+      })
+      .strict()
+      .optional()
+      .describe("The admin's answer to a one-time notice (UX1)"),
+    expected: z
+      .object({
+        featureFlags: z.record(z.string(), z.boolean()).optional(),
+        fileUploadMaxSizeBytes: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional()
+      .describe(
+        'What the admin saw for each setting it sends (UX2): a setting someone else changed since is refused 409 labs_changed instead of overwritten',
+      ),
+    agentHarness: z
+      .object({
+        modelFamilies: z
+          .array(
+            z
+              .string()
+              .trim()
+              .toLowerCase()
+              .regex(/^[a-z0-9][a-z0-9_.-]{0,63}$/),
+          )
+          .max(64)
+          .nullable(),
+      })
+      .strict()
+      .optional()
+      .describe(
+        'Durable agent harness rollout; modelFamilies null allows every model family',
+      ),
   }),
 });
 
@@ -571,6 +619,12 @@ const batchModelSchema = z.object({
   isMultimodal: z.boolean().default(false),
   isReasoning: z.boolean().default(false),
   contextLength: z.number().optional().nullable(),
+  configuration: z
+    .record(z.string().max(64), z.unknown())
+    .optional()
+    .describe(
+      'Non-secret configuration keys that differ for this model, applied over the shared ones',
+    ),
 });
 
 /** Drop a shared friendly name before the single-model refine. Each batch model carries its own. */
@@ -702,6 +756,7 @@ export const webSearchProviderType = z.enum([
   'searxng',
   'firecrawl',
   'crawl4ai',
+  'keenable',
 ]);
 
 const notADefaultPageReader = (body: {

@@ -8,6 +8,7 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import {
   useFeatureFlagsStore,
   selectProjectsEnabled,
+  selectFeatureFlagsKnown,
   selectFeatureFlagsLoaded,
 } from '@/lib/store/feature-flags-store';
 import { ProjectList } from './components/project-list';
@@ -20,13 +21,15 @@ function ProjectsPageContent() {
   const projectId = rawProjectId?.trim() ? rawProjectId : null;
 
   const flagsLoaded = useFeatureFlagsStore(selectFeatureFlagsLoaded);
+  // A failed read's stand-in never redirects: only an answer that says it is off (UIADOPT1-FU-1).
+  const flagsKnown = useFeatureFlagsStore(selectFeatureFlagsKnown);
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
 
   useEffect(() => {
-    if (flagsLoaded && !projectsEnabled) {
+    if (flagsKnown && !projectsEnabled) {
       router.replace('/chat/');
     }
-  }, [flagsLoaded, projectsEnabled, router]);
+  }, [flagsKnown, projectsEnabled, router]);
 
   if (!flagsLoaded || !projectsEnabled) {
     return (
@@ -36,7 +39,13 @@ function ProjectsPageContent() {
     );
   }
 
-  return projectId ? <ProjectWorkspaceRedesigned projectId={projectId} /> : <ProjectList />;
+  // Keyed by project so a save still in flight for the previous project lands
+  // on an unmounted workspace instead of replacing the new project's state.
+  return projectId ? (
+    <ProjectWorkspaceRedesigned key={projectId} projectId={projectId} />
+  ) : (
+    <ProjectList />
+  );
 }
 
 export default function ProjectsPage() {

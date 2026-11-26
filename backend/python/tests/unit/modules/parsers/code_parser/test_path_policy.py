@@ -4,8 +4,10 @@ import pytest
 from app.connectors.core.registry.code_indexing_flags import (
     code_exclude_globs,
     code_indexing_filters_changed,
+    sync_filters_changed_beyond_branch,
 )
 from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
+from app.connectors.sources.gitlab.repos import _should_skip_dotfile_repo_path
 from app.modules.parsers.code_parser.file_role import (
     FileRole,
     classify_file_role,
@@ -64,6 +66,23 @@ def test_a_credential_file_stays_out_whatever_the_repo_says() -> None:
     assert not policy.keeps_file(".env")
 
 
+@pytest.mark.parametrize("path", [".kube/config", "deploy/.docker/config.json"])
+def test_a_tool_folder_credential_is_judged_by_its_path(path: str) -> None:
+    """GitLab passes (path, name): the name alone (`config`) would not say it is a credential."""
+    name = path.rsplit("/", 1)[-1]
+    assert not PathPolicy().keeps_file(path)
+    assert not PathPolicy().keeps_file(path, name)
+    assert should_index_code_file(path, name)[0] is False
+    forced_in = PathPolicy(linguist=parse_linguist_exclusions(f"{path} -linguist-generated\n"))
+    assert forced_in.linguist.forces_in(path)
+    assert not forced_in.keeps_file(path, name)
+    assert _should_skip_dotfile_repo_path(path)
+
+
+def test_a_credential_name_is_judged_when_the_path_is_empty() -> None:
+    assert should_index_code_file("", "client_secret.json")[0] is False
+
+
 def test_gitattributes_can_force_a_path_back_in() -> None:
     rules = parse_linguist_exclusions(
         "dist/** linguist-generated\n"
@@ -94,3 +113,18 @@ def test_a_test_files_toggle_is_a_code_filter_change() -> None:
     assert code_indexing_filters_changed(old, {"test_files": {"operator": "is", "value": True}})
     assert not code_indexing_filters_changed(old, dict(old))
     assert not code_indexing_filters_changed({}, {"documents": {"value": True}})
+
+
+def test_a_branch_change_alone_is_no_full_resync() -> None:
+    """The connector sees its checkpoint's branch differ and syncs the difference."""
+    repos = {"repo_ids": {"operator": "in", "value": ["acme/widgets"]}}
+
+    def branch(name: str) -> dict:
+        return {"branch": {"operator": "in", "type": "select", "value": [name]}}
+
+    old = {"values": {**repos, **branch("main")}}
+    assert not sync_filters_changed_beyond_branch(old, {"values": {**repos, **branch("release")}})
+    assert not sync_filters_changed_beyond_branch(old, {"values": dict(repos)})
+    assert not sync_filters_changed_beyond_branch({"values": dict(repos)}, old)
+    other = {"values": {"repo_ids": {"operator": "in", "value": ["acme/gadgets"]}, **branch("release")}}
+    assert sync_filters_changed_beyond_branch(old, other)

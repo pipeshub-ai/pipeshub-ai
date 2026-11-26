@@ -10,21 +10,29 @@ growth ramps slowly (plan section 4).
 """
 from __future__ import annotations
 
+import logging
 import math
+import os
 import statistics
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from types import MappingProxyType
+from typing import TYPE_CHECKING, NamedTuple
 
+from app.modules.parsers.excel.limits import excel_document_memory_bytes
 from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
+    LimitRule,
     Limits,
     Pool,
     PoolDemand,
     PoolState,
     ResourceSnapshot,
+    merge_cooldown_causes,
 )
 from app.utils.env_config import env_float as _env_float
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -46,6 +54,77 @@ SAMPLE_JITTER_SECONDS = 1.0
 HEAVY_PARSE_WORKING_SET_GB = _env_float(
     "GOVERNOR_HEAVY_PARSE_WORKING_SET_GB", 1.5, low=0.1, high=64.0
 )
+
+
+_HEAVY_PARSE_WORKING_SET_DEFAULT_GB = 1.5
+_WARNED: set[str] = set()  # warnings already logged
+
+
+def _heavy_parse_working_set_is_explicit() -> bool:
+    raw = os.environ.get("GOVERNOR_HEAVY_PARSE_WORKING_SET_GB")
+    return bool(raw and raw.strip()) or HEAVY_PARSE_WORKING_SET_GB != _HEAVY_PARSE_WORKING_SET_DEFAULT_GB
+
+
+def heavy_parse_working_set_gb() -> float:
+    """Resident GiB one heavy parse is assumed to hold.
+
+    A ``GOVERNOR_HEAVY_PARSE_WORKING_SET_GB`` set by the operator is used exactly, even below what
+    one Excel document may hold (``excel_document_memory_bytes``); that is logged once. Unset, it
+    is the larger of the default and the Excel figure, so raising the Excel limits lowers the
+    number of heavy parses the memory gate admits."""
+    excel_gb = excel_document_memory_bytes() / 1024 ** 3
+    if _heavy_parse_working_set_is_explicit():
+        if HEAVY_PARSE_WORKING_SET_GB < excel_gb and "below_excel" not in _WARNED:
+            _WARNED.add("below_excel")
+            _logger.warning(
+                "GOVERNOR_HEAVY_PARSE_WORKING_SET_GB=%.2f is below what one Excel document may hold "
+                "(%.2f GiB, from EXCEL_LOAD_MAX_MB and EXCEL_MAX_TEXT_MB); the setting is used as given",
+                HEAVY_PARSE_WORKING_SET_GB, excel_gb,
+            )
+        return HEAVY_PARSE_WORKING_SET_GB
+    return max(HEAVY_PARSE_WORKING_SET_GB, excel_gb)
+
+
+# The parent's own growth while a PdfPlumber parse runs (+0.10 to +0.19 GiB measured over the idle
+# parent, 1.3 x the largest). It is the heavy permit's working set only where lane admission
+# charges the worker's memory (``resolve_heavy_working_set``).
+PDF_PARENT_WORKING_SET_GB = 0.25
+DOCLING_WORKING_SET_DEFAULT_GB = 1.5
+
+
+def docling_working_set_gb() -> float:
+    """Resident GiB one local Docling conversion holds (``GOVERNOR_DOCLING_WORKING_SET_GB``).
+
+    The Docling service's heavy permit and a local DOCX's excess are sized from this, never from
+    the PdfPlumber figure."""
+    return _env_float("GOVERNOR_DOCLING_WORKING_SET_GB", DOCLING_WORKING_SET_DEFAULT_GB, low=0.1, high=64.0)
+
+
+class HeavyWorkingSet(NamedTuple):
+    gb: float
+    source: str  # explicit | measured | fallback | docling
+
+    def as_dict(self) -> dict[str, object]:
+        return {"gb": self.gb, "source": self.source}
+
+
+def resolve_heavy_working_set(*, measured_base: bool = False, docling_gb: float | None = None) -> HeavyWorkingSet:
+    """The working set a heavy permit assumes, by the order of LLD 2.22.
+
+    1. an operator's ``GOVERNOR_HEAVY_PARSE_WORKING_SET_GB``, used exactly;
+    2. the Docling service's own figure (*docling_gb*), when the caller is that service;
+    3. the measured PdfPlumber parent base, only where *measured_base* says the worker's memory is
+       charged by a shared lane budget;
+    4. the old ``max(1.5, excel document)``.
+    """
+    if _heavy_parse_working_set_is_explicit():
+        return HeavyWorkingSet(heavy_parse_working_set_gb(), "explicit")
+    if docling_gb is not None:
+        return HeavyWorkingSet(docling_gb, "docling")
+    if measured_base:
+        return HeavyWorkingSet(PDF_PARENT_WORKING_SET_GB, "measured")
+    return HeavyWorkingSet(heavy_parse_working_set_gb(), "fallback")
+
 
 # Slots per CPU per tier. A heavy parse is CPU-bound end to end (Docling
 # layout analysis, OCR, LibreOffice), so one per core is the most that adds
@@ -172,6 +251,24 @@ DOWNSTREAM_TIMEOUT_SHRINK_THRESHOLD = 2
 DOWNSTREAM_TIMEOUT_SHRINK_FACTOR = 0.75
 DOWNSTREAM_GROW_CONFIRM_SAMPLES = 2
 DOWNSTREAM_LATENCY_HOLD_FACTOR = 2.0
+# While code sandbox runs wait for memory this container shares, heavy parse
+# loses one slot and the index pools a quarter per sample, down to their
+# pressure floor. Growth then waits YIELD_GROW_CONFIRM_SAMPLES samples without
+# the signal and resumes linearly, so indexing creeps back instead of doubling
+# into the memory the runs are waiting for.
+YIELD_INDEX_SHRINK_FACTOR = DOWNSTREAM_TIMEOUT_SHRINK_FACTOR
+YIELD_GROW_CONFIRM_SAMPLES = 4
+# One heavy parse slot is a whole working set (1.5 GiB by default), so on a
+# small host regrowing it is often what sends the next run back to waiting.
+# A yield that returns within YIELD_REPEAT_WINDOW_SAMPLES of heavy parse's
+# holdoff running out doubles its next holdoff, up to
+# YIELD_HEAVY_MAX_HOLDOFF_SAMPLES; a yield after a longer quiet spell starts
+# from YIELD_GROW_CONFIRM_SAMPLES again. The index pools are cheap per permit
+# and keep the short holdoff.
+YIELD_REPEAT_WINDOW_SAMPLES = 16
+YIELD_HEAVY_MAX_HOLDOFF_SAMPLES = 64
+# Light parse is cheap; braking it would only queue cheap records.
+YIELD_POOLS = frozenset({Pool.HEAVY_PARSE, Pool.INDEX_HEAVY, Pool.INDEX_LIGHT})
 HOLD_EWMA_ALPHA = 0.3
 HOLD_BASELINE_DRIFT = 0.05
 
@@ -290,7 +387,9 @@ def _worker_share(total: int, worker_count: int) -> int:
     return total if workers == 1 else max(1, total // workers)
 
 
-def heavy_memory_cap(snap: ResourceSnapshot, worker_count: int = 1) -> int | None:
+def heavy_memory_cap(
+    snap: ResourceSnapshot, worker_count: int = 1, working_set_gb: float | None = None
+) -> int | None:
     """How many heavy parses this process's share of the *currently free*
     memory can hold, or ``None`` when the cgroup limit is unknown.
 
@@ -306,10 +405,13 @@ def heavy_memory_cap(snap: ResourceSnapshot, worker_count: int = 1) -> int | Non
     free_gb = _free_memory_gb(snap)
     if free_gb is None:
         return None
-    return _worker_share(max(1, int(free_gb / HEAVY_PARSE_WORKING_SET_GB)), worker_count)
+    working_set = heavy_parse_working_set_gb() if working_set_gb is None else working_set_gb
+    return _worker_share(max(1, int(free_gb / working_set)), worker_count)
 
 
-def cgroup_heavy_parse_limit(snap: ResourceSnapshot, fleet: Ceilings) -> int:
+def cgroup_heavy_parse_limit(
+    snap: ResourceSnapshot, fleet: Ceilings, working_set_gb: float | None = None
+) -> int:
     """Heavy parses the whole cgroup may run at once: the heavy budget for all
     of its worker processes, held to what free memory holds.
 
@@ -317,8 +419,15 @@ def cgroup_heavy_parse_limit(snap: ResourceSnapshot, fleet: Ceilings) -> int:
     a parse already running is not counted back into free memory, and a
     smaller value never revokes one.
     """
-    mem_cap = heavy_memory_cap(snap)
+    mem_cap = heavy_memory_cap(snap, working_set_gb=working_set_gb)
     return max(1, fleet.heavy if mem_cap is None else min(fleet.heavy, mem_cap))
+
+
+def free_memory_share_bytes(snap: ResourceSnapshot, worker_count: int = 1) -> int | None:
+    """One worker process's share of the memory free in the cgroup, or ``None``
+    when the limit is unknown. What big records reserve from (``MemoryBudget``)."""
+    free_gb = _free_memory_gb(snap)
+    return None if free_gb is None else int(free_gb * 1024 ** 3) // max(1, worker_count)
 
 
 def index_memory_cap(
@@ -355,6 +464,19 @@ def index_memory_cap(
 # ---------------------------------------------------------------------------
 
 
+def ceiling_cpus(cpu_quota: float) -> float:
+    """CPUs that size ceilings: ``floor(cpu_quota)``, equal to
+    ``effective_cpu_count()`` from 1 CPU up.
+
+    Below one CPU the fraction is kept: a 0.5-CPU cgroup has always sized its
+    light and index tiers off 0.5, and every ceiling is floored at 1 anyway.
+    ``ResourceSnapshot.cpu_quota`` itself keeps the fraction for utilisation.
+    """
+    if cpu_quota < 1.0:
+        return max(0.0, cpu_quota)
+    return float(math.floor(cpu_quota))
+
+
 def resolve_ceilings(
     snap: ResourceSnapshot,
     env_parse: int | None,
@@ -362,6 +484,8 @@ def resolve_ceilings(
     worker_count: int = 1,
     *,
     reserve_embedding_cpus: bool = False,
+    cells: int = 1,
+    profile: str = "legacy",
 ) -> Ceilings:
     """Resolve operator ceilings once at startup.
 
@@ -409,8 +533,18 @@ def resolve_ceilings(
     ``worker_count > 1`` returns one worker process's share
     (``split_ceilings``), since each runs its own governor against the same
     cgroup.
+
+    ``profile="auto"`` (``PIPESHUB_CAPACITY_PROFILE=auto``) resolves the caps from the CPU count and
+    the number of ``cells`` instead (``app.capacity.ceilings``); ``legacy`` is the chain below.
     """
-    cpus = max(0.0, snap.cpu_quota)
+    if profile == "auto":
+        from app.capacity.ceilings import auto_ceilings
+
+        fleet = auto_ceilings(
+            snap.cpu_quota, env_parse, env_index, cells=cells, reserve_embedding_cpus=reserve_embedding_cpus
+        )
+        return split_ceilings(Ceilings(*fleet.as_tuple()), worker_count)
+    cpus = ceiling_cpus(snap.cpu_quota)
     reservation = min(EMBEDDING_CPU_RESERVATION, cpus * EMBEDDING_CPU_RESERVATION_MAX_FRACTION)
     heavy_cpus = max(0.0, cpus - reservation) if reserve_embedding_cpus else cpus
     # Floored at 1 throughout: a sub-1-CPU cgroup (fractional cpu.max) must
@@ -630,12 +764,16 @@ def ceiling_for(pool: Pool, ceilings: Ceilings) -> int:
 
 
 def _target_for(
-    pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings, worker_count: int = 1
+    pool: Pool,
+    snap: ResourceSnapshot,
+    ceilings: Ceilings,
+    worker_count: int = 1,
+    heavy_working_set_gb: float | None = None,
 ) -> int:
     """Section 4 "Targets per sample" — the value growth ramps toward, never
     a value jumped to directly."""
     if pool is Pool.HEAVY_PARSE:
-        mem_cap = heavy_memory_cap(snap, worker_count)
+        mem_cap = heavy_memory_cap(snap, worker_count, heavy_working_set_gb)
         bound = ceilings.heavy if mem_cap is None else min(ceilings.heavy, mem_cap)
         # Clamped to 1, not to floor_for: the memory gate must be able to
         # hold heavy *below* its warm-start floor when the cgroup genuinely
@@ -745,6 +883,58 @@ def _reset_for_shrink(state: PoolState, *, cooldown_until: float) -> PoolState:
         slow_start_step=1,
         prev_grow_mem_pressure=None,
         prev_grow_cpu_utilisation=None,
+    )
+
+
+_SHRINK_CAUSE: dict[LimitRule, str] = {
+    LimitRule.MEM_HARD: "memory",
+    LimitRule.MEM_SOFT: "memory",
+    LimitRule.MEM_TARGET: "memory",
+    LimitRule.CPU: "cpu",
+    LimitRule.DOWNSTREAM: "downstream",
+    LimitRule.HOST_YIELD: "host_yield",
+}
+# Hold rules that say nothing once the pool sits at its ceiling.
+_GROWTH_HOLDS = frozenset(
+    {LimitRule.GROW, LimitRule.NO_DEMAND, LimitRule.CONFIRMING, LimitRule.RESOURCE_DELTA, LimitRule.GROW_BAND}
+)
+
+
+def _with_rule(
+    state: PoolState,
+    rule: LimitRule,
+    now: float,
+    *,
+    limit: int,
+    ceiling: int,
+    causes: tuple[tuple[str, float], ...] = (),
+    services: tuple[str, ...] | None = None,
+) -> PoolState:
+    """*state* tagged with the rule that produced *limit* (observability only).
+
+    A pool with no room at all reads ``collapsed``, and one at its ceiling reads ``at_ceiling``
+    where the rule is only a growth hold, so a reader never sees "confirming" on a pool that
+    has nothing left to grow into.
+    """
+    if ceiling <= 0:
+        rule = LimitRule.COLLAPSED
+    elif limit >= ceiling and rule in _GROWTH_HOLDS:
+        rule = LimitRule.AT_CEILING
+    tagged = replace(
+        state,
+        rule=rule,
+        rule_since=state.rule_since if state.rule is rule and state.rule_since is not None else now,
+        cooldown_causes=merge_cooldown_causes(state.cooldown_causes, causes, now),
+        rule_services=state.rule_services if services is None else services,
+    )
+    # Service names belong to the downstream restriction: once the rule is something else and that cooldown
+    # has closed, a pool that grows or holds names none.
+    return replace(tagged, rule_services=tagged.active_services(now))
+
+
+def _feedback_services(feedback: FeedbackWindow) -> tuple[str, ...]:
+    return tuple(
+        sorted({*feedback.throttles, *feedback.pool_exhaustions, *feedback.unavailable, *feedback.timeouts})
     )
 
 
@@ -860,15 +1050,49 @@ def _latency_hold(state: PoolState) -> bool:
     return state.hold_ewma > DOWNSTREAM_LATENCY_HOLD_FACTOR * state.hold_baseline
 
 
+# A reporter only one index tier calls. Docling parses PDF-route records, which classify heavy unless their extension
+# and mime disagree: narrowing the light pool for its outage takes no load off it and only queues Jira/Slack records.
+# Every other reporter is called by both tiers.
+SERVICE_POOL: Mapping[str, Pool] = MappingProxyType({"DoclingService": Pool.INDEX_HEAVY})
+
+
+def _feedback_for(pool: Pool, feedback: FeedbackWindow) -> FeedbackWindow:
+    """What *pool* is braked by: the window minus the services only the other tier calls."""
+    return feedback.without({name for name, owner in SERVICE_POOL.items() if owner is not pool})
+
+
 def _downstream_shrink_target(
     current: int, floor: int, feedback: FeedbackWindow
 ) -> tuple[int | None, bool]:
     """``(shrink_to, incident)`` the downstream window asks for, if any."""
     if feedback.incident:
-        return max(floor, current // 2), True
+        return min(current, max(floor, current // 2)), True
     if feedback.timeout_count >= DOWNSTREAM_TIMEOUT_SHRINK_THRESHOLD:
-        return max(floor, math.ceil(current * DOWNSTREAM_TIMEOUT_SHRINK_FACTOR)), False
+        return min(current, max(floor, math.ceil(current * DOWNSTREAM_TIMEOUT_SHRINK_FACTOR))), False
     return None, False
+
+
+def _yield_shrink_target(pool: Pool, current: int, floor: int) -> int:
+    step_to = current - COUNT_POOL_STEP
+    if _is_index_pool(pool):
+        # At least one off, or a pool of 3 would stay at ceil(3 x 0.75) = 3.
+        step_to = min(step_to, math.ceil(current * YIELD_INDEX_SHRINK_FACTOR))
+    return min(current, max(floor, step_to))
+
+
+def _yield_holdoff(pool: Pool, state: PoolState, now: float, interval: float) -> int:
+    """The growth holdoff a yielding sample sets for *pool*."""
+    last = state.yield_holdoff_set
+    if pool is not Pool.HEAVY_PARSE or not last:
+        return YIELD_GROW_CONFIRM_SAMPLES
+    if state.yield_holdoff > 0:
+        # The same episode, or a yield back before growth resumed: indexing
+        # did not grow into it, so it is no reason to hold longer.
+        return last
+    released = state.yield_released_at
+    if released is not None and now - released <= YIELD_REPEAT_WINDOW_SAMPLES * interval:
+        return min(2 * last, YIELD_HEAVY_MAX_HOLDOFF_SAMPLES)
+    return YIELD_GROW_CONFIRM_SAMPLES
 
 
 def _next_pool_limit(
@@ -882,11 +1106,14 @@ def _next_pool_limit(
     interval: float,
     feedback: FeedbackWindow | None = None,
     worker_count: int = 1,
+    heavy_working_set_gb: float | None = None,
+    *,
+    host_yield: bool = False,
 ) -> tuple[int, PoolState]:
     ceiling = ceiling_for(pool, ceilings)
     floor = pressure_floor(pool, ceiling, worker_count)
     shrink_step = COUNT_POOL_STEP
-    target = _target_for(pool, snap, ceilings, worker_count)
+    target = _target_for(pool, snap, ceilings, worker_count, heavy_working_set_gb)
     pressure = snap.mem_pressure
     # Asymmetric on purpose: shrink on the cgroup's true occupancy, grow on
     # the baseline-credited reading. Braking on the credited reading pushes
@@ -907,7 +1134,7 @@ def _next_pool_limit(
     # The downstream brake is for the index pools: they are what fans out to
     # the services that reported, and the parse pools sit *behind* an index
     # permit, so narrowing index alone is what reduces the load.
-    downstream = feedback if _is_index_pool(pool) and feedback is not None else None
+    downstream = _feedback_for(pool, feedback) if _is_index_pool(pool) and feedback is not None else None
     # The holdoff is judged on its value *entering* this sample, so a clean
     # window counts toward growth only from the next sample on: two clean
     # samples means two full intervals with no symptoms before the pool grows.
@@ -916,27 +1143,45 @@ def _next_pool_limit(
         state = _track_hold_time(state, demand)
         if downstream is None or downstream.is_empty:
             state = replace(state, downstream_holdoff=max(0, downstream_holdoff - 1))
+    # Judged on its value entering the sample, like the downstream holdoff.
+    yield_holdoff = state.yield_holdoff
+    yielding = host_yield and pool in YIELD_POOLS
+    if not host_yield and yield_holdoff:
+        state = replace(
+            state, yield_holdoff=yield_holdoff - 1,
+            yield_released_at=now if yield_holdoff == 1 else state.yield_released_at,
+        )
 
     # Collect every shrink rule that applies this sample and take the
-    # tightest. Rules that fire together are describing one shortage from
+    # tightest. Each rule ends in ``min(current, ...)``: the floor is a lower
+    # bound for a brake, never a level to jump up to. The memory target can
+    # already have held a pool under its floor, and a brake that lifted it
+    # back (1 -> 2 -> 1 -> 2 for heavy parse) would admit another working set
+    # on every other sample. A rule that lands on ``current`` is a hold that
+    # still resets the grow state and starts the cooldown. Rules that fire together are describing one shortage from
     # different angles, so honouring only the gentler one would leave the
     # container over-committed for another whole interval.
-    shrink_to: int | None = None
+    # Each candidate carries the rule that asked for it, so the binding one (the
+    # smallest target; the first listed on a tie) is what the pool reports.
+    candidates: list[tuple[int, LimitRule]] = []
     incident = False
 
     if brake_pressure is not None and brake_pressure >= MEM_HARD:
-        shrink_to = max(floor, current // 2)
+        candidates.append((min(current, max(floor, current // 2)), LimitRule.MEM_HARD))
         incident = True
-    elif (brake_pressure is not None and brake_pressure >= MEM_SOFT) or cpu_brake:
-        shrink_to = max(floor, current - shrink_step)
+    elif brake_pressure is not None and brake_pressure >= MEM_SOFT:
+        candidates.append((min(current, max(floor, current - shrink_step)), LimitRule.MEM_SOFT))
+    elif cpu_brake:
+        candidates.append((min(current, max(floor, current - shrink_step)), LimitRule.CPU))
 
     downstream_shrink = False
+    downstream_incident = False
     if downstream is not None:
         wanted, downstream_incident = _downstream_shrink_target(current, floor, downstream)
         if wanted is not None:
             downstream_shrink = True
             incident = incident or downstream_incident
-            shrink_to = wanted if shrink_to is None else min(shrink_to, wanted)
+            candidates.append((wanted, LimitRule.DOWNSTREAM))
 
     # Heavy and index both have a target that live free memory can pull below
     # the ceiling (_target_for). Overall pressure can sit well under MEM_SOFT
@@ -947,9 +1192,13 @@ def _next_pool_limit(
     # always the ceiling, so this can never fire for it.
     if current > target:
         walked = max(target, current - _target_shrink_step(pool, current, target))
-        shrink_to = walked if shrink_to is None else min(shrink_to, walked)
+        candidates.append((walked, LimitRule.MEM_TARGET))
 
-    if shrink_to is not None:
+    if yielding:
+        candidates.append((_yield_shrink_target(pool, current, floor), LimitRule.HOST_YIELD))
+
+    if candidates:
+        shrink_to, binding = min(candidates, key=lambda c: c[0])
         # An incident cooldown is assigned outright rather than max()'d: it is
         # the longer of the two windows, and it starts from this sample.
         cooldown_until = (
@@ -960,12 +1209,37 @@ def _next_pool_limit(
         next_state = _reset_for_shrink(state, cooldown_until=cooldown_until)
         if downstream_shrink:
             next_state = replace(next_state, downstream_holdoff=DOWNSTREAM_GROW_CONFIRM_SAMPLES)
-        return shrink_to, next_state
+        if yielding:
+            holdoff = _yield_holdoff(pool, state, now, interval)
+            next_state = replace(
+                next_state, yield_holdoff=holdoff, yield_holdoff_set=holdoff, in_slow_start=False,
+            )
+        # Every rule that fired starts a cooldown of its own: an incident-class rule runs the longer window.
+        # The binding rule is listed last, so it is the one named when windows end together.
+        fired = [rule for _, rule in candidates if rule is not binding] + [binding]
+        causes = tuple(
+            (
+                _SHRINK_CAUSE[rule],
+                now
+                + (
+                    INCIDENT_COOLDOWN_SECONDS
+                    if rule is LimitRule.MEM_HARD or (rule is LimitRule.DOWNSTREAM and downstream_incident)
+                    else SHRINK_COOLDOWN_SECONDS
+                ),
+            )
+            for rule in fired
+        )
+        return shrink_to, _with_rule(
+            next_state, binding, now, limit=shrink_to, ceiling=ceiling, causes=causes,
+            services=_feedback_services(downstream) if downstream_shrink and downstream else None,
+        )
 
     if pressure is None:
         # Cannot prove there is memory headroom to grow into — freeze.
         # (The CPU brake above still applies independently of this branch.)
-        return current, replace(state, healthy_streak=0)
+        return current, _with_rule(
+            replace(state, healthy_streak=0), LimitRule.PRESSURE_UNKNOWN, now, limit=current, ceiling=ceiling
+        )
 
     # Every tier grows up to MEM_SOFT. GROW_BAND (default 0) is an optional
     # extra margin on heavy only. The cheap count pools (light, index) also
@@ -978,11 +1252,12 @@ def _next_pool_limit(
         DEMAND_UTILISATION_THRESHOLD if cpu_bound else LIGHT_DEMAND_UTILISATION_THRESHOLD
     )
     downstream_hold = _is_index_pool(pool) and (downstream_holdoff > 0 or _latency_hold(state))
+    grow_hold = downstream_hold or yield_holdoff > 0
     if pressure < grow_threshold and not cooling_down:
         healthy_streak = state.healthy_streak + 1
         if (
             healthy_streak >= confirm_samples
-            and not downstream_hold
+            and not grow_hold
             and demand.has_demand(current, interval, threshold=demand_threshold)
         ):
             next_state = replace(state, healthy_streak=healthy_streak)
@@ -990,12 +1265,35 @@ def _next_pool_limit(
             if grow_step <= 0:
                 # Large resource impact from the last grow — hold this
                 # round without abandoning slow start.
-                return current, grow_state
-            return min(target, current + grow_step), _record_grow(grow_state, snap)
-        return current, replace(state, healthy_streak=healthy_streak)
+                return current, _with_rule(grow_state, LimitRule.RESOURCE_DELTA, now, limit=current, ceiling=ceiling)
+            wanted = current + grow_step
+            grown = min(target, wanted)
+            # A grow that free memory clips short of the ceiling is a memory hold, not growth.
+            clipped = wanted > target and target < ceiling
+            return grown, _with_rule(
+                _record_grow(grow_state, snap), LimitRule.MEM_TARGET if clipped else LimitRule.GROW,
+                now, limit=grown, ceiling=ceiling,
+            )
+        if healthy_streak < confirm_samples:
+            held = LimitRule.CONFIRMING
+        elif downstream_hold:
+            held = LimitRule.DOWNSTREAM_HOLDOFF if downstream_holdoff > 0 else LimitRule.LATENCY_HOLD
+        elif yield_holdoff > 0:
+            held = LimitRule.YIELD_HOLDOFF
+        else:
+            held = LimitRule.NO_DEMAND
+        return current, _with_rule(
+            replace(state, healthy_streak=healthy_streak), held, now, limit=current, ceiling=ceiling
+        )
 
     # Pressure is fine but not yet confirmed-healthy, or still cooling down.
-    return current, replace(state, healthy_streak=0 if cooling_down else state.healthy_streak)
+    return current, _with_rule(
+        replace(state, healthy_streak=0 if cooling_down else state.healthy_streak),
+        LimitRule.COOLDOWN if cooling_down else LimitRule.GROW_BAND,
+        now,
+        limit=current,
+        ceiling=ceiling,
+    )
 
 
 def next_limits(
@@ -1008,12 +1306,19 @@ def next_limits(
     interval: float = SAMPLE_INTERVAL_SECONDS,
     feedback: FeedbackWindow | None = None,
     worker_count: int = 1,
+    heavy_working_set_gb: float | None = None,
+    *,
+    host_yield: bool = False,
 ) -> tuple[Limits, ControllerState]:
     """Advance every pool's limit by at most one step toward its target.
 
     ``feedback`` is what downstream services reported since the last sample
     (``DownstreamFeedback.drain``); it only ever shrinks or holds the index
-    pools. ``worker_count`` is how many processes share the cgroup's free
+    pools. ``host_yield`` says code sandbox runs are waiting for memory this
+    container shares: heavy parse and the index pools shrink toward their
+    pressure floor and hold growth for a while after it clears (heavy parse
+    longer each time the yield soon comes back).
+    ``worker_count`` is how many processes share the cgroup's free
     memory, and ``ceilings`` must be one process's share of the budget. Pure
     and deterministic given its inputs — the caller supplies ``now`` and the
     sampled ``demand`` so this can be exercised in tests without a clock or
@@ -1025,7 +1330,8 @@ def next_limits(
         pool_demand = demand.get(pool, PoolDemand.empty())
         new_limit, new_state = _next_pool_limit(
             pool, current.get(pool), snap, ceilings, state.get(pool), pool_demand, now, interval,
-            feedback=feedback, worker_count=worker_count,
+            feedback=feedback, worker_count=worker_count, heavy_working_set_gb=heavy_working_set_gb,
+            host_yield=host_yield,
         )
         new_values[pool] = new_limit
         new_states[pool] = new_state

@@ -3,8 +3,8 @@ from copy import deepcopy
 from enum import Enum
 from typing import Any
 
+from app.config import file_types
 from app.config.constants.arangodb import (
-    EXCLUDABLE_FILE_EXTENSIONS,
     ExtensionTypes,
     PermissionModel,
 )
@@ -812,10 +812,14 @@ class CommonFields:
         )
 
     @staticmethod
-    def folder_paths_filter(container: str = "bucket") -> FilterField:
+    def folder_paths_filter(
+        container: str = "bucket", *, path_style: str | None = None, wildcards: bool = False,
+    ) -> FilterField:
         """Folders inside a bucket, container or share to sync (typed paths).
 
         Empty syncs everything, as before. See FolderScope for the matching rules.
+        ``path_style`` is "windows" for a file share (``\\`` separates folders,
+        case does not matter) and "posix" or None for an object store.
         """
         return FilterField(
             name=SyncFilterKey.FOLDER_PATHS.value,
@@ -827,9 +831,16 @@ class CommonFields:
                 "Press Enter after each folder; names may contain spaces. "
                 "Include syncs only these folders; Exclude syncs everything except them. "
                 f"Leave empty to sync the whole {container}."
+                + (
+                    " In a folder name * matches any characters and ? one character; a ** folder"
+                    " matches any number of folders, as in customer/*/quotes or **/quotes."
+                    if wildcards else ""
+                )
             ),
             default_operator=ListOperator.IN.value,
             option_source_type=OptionSourceType.MANUAL,
+            path_style=path_style,
+            wildcards=wildcards,
         )
 
     @staticmethod
@@ -839,6 +850,8 @@ class CommonFields:
         options_endpoint: str | None = None,
         extensions: list[ExtensionTypes] | None = None,
         labels: dict[str, str] | None = None,
+        *,
+        repository: bool = False,
     ) -> FilterField:
         """
         Standard file extension filter (static multiselect).
@@ -847,6 +860,7 @@ class CommonFields:
         ``labels`` replaces an option's ".ext" label. Without ``extensions`` every
         indexable type is offered, followed by common types that cannot be indexed
         (archives, databases, executables, temporary files, logs) so they can be excluded.
+        ``repository`` also offers the repository sources read as text (.vue, .tf, ...).
 
         Note: options_endpoint is reserved for a future dynamic-options implementation.
         """
@@ -863,12 +877,8 @@ class CommonFields:
             options=[
                 FilterOption(id=ext, label=(labels or {}).get(ext, f".{ext}"))
                 for ext in (
-                    [ext.value for ext in extensions]
-                    if extensions
-                    else [
-                        *(ext.value for ext in ExtensionTypes),
-                        *EXCLUDABLE_FILE_EXTENSIONS,
-                    ]
+                    [ext.value for ext in extensions] if extensions
+                    else file_types.filter_option_ids(repository=repository)
                 )
             ]
         )

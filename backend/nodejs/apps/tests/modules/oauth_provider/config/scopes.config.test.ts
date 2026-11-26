@@ -25,10 +25,13 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     expect(result.invalid).to.include('not-a-real-scope')
   })
 
-  // pipeshub_directory lists groups through GET /userGroups, which requires
-  // usergroup:read; without it in MCP_SCOPES that call always returns 403.
-  it('DefaultMcpScopes covers group listing and grants nothing admin-only', () => {
+  // No /mcp tool lists user groups, so discovery does not ask for
+  // usergroup:read. The cap keeps it, so a client registered with it is not
+  // refused when it asks again, and its tokens keep working.
+  it('DefaultMcpScopes keeps usergroup:read and grants nothing admin-only, though discovery leaves it out', () => {
     expect(DefaultMcpScopes).to.include('usergroup:read')
+    expect(McpToolScopes).to.not.include('usergroup:read')
+    expect(mcpDiscoveryScopes(DefaultMcpScopes)).to.not.include('usergroup:read')
     expect(DefaultMcpScopes.filter((s) => AdminOnlyScopes.has(s))).to.deep.equal([])
     expect(DefaultMcpScopes.every((s) => isValidScope(s))).to.be.true
   })
@@ -48,8 +51,17 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
   it('the agent preset can create and upload, not delete, and stays inside MCP_SCOPES', () => {
     expect(AgentMcpScopes).to.include.members(['kb:write', 'kb:upload'])
     expect(AgentMcpScopes).to.not.include('kb:delete')
-    expect(DefaultMcpScopes).to.include.members([...AgentMcpScopes])
+    // code:write is the one opt-in scope in the preset; Dynamic Client Registration cuts the preset to MCP_SCOPES instead of failing on it.
+    expect(DefaultMcpScopes).to.include.members(AgentMcpScopes.filter((s) => s !== 'code:write'))
     expect(getAllowedScopeNamesForRole(false)).to.include.members(['kb:write', 'kb:upload'])
+  })
+
+  it('the agent preset can add a web source: create a connector and start its sync, not delete it', () => {
+    const webSource = ['connector:write', 'connector:sync']
+    expect(AgentMcpScopes).to.include.members(webSource)
+    expect(AgentMcpScopes).to.not.include('connector:delete')
+    expect(McpToolScopes).to.include.members(webSource)
+    expect(getAllowedScopeNamesForRole(false)).to.include.members(webSource)
   })
 
   // The first-run script mints the agent token with its own copy of the
@@ -61,7 +73,38 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     )
     const line = script.split('\n').find((l) => l.startsWith('AGENT_SCOPES=')) ?? ''
     const minted = JSON.parse(line.slice(line.indexOf("'") + 1, line.lastIndexOf("'")))
-    expect([...minted].sort()).to.deep.equal([...AgentMcpScopes].sort())
+    // code:write (pushing a local repository) is opt-in: a token minted here must work under the stock MCP_SCOPES, which lack it.
+    expect([...minted].sort()).to.deep.equal(AgentMcpScopes.filter((s) => s !== 'code:write').sort())
+  })
+
+  // Operators copy this list when they mint the token by hand.
+  it('BOOTSTRAP.md lists exactly the agent preset', () => {
+    const doc = readFileSync(
+      resolve(process.cwd(), '../../../deployment/docker-compose/BOOTSTRAP.md'),
+      'utf8',
+    )
+    const listed = doc.split('PAT scopes the script mints')[1]?.split('```')[1] ?? ''
+    expect(listed.trim().split('\n').sort()).to.deep.equal(AgentMcpScopes.filter((s) => s !== 'code:write').sort())
+  })
+
+  // Pushing a repository to be indexed is opt-in: it is neither in a new token's default scopes nor in the stock MCP_SCOPES. Only the CLI's
+  // first-party device app (the agent preset, cut to MCP_SCOPES) asks for it.
+  it('code:write is in no default: not DefaultMcpScopes, not the stock MCP_SCOPES, not the compose defaults', () => {
+    expect(DefaultMcpScopes).to.not.include('code:write')
+    expect(AgentMcpScopes).to.include('code:write')
+    const stock = (readFileSync(resolve(process.cwd(), '../../env.template'), 'utf8').split('\n').find((l) => l.startsWith('MCP_SCOPES=')) ?? '')
+    expect(stock).to.not.contain('code:write')
+    const compose = readFileSync(resolve(process.cwd(), '../../../deployment/docker-compose/docker-compose.yml'), 'utf8')
+    expect(compose.split('\n').filter((l) => l.includes('MCP_SCOPES=')).join('')).to.not.contain('code:write')
+  })
+
+  // Opt-in for the presets, but not admin-only: a pushed repository becomes the pusher's own personal connector, which a
+  // member's session can already create, and the device login app (one for every user, cut to what a member may hold)
+  // would lose code:write for everyone, admins included, if it were admin-only.
+  it('code:write is a scope a member may register on an app and the device login app may carry', () => {
+    expect(AdminOnlyScopes.has('code:write')).to.equal(false)
+    expect(getAllowedScopeNamesForRole(false)).to.include('code:write')
+    expect(getAllowedScopeNamesForRole(true)).to.include('code:write')
   })
 
   // MCP clients request every scope discovery lists, so it lists only what
@@ -81,11 +124,16 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     for (const list of [stock, DefaultMcpScopes]) {
       expect(mcpDiscoveryScopes(list)).to.have.members([...McpToolScopes])
     }
+    // Project scopes cap personal access tokens and OAuth apps; no MCP tool calls a project route, or lists user groups.
     expect(stock.filter((s) => !mcpDiscoveryScopes(stock).includes(s))).to.have.members([
       'openid',
       'profile',
       'email',
       'conversation:write',
+      'usergroup:read',
+      'project:read',
+      'project:write',
+      'project:delete',
     ])
     expect(McpToolScopes.filter((s) => AdminOnlyScopes.has(s))).to.deep.equal([])
   })
@@ -100,7 +148,7 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
   it('getAllScopesGroupedByCategory returns every category bucket', () => {
     const grouped = getAllScopesGroupedByCategory()
     expect(Object.keys(grouped).length).to.be.greaterThan(5)
-    expect(grouped.Identity.some((s) => s.name === 'openid')).to.be.true
+    expect(grouped.Identity!.some((s) => s.name === 'openid')).to.be.true
   })
 
   it('isValidScope and getScopeDefinition', () => {

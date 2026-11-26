@@ -4,14 +4,15 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import {
-  PdfLoader,
   PdfHighlighter,
   Highlight,
   AreaHighlight,
   Popup,
 } from 'react-pdf-highlighter';
 import type { IHighlight } from 'react-pdf-highlighter';
+import { OwnedPdfLoader } from './owned-pdf-loader';
 import type { PDFRendererProps, PreviewCitation } from '../types';
+import { RECORD_RANGE_LOADER_OPTIONS } from '@/lib/record-content/range-options';
 
 // Constants matching the demo (scaled "paper" space for citation rects)
 const PDF_PAGE_WIDTH = 967;
@@ -21,18 +22,22 @@ const SCROLL_DELAY_MS = 300;
 const NO_HIGHLIGHTS: IHighlight[] = [];
 const NAVIGATION_SETTLE_MS = 500;
 
-// PdfLoader passes its props straight to pdf.js getDocument(), but its prop
+// OwnedPdfLoader passes its props straight to pdf.js getDocument(), but its prop
 // types omit this option, hence the spread. Turning eval off stops a crafted
 // PDF font from running script in the page.
 const PDF_LOADER_SAFE_OPTIONS = { isEvalSupported: false };
 
 // The worker ships with the app. PdfLoader's default is a CDN copy of another pdf.js
 // version, which pdf.js refuses, the CSP's worker-src blocks, and an offline install can't reach.
+// PdfLoader only loads when it has a url, and pdf.js ignores the url once it has a range transport.
+const RANGE_MODE_URL = 'record-range:';
+
 const PDF_WORKER_SRC = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
 type PdfJsViewer = {
   currentPageNumber: number;
   currentScaleValue: string;
+  currentScale?: number;
   pagesCount?: number;
   container?: HTMLElement;
 };
@@ -145,6 +150,7 @@ function citationToHighlight(citation: PreviewCitation): IHighlight | null {
 export function PDFRenderer({
   fileUrl,
   fileName,
+  rangeTransport,
   pagination,
   citations,
   activeCitationId,
@@ -174,6 +180,7 @@ export function PDFRenderer({
   // Holds a citation highlight to scroll to once the viewer becomes ready.
   const pendingCitationScroll = useRef<IHighlight | null>(null);
   const navigatingTimeoutRef = useRef<number | null>(null);
+  const pendingScrollTimeoutRef = useRef<number | null>(null);
 
   const clearNavigatingSoon = useCallback(() => {
     if (navigatingTimeoutRef.current !== null) {
@@ -189,6 +196,9 @@ export function PDFRenderer({
     () => () => {
       if (navigatingTimeoutRef.current !== null) {
         window.clearTimeout(navigatingTimeoutRef.current);
+      }
+      if (pendingScrollTimeoutRef.current !== null) {
+        window.clearTimeout(pendingScrollTimeoutRef.current);
       }
     },
     [],
@@ -362,9 +372,15 @@ export function PDFRenderer({
   useEffect(() => {
     lastReportedPage.current = 0;
     isViewerReady.current = false;
+    // A citation scroll parked or scheduled for the previous document must not move this one.
+    pendingCitationScroll.current = null;
+    if (pendingScrollTimeoutRef.current !== null) {
+      window.clearTimeout(pendingScrollTimeoutRef.current);
+      pendingScrollTimeoutRef.current = null;
+    }
     setViewerReady(false);
     setViewerReadyEpoch((n) => n + 1);
-  }, [fileUrl]);
+  }, [fileUrl, rangeTransport]);
 
   // When toolbar prev/next (or any host-driven page change) updates `currentPage`,
   // use pdf.js `currentPageNumber` so navigation works for pages that are not yet
@@ -396,7 +412,12 @@ export function PDFRenderer({
 
   // react-pdf-highlighter only applies `pdfScaleValue` on `pagesinit`; re-apply when
   // scale (or a new document) changes once the global pdf.js viewer is present.
-  const scale = pagination?.scale ?? 1;
+  // No scale yet (the person has not zoomed): fit the page to the panel, never above 100 %,
+  // so a phone shows the whole slide and a page that already fits stays as it was.
+  // shortcut: react-pdf-highlighter re-applies `page-width` on resize without the 100 % cap; cap it there if a wide panel complains.
+  const scale = pagination?.scale;
+  const scaleValue = scale === undefined ? 'page-width' : String(scale);
+  const onScaleChange = pagination?.onScaleChange;
   useEffect(() => {
     const viewer = getPdfJsViewer();
     if (!viewer) return;
@@ -408,20 +429,27 @@ export function PDFRenderer({
       if (!isLaidOut) return;
     }
     try {
-      viewer.currentScaleValue = String(scale);
+      viewer.currentScaleValue = scaleValue;
+      if (scale === undefined && typeof viewer.currentScale === 'number') {
+        if (viewer.currentScale > 1) viewer.currentScaleValue = '1';
+        onScaleChange?.(Math.round(viewer.currentScale * 100) / 100);
+      }
     } catch {
       // Ignore transient pdf.js layout errors while the viewer is mounting/unmounting.
     }
-  }, [scale, fileUrl, getPdfJsViewer]);
+  }, [scale, scaleValue, fileUrl, rangeTransport, viewerReadyEpoch, onScaleChange, getPdfJsViewer]);
 
   // Scroll to a citation when activeCitationId changes or when highlights load.
   // If the viewer isn't ready yet (PDF still loading), park the scroll in
   // pendingCitationScroll and execute it from the scrollRef callback below.
   useEffect(() => {
-    if (!activeCitationId || highlights.length === 0) return;
-
-    const targetHighlight = highlights.find((h) => h.id === activeCitationId);
-    if (!targetHighlight) return;
+    const targetHighlight = activeCitationId
+      ? highlights.find((h) => h.id === activeCitationId)
+      : undefined;
+    if (!targetHighlight) {
+      pendingCitationScroll.current = null;
+      return;
+    }
 
     if (!isViewerReady.current) {
       // Defer: execute once viewer signals ready via scrollRef
@@ -434,7 +462,8 @@ export function PDFRenderer({
     }, SCROLL_DELAY_MS);
 
     return () => clearTimeout(timer);
-  }, [activeCitationId, highlights, navigateToHighlightSafely]);
+    // fileUrl: a new document re-parks its own matching citation after the reset above.
+  }, [fileUrl, rangeTransport, activeCitationId, highlights, navigateToHighlightSafely]);
 
   // Detect page count for pagination
   const handleDocumentLoaded = useCallback(
@@ -444,7 +473,7 @@ export function PDFRenderer({
     [pagination],
   );
 
-  if (!fileUrl) {
+  if (!fileUrl && !rangeTransport) {
     return (
       <Flex
         align="center"
@@ -457,7 +486,7 @@ export function PDFRenderer({
           padding: 'var(--space-5)',
         }}
       >
-        <MaterialIcon name="description" size={48} color="var(--olive-9)" />
+        <MaterialIcon name="description" size={48} color="var(--olive-11)" />
         <Text size="2" color="gray" align="center">
           PDF file URL not available
         </Text>
@@ -479,10 +508,13 @@ export function PDFRenderer({
         overflow: 'hidden',
       }}
     >
-      <PdfLoader
-        url={fileUrl}
+      <OwnedPdfLoader
+        url={rangeTransport ? RANGE_MODE_URL : fileUrl}
         workerSrc={PDF_WORKER_SRC}
         {...PDF_LOADER_SAFE_OPTIONS}
+        {...(rangeTransport
+          ? { range: rangeTransport, length: rangeTransport.length, ...RECORD_RANGE_LOADER_OPTIONS }
+          : {})}
         beforeLoad={
           <Flex
             align="center"
@@ -510,7 +542,7 @@ export function PDFRenderer({
               padding: 'var(--space-5)',
             }}
           >
-            <MaterialIcon name="error_outline" size={48} color="var(--olive-9)" />
+            <MaterialIcon name="error_outline" size={48} color="var(--olive-11)" />
             <Text size="2" color="gray" align="center">
               Failed to load PDF file
             </Text>
@@ -543,12 +575,16 @@ export function PDFRenderer({
                 if (pendingCitationScroll.current) {
                   const highlight = pendingCitationScroll.current;
                   pendingCitationScroll.current = null;
-                  setTimeout(() => {
+                  if (pendingScrollTimeoutRef.current !== null) {
+                    window.clearTimeout(pendingScrollTimeoutRef.current);
+                  }
+                  pendingScrollTimeoutRef.current = window.setTimeout(() => {
+                    pendingScrollTimeoutRef.current = null;
                     navigateToHighlightSafely(scrollTo, highlight);
                   }, 100);
                 }
               }}
-              pdfScaleValue={String(pagination?.scale ?? 1)}
+              pdfScaleValue={scaleValue}
               onSelectionFinished={() => null}
               highlightTransform={(
                 highlight,
@@ -602,7 +638,7 @@ export function PDFRenderer({
             />
           </>
         )}
-      </PdfLoader>
+      </OwnedPdfLoader>
     </Box>
   );
 }

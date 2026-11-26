@@ -243,6 +243,7 @@ class SyncFilterKey(str, Enum):
     GROUP_IDS = "group_ids"
     ORG_IDS = "org_ids"
     REPO_IDS = "repo_ids"
+    KNOWLEDGE_BASES = "knowledge_bases"
     # Code repositories: gitignore-style paths whose files get no record
     EXCLUDE_PATHS = "exclude_paths"
     # Code repositories: the branch whose files are synced; unset = default branch
@@ -262,6 +263,16 @@ class SyncFilterKey(str, Enum):
     CREATED_BY = "created_by"
     USERS = "users"
     GROUPS = "groups"
+
+    # SQL Connectors
+    TABLES = "tables"
+    SCHEMAS = "schemas"
+    DATABASES = "databases"
+    VIEWS = "views"
+    STAGES = "stages"
+    FILES = "files"
+    MAX_ROWS_PER_TABLE = "max_rows_per_table"
+    DERIVE_CONSTRAINTS = "derive_constraints"
 
 
 class IndexingFilterKey(str, Enum):
@@ -419,6 +430,11 @@ class FilterField:
     option_source_type: OptionSourceType = OptionSourceType.MANUAL
     allowed_operators: list[str] | None = None
     fallback_operator: str | None = None
+    # Folder paths only: "posix" (object stores; names as stored) or "windows"
+    # (file shares; `\` separates folders and case does not matter).
+    path_style: str | None = None
+    # Folder paths only: the connector reads `*`, `?` and `**` in them.
+    wildcards: bool = False
     def __post_init__(self) -> None:
         """Validate configuration"""
 
@@ -519,6 +535,12 @@ class FilterField:
 
         if self.fallback_operator is not None:
             schema["fallbackOperator"] = self.fallback_operator
+
+        if self.path_style is not None:
+            schema["pathStyle"] = self.path_style
+
+        if self.wildcards:
+            schema["folderWildcards"] = True
 
         return schema
 

@@ -3,14 +3,15 @@
 import React, { useMemo } from 'react';
 import { lower } from '@/lib/utils/safe';
 import { useTranslation } from 'react-i18next';
-import { Box, Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
+import { Box, Flex, Grid, Heading, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { Connector } from '../types';
 import { ConnectorCard } from './connector-card';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 
 // ========================================
 // Types
@@ -62,6 +63,8 @@ interface ConnectorCatalogLayoutProps {
   extraTabCounts?: Record<string, number>;
   /** Custom content for a tab, replacing the default connector card grid. */
   tabContent?: React.ReactNode;
+  /** Optional content under the connector grid (e.g. an Enterprise Edition notice). */
+  footer?: React.ReactNode;
 }
 
 // ========================================
@@ -87,6 +90,7 @@ export function ConnectorCatalogLayout({
   setupPermissionDenied = false,
   onCardClick,
   isLoading = false,
+  footer,
   extraTabCounts,
   tabContent,
 }: ConnectorCatalogLayoutProps) {
@@ -198,7 +202,7 @@ export function ConnectorCatalogLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
         paddingBottom: 64,
         paddingInline: pagePaddingX(100),
         overflowY: 'auto',
@@ -229,7 +233,7 @@ export function ConnectorCatalogLayout({
             style={{ width: '100%' }}
           >
             <TextField.Slot>
-              <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+              <MaterialIcon name="search" size={16} color="var(--gray-11)" />
             </TextField.Slot>
           </TextField.Root>
         </Box>
@@ -241,18 +245,12 @@ export function ConnectorCatalogLayout({
       <Flex align="center" justify="between" wrap="wrap" gap="3" style={{ width: '100%' }}>
         {/* Phones: scroll the tab row sideways instead of pushing it off-screen */}
         <Box className="no-scrollbar tab-scroll-fade" style={{ maxWidth: '100%', overflowX: 'auto' }}>
-          <SegmentedControl.Root
+          <SegmentedTabs
             value={activeTab}
             onValueChange={(value) => onTabChange(value)}
-            size="2"
+            items={tabs.map((tab) => ({ value: tab.value, label: `${tab.label} (${tabCounts[tab.value] ?? 0})` }))}
             style={{ minWidth: 'max-content' }}
-          >
-            {tabs.map((tab) => (
-              <SegmentedControl.Item key={tab.value} value={tab.value}>
-                {tab.label} ({tabCounts[tab.value] ?? 0})
-              </SegmentedControl.Item>
-            ))}
-          </SegmentedControl.Root>
+          />
         </Box>
         {!isMobile && trailingAction}
       </Flex>
@@ -274,7 +272,7 @@ export function ConnectorCatalogLayout({
           gap="2"
           style={{ width: '100%', paddingTop: 80 }}
         >
-          <MaterialIcon name="hub" size={48} color="var(--gray-9)" />
+          <MaterialIcon name="hub" size={48} color="var(--gray-11)" />
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.connectors.emptyState')}
           </Text>
@@ -300,6 +298,7 @@ export function ConnectorCatalogLayout({
           ))}
         </Grid>
       )}
+      {footer}
     </Flex>
   );
 }

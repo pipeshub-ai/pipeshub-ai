@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -50,6 +51,9 @@ class RecordFacts:
     # PARSER_VERSION the blob was parsed under. A blob stored before the stamp
     # existed reads as current: until 2026.10.19 nothing told them apart.
     facts_version: str = PARSER_VERSION
+    # A JSON file's parse as dot-path -> value (`compilerOptions.baseUrl` -> `.`): how a
+    # tsconfig's settings reach the build. Empty for code.
+    structured_fields: dict[str, str] = field(default_factory=dict)
 
 
 class CodeFactsSource(Protocol):
@@ -76,6 +80,7 @@ def facts_from_blob_record(record_id: str, record: dict[str, Any]) -> RecordFact
     items = [*(container.get("block_groups") or []), *(container.get("blocks") or [])]
     if items and not any(_code_metadata(item) for item in items):
         out.recognised = False
+        out.structured_fields = _structured_fields(container.get("blocks") or [])
         return out
     for group in container.get("block_groups") or []:
         meta = _code_metadata(group)
@@ -93,6 +98,26 @@ def facts_from_blob_record(record_id: str, record: dict[str, Any]) -> RecordFact
 def _code_metadata(item: object) -> dict[str, Any]:
     meta = item.get("code_metadata") if isinstance(item, dict) else None
     return meta if isinstance(meta, dict) else {}
+
+
+def _structured_fields(blocks: list) -> dict[str, str]:
+    """The JSON parser's flat-field text (`flatten_to_text`: "a.b: 1, c: x, y") read back into fields.
+
+    A key is a run without spaces, colons or commas followed by ": ".
+    shortcut: a value holding ", k: " splits there; such strings do not occur in a tsconfig's settings.
+    """
+    fields: dict[str, str] = {}
+    for block in blocks:
+        text = block.get("data") if isinstance(block, dict) and block.get("format") == "json" else None
+        if not isinstance(text, str):
+            continue
+        keys = list(_FIELD_KEY.finditer(text))
+        for key, nxt in zip(keys, [*keys[1:], None]):
+            fields[key.group(1)] = text[key.end():nxt.start() if nxt else len(text)]
+    return fields
+
+
+_FIELD_KEY = re.compile(r"(?:^|, )([^\s:,]+): ")
 
 
 def _take(out: RecordFacts, block_key: str, meta: dict[str, Any]) -> None:

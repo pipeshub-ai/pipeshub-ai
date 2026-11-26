@@ -17,10 +17,16 @@ from zammad_behaviour_fakes import (
     FakeZammad,
     epoch_ms,
     iso,
+    run_full_sync,
 )
 
 from app.connectors.sources.zammad import connector as zammad_connector
-from app.connectors.sources.zammad.connector import MIN_SPLIT_WINDOW_MS, ZammadConnector
+from app.connectors.sources.zammad.connector import (
+    FILTER_CLEANUP_SYNC_POINT_KEY,
+    MIN_SPLIT_WINDOW_MS,
+    ZammadConnector,
+    ZammadSyncIncompleteError,
+)
 
 CONNECTOR_ID = "zm-1"
 NOW = epoch_ms(30)
@@ -52,11 +58,23 @@ class World:
     async def sync(self) -> None:
         await self.connector.run_sync()
 
-    async def save_filters(self, values: dict) -> None:
-        """Saving filters clears the sync points and the next sync is a full one."""
+    async def sync_incomplete(self) -> list[str]:
+        """A sync that could not read or remove every part: it writes the rest, then ends as failed."""
+        with pytest.raises(ZammadSyncIncompleteError) as raised:
+            await self.connector.run_sync()
+        return raised.value.parts
+
+    async def save_filters(self, values: dict, *, incomplete: bool = False) -> list[str]:
+        """Saving filters clears the sync points and the next sync is a full one.
+
+        Returns the parts the sync could not finish, which ``incomplete`` says to expect.
+        """
         self.config.sync_filters = values
         self.store.clear()
+        if incomplete:
+            return await self.sync_incomplete()
         await self.sync()
+        return []
 
 
 def _clock(monkeypatch: pytest.MonkeyPatch, now: int) -> None:
@@ -117,7 +135,9 @@ async def test_a_failed_listing_removes_nothing_and_the_next_sync_catches_up(wor
     world.zammad.delete_ticket(11)
     world.zammad.fail_search = lambda query: "updated_at" not in query  # only the id listing fails
 
-    await world.sync()
+    assert await world.sync_incomplete() == [
+        "the check for deleted tickets of group 'Support'", "the check for deleted tickets of group 'Sales'",
+    ]
     assert world.db.deleted == []
 
     world.zammad.fail_search = lambda _query: False
@@ -129,7 +149,7 @@ async def test_a_ticket_zammad_cannot_read_back_is_kept(world: World) -> None:
     world.zammad.delete_ticket(11)
     world.zammad.ticket_read_status[11] = 503
 
-    await world.sync()
+    assert await world.sync_incomplete() == ["the check for deleted tickets of group 'Support'"]
 
     assert "11" in world.db.external_ids()
     assert world.db.deleted == []
@@ -139,7 +159,7 @@ async def test_a_failed_delete_keeps_the_ticket_so_the_next_sync_retries(world: 
     world.zammad.delete_ticket(11)
     world.db.fail_delete_for.add("11_1_1")
 
-    await world.sync()
+    await world.sync_incomplete()
     assert {"11", "11_1_1"} <= world.db.external_ids()
 
     world.db.fail_delete_for.clear()
@@ -162,7 +182,7 @@ async def test_a_group_the_filter_now_excludes_loses_its_tickets(world: World) -
 async def test_a_failed_group_listing_removes_nothing(world: World) -> None:
     world.zammad.fail_list_groups = True
 
-    await world.save_filters({"group_ids": {"operator": "not_in", "value": ["2"], "type": "list"}})
+    await world.save_filters({"group_ids": {"operator": "not_in", "value": ["2"], "type": "list"}}, incomplete=True)
 
     assert world.db.deleted == []
 
@@ -201,7 +221,7 @@ def _checkpoint(world: World, group_name: str) -> object:
 async def test_a_read_back_that_fails_once_is_repeated_and_the_ticket_goes_on_the_next_sync(world: World) -> None:
     world.zammad.delete_ticket(11)
     world.zammad.ticket_read_status[11] = 503
-    await world.sync()
+    await world.sync_incomplete()
     assert "11" in world.db.external_ids()
 
     del world.zammad.ticket_read_status[11]
@@ -217,7 +237,7 @@ async def test_a_failed_search_page_keeps_the_group_checkpoint_until_a_sync_read
         world.zammad.add_ticket(ticket_id, 1, day=9, minute=ticket_id)
     world.zammad.fail_search_at_offset = 50
 
-    await world.sync()
+    assert await world.sync_incomplete() == ["the tickets of group 'Support'"]
     assert "599" in world.db.external_ids()
     assert _checkpoint(world, "Support") == before
 
@@ -233,7 +253,7 @@ async def test_a_ticket_whose_articles_fail_keeps_the_checkpoint_and_is_read_aga
     world.zammad.add_ticket(13, 1, day=10)
     world.zammad.fail_articles_for.add(12)
 
-    await world.sync()
+    await world.sync_incomplete()
     # The other ticket lands, but the group's checkpoint stays behind the one that failed.
     assert "13" in world.db.external_ids()
     assert "12" not in world.db.external_ids()
@@ -289,7 +309,7 @@ async def test_a_failed_id_range_keeps_its_tickets_and_still_removes_elsewhere(
     world.zammad.delete_ticket(299)
     world.zammad.fail_search = lambda query: "TO 299]" in query
 
-    await world.sync()
+    await world.sync_incomplete()
 
     assert "11" not in world.db.external_ids()
     assert "299" in world.db.external_ids()
@@ -308,7 +328,7 @@ async def test_a_ticket_moved_out_of_an_excluded_group_is_moved_not_removed(worl
 
 async def test_an_excluded_group_ticket_that_cannot_be_read_back_is_retried(world: World) -> None:
     world.zammad.ticket_read_status[20] = 503
-    await world.save_filters({"group_ids": {"operator": "not_in", "value": ["2"], "type": "list"}})
+    await world.save_filters({"group_ids": {"operator": "not_in", "value": ["2"], "type": "list"}}, incomplete=True)
     assert "20" in world.db.external_ids()
 
     del world.zammad.ticket_read_status[20]
@@ -357,7 +377,7 @@ async def test_a_burst_read_that_fails_part_way_carries_on_from_the_id_it_reache
     world.zammad.add_ticket(1200, 1, day=6)
     world.zammad.fail_search = lambda query: "id:[1100 TO 1109]" in query
 
-    await world.save_filters({})
+    await world.save_filters({}, incomplete=True)
     assert all(str(t) in world.db.external_ids() for t in range(1000, 1100))
     assert "1120" not in world.db.external_ids() and "1200" not in world.db.external_ids()
     assert _group_point(world, "Support").get("burst_next_id") == 1100
@@ -390,7 +410,7 @@ async def test_a_burst_resumed_beside_a_window_edge_in_its_own_second_is_not_rea
 
     await world.save_filters({"modified": {
         "operator": "is_after", "value": {"start": edge - MIN_SPLIT_WINDOW_MS, "end": None}, "type": "datetime",
-    }})
+    }}, incomplete=True)
     assert all(str(t) in world.db.external_ids() for t in range(1000, 1100))
     assert "1120" not in world.db.external_ids() and "1200" not in world.db.external_ids()
     assert _group_point(world, "Support").get("burst_next_id") == 1100
@@ -423,7 +443,7 @@ async def test_a_burst_on_a_modified_before_filter_that_a_window_edge_lands_on_i
 
     await world.save_filters({"modified": {
         "operator": "is_between", "value": {"start": edge - MIN_SPLIT_WINDOW_MS, "end": edge}, "type": "datetime",
-    }})
+    }}, incomplete=True)
     assert _group_point(world, "Support").get("burst_next_id") == 1100
 
     world.zammad.fail_search = lambda _query: False
@@ -456,7 +476,7 @@ async def test_a_burst_in_the_current_second_of_a_narrow_window_is_resumed_not_r
 
     await world.save_filters({"modified": {
         "operator": "is_after", "value": {"start": burst_at - 30_000, "end": None}, "type": "datetime",
-    }})
+    }}, incomplete=True)
     assert _group_point(world, "Support").get("burst_next_id") == 1100
 
     world.zammad.fail_search = lambda _query: False
@@ -506,7 +526,7 @@ async def test_a_failed_window_probe_keeps_the_group_checkpoint(
         world.zammad.add_ticket(ticket_id, 1, day=4, minute=2 * ticket_id)
     world.zammad.fail_search_at_offset = 299
 
-    await world.sync()
+    await world.sync_incomplete()
     assert _checkpoint(world, "Support") == before
 
     world.zammad.fail_search_at_offset = None
@@ -521,8 +541,8 @@ async def test_a_ticket_that_never_reads_holds_the_checkpoint_for_three_syncs_th
     world.zammad.add_ticket(13, 1, day=10)
     world.zammad.fail_articles_for.add(12)
 
-    await world.sync()
-    await world.sync()
+    await world.sync_incomplete()
+    await world.sync_incomplete()
     assert _checkpoint(world, "Support") == before
     assert _group_point(world, "Support")["read_failure_counts"] == [2]
 
@@ -547,7 +567,7 @@ async def test_a_failed_ticket_in_another_window_does_not_stop_a_burst_read_by_i
     for ticket_id in range(1000, 1150):
         world.zammad.add_ticket(ticket_id, 1, day=5)
 
-    await world.save_filters({})
+    await world.save_filters({}, incomplete=True)
 
     assert all(str(t) in world.db.external_ids() for t in range(1000, 1150))
     assert "12" not in world.db.external_ids()
@@ -638,7 +658,7 @@ async def test_a_failed_full_listing_is_tried_again_on_the_next_sync(
     world.zammad.delete_ticket(11)
     world.zammad.fail_search = lambda query: " AND id:[" in query
 
-    await world.sync()
+    await world.sync_incomplete()
     assert "11" in world.db.external_ids()
 
     world.zammad.fail_search = lambda _query: False
@@ -660,3 +680,382 @@ async def test_a_zammad_that_can_count_checks_for_deletions_every_sync(
 
     assert world.db.external_ids() == {"20"}
     assert not any("full_listing_at" in v for v in world.store.sync_points.values() if isinstance(v, dict))
+
+
+# ---- groups out of scope: inactive, or left out by the filter -----------------
+
+def _cleanup_memo(world: World) -> object:
+    return next(
+        (v.get("excluded_group_ids") for k, v in world.store.sync_points.items()
+         if k.endswith(FILTER_CLEANUP_SYNC_POINT_KEY)),
+        None,
+    )
+
+
+async def test_a_group_made_inactive_loses_its_tickets_and_its_record_group(world: World) -> None:
+    world.zammad.inactive.add(2)
+    world.zammad.ticket_reads.clear()
+
+    await world.sync()
+
+    assert world.db.external_ids() == {"10", "11", "11_1_1"}
+    assert world.db.deleted == ["20"]
+    assert world.db.deleted_groups == ["group_2"]
+    # Zammad's active:false is the signal: nothing is read back first.
+    assert 20 not in world.zammad.ticket_reads
+    assert _cleanup_memo(world) == ["2"]
+
+
+async def test_a_group_made_inactive_has_its_ticket_sync_point_cleared(world: World) -> None:
+    assert _checkpoint(world, "Sales")
+
+    world.zammad.inactive.add(2)
+    await world.sync()
+
+    assert _group_point(world, "Sales")["last_sync_time"] == 0
+    assert _group_point(world, "Sales")["burst_next_id"] == 0
+
+
+async def test_an_inactive_group_is_cleaned_up_once(world: World) -> None:
+    world.zammad.inactive.add(2)
+    await world.sync()
+    reads_before = len(world.db.group_page_reads)
+
+    await world.sync()
+
+    assert "group_2" not in world.db.group_page_reads[reads_before:]
+    assert world.db.deleted_groups == ["group_2"]
+
+
+async def test_a_group_made_active_again_has_every_ticket_read_again(world: World) -> None:
+    world.zammad.inactive.add(2)
+    await world.sync()
+    world.zammad.add_ticket(21, 2, day=4)
+
+    world.zammad.inactive.discard(2)
+    await world.sync()
+
+    # Ticket 20 is older than the group's old checkpoint: only a cleared sync point brings it back.
+    assert {"20", "21"} <= world.db.external_ids()
+    assert "group_2" in world.db.record_groups
+    assert _cleanup_memo(world) == []
+
+    # Made inactive a second time, it is cleaned up again.
+    world.zammad.inactive.add(2)
+    await world.sync()
+    assert not {"20", "21"} & world.db.external_ids()
+
+
+async def test_a_ticket_moved_out_of_a_group_made_inactive_stays_in_its_new_group(world: World) -> None:
+    world.zammad.move_ticket(20, 1, day=6)
+    world.zammad.inactive.add(2)
+
+    await world.sync()
+
+    assert "20" in world.db.external_ids()
+    assert world.db.records["20"].external_record_group_id == "group_1"
+    assert "20" not in world.db.deleted
+
+
+async def test_a_group_the_filter_excludes_loses_its_record_group_once_emptied(world: World) -> None:
+    await world.save_filters({"group_ids": {"operator": "not_in", "value": ["2"], "type": "list"}})
+
+    assert world.db.deleted_groups == ["group_2"]
+    assert "group_2" not in world.db.record_groups
+
+
+async def test_an_excluded_group_with_a_ticket_not_yet_settled_keeps_its_record_group(world: World) -> None:
+    world.zammad.ticket_read_status[20] = 503
+
+    parts = await world.save_filters(
+        {"group_ids": {"operator": "not_in", "value": ["2"], "type": "list"}}, incomplete=True,
+    )
+
+    assert parts == ["the removal of 1 tickets of groups out of scope"]
+    assert world.db.deleted_groups == []
+    assert "group_2" in world.db.record_groups
+    assert _cleanup_memo(world) is None
+
+
+async def test_the_clean_up_memo_is_reset_when_no_group_is_out_of_scope(world: World) -> None:
+    await world.save_filters({"group_ids": {"operator": "not_in", "value": ["2"], "type": "list"}})
+    assert _cleanup_memo(world) == ["2"]
+
+    # Widening the filter by hand, without the sync point reset that saving filters does.
+    world.config.sync_filters = {}
+    await world.sync()
+
+    assert _cleanup_memo(world) == []
+
+
+async def test_a_ticket_in_its_own_group_that_is_no_longer_synced_is_removed(world: World) -> None:
+    """"Not synced" is checked before "still in the group it is held in"."""
+    world.connector._synced_group_ids = {"1"}
+    by_ticket = await world.connector._records_by_ticket_in_group("group_2")
+
+    settled = await world.connector._settle_ticket("20", by_ticket["20"], "group_2", "test")
+
+    assert settled is True
+    assert "20" not in world.db.external_ids()
+
+
+async def test_a_ticket_zammad_refuses_to_read_back_is_kept(world: World) -> None:
+    """A 403 does not say the ticket is gone, only that the token may not see it now."""
+    world.zammad.delete_ticket(11)
+    world.zammad.ticket_read_status[11] = 403
+
+    assert await world.sync_incomplete() == ["the check for deleted tickets of group 'Support'"]
+
+    assert {"11", "11_1_1"} <= world.db.external_ids()
+    assert world.db.deleted == []
+
+
+# ---- a sync that could not read everything ------------------------------------
+
+async def test_an_incomplete_sync_writes_every_part_it_read_then_fails(world: World) -> None:
+    world.zammad.add_ticket(21, 2, day=4)
+    world.zammad.delete_ticket(11)
+    world.zammad.fail_search = lambda query: "group_id:1" in query
+    kb_syncs = world.connector._sync_knowledge_bases.await_count
+
+    parts = await world.sync_incomplete()
+
+    assert "the tickets of group 'Support'" in parts
+    # The other group's new ticket is written and the steps after the failure still run...
+    assert "21" in world.db.external_ids()
+    assert world.connector._sync_knowledge_bases.await_count == kb_syncs + 1
+    # ...but nothing is removed on the strength of the read that failed.
+    assert {"11", "11_1_1"} <= world.db.external_ids()
+    assert world.db.deleted == []
+
+
+async def test_a_role_list_that_fails_still_syncs_tickets_and_fails_the_run(world: World) -> None:
+    world.zammad.list_roles_status = 503
+    world.zammad.add_ticket(21, 2, day=4)
+
+    assert await world.sync_incomplete() == ["the role list (interrupted)"]
+
+    assert "21" in world.db.external_ids()
+    assert world.zammad.role_reads[-1] is True  # roles are always read with expand=true
+
+
+
+# ---- full sync: the runner unlinks every held node the run did not note ----
+
+# Ticket 20 and group 3 (no tickets) are deleted in Zammad before the full sync; everything else is still there.
+GONE_FROM_ZAMMAD = frozenset({"recordGroup:group_3", "userGroup:3"})
+
+
+async def _full_sync(world: World) -> tuple[bool, list[str], list[str]]:
+    """(no further full sync owed, nodes still in Zammad that were unlinked or deleted, gone nodes unlinked)."""
+    held = {f"record:{ext}" for ext in world.db.external_ids()}
+    done, unlinked = await run_full_sync(world.connector, world.db, world.store.clear)
+    removed = unlinked | (held - {f"record:{ext}" for ext in world.db.external_ids()})
+    still_there = removed - GONE_FROM_ZAMMAD - {"record:20"}
+    return done, sorted(still_there), sorted(unlinked & GONE_FROM_ZAMMAD)
+
+
+@pytest.fixture
+async def gone_world(world: World) -> World:
+    world.zammad.groups[3] = "Archive"
+    await world.sync()
+    assert {"group_3"} <= set(world.db.record_groups) and "3" in world.db.user_groups
+    world.zammad.delete_ticket(20)
+    del world.zammad.groups[3]
+    return world
+
+
+async def test_a_full_sync_unlinks_only_what_is_gone_from_zammad(gone_world: World) -> None:
+    done, wrongly_removed, gone_unlinked = await _full_sync(gone_world)
+
+    assert done is True
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(GONE_FROM_ZAMMAD))
+    assert "20" in gone_world.db.deleted
+
+
+async def test_a_full_sync_keeps_the_links_of_a_ticket_the_search_index_has_not_caught_up_with(
+    gone_world: World,
+) -> None:
+    """The ticket is read back, found in its group and kept: the unlink must not strip it."""
+    gone_world.zammad.unindexed.add(11)
+
+    done, wrongly_removed, gone_unlinked = await _full_sync(gone_world)
+
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(GONE_FROM_ZAMMAD))
+    assert done is True
+    assert 11 in gone_world.zammad.ticket_reads
+
+
+async def test_a_full_sync_keeps_the_links_of_a_ticket_read_back_without_a_group(gone_world: World) -> None:
+    """``_settle_ticket`` keeps a ticket Zammad reads back with no group_id; the unlink must not strip it."""
+    gone_world.zammad.tickets[11]["group_id"] = None
+
+    done, wrongly_removed, gone_unlinked = await _full_sync(gone_world)
+
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(GONE_FROM_ZAMMAD))
+    assert done is True
+
+
+async def test_a_full_sync_still_removes_a_ticket_the_search_misses_that_reads_back_as_gone(
+    gone_world: World,
+) -> None:
+    gone_world.zammad.unindexed.add(11)
+    gone_world.zammad.delete_ticket(11)
+
+    done, unlinked = await run_full_sync(gone_world.connector, gone_world.db, gone_world.store.clear)
+
+    assert done is True
+    assert sorted(gone_world.db.deleted) == ["11", "11_1_1", "20"]
+    assert unlinked == GONE_FROM_ZAMMAD
+
+
+async def test_a_full_sync_whose_read_back_fails_keeps_the_ticket_and_unlinks_nothing(gone_world: World) -> None:
+    gone_world.zammad.unindexed.add(11)
+    gone_world.zammad.ticket_read_status[11] = 500
+
+    assert await run_full_sync(gone_world.connector, gone_world.db, gone_world.store.clear) == (False, set())
+
+    assert {"11", "11_1_1"} <= gone_world.db.external_ids()
+    assert "11" not in gone_world.db.deleted
+    assert "the check for deleted tickets of group 'Support'" in gone_world.connector._incomplete
+
+
+async def test_a_full_sync_writes_a_ticket_moved_to_another_synced_group_the_search_has_not_caught_up_with(
+    gone_world: World,
+) -> None:
+    gone_world.zammad.move_ticket(11, 2, day=6)
+    gone_world.zammad.unindexed.add(11)
+
+    done, wrongly_removed, gone_unlinked = await _full_sync(gone_world)
+
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(GONE_FROM_ZAMMAD))
+    assert done is True
+    assert gone_world.db.records["11"].external_record_group_id == "group_2"
+
+
+async def test_a_full_sync_does_not_drop_an_attachment_whose_record_could_not_be_looked_up(
+    gone_world: World,
+) -> None:
+    """A lookup that fails while the attachment is built must not cost the attachment, now or after the retry."""
+    lookup = gone_world.db.get_record_by_external_id
+
+    async def failing_lookup(connector_id: str, external_record_id: str, **kwargs: object) -> object:
+        if external_record_id == "11_1_1":
+            raise RuntimeError("graph unavailable")
+        return await lookup(connector_id, external_record_id)
+
+    gone_world.db.get_record_by_external_id = failing_lookup
+    _, wrongly_removed, _ = await _full_sync(gone_world)
+    assert wrongly_removed == []
+
+    gone_world.db.get_record_by_external_id = lookup
+    done, wrongly_removed, gone_unlinked = await _full_sync(gone_world)
+    assert (wrongly_removed, gone_unlinked) == ([], sorted(GONE_FROM_ZAMMAD))
+    assert done is True
+
+
+def _fail_lookup_of(world: World, external_id: str) -> object:
+    """Makes the graph lookup of one record raise; returns the real lookup to restore."""
+    lookup = world.db.get_record_by_external_id
+
+    async def failing_lookup(connector_id: str, external_record_id: str, **kwargs: object) -> object:
+        if external_record_id == external_id:
+            raise RuntimeError("graph unavailable")
+        return await lookup(connector_id, external_record_id)
+
+    world.db.get_record_by_external_id = failing_lookup
+    return lookup
+
+
+async def test_an_incremental_sync_does_not_delete_an_attachment_whose_record_could_not_be_looked_up(
+    world: World,
+) -> None:
+    world.zammad.move_ticket(11, 1, day=9)
+    lookup = _fail_lookup_of(world, "11_1_1")
+
+    assert await world.sync_incomplete() == ["the tickets of group 'Support'"]
+    assert "11_1_1" in world.db.external_ids()
+    assert world.db.deleted == []
+
+    world.db.get_record_by_external_id = lookup
+    await world.sync()
+    assert {"11", "11_1_1"} <= world.db.external_ids()
+    assert world.db.deleted == []
+    assert world.db.records["11"].source_updated_at == epoch_ms(9)
+
+
+async def test_a_ticket_whose_attachment_never_builds_is_given_up_without_losing_the_attachment(
+    world: World,
+) -> None:
+    world.zammad.move_ticket(11, 1, day=9)
+    _fail_lookup_of(world, "11_1_1")
+
+    await world.sync_incomplete()
+    await world.sync_incomplete()
+    await world.sync()
+
+    assert {"11", "11_1_1"} <= world.db.external_ids()
+    assert world.db.deleted == []
+
+
+def _fail_build_of(world: World, external_id: str) -> None:
+    """Makes the build of one attachment record raise on every sync, as a bad attachment would."""
+    build = world.connector._transform_attachment_to_file_record
+
+    async def failing_build(*args: object, **kwargs: object) -> object:
+        if kwargs.get("external_record_id") == external_id:
+            raise ValueError("attachment cannot be built")
+        return await build(*args, **kwargs)
+
+    world.connector._transform_attachment_to_file_record = failing_build
+
+
+async def test_a_ticket_attachment_that_never_builds_does_not_wedge_full_syncs(gone_world: World) -> None:
+    """Each full sync resets the read-failure counts, so failing the ticket would fail every full sync."""
+    gone_world.zammad.move_ticket(11, 1, day=9)
+    _fail_build_of(gone_world, "11_1_1")
+
+    for _ in range(2):
+        done, wrongly_removed, _ = await _full_sync(gone_world)
+        assert (done, wrongly_removed) == (True, [])
+        assert gone_world.db.records["11"].source_updated_at == epoch_ms(9)
+        assert "11_1_1" in gone_world.db.external_ids()
+    assert "11_1_1" not in gone_world.db.deleted
+
+
+async def test_an_incremental_sync_writes_a_ticket_whose_attachment_fails_to_build_and_keeps_the_attachment(
+    world: World,
+) -> None:
+    world.zammad.move_ticket(11, 1, day=9)
+    _fail_build_of(world, "11_1_1")
+
+    await world.sync()
+
+    assert world.db.records["11"].source_updated_at == epoch_ms(9)
+    assert "11_1_1" in world.db.external_ids()
+    assert world.db.deleted == []
+
+
+@pytest.mark.parametrize("full", [False, True], ids=["incremental", "full"])
+async def test_an_attachment_removed_from_a_ticket_is_deleted_beside_one_kept_as_stored(
+    world: World, full: bool,
+) -> None:
+    """Keeping the attachment that fails to build must not stop the comparison that removes the other one."""
+    world.zammad.tickets[11]["attachments"] = 2
+    world.zammad.move_ticket(11, 1, day=5)
+    await world.sync()
+    assert {"11_1_1", "11_1_2"} <= world.db.external_ids()
+
+    world.zammad.tickets[11]["attachments"] = 1
+    world.zammad.move_ticket(11, 1, day=9)
+    _fail_build_of(world, "11_1_1")
+    if full:
+        await run_full_sync(world.connector, world.db, world.store.clear)
+    else:
+        await world.sync()
+
+    assert "11_1_2" in world.db.deleted
+    assert "11_1_2" not in world.db.external_ids()
+    assert "11_1_1" in world.db.external_ids()
+    assert "11_1_1" not in world.db.deleted
+    assert world.db.records["11"].source_updated_at == epoch_ms(9)

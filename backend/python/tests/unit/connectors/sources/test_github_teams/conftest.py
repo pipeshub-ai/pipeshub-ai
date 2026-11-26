@@ -6,9 +6,15 @@ the mock-connector setup (mirrors ``tests/unit/connectors/sources/test_gitlab/co
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from app.connectors.sources.github_teams.runtime import RefreshOutcome
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 def make_mock_connector() -> MagicMock:
@@ -65,7 +71,7 @@ def make_mock_connector() -> MagicMock:
     runtime.ds_call = AsyncMock()
     runtime.search_call = AsyncMock()
     runtime.refresh_token_if_needed = AsyncMock()
-    runtime.force_refresh_oauth_token = AsyncMock(return_value=True)
+    runtime.force_refresh_oauth_token = AsyncMock(return_value=RefreshOutcome.REFRESHED)
 
     # The real one caches; the mock goes straight through ds_call so a test
     # that dispatches on ``c.data_source.get_repo_by_id`` keeps working.
@@ -81,6 +87,8 @@ def make_mock_connector() -> MagicMock:
     c.record_sync_point = rsp
 
     c.creator_user_permission = MagicMock(return_value=None)
+    # A run's failure path awaits it; a test of a refused sign-in binds the real one.
+    c._stop_if_sign_in_refused = AsyncMock()
 
     # transaction() context manager -> tx_store mock
     tx_store = MagicMock()
@@ -122,6 +130,18 @@ def make_mock_connector() -> MagicMock:
     c.issue_reconciler.reconcile = AsyncMock(return_value=0)
 
     return c
+
+
+@pytest.fixture(autouse=True)
+def _no_reused_github_profiles() -> Iterator[None]:
+    """User sync keeps fetched profiles process-wide; start every test without them."""
+    from app.connectors.sources.github_teams import users
+
+    users._recent_profiles.clear()
+    users._profile_fetch_locks.clear()
+    yield
+    users._recent_profiles.clear()
+    users._profile_fetch_locks.clear()
 
 
 @pytest.fixture()

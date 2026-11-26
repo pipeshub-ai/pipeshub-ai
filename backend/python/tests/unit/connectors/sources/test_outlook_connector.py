@@ -26,7 +26,9 @@ from app.connectors.sources.microsoft.common.outlook_constants import (
 from app.connectors.sources.microsoft.outlook.connector import (
     OutlookConnector,
     OutlookCredentials,
+    OutlookUserListing,
 )
+from tests.support.data_store import runs_in_its_transaction
 
 # Backwards compatibility aliases for tests
 STANDARD_OUTLOOK_FOLDERS = OutlookFolders.STANDARD_FOLDERS
@@ -70,7 +72,7 @@ def _make_mock_deps():
     data_entities_processor.get_record_by_conversation_index = AsyncMock(return_value=None)
     data_entities_processor.get_record_owner_source_user_email = AsyncMock(return_value=None)
 
-    data_store_provider = MagicMock()
+    data_store_provider = runs_in_its_transaction(MagicMock())
 
     config_service = MagicMock()
     config_service.get_config = AsyncMock()
@@ -364,7 +366,7 @@ class TestPopulateUserCache:
             email="user1@example.com",
             full_name="User One",
         )
-        connector._get_all_users_external = AsyncMock(return_value=[user1])
+        connector._get_all_users_external = AsyncMock(return_value=OutlookUserListing([user1]))
 
         await connector._populate_user_cache()
         assert "user1@example.com" in connector._user_cache
@@ -1954,7 +1956,10 @@ class TestSyncUsersDeep:
             app_name=Connectors.OUTLOOK, connector_id="conn-1",
             source_user_id="su1", email="active@test.com", full_name="Active User",
         )
-        connector._get_all_users_external = AsyncMock(return_value=[enterprise_user])
+        listing = OutlookUserListing([enterprise_user])
+        listing.listed_ids = {"su1"}  # a complete read
+        connector._get_all_users_external = AsyncMock(return_value=listing)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
 
         active_user = MagicMock()
         active_user.email = "active@test.com"
@@ -2470,7 +2475,7 @@ def _make_mock_deps_fullcov():
     data_entities_processor.delete_record_by_external_id = AsyncMock()
     data_entities_processor.reindex_existing_records = AsyncMock()
 
-    data_store_provider = MagicMock()
+    data_store_provider = runs_in_its_transaction(MagicMock())
 
     config_service = MagicMock()
     config_service.get_config = AsyncMock()
@@ -5690,7 +5695,7 @@ class TestSyncUsersAdditional:
             app_name=Connectors.OUTLOOK, connector_id="conn-1",
             source_user_id="su1", email="enterprise@test.com", full_name="Ent User",
         )
-        connector._get_all_users_external = AsyncMock(return_value=[enterprise_user])
+        connector._get_all_users_external = AsyncMock(return_value=OutlookUserListing([enterprise_user]))
 
         active_user = MagicMock()
         active_user.email = "other@test.com"

@@ -1621,6 +1621,9 @@ class _AllRecorded:
     def __contains__(self, _: object) -> bool:
         return True
 
+    def get(self, key: str, default: object = None) -> str:
+        return f"record-of-{key}"
+
 _JAN = [datetime(2026, 1, day, tzinfo=timezone.utc) for day in (1, 2, 3)]
 
 

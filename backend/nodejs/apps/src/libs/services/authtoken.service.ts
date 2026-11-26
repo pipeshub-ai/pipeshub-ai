@@ -2,10 +2,12 @@
 import { injectable } from 'inversify';
 import { createPublicKey, createSecretKey, KeyObject } from 'node:crypto';
 import { UnauthorizedError } from '../errors/http.errors';
-import { Logger } from '../services/logger.service';
+import { withCause } from '../errors/base.error';
 import { isUserActionScope } from '../enums/token-scopes.enum';
 import { deriveUserActionSecret } from '../utils/jwtKeys';
 import jwt, { SignOptions } from 'jsonwebtoken';
+import { Request } from 'express';
+import { isMcpRelay, relayKey } from '../middlewares/mcp-relay';
 
 interface TokenPayload extends Record<string, any> {}
 
@@ -28,7 +30,13 @@ interface TokenPayload extends Record<string, any> {}
  * always truthy, so without this guard an empty secret sails past that check
  * and every token forged with an empty HMAC key verifies successfully.
  */
-function toVerificationKey(secret: string): KeyObject {
+/** Callers `.catch` a refused token, so a verification error must reject rather than throw. */
+const settled = <T>(verify: () => T): Promise<T> =>
+  new Promise((resolve) => {
+    resolve(verify());
+  });
+
+export function toVerificationKey(secret: string): KeyObject {
   if (!secret) {
     throw new Error('JWT secret is not configured');
   }
@@ -40,7 +48,7 @@ function toVerificationKey(secret: string): KeyObject {
 
 /** Algorithms a key type can legitimately verify, so a token's own `alg`
  * header cannot steer verification onto a weaker scheme. */
-function algorithmsFor(key: KeyObject): jwt.Algorithm[] {
+export function algorithmsFor(key: KeyObject): jwt.Algorithm[] {
   return key.type === 'secret'
     ? ['HS256', 'HS384', 'HS512']
     : [
@@ -65,7 +73,6 @@ function isSignatureMismatch(error: unknown): boolean {
 
 @injectable()
 export class AuthTokenService {
-  private readonly logger = Logger.getInstance();
   private readonly jwtSecret: string;
   private readonly scopedJwtSecret: string;
   private readonly jwtVerificationKey: KeyObject;
@@ -73,6 +80,7 @@ export class AuthTokenService {
   private readonly userActionVerificationKey: KeyObject;
   private readonly jwtAlgorithms: jwt.Algorithm[];
   private readonly scopedJwtAlgorithms: jwt.Algorithm[];
+  private relayVerificationKey?: KeyObject;
 
   constructor(jwtSecret: string, scopedJwtSecret: string) {
     this.jwtSecret = jwtSecret;
@@ -88,6 +96,12 @@ export class AuthTokenService {
     this.scopedJwtAlgorithms = algorithmsFor(this.scopedJwtVerificationKey);
   }
 
+  /** Whether `req` is an API call the /mcp handler made for one of its tool calls. */
+  isMcpRelay(req: Request): boolean {
+    this.relayVerificationKey ??= relayKey(this.scopedJwtSecret);
+    return isMcpRelay(req, this.relayVerificationKey);
+  }
+
   async verifyToken(token: string): Promise<TokenPayload> {
     try {
       const decoded = jwt.verify(token, this.jwtVerificationKey, {
@@ -96,12 +110,16 @@ export class AuthTokenService {
 
       return decoded;
     } catch (error) {
-      this.logger.error('Token verification failed', { error });
-      throw new UnauthorizedError('Invalid token');
+      // Not logged here: the layer that answers the 401 logs it once, with this cause.
+      throw withCause(new UnauthorizedError('Invalid token'), error);
     }
   }
 
-  async verifyScopedToken(token: string, scope: string): Promise<TokenPayload> {
+  verifyScopedToken(
+    token: string,
+    scope: string,
+    audience?: string,
+  ): Promise<TokenPayload> {
     const keys = isUserActionScope(scope)
       ? [
           this.userActionVerificationKey,
@@ -112,12 +130,37 @@ export class AuthTokenService {
           this.scopedJwtVerificationKey,
         ]
       : [this.scopedJwtVerificationKey];
-    const decoded = this.verifyWithKeys(token, keys, this.scopedJwtAlgorithms);
+    return settled(() =>
+      this.withScope(
+        this.verifyWithKeys(token, keys, this.scopedJwtAlgorithms, audience),
+        scope,
+      ),
+    );
+  }
+
+  /**
+   * A token a person holds for one narrow purpose, signed with the
+   * user-action key whatever its scope, so a service holding only the scoped
+   * secret can never mint one.
+   */
+  verifyUserActionToken(token: string, scope: string): Promise<TokenPayload> {
+    return settled(() =>
+      this.withScope(
+        this.verifyWithKeys(
+          token,
+          [this.userActionVerificationKey],
+          this.scopedJwtAlgorithms,
+        ),
+        scope,
+      ),
+    );
+  }
+
+  private withScope(decoded: TokenPayload, scope: string): TokenPayload {
     const { scopes } = decoded;
     if (!scopes || !scopes.includes(scope)) {
       throw new UnauthorizedError('Invalid scope');
     }
-
     return decoded;
   }
 
@@ -141,11 +184,15 @@ export class AuthTokenService {
     token: string,
     keys: KeyObject[],
     algorithms: jwt.Algorithm[],
+    audience?: string,
   ): TokenPayload {
     let failure: unknown;
     for (const key of keys) {
       try {
-        return jwt.verify(token, key, { algorithms }) as TokenPayload;
+        return jwt.verify(token, key, {
+          algorithms,
+          ...(audience ? { audience } : {}),
+        }) as TokenPayload;
       } catch (error) {
         // A signature mismatch only means "not this key"; any other error came
         // from the key that matched and says why the token was refused.
@@ -154,7 +201,6 @@ export class AuthTokenService {
         }
       }
     }
-    this.logger.error('Token verification failed', { error: failure });
-    throw new UnauthorizedError('Invalid token');
+    throw withCause(new UnauthorizedError('Invalid token'), failure);
   }
 }

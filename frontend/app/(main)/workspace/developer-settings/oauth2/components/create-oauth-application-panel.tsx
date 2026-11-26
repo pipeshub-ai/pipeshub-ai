@@ -9,7 +9,6 @@ import {
   IconButton,
   Tabs,
   Text,
-  TextArea,
   TextField,
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -21,7 +20,7 @@ import {
   knowledgeLimitForApi,
   type KnowledgeLimitValue,
 } from '@/app/components/knowledge-limit';
-import { FormField, WorkspaceRightPanel } from '../../../components';
+import { FormField, FormFieldTextArea, FormFieldTextField, WorkspaceRightPanel } from '../../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { Oauth2Api } from '../api';
 import { ServiceAccountsApi } from '../../../service-accounts/api';
@@ -33,6 +32,7 @@ import {
   isValidHttpUrl,
   isValidOAuthRedirectUri,
 } from '../redirect-uri-validation';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 // ========================================
 // Constants
@@ -110,6 +110,31 @@ export interface CreateOAuthApplicationPanelProps {
 
 type CreateTab = 'general' | 'scopes' | 'granular';
 
+/**
+ * Ticked when the form opens: the least an MCP client needs to search and
+ * chat, with or without an agent. Search needs semantic:write, not read: the
+ * Python route it forwards to requires write. Scopes the instance does not
+ * offer this user are dropped.
+ */
+export const DEFAULT_SELECTED_SCOPES = [
+  'offline_access',
+  'kb:read',
+  'connector:read',
+  'semantic:write',
+  'conversation:chat',
+  'agent:read',
+  'agent:execute',
+] as const;
+
+function defaultScopeSelection(
+  scopes: Record<string, OAuthScopeItem[]>
+): Set<string> {
+  const offered = new Set(
+    Object.values(scopes).flatMap((items) => items.map((i) => i.name))
+  );
+  return new Set(DEFAULT_SELECTED_SCOPES.filter((name) => offered.has(name)));
+}
+
 export function CreateOAuthApplicationPanel({
   open,
   onOpenChange,
@@ -167,6 +192,19 @@ export function CreateOAuthApplicationPanel({
   const [selectedScopes, setSelectedScopes] = useState<Set<string>>(
     () => new Set()
   );
+  // Once per opening: the list reloads when `t` changes (a language switch),
+  // and that must not undo the user's edits.
+  const defaultsAppliedRef = useRef(false);
+
+  const applyLoadedScopes = useCallback(
+    (scopes: Record<string, OAuthScopeItem[]>) => {
+      setScopesByCategory(scopes);
+      if (defaultsAppliedRef.current) return;
+      defaultsAppliedRef.current = true;
+      setSelectedScopes(defaultScopeSelection(scopes));
+    },
+    []
+  );
 
   const [isCreating, setIsCreating] = useState(false);
 
@@ -220,6 +258,7 @@ export function CreateOAuthApplicationPanel({
       setScopesByCategory(null);
       setScopesError(null);
       setSelectedScopes(new Set());
+      defaultsAppliedRef.current = false;
       setIsCreating(false);
       setCreatedCredentials(null);
       setShowClientSecret(false);
@@ -235,7 +274,7 @@ export function CreateOAuthApplicationPanel({
     const loadScopes = async () => {
       try {
         const data = await Oauth2Api.getScopes();
-        if (!cancelled) setScopesByCategory(data.scopes ?? {});
+        if (!cancelled) applyLoadedScopes(data.scopes ?? {});
       } catch {
         if (!cancelled) {
           setScopesError(t('workspace.oauth2.create.scopesLoadError'));
@@ -250,7 +289,7 @@ export function CreateOAuthApplicationPanel({
     return () => {
       cancelled = true;
     };
-  }, [open, t]);
+  }, [open, t, applyLoadedScopes]);
 
   useEffect(() => {
     if (usesAuthorizationCode) return;
@@ -295,7 +334,7 @@ export function CreateOAuthApplicationPanel({
         setGrantTypes((prev) => new Set(prev).add(value));
         return;
       }
-      // Read latest grants in the event handler ΓÇö never call addToast inside setState updaters.
+      // Read latest grants in the event handler — never call addToast inside setState updaters.
       if (grantTypesRef.current.size <= 1) {
         addToast({
           variant: 'error',
@@ -723,10 +762,10 @@ export function CreateOAuthApplicationPanel({
                   {t('workspace.oauth2.create.clientSecretLabel')}
                 </Text>
                 <Flex align="center" gap="2" style={{ width: '100%' }}>
-                  <TextField.Root
+                  <SecretTextField
                     size="2"
                     readOnly
-                    type={showClientSecret ? 'text' : 'password'}
+                    masked={!showClientSecret}
                     value={createdCredentials.clientSecret}
                     style={{ flex: 1, minWidth: 0, ...CREDENTIAL_MONO }}
                   />
@@ -801,7 +840,7 @@ export function CreateOAuthApplicationPanel({
                   required
                   error={generalErrors.name}
                 >
-                  <TextField.Root
+                  <FormFieldTextField
                     size="2"
                     placeholder={t('workspace.oauth2.create.appNamePlaceholder')}
                     value={name}
@@ -814,7 +853,7 @@ export function CreateOAuthApplicationPanel({
                     label={t('workspace.oauth2.create.descriptionLabel')}
                     optional
                   >
-                    <TextArea
+                    <FormFieldTextArea
                       size="2"
                       rows={2}
                       placeholder={t(
@@ -1053,7 +1092,7 @@ export function CreateOAuthApplicationPanel({
                     label={t('workspace.oauth2.create.homepageLabel')}
                     optional
                   >
-                    <TextField.Root
+                    <FormFieldTextField
                       type="url"
                       placeholder={t('workspace.oauth2.create.urlPlaceholder')}
                       value={homepageUrl}
@@ -1065,7 +1104,7 @@ export function CreateOAuthApplicationPanel({
                     label={t('workspace.oauth2.create.privacyLabel')}
                     optional
                   >
-                    <TextField.Root
+                    <FormFieldTextField
                       type="url"
                       value={privacyPolicyUrl}
                       onChange={(e) => setPrivacyPolicyUrl(e.target.value)}
@@ -1077,7 +1116,7 @@ export function CreateOAuthApplicationPanel({
                     label={t('workspace.oauth2.create.termsLabel')}
                     optional
                   >
-                    <TextField.Root
+                    <FormFieldTextField
                       type="url"
                       value={termsUrl}
                       onChange={(e) => setTermsUrl(e.target.value)}
@@ -1142,7 +1181,7 @@ export function CreateOAuthApplicationPanel({
                       setScopesError(null);
                       setScopesLoading(true);
                       void Oauth2Api.getScopes()
-                        .then((data) => setScopesByCategory(data.scopes ?? {}))
+                        .then((data) => applyLoadedScopes(data.scopes ?? {}))
                         .catch(() =>
                           setScopesError(t('workspace.oauth2.create.scopesLoadError'))
                         )
@@ -1231,7 +1270,7 @@ export function CreateOAuthApplicationPanel({
                                 {scope.description}
                               </Text>
                               {scope.requiresUserConsent && (
-                                <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                                   {t('workspace.oauth2.create.requiresConsent')}
                                 </Text>
                               )}

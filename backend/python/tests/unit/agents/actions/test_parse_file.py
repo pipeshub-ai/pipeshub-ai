@@ -61,8 +61,13 @@ def _make_file_record(extension="txt", record_name="doc", mime_type="text/plain"
     rec.record_name = record_name
     rec.mime_type = mime_type
     rec.block_containers = None
-    rec.to_llm_full_context = MagicMock(return_value=_LLM_CONTEXT)
     return rec
+
+
+def _citations() -> MagicMock:
+    citations = MagicMock()
+    citations.render = MagicMock(return_value=_LLM_CONTEXT)
+    return citations
 
 
 # ============================================================================
@@ -368,8 +373,9 @@ class TestParse:
     @pytest.mark.asyncio
     async def test_unsupported_extension(self):
         parser = _make_parser()
+        citations = _citations()
         rec = _make_file_record(extension="exe")
-        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
+        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock(), citations=citations)
         assert ok is False
         assert isinstance(msg[0], ParseErrorPayload)
         assert "not supported" in msg[0].error
@@ -377,17 +383,19 @@ class TestParse:
     @pytest.mark.asyncio
     async def test_missing_extension(self):
         parser = _make_parser()
+        citations = _citations()
         rec = _make_file_record(extension="")
-        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
+        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock(), citations=citations)
         assert ok is False
         assert isinstance(msg[0], ParseErrorPayload)
 
     @pytest.mark.asyncio
     async def test_parse_to_block_container_fails(self):
         parser = _make_parser()
+        citations = _citations()
         rec = _make_file_record(extension="txt")
         parser.parse_to_block_container = AsyncMock(side_effect=RuntimeError("bad"))
-        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
+        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock(), citations=citations)
         assert ok is False
         assert "Parse failed" in msg[0].error
 
@@ -409,7 +417,7 @@ class TestParse:
             extension="xlsx",
             mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        ok, msg = await parser.parse(rec, raw.getvalue(), None, None, MagicMock())
+        ok, msg = await parser.parse(rec, raw.getvalue(), None, None, MagicMock(), citations=_citations())
 
         assert ok is False
         assert msg[0].error == LLM_MISSING_FOR_FILE
@@ -418,60 +426,70 @@ class TestParse:
     @pytest.mark.asyncio
     async def test_to_llm_context_fails(self):
         parser = _make_parser()
+        citations = _citations()
         rec = _make_file_record(extension="txt")
-        rec.to_llm_full_context = MagicMock(side_effect=RuntimeError("ctx err"))
+        citations.render = MagicMock(side_effect=RuntimeError("ctx err"))
         parser.parse_to_block_container = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
-        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
+        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock(), citations=citations)
         assert ok is False
         assert "Context build failed" in msg[0].error
 
     @pytest.mark.asyncio
     async def test_token_check_fails(self):
         parser = _make_parser()
+        citations = _citations()
         rec = _make_file_record(extension="txt")
         parser.parse_to_block_container = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         parser.check_token_limit = AsyncMock(side_effect=RuntimeError("tok err"))
-        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
+        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock(), citations=citations)
         assert ok is False
         assert "Token check failed" in msg[0].error
+        citations.register.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_within_limit_returns_success(self):
         parser = _make_parser()
+        citations = _citations()
         rec = _make_file_record(extension="txt")
         parser.parse_to_block_container = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         parser.check_token_limit = AsyncMock(return_value=True)
-        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
+        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock(), citations=citations)
         assert ok is True
         assert msg == _LLM_CONTEXT
         assert all(isinstance(item, LlmTextContent) for item in msg)
+        citations.render.assert_called_once_with(rec)
+        citations.register.assert_called_once_with(rec)
 
     @pytest.mark.asyncio
     async def test_exceeds_limit_returns_failure(self):
         parser = _make_parser()
+        citations = _citations()
         rec = _make_file_record(extension="txt")
         parser.parse_to_block_container = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         parser.check_token_limit = AsyncMock(return_value=False)
-        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
+        ok, msg = await parser.parse(rec, b"data", None, None, MagicMock(), citations=citations)
         assert ok is False
         assert "Token limit exceeded" in msg[0].error
+        # The model never sees it, so it is no source of the run's citations.
+        citations.register.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_outer_exception_wrapped(self):
         parser = _make_parser()
+        citations = _citations()
         rec = _make_file_record(extension="txt")
         with patch.object(
             parser, "is_supported_extension", side_effect=RuntimeError("outer boom")
         ):
-            ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
+            ok, msg = await parser.parse(rec, b"data", None, None, MagicMock(), citations=citations)
         assert ok is False
         assert "Failed to parse file" in msg[0].error
 
@@ -580,12 +598,12 @@ class TestHandleDoc:
     async def test_converts_doc_to_docx(self):
         parser = _make_parser()
         stream = io.BytesIO(b"fake docx bytes")
-        parser._doc_parser.convert_doc_to_docx = MagicMock(return_value=stream)
+        parser._doc_parser.convert_doc_to_docx_async = AsyncMock(return_value=stream)
         parser.handle_docx = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         await parser.handle_doc(b"raw", "file.doc")
-        parser._doc_parser.convert_doc_to_docx.assert_called_once_with(b"raw")
+        parser._doc_parser.convert_doc_to_docx_async.assert_awaited_once_with(b"raw")
         parser.handle_docx.assert_called_once()
 
 
@@ -593,22 +611,22 @@ class TestHandlePptAndXls:
     @pytest.mark.asyncio
     async def test_ppt_converts_to_pptx(self):
         parser = _make_parser()
-        parser._ppt_parser.convert_ppt_to_pptx = MagicMock(return_value=b"pptx bytes")
+        parser._ppt_parser.convert_ppt_to_pptx_async = AsyncMock(return_value=b"pptx bytes")
         parser.handle_pptx = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         await parser.handle_ppt(b"raw", "a.ppt")
-        parser._ppt_parser.convert_ppt_to_pptx.assert_called_once_with(b"raw")
+        parser._ppt_parser.convert_ppt_to_pptx_async.assert_awaited_once_with(b"raw")
 
     @pytest.mark.asyncio
     async def test_xls_converts_to_xlsx(self):
         parser = _make_parser()
-        parser._xls_parser.convert_xls_to_xlsx = MagicMock(return_value=b"xlsx bytes")
+        parser._xls_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx bytes")
         parser.handle_xlsx = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         await parser.handle_xls(b"raw", "a.xls")
-        parser._xls_parser.convert_xls_to_xlsx.assert_called_once_with(b"raw")
+        parser._xls_parser.convert_xls_to_xlsx_async.assert_awaited_once_with(b"raw")
 
 
 class TestHandleXlsx:
@@ -629,6 +647,25 @@ class TestHandleXlsx:
             result = await parser.handle_xlsx(b"raw", "book.xlsx")
             assert result is expected
             instance.load_workbook_from_binary.assert_called_once_with(b"raw")
+
+    @pytest.mark.asyncio
+    async def test_the_workbook_is_loaded_off_the_event_loop(self) -> None:
+        import threading
+
+        parser = _make_parser()
+        loop_thread = threading.get_ident()
+        loaded_in: list[int] = []
+        with patch(
+            "app.agents.actions.util.parse_file.get_llm_for_role",
+            new_callable=AsyncMock,
+            return_value=("llm", None),
+        ), patch("app.agents.actions.util.parse_file.ExcelParser") as mock_cls:
+            instance = mock_cls.return_value
+            instance.load_workbook_from_binary = lambda _raw: loaded_in.append(threading.get_ident())
+            instance.create_blocks = AsyncMock(return_value=BlocksContainer(blocks=[], block_groups=[]))
+            await parser.handle_xlsx(b"raw", "book.xlsx")
+        assert loaded_in
+        assert loaded_in[0] != loop_thread
 
 
 class TestHandleCsvTsv:
@@ -784,7 +821,7 @@ class TestHandleHtml:
         result = await parser.handle_html(b"<html></html>", "page.html")
         assert result is expected
         parser._image_parser.urls_to_base64.assert_awaited_once_with(
-            ["https://example.com/pic.png"]
+            ["https://example.com/pic.png"], allow_remote_fetch=True
         )
         parser._html_parser.parse_to_blocks.assert_awaited_once_with(
             cleaned,

@@ -59,12 +59,12 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import (
     ARANGO_PASSWORD,
-    ARANGO_URL,
     backend_unavailable,
     connect_arango,
     connect_neo4j,
 )
 from tests.integration.test_revision_retention_e2e import _World
+from tests.support import it_backends
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -82,6 +82,8 @@ LOCAL_ROOT = os.environ.get("RETENTION_IT_LOCAL_ROOT", "")
 SCALE = int(os.environ.get("RETENTION_IT_SCALE", "5000"))
 ARANGO_DB = "revision_retention_storage_it"
 DAY_MS = 24 * 3600 * 1000
+#: The run the stored record was written by, which the pointer flip compares against.
+STORED_RUN = "gen-it:run"
 
 pytestmark = [
     pytest.mark.integration,
@@ -163,15 +165,20 @@ class _Lifecycle(_World):
         """What indexing does: the record is on ``rev``, its set is written, the pointer moved."""
         await self.set_rev(record_id, rev)
         record = self.model(record_id, vrid, f"content of {rev}", images)
-        written = await self.writer.write_revision(record, self.org_id, vrid, rev, record.block_containers)
+        written = await self.writer.write_revision(record, self.org_id, vrid, rev, record.block_containers, stored_run=STORED_RUN)
         assert written is not None
         await self.flip(record, written)
         self.written[(vrid, rev)] = written
         return written
 
     async def flip(self, record: Record, written: Any) -> None:  # noqa: ANN401
+        # The stored write names its run on the mapping before the pointer moves, and the flip
+        # is a compare-and-set on that run.
+        collection = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+        if await self.graph.get_document(record.virtual_record_id, collection) is not None:
+            await self.graph.update_node(record.virtual_record_id, collection, {"storedRun": STORED_RUN})
         await SinkOrchestrator._flip_revision_pointer(
-            SimpleNamespace(graph_provider=self.graph, logger=logger), record, written,
+            SimpleNamespace(graph_provider=self.graph, logger=logger), record, written, STORED_RUN,
         )
 
     async def pointer(self, vrid: str) -> dict[str, Any]:
@@ -451,7 +458,7 @@ async def test_a_mapping_without_a_pointer_deletes_no_set_but_retires_unheld_sta
     for rev in revs:
         await life.set_rev(a, rev)
         record = life.model(a, vrid, rev)
-        assert await life.writer.write_revision(record, life.org_id, vrid, rev, record.block_containers)
+        assert await life.writer.write_revision(record, life.org_id, vrid, rev, record.block_containers, stored_run=STORED_RUN)
         await life.state(vrid, rev, "classify", get_epoch_timestamp_in_ms())
 
     _, report = await _sweep(life).run_page(life.prefix)
@@ -655,7 +662,7 @@ async def test_stage_state_queries_use_indexes(life: _Lifecycle) -> None:
             await g.get_revision_pointers(life.prefix, 10)
         async with aiohttp.ClientSession(auth=aiohttp.BasicAuth("root", ARANGO_PASSWORD)) as session:
             for query, bind_vars in queries:
-                async with session.post(f"{ARANGO_URL}/_db/{ARANGO_DB}/_api/explain",
+                async with session.post(f"{it_backends.endpoint('ARANGO_IT_URL')}/_db/{ARANGO_DB}/_api/explain",
                                         json={"query": query, "bindVars": bind_vars}) as r:
                     plan = await r.json()
                 assert r.status == 200, plan

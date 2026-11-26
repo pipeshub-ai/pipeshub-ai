@@ -113,7 +113,11 @@ describeIfMongo(`fork conversation on a real MongoDB (transactions: ${useTransac
     expect(copied.map((m) => m.seq)).to.deep.equal(Array.from({ length: total }, (_, i) => i + 1))
     expect(copied.map((m) => m.content)).to.deep.equal(Array.from({ length: total }, (_, i) => `message ${i + 1}`))
     expect(copied.some((m) => (m as { feedback?: unknown[] }).feedback?.length)).to.equal(false)
-    expect(String(copied[1]!.citations![0]!.citationId)).to.equal(String(citationId))
+    // Each conversation's erasure deletes the citation documents its messages name, so the fork has its own (FORKFIX).
+    const forkCitation = copied[1]!.citations![0]!.citationId
+    expect(String(forkCitation)).to.not.equal(String(citationId))
+    expect((await Citation.findById(forkCitation).lean())!.content).to.equal('Q3 sales were 4M.')
+    expect(copied[1]!.citations![0]!.relevanceScore).to.equal(0.9)
     // Attachments are copied as references to the same records, not duplicated. A tool part's own
     // artifactId (a stored tool result, not a chat artifact) is left as it is.
     expect(copied[0]!.attachments).to.have.length(1)
@@ -250,9 +254,11 @@ describeIfMongo(`fork conversation on a real MongoDB (transactions: ${useTransac
       const populated = await ChatSessionMessage.find({ sessionId: forkId, seq: 2 })
         .populate({ path: 'citations.citationId', model: 'citation' })
         .lean()
-      const cited = populated[0]!.citations![0]!.citationId as unknown as { _id: mongoose.Types.ObjectId; content: string } | null
-      expect(cited && String(cited._id)).to.equal(String(citationId))
+      const cited = populated[0]!.citations![0]!.citationId as unknown as { _id: mongoose.Types.ObjectId; content: string; isDeleted?: boolean } | null
+      // The fork's own citation (FORKFIX): deleting the source's leaves it as it was.
+      expect(cited && String(cited._id)).to.not.equal(String(citationId))
       expect(cited!.content).to.equal('Q3 sales were 4M.')
+      expect(cited!.isDeleted ?? false).to.equal(false)
     })
 
     it('does not let a shared recipient, a project member or another org fork the chat', async () => {

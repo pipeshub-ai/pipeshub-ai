@@ -11,9 +11,14 @@ Note: All reference fields are returned as strings (sys_ids) because the connect
 This ensures consistent, simple string types for all references.
 """
 
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# The message of the error a Table API answer that is not JSON raises; the connector names it.
+PARSE_ERROR_MESSAGE = "Failed to parse API response"
+# A 3xx: the ServiceNow clients do not follow redirects, so credentials never leave the instance.
+REDIRECT_MESSAGE = "ServiceNow answered with a redirect to another address"
 
 
 class ServiceNowAPIError(Exception):
@@ -32,6 +37,23 @@ class ServiceNowAPIError(Exception):
         self.message = message
         self.details = details
         super().__init__(f"ServiceNow API Error {status_code}: {message}")
+
+
+class ServiceNowAuthError(ServiceNowAPIError):
+    """A 401 that a token refresh did not cure: the sync stops instead of failing item by item."""
+
+    def __init__(self, message: str, details: str | None = None) -> None:
+        super().__init__(status_code=401, message=message, details=details)
+
+
+class ServiceNowAccessError(ServiceNowAPIError):
+    """A table that says who may read what is closed to this account: a 403, or a listing whose
+    rows are all hidden although ServiceNow counts them. Read as empty it would change access,
+    so the sync stops. ``table`` names it."""
+
+    def __init__(self, table: str, message: str, details: str | None = None) -> None:
+        self.table = table
+        super().__init__(status_code=403, message=f"{table}: {message}", details=details)
 
 
 class TableAPIRecord(BaseModel):
@@ -101,6 +123,8 @@ class TableAPIResponse(BaseModel):
         default_factory=list,
         description="Array of table records returned by the query"
     )
+    # X-Total-Count: rows the query matches before ACLs drop any (None when not sent).
+    total_count: int | None = None
 
     model_config = ConfigDict(extra="allow")
 
@@ -120,6 +144,7 @@ class AttachmentMetadata(BaseModel):
     table_name: str | None = Field(default=None, description="Name of the parent table")
     sys_created_on: str = Field(description="Creation timestamp")
     sys_updated_on: str = Field(description="Last update timestamp")
+    hash: str | None = Field(default=None, description="SHA-256 of the file's bytes")
 
     model_config = ConfigDict(extra="allow")
 
@@ -351,19 +376,3 @@ class KBPermissionMapping(BaseModel):
     user_criteria: str = Field(description="User criteria sys_id reference (user_criteria)")
 
     model_config = ConfigDict(extra="allow")
-
-
-# Internal connector models (not from ServiceNow API directly)
-
-class RawPermission(BaseModel):
-    """Internal model for raw permission data extracted from user_criteria.
-
-    This represents a single permission assignment before conversion to the app's Permission model.
-    Used as an intermediate format between ServiceNow data and application Permission objects.
-    """
-
-    entity_type: Literal["USER", "GROUP"] = Field(description="Type of entity: USER or GROUP")
-    source_sys_id: str = Field(description="ServiceNow sys_id of the user or group")
-    role: Literal["READER", "WRITER", "OWNER"] = Field(description="Permission role type")
-
-    model_config = ConfigDict(extra="forbid")

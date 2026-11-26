@@ -1,13 +1,19 @@
 'use client';
 
 import React, { useEffect, useLayoutEffect, useRef, useMemo, useCallback, useState } from 'react';
-import { useAui, useAuiState } from '@assistant-ui/react';
+import { useAuiState } from '@assistant-ui/react';
 import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
+import { FollowupChips } from './followup-chips';
+import { CopiedHistoryNote, lastCopiedPairIndex } from './copied-history-note';
+import { ForkedIntoLine, ForkOriginHeader, ForkOriginLine } from './fork-origin-line';
 import { useChatStore } from '../../store';
+import { useCompareStore } from '../../compare/compare-store';
+import { useCompareLifecycle } from '../../compare/use-compare-lifecycle';
+import { CompareColumns } from '../../compare/components/compare-columns';
 import { debugLog } from '../../debug-logger';
-import { ASK_MORE_QUESTION_SETS, chatContentColumnStyle } from '../../constants';
+import { chatContentColumnStyle } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { ChatArtifact, MessagePart } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
@@ -23,6 +29,14 @@ import type { MessagePair } from './message-pairs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ErrorBoundary, ErrorFallback } from '@/app/components/ui/error-boundary';
 import { shouldShowJumpToNewest } from './jump-to-newest';
+import { BuiltinResultRows, useSavedUndoRows } from './builtin-result-rows';
+import { InitDraftAction } from './init-draft-action';
+import { NEW_CHAT_KEY, useBuiltinResults, useBuiltinRows } from '../../builtin-results';
+import { revealScrollTop } from './reveal-row';
+import { ThreadOwnerContext, threadOwnerOf } from '../../hooks/use-thread-owner';
+
+/** The room left around a revealed command row. */
+const REVEAL_GAP_PX = 16;
 
 // Stable empty references to avoid re-renders from selector fallbacks.
 // `?? []` or `?? null` in a selector body creates a new ref every call,
@@ -45,6 +59,8 @@ const IDLE_SCROLLED_UP_ZONE_PX = 96;
 const IDLE_SCROLL_LOCK_GRACE_MS = 160;
 /** Distance from top (px) at which we trigger loading older messages */
 const LOAD_OLDER_THRESHOLD_PX = 120;
+/** Most older pages fetched to find a linked message before giving up and opening at the latest */
+const FOCUS_MESSAGE_MAX_PAGES = 10;
 
 function isStreamingFlushWithBottom(el: HTMLElement): boolean {
   const { scrollTop, scrollHeight, clientHeight } = el;
@@ -99,6 +115,18 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   const messagePagination = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.messagePagination ?? null : null
   );
+  const forkedFrom = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.forkedFrom ?? null : null
+  );
+  const forks = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.forks : undefined
+  );
+  const threadAgentId = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.threadAgentId ?? null : null
+  );
+  const slotProjectId = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.projectId ?? null : null
+  );
   const hasOlderMessages = messagePagination?.hasOlderMessages ?? false;
   const isLoadingOlder = messagePagination?.isLoadingOlder ?? false;
   // ── Render-reason tracking ──────────────────────────────────────
@@ -120,6 +148,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
   // ── Active slot ID (needed for save/restore on conversation switch) ──
   const activeSlotId = useChatStore((s) => s.activeSlotId);
+  const compareTurn = useCompareStore((s) => (activeSlotId ? s.turns[activeSlotId] : undefined));
+  useCompareLifecycle(activeSlotId);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const spacerRef = useRef<HTMLDivElement>(null);
@@ -156,6 +186,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   const isAutoScrollingRef = useRef(false);
   const autoScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasPerformedInitialScrollRef = useRef(false);
+  /** Older pages fetched so far while looking for the fork-point message of a `?messageId=` link. */
+  const focusPagesLoadedRef = useRef(0);
   const prevActiveSlotIdRef = useRef<string | null>(null);
   const wasStreamingRef = useRef(isStreaming);
   /** Detects isStreaming false→true so we clear scroll lock before tail sync (layout phase). */
@@ -186,12 +218,13 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     streamingScrollTopRef.current = scrollContainerRef.current.scrollTop;
   }
 
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
 
-  // Reactive thread messages plus the client used to append follow-up messages
+  // Reactive thread messages
   const threadMessages = useAuiState((s) => s.thread.messages);
-  const aui = useAui();
+  const threadExtras = useAuiState((s) => s.thread.extras);
+  const threadOwner = useMemo(() => threadOwnerOf(threadExtras), [threadExtras]);
 
   // Track threadMessages changes as a render reason
   const prevThreadMsgsRef = useRef(threadMessages);
@@ -221,6 +254,13 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
       }),
     [threadMessages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]
   );
+  // A built-in's result row sits after the pairs shown when it was typed (SLASH2 §3).
+  const builtinRowKey = activeSlotId ?? NEW_CHAT_KEY;
+  const builtinRows = useBuiltinRows(builtinRowKey);
+  useSavedUndoRows(builtinRowKey, messagePairs);
+  useEffect(() => {
+    useBuiltinResults.getState().setPairs(builtinRowKey, messagePairs.length);
+  }, [builtinRowKey, messagePairs.length]);
 
   // The highest version any message in this conversation has shown for a
   // given artifact `recordId`. Every version bump re-registers the SAME
@@ -252,6 +292,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // Ref-mirror of messagePairs — lets scroll effects read the latest pairs
   // without having the full array in their dependency list (which would cause
   // effect #2 to re-run and cancel its rAF on every render during streaming).
+  const copiedUpTo = useMemo(() => lastCopiedPairIndex(messagePairs), [messagePairs]);
   const messagePairsRef = useRef(messagePairs);
   messagePairsRef.current = messagePairs;
 
@@ -381,9 +422,11 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
    * @param options.chatBecameActive If true, resets isScrolledUp (new context)
    */
   const executeScroll = useCallback((options: {
-    target: 'top-of-last-message' | 'bottom-of-container';
+    target: 'top-of-last-message' | 'bottom-of-container' | 'message';
     behavior: 'auto' | 'smooth' | '80/20-jump';
     chatBecameActive?: boolean;
+    /** Row key of the message to put at the top; used with target 'message'. */
+    messageKey?: string;
   }) => {
     if (!scrollContainerRef.current) {
       return;
@@ -399,9 +442,10 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     const container = scrollContainerRef.current;
     let targetScrollTop = 0;
 
-    if (options.target === 'top-of-last-message') {
-      if (messageRefs.current.size === 0 || !lastMessageKeyRef.current) return;
-      const element = messageRefs.current.get(lastMessageKeyRef.current);
+    if (options.target === 'top-of-last-message' || options.target === 'message') {
+      const key = options.target === 'message' ? options.messageKey : lastMessageKeyRef.current;
+      if (messageRefs.current.size === 0 || !key) return;
+      const element = messageRefs.current.get(key);
       if (!element) return;
 
       const containerRect = container.getBoundingClientRect();
@@ -734,6 +778,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
       hasPerformedInitialScrollRef.current = false;
       isScrolledUpRef.current = false;
       lockClearedAtMsRef.current = 0;
+      focusPagesLoadedRef.current = 0;
       lastTailSyncScrollTopRef.current = -1;
       // Align wasStreamingRef with the incoming slot's current streaming state
       // so Effect #5 (streaming-completion handler) doesn't fire spuriously.
@@ -755,12 +800,37 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     if (!isInitialized || messagePairs.length === 0) return;
     if (hasPerformedInitialScrollRef.current) return;
 
+    // A link from a fork (`?messageId=`) opens the chat at the message it was forked
+    // from, ahead of any saved position. Only the newest page is loaded at first, so
+    // an older fork point is looked for page by page, up to FOCUS_MESSAGE_MAX_PAGES.
+    const focusId = new URLSearchParams(window.location.search).get('messageId');
+    const focusPair = focusId ? messagePairs.find((p) => p.messageId === focusId) : undefined;
+    if (
+      focusId && !focusPair && activeSlotId &&
+      hasOlderMessages && focusPagesLoadedRef.current < FOCUS_MESSAGE_MAX_PAGES
+    ) {
+      // Wait out a load already in flight; the effect re-runs when it settles.
+      if (!isLoadingOlder) {
+        focusPagesLoadedRef.current += 1;
+        void loadOlderMessagesForSlot(activeSlotId);
+      }
+      return;
+    }
+
     hasPerformedInitialScrollRef.current = true;
 
     // Check for saved scroll position (returning to a previously viewed chat)
     const store = useChatStore.getState();
     const slot = activeSlotId ? store.slots[activeSlotId] : null;
     const savedTop = slot?.savedScrollTop;
+
+    if (focusPair) {
+      recalcSpacerHeight();
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        executeScroll({ target: 'message', messageKey: focusPair.key, behavior: 'auto', chatBecameActive: true });
+      }));
+      return;
+    }
 
     // Determine whether the last message is actively streaming RIGHT NOW.
     // Hoisted above the savedTop block so it can be used in both branches.
@@ -808,7 +878,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
         chatBecameActive: true,
       });
     }));
-  }, [isInitialized, messagePairs.length, activeSlotId, recalcSpacerHeight, executeScroll]);
+  }, [isInitialized, messagePairs.length, activeSlotId, hasOlderMessages, isLoadingOlder, recalcSpacerHeight, executeScroll]);
 
   // ── 2. ResizeObserver on last message element ─────────────────────
   // Tracks the last message's DOM size changes (streaming content growing,
@@ -1015,41 +1085,45 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     wasStreamingRef.current = isStreaming;
   }, [isStreaming, recalcSpacerHeight]);
 
-  // ── Ask More: randomly pick one question set per new message pair ──
-  // TODO: Move this to the backend, also remove from il8n jsons since it's meant to be dynamic content
-  const askMoreSetIndexRef = useRef<{ count: number; index: number }>({ count: -1, index: 0 });
-  if (askMoreSetIndexRef.current.count !== messagePairs.length) {
-    askMoreSetIndexRef.current = {
-      count: messagePairs.length,
-      // eslint-disable-next-line react-hooks/purity -- intentional render-time ref update: pick a stable random set per message-pair count change
-      index: Math.floor(Math.random() * 1_000_000),
-    };
-  }
-  const askMoreQuestions = useMemo(() => {
-    if (messagePairs.length === 0) return [];
-    // t() with returnObjects:true is unreliable for nested arrays in strict TS —
-    // read the resource bundle directly to get the raw JSON array.
-    const bundle = i18n.getResourceBundle(i18n.language, 'translation') as Record<string, unknown> | undefined;
-    const sets = (bundle?.chat as Record<string, unknown> | undefined)?.askMoreQuestionSets as string[][] | undefined;
-    const activeSets = Array.isArray(sets) && sets.length > 0 ? sets : ASK_MORE_QUESTION_SETS;
-    const setIndex = askMoreSetIndexRef.current.index % activeSets.length;
-    return activeSets[setIndex];
-  }, [messagePairs.length, i18n.language]);
 
-  // Whether to show Ask More suggestions
-  const showAskMore = messagePairs.length > 0 && !isStreaming && !isLoadingConversation;
-
-  // Handle Ask More question click — send through runtime
-  const handleAskMoreClick = useCallback(
-    (question: string) => {
-      aui.thread().append({
-        role: 'user',
-        content: [{ type: 'text', text: question }],
-        startRun: true,
+  // ── 6. A built-in's result row ───────────────────────────────────
+  // It lands after the last reply, under the composer: brought into view when typed and again when it settles.
+  // Only a row typed while this list is mounted: a chat opened again keeps its own scroll position.
+  const builtinReveal = useBuiltinResults((s) => s.reveal);
+  const handledRevealSeqRef = useRef(builtinReveal?.seq ?? 0);
+  useEffect(() => {
+    if (!builtinReveal || builtinReveal.seq <= handledRevealSeqRef.current) return;
+    handledRevealSeqRef.current = builtinReveal.seq;
+    if (builtinReveal.key !== builtinRowKey) return;
+    const raf = requestAnimationFrame(() => {
+      const container = scrollContainerRef.current;
+      const row = Array.from(container?.querySelectorAll<HTMLElement>('[data-builtin-row-id]') ?? []).find(
+        (el) => el.dataset.builtinRowId === builtinReveal.id,
+      );
+      if (!container || !row) return;
+      const view = container.getBoundingClientRect();
+      const rect = row.getBoundingClientRect();
+      const top = revealScrollTop({
+        rowTop: rect.top,
+        rowBottom: rect.bottom,
+        viewTop: view.top,
+        viewBottom: view.bottom - (composerDockRef.current?.offsetHeight ?? 0),
+        scrollTop: container.scrollTop,
+        padding: REVEAL_GAP_PX,
       });
-    },
-    [aui]
-  );
+      if (top === null) return;
+      // The person just typed the command: like sending a message, it outranks their earlier scroll-up.
+      isScrolledUpRef.current = false;
+      if (autoScrollTimeoutRef.current) clearTimeout(autoScrollTimeoutRef.current);
+      isAutoScrollingRef.current = true;
+      autoScrollTimeoutRef.current = setTimeout(() => {
+        isAutoScrollingRef.current = false;
+        autoScrollTimeoutRef.current = null;
+      }, 500);
+      container.scrollTo({ top, behavior: 'smooth' });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [builtinReveal, builtinRowKey]);
 
   // Lands on the end of the latest message and, if an answer is streaming, re-arms tail-follow.
   const handleJumpToNewest = useCallback(() => {
@@ -1096,85 +1170,118 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
           paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-5)',
         }}
       >
-        <Flex direction="column" gap="6">
-          {/* Loading older messages indicator — shown at the very top while fetching */}
-          {isLoadingOlder && (
-            <Flex align="center" justify="center" style={{ padding: 'var(--space-4)', flexShrink: 0 }}>
-              <LottieLoader variant="loader" size={32} />
-            </Flex>
-          )}
+        <ThreadOwnerContext.Provider value={threadOwner}>
+          <Flex direction="column" gap="6">
+            {/* Loading older messages indicator — shown at the very top while fetching */}
+            {isLoadingOlder && (
+              <Flex align="center" justify="center" style={{ padding: 'var(--space-4)', flexShrink: 0 }}>
+                <LottieLoader variant="loader" size={32} />
+              </Flex>
+            )}
 
-          {isLoadingConversation && (
-            <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
-              <LottieLoader variant="loader" size={48} showLabel />
-            </Flex>
-          )}
+            {isLoadingConversation && (
+              <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
+                <LottieLoader variant="loader" size={48} showLabel />
+              </Flex>
+            )}
 
-          {messagePairs.map((pair, index) => {
-            const isLast = index === messagePairs.length - 1;
-            return (
-              <div
-                key={pair.key}
-                ref={(el) => setMessageRef(pair.key, el)}
-              >
-                <ErrorBoundary
-                  resetKeys={[pair.key, pair.messageId]}
-                  fallback={(error, reset) => <ErrorFallback error={error} reset={reset} compact />}
-                >
-                  <ChatResponse
-                    question={pair.question}
-                    answer={pair.answer}
-                    citationMaps={pair.citationMaps}
-                    citationCallbacks={citationCallbacks}
-                    confidence={pair.confidence}
-                    isStreaming={pair.isStreaming}
-                    modelInfo={pair.modelInfo}
-                    collections={pair.collections}
-                    appliedFilters={pair.appliedFilters}
-                    attachments={pair.attachments}
-                    messageId={pair.messageId}
-                    isLastMessage={isLast}
-                    rowId={pair.key}
-                    citationMessageRowKey={pair.key}
-                    createdAt={pair.createdAt}
-                    streamingContent={pair.isStreaming ? streamingContent : undefined}
-                    currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
-                    streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
-                    streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
-                    streamingParts={pair.isStreaming ? streamingParts : undefined}
-                    latestArtifactVersions={latestArtifactVersions}
-                    persistedParts={pair.persistedParts}
-                    persistedAskUserQuestion={pair.persistedAskUserQuestion}
-                    persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
-                    feedbackInfo={pair.feedbackInfo}
-                    status={pair.status}
-                    streamError={pair.streamError}
-                    unanswered={pair.unanswered}
-                  />
-                </ErrorBoundary>
+            {forkedFrom && (
+              <ForkOriginHeader origin={forkedFrom} agentId={threadAgentId} projectId={slotProjectId} />
+            )}
 
-                {/* Ask More — follow-up suggestions after the last bot response.
-                    Placed inside the last message wrapper so the ResizeObserver
-                    accounts for its height in the spacer calculation.
-
-                    TEMPORARILY DISABLED: the follow-up questions are hardcoded
-                    (see `ASK_MORE_QUESTION_SETS` in ../../constants) and are not
-                    yet generated from the actual conversation. Re-enable once
-                    the suggestions are dynamically produced by the backend. */}
-                {/*
-                {isLast && showAskMore && (
-                  <Box style={{ marginTop: 'var(--space-6)' }}>
-                    <AskMore
-                      questions={askMoreQuestions}
-                      onQuestionClick={handleAskMoreClick}
+            <BuiltinResultRows rows={builtinRows} rowKey={builtinRowKey} afterPairs={0} last={messagePairs.length === 0} />
+            {messagePairs.map((pair, index) => {
+              const isLast = index === messagePairs.length - 1;
+              const compared = isLast ? compareTurn : undefined;
+              const response = (extra?: Partial<React.ComponentProps<typeof ChatResponse>>) => (
+                    <ChatResponse
+                      question={pair.question}
+                      answer={pair.answer}
+                      citationMaps={pair.citationMaps}
+                      citationCallbacks={citationCallbacks}
+                      confidence={pair.confidence}
+                      searchDegraded={pair.searchDegraded}
+                      accessNotices={pair.accessNotices}
+                      isStreaming={pair.isStreaming}
+                      modelInfo={pair.modelInfo}
+                      collections={pair.collections}
+                      appliedFilters={pair.appliedFilters}
+                      attachments={pair.attachments}
+                      command={pair.command}
+                      messageId={pair.messageId}
+                      isLastMessage={isLast}
+                      rowId={pair.key}
+                      citationMessageRowKey={pair.key}
+                      createdAt={pair.createdAt}
+                      streamingContent={pair.isStreaming ? streamingContent : undefined}
+                      currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
+                      streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
+                      streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
+                      streamingParts={pair.isStreaming ? streamingParts : undefined}
+                      latestArtifactVersions={latestArtifactVersions}
+                      persistedParts={pair.persistedParts}
+                      runId={pair.runId}
+                      persistedAskUserQuestion={pair.persistedAskUserQuestion}
+                      persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
+                      feedbackInfo={pair.feedbackInfo}
+                      status={pair.status}
+                      truncatedBy={pair.truncatedBy}
+                      budgetScope={pair.budgetScope}
+                      notFound={pair.notFound}
+                      limits={pair.limits}
+                      streamError={pair.streamError}
+                      answerHidden={pair.answerHidden}
+                      unanswered={pair.unanswered}
+                      {...extra}
                     />
-                  </Box>
-                )}
-                */}
-              </div>
-            );
-          })}
-        </Flex>
+              );
+              return (
+                <div
+                  key={pair.key}
+                  ref={(el) => setMessageRef(pair.key, el)}
+                >
+                  <ErrorBoundary
+                    resetKeys={[pair.key, pair.messageId]}
+                    fallback={(error, reset) => <ErrorFallback error={error} reset={reset} compact />}
+                  >
+                    {compared && activeSlotId ? (
+                      <CompareColumns
+                        slotId={activeSlotId}
+                        turn={compared}
+                        question={response({ unanswered: true })}
+                        primary={response({ columnMode: true })}
+                        citationCallbacks={citationCallbacks}
+                      />
+                    ) : (
+                      response()
+                    )}
+                  </ErrorBoundary>
+                  {pair.command?.name === 'init' && pair.command.owner === 'pipeshub' && !pair.isStreaming && pair.answer ? (
+                    <InitDraftAction answer={pair.answer} />
+                  ) : null}
+
+                  {forkedFrom?.atMessageId && pair.messageId === forkedFrom.atMessageId && (
+                    <ForkOriginLine />
+                  )}
+                  {/* The fork's own line marks the copy when the server names it; ours stands in only without it. */}
+                  {index === copiedUpTo && !forkedFrom?.atMessageId && <CopiedHistoryNote />}
+
+                  {pair.messageId && forks?.some((f) => f.fromMessageId === pair.messageId) && (
+                    <ForkedIntoLine
+                      forks={forks.filter((f) => f.fromMessageId === pair.messageId)}
+                      agentId={threadAgentId}
+                      projectId={slotProjectId}
+                    />
+                  )}
+
+                  {/* Inside the last message's wrapper so the spacer's ResizeObserver counts the chips' height. */}
+                  {isLast && !pair.isStreaming && <FollowupChips />}
+                  <BuiltinResultRows rows={builtinRows} rowKey={builtinRowKey} afterPairs={index + 1} last={isLast} />
+                </div>
+              );
+            })}
+          </Flex>
+        </ThreadOwnerContext.Provider>
       </Box>
 
       {/* Dynamic bottom spacer: ensures the last message can always be scrolled to
@@ -1233,12 +1340,14 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
     {showJumpToNewest && (
       <Box
+        data-testid="jump-to-newest"
         style={{
           position: 'absolute',
           bottom: composerDockHeight + 12,
-          left: '50%',
-          transform: 'translateX(-50%)',
           zIndex: 2,
+          // On a phone every card spans the column, so a centred button sat on the controls of the card
+          // above the composer (a job card's Steps row). At the right edge it covers only where rows end.
+          ...(isMobile ? { right: 'var(--space-4)' } : { left: '50%', transform: 'translateX(-50%)' }),
         }}
       >
         <IconButton

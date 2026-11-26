@@ -131,3 +131,19 @@ class TestClientFactoryBase:
             assert result == "thread_client"
         finally:
             loop.close()
+
+
+def test_create_client_sync_in_async_context_keeps_the_callers_log_fields() -> None:
+    """The worker thread runs in a copy of the caller's context, so its lines keep the call's ids."""
+    from app.agents.tools.factories.base import ClientFactory
+    from app.utils.logging_fields import current_log_fields, log_fields
+
+    class ConcreteFactory(ClientFactory):
+        async def create_client(self, config_service: object, logger: object, toolset_config: dict, state: object = None) -> dict:
+            return dict(current_log_fields())
+
+    async def run_test() -> dict:
+        with log_fields(tool="jira__search", tool_call_id="c1"):
+            return ConcreteFactory().create_client_sync(MagicMock(), MagicMock(), {})
+
+    assert asyncio.run(run_test()) == {"tool": "jira__search", "tool_call_id": "c1"}

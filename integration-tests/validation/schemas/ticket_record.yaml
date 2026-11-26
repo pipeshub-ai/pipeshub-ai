@@ -34,6 +34,9 @@ fields:
   labels:
     required: false
     type: array
+  milestone:
+    required: false
+    type: string
   priority:
     required: false
     type: string

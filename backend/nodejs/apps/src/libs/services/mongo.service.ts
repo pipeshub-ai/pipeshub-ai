@@ -1,5 +1,11 @@
 import { injectable } from 'inversify';
 import mongoose, { Connection, ConnectOptions } from 'mongoose';
+import {
+  APP_MONGO_DEFAULT_OPTIONS,
+  fenceClientOptions,
+  installMongoFence,
+  setConsumerPauseDb,
+} from '../repositories/fence';
 import { ConnectionError } from '../errors/database.errors';
 import { BadRequestError, InternalServerError } from '../errors/http.errors';
 import { Logger } from './logger.service';
@@ -46,15 +52,24 @@ const REQUIRED_COLLECTIONS = [
   'notifications',
 ];
 
+/**
+ * Mongoose's process-wide options as the app runs them; a process that connects Mongoose itself (a test server
+ * standing in for the app) calls this first, so it runs the queries the app runs.
+ */
+export function configureMongoose(): void {
+  mongoose.set('strictQuery', true);
+  mongoose.set('debug', process.env.NODE_ENV === 'development');
+  // PERF-D's per-query stack capture (6% of the harness hot path's CPU) is gone in Mongoose 9, and its
+  // skipOriginalStackTraces option with it; PERFD-11 keeps the major version from slipping back below 9.
+}
+
 @injectable()
 export class MongoService {
   private connection: Connection | null = null;
   private isInitialized: boolean = false;
 
   constructor(private config: MongooseConfig) {
-    // Set mongoose configuration options
-    mongoose.set('strictQuery', true);
-    mongoose.set('debug', process.env.NODE_ENV === 'development');
+    configureMongoose();
   }
 
   public async initialize(): Promise<void> {
@@ -65,23 +80,21 @@ export class MongoService {
 
     try {
       const { uri, db, options } = this.config;
-      const defaultOptions = {
-        serverSelectionTimeoutMS: 5000,
-        socketTimeoutMS: 45000,
-        family: 4,
-        maxPoolSize: 10,
-      };
+      const defaultOptions = APP_MONGO_DEFAULT_OPTIONS;
       // Configure connection options
       const connectOptions: ConnectOptions = {
         dbName: db,
         ...(options ?? defaultOptions),
+        ...fenceClientOptions(),
         autoCreate: true,
         autoIndex: true,
       };
 
+      installMongoFence(mongoose.mongo.Collection);
       // Connect to MongoDB
       await mongoose.connect(uri, connectOptions);
       this.connection = mongoose.connection;
+      setConsumerPauseDb(mongoose.connection.db);
 
       // Set up connection event handlers
       this.setupConnectionHandlers();
@@ -113,9 +126,6 @@ export class MongoService {
     this.connection.on('error', (error) => {
       logger.error('Mongoose connection error:', error);
     });
-
-    // No signal handlers here: `Application.stop()` owns shutdown order and
-    // disconnects via `destroy()` only after in-flight requests have drained.
   }
 
   /**
@@ -125,7 +135,9 @@ export class MongoService {
    */
   private async ensureCollections(): Promise<void> {
     if (!this.connection?.db) {
-      logger.warn('Cannot ensure collections: database connection not available');
+      logger.warn(
+        'Cannot ensure collections: database connection not available',
+      );
       return;
     }
 
@@ -159,6 +171,11 @@ export class MongoService {
     }
   }
 
+  /**
+   * Called by the owner at the end of its shutdown. The connection is not
+   * closed on a signal here: that cut it under requests still being answered
+   * and under the leases a stopping process has yet to release.
+   */
   public async destroy(): Promise<void> {
     if (!this.isInitialized) {
       logger.warn('MongoDB connection not initialized');

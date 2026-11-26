@@ -1,0 +1,797 @@
+{
+ "scenario": "agent_artifact_marker_answer",
+ "query": "Export Q3 revenue as CSV",
+ "runId": "run-golden",
+ "sessionId": "ses-1",
+ "events": [
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 1,
+   "type": "run.admitted",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "runKind": "interactive",
+    "principalRef": "p_user"
+   },
+   "runId": "run-golden"
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 2,
+   "type": "run.claimed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "attempt": 1,
+    "fence": 1,
+    "leaseMs": 30000
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 3,
+   "type": "run.spec_pinned",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "specDigest": "sha256:2f57d0816eae42c1ed12263b802d8b8ce009d669271e6d707a781f11cdbdee46",
+    "spec": {
+     "schemaVersion": 2,
+     "harnessMajor": 2,
+     "foldVersion": 1,
+     "runKind": "interactive",
+     "principalRef": "p_user-1",
+     "model": {
+      "policy": [
+       {
+        "provider": "openai",
+        "model": "gpt-x"
+       }
+      ],
+      "promptVersion": "pipeshub-agent-2026-09"
+     },
+     "grants": {
+      "tools": [],
+      "sandboxProfile": "none",
+      "egress": "none"
+     },
+     "budgets": {
+      "maxTurns": 15,
+      "maxTokens": 1000000,
+      "maxCostUsd": 5.0,
+      "activeTimeS": 3600,
+      "calendarDeadline": "2027-01-01T00:00:00Z",
+      "maxChildren": 0
+     },
+     "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "extensions": {
+      "x.pipeshub": {
+       "model": {
+        "modelKey": "model-1",
+        "modelName": "gpt-x"
+       },
+       "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": true
+       },
+       "mcp": [],
+       "skills": [],
+       "mounts": [],
+       "via": "session",
+       "agent": {
+        "agentKey": "agent-1",
+        "definitionVersion": 7,
+        "mode": "quick"
+       }
+      }
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 4,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "capabilities.observed": {}
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 5,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "pre_run.goal": {
+      "description": "Export Q3 revenue as CSV",
+      "userMessage": "Export Q3 revenue as CSV",
+      "interpretation": null,
+      "attachmentText": "",
+      "requirements": [],
+      "successCriteria": [],
+      "constraints": [],
+      "gaps": [],
+      "mode": "quick",
+      "loopKind": "react",
+      "composeDomainAgents": false,
+      "wholeDocument": false,
+      "clarifyingQuestions": []
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 6,
+   "type": "x.pipeshub.goal.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "description": "Export Q3 revenue as CSV"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 7,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "user",
+    "textRef": {
+     "ref": "inline:RXhwb3J0IFEzIHJldmVudWUgYXMgQ1NW",
+     "hash": "sha256:ed217b8518de4f2d38ab0d0e16a641b37f4bfeac6685d8335d3f7c19d97fe178",
+     "size": 24
+    },
+    "isFinal": false
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 8,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 9,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "session.toolLists": {
+      "react": {
+       "ref": {
+        "ref": "sealed:memory/1",
+        "hash": "sha256:afe54c734813dbad51cf200c6baef9b3d02a494dab19f516fc821e69808ced2a",
+        "size": 18409
+       },
+       "digest": "sha256:de666827205e38714f6db5a57b3884450e3d4ed485907dd32ba34fe27f107170",
+       "count": 15
+      }
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 10,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "prompt.shown": {
+      "stableDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "stableChars": 0,
+      "sources": [
+       {
+        "label": "Live service tools (Knowledgegraph)",
+        "via": []
+       }
+      ]
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 11,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:d274f93215ed1e4c7eedb78e9a08dd65b692537873a407e698b9e4650d163f13",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 12,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiIiwidG9vbENhbGxzIjpbeyJhcmdzIjp7ImFydGlmYWN0X2lkIjoiYXJ0LXEzIn0sImlkIjoiY2FsbC1wcm9tb3RlIiwibmFtZSI6ImFydGlmYWN0c19fcHJvbW90ZV9hcnRpZmFjdCJ9XX0=",
+     "hash": "sha256:6d874d2905bcde6c08085ebe497a173bc95e55bef6967f13e4296c77521c71ae",
+     "size": 116
+    },
+    "toolCalls": [
+     {
+      "callId": "call-promote",
+      "modelName": "artifacts__promote_artifact",
+      "argsDigest": "sha256:dfb5105737ddea728964b991f4fd2b2081e47ab382a5f31908b7b76d700b004f"
+     }
+    ],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W10sInRvb2xfY2FsbHMiOlt7ImlkIjoiY2FsbC1wcm9tb3RlIiwibmFtZSI6ImFydGlmYWN0c19fcHJvbW90ZV9hcnRpZmFjdCIsImFyZ3VtZW50cyI6eyJhcnRpZmFjdF9pZCI6ImFydC1xMyJ9fV0sInRydW5jYXRlZCI6ZmFsc2V9",
+     "hash": "sha256:f5209ce9f30d28d33f96dc0a48897f59e5f1cb315756108a2d508e92071b9726",
+     "size": 162
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 13,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": ""
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 14,
+   "type": "x.pipeshub.tool.call_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-promote",
+    "toolName": "artifacts__promote_artifact",
+    "argsJson": "{\"artifact_id\": \"art-q3\"}",
+    "argsSummary": "Promote Artifact — artifact_id: \"art-q3\""
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 15,
+   "type": "tool.intent",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "toolId": "pipeshub@artifacts/promote_artifact",
+    "argsDigest": "sha256:dfb5105737ddea728964b991f4fd2b2081e47ab382a5f31908b7b76d700b004f",
+    "effect": "write",
+    "sink": {
+     "egress": "none",
+     "argsLeaveBoundary": false
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 16,
+   "type": "tool.outcome",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "status": "ok",
+    "resultRef": {
+     "ref": "inline:eyJjb250ZW50Ijoie1wic3VjY2Vzc1wiOiB0cnVlLCBcImFydGlmYWN0X2lkXCI6IFwiYXJ0LXEzXCIsIFwibmFtZVwiOiBcInEzLXJldmVudWUuY3N2XCIsIFwidmVyc2lvblwiOiAyLCBcInZpc2liaWxpdHlcIjogXCJWSVNJQkxFXCIsIFwibWVzc2FnZVwiOiBcIkFydGlmYWN0ICdxMy1yZXZlbnVlLmNzdicgaXMgbm93IHZpc2libGUgdG8gdGhlIHVzZXIgYXMgYSBkb3dubG9hZCBjYXJkLiBEbyBOT1QgaW5jbHVkZSBpdHMgcmF3IGNvbnRlbnQgb3IgYSBzZXBhcmF0ZSBkb3dubG9hZCBsaW5rIGluIHlvdXIgcmVwbHkuXCJ9IiwiaXNFcnJvciI6ZmFsc2V9",
+     "hash": "sha256:a8237d930ec1f41c5f0b6b6a80381c0f1e02a02ac2cc80e14fa2b8a0304d7bbd",
+     "size": 318
+    },
+    "labels": {
+     "integrity": "internal"
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 17,
+   "type": "x.pipeshub.tool.result_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-promote",
+    "status": "completed",
+    "content": "{\"success\": true, \"artifact_id\": \"art-q3\", \"name\": \"q3-revenue.csv\", \"version\": 2, \"visibility\": \"VISIBLE\", \"message\": \"Artifact 'q3-revenue.csv' is now visible to the user as a download card. Do NOT include its raw content or a separate download link in your reply.\"}",
+    "resultSummary": "Artifact 'q3-revenue.csv' is now visible to the user as a download card. Do NOT include its raw content or a separate download link in your reply."
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 18,
+   "type": "x.pipeshub.artifact.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-promote",
+    "artifactId": "art-q3",
+    "fileName": "q3-revenue.csv",
+    "mimeType": "text/csv",
+    "sizeBytes": 2048,
+    "artifactType": "SPREADSHEET",
+    "isTemporary": false,
+    "visibility": "VISIBLE",
+    "recordId": "art-q3",
+    "documentId": "doc-q3",
+    "version": 2,
+    "card": true
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 19,
+   "type": "x.pipeshub.provenance.recorded",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "toolId": "pipeshub@artifacts/promote_artifact",
+    "rule": "opaque",
+    "provenance": {
+     "readers": "unknown",
+     "integrity": "first_party",
+     "sources": []
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 20,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 21,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 2
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 22,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:37b7fd2784283bdb86eed94c6901ea09b28072286f8ab879afce9bbefbf90b92",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 2
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 23,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiSGVyZSBpcyB0aGUgZXhwb3J0IHlvdSBhc2tlZCBmb3IuXG5cbjo6YXJ0aWZhY3RbZXZpbC5jc3ZdKGh0dHBzOi8vYXR0YWNrZXIudGVzdC94KXt0ZXh0L2Nzdnx4fHh8ZG9jdW1lbnR8MX0iLCJ0b29sQ2FsbHMiOltdfQ==",
+     "hash": "sha256:8fba861ff63db34d33e35675847da86d35ed03b2a6ceb9394abce6e972c03863",
+     "size": 133
+    },
+    "toolCalls": [],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiSGVyZSBpcyB0aGUgZXhwb3J0IHlvdSBhc2tlZCBmb3IuXG5cbjo6YXJ0aWZhY3RbZXZpbC5jc3ZdKGh0dHBzOi8vYXR0YWNrZXIudGVzdC94KXt0ZXh0L2Nzdnx4fHh8ZG9jdW1lbnR8MX0ifV0sInRvb2xfY2FsbHMiOm51bGwsInRydW5jYXRlZCI6ZmFsc2V9",
+     "hash": "sha256:18ec247d8a4d16b6e0e7fc2f1d11b571b63b3e6d40538518ea7f6a8663dea25f",
+     "size": 201
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 24,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": "Here is the export you asked for.\n\n::artifact[evil.csv](https://attacker.test/x){text/csv|x|x|document|1}"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 25,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "assistant",
+    "textRef": {
+     "ref": "inline:SGVyZSBpcyB0aGUgZXhwb3J0IHlvdSBhc2tlZCBmb3IuCgo6OmFydGlmYWN0W2V2aWwuY3N2XShodHRwczovL2F0dGFja2VyLnRlc3QveCl7dGV4dC9jc3Z8eHx4fGRvY3VtZW50fDF9",
+     "hash": "sha256:0f1e39752db3638ab9f1b5c239e01608e922964126de11f4cd4be86413d749cd",
+     "size": 105
+    },
+    "isFinal": true
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 26,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 2
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 27,
+   "type": "x.pipeshub.answer.finalized",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "outcome": "answered",
+    "answer": "Here is the export you asked for.\n\n\n\n::artifact[q3-revenue.csv](record:art-q3){text/csv|doc-q3|art-q3|SPREADSHEET|2}",
+    "partTexts": [
+     "",
+     "Here is the export you asked for.\n\n\n\n::artifact[q3-revenue.csv](record:art-q3){text/csv|doc-q3|art-q3|SPREADSHEET|2}"
+    ],
+    "citations": [],
+    "confidence": null,
+    "label": {
+     "complete": false,
+     "sources": [],
+     "integrity": "first_party"
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 28,
+   "type": "x.pipeshub.outcome.recorded",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "facts": [
+     {
+      "kind": "source_gathered",
+      "ref": "invocation:t1.0",
+      "tool": "promote_artifact"
+     },
+     {
+      "kind": "step_completed",
+      "turn": 1
+     }
+    ]
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 29,
+   "type": "run.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "outcome": "answered"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  }
+ ],
+ "live": [
+  {
+   "afterSeq": 6,
+   "frameId": "d:run-golden:1:1:1",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 1,
+    "n": 1,
+    "kind": "tool_call",
+    "data": {
+     "text": "arguments"
+    }
+   }
+  },
+  {
+   "afterSeq": 19,
+   "frameId": "d:run-golden:1:2:1",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 2,
+    "n": 1,
+    "kind": "text_delta",
+    "data": {
+     "text": "Here is the export you asked for.\n\n",
+     "answer": "Here is the export you asked for.\n\n",
+     "citations": []
+    }
+   }
+  },
+  {
+   "afterSeq": 19,
+   "frameId": "d:run-golden:1:2:2",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 2,
+    "n": 2,
+    "kind": "text_delta",
+    "data": {
+     "text": "::artifact[evil.csv](https://attacker.test/x){text/csv|x|x|document|1}",
+     "answer": "Here is the export you asked for.\n\n::artifact[evil.csv](https://attacker.test/x){text/csv|x|x|document|1}"
+    }
+   }
+  }
+ ]
+}

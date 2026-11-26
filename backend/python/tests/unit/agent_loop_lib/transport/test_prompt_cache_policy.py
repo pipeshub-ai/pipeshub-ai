@@ -70,6 +70,15 @@ class TestRoutingKey:
         assert org == routing_key("org-1", "record-1", 8).split(":")[1]
         assert key != routing_key("org-1", "record-1", 8, family="document-extraction")
 
+    def test_a_principal_scopes_the_route_to_one_person_of_the_org(self) -> None:
+        mine = routing_key("org-1", "conv-1", 8, principal_id="user-1")
+        assert mine == routing_key("org-1", "conv-1", 8, principal_id="user-1")
+        assert mine != routing_key("org-1", "conv-1", 8, principal_id="user-2")
+        assert mine != routing_key("org-1", "conv-1", 8), "the org's own route is not a person's"
+        assert mine != routing_key("org-2", "conv-1", 8, principal_id="user-1")
+        prefix, scope, _shard = mine.split(":")
+        assert prefix == "pipeshub" and len(scope) == 12 and "user-1" not in mine and "org-1" not in mine
+
     def test_conversations_spread_over_the_shards(self) -> None:
         shards = {routing_key("org-1", f"conv-{i}", 8).rsplit(":", 1)[1] for i in range(200)}
         assert len(shards) == 8
@@ -134,6 +143,8 @@ class TestOpenAICachePlan:
     @pytest.mark.parametrize(("model", "base_url", "expected"), [
         ("gpt-5.4", None, (RETAINED, False)),
         ("gpt-5.4", "https://api.openai.com/v1", (RETAINED, False)),
+        ("gpt-5.4", "https://us.api.openai.com/v1", (RETAINED, False)),
+        ("gpt-5.6-luna", "https://eu.api.openai.com/v1", (KEYED, True)),
         ("gpt-5.4", AZURE, (RETAINED, False)),
         ("gpt-5", "https://res.cognitiveservices.azure.com", (RETAINED, False)),
         ("gpt-5-codex", None, (RETAINED, False)),

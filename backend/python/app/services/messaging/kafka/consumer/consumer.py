@@ -1,23 +1,20 @@
 import asyncio
 import json
-import ssl
 import time
+from collections import deque
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Optional
 
 from aiokafka import AIOKafkaConsumer  # type: ignore
+from pydantic import ValidationError
 
-from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, open_configured
-from app.core.org_context import bind_optional, spawn_detached
+from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, Inbox, decode_message, open_configured, record_processed
+from app.core.org_context import spawn_detached
+from app.services.messaging import message_log
 from app.services.messaging.config import MessageHandler, StreamMessage, messaging_env
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
 from app.services.messaging.interface.consumer import IMessagingConsumer
-from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
-from app.utils.request_context import (
-    context_from_envelope,
-    reset_context,
-    set_context,
-)
+from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig, kafka_security_kwargs
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -27,6 +24,36 @@ if TYPE_CHECKING:
     from app.services.messaging.retry_manager import RetryManager
 
 MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
+# How many recently settled offsets are remembered per partition for redelivery dedup.
+SETTLED_OFFSET_WINDOW = 4096
+
+
+class _SettledOffsets:
+    """The last ``limit`` offsets settled on one partition: O(1) lookup, bounded size."""
+
+    __slots__ = ("_order", "_seen")
+
+    def __init__(self, limit: int) -> None:
+        self._order: deque[int] = deque(maxlen=limit)
+        self._seen: set[int] = set()
+
+    def add(self, offset: int) -> None:
+        if offset in self._seen:
+            return
+        if len(self._order) == self._order.maxlen:
+            # An offset older than the window would be evicted next anyway; adding it
+            # would evict one a replay is about to redeliver, and so on down the span.
+            if offset < self._order[0]:
+                return
+            self._seen.discard(self._order[0])  # the append below evicts it
+        self._order.append(offset)
+        self._seen.add(offset)
+
+    def __contains__(self, offset: int) -> bool:
+        return offset in self._seen
+
+    def __len__(self) -> int:
+        return len(self._seen)
 
 
 class KafkaMessagingConsumer(IMessagingConsumer):
@@ -45,12 +72,17 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         logger: Logger,
         kafka_config: KafkaConsumerConfig,
         retry_manager: Optional["RetryManager"] = None,
+        inbox: Inbox | None = None,
     ) -> None:
         self.logger = logger
+        self.inbox = inbox  # skips events this group already finished (see app.services.messaging.inbox)
         self.consumer: AIOKafkaConsumer | None = None
         self.running = False
         self.kafka_config = kafka_config
-        self.processed_messages: dict[str, list[int]] = {}
+        # Recently settled offsets per "topic-partition", so a redelivery of one
+        # (a rebalance, a seek, a commit that failed) is skipped. Bounded per
+        # partition and O(1) to look up; see _SettledOffsets.
+        self.processed_messages: dict[str, _SettledOffsets] = {}
         self.consume_task = None
         self.message_handler = None
         self.retry_manager = retry_manager
@@ -81,18 +113,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             'topics': kafka_config.topics  # Include topics in the dictionary
         }
 
-        # Add SSL/SASL configuration
-        if kafka_config.ssl:
-            config["ssl_context"] = ssl.create_default_context()
-            sasl_config = kafka_config.sasl or {}
-            if sasl_config.get("username"):
-                config["security_protocol"] = "SASL_SSL"
-                config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
-                config["sasl_plain_username"] = sasl_config["username"]
-                config["sasl_plain_password"] = sasl_config["password"]
-            else:
-                config["security_protocol"] = "SSL"
-
+        config.update(kafka_security_kwargs(ssl_enabled=kafka_config.ssl, sasl=kafka_config.sasl))
         return config
 
     # implementing abstract methods from IMessagingConsumer
@@ -163,7 +184,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
 
         if self.consumer:
             await self.consumer.stop()
-            self.logger.info("✅ Kafka consumer stopped")
+            self.logger.info("Kafka consumer stopped")
 
     # implementing abstract methods from IMessagingConsumer
     def is_running(self) -> bool:
@@ -177,90 +198,69 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             Tuple of (success, exception) where exception is set on failure
             for classification by the caller.
         """
-        message_id = None
         try:
             message_id = f"{message.topic}-{message.partition}-{message.offset}"
-            self.logger.debug(f"Processing message {message_id}")
-
             if self.__is_message_processed(message_id):
-                self.logger.info(f"Message {message_id} already processed, skipping")
+                message_log.note(outcome="skipped", reason="already_settled")
                 return True, None
 
             # Message decoding and parsing
             message_value = message.value
+            size_bytes = len(message_value) if isinstance(message_value, (bytes, str)) else None
             parsed_message = None
 
             try:
                 if isinstance(message_value, bytes):
                     message_value = message_value.decode("utf-8")
-                    self.logger.debug(f"Decoded bytes message for {message_id}")
 
                 if isinstance(message_value, str):
                     try:
-                        parsed_message = json.loads(message_value)
-                        # Handle double-encoded JSON
-                        if isinstance(parsed_message, str):
-                            parsed_message = json.loads(parsed_message)
-                            self.logger.debug("Handled double-encoded JSON message")
-
-                        self.logger.debug(
-                            f"Parsed message {message_id}: type={type(parsed_message)}"
-                        )
+                        parsed_message = decode_message(message_value)
                     except json.JSONDecodeError as e:
-                        self.logger.error(
-                            f"JSON parsing failed for message {message_id}: {str(e)}\n"
-                            f"Raw message: {message_value[:1000]}..."
-                        )
+                        message_log.note(reason="unparseable", size_bytes=size_bytes)
                         return False, e
                 else:
-                    self.logger.error(
-                        f"Unexpected message value type for {message_id}: {type(message_value)}"
-                    )
+                    message_log.note(reason="unparseable")
                     return False, ValueError(f"Unexpected message type: {type(message_value)}")
 
             except UnicodeDecodeError as e:
-                self.logger.error(
-                    f"Failed to decode message {message_id}: {str(e)}\n"
-                    f"Raw bytes: {message_value[:100]}..."
-                )
+                message_log.note(reason="unparseable", size_bytes=size_bytes)
                 return False, e
 
-            # Carry the producer's trace id into consumer-side logs.
-            if self.message_handler and parsed_message:
-                envelope = parsed_message if isinstance(parsed_message, dict) else {}
-                if not isinstance(parsed_message, dict):
-                    StreamMessage(**parsed_message)  # TypeError: not an envelope
-                ctx = context_from_envelope(envelope)
-                token = set_context(ctx.root_id)
-                try:
-                    try:
-                        opened = await open_configured(message.topic, envelope)
-                    except DuplicateEnvelope:
-                        return True, None
-                    except EnvelopeRejected as e:
-                        self.logger.error(f"Envelope rejected for {message_id}: {e.reason}")
-                        return False, e
-                    with bind_optional(opened.ctx):
-                        stream_message = StreamMessage(**opened.message)
-                        result = await self.message_handler(stream_message)
-                    return result, None
-                except Exception as e:
-                    self.logger.error(
-                        f"Error in message handler for {message_id}: {str(e)}",
-                        exc_info=True,
-                    )
-                    return False, e
-                finally:
-                    reset_context(token)
-            else:
-                self.logger.error(f"No message handler available for {message_id}")
+            if not (self.message_handler and parsed_message):
+                message_log.note(reason="no_handler" if parsed_message else "unparseable", size_bytes=size_bytes)
                 return False, ValueError("No message handler available")
+            if not isinstance(parsed_message, dict):
+                message_log.note(reason="unparseable", size_bytes=size_bytes)
+                return False, TypeError("message is not an envelope")
+
+            # Carry the producer's trace id into consumer-side logs.
+            message_log.bind_envelope(parsed_message)
+            try:
+                opened = await open_configured(
+                    message.topic, parsed_message, inbox=self.inbox, consumer=self.kafka_config.group_id
+                )
+            except DuplicateEnvelope:
+                message_log.note(outcome="skipped", reason="duplicate")
+                return True, None
+            except EnvelopeRejected as e:
+                message_log.note(reason="envelope_rejected", code=e.reason, **e.facts())
+                return False, e
+            message_log.bind_opened(opened.ctx, opened.message)
+            try:
+                stream_message = StreamMessage(**opened.message)
+            except ValidationError as e:
+                message_log.note(reason="unparseable", exc=e)
+                return False, e
+            result = await self.message_handler(stream_message)
+            if not result:
+                message_log.note(reason="handler_false")
+            else:
+                await record_processed(self.inbox, self.kafka_config.group_id, opened.ctx)
+            return result, None
 
         except Exception as e:
-            self.logger.error(
-                f"Unexpected error processing message {message_id if message_id else 'unknown'}: {str(e)}",
-                exc_info=True,
-            )
+            message_log.note(reason="exception", exc=e)
             return False, e
 
     def _apply_backpressure(self) -> None:
@@ -318,81 +318,9 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                     for topic_partition, messages in message_batch.items():
                         for message in messages:
                             message_id = f"{message.topic}-{message.partition}-{message.offset}"
-                            try:
-                                self.logger.debug(
-                                    f"Received message: topic={message.topic}, "
-                                    f"partition={message.partition}, offset={message.offset}"
-                                )
-
-                                if await self.__attempts_exhausted(message_id):
-                                    # Given up on earlier, but that commit failed.
-                                    self.logger.warning(
-                                        f"{message_id} already used up its attempts; committing it "
-                                        "without handling it again"
-                                    )
-                                    await self.__commit_settled(topic_partition, message, message_id)
-                                    continue
-
-                                success, exc = await self.__process_message(message)
-
-                                should_commit = False
-                                if success:
-                                    should_commit = True
-                                    self.logger.debug(f"Message {message_id} processed successfully")
-                                else:
-                                    # Classify exception to determine commit behavior
-                                    error_type = MessageErrorType.TRANSIENT
-                                    if exc:
-                                        error_type = MessageErrorClassifier.classify_by_exception(exc)
-
-                                    if error_type == MessageErrorType.TERMINAL:
-                                        # Terminal error: commit immediately (no retry)
-                                        should_commit = True
-                                        self.logger.warning(
-                                            f"Terminal error for {message_id}: {type(exc).__name__}. "
-                                            "Committing without retry."
-                                        )
-                                    elif self.retry_manager:
-                                        count, should_dead_letter = await self.__count_failed_attempt(message_id)
-                                        if should_dead_letter:
-                                            should_commit = True
-                                            self.logger.warning(
-                                                f"Dead-lettering {message_id} after {count} attempts"
-                                            )
-                                        else:
-                                            self.logger.warning(
-                                                f"Message {message_id} failed (attempt {count}/"
-                                                f"{messaging_env.max_delivery_attempts}), will retry"
-                                            )
-                                    else:
-                                        # No retry manager: always commit to avoid infinite loop
-                                        should_commit = True
-                                        self.logger.warning(
-                                            f"Message {message_id} failed, no retry manager, committing"
-                                        )
-
-                                if should_commit:
-                                    await self.__commit_settled(topic_partition, message, message_id)
-                                    continue
-
-                            except Exception as e:
-                                self.logger.error(f"Error processing message {message_id}: {e}")
-                                _, give_up = await self.__count_failed_attempt(message_id)
-                                if give_up:
-                                    self.logger.warning(f"Giving up on {message_id} after repeated errors")
-                                    await self.__commit_settled(topic_partition, message, message_id)
-                                    continue
-
-                            # Kafka never re-sends a fetched record on its own, so
-                            # without this seek the rest of the batch is skipped and
-                            # the next commit moves past it for good.
-                            self.__retry_later(topic_partition, message.offset)
-                            self.logger.warning(
-                                f"Partition {message.topic}-{message.partition} processing "
-                                f"stopped at offset {message.offset} due to retryable failure. "
-                                f"It and the messages after it will be read again."
-                            )
-                            break
+                            with message_log.delivery(self.logger, topic=message.topic, message_id=message_id):
+                                if not await self.__handle_message(topic_partition, message, message_id):
+                                    break
 
                 except asyncio.CancelledError:
                     self.logger.info("Kafka consumer task cancelled")
@@ -405,6 +333,52 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             self.logger.error(f"Fatal error in consume_messages: {e}")
         finally:
             await self.cleanup()
+
+    async def __handle_message(self, topic_partition: "TopicPartition", message: Any, message_id: str) -> bool:  # noqa: ANN401 - aiokafka ConsumerRecord
+        """Handle one delivery and settle or retry it. False when the partition was rewound for a
+        retry: the rest of the batch is read again and must not be handled now."""
+        try:
+            if await self.__attempts_exhausted(message_id):
+                # Given up on earlier, but that commit failed.
+                await self.__commit_settled(topic_partition, message, message_id)
+                message_log.end("dead_letter", reason="attempts_exhausted")
+                return True
+
+            success, exc = await self.__process_message(message)
+
+            if success:
+                await self.__commit_settled(topic_partition, message, message_id)
+                message_log.end("ack")
+                return True
+            # Classify exception to determine commit behavior
+            error_type = MessageErrorType.TRANSIENT
+            if exc:
+                error_type = MessageErrorClassifier.classify_by_exception(exc)
+
+            if error_type == MessageErrorType.TERMINAL or not self.retry_manager:
+                # Terminal, or no retry manager (always commit to avoid an infinite loop): dropped.
+                await self.__commit_settled(topic_partition, message, message_id)
+                message_log.end("dead_letter")
+                return True
+            count, should_dead_letter = await self.__count_failed_attempt(message_id)
+            if should_dead_letter:
+                await self.__commit_settled(topic_partition, message, message_id)
+                message_log.end("dead_letter", attempt=count)
+                return True
+        except Exception as e:
+            message_log.note(reason="exception", exc=e)
+            count, give_up = await self.__count_failed_attempt(message_id)
+            if give_up:
+                await self.__commit_settled(topic_partition, message, message_id)
+                message_log.end("dead_letter", attempt=count)
+                return True
+
+        # Kafka never re-sends a fetched record on its own, so
+        # without this seek the rest of the batch is skipped and
+        # the next commit moves past it for good.
+        self.__retry_later(topic_partition, message.offset)
+        message_log.end("retry", attempt=count)
+        return False
 
     async def __commit_settled(self, topic_partition: "TopicPartition", message: Any, message_id: str) -> None:  # noqa: ANN401 - aiokafka ConsumerRecord
         """Commit a message that is done, terminal or given up on.
@@ -462,16 +436,16 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         return self._failed_attempts[message_id]
 
     async def __attempts_exhausted(self, message_id: str) -> bool:
+        """Whether earlier deliveries used up the attempts; notes this delivery's number."""
         max_attempts = messaging_env.max_delivery_attempts
-        if self._failed_attempts.get(message_id, 0) >= max_attempts:
-            return True
-        if self.retry_manager is None:
-            return False
-        try:
-            return await self.retry_manager.get_count(message_id) >= max_attempts
-        except Exception as e:
-            self.logger.error(f"Failed to read retry count for {message_id}: {e}")
-            return False
+        failures = self._failed_attempts.get(message_id, 0)
+        if failures < max_attempts and self.retry_manager is not None:
+            try:
+                failures = max(failures, await self.retry_manager.get_count(message_id))
+            except Exception as e:
+                self.logger.error(f"Failed to read retry count for {message_id}: {e}")
+        message_log.note(attempt=failures + 1)
+        return failures >= max_attempts
 
     async def __count_failed_attempt(self, message_id: str) -> tuple[int, bool]:
         """Count one failed attempt; returns ``(attempts, give_up)``."""
@@ -510,5 +484,5 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         topic_partition = "-".join(message_id.split("-")[:-1])
         offset = int(message_id.split("-")[-1])
         if topic_partition not in self.processed_messages:
-            self.processed_messages[topic_partition] = []
-        self.processed_messages[topic_partition].append(offset)
+            self.processed_messages[topic_partition] = _SettledOffsets(SETTLED_OFFSET_WINDOW)
+        self.processed_messages[topic_partition].add(offset)

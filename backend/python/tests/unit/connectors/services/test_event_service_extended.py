@@ -12,13 +12,22 @@ Targets:
 import asyncio
 import logging
 from collections.abc import Coroutine
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.connectors.services.event_service import EventService
+from app.exceptions.non_retryable import NonRetryableError
+from app.models.entities import FileRecord, RecordType
 from tests.unit.connectors.services.coordinator_stub import installed_stub, spawned
+
+
+@pytest.fixture(autouse=True)
+def _one_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keys these tests can name: each delete request's entry is stored as ``r``."""
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r"))
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -102,11 +111,11 @@ class TestProcessEventDeleteAction:
             })
 
     @pytest.mark.asyncio
-    async def test_unknown_action_returns_false(self, service):
-        """Unknown action returns False and logs error."""
-        result = await service.process_event("gmail.unknown_action", {})
-        assert result is False
-        service.logger.error.assert_called()
+    async def test_unknown_action_is_terminal(self, service):
+        """Unknown action raises NonRetryableError; the consumer logs it, the service does not log it again."""
+        with pytest.raises(NonRetryableError, match="unknown_action"):
+            await service.process_event("gmail.unknown_action", {})
+        service.logger.error.assert_not_called()
 
 
 # ===========================================================================
@@ -301,6 +310,36 @@ class TestRunReindexModes:
         assert rec2.indexing_status == ProgressStatus.NOT_STARTED.value
 
     @pytest.mark.asyncio
+    async def test_reindex_marks_folders_completed_not_pending(self, service) -> None:
+        """A folder is set COMPLETED, not NOT_STARTED: connectors may never publish it."""
+        connector = AsyncMock()
+        connector.reindex_records = AsyncMock()
+
+        folder = FileRecord(
+            id="dir", record_name="src", record_type=RecordType.FILE,
+            external_record_id="repo/src", version=0, origin="CONNECTOR",
+            connector_name="GITHUB", connector_id="c1", is_file=False,
+            indexing_status=ProgressStatus.COMPLETED.value,
+        )
+        file_rec = _make_mock_record("f1", indexing_status=ProgressStatus.COMPLETED.value)
+        service.graph_provider.get_records_by_status = AsyncMock(side_effect=[[folder, file_rec], []])
+
+        await service._run_reindex(
+            connector=connector, connector_name="github", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None,
+            status_filters=[ProgressStatus.COMPLETED.value],
+        )
+
+        update = service.graph_provider.update_indexing_status_for_record_ids
+        assert update.await_args_list == [
+            call(["f1"], ProgressStatus.NOT_STARTED.value),
+            call(["dir"], ProgressStatus.COMPLETED.value),
+        ]
+        assert folder.indexing_status == ProgressStatus.COMPLETED.value
+        assert file_rec.indexing_status == ProgressStatus.NOT_STARTED.value
+        connector.reindex_records.assert_awaited_once_with([folder, file_rec])
+
+    @pytest.mark.asyncio
     async def test_reindex_skips_placeholder_records(self, service):
         """Placeholder records are filtered out after fetch."""
         connector = AsyncMock()
@@ -398,6 +437,121 @@ class TestHandleDelete:
         assert service.app_container.messaging_producer.send_message.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_deleting_a_local_repository_connector_removes_its_mirror_and_then_the_connector(self, service, tmp_path, monkeypatch) -> None:
+        """The pushed files go with the connector: they are found from the owner and the repository key in its config."""
+        from app.connectors.sources.local_repo import store
+
+        monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
+        key = "repo-key-0001"
+        repo = store.Repo("org1", "u1", key)
+        repo.save_meta(name="shop", connectorId="c1")
+        repo.store([{"path": "a.py", "sha256": __import__("hashlib").sha256(b"x").hexdigest(), "content": "x"}])
+        other = store.Repo("org1", "u1", "repo-key-0002")
+        other.save_meta(name="other")
+        service.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
+        service.app_container.config_service.return_value.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {store.REPO_KEY: key}}})
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+        payload = {"orgId": "org1", "connectorId": "c1", "connectorType": "Local Repository"}
+
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            assert await service._handle_delete("localrepository", payload) is True
+
+        assert not repo.dir.exists()
+        assert other.exists()  # another repository of the same user is not touched
+        service.graph_provider.delete_connector_instance.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_delete_that_runs_late_does_not_remove_the_files_of_a_repository_registered_again(self, service, tmp_path, monkeypatch) -> None:
+        from app.connectors.sources.local_repo import store
+
+        monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
+        key = "repo-key-0001"
+        repo = store.Repo("org1", "u1", key)
+        repo.save_meta(name="shop", connectorId="c-new")  # the same key, registered again after c1 was deleted through the API
+        service.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
+        service.app_container.config_service.return_value.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {store.REPO_KEY: key}}})
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            assert await service._handle_delete("localrepository", {"orgId": "org1", "connectorId": "c1", "connectorType": "Local Repository"}) is True
+        assert repo.exists()
+
+    @pytest.mark.asyncio
+    async def test_a_delete_whose_owner_cannot_be_read_is_aborted_and_the_connector_put_back(self, service, tmp_path, monkeypatch) -> None:
+        from app.connectors.sources.local_repo import store
+
+        monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
+        repo = store.Repo("org1", "u1", "repo-key-0001")
+        repo.save_meta(name="shop", connectorId="c1")
+        service.graph_provider.get_document = AsyncMock(side_effect=RuntimeError("graph down"))
+        service.graph_provider.batch_upsert_nodes = AsyncMock()
+        service.app_container.config_service.return_value.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {store.REPO_KEY: "repo-key-0001"}}})
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            result = await service._handle_delete("localrepository", {"orgId": "org1", "connectorId": "c1", "connectorType": "Local Repository"})
+        assert result is False and repo.exists()
+        service.graph_provider.delete_connector_instance.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("config", [{"sync": {"customValues": {}}}, None])
+    async def test_a_connector_with_no_owner_or_no_key_on_record_has_its_mirror_found_by_connector_id(self, service, tmp_path, monkeypatch, config) -> None:
+        from app.connectors.sources.local_repo import store
+
+        monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
+        mine = store.Repo("org1", "u1", "repo-key-0001")
+        mine.save_meta(name="shop", connectorId="c1")
+        theirs = store.Repo("org1", "u2", "repo-key-0001")  # the same key under another user, another connector
+        theirs.save_meta(name="shop", connectorId="c2")
+        elsewhere = store.Repo("org2", "u1", "repo-key-0001")  # another org
+        elsewhere.save_meta(name="shop", connectorId="c1")
+        service.graph_provider.get_document = AsyncMock(return_value={})  # an old record: no createdBy
+        service.app_container.config_service.return_value.get_config = AsyncMock(return_value=config)
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            assert await service._handle_delete("localrepository", {"orgId": "org1", "connectorId": "c1", "connectorType": "Local Repository"}) is True
+        assert not mine.exists() and theirs.exists() and elsewhere.exists()
+
+    @pytest.mark.asyncio
+    async def test_a_connector_of_another_type_never_touches_a_mirror(self, service, tmp_path, monkeypatch) -> None:
+        from app.connectors.sources.local_repo import store
+
+        monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
+        repo = store.Repo("org1", "u1", "repo-key-0001")
+        repo.save_meta(name="shop", connectorId="c1")
+        service.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
+        service.app_container.config_service.return_value.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {store.REPO_KEY: "repo-key-0001"}}})
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1", "connectorType": "Gmail"})
+        assert repo.exists()
+
+    @pytest.mark.asyncio
+    async def test_a_mirror_that_cannot_be_removed_fails_the_delete_before_the_connector_goes_and_puts_it_back(self, service, tmp_path, monkeypatch, mock_logger) -> None:
+        """Failing here keeps the connector (back from DELETING) so the delete can be asked for again; after the graph rows are gone nothing could."""
+        from app.connectors.sources.local_repo import store
+
+        monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
+        store.Repo("org1", "u1", "repo-key-0001").save_meta(name="shop", connectorId="c1")
+        service.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
+        service.app_container.config_service.return_value.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {store.REPO_KEY: "repo-key-0001"}}})
+        service.graph_provider.batch_upsert_nodes = AsyncMock()
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
+             patch.object(store.shutil, "rmtree", side_effect=PermissionError("denied")):
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            result = await service._handle_delete("localrepository", {"orgId": "org1", "connectorId": "c1", "connectorType": "Local Repository"})
+        assert result is False
+        service.graph_provider.delete_connector_instance.assert_not_awaited()  # the connector is still there
+        service.graph_provider.batch_upsert_nodes.assert_awaited()  # its status is reverted from DELETING
+        assert any("could not be removed" in str(c) for c in mock_logger.error.call_args_list)
+
+    @pytest.mark.asyncio
     async def test_a_deleted_connector_frees_its_queue_lane_after_its_cleanup_events(
         self, service
     ) -> None:
@@ -428,6 +582,8 @@ class TestHandleDelete:
         service.graph_provider.delete_connector_instance = AsyncMock(
             return_value={"success": False, "error": "boom"}
         )
+        # Still there after the failed delete; a connector that reads as gone has its lane freed.
+        service.graph_provider.get_document = AsyncMock(return_value={"type": "Gmail"})
         with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
              patch(
                  "app.connectors.services.event_service.free_lane_of_deleted_connector",
@@ -451,7 +607,9 @@ class TestHandleDelete:
         release_may_finish = asyncio.Event()
 
         async def release(*_a):
-            from app.connectors.core.base.data_processor.storage_cleanup import StorageReleaseResult
+            from app.connectors.core.base.data_processor.storage_cleanup import (
+                StorageReleaseResult,
+            )
             await release_may_finish.wait()
             return StorageReleaseResult(completed=True)
 
@@ -473,7 +631,9 @@ class TestHandleDelete:
 
     @staticmethod
     def _helper(calls, completed=True):
-        from app.connectors.core.base.data_processor.storage_cleanup import StorageReleaseResult
+        from app.connectors.core.base.data_processor.storage_cleanup import (
+            StorageReleaseResult,
+        )
 
         helper = AsyncMock()
         helper.release_connector_storage = AsyncMock(
@@ -488,6 +648,8 @@ class TestHandleDelete:
         calls = []
         config = mock_container.config_service.return_value
         config.set_config = AsyncMock(side_effect=lambda key, _v: calls.append(key) or True)
+        config.list_keys_in_directory = AsyncMock(side_effect=lambda prefix: [f"{prefix}r"] if "/pending/" in prefix else [])
+        config.get_config = AsyncMock(side_effect=lambda key, *_a, **_k: {"orgId": "org1", "connectorId": "c1", "requestedAt": 1} if "/pending/org1/" in key else None)
         config.delete_config = AsyncMock(side_effect=lambda key: calls.append(f"clear:{key}") or True)
         service.graph_provider.delete_connector_instance = AsyncMock(
             side_effect=lambda **kw: calls.append("graph") or {"success": True}
@@ -496,13 +658,14 @@ class TestHandleDelete:
 
         assert await self._delete_with_helper(service, helper) is True
 
-        assert [c for c in calls if "/services/connectors/" not in c][:4] == [
-            "/services/entityCleanup/pending/c1",
-            "/services/storageRelease/pending/c1",
+        assert [c for c in calls if "/services/connectors/" not in c][:5] == [
+            "/services/entityCleanup/pending/org1/c1/r",
+            "/services/storageRelease/pending/org1/c1/r",
+            "/services/lateWriteSweep/pending/org1/c1/r",
             "graph",
             "release",
         ]
-        assert "clear:/services/storageRelease/pending/c1" in calls
+        assert "clear:/services/storageRelease/pending/org1/c1/r" in calls
         helper.release_connector_storage.assert_awaited_once_with("org1", "c1")
         helper.close.assert_awaited_once()
 
@@ -516,9 +679,9 @@ class TestHandleDelete:
         assert await self._delete_with_helper(service, self._helper([], completed=False)) is True
 
         cleared = [c.args[0] for c in config.delete_config.await_args_list]
-        assert "/services/storageRelease/pending/c1" not in cleared
+        assert "/services/storageRelease/pending/org1/c1/r" not in cleared
         key, intent = config.set_config.await_args.args
-        assert key == "/services/storageRelease/pending/c1" and intent["attempts"] == 1
+        assert key == "/services/storageRelease/pending/org1/c1/r" and intent["attempts"] == 1
 
     @pytest.mark.asyncio
     async def test_a_release_that_raises_does_not_fail_the_delete(self, service):
@@ -708,10 +871,13 @@ class TestStageReruns:
         {"orgId": "o1", "connectorId": "c1", "stages": ["embed"]},
         {"orgId": "o1", "connectorId": "c1", "stages": ["classify", "entities"]},
         {"orgId": "o1", "connectorId": "c1", "stages": "classify"},
+        {"orgId": "o1", "connectorId": "c1", "stages": []},
     ])
     async def test_stage_reruns_are_connector_wide_and_name_known_stages(self, service, payload) -> None:
+        """A payload fault: redelivering the same event cannot make it valid."""
         service._ensure_connector = AsyncMock()
-        assert await service._handle_reindex("gmail", payload) is False
+        with pytest.raises(NonRetryableError):
+            await service._handle_reindex("gmail", payload)
         service._ensure_connector.assert_not_awaited()
 
     @pytest.mark.asyncio

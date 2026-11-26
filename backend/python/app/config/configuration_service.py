@@ -1,8 +1,10 @@
 # src/config/configuration_service.py
 import asyncio
-import hashlib
+import logging
 import os
 import threading
+import time
+from collections.abc import Callable
 
 import dotenv
 from cachetools import LRUCache, TTLCache
@@ -14,6 +16,11 @@ from app.config.constants.service import (
 )
 from app.config.key_value_store import KeyValueStore
 from app.services.messaging.config import RedisConfig
+from app.utils.encryption.component_key import (
+    COMPONENT_DOCUMENTS,
+    component_identity,
+    process_cipher_key,
+)
 from app.utils.encryption.encryption_service import EncryptionService
 
 _ = dotenv.load_dotenv(dotenv.find_dotenv(usecwd=True))
@@ -30,15 +37,18 @@ class ConfigurationService:
         self.logger = logger
         self.logger.debug("🔧 Initializing ConfigurationService")
 
-        # Get and hash the secret key to ensure 32 bytes
-        secret_key = os.getenv("SECRET_KEY")
-        if not secret_key:
-            raise ValueError("SECRET_KEY environment variable is required")
-
-        # Hash the secret key to get exactly 32 bytes and convert to hex
-        hashed_key = hashlib.sha256(secret_key.encode()).digest()
-        hex_key = hashed_key.hex()
-        self.logger.debug("🔑 Secret key hashed to 32 bytes and converted to hex")
+        # The platform cipher's key (ADR-KEY-02): HKDF of SECRET_KEY, or of this component's own key on the
+        # sandbox plane, which never holds SECRET_KEY.
+        hex_key = process_cipher_key()
+        # On the sandbox plane the component's Redis user may read only these keys (ADR-KEY-02); any other key is
+        # answered as absent here rather than refused by Redis, so its default (an env fallback) applies quietly.
+        identity = component_identity()
+        self._component_keys: frozenset[str] | None = (
+            None if identity is None else frozenset({COMPONENT_DOCUMENTS[identity[0]]})
+        )
+        # R38IDENT-FU-10: a component's endpoints are the ones Node sealed into its document. The plain document is
+        # writable by any holder of the store's default login, which could otherwise redirect the gateways.
+        self._sealed_endpoints_in: str | None = None if identity is None else COMPONENT_DOCUMENTS[identity[0]]
 
         self.encryption_service = EncryptionService.get_instance(
             "aes-256-gcm", hex_key, logger
@@ -55,6 +65,8 @@ class ConfigurationService:
         # LRUCache is not thread-safe (even a read reorders it), and it is used from every
         # event loop's thread plus the watch thread. Never hold this across an await.
         self._cache_lock = threading.Lock()
+        # When each cached value was stored (monotonic seconds), for ``max_age_seconds``.
+        self._cached_at: dict[str, float] = {}
         self.logger.debug("📦 Initialized LRU cache with max size 1000")
 
         self.store = key_value_store
@@ -74,6 +86,8 @@ class ConfigurationService:
         # etcd-watch-id / Pub/Sub-task fields that used to require branching
         # on KV_STORE_TYPE to know which one to cancel (R15).
         self._change_subscription: object | None = None
+        # Called with every changed key after the cache drops it (from the watch thread): must be quick and not block.
+        self._change_listeners: list[Callable[[str], None]] = []
 
         # Start watching for cross-process invalidation, regardless of
         # backend: every KeyValueStore implements subscribe_changes(),
@@ -82,7 +96,7 @@ class ConfigurationService:
 
         self.logger.debug("✅ ConfigurationService initialized successfully")
 
-    async def get_config(self, key: str, default: str | int | float | bool | dict | list | None = None, use_cache: bool = False, *, raise_on_error: bool = False, keep_in_cache: bool = True) -> str | int | float | bool | dict | list | None:
+    async def get_config(self, key: str, default: str | int | float | bool | dict | list | None = None, use_cache: bool = False, *, raise_on_error: bool = False, keep_in_cache: bool = True, max_age_seconds: float | None = None) -> str | int | float | bool | dict | list | None:
         """Get configuration value with LRU cache and environment variable fallback.
 
         `use_cache=True` is safe for org-level config: writes from any process
@@ -98,12 +112,29 @@ class ConfigurationService:
 
         `keep_in_cache=False` leaves the LRU alone, for keys that are many, large or
         short-lived (MCP tool catalogs) and would push org config out of it.
+
+        `max_age_seconds` bounds how stale a cache hit may be: an older entry is
+        read from the store again. Invalidations still drop entries at once; the
+        bound covers the case where the subscription that delivers them died, for
+        a key that is acted on (the artifact flags).
         """
+        sealed_in = getattr(self, "_sealed_endpoints_in", None)
+        if sealed_in is not None and key == config_node_constants.ENDPOINTS.value:
+            document = await self.get_config(
+                sealed_in, use_cache=use_cache, raise_on_error=raise_on_error, max_age_seconds=max_age_seconds
+            )
+            endpoints = document.get("endpoints") if isinstance(document, dict) else None
+            return endpoints if isinstance(endpoints, dict) else default
+        if not self._may_read(key):
+            return default
         try:
             # Check cache first
             if use_cache:
                 with self._cache_lock:
-                    if key in self.cache:
+                    fresh = max_age_seconds is None or (
+                        time.monotonic() - self._cached_at.get(key, float("-inf")) <= max_age_seconds
+                    )
+                    if key in self.cache and fresh:
                         # Not the key: cached entries hold credentials, and nothing derived
                         # from them belongs in a log line.
                         self.logger.debug("📦 Config cache hit")
@@ -124,14 +155,14 @@ class ConfigurationService:
                 if env_fallback is not None:
                     self.logger.debug("📦 Using environment variable fallback for a config key")
                     with self._cache_lock:
-                        self.cache[key] = env_fallback
+                        self._remember(key, env_fallback)
                     return env_fallback
 
                 self.logger.debug("📦 Config cache miss")
                 return default
             if keep_in_cache:
                 with self._cache_lock:
-                    self.cache[key] = value
+                    self._remember(key, value)
             return value
         except Exception as e:
             self.logger.error("❌ Failed to get config %s: %s", key, type(e).__name__)
@@ -144,6 +175,11 @@ class ConfigurationService:
                 self.logger.debug("📦 Using environment variable fallback after the error")
                 return env_fallback
             return default
+
+    def _remember(self, key: str, value: object) -> None:
+        """Cache *value*; the caller holds ``_cache_lock``."""
+        self.cache[key] = value
+        self._cached_at[key] = time.monotonic()
 
     def _get_env_fallback(self, key: str) -> dict | None:
         """Get environment variable fallback for specific configuration keys"""
@@ -233,6 +269,18 @@ class ConfigurationService:
                 }
         return None
 
+    def _may_read(self, key: str) -> bool:
+        """On the sandbox plane only the component's own keys (ADR-KEY-02); every key elsewhere."""
+        allowed = getattr(self, "_component_keys", None)
+        return allowed is None or key in allowed
+
+    async def _migration_completed(self, key: str) -> bool:
+        if not self._may_read(key):
+            return False
+        underlying_store = getattr(self.store, "store", self.store)
+        # The deserializer parses the plain-text "true"/"false" as JSON, yielding a Python bool -- not the string.
+        return await underlying_store.get_key(key) is True
+
     def _start_watch(self) -> None:
         """Start watching for cross-process cache invalidation.
 
@@ -262,13 +310,7 @@ class ConfigurationService:
                 # Handles the race where migration completes before this
                 # service starts and subscribes to the invalidation channel.
                 try:
-                    underlying_store = getattr(self.store, "store", self.store)
-                    migration_completed = loop.run_until_complete(
-                        underlying_store.get_key(migration_flag_key)
-                    )
-                    # The deserializer parses the plain-text "true"/"false"
-                    # as JSON, yielding a Python bool -- not the string.
-                    if migration_completed is True:
+                    if loop.run_until_complete(self._migration_completed(migration_flag_key)):
                         self.clear_cache()
                         self._log_safe(
                             "📦 Cache cleared on startup - migration from etcd to Redis was completed"
@@ -285,8 +327,11 @@ class ConfigurationService:
                 with self._pubsub_state_lock:
                     if self._stopping:
                         return
+                    own_keys = getattr(self, "_component_keys", None)
                     self._change_subscription = loop.run_until_complete(
                         self.store.subscribe_changes(self._invalidation_callback)
+                        if own_keys is None
+                        else self.store.subscribe_changes(self._invalidation_callback, keys=own_keys)
                     )
                 self._log_safe("👀 Change subscription registered for cache invalidation", level="debug")
 
@@ -327,8 +372,14 @@ class ConfigurationService:
                 with self._cache_lock:
                     self.cache.pop(key, None)
                 self._log_safe("📦 Cache invalidated for key: %s" % key, level="debug")
+            for listener in self._change_listeners:
+                listener(key)
         except Exception as e:
             self._log_safe("❌ Error in cache invalidation callback: %s" % str(e), level="error")
+
+    def add_change_listener(self, listener: Callable[[str], None]) -> None:
+        """``listener(key)`` on every cross-process change notification (``__CLEAR_ALL__`` included)."""
+        self._change_listeners.append(listener)
 
     def _log_safe(self, msg: str, level: str = "info") -> None:
         """Log a message, suppressing errors from closed file handles during shutdown."""
@@ -348,6 +399,7 @@ class ConfigurationService:
         try:
             with self._cache_lock:
                 self.cache.clear()
+                self._cached_at.clear()
             self._log_safe("📦 In-memory configuration cache cleared")
         except Exception as e:
             self._log_safe("❌ Failed to clear cache: %s" % str(e), level="error")
@@ -367,13 +419,13 @@ class ConfigurationService:
                 expiry = {"ttl": ttl_seconds} if ttl_seconds else {}
                 success = await self.store.create_key(key, value, overwrite=True, **expiry)
             except Exception as store_error:
-                self.logger.error("❌ Failed to create key in store: %s", str(store_error))
-                success = False
+                self._log_store_failure("config.set.failed", store_error, key)
+                return False
 
             if success:
                 with self._cache_lock:
                     if keep_in_cache:
-                        self.cache[key] = value
+                        self._remember(key, value)
                     else:
                         self.cache.pop(key, None)
                 self.logger.info("✅ Successfully set config for key: %s, now publishing cache invalidation", key)
@@ -407,7 +459,7 @@ class ConfigurationService:
         created = await self.store.create_key(key, value, overwrite=False, ttl=ttl_seconds)
         if created:
             with self._cache_lock:
-                self.cache[key] = value
+                self._remember(key, value)
             self.logger.info("✅ Created config key %s (was absent)", key)
             await self._publish_cache_invalidation(key)
         else:
@@ -430,23 +482,18 @@ class ConfigurationService:
             # Update in KV store
             try:
                 await self.store.update_value(key, value)
-                success = True
             except Exception as store_error:
-                self.logger.error("❌ Failed to update key in store: %s", str(store_error))
-                success = False
+                self._log_store_failure("config.update.failed", store_error, key)
+                return False
 
-            if success:
-                # Update cache with value
-                with self._cache_lock:
-                    self.cache[key] = value
-                self.logger.debug("✅ Successfully updated config for key: %s", key)
+            # Update cache with value
+            with self._cache_lock:
+                self._remember(key, value)
+            self.logger.debug("✅ Successfully updated config for key: %s", key)
 
-                # Publish cache invalidation for other processes (Redis only)
-                await self._publish_cache_invalidation(key)
-            else:
-                self.logger.error("❌ Failed to update config for key: %s", key)
-
-            return success
+            # Publish cache invalidation for other processes (Redis only)
+            await self._publish_cache_invalidation(key)
+            return True
 
         except Exception as e:
             self.logger.error("❌ Failed to update config %s: %s", key, str(e))
@@ -456,23 +503,37 @@ class ConfigurationService:
         """Delete configuration value"""
         try:
             success = await self.store.delete_key(key)
+            self._evict(key)  # before the publish await below, so no read in between gets the deleted value
 
             if success:
-                # Remove from cache
-                with self._cache_lock:
-                    self.cache.pop(key, None)
                 self.logger.debug("✅ Successfully deleted config for key: %s", key)
 
                 # Publish cache invalidation for other processes (Redis only)
                 await self._publish_cache_invalidation(key)
             else:
-                self.logger.error("❌ Failed to delete config for key: %s", key)
+                # delete_key answers False for a key that is not set; a store failure raises.
+                self.logger.debug("Config key already absent: %s", key)
 
             return success
 
         except Exception as e:
-            self.logger.error("❌ Failed to delete config %s: %s", key, str(e))
+            self._log_store_failure("config.delete.failed", e, key)
             return False
+        finally:
+            # Whatever the store answered, a copy cached here is not to be trusted: a False can follow a missed
+            # invalidation, and a raise can follow a delete whose reply was lost.
+            self._evict(key)
+
+    def _evict(self, key: str) -> None:
+        with self._cache_lock:
+            self.cache.pop(key, None)
+
+    def _log_store_failure(self, event: str, error: Exception, key: str) -> None:
+        """The one line for a store failure this service handles: the store and its wrappers raise without logging."""
+        # Imported here: at top level it cycles (error_class -> base_client -> jwt -> this module).
+        from app.utils.error_class import log_failure
+
+        log_failure(self.logger, event, error, level=logging.ERROR, config_path=key)
 
     async def _publish_cache_invalidation(self, key: str) -> None:
         """Publish cache invalidation for cross-process cache sync (R15).
@@ -560,3 +621,34 @@ class ConfigurationService:
     async def list_keys_in_directory(self, directory: str) -> list[str]:
         """List all keys in a directory"""
         return await self.store.list_keys_in_directory(directory)
+
+
+async def delete_config_confirmed(config_service: ConfigurationService, key: str) -> bool:
+    """Delete ``key``; True when it is gone afterwards, also when it was already gone.
+
+    ``delete_config`` answers False for a key that was not there and for a failed delete, and a
+    delete retried after its answer was lost (etcd re-login) finds nothing. So a False is checked
+    with a fresh read, which raises when the store can't answer.
+
+    A function rather than a method: it works on any service with these two calls, including one
+    that wraps this class.
+    """
+    if await config_service.delete_config(key):
+        return True
+    return await config_service.get_config(key, use_cache=False, keep_in_cache=False, raise_on_error=True) is None
+
+
+class ConfigKeyNotDeletedError(RuntimeError):
+    """The store kept a key it was asked to delete."""
+
+    # Like an outage: the same delete is worth sending again (503 + Retry-After).
+    log_error_class = "unavailable"
+
+
+async def delete_config_or_raise(config_service: ConfigurationService, key: str) -> None:
+    """Delete ``key``, or raise when it may still be stored (an absent key counts as deleted).
+
+    :class:`ConfigKeyNotDeletedError` when the store kept it; the read's own error when the store can't answer.
+    """
+    if not await delete_config_confirmed(config_service, key):
+        raise ConfigKeyNotDeletedError("A stored value was not deleted")  # no key in the text: it names a user

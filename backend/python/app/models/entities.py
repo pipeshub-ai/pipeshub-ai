@@ -8,11 +8,8 @@ from enum import Enum
 from typing import Any, Optional,Dict, List, Literal, TypeVar
 from urllib.parse import quote
 from uuid import uuid4
-from app.modules.qna.prompt_templates import (
-    agent_block_group_prompt,
-)
-from pydantic import BaseModel, Field
-from app.models.blocks import BlockType, GroupType
+from pydantic import BaseModel, Field, PrivateAttr
+from app.modules.indexing.record_diagnostics import STORED_RUN_FIELDS
 from app.config.constants.arangodb import (
     AccessRule,
     CollectionNames,
@@ -29,8 +26,9 @@ from app.models.blocks import (
     BlocksContainer,
     SemanticMetadata,
 )
+from app.connectors.sources.localKB.push.contract import PUSH_ORIGIN_FIELD
 from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, RecordDates
-from app.utils.jinja_templates import compiled_template, one_line
+from app.utils.jinja_templates import one_line
 from app.utils.time_conversion import (
     format_day_for_llm,
     format_epoch_ms_for_llm,
@@ -105,7 +103,7 @@ def substitute_user_email(
 
 
 class LlmTextContent(BaseModel):
-    """A single LLM message-content item produced by ``to_llm_full_context``."""
+    """A single text item of LLM message content."""
 
     type: Literal["text"]
     text: str
@@ -174,6 +172,7 @@ class RecordType(str, Enum):
     ARTIFACT = "ARTIFACT"
     CODE_FILE = "CODE_FILE"
     SQL_TABLE = "SQL_TABLE"
+    SQL_COLUMN = "SQL_COLUMN"
     SQL_VIEW = "SQL_VIEW"
     OTHERS = "OTHERS"
 
@@ -274,6 +273,51 @@ class RelatedExternalRecord(BaseModel):
     constraint_name: Optional[str] = Field(default=None, description="Constraint name (e.g. FK constraint name)")
 
 
+# Fields an edition keeps on a record (``SourceMetadataReader``), by its own keys; stored as one ``editionFields``
+# map, which Neo4j holds as a JSON string.
+EditionFields = dict[str, Any]
+EDITION_FIELDS_KEY = "editionFields"
+
+
+def clean_edition_fields(value: object) -> EditionFields:
+    """``value`` as edition fields: a map (or its JSON text) without the keys whose value is ``None``."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return {}
+    if not isinstance(value, dict):
+        return {}
+    return {k: v for k, v in value.items() if isinstance(k, str) and v is not None}
+
+
+def edition_fields_of(doc: dict) -> EditionFields | None:
+    """A stored record's edition fields; ``None`` when it holds none."""
+    return clean_edition_fields(doc.get(EDITION_FIELDS_KEY)) or None
+
+
+class SourcePerson(BaseModel):
+    """A person as the source system names them, for authorship links.
+
+    Connectors fill it from vendor data; nothing downstream sees a vendor
+    shape. At least one of ``source_id`` (the connector's own user id) and
+    ``email`` identifies the person; ``display_name`` is for display only and
+    is never used to match.
+    """
+
+    model_config = {"frozen": True}
+
+    source_id: str | None = None
+    email: str | None = None
+    display_name: str | None = None
+    # Bots, apps and system accounts: never linked as a document's person.
+    is_service_account: bool = False
+
+    @property
+    def identifiable(self) -> bool:
+        return not self.is_service_account and bool(self.source_id or self.email)
+
+
 class Record(BaseModel):
     # Core record properties
     id: str = Field(description="Unique identifier for the record", default_factory=lambda: str(uuid4()))
@@ -301,13 +345,24 @@ class Record(BaseModel):
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
     # Write-time only. Set when a record's parent is not its permission parent.
     inherit_permissions_from_group: bool = Field(default=False)
+    # Write-time only. The external id of a record group the record takes its access from (a Jira
+    # issue's security level): it inherits that group, hangs under it, and inherits nothing it is
+    # filed under. None: no such group is named (one stored is kept); "": none, so a stored one goes.
+    access_group_external_id: str | None = Field(default=None)
     # Write-time only. When set, this save replaces the record's permission edges.
     rewrite_permissions: bool = Field(default=False)
+    # Write-time only. When set, this save's permissions are some of the record's (one user's view of it):
+    # they are added, and never replace the stored ones, not even on a full sync's first write.
+    adds_permissions: bool = Field(default=False)
     # Read by the permission traversal on every visited node, so unlike
     # inherit_permissions — which is expressed as an edge — this is stored.
     # OPEN by default: a connector that says nothing gets the permissive
     # reading, and only sources that need every ancestor checked opt in.
-    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this record's own permissions combine with its ancestors': OPEN, STRICT or RESTRICTED")
+    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this record's own permissions combine with its ancestors': OPEN, STRICT, RESTRICTED or PARENT_AND_GRANT")
+    # What an edition read of the item at its source (``SourceMetadataReader``), by its own keys; ``None`` when it
+    # read none, so a record's dump (journaled with a live read) carries no empty map. A ``None`` value inside is
+    # written as null so the store drops a value the source no longer gives (the upserts merge).
+    edition_fields: EditionFields | None = Field(default=None, description="Edition-owned fields read from the source")
     parsing_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Parsing status for the record (parse phase, ahead of indexing/extraction)")
     indexing_status: str = Field(default=ProgressStatus.QUEUED.value, description="Indexing status for the record")
     extraction_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Extraction status for the record")
@@ -316,11 +371,21 @@ class Record(BaseModel):
     # Epoch Timestamps
     created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the record update")
+    incarnation_id: str | None = Field(default=None, description="Names the life of the stored vertex: minted by the graph store at insert, changed only by a restore from the trash. None for a record stored before it existed.")
     source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record creation in the source system")
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
     source_timestamp_origin: str | None = Field(default=None, description="Knowledge-base uploads only: what set the source timestamps (app.models.source_dates.SourceTimestampOrigin)")
     processing_started_at: int | None = Field(default=None, description="Epoch ms when parse/index processing began for the current attempt; null when idle")
     queued_at: int | None = Field(default=None, description="Epoch ms the platform last put this record in line for indexing. Platform-owned, unlike updated_at, which connectors may fill with source-system time; the stranded-record sweep ages on it")
+    first_queued_at: int | None = Field(default=None, description="Epoch ms the record first went in line for its current processing run. Internal: never returned by the API; set by the writer, not read back from the stored doc, so an entity round-trip does not write it")
+    indexing_attempts: int | None = Field(default=None, description="How many times processing has been attempted for the record. Internal: never returned by the API; set by the writer, not read back from the stored doc, so an entity round-trip does not write it")
+    # What the stored document said about the record's current run when it was read. Never serialised: it only lets the
+    # save path decide, from the stored values, whether a write continues the run or starts a new one.
+    _stored_run: dict | None = PrivateAttr(default=None)
+    # Write hints from the processor, never stored. ``_known_new``: the vertex is known not to exist, so the ArangoDB
+    # store inserts first. ``_promotes_stub``: the stored row is a placeholder this record replaces, so its date is the earlier.
+    _known_new: bool = PrivateAttr(default=False)
+    _promotes_stub: bool = PrivateAttr(default=False)
 
     # Source information
     weburl: str | None = None
@@ -336,6 +401,7 @@ class Record(BaseModel):
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
     is_placeholder: bool = Field(default=False, description="Stub parent created for a not-yet-synced or out-of-scope ancestor; reconciled when the real record syncs")
+    push_origin: bool = Field(default=False, description="Created by an API push; indexing never fetches a remote image for it")
 
     # Processing flags
     is_vlm_ocr_processed: bool | None = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
@@ -349,6 +415,21 @@ class Record(BaseModel):
     purge_attempts: int | None = Field(default=None, description="Failed purge attempts")
     purge_last_error: str | None = Field(default=None, description="Last purge error, shortened")
     trashed_external_record_id: str | None = Field(default=None, description="External id this trashed record held before a live record moved onto it; restore puts it back")
+    # Who made and changed the record, as the source reports it for the current
+    # version. ``authored_by`` only when the source says this person wrote the
+    # content (a Drive file's creator); ``created_by`` when it says only who
+    # brought it in (a file uploaded to a collection). Read by record_people;
+    # not stored on the record node.
+    authored_by: SourcePerson | None = Field(default=None)
+    created_by: SourcePerson | None = Field(default=None)
+    last_modified_by: SourcePerson | None = Field(default=None)
+    owners: list[SourcePerson] = Field(default_factory=list)
+    # People the file is shared with directly. None: the connector did not read
+    # the shares, so the stored SHARED_WITH edges stay; []: shared with nobody.
+    shared_with: list[SourcePerson] | None = Field(default=None)
+    # Person edge types (AUTHORED_BY, OWNED_BY, ...) whose people the connector
+    # could not tell this time: their stored edges stay and nothing is linked.
+    people_unknown: list[str] = Field(default_factory=list)
 
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
@@ -488,8 +569,14 @@ class Record(BaseModel):
         }
         # Omitted rather than null: the Neo4j upsert is `SET n +=`, where a null
         # key deletes the stored value, and most writers never set this field.
+        # ``incarnationId`` is never written from a record: the graph store mints it when it inserts the vertex and a restore
+        # replaces it. A copy carried from a stored record could otherwise start a new vertex under the id of a deleted one.
         if self.queued_at is not None:
             base["queuedAtTimestamp"] = self.queued_at
+        if self.first_queued_at is not None:
+            base["firstQueuedAt"] = self.first_queued_at
+        if self.indexing_attempts is not None:
+            base["indexingAttempts"] = self.indexing_attempts
         # Only written once set: a pod still on the old strict Arango schema
         # rejects these keys, even as null, during a rolling upgrade.
         delete_state = {
@@ -503,9 +590,26 @@ class Record(BaseModel):
         base.update({k: v for k, v in delete_state.items() if v is not None})
         if self.uploaded_by:
             base["uploadedBy"] = self.uploaded_by
+        # Only written once set, as the delete state: a pod on the old strict schema rejects the key.
+        if self.edition_fields:
+            base[EDITION_FIELDS_KEY] = dict(self.edition_fields)
         if self.source_timestamp_origin:
             base[SOURCE_TIMESTAMP_ORIGIN_FIELD] = self.source_timestamp_origin
+        # Written only when set: an older Arango schema rejects the key, even as false.
+        if self.push_origin:
+            base[PUSH_ORIGIN_FIELD] = True
         return base
+
+    @staticmethod
+    def progress_state_from_arango(
+        record_doc: dict, indexing_default: str = ProgressStatus.QUEUED.value,
+    ) -> dict[str, Any]:
+        """Constructor kwargs for the indexing and extraction status of a stored record. Without them a typed record
+        kept the field defaults, so an indexed record read by id reported itself QUEUED ("not indexed")."""
+        return {
+            "indexing_status": record_doc.get("indexingStatus", indexing_default),
+            "extraction_status": record_doc.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+        }
 
     @staticmethod
     def delete_state_from_arango(record_doc: dict) -> dict[str, Any]:
@@ -539,7 +643,7 @@ class Record(BaseModel):
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
 
-        return Record(
+        parsed = Record(
             id=arango_base_record.get("id", arango_base_record.get("_key")),
             org_id=arango_base_record["orgId"],
             record_name=arango_base_record["recordName"],
@@ -558,14 +662,14 @@ class Record(BaseModel):
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record.get("webUrl"),
             created_at=arango_base_record.get("createdAtTimestamp"),
+            incarnation_id=arango_base_record.get("incarnationId"),
             updated_at=arango_base_record.get("updatedAtTimestamp"),
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
             processing_started_at=arango_base_record.get("processingStartedAt"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
             parsing_status=arango_base_record.get("parsingStatus", ProgressStatus.NOT_STARTED.value),
-            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
-            extraction_status=arango_base_record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+            **Record.progress_state_from_arango(arango_base_record),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
             is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
@@ -574,6 +678,8 @@ class Record(BaseModel):
             hide_weburl=arango_base_record.get("hideWeburl", False),
             is_internal=arango_base_record.get("isInternal", False),
             is_placeholder=arango_base_record.get("isPlaceholder", False),
+
+            edition_fields=edition_fields_of(arango_base_record),
             md5_hash=arango_base_record.get("md5Checksum"),
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
@@ -584,8 +690,13 @@ class Record(BaseModel):
             access_rule=read_access_rule(arango_base_record),
             uploaded_by=arango_base_record.get("uploadedBy"),
             source_timestamp_origin=arango_base_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
+            push_origin=arango_base_record.get(PUSH_ORIGIN_FIELD) is True,
             **Record.delete_state_from_arango(arango_base_record),
         )
+        parsed._stored_run = {
+            name: arango_base_record.get(name) for name in STORED_RUN_FIELDS if name in arango_base_record
+        }
+        return parsed
 
     def to_kafka_record(self) -> dict:
         raise NotImplementedError("Implement this method in the subclass")
@@ -616,148 +727,6 @@ class FileRecord(Record):
             lines.extend(specific_lines)
 
         return "\n".join(lines)
-
-    def to_llm_full_context(self) -> list[LlmTextContent]:
-        """
-        Convert a record JSON object to message content format matching get_message_content.
-
-        Args:
-            record: The record JSON object containing block_containers and other metadata
-            ref_mapper: Optional shared CitationRefMapper for tiny-ref generation
-
-        Returns:
-            Tuple of (content list, ref_mapper)
-        """
-
-        try:
-            from app.utils.chat_helpers import (
-                _safe_stringify_content,
-                build_group_blocks,
-                format_code_locator,
-                valid_group_labels,
-            )
-
-            content: list[LlmTextContent] = []
-            context_metadata = f"record/{self.id}"
-            content.append(LlmTextContent(
-                type="text",
-                text=f"""<record>\n{context_metadata}
-    Record blocks (sorted):\n\n""",
-            ))
-            # Process blocks
-            block_containers = self.block_containers
-            blocks = block_containers.blocks
-            block_groups = block_containers.block_groups
-
-            # build_group_blocks (in chat_helpers) expects plain dicts, not Pydantic models
-            blocks_as_dicts = [b.model_dump() for b in blocks]
-            block_groups_as_dicts = [bg.model_dump() for bg in block_groups]
-
-            seen_block_groups = set()
-            for block in blocks:
-                block_type = block.type.value if block.type else None
-
-                data = block.data or ""
-
-                if block_type == BlockType.IMAGE.value:
-                    continue
-                elif block_type == BlockType.TEXT.value and block.parent_index is None:
-                    content.append(LlmTextContent(
-                        type="text",
-                        text=f"* Block Type: {block_type}\n* Block Content: {data}\n\n",
-                    ))
-                elif block_type == BlockType.CODE.value and block.parent_index is None:
-                    # Top-level code belongs to no group, so without this branch a
-                    # file with no classes renders as an empty record.
-                    qname = block.code_metadata.qualified_name if block.code_metadata else None
-                    locator = format_code_locator(getattr(self, "file_path", "") or "", qname or "")
-                    header = f"* Symbol: {locator}\n" if locator else ""
-                    content.append(LlmTextContent(
-                        type="text",
-                        text=(
-                            f"* Block Type: {block_type}\n{header}"
-                            f"* Block Content: {_safe_stringify_content(data)}\n\n"
-                        ),
-                    ))
-                elif block_type == BlockType.TABLE_ROW.value:
-                    block_group_index = block.parent_index
-                    block_group_id = f"{self.virtual_record_id or ''}-{block_group_index}"
-                    if block_group_id in seen_block_groups:
-                        continue
-                    seen_block_groups.add(block_group_id)
-                    if block_group_index is not None:
-                        corresponding_block_group = block_groups[block_group_index]
-
-                        block_type = corresponding_block_group.type.value if corresponding_block_group.type else None
-                        data = corresponding_block_group.data or {}
-
-                        if block_type == GroupType.TABLE.value:
-                            children = corresponding_block_group.children
-                            rows_to_be_included_list = []
-                            if children:
-                                for range_obj in children.block_ranges:
-                                    rows_to_be_included_list.extend(range(range_obj.start, range_obj.end + 1))
-
-                            child_results = []
-                            for row_index in rows_to_be_included_list:
-                                if row_index < len(blocks):
-                                    row_block = blocks[row_index]
-                                    block_data = row_block.data
-                                    if isinstance(block_data, dict):
-                                        row_text = block_data.get("row_natural_language_text", "")
-                                    else:
-                                        row_text = str(block_data or "")
-
-                                    child_results.append({
-                                        "content": row_text
-                                    })
-
-                            if child_results:
-                                template = compiled_template(agent_block_group_prompt)
-                                rendered_form = template.render(
-                                    block_group_index=block_group_index,
-                                    label=GroupType.TABLE.value,
-                                    blocks=child_results,
-                                )
-                                content.append(LlmTextContent(
-                                    type="text",
-                                    text=f"{rendered_form}\n\n",
-                                ))
-                elif block.parent_index is not None:
-                    parent_index = block.parent_index
-                    block_group_id = f"{self.virtual_record_id or ''}-{parent_index}"
-                    if block_group_id in seen_block_groups:
-                        continue
-                    template = compiled_template(agent_block_group_prompt)
-                    if parent_index >= len(block_groups):
-                        continue
-                    block_group = block_groups[parent_index]
-                    block_group_type = block_group.type.value if block_group.type else None
-                    if block_group_type not in valid_group_labels:
-                        continue
-
-                    virtual_record_id = self.virtual_record_id or ""
-                    group_blocks = build_group_blocks(block_groups_as_dicts, blocks_as_dicts, parent_index, virtual_record_id, self.to_kafka_record(), {})
-
-                    if not group_blocks:
-                        continue
-                    seen_block_groups.add(block_group_id)
-                    rendered_form = template.render(
-                        block_group_index=parent_index,
-                        label=block_group_type,
-                        blocks=group_blocks,
-                        file_path=getattr(self, "file_path", "") or "",
-                    )
-                    content.append(LlmTextContent(
-                        type="text",
-                        text=f"{rendered_form}\n\n",
-                    ))
-                else:
-                    continue
-
-            return content
-        except Exception as e:
-            raise RuntimeError(f"Error in record_to_message_content: {e}") from e
 
     def to_arango_record(self) -> dict:
         return {
@@ -812,6 +781,8 @@ class FileRecord(Record):
             parent_node_id=arango_base_record.get("parentNodeId"),
             is_internal=arango_base_record.get("isInternal", False),
             is_placeholder=arango_base_record.get("isPlaceholder", False),
+
+            edition_fields=edition_fields_of(arango_base_record),
             is_file=arango_base_file_record.get("isFile", True),
             size_in_bytes=size if (size := arango_base_record.get("sizeInBytes")) is not None else arango_base_file_record.get("sizeInBytes"),
             extension=arango_base_file_record.get("extension"),
@@ -824,10 +795,13 @@ class FileRecord(Record):
             sha1_hash=arango_base_file_record.get("sha1Hash"),
             sha256_hash=arango_base_file_record.get("sha256Hash"),
             storage_document_id=arango_base_record.get("storageDocumentId"),
+            virtual_record_id=arango_base_record.get("virtualRecordId"),
             access_rule=read_access_rule(arango_base_record),
             uploaded_by=arango_base_record.get("uploadedBy"),
             source_timestamp_origin=arango_base_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
+            push_origin=arango_base_record.get(PUSH_ORIGIN_FIELD) is True,
             **Record.delete_state_from_arango(arango_base_record),
+            **Record.progress_state_from_arango(arango_base_record),
         )
 
     def to_kafka_record(self) -> dict:
@@ -984,6 +958,7 @@ class MessageRecord(Record):
             involved_user_source_ids=message_doc.get("involvedUserSourceIds", []),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict[str, Any]:
@@ -1113,6 +1088,7 @@ class MailRecord(Record):
             label_ids=mail_doc.get("labelIds", []),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 class WebpageRecord(Record):
@@ -1175,7 +1151,9 @@ class WebpageRecord(Record):
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
             access_rule=read_access_rule(record_doc),
+            edition_fields=edition_fields_of(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 class LinkRecord(Record):
@@ -1286,6 +1264,7 @@ class LinkRecord(Record):
             parent_node_id=record_doc.get("parentNodeId"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 class CommentRecord(Record):
@@ -1378,6 +1357,7 @@ class CommentRecord(Record):
             comment_selection=comment_doc.get("commentSelection"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 # How a ticket's source is named beside its own status name ("Status: NEW
@@ -1411,6 +1391,8 @@ class TicketRecord(Record):
     creator_source_timestamp: int | None = None
     reporter_source_timestamp: int | None = None
     labels: list[str] | None = Field(default_factory=list)
+    # The source's milestone (GitHub), by its title: often the release an item is aimed at.
+    milestone: str | None = None
     is_email_hidden: bool = False # this means reporters, assignees... emails are hidden and represents connector's native id
     assignee_source_id: list[str] | None = Field(default_factory=list) # this means reporters  source ids in the connector system
     reporter_source_id:str | None=None
@@ -1489,6 +1471,9 @@ class TicketRecord(Record):
         if self.labels:
             specific_lines.append(f"* Labels: {', '.join(self.labels)}")
 
+        if self.milestone:
+            specific_lines.append(f"* Milestone: {self.milestone}")
+
         if specific_lines:
             lines.append("Ticket Information:")
             lines.extend(specific_lines)
@@ -1566,6 +1551,7 @@ class TicketRecord(Record):
             "creatorSourceTimestamp": self.creator_source_timestamp,
             "reporterSourceTimestamp": self.reporter_source_timestamp,
             "labels":self.labels ,
+            "milestone": self.milestone,
             "assignee_source_id": self.assignee_source_id ,
             "reporter_source_id": self.reporter_source_id,
             "is_email_hidden": self.is_email_hidden,
@@ -1624,6 +1610,8 @@ class TicketRecord(Record):
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
+
+            edition_fields=edition_fields_of(record_doc),
             status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), Status),
             source_status=ticket_doc.get("sourceStatus"),
             priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), Priority),
@@ -1639,12 +1627,16 @@ class TicketRecord(Record):
             creator_source_timestamp=ticket_doc.get("creatorSourceTimestamp"),
             reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
             labels=ticket_doc.get("labels"),
+            milestone=ticket_doc.get("milestone"),
             # With it lost, the email fields (then the source's user ids) read as emails.
-            is_email_hidden=bool(ticket_doc.get("is_email_hidden")),
+            is_email_hidden=bool(ticket_doc.get("is_email_hidden", False)),
+            assignee_source_id=ticket_doc.get("assignee_source_id") or [],
+            reporter_source_id=ticket_doc.get("reporter_source_id"),
             resolved_at=ticket_doc.get("resolvedAtTimestamp"),
             due_date=ticket_doc.get("dueDateTimestamp"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1745,6 +1737,8 @@ class ProjectRecord(Record):
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
+
+            edition_fields=edition_fields_of(record_doc),
             status=project_doc.get("status"),
             priority=project_doc.get("priority"),
             lead_id=project_doc.get("leadId"),
@@ -1752,6 +1746,7 @@ class ProjectRecord(Record):
             lead_email=project_doc.get("leadEmail"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1835,6 +1830,7 @@ class ProductRecord(Record):
             list_price=product_doc.get("listPrice"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -2160,6 +2156,7 @@ class DealRecord(Record):
             close_date=deal_doc.get("closeDate"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -2297,6 +2294,7 @@ class SQLViewRecord(Record):
     source_tables: Optional[List[str]] = Field(default_factory=list, description="Tables referenced by this view")
     is_secure: bool = Field(default=False, description="Whether this is a secure view")
     comment: Optional[str] = Field(default=None, description="View description/comment")
+    ddl: str | None = Field(default=None, description="CREATE VIEW DDL, or synthetic column-based DDL when unavailable")
 
     def to_arango_record(self) -> Dict:
         return {
@@ -2310,6 +2308,7 @@ class SQLViewRecord(Record):
             "sourceTables": self.source_tables,
             "isSecure": self.is_secure,
             "comment": self.comment,
+            "ddl": self.ddl,
         }
 
     @staticmethod
@@ -2354,7 +2353,9 @@ class SQLViewRecord(Record):
             is_secure=view_doc.get("isSecure", False),
             comment=view_doc.get("comment"),
             access_rule=read_access_rule(record_doc),
+            ddl=view_doc.get("ddl"),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -2386,6 +2387,8 @@ class SQLTableRecord(Record):
     schema_name: Optional[str] = Field(default=None, description="Schema containing the table")
     fqn: Optional[str] = Field(default=None, description="Fully qualified name: database.schema.table")
     row_count: Optional[int] = Field(default=None, description="Number of rows in the table")
+    db_row_count: int | None = Field(default=None, description="Exact row count from COUNT(*) in the database")
+    indexed_row_count: int | None = Field(default=None, description="Number of rows indexed (capped by max rows per table)")
     size_bytes: Optional[int] = Field(default=None, description="Size of the table in bytes")
     column_count: Optional[int] = Field(default=None, description="Number of columns in the table")
     ddl: Optional[str] = Field(default=None, description="CREATE TABLE DDL statement")
@@ -2402,6 +2405,8 @@ class SQLTableRecord(Record):
             "schemaName": self.schema_name,
             "fqn": self.fqn,
             "rowCount": self.row_count,
+            "dbRowCount": self.db_row_count,
+            "indexedRowCount": self.indexed_row_count,
             "sizeInBytes": self.size_bytes,
             "columnCount": self.column_count,
             "ddl": self.ddl,
@@ -2448,6 +2453,8 @@ class SQLTableRecord(Record):
             schema_name=table_doc.get("schemaName"),
             fqn=table_doc.get("fqn"),
             row_count=table_doc.get("rowCount"),
+            db_row_count=table_doc.get("dbRowCount"),
+            indexed_row_count=table_doc.get("indexedRowCount"),
             size_bytes=table_doc.get("sizeInBytes"),
             column_count=table_doc.get("columnCount"),
             ddl=table_doc.get("ddl"),
@@ -2456,6 +2463,7 @@ class SQLTableRecord(Record):
             comment=table_doc.get("comment"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -2480,6 +2488,136 @@ class SQLTableRecord(Record):
             "parentExternalRecordId": self.parent_external_record_id,
         }
 
+
+class SQLColumnRecord(Record):
+    """Record for a column on a synced SQL table."""
+
+    fqn: str | None = Field(default=None, description="Fully qualified name: table_fqn.column_name")
+    table_fqn: str | None = Field(default=None, description="Parent table FQN")
+    data_type: str | None = Field(default=None)
+    nullable: bool = Field(default=False)
+    is_primary_key: bool = Field(default=False)
+    is_unique: bool = Field(default=False)
+    is_part_of_composite_primary_key: bool = Field(default=False)
+    is_part_of_composite_unique: bool = Field(default=False)
+    default: str | None = Field(default=None)
+    ordinal_position: int | None = Field(default=None)
+    distinct_count: int | None = Field(default=None)
+    null_count: int | None = Field(default=None)
+    cardinality_ratio: float | None = Field(default=None)
+    confidence_score: str | None = Field(default=None)
+    # Value profile. Values and frequencies are parallel lists because Neo4j
+    # cannot store a list of maps as a property.
+    top_values: list[str] | None = Field(default=None, description="Most common values, descending")
+    top_value_frequencies: list[float] | None = Field(
+        default=None, description="Fraction of non-null rows for each of top_values, same order"
+    )
+    min_value: str | None = Field(default=None)
+    max_value: str | None = Field(default=None)
+    numeric_text: bool | None = Field(
+        default=None, description="Text column whose observed values all parse as numbers"
+    )
+    profiled_at: int | None = Field(default=None, description="Epoch ms of the value profile")
+
+    def to_arango_record(self) -> dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.record_name,
+            "fqn": self.fqn,
+            "tableFqn": self.table_fqn,
+            "dataType": self.data_type,
+            "nullable": self.nullable,
+            "isPrimaryKey": self.is_primary_key,
+            "isUnique": self.is_unique,
+            "isPartOfCompositePrimaryKey": self.is_part_of_composite_primary_key,
+            "isPartOfCompositeUnique": self.is_part_of_composite_unique,
+            "default": self.default,
+            "ordinalPosition": self.ordinal_position,
+            "distinctCount": self.distinct_count,
+            "nullCount": self.null_count,
+            "cardinalityRatio": self.cardinality_ratio,
+            "confidenceScore": self.confidence_score,
+            "topValues": self.top_values,
+            "topValueFrequencies": self.top_value_frequencies,
+            "minValue": self.min_value,
+            "maxValue": self.max_value,
+            "numericText": self.numeric_text,
+            "profiledAt": self.profiled_at,
+        }
+
+    @staticmethod
+    def from_arango_record(column_doc: dict, record_doc: dict) -> "SQLColumnRecord":
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return SQLColumnRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId"),
+            is_internal=record_doc.get("isInternal", False),
+            **Record.progress_state_from_arango(record_doc, indexing_default=ProgressStatus.AUTO_INDEX_OFF.value),
+            fqn=column_doc.get("fqn"),
+            table_fqn=column_doc.get("tableFqn"),
+            data_type=column_doc.get("dataType"),
+            nullable=column_doc.get("nullable", False),
+            is_primary_key=column_doc.get("isPrimaryKey", False),
+            is_unique=column_doc.get("isUnique", False),
+            is_part_of_composite_primary_key=column_doc.get("isPartOfCompositePrimaryKey", False),
+            is_part_of_composite_unique=column_doc.get("isPartOfCompositeUnique", False),
+            default=column_doc.get("default"),
+            ordinal_position=column_doc.get("ordinalPosition"),
+            distinct_count=column_doc.get("distinctCount"),
+            null_count=column_doc.get("nullCount"),
+            cardinality_ratio=column_doc.get("cardinalityRatio"),
+            confidence_score=column_doc.get("confidenceScore"),
+            top_values=column_doc.get("topValues"),
+            top_value_frequencies=column_doc.get("topValueFrequencies"),
+            min_value=column_doc.get("minValue"),
+            max_value=column_doc.get("maxValue"),
+            numeric_text=column_doc.get("numericText"),
+            profiled_at=column_doc.get("profiledAt"),
+            access_rule=read_access_rule(record_doc),
+            **Record.delete_state_from_arango(record_doc),
+        )
+
+    def to_kafka_record(self) -> dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "version": self.version,
+            "origin": self.origin.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "parentExternalRecordId": self.parent_external_record_id,
+        }
+
+
 # What the GitHub connector stores as a pull request's status, spelled out.
 # `_status_from_pr` (connectors/sources/github_teams/pull_requests.py) writes
 # DONE for a merged PR, CANCELLED for one closed without merging, and OPEN for
@@ -2500,6 +2638,7 @@ _REQUESTED_REVIEWER_CONNECTORS: frozenset[Connectors] = frozenset({
 })
 
 
+
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
     status: str | None = None
@@ -2512,6 +2651,8 @@ class PullRequestRecord(Record):
     mergeable: str | None = None
     merged_by: str | None = None
     labels: list[str] | None = Field(default_factory=list)
+    # The source's milestone (GitHub), by its title: often the release a PR is aimed at.
+    milestone: str | None = None
     last_commit_sha: str | None = Field(default=None)
     # Epoch ms the source merged the PR, or closed it unmerged; None while open.
     merged_at: int | None = None
@@ -2574,6 +2715,9 @@ class PullRequestRecord(Record):
         if self.labels:
             specific_lines.append(f"* Labels: {', '.join(self.labels)}")
 
+        if self.milestone:
+            specific_lines.append(f"* Milestone: {self.milestone}")
+
         if specific_lines:
             lines.append("Pull Request Information:")
             lines.extend(specific_lines)
@@ -2611,6 +2755,7 @@ class PullRequestRecord(Record):
             "mergeable": self.mergeable,
             "mergedBy": self.merged_by,
             "labels":self.labels ,
+            "milestone": self.milestone,
             "lastCommitSha": self.last_commit_sha,
             "mergedAtTimestamp": self.merged_at,
             "closedAtTimestamp": self.closed_at,
@@ -2660,11 +2805,13 @@ class PullRequestRecord(Record):
             mergeable=pr_doc.get("mergeable"),
             merged_by=pr_doc.get("mergedBy"),
             labels=pr_doc.get("labels"),
+            milestone=pr_doc.get("milestone"),
             last_commit_sha=pr_doc.get("lastCommitSha"),
             merged_at=pr_doc.get("mergedAtTimestamp"),
             closed_at=pr_doc.get("closedAtTimestamp"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
 class LifecycleStatus(str, Enum):
@@ -2863,6 +3010,7 @@ class ArtifactRecord(Record):
             versions=deserialize_artifact_versions(artifact_doc.get("versions")),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
         
@@ -2887,11 +3035,15 @@ class RecordGroup(BaseModel):
     # As on Record: read per node by the traversal, so stored rather than
     # inferred from an edge. A Confluence space is RESTRICTED — it carries its
     # own permission list, so inheriting from the App is never enough alone.
-    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this group's own permissions combine with its ancestors': OPEN, STRICT or RESTRICTED")
+    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this group's own permissions combine with its ancestors': OPEN, STRICT, RESTRICTED or PARENT_AND_GRANT")
     is_internal: bool | None = Field(default=False, description="Flag indicating if the record group is for internal use")
     hide_children: bool | None = Field(
         default=False,
         description="When true, child records are hidden in the knowledge-base tree UI",
+    )
+    access_only: bool = Field(
+        default=False,
+        description="Carries access only (a Jira security level): never a Knowledge Hub row, its records are listed where they are filed",
     )
     is_deleted_at_source: bool = Field(
         default=False,
@@ -2921,6 +3073,7 @@ class RecordGroup(BaseModel):
             "groupType": self.group_type.value,
             "isInternal": self.is_internal,
             "hideChildren": self.hide_children,
+            "accessOnly": self.access_only,
             "accessRule": self.access_rule.value,
             "permissionModel": (self.permission_model.value if self.permission_model else None),
             "webUrl": self.web_url,
@@ -2947,6 +3100,7 @@ class RecordGroup(BaseModel):
             connector_id=arango_base_record_group.get("connectorId"),
             is_internal=arango_base_record_group.get("isInternal", False),
             hide_children=arango_base_record_group.get("hideChildren", False),
+            access_only=bool(arango_base_record_group.get("accessOnly", False)),
             group_type=arango_base_record_group.get("groupType", RecordGroupType.KB),
             web_url=arango_base_record_group.get("webUrl"),
             created_at=arango_base_record_group.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
@@ -3070,8 +3224,7 @@ class CodeFileRecord(Record):
             processing_started_at=arango_base_record.get("processingStartedAt"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
             parsing_status=arango_base_record.get("parsingStatus", ProgressStatus.NOT_STARTED.value),
-            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
-            extraction_status=arango_base_record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+            **Record.progress_state_from_arango(arango_base_record),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
             is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
@@ -3080,6 +3233,8 @@ class CodeFileRecord(Record):
             hide_weburl=arango_base_record.get("hideWeburl", False),
             is_internal=arango_base_record.get("isInternal", False),
             is_placeholder=arango_base_record.get("isPlaceholder", False),
+
+            edition_fields=edition_fields_of(arango_base_record),
             md5_hash=arango_base_record.get("md5Checksum"),
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
@@ -3137,6 +3292,7 @@ class Org(BaseModel):
     ownership_type: str | None = Field(default=None, description="Ownership type: public, private, subsidiary, government, other")
     phone: str | None = Field(default=None, description="Organization phone number")
     duns_id: str | None = Field(default=None, description="DUNS number (Data Universal Numbering System)")
+    parent_org_id: str | None = Field(default=None, description="The org an external organisation belongs to")
 
     def to_arango_org(self) -> dict[str, Any]:
         """Convert Org model to ArangoDB document format. Output matches orgs_schema (no extra fields)."""
@@ -3155,7 +3311,15 @@ class Org(BaseModel):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+            **({"parentOrgId": self.parent_org_id} if self.parent_org_id else {}),
+            **({"normalizedName": self._organization_key()} if self.is_external else {}),
         }
+
+    def _organization_key(self) -> str:
+        # Imported here: app.modules.entity_resolution imports this module.
+        from app.modules.entity_resolution.organizations import organization_key
+
+        return organization_key(self.name)
 
     @staticmethod
     def from_arango_org(data: dict[str, Any]) -> 'Org':
@@ -3176,6 +3340,7 @@ class Org(BaseModel):
             ownership_type=data.get("ownershipType"),
             phone=data.get("phone"),
             duns_id=data.get("dunsId"),
+            parent_org_id=data.get("parentOrgId"),
         )
 
 class Domain(BaseModel):
@@ -3271,9 +3436,16 @@ class UserGroup(BaseModel):
 
 
 class Person(BaseModel):
-    """Lightweight entity for external email addresses (not organization members)."""
+    """Someone who is not an organization member: an external collaborator,
+    or a person a connector names (a document's author) without an account.
+
+    Keyed by (org_id, email). A source that names a person only by its own
+    user id (Jira, Notion) gives no email; such a node is keyed by
+    (org_id, source_key) instead, ``source_key`` being ``"<connector id>:<source user id>"``.
+    """
     id: str = Field(description="Unique identifier", default_factory=lambda: str(uuid4()))
-    email: str = Field(description="Email address")
+    email: str | None = Field(default=None, description="Email address")
+    source_key: str | None = Field(default=None, description="'<connector id>:<source user id>' when there is no email")
     org_id: str | None = Field(default=None, description="Owning org for this Person")
     created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Creation timestamp")
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Update timestamp")
@@ -3284,13 +3456,8 @@ class Person(BaseModel):
     phone: str | None = Field(default=None, description="Phone number")
 
     def to_arango_person(self) -> dict[str, Any]:
-        return {
+        doc = {
             "_key": self.id,
-            # (orgId, email) is this node's business key and carries a composite unique
-            # index. Atomic upserts match on exact equality, so the stored form must be
-            # normalised or Foo@x.com and foo@x.com become two nodes every reader sees
-            # as one.
-            "email": self.email.lower(),
             "orgId": self.org_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -3299,12 +3466,23 @@ class Person(BaseModel):
             "lastName": self.last_name,
             "phone": self.phone,
         }
+        # Only the keys that are set: an older pod's strict schema (email
+        # required, no sourceKey) must still accept an email person mid-rollout.
+        if self.email:
+            # (orgId, email) is the business key; upserts match on exact equality,
+            # so the stored form must be normalised or Foo@x.com and foo@x.com
+            # become two nodes.
+            doc["email"] = self.email.lower()
+        if self.source_key:
+            doc["sourceKey"] = self.source_key
+        return doc
 
     @staticmethod
     def from_arango_person(data: dict[str, Any]) -> 'Person':
         return Person(
             id=data.get("_key"),
             email=data.get("email"),
+            source_key=data.get("sourceKey"),
             org_id=data.get("orgId"),
             created_at=data.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
             updated_at=data.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()),
@@ -3627,6 +3805,7 @@ class MeetingRecord(Record):
             recording_url=meeting_doc.get("recordingUrl"),
             access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
+            **Record.progress_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -3675,7 +3854,13 @@ class EntityType(str, Enum):
     RECORD_GROUP = "record_group"
     CONNECTOR = "connector"
     LANGUAGE = "language"
+    # An organisation member named by records (KG-13); keyed by the user id.
+    PERSON = "person"
+    # An external organisation (a CRM account) records belong to (KG-13).
+    ORGANIZATION = "organization"
     RELATIONSHIP = "relationship"
+    # A domain concept a knowledge extractor names (a business term, a metric) that records describe.
+    CONCEPT = "concept"
     CUSTOM = "custom"
     NAMED_ENTITY = "named_entity"
 
@@ -3765,6 +3950,32 @@ class EntityRecord(BaseModel):
             record_group_ids=[group_id],
             type_category=EntityTypeCategory.PREDEFINED,
         )
+
+    @classmethod
+    def for_linked(
+        cls, entity_type: EntityType, entity_id: str, name: str, org_id: str,
+        connector_id: str | None, record_group_id: str | None,
+    ) -> "EntityRecord":
+        """The point of an entity a record links to over ``entityRelations``
+        (a person, an organisation), from one such record. Written with
+        ``merge_membership=True``: the entity spans many records, connectors
+        and groups."""
+        return cls(
+            entity_id=entity_id,
+            entity_type=entity_type,
+            name=name,
+            org_id=org_id,
+            connector_ids=[connector_id] if connector_id else [],
+            record_group_ids=[record_group_id] if record_group_id else [],
+            type_category=EntityTypeCategory.PREDEFINED,
+        )
+
+    @classmethod
+    def for_person(
+        cls, user_id: str, name: str, org_id: str, connector_id: str | None, record_group_id: str | None,
+    ) -> "EntityRecord":
+        """A member's point (KG-13)."""
+        return cls.for_linked(EntityType.PERSON, user_id, name, org_id, connector_id, record_group_id)
 
     def to_vector_payload(self) -> dict:
         """Serialise to the flat metadata dict stored on each vector point.

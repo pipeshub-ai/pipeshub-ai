@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 from app.models.entities import ArtifactType, ArtifactVisibility, LifecycleStatus
 
@@ -25,6 +26,8 @@ __all__ = [
     "ArtifactMetadata",
     "ArtifactVersion",
     "ArtifactLineage",
+    "ArtifactProvenance",
+    "ArtifactVersionPin",
     "UploadGrant",
 ]
 
@@ -97,6 +100,35 @@ class ArtifactLineage(BaseModel):
     code_artifact_id: str
     code_version: int
     output_version: int
+
+
+class ArtifactVersionPin(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, frozen=True)
+
+    artifact_id: str
+    version: int
+
+
+class ArtifactProvenance(BaseModel):
+    """How one artifact version was made (P3.5): stored per version on the
+    artifact document (`artifacts.provenance`), never model-asserted.
+
+    `source_record_ids` are the records the content was derived from;
+    `None` means unknown, which hides the artifact from every reader who
+    does not own it (`viewer_access.RecordedProvenance`)."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, frozen=True)
+
+    version: int
+    run_id: str
+    task_id: str
+    workspace_id: str | None = None
+    workspace_revision: int | None = None
+    command: str | None = None
+    input_paths: list[str] = Field(default_factory=list)
+    input_artifacts: list[ArtifactVersionPin] = Field(default_factory=list)
+    source_record_ids: list[str] | None = None
+    recorded_at: int | None = None
 
 
 class ArtifactMetadata(BaseModel):

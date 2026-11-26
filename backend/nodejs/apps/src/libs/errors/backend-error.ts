@@ -1,9 +1,10 @@
-import { Logger } from '../services/logger.service';
 import {
+  BadGatewayError,
   BadRequestError,
   ConflictError,
   ForbiddenError,
   GatewayTimeoutError,
+  HttpError,
   InternalServerError,
   NotFoundError,
   PaymentRequiredError,
@@ -12,14 +13,16 @@ import {
   UnauthorizedError,
   UnprocessableEntityError,
 } from './http.errors';
-import { BaseError } from './base.error';
+import { BaseError, ErrorMetadata, withCause } from './base.error';
+
+/** The connector service's refusal of a write to a knowledge base that is being deleted. */
+export const KB_BEING_DELETED_MESSAGE =
+  "This knowledge base is being deleted, so it can't be changed.";
 import {
   isReaderWritten,
   markClientSafe,
   serverFailureMessage,
 } from './reader-friendly';
-
-const logger = Logger.getInstance({ service: 'Backend Error' });
 
 /**
  * Shown when one PipesHub service cannot reach another. The fault is on the
@@ -108,9 +111,16 @@ const transientError = (
   statusCode: 429 | 503 | 504,
   upstreamDetail: unknown,
   error: { headers?: Record<string, unknown> } | undefined,
-): Error => {
+  refusal: RelayedRefusal | undefined,
+): HttpError => {
   const retry = retryAfterMetadata(error);
-  const detail = upstreamDetail ? stringifyErrorDetail(upstreamDetail) : '';
+  const metadata =
+    retry || refusal
+      ? { ...retry, ...(refusal && { reasonCode: refusal.reasonCode }) }
+      : undefined;
+  const detail =
+    refusal?.message ??
+    (upstreamDetail ? stringifyErrorDetail(upstreamDetail) : '');
   // A 429 is about the caller, so the service's own words are worth repeating.
   // A 503 or 504 is about the service, so only a line we know a person wrote
   // survives; anything else would be our topology on someone's screen.
@@ -122,13 +132,37 @@ const transientError = (
   // Marked as we build it: without that the middleware would treat these as
   // plumbing and replace the very wording chosen here.
   if (statusCode === 429)
-    return markClientSafe(new TooManyRequestsError(message, retry));
+    return markClientSafe(new TooManyRequestsError(message, metadata));
   if (statusCode === 503)
-    return markClientSafe(new ServiceUnavailableError(message, retry));
-  return markClientSafe(new GatewayTimeoutError(message, retry));
+    return markClientSafe(new ServiceUnavailableError(message, metadata));
+  return markClientSafe(new GatewayTimeoutError(message, metadata));
 };
 
 type Indexed = Record<string, unknown>;
+
+/** A machine code a Python route refused with: the error middleware relays it as `error.reasonCode`. */
+export const REASON_CODE_PATTERN = /^[a-z][a-z0-9_]{1,63}$/;
+
+interface RelayedRefusal {
+  reasonCode: string;
+  message: string | undefined;
+}
+
+/**
+ * A Python route's typed refusal: FastAPI's `detail` carrying `{reasonCode | code, message}`
+ * (the MCP hub, the query service) or the same fields at the top of the body.
+ */
+const relayedRefusal = (
+  data: Indexed | undefined,
+): RelayedRefusal | undefined => {
+  const detail = asRecord(data?.detail);
+  const source = detail ?? data;
+  const code = detail ? (detail.reasonCode ?? detail.code) : data?.reasonCode;
+  if (!source || typeof code !== 'string' || !REASON_CODE_PATTERN.test(code)) {
+    return undefined;
+  }
+  return { reasonCode: code, message: asText(source.message) };
+};
 
 const asRecord = (value: unknown): Indexed | undefined =>
   typeof value === 'object' && value !== null ? (value as Indexed) : undefined;
@@ -136,10 +170,89 @@ const asRecord = (value: unknown): Indexed | undefined =>
 const asText = (value: unknown): string | undefined =>
   typeof value === 'string' && value ? value : undefined;
 
+// Failures to reach a service at all. A TLS or request error is not one of
+// them: it is a fault on one side that retrying will not fix.
+const NETWORK_CAUSE_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EPIPE',
+  'ETIMEDOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
+
+// What axios reports for a request that never got an answer, besides the
+// network codes above: its own timeout and its generic network failure.
+const AXIOS_UNANSWERED_CODES = new Set(['ECONNABORTED', 'ERR_NETWORK']);
+
+// axios's own request timeout: ECONNABORTED, or ETIMEDOUT when it is told to
+// tell the two apart.
+const AXIOS_TIMEOUT_CODES = new Set(['ECONNABORTED', 'ETIMEDOUT']);
+
+const isUnansweredAxiosCode = (code: string | undefined): boolean =>
+  code === undefined ||
+  NETWORK_CAUSE_CODES.has(code) ||
+  AXIOS_UNANSWERED_CODES.has(code);
+
 const isConnectionRefused = (error: Indexed): boolean => {
-  const cause = asRecord(error.cause);
-  if (asText(cause?.code) === 'ECONNREFUSED') return true;
+  const causeCode = asText(asRecord(error.cause)?.code);
+  if (causeCode) return NETWORK_CAUSE_CODES.has(causeCode);
   return (asText(error.message) ?? '').includes('fetch failed');
+};
+
+/**
+ * Whether a call to another PipesHub service never got an answer: 'timeout'
+ * when it timed out, 'unavailable' when the service could not be reached
+ * (fetch's "fetch failed", or axios's request with no response). Null for
+ * anything else, including a call the service did answer. The one definition
+ * of "unreachable", shared by `unansweredCallError` and the log taxonomy
+ * (`classifyError`).
+ */
+export const unansweredKind = (
+  error: unknown,
+): 'timeout' | 'unavailable' | null => {
+  const source = asRecord(error);
+  if (!source) return null;
+  if (asText(source.name) === 'TimeoutError') return 'timeout';
+  const response = asRecord(source.response);
+  // An answer with a status reached us; words like "fetch failed" in its body
+  // describe the service's own work, not our connection to it.
+  if (
+    typeof response?.status === 'number' ||
+    typeof source.statusCode === 'number'
+  ) {
+    return null;
+  }
+  const noResponse =
+    source.request !== undefined &&
+    source.request !== null &&
+    (source.detail === undefined || source.detail === null) &&
+    isUnansweredAxiosCode(asText(source.code));
+  if (noResponse && AXIOS_TIMEOUT_CODES.has(asText(source.code) ?? '')) {
+    return 'timeout';
+  }
+  return isConnectionRefused(source) || noResponse ? 'unavailable' : null;
+};
+
+/**
+ * The error for a call that never got an answer (see `unansweredKind`): 504
+ * when it timed out, 503 when the service could not be reached, carrying the
+ * original as its `cause`. Not logged here: whoever handles it logs it once.
+ */
+export const unansweredCallError = (error: unknown): HttpError | null => {
+  const kind = unansweredKind(error);
+  if (!kind) return null;
+  const mapped =
+    kind === 'timeout'
+      ? transientError(504, undefined, undefined, undefined)
+      : markClientSafe(
+          new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE),
+        );
+  return withCause(mapped, error);
 };
 
 /**
@@ -149,8 +262,12 @@ const isConnectionRefused = (error: Indexed): boolean => {
  * and `{ statusCode, data, msg }`.
  *
  * A 4xx keeps the service's own words — those are written for the person who
- * made the request. A 5xx does not: the reader gets `operation` in plain words
- * while the upstream detail is logged.
+ * made the request. A 5xx does not: the reader gets `operation` in plain words,
+ * and the upstream's detail stays in the upstream's own log (same request id).
+ *
+ * Not logged here: the call's `upstream.call.end` line and the error
+ * middleware's line report it. A mapped 5xx carries `{ status }` as its cause,
+ * so those lines class an upstream 500 as `upstream_5xx`, not as ours.
  */
 export const handleBackendError = (
   error: unknown,
@@ -169,19 +286,8 @@ export const handleBackendError = (
     );
   }
 
-  if (asText(source.name) === 'TimeoutError') {
-    logger.error(`Timed out waiting for the service during ${operation}`);
-    return transientError(504, undefined, undefined);
-  }
-
-  if (isConnectionRefused(source)) {
-    logger.error(`Could not reach the service during ${operation}`, {
-      cause: asText(asRecord(source.cause)?.code) ?? asText(source.message),
-    });
-    return markClientSafe(
-      new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE),
-    );
-  }
+  const unanswered = unansweredCallError(source);
+  if (unanswered) return unanswered;
 
   // axios-style `{ response: { status, data } }`, or a service command's
   // `{ statusCode, data, message | msg }`.
@@ -202,9 +308,6 @@ export const handleBackendError = (
 
   // Some services report a refused connection in the body instead of a status.
   if (bodyDetail === 'ECONNREFUSED') {
-    logger.error(`Could not reach the service during ${operation}`, {
-      statusCode,
-    });
     return markClientSafe(
       new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE),
     );
@@ -215,56 +318,108 @@ export const handleBackendError = (
     if (source.detail !== undefined && source.detail !== null) {
       return new BadRequestError(stringifyErrorDetail(source.detail));
     }
-    if (source.request !== undefined && source.request !== null) {
-      logger.error(`No response from the service during ${operation}`);
-      return markClientSafe(
-        new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE),
-      );
-    }
-    logger.error(`${operation} failed`, { error: ownMessage });
-    return markClientSafe(
+    const mapped = markClientSafe(
       new InternalServerError(serverFailureMessage(operation)),
     );
+    const cause = safeCause(error);
+    return cause ? withCause(mapped, cause) : mapped;
   }
 
-  const errorDetail = stringifyErrorDetail(
-    bodyDetail ?? fallbackDetail ?? 'Unknown error',
-  );
+  const refusal = relayedRefusal(data);
+  const errorDetail =
+    refusal?.message ??
+    stringifyErrorDetail(bodyDetail ?? fallbackDetail ?? 'Unknown error');
+  const coded: ErrorMetadata | undefined = refusal
+    ? { reasonCode: refusal.reasonCode }
+    : undefined;
 
-  logger.error(`Backend error during ${operation}`, {
+  return errorForStatus(
     statusCode,
     errorDetail,
-    fullResponse: data,
-  });
+    bodyDetail,
+    response ?? source,
+    operation,
+    refusal,
+    coded,
+  );
+};
 
+/**
+ * What the error middleware may show as the cause of a failure with no status:
+ * only an Error, never a payload object, and never JSON.parse's message, which
+ * quotes the start of the body it could not read.
+ */
+export const safeCause = (error: unknown): Error | undefined => {
+  if (error instanceof SyntaxError) {
+    return new SyntaxError('response was not valid JSON');
+  }
+  return error instanceof Error ? error : undefined;
+};
+
+const errorForStatus = (
+  statusCode: number,
+  errorDetail: string,
+  bodyDetail: unknown,
+  source: { headers?: Record<string, unknown> },
+  operation: string,
+  refusal: RelayedRefusal | undefined,
+  coded: ErrorMetadata | undefined,
+): BaseError => {
   switch (statusCode) {
     case 400:
-      return new BadRequestError(errorDetail);
+      return new BadRequestError(errorDetail, coded);
     case 401:
-      return new UnauthorizedError(errorDetail);
+      return new UnauthorizedError(errorDetail, coded);
     case 402:
       return new PaymentRequiredError(
         asText(asRecord(bodyDetail)?.message) ?? errorDetail,
       );
     case 403:
-      return new ForbiddenError(errorDetail);
+      return new ForbiddenError(errorDetail, coded);
     case 404:
-      return new NotFoundError(errorDetail);
+      return new NotFoundError(errorDetail, coded);
     case 409:
-      return new ConflictError(errorDetail);
+      // The connector service words this refusal the same way everywhere (kb_service.py); it is
+      // the one 409 a client may want to tell apart, because retrying the write can never work.
+      if (errorDetail === KB_BEING_DELETED_MESSAGE) {
+        return new HttpError('KB_BEING_DELETED', KB_BEING_DELETED_MESSAGE, 409);
+      }
+      return new ConflictError(errorDetail, coded);
     case 422:
-      return new UnprocessableEntityError(errorDetail);
+      return new UnprocessableEntityError(errorDetail, coded);
     // Transient: the caller should retry, so they must not read as a 500.
     case 429:
     case 503:
     case 504:
-      return transientError(statusCode, bodyDetail, response ?? source);
+      return transientError(statusCode, bodyDetail, source, refusal);
+    // A refusal from a service this one depends on (an MCP server it could
+    // not list, a runner that would not start): the code tells the reader
+    // which; the service's words name our internals, so they stay in the log.
+    case 502:
+      if (refusal) {
+        return withCause(
+          markClientSafe(
+            new BadGatewayError(serverFailureMessage(operation), coded),
+          ),
+          { status: statusCode },
+        );
+      }
+      return withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage(operation)),
+        ),
+        { status: statusCode },
+      );
     default:
       // Every 5xx (502 included, as the upload pre-check documents), and
       // anything unrecognised: the service's own words describe its internals,
-      // so the reader gets the plain sentence instead.
-      return markClientSafe(
-        new InternalServerError(serverFailureMessage(operation)),
+      // so the reader gets the plain sentence instead. The status as the cause
+      // lets the log class an upstream 5xx as theirs (a 405 stays ours).
+      return withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage(operation)),
+        ),
+        { status: statusCode },
       );
   }
 };

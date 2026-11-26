@@ -8,6 +8,12 @@ import { loadConfigurationManagerConfig } from '../../configuration_manager/conf
 import { configPaths } from '../../configuration_manager/paths/paths';
 import { DefaultMcpScopes } from '../../oauth_provider/config/scopes.config';
 import { normalizeUrl } from '../utils/utils';
+import { envFlag } from '../../../libs/utils/env-flags';
+import { safeCause } from '../../../libs/errors/backend-error';
+import { parseKvObject } from '../../../libs/utils/kv-object.utils';
+
+// JSON.parse's message quotes the start of what it read: here, decrypted config. Log `safeCause(error)`, never the error.
+const logger = Logger.getInstance({ service: 'ConfigService' });
 
 // Define interfaces for all service configurations
 export interface SmtpConfig {
@@ -16,6 +22,8 @@ export interface SmtpConfig {
   username?: string;
   password?: string;
   fromEmail: string;
+  /** Absent means on; only an explicit `false` turns sending off. */
+  enabled?: boolean;
 }
 
 export const SIGNING_SECRET_BYTES = 32;
@@ -39,6 +47,36 @@ export interface KafkaConfig {
     password: string;
   };
 }
+
+/**
+ * SEC-D-06: the broker login the environment declares wins over a stored one for the same brokers, so an install
+ * whose Kafka config was stored before the bundled broker required SCRAM (or before KAFKA_PASSWORD rotated) moves
+ * onto the login without anyone editing the store. A config pointing at other brokers (an admin's external Kafka)
+ * is the admin's, and stays as stored. Returns null when nothing changes.
+ */
+export const reconcileKafkaLogin = (
+  stored: KafkaConfig,
+  fromEnv: KafkaConfig,
+): KafkaConfig | null => {
+  if (!fromEnv.sasl) return null;
+  const brokerSet = (brokers: string[] = []): string =>
+    brokers
+      .map((b) => b.trim())
+      .sort()
+      .join(',');
+  if (brokerSet(stored.brokers) !== brokerSet(fromEnv.brokers)) return null;
+  const login = stored.sasl;
+  if (
+    login &&
+    login.mechanism === fromEnv.sasl.mechanism &&
+    login.username === fromEnv.sasl.username &&
+    login.password === fromEnv.sasl.password &&
+    Boolean(stored.ssl) === Boolean(fromEnv.ssl)
+  ) {
+    return null;
+  }
+  return { ...stored, ssl: fromEnv.ssl, sasl: fromEnv.sasl };
+};
 
 export interface RedisConfig {
   host: string;
@@ -83,6 +121,17 @@ export interface DefaultStorageConfig {
   storageType: string;
   endpoint: string;
 }
+
+/** `/services/endpoints` service, key under it, and the variable that sets it. */
+export const SANDBOX_PLANE_ENDPOINTS = [
+  ['sandboxBroker', 'endpoint', 'SANDBOX_BROKER_BACKEND'],
+  ['egressProxy', 'controlEndpoint', 'EGRESS_PROXY_CONTROL_BACKEND'],
+  ['modelGateway', 'endpoint', 'MODEL_GATEWAY_BACKEND'],
+  ['toolGateway', 'endpoint', 'TOOL_GATEWAY_BACKEND'],
+] as const;
+
+/** `"<service>.<key>"` → URL, for the addresses that are configured. */
+export type SandboxPlaneEndpoints = Partial<Record<string, string>>;
 
 // Main Config Service
 export class ConfigService {
@@ -130,6 +179,10 @@ export class ConfigService {
 
       return fallbackConfig;
     } catch (error) {
+      logger.warn('Stored config unreadable; using the environment defaults', {
+        path: configPath,
+        error: safeCause(error),
+      });
       return fallbackEnvVars as T;
     }
   }
@@ -158,14 +211,18 @@ export class ConfigService {
       configPaths.smtp,
     );
     if (encryptedConfig) {
-      return JSON.parse(this.encryptionService.decrypt(encryptedConfig));
+      const config = JSON.parse(
+        this.encryptionService.decrypt(encryptedConfig),
+      ) as SmtpConfig;
+      // An admin turned email off: the mail service must behave as if none is set.
+      return config.enabled === false ? null : config;
     }
     return null;
   }
 
   // Kafka Configuration (supports standard Kafka and AWS MSK with SASL/SCRAM)
   public async getKafkaConfig(): Promise<KafkaConfig> {
-    return this.getEncryptedConfig<KafkaConfig>(configPaths.broker.kafka, {
+    const fromEnv: KafkaConfig = {
       brokers: process.env.KAFKA_BROKERS
         ? process.env.KAFKA_BROKERS.split(',')
         : [],
@@ -177,7 +234,15 @@ export class ConfigService {
           password: process.env.KAFKA_PASSWORD!,
         },
       }),
-    });
+    };
+    const config = await this.getEncryptedConfig<KafkaConfig>(
+      configPaths.broker.kafka,
+      fromEnv,
+    );
+    const reconciled = reconcileKafkaLogin(config, fromEnv);
+    if (!reconciled) return config;
+    await this.saveConfigToEtcd(configPaths.broker.kafka, reconciled);
+    return reconciled;
   }
 
   // Redis Configuration
@@ -268,7 +333,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.auth = {
@@ -292,7 +357,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.communication = {
@@ -316,7 +381,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.kb = {
@@ -340,7 +405,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.es = {
@@ -364,7 +429,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.cm = {
@@ -388,7 +453,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.tokenBackend = {
@@ -412,7 +477,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.connectors = {
@@ -435,7 +500,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
     return normalizeUrl(parsedUrl.connectors.publicEndpoint) || normalizeUrl(process.env.CONNECTOR_PUBLIC_BACKEND!);
   }
 
@@ -444,7 +509,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.indexing = {
@@ -464,7 +529,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.iam = {
@@ -487,7 +552,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.storage = {
@@ -511,7 +576,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.frontend = {
@@ -535,7 +600,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.queryBackend = {
@@ -555,12 +620,52 @@ export class ConfigService {
     return parsedUrl.queryBackend.endpoint;
   }
 
+  /**
+   * Sandbox broker, egress proxy control plane and the two gateways: the
+   * Python processes read these from /services/endpoints. An unset variable
+   * keeps what is stored, and an address never configured stays absent: the
+   * egress proxy treats a missing gateway as not configured.
+   */
+  public async getSandboxPlaneEndpoints(): Promise<SandboxPlaneEndpoints> {
+    const url =
+      (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
+      '{}';
+    const parsedUrl = parseKvObject(url) as Record<
+      string,
+      Record<string, unknown> | undefined
+    >;
+    const found: SandboxPlaneEndpoints = {};
+    let changed = false;
+    for (const [service, key, envName] of SANDBOX_PLANE_ENDPOINTS) {
+      const fromEnv = normalizeUrl(process.env[envName] ?? '');
+      const storedRaw = parsedUrl[service]?.[key];
+      const stored = normalizeUrl(
+        typeof storedRaw === 'string' ? storedRaw : '',
+      );
+      if (fromEnv && fromEnv !== stored) {
+        parsedUrl[service] = { ...parsedUrl[service], [key]: fromEnv };
+        changed = true;
+      }
+      const effective = fromEnv || stored;
+      if (effective) {
+        found[`${service}.${key}`] = effective;
+      }
+    }
+    if (changed) {
+      await this.keyValueStoreService.set<string>(
+        configPaths.endpoint,
+        JSON.stringify(parsedUrl),
+      );
+    }
+    return found;
+  }
+
   public async getStorageConfig(): Promise<DefaultStorageConfig> {
     const url =
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.storage = {
@@ -580,7 +685,7 @@ export class ConfigService {
         configPaths.storageService,
       )) || '{}';
 
-    const parsedConfig = JSON.parse(storageConfig); // Parse JSON string
+    const parsedConfig = parseKvObject(storageConfig);
     let storageType = parsedConfig.storageType;
     if (!storageType) {
       storageType = 'local';
@@ -613,7 +718,7 @@ export class ConfigService {
     parsedKeys.scopedJwtSecret = randomKeyGenerator();
     parsedKeys.cookieSecret = randomKeyGenerator();
     parsedKeys[SIGNING_SECRETS_ROTATE_ID_FIELD] = rotateId;
-    Logger.getInstance({ service: 'ConfigService' }).warn(
+    logger.warn(
       'Rotated JWT/cookie signing secrets (ROTATE_SIGNING_SECRETS). Existing sessions and service tokens are now invalid.',
     );
     return true;
@@ -697,7 +802,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    const parsedUrl = JSON.parse(url);
+    const parsedUrl = parseKvObject(url);
 
     parsedUrl.oauthProvider = {
       ...parsedUrl.oauthProvider,
@@ -728,11 +833,12 @@ export class ConfigService {
   }
 
   public async getMcpScopes(): Promise<string[]> {
-    const scopes = process.env.MCP_SCOPES;
-    if (!scopes) {
-      return DefaultMcpScopes;
-    }
-    return scopes.split(',').map((s) => s.trim()).filter(Boolean);
+    const scopes = (process.env.MCP_SCOPES ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    // Callers read an empty list as "no cap", so a blank value (" " or ",") means unset, never "every scope".
+    return scopes.length > 0 ? scopes : DefaultMcpScopes;
   }
 
   public async getDeploymentConfig(): Promise<Record<string, string>> {
@@ -749,7 +855,11 @@ export class ConfigService {
           config = parsed;
         }
       }
-    } catch {
+    } catch (error) {
+      logger.warn(
+        'Deployment config unreadable; rewriting it with the Node-owned keys only',
+        { error: safeCause(error) },
+      );
       config = {};
     }
 
@@ -791,6 +901,6 @@ export class ConfigService {
   // on a replica set member or mongos" at runtime. Every deployment path
   // (Helm chart, docker-compose) now sets this env var explicitly.
   public async getRsAvailable(): Promise<string> {
-    return process.env.REPLICA_SET_AVAILABLE === 'true' ? 'true' : 'false';
+    return envFlag('REPLICA_SET_AVAILABLE') ? 'true' : 'false';
   }
 }

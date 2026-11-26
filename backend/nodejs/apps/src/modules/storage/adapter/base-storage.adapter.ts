@@ -1,8 +1,12 @@
 import type { FileHandle } from 'fs/promises';
 import { StorageServiceInterface } from '../services/storage.service';
+import type { ObjectStat } from '../utils/storage-fingerprint';
 import {
   Document,
   FilePayload,
+  ObjectPage,
+  ConditionalCapabilities,
+  ConditionalDeleteResult,
   SignObjectUrlOptions,
   SignedObjectUrl,
   StorageServiceResponse,
@@ -159,6 +163,17 @@ export class StorageServiceAdapter {
   }
 
   /**
+   * Size and ETag of the document's current file as the store reports them now.
+   * @param document - Metadata of the document.
+   * @returns A promise resolving to null only when storage confirms the file is absent.
+   */
+  statObject(document: Document): Promise<ObjectStat | null> {
+    return this.adapter.statObject
+      ? this.adapter.statObject(document)
+      : Promise.reject(new Error('Method not implemented'));
+  }
+
+  /**
    * Whether a file is stored at this path.
    * @param documentPath - The storage path to check.
    * @returns A promise resolving to false only when storage confirms the path is empty.
@@ -257,6 +272,68 @@ export class StorageServiceAdapter {
       ? this.adapter.writeObject(storageKey, data)
       : Promise.reject(
           new Error('writeObject not implemented for this storage provider'),
+        );
+  }
+
+  writeObjectIfAbsent(storageKey: string, data: Buffer): Promise<boolean> {
+    return this.adapter.writeObjectIfAbsent
+      ? this.adapter.writeObjectIfAbsent(storageKey, data)
+      : Promise.reject(
+          new Error(
+            'writeObjectIfAbsent not implemented for this storage provider',
+          ),
+        );
+  }
+
+  listObjects(
+    prefix: string,
+    options: { after?: string; limit: number },
+  ): Promise<ObjectPage> {
+    return this.adapter.listObjects
+      ? this.adapter.listObjects(prefix, options)
+      : Promise.reject(
+          new Error('listObjects not implemented for this storage provider'),
+        );
+  }
+
+  deleteObjects(storageKeys: string[]): Promise<void> {
+    return this.adapter.deleteObjects
+      ? this.adapter.deleteObjects(storageKeys)
+      : Promise.reject(
+          new Error('deleteObjects not implemented for this storage provider'),
+        );
+  }
+
+  deleteObjectsIfMatch(
+    items: { key: string; etag: string }[],
+  ): Promise<ConditionalDeleteResult> {
+    return this.adapter.deleteObjectsIfMatch
+      ? this.adapter.deleteObjectsIfMatch(items)
+      : Promise.reject(
+          new Error(
+            'deleteObjectsIfMatch not implemented for this storage provider',
+          ),
+        );
+  }
+
+  /** What the store honours. A provider without the method honours nothing conditional. */
+  conditionalCapabilities(): Promise<ConditionalCapabilities> {
+    return this.adapter.conditionalCapabilities
+      ? this.adapter.conditionalCapabilities()
+      : Promise.resolve({ conditionalDelete: false, bump: false });
+  }
+
+  writeObjectIfMatch(
+    storageKey: string,
+    data: Buffer,
+    etag: string,
+  ): Promise<'written' | 'gone' | 'changed'> {
+    return this.adapter.writeObjectIfMatch
+      ? this.adapter.writeObjectIfMatch(storageKey, data, etag)
+      : Promise.reject(
+          new Error(
+            'writeObjectIfMatch not implemented for this storage provider',
+          ),
         );
   }
 

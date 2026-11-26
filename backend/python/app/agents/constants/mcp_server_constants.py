@@ -11,6 +11,7 @@ would create under concurrent admin writes):
   /services/mcp/credentials/{instanceId}/{userId}/dcr-client      -> legacy per-owner DCRClient
   /services/mcp/dcr-clients/{instanceId}                          -> shared per-instance DCRClient
   /services/mcp/oauth-clients/{instanceId}                        -> admin shared OAuth app creds
+  /services/mcp/logos/{instanceId}                                -> a custom server's uploaded logo (`logo`)
   /services/mcp/oauth-states/{sha256(state)}                      -> CSRF state (state-keyed, O(1) callback lookup)
   /services/mcp/oauth-state-claims/{sha256(state)}                -> single-use claim of a state (callback)
   /services/mcp/refresh-locks/{instanceId}/{ownerId}              -> cluster-wide token refresh lock
@@ -70,6 +71,11 @@ def get_mcp_credentials_path(instance_id: str, user_id: str) -> str:
     return f"{MCP_ROOT}/credentials/{instance_id}/{user_id}"
 
 
+def get_mcp_credentials_prefix() -> str:
+    """Every instance's auth records: /services/mcp/credentials/"""
+    return f"{MCP_ROOT}/credentials/"
+
+
 def get_mcp_instance_credentials_prefix(instance_id: str) -> str:
     """Prefix to list every user's auth record for an instance (used on full instance delete)."""
     return f"{MCP_ROOT}/credentials/{instance_id}/"
@@ -108,6 +114,11 @@ def get_mcp_shared_dcr_client_path(instance_id: str) -> str:
 def get_mcp_oauth_client_config_path(instance_id: str) -> str:
     """Admin-configured shared OAuth app credentials: /services/mcp/oauth-clients/{instanceId}"""
     return f"{MCP_ROOT}/oauth-clients/{instance_id}"
+
+
+def get_mcp_logo_path(instance_id: str) -> str:
+    """A custom server's uploaded logo: /services/mcp/logos/{instanceId}"""
+    return f"{MCP_ROOT}/logos/{instance_id}"
 
 
 def _state_key(state: str) -> str:

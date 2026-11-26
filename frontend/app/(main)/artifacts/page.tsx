@@ -8,10 +8,10 @@ import { useDebouncedSearch } from '@/knowledge-base/hooks/use-debounced-search'
 import { useTranslation } from 'react-i18next';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { FilePreviewSidebar } from '@/app/components/file-preview';
+import { effectiveMimeType } from '@/lib/utils/file-icon-utils';
 import {
-  isLegacyWordDocFile,
-  isPresentationFile,
   resolvePreviewMimeAfterStream,
+  streamRecordForPreview,
 } from '@/app/components/file-preview/utils';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import { ShareSidebar } from '@/app/components/share';
@@ -26,6 +26,7 @@ import type { ArtifactListItem, ArtifactsSortField } from './types';
 import { ArtifactsHeader } from './components/header';
 import { ArtifactsFilterBar } from './components/filter-bar';
 import { ArtifactsDataTable } from './components/artifacts-data-table';
+import { buildChatHref } from '@/chat/build-chat-url';
 
 function ArtifactsPageContent() {
   const { t } = useTranslation();
@@ -81,6 +82,7 @@ function ArtifactsPageContent() {
   const clearFilters = useArtifactsStore((s) => s.clearFilters);
 
   const hydratedRef = useRef(false);
+  const [isHydrated, setIsHydrated] = useState(false);
   const skipUrlSyncRef = useRef(true);
 
   useEffect(() => {
@@ -102,6 +104,7 @@ function ArtifactsPageContent() {
       setIsSearchActive(true);
     }
     hydratedRef.current = true;
+    setIsHydrated(true);
   }, [searchParams, hydrateFromUrl]);
 
   const listParams = useMemo(
@@ -137,9 +140,11 @@ function ArtifactsPageContent() {
     }
   }, [listParams, setError, setItems, setLoading, t]);
 
+  // Wait for the URL's filters: listing with the params from before hydration
+  // and again with the hydrated ones made two identical requests per visit.
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (isHydrated) void load();
+  }, [isHydrated, load]);
 
   useEffect(() => {
     if (!hydratedRef.current) return;
@@ -178,22 +183,20 @@ function ArtifactsPageContent() {
     const id = requestId ?? ++previewRequestIdRef.current;
     setPreviewLoading(true);
     setPreviewError(undefined);
-    const mimeType = item.mimeType ?? undefined;
-    const streamAsPdf =
-      isPresentationFile(mimeType, item.name) ||
-      isLegacyWordDocFile(mimeType, item.name);
     try {
-      const blob = await KnowledgeBaseApi.streamRecord(item.artifactId, {
-        version,
-        ...(streamAsPdf ? { convertTo: 'application/pdf' } : {}),
-      });
+      const { blob, asPdf } = await streamRecordForPreview(
+        (options) => KnowledgeBaseApi.streamRecord(item.artifactId, options),
+        item.mimeType ?? undefined,
+        item.name,
+        { version },
+      );
       if (id !== previewRequestIdRef.current) return;
       revokePreviewUrl();
       const url = URL.createObjectURL(blob);
       blobUrlRef.current = url;
       setPreviewUrl(url);
       setPreviewBlob(blob);
-      setPreviewType(resolvePreviewMimeAfterStream(item.mimeType || '', item.name, blob, streamAsPdf));
+      setPreviewType(resolvePreviewMimeAfterStream(item.mimeType || '', item.name, blob, asPdf));
       setPreviewVersion(version ?? item.version);
     } catch {
       if (id !== previewRequestIdRef.current) return;
@@ -299,7 +302,19 @@ function ArtifactsPageContent() {
 
   const handleOpenChat = useCallback((item: ArtifactListItem) => {
     if (!item.conversationId) return;
-    router.push(`/chat/?conversationId=${encodeURIComponent(item.conversationId)}`);
+    if (item.conversationArchived) {
+      const q = new URLSearchParams({ conversationId: item.conversationId });
+      if (item.agentKey) q.set('agentKey', item.agentKey);
+      router.push(`/workspace/archived-chats/?${q.toString()}`);
+      return;
+    }
+    router.push(
+      buildChatHref({
+        agentId: item.agentKey,
+        projectId: item.projectId,
+        conversationId: item.conversationId,
+      }),
+    );
   }, [router]);
 
   const handleShare = useCallback((item: ArtifactListItem) => {
@@ -361,7 +376,7 @@ function ArtifactsPageContent() {
             style={{ width: '100%' }}
           >
             <TextField.Slot>
-              <MaterialIcon name="search" size={16} color="var(--slate-9)" />
+              <MaterialIcon name="search" size={16} color="var(--slate-11)" />
             </TextField.Slot>
           </TextField.Root>
         </Flex>
@@ -402,6 +417,7 @@ function ArtifactsPageContent() {
             name: previewItem.name,
             url: previewUrl || '',
             type: previewType || previewItem.mimeType || 'application/octet-stream',
+            sourceType: effectiveMimeType(previewItem.name, previewItem.mimeType),
             size: previewItem.sizeInBytes ?? undefined,
             blob: previewBlob,
             version: previewVersion,

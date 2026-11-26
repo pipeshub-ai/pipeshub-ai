@@ -52,6 +52,8 @@ class StrategyResult:
     windows_total: int = 0
     windows_run: int = 0
     windows_failed: int = 0
+    # Failed windows the provider could not serve (down, timing out, rate limiting).
+    windows_unavailable: int = 0
 
 
 class IExtractionStrategy(Protocol):

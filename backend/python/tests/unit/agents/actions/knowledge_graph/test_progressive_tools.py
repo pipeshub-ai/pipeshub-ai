@@ -31,11 +31,15 @@ _EXPECTED_TOOL_PATHS = {
     "/tools/knowledgegraph/search_entities",
     "/tools/knowledgegraph/find_records_by_entity",
     "/tools/knowledgegraph/find_records_by_value",
+    "/tools/knowledgegraph/find_co_mentioned_entities",
+    "/tools/knowledgegraph/find_records_by_person",
     # Declared on the class; the toolset withholds it unless the deployment
     # offers it (``KnowledgeGraph.tools_for_request``).
     "/tools/knowledgegraph/search_by_entities",
     # Withheld when the deployment sets TIMELINE_SUMMARIES=false.
     "/tools/knowledgegraph/search_timeline",
+    # Withheld unless a harness run bound a quarantined summarizer over knowledge outsiders write (G-58).
+    "/tools/knowledgegraph/summarize",
 }
 
 # Parameters whose default is the tool's page/result-size cap.
@@ -44,6 +48,7 @@ _BOUND_PARAM_DEFAULTS = {
     "list_files": {"limit": 20},
     "search_entities": {"top_k": 10},
     "find_records_by_entity": {"limit": 20},
+    "find_records_by_person": {"limit": 20},
 }
 
 

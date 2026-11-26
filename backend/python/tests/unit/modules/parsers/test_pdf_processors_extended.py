@@ -909,10 +909,17 @@ class TestPyMuPDFOpenCVProcessorExtended:
         ), patch(
             "app.modules.parsers.pdf.layout_pages.os.unlink",
             side_effect=OSError("permission denied"),
-        ):
-            result = await proc.parse_document("test.pdf", b"fake-pdf-bytes")
+        ) as unlink_mock:
+            try:
+                result = await proc.parse_document("test.pdf", b"fake-pdf-bytes")
+            finally:
+                # The mock stops the real unlink, so remove the file it was given.
+                leaked = [c.args[0] for c in unlink_mock.call_args_list]
+                for path in leaked:
+                    os.remove(path)
 
         assert len(result) == 1
+        assert len(leaked) == 1 and os.path.basename(leaked[0]).startswith("pipeshub_pdf_")
 
     @pytest.mark.asyncio
     async def test_parse_document_tempfile_failure_skips_unlink(self):

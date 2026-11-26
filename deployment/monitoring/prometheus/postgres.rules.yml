@@ -1,0 +1,284 @@
+# Alert rules for PostgreSQL and PgBouncer, read from the two exporters of the Compose `postgres-metrics` profile
+# (postgres-exporter v0.20.1 with --collector.long_running_transactions, --collector.database_wraparound,
+# --collector.stat_activity_autovacuum and --collector.stat_wal_receiver; pgbouncer-exporter v0.12.1) or the chart's postgresExporter. Prometheus loads
+# them with docker-compose.monitoring-postgres.yml. Thresholds are starting points an operator tunes for their install.
+groups:
+  - name: pipeshub-postgres-availability
+    rules:
+      - alert: PostgresExporterDown
+        # The job names of docker-compose.monitoring-postgres.yml, and the chart's <release>-...-postgres-exporter Service.
+        expr: up{job=~".*(postgres|pgbouncer)-exporter.*"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: A PostgreSQL or PgBouncer exporter cannot be scraped
+          description: >-
+            {{ $labels.job }} on {{ $labels.instance }} has not answered a scrape for 5 minutes, so no other
+            PostgreSQL alert can fire for it. Check that the exporter container is running.
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: PostgreSQL is unreachable
+          description: >-
+            The exporter on {{ $labels.instance }} cannot connect to PostgreSQL: the server is down, refusing
+            connections, or the monitoring login (pipeshub_monitor) is missing or has the wrong password.
+      - alert: PgBouncerDown
+        expr: pgbouncer_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: PgBouncer is unreachable
+          description: >-
+            The exporter on {{ $labels.instance }} cannot connect to PgBouncer's console: the pooler is down, or
+            pipeshub_monitor is not in its stats_users or verifier file. The application reaches PostgreSQL through it.
+
+  - name: pipeshub-postgres-connections
+    rules:
+      - alert: PostgresConnectionsNearMax
+        # Client backends against what max_connections leaves to ordinary logins. reserved_connections exists from PostgreSQL 16;
+        # on an older server its series is absent and counts as 0, or the division would match nothing and never fire.
+        expr: >-
+          sum by (instance, job) (pg_stat_activity_count{backend_type="client backend"})
+          / on (instance, job) (pg_settings_max_connections - pg_settings_superuser_reserved_connections
+          - (pg_settings_reserved_connections or 0 * pg_settings_max_connections)) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: PostgreSQL uses more than 80% of its connections
+          description: >-
+            {{ $value | humanizePercentage }} of the connections max_connections allows are in use on
+            {{ $labels.instance }}. New logins are refused once it is full; look for a client that bypasses PgBouncer.
+      - alert: PostgresConnectionsExhausted
+        expr: >-
+          sum by (instance, job) (pg_stat_activity_count{backend_type="client backend"})
+          / on (instance, job) (pg_settings_max_connections - pg_settings_superuser_reserved_connections
+          - (pg_settings_reserved_connections or 0 * pg_settings_max_connections)) > 0.95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: PostgreSQL is about to refuse new connections
+          description: >-
+            {{ $value | humanizePercentage }} of the allowed connections are in use on {{ $labels.instance }}.
+      - alert: PgBouncerClientsWaiting
+        # PgBouncer drops a client that waited query_wait_timeout (5 s in postgres/pgbouncer.ini) for a server connection.
+        expr: max by (instance, job, database) (pgbouncer_pools_client_maxwait_seconds{database!="pgbouncer"}) >= 2
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Clients wait for a PostgreSQL connection in PgBouncer
+          description: >-
+            The oldest client waiting for a server connection to {{ $labels.database }} has waited {{ $value }} s.
+            Past query_wait_timeout PgBouncer drops it and the request fails: a pool is too small or held by slow
+            transactions.
+      - alert: PgBouncerServerPoolSaturated
+        # max_connections here is the database's max_db_connections; 0 means no limit.
+        expr: >-
+          pgbouncer_databases_current_connections / (pgbouncer_databases_max_connections > 0) >= 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: PgBouncer has nearly all the server connections it may open to a database
+          description: >-
+            {{ $value | humanizePercentage }} of max_db_connections for {{ $labels.database }} are open. Further
+            clients wait for one to be released.
+      - alert: PgBouncerClientConnectionsNearMax
+        expr: >-
+          pgbouncer_used_clients / on (instance, job) pgbouncer_config_max_client_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: PgBouncer uses more than 80% of max_client_conn
+          description: >-
+            {{ $value | humanizePercentage }} of max_client_conn is in use on {{ $labels.instance }}; PgBouncer
+            refuses clients beyond it.
+
+  - name: pipeshub-postgres-wal
+    rules:
+      - alert: PostgresWalArchiveFailing
+        # archive_command (pgbackrest-archive-push.sh with docker-compose.postgres-backup.yml) keeps failing.
+        expr: increase(pg_stat_archiver_failed_count[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: PostgreSQL cannot archive WAL
+          description: >-
+            WAL archiving failed {{ $value | humanize }} times in the last 10 minutes on {{ $labels.instance }} and
+            has been failing for 10 minutes. Unarchived WAL stays in pg_wal and point-in-time restore stops at the
+            last archived segment. Read the server log for archive-push errors (repository unreachable or full).
+      - alert: PostgresWalArchiveStalled
+        expr: >-
+          pg_stat_archiver_last_archive_age > 3600
+          and on (instance, job) increase(pg_stat_archiver_failed_count[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: No WAL segment was archived for an hour, and archiving is failing
+          description: >-
+            The last successful WAL archive on {{ $labels.instance }} was {{ $value | humanizeDuration }} ago.
+            A restore now loses everything after it.
+      - alert: PostgresWalPilingUp
+        # WAL beyond twice max_wal_size is held for a failing archiver, an abandoned replication slot or wal_keep_size.
+        expr: pg_wal_size_bytes > on (instance, job) 2 * pg_settings_max_wal_size_bytes
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: pg_wal keeps growing
+          description: >-
+            pg_wal on {{ $labels.instance }} holds {{ $value | humanize1024 }}B, more than twice max_wal_size. It is
+            kept for archiving or a replication slot, and fills the data volume if nothing releases it.
+      - alert: PostgresReplicaLagging
+        expr: pg_replication_lag_seconds > 300 and on (instance, job) pg_replication_is_replica == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A PostgreSQL replica is more than 5 minutes behind
+          description: >-
+            The replica {{ $labels.instance }} last replayed a transaction {{ $value | humanizeDuration }} behind
+            the primary.
+
+      - alert: PostgresReplicaNotStreaming
+        # pg_replication_lag_seconds reads 0 whenever the received and replayed positions are equal, which a disconnected
+        # receiver leaves them, so lag alone misses a replica cut off from its primary. pg_stat_wal_receiver has a row only
+        # while a receiver runs, and wal_receiver_timeout (60 s by default) ends a connection that stops receiving, so a
+        # replica that stops getting WAL loses its "streaming" row. postgres-exporter v0.20.1 exports that row only for a
+        # receiver with a replication slot (collector/pg_stat_walreceiver.go skips a null slot_name), so a replica streaming
+        # without a slot, or one fed only by restore_command, fires too: give it a slot (primary_slot_name) or silence it.
+        expr: >-
+          pg_replication_is_replica == 1
+          unless on (instance, job) pg_stat_wal_receiver_last_msg_receipt_time{status="streaming"}
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A PostgreSQL replica is not streaming WAL from its primary
+          description: >-
+            The replica {{ $labels.instance }} has had no streaming WAL receiver for 5 minutes: it falls behind while the
+            primary commits, though its replication lag can still read 0. Check primary_conninfo, the network and the
+            primary's replication slots.
+
+  - name: pipeshub-postgres-transactions
+    rules:
+      - alert: PostgresLongRunningTransaction
+        # Excludes idle sessions and autovacuum; a transaction open this long holds back vacuum on every table.
+        expr: pg_long_running_transactions_oldest_timestamp_seconds > 3600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A transaction has been open for more than an hour
+          description: >-
+            The oldest open transaction on {{ $labels.instance }} started {{ $value | humanizeDuration }} ago.
+            Dead rows cannot be removed while it runs. Find it in pg_stat_activity (xact_start) and end it if stuck.
+      - alert: PostgresIdleInTransaction
+        # The value is the age of the transaction (xact_start), which is now idle.
+        expr: >-
+          max by (instance, job, datname, usename)
+          (pg_stat_activity_max_tx_duration{state=~"idle in transaction.*"}) > 300
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: A session sits idle inside a transaction
+          description: >-
+            {{ $labels.usename }} on {{ $labels.datname }} is idle inside a transaction that has been open for
+            {{ $value | humanizeDuration }}. It keeps its locks and holds back vacuum: a client forgot to commit.
+      - alert: PostgresDeadlocksRising
+        expr: increase(pg_stat_database_deadlocks[15m]) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: PostgreSQL is resolving deadlocks
+          description: >-
+            {{ $value | humanize }} deadlocks in 15 minutes on {{ $labels.datname }}. Each one aborts a transaction;
+            the server log names the statements (deadlock detected).
+
+  - name: pipeshub-postgres-maintenance
+    rules:
+      - alert: PostgresTxidWraparoundNear
+        # PostgreSQL stops assigning transaction ids about 2^31 (2.1e9) ids after the oldest unfrozen one;
+        # autovacuum normally freezes at autovacuum_freeze_max_age (2e8 by default), so 1e9 means it is far behind.
+        expr: >-
+          pg_database_wraparound_age_datfrozenxid_seconds > 1e9
+          or pg_database_wraparound_age_datminmxid_seconds > 1e9
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: A database is halfway to transaction ID wraparound
+          description: >-
+            {{ $labels.datname }} on {{ $labels.instance }} has {{ $value | humanize }} transactions (or multixacts)
+            since its oldest unfrozen one. Find what blocks autovacuum (long transactions, idle-in-transaction
+            sessions, abandoned replication slots) and VACUUM the oldest tables.
+      - alert: PostgresTxidWraparoundImminent
+        expr: >-
+          pg_database_wraparound_age_datfrozenxid_seconds > 1.5e9
+          or pg_database_wraparound_age_datminmxid_seconds > 1.5e9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: A database is close to transaction ID wraparound
+          description: >-
+            {{ $labels.datname }} is {{ $value | humanize }} ids past its oldest unfrozen one. Near 2.1e9 the server
+            refuses writes until a VACUUM finishes.
+      - alert: PostgresDeadTuplesHigh
+        # Autovacuum vacuums a table at 20% dead rows by default; 30% for an hour means it is not keeping up.
+        expr: >-
+          pg_stat_user_tables_n_dead_tup > 100000
+          and pg_stat_user_tables_n_dead_tup / (pg_stat_user_tables_n_live_tup + pg_stat_user_tables_n_dead_tup) > 0.3
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: Autovacuum is not keeping up with a table
+          description: >-
+            {{ $labels.schemaname }}.{{ $labels.relname }} has {{ $value | humanize }} dead rows, over 30% of the
+            table, for an hour. Check for long transactions holding them back and the table's last_autovacuum.
+      - alert: PostgresAutovacuumRunningLong
+        expr: time() - pg_stat_activity_autovacuum_timestamp_seconds > 6 * 3600
+        labels:
+          severity: warning
+        annotations:
+          summary: An autovacuum has been running for more than six hours
+          description: >-
+            Autovacuum of {{ $labels.relname }} started {{ $value | humanizeDuration }} ago. It is throttled
+            (autovacuum_vacuum_cost_limit) or blocked; other tables wait for a worker meanwhile.
+      - alert: PostgresAutovacuumOff
+        expr: pg_settings_autovacuum == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Autovacuum is turned off
+          description: >-
+            autovacuum is off on {{ $labels.instance }}: dead rows accumulate and nothing freezes old transaction
+            ids, which ends in wraparound.
+
+  - name: pipeshub-postgres-size
+    rules:
+      - alert: PostgresDatabaseGrowingFast
+        # Half again its size in a day, once it is past 1 GiB: plan disk before the data volume fills.
+        expr: >-
+          pg_database_size_bytes > 1073741824
+          and pg_database_size_bytes / (pg_database_size_bytes offset 1d) > 1.5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: A database grew by more than half in a day
+          description: >-
+            {{ $labels.datname }} on {{ $labels.instance }} is {{ $value | humanize1024 }}B and grew over 50% in
+            24 hours. Check the free space of the data volume.

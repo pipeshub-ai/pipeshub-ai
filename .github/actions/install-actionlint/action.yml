@@ -1,0 +1,48 @@
+name: Install actionlint
+description: >-
+  Installs the pinned actionlint release from a cached tarball, downloading it
+  only when no cached copy passes the checksum. Shared by the PR lint job and
+  release-download-cache.yml, which saves the tarball from main so that every
+  pull request can restore it.
+
+runs:
+  using: composite
+  steps:
+    # Restore and save are separate steps because a composite action cannot rely on a nested action's post step.
+    # The cache is not trusted any more than the URL: the checksum is checked on every run, cached or downloaded.
+    - name: Restore the actionlint release
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/actionlint
+        key: actionlint-1.7.7-023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+
+    - name: Install actionlint
+      shell: bash
+      env:
+        # Keep in step with both cache keys in this file.
+        ACTIONLINT_VERSION: 1.7.7
+        # Without the checksum this step trusts whatever the URL returns, a release asset a third party can replace.
+        ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+      run: |
+        set -euo pipefail
+        tarball="$HOME/.cache/actionlint/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+        verified() { [ -f "$tarball" ] && echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c --quiet -; }
+        if ! verified; then
+          # no cached copy, or a damaged one: download it again; a download that fails the check fails the step
+          rm -f "$tarball"
+          mkdir -p "$(dirname "$tarball")"
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 6 --retry-all-errors --retry-delay 20 "$url" -o "$tarball"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c -
+        fi
+        tar -xzf "$tarball" -C /tmp actionlint
+        sudo install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
+        actionlint --version
+
+    - name: Save the actionlint release
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/actionlint
+        key: actionlint-1.7.7-023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757

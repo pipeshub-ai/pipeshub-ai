@@ -93,6 +93,7 @@ class TestRedisMembershipDelete:
                 col,
                 FilterExpression(
                     must=[
+                        FieldCondition(key="metadata.orgId", value="org1"),
                         FieldCondition(key=CONNECTOR_IDS_FIELD, value=DYING),
                         FieldCondition(key=CONNECTOR_IDS_FIELD, values_count_lte=1),
                     ]
@@ -127,6 +128,7 @@ class TestRedisMembershipDelete:
                 col,
                 FilterExpression(
                     must=[
+                        FieldCondition(key="metadata.orgId", value="org1"),
                         FieldCondition(key=CONNECTOR_IDS_FIELD, value=DYING),
                         FieldCondition(key=CONNECTOR_IDS_FIELD, values_count_lte=1),
                     ]
@@ -168,9 +170,10 @@ class TestRedisMembershipDelete:
                     col,
                     FilterExpression(
                         must=[
+                            FieldCondition(key="metadata.orgId", value="org1"),
                             FieldCondition(
                                 key=CONNECTOR_IDS_FIELD, values_count_lte=1
-                            )
+                            ),
                         ]
                     ),
                 )

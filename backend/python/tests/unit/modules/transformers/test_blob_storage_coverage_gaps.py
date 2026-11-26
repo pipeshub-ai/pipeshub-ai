@@ -1,5 +1,6 @@
 """Targeted tests to raise coverage for blob_storage.py remaining branches."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -30,6 +31,7 @@ def _resp(status=200, json_value=None, text_value=""):
     r = AsyncMock()
     r.status = status
     r.json = AsyncMock(return_value=json_value if json_value is not None else {})
+    r.read = AsyncMock(return_value=json.dumps(json_value if json_value is not None else {}).encode())
     r.text = AsyncMock(return_value=text_value)
     r.__aenter__ = AsyncMock(return_value=r)
     r.__aexit__ = AsyncMock(return_value=False)
@@ -225,24 +227,26 @@ class TestApplyUploadNextVersionErrors:
     async def test_propagates_when_not_versioning_error(self):
         gp = AsyncMock()
         bs = _make_bs(graph_provider=gp)
-        bs.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value={"record_doc_id": "doc-existing"}
-        )
-        # apply()'s "override in place" branch catches ANY exception from
-        # update_record_buffer unconditionally and falls back to
-        # save_record_to_storage -- it does not gate on
-        # _is_non_versioned_exception. So a non-"cannot be versioned" error
-        # only propagates out of apply() if the fallback create ALSO fails.
+        bs._mapping_node = AsyncMock(return_value={
+            "id": "vr-1", "documentId": "doc-existing", "record_doc_id": "doc-existing",
+            "storedRun": "none:p", "switchSeq": 2,
+        })
+        bs._switch_mapping = AsyncMock(return_value=True)
+        # A failure that is not "the document is gone" fails the write after its retries: the
+        # record is retried as a whole, and no replacement document is created behind its back.
         bs.update_record_buffer = AsyncMock(side_effect=RuntimeError("upstream failure"))
         bs.save_record_to_storage = AsyncMock(side_effect=RuntimeError("upstream failure"))
 
         ctx = MagicMock()
         ctx.record = _make_record_mock()
+        ctx.settings = {}
 
-        with pytest.raises(RuntimeError, match="upstream failure"):
-            await bs.apply(ctx)
+        with patch("app.modules.transformers.blob_storage.asyncio.sleep", new=AsyncMock()):
+            with pytest.raises(RuntimeError, match="upstream failure"):
+                await bs.apply(ctx)
 
-        bs.save_record_to_storage.assert_awaited_once()
+        bs.save_record_to_storage.assert_not_awaited()
+        bs._switch_mapping.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

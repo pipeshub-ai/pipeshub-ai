@@ -8,13 +8,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.config.constants.arangodb import EventTypes
-from app.services.graph_db.common.record_visibility import is_searchable_record
+from app.config.constants.arangodb import EventTypes, OriginTypes, ProgressStatus
+from app.connectors.sources.localKB.push.contract import is_pushed_revision
+from app.modules.indexing.refresh_intent import live_intent, stored_intent, with_intent
+from app.services.graph_db.common.record_visibility import (
+    is_live_record,
+    is_searchable_record,
+)
+from app.services.graph_db.common.utils import RESTORED_AT_FIELD
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-__all__ = ["is_parked_duplicate", "record_event", "reembeds_from_storage"]
+__all__ = ["is_parked_duplicate", "record_event", "reembeds_from_storage", "republish_eligible"]
 
 
 def reembeds_from_storage(record: Mapping[str, object]) -> bool:
@@ -74,8 +81,16 @@ def record_event(
         if (version > 0 or restored_upload) and payload.get("virtualRecordId")
         else EventTypes.NEW_RECORD.value
     )
-    if restored_upload and event_type == EventTypes.REINDEX_RECORD.value and reembeds_from_storage(record):
+    now_ms = get_epoch_timestamp_in_ms()
+    # A restored upload that holds a live Force reindex request runs as the full refresh: a vector-only rebuild would leave the
+    # request unserved (the handler gives a vector rebuild no refresh), and it would age out.
+    if (
+        restored_upload and event_type == EventTypes.REINDEX_RECORD.value and reembeds_from_storage(record)
+        and live_intent(record, now_ms) is None
+    ):
         payload["vectorDbOnly"] = True
+    # A record that holds a live Force reindex request is re-sent as that refresh, whatever built the event.
+    with_intent(payload, record, now_ms)
     return event_type, payload
 
 
@@ -84,6 +99,31 @@ def is_parked_duplicate(record: Mapping[str, object], *, restored_upload: bool =
     its message already acked, and released by the twin's completion, not by a
     re-send. A restored file still NOT_STARTED is not parked, though it keeps
     the checksum and content id it had."""
+    # A record that holds a Force reindex's request is never parked: it must run as a refresh of its own, so a twin's
+    # completion neither promotes it to COMPLETED nor fails it (see ``refresh_intent``).
     return bool(
         record.get("md5Checksum") and record.get("virtualRecordId") and not restored_upload
+        and stored_intent(record) is None
     )
+
+
+def republish_eligible(record: Mapping[str, object], status: str) -> tuple[bool, bool]:
+    """``(eligible, restored_upload)`` for a record found waiting in ``status``.
+
+    A connector's record is always eligible. An upload is left alone, since a new one waits on
+    its file reaching storage, except a restored one (its content is stored and the restore was
+    the only thing that queued it) and a pushed one: a push writes the row only after its
+    content is stored, so a row still waiting means the publish after the commit was lost.
+    """
+    live = is_live_record(record)
+    restored_upload = (
+        status == ProgressStatus.NOT_STARTED.value and bool(record.get(RESTORED_AT_FIELD)) and live
+    )
+    pushed = (
+        record.get("origin") == OriginTypes.UPLOAD.value
+        and is_pushed_revision(record.get("externalRevisionId"))  # type: ignore[arg-type]
+        and live
+        and status in (ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
+    )
+    eligible = record.get("origin") == OriginTypes.CONNECTOR.value or restored_upload or pushed
+    return eligible, restored_upload

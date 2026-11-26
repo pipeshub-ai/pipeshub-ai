@@ -1,0 +1,83 @@
+# DEV-ONLY overlay for deployment/e2e/run.sh human-up: the e2e stack as a person tests it by hand in the
+# browser (scripts/human-test-stack.sh drives it).
+#
+# On top of docker-compose.e2e.yml it changes what a person would trip over on a test stack:
+#   - the model providers' own endpoints (app_from_source.sh drops the e2e overlay's base-URL overrides), so the
+#     keys a person enters on the AI models page reach the real provider; the scripted model stays as one more
+#     openAICompatible model
+#   - the local embedding service, as the image starts it, with its model cache kept across rebuilds
+#   - a self-hosted offering, where the vendor rules allow Claude Code on the org's own Anthropic key
+#   - its own Redis (the base file's service, with its named volume), not the host's shared pxh-redis: a
+#     FLUSHALL there by another job wiped this stack's models and MCP servers while Mongo kept the rest (routefix)
+#   - memory and CPU limits: the host is shared
+# Everything else (CONTROL_PLANE_PIN, MCP_HUB, ...) stays at the release default.
+
+x-e2e-labels: &e2e-labels
+  pipeshub.harness.owner: x-lead
+  io.pipeshub.e2e.run: ${E2E_RUN:?set E2E_RUN}
+
+services:
+  redis:
+    labels: *e2e-labels
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  pipeshub-ai:
+    environment:
+      - E2E_HUMAN=1
+      - AGENT_HARNESS_OFFERING=oss
+      - HF_HOME=/hf
+      # How long a person's Claude sign-in is kept (SIGNIN-5); empty is the product default (30 minutes idle, 12 hours).
+      # human-test-stack.sh --signin-idle-minutes / --signin-max-hours shorten them to test the expiry.
+      - HARNESS_SIGNIN_IDLE_MINUTES=${E2E_SIGNIN_IDLE_MINUTES:-}
+      - HARNESS_SIGNIN_MAX_HOURS=${E2E_SIGNIN_MAX_HOURS:-}
+      # WP-26 repository picker: the connectors service reads GitHub from the fake SaaS, with the token
+      # seed_config.py github writes on the admin's GitHub sign-in (a test value, never a real GitHub token).
+      - GITHUB_API_URL=http://pxh-fake-saas:8090/api/v3
+      - FAKE_SAAS_GITHUB_TOKEN=pxh-fake-github-token
+    volumes:
+      - ${E2E_HUMAN_DIR:?set E2E_HUMAN_DIR}/hf:/hf
+    deploy:
+      resources:
+        limits:
+          cpus: "6"
+          memory: 10G
+
+  sandbox-broker:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  egress-proxy:
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  qdrant:
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "1"
+          memory: 512M
+
+  pxh-fake-llm:
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  pxh-fake-saas:
+    environment:
+      FAKE_SAAS_GITHUB_TOKEN: pxh-fake-github-token
+    deploy:
+      resources:
+        limits:
+          memory: 256M

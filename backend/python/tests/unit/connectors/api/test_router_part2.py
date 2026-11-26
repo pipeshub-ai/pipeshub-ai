@@ -2624,12 +2624,15 @@ class TestToggleRollsBackOnPublishFailure:
         org = {"_key": "o1", "accountType": "individual"}
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(return_value=org)
+        # The toggle's number, as the stores return it from the increment.
+        graph_provider.increment_node_field = AsyncMock(return_value=4)
+        stored = {"updatedAtTimestamp": current_version, "toggleSeq": 4}
 
         async def compare_and_set(key, collection, updates, expected) -> bool:
             if revert_error is not None:
                 raise revert_error
             assert collection == CollectionNames.APPS.value
-            return expected == {"updatedAtTimestamp": current_version}
+            return all(stored.get(k) == v for k, v in expected.items())
 
         graph_provider.update_node_fields_if_match = AsyncMock(side_effect=compare_and_set)
         instance = _make_instance(

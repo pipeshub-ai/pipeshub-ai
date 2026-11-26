@@ -8,43 +8,48 @@ returns a ``BlocksContainer`` JSON.  All parser implementations live in
 import asyncio
 import logging
 import os
-import signal
-import sys
-import types
 from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede ML imports
+from app.api.routes.parsing import parse_admission_stats
 from app.api.routes.parsing import router as parsing_router
+from app.api.validation_errors import input_free_422
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import OCRProvider
 from app.containers.parsing import ParsingAppContainer, initialize_container
+from app.edition import check_runtime_settings
 from app.edition_services import configure_app
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
 from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
+from app.modules.parsers.email.msg_parser import MsgParser
 from app.modules.parsers.epub.epub_parser import EPUBParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
-from app.modules.parsers.html_parser.html_parser import HTMLParser
 from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.modules.parsers.json.json_parser import JSONParser
 from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
 from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
+from app.modules.parsers.ooxml.ooxml_package_parser import OoxmlPackageParser
 from app.modules.parsers.parse_pool import (
     set_resource_governor as set_parse_pool_governor,
 )
 from app.modules.parsers.parse_pool import shutdown_parse_pool
-from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+from app.modules.parsers.pdf.docling_processor import (
+    DoclingProcessor,
+    shutdown_docling_pool,
+)
 from app.modules.parsers.pdf.docling_processor import (
     set_resource_governor as set_docling_processor_governor,
 )
@@ -60,11 +65,15 @@ from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.sql.sql_table_parser import SQLTableParser
 from app.modules.parsers.sql.sql_view_parser import SQLViewParser
+from app.modules.parsers.text.plain_text_parser import PlainTextParser
 from app.modules.parsers.yaml.yaml_parser import YAMLParser
 from app.services.docling.client import DoclingClient
+from app.services.llm_gateway.fleet_redis import bind_fleet_redis, bind_service_fleet
 from app.services.llm_gateway.gateway import get_llm_gateway
+from app.services.llm_gateway.wire import hook_status as wire_hook_status
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParserProvider
+from app.services.parsing.load import parse_load, render_metrics
 from app.services.parsing.providers.docling_service_parser import DoclingServiceParser
 from app.services.parsing.providers.local_docling_parser import LocalDoclingParser
 from app.services.parsing.providers.ocr_parser import OCRParser
@@ -72,11 +81,13 @@ from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
 from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import ResourceGovernor
+from app.services.resource_governor.controller import run_for_health
+from app.services.resource_governor.lanes import lanes_health
 from app.services.resource_governor.probe import (
     effective_cpu_count,
     effective_cpu_source,
 )
-from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+from app.utils.env_utils import bind_host, bind_port, uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.logger import install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
@@ -89,13 +100,12 @@ logger = logging.getLogger("parsing_main")
 PARSE_THREAD_POOL_HEADROOM = 4
 
 
-def handle_sigterm(signum: int, frame: types.FrameType | None) -> None:
-    logger.info("Received signal %s; shutting down gracefully", signum)
-    sys.exit(0)
+# No SIGTERM/SIGINT handler is installed here. uvicorn installs its own while it serves and drains
+# in-flight requests before it exits; this module is imported again behind uvicorn's import string
+# (``app.parsing_main:app``), so a handler set at import would be a second owner of those signals.
 
-
-signal.signal(signal.SIGTERM, handle_sigterm)
-signal.signal(signal.SIGINT, handle_sigterm)
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 container = ParsingAppContainer.init("parsing_service")
 container_lock = asyncio.Lock()
@@ -186,6 +196,21 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     registry.register("docx", ParserProvider.DEFAULT, local_docling_parser)
     registry.register("doc", ParserProvider.DOCLING, doc_parser)
     registry.register("doc", ParserProvider.DEFAULT, doc_parser)
+    odt_parser = DocParser(local_docling_parser, input_ext="odt")
+    registry.register("odt", ParserProvider.DOCLING, odt_parser)
+    registry.register("odt", ParserProvider.DEFAULT, odt_parser)
+    rtf_parser = DocParser(local_docling_parser, input_ext="rtf")
+    registry.register("rtf", ParserProvider.DOCLING, rtf_parser)
+    registry.register("rtf", ParserProvider.DEFAULT, rtf_parser)
+    # A macro-enabled document or a template, rewritten as the plain package it holds.
+    word_package_parser = OoxmlPackageParser(local_docling_parser, "word")
+    registry.register("docm", ParserProvider.DOCLING, word_package_parser)
+    registry.register("docm", ParserProvider.DEFAULT, word_package_parser)
+    registry.register("dotx", ParserProvider.DOCLING, word_package_parser)
+    registry.register("dotx", ParserProvider.DEFAULT, word_package_parser)
+    slides_package_parser = OoxmlPackageParser(local_docling_parser, "slides")
+    registry.register("potx", ParserProvider.DOCLING, slides_package_parser)
+    registry.register("potx", ParserProvider.DEFAULT, slides_package_parser)
 
 
     # ----------------------------------------------------------------
@@ -219,6 +244,16 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     # ----------------------------------------------------------------
     registry.register("html", ParserProvider.DEFAULT, default_html_parser)
     registry.register("html", ParserProvider.DOCLING, docling_html_parser)
+
+    # ----------------------------------------------------------------
+    # Outlook mail; logs and configuration files (plain text, never Markdown)
+    # ----------------------------------------------------------------
+    msg_parser = MsgParser(SelectolaxHtmlParser(allow_remote_fetch=False))
+    registry.register("msg", ParserProvider.DEFAULT, msg_parser)
+    registry.register("msg", ParserProvider.DOCLING, MsgParser(DoclingHtmlParser(allow_remote_fetch=False)))
+    plain_text_parser = PlainTextParser()
+    registry.register("log", ParserProvider.DEFAULT, plain_text_parser)
+    registry.register("cfg", ParserProvider.DEFAULT, plain_text_parser)
 
     # ----------------------------------------------------------------
     # CSV / TSV
@@ -256,6 +291,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     config_service = app_container.config_service()
     app_logger = app_container.logger()
+    from app.modules.indexing.replay_set import check_main_redis_eviction_policy
+
+    await check_main_redis_eviction_policy(config_service, app_logger, "parsing")
 
     app.state.parser_registry = _build_registry(config_service, app_logger)
 
@@ -297,6 +335,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     asyncio.get_running_loop().set_default_executor(executor)
     app.state.parse_executor = executor
 
+    # The model providers' circuit breaker is the fleet's: shared with the indexing service through Redis, so every
+    # process and pod sees the same outage.
+    fleet_registry = await bind_service_fleet(config_service, app_logger)
+
     app_logger.info(
         "✅ Parsing Service started — %d formats registered | "
         "heavy_parse_ceiling=%d light_parse_ceiling=%d (worker_count=%d) | thread_pool_size=%d | "
@@ -314,6 +356,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     app_logger.info("🔄 Parsing Service shutting down")
+    bind_fleet_redis(None)
+    await fleet_registry.aclose()
+    # The pool goes first: its workers hold leases and tokens of the governor's
+    # lane budget, and closing the budget under them strands the waiters.
+    # Cleared first, or the next submit in this process starts a new pool.
+    set_parse_pool_governor(None)
+    shutdown_parse_pool()
+    shutdown_docling_pool()
     governor.stop()
     governor_task.cancel()
     try:
@@ -324,7 +374,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app_logger.exception("Error during resource governor shutdown")
     governor.close()
     executor.shutdown(wait=False, cancel_futures=True)
-    shutdown_parse_pool()
     try:
         config_service.close()
     except Exception:
@@ -341,6 +390,7 @@ app = FastAPI(
     description="Parses documents into BlocksContainer format",
     version="2.0.0",
     lifespan=lifespan,
+    exception_handlers={RequestValidationError: input_free_422},
 )
 configure_app(app, "parsing")
 
@@ -350,6 +400,17 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(parsing_router)
 
 
+@app.get("/metrics", include_in_schema=False)
+async def metrics() -> PlainTextResponse:
+    """In-flight and saturation counters in Prometheus text format, for a dashboard or an alert to read."""
+    governor: ResourceGovernor | None = getattr(app.state, "governor", None)
+    default_capacity = governor.ceilings.heavy if governor is not None else None
+    return PlainTextResponse(
+        render_metrics(default_capacity=default_capacity),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
 @app.get("/health")
 async def health_check() -> JSONResponse:
     registry: ParserRegistry = app.state.parser_registry
@@ -357,6 +418,7 @@ async def health_check() -> JSONResponse:
         "status": "healthy",
         "service": "parsing",
         "formats": list(registry.list_all_formats().keys()),
+        "load": parse_load().snapshot(),
         "cpu": {
             "effective_cpus": effective_cpu_count(),
             "source": effective_cpu_source(),
@@ -364,17 +426,32 @@ async def health_check() -> JSONResponse:
         },
     }
     governor: ResourceGovernor | None = getattr(app.state, "governor", None)
+    try:
+        content["lanes"] = await run_for_health(lanes_health, governor, effective_cpu_count())
+    except Exception as lanes_error:
+        container.logger().warning("Lane plan failed: %s", lanes_error)
+        content["lanes"] = {"error": "unavailable"}
     if governor is not None:
         try:
-            content["resource_governor"] = governor.stats()
+            content["resource_governor"] = await run_for_health(governor.stats)
         except Exception as stats_error:
             # Observability failure must not fail the liveness probe — the
             # service itself is still healthy.
             container.logger().warning("Resource governor stats failed: %s", stats_error)
             content["resource_governor"] = {"error": "unavailable"}
     try:
+        # Why the pools admit what they admit, and which requests were refused and why.
+        content["admission"] = {
+            "governor": governor.admission_explain() if governor is not None else None,
+            "parse": parse_admission_stats(),
+        }
+    except Exception as stats_error:
+        container.logger().warning("Admission stats failed: %s", stats_error)
+        content["admission"] = {"error": "unavailable"}
+    try:
         # Table summaries, image descriptions and VLM OCR call models through this process's gateway.
         content["llm_gateway"] = get_llm_gateway().stats()
+        content["llm_wire_hooks"] = wire_hook_status()
     except Exception as stats_error:
         # Logged, not returned: exception text does not belong in /health.
         container.logger().warning("LLM gateway stats failed: %s", stats_error)
@@ -382,7 +459,32 @@ async def health_check() -> JSONResponse:
     return JSONResponse(content=content)
 
 
-def run(host: str = "0.0.0.0", port: int | None = None, workers: int | None = None, *, reload: bool = False) -> None:
+DOCLING_READY_TIMEOUT_SECONDS = 2.0
+
+
+@app.get("/health/ready")
+async def readiness() -> JSONResponse:
+    """Ready to take parses: this process is up and the Docling service it calls on localhost answers.
+
+    ``/health`` stays the liveness signal and does not look at Docling, so a busy Docling cannot get a
+    pod restarted; this one is for readiness probes, which only take the pod out of rotation.
+    """
+    import httpx
+
+    url = os.getenv("DOCLING_SERVICE_URL", "http://localhost:8081").rstrip("/") + "/health"
+    try:
+        async with httpx.AsyncClient(timeout=DOCLING_READY_TIMEOUT_SECONDS) as client:
+            response = await client.get(url)
+        ready = response.status_code == 200
+    except httpx.HTTPError:
+        ready = False
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={"status": "ready" if ready else "unavailable", "docling": "ok" if ready else "unavailable"},
+    )
+
+
+def run(host: str | None = None, port: int | None = None, workers: int | None = None, *, reload: bool = False) -> None:
     """Run the Parsing Service.
 
     ``PARSING_UVICORN_WORKERS`` (default 1) scales the service across
@@ -392,7 +494,8 @@ def run(host: str = "0.0.0.0", port: int | None = None, workers: int | None = No
     divided by the worker count instead of every worker independently
     claiming the whole box's resources (see ``lifespan``).
     """
-    port = port or int(os.getenv("PARSING_SERVICE_PORT", "8092"))
+    host = host or bind_host()
+    port = port if port is not None else bind_port(8092, "PARSING_SERVICE_PORT")
     workers = workers or max(1, int(os.getenv("PARSING_UVICORN_WORKERS", "1")))
     if reload and workers > 1:
         logger.warning(

@@ -271,3 +271,21 @@ def test_json_round_trip() -> None:
     back = RecordMetadata.model_validate_json(json.dumps(as_json))
     assert back == metadata
     assert isinstance(back.values["urgent"].value, bool) and isinstance(back.values["score"].value, float)
+
+
+def test_validation_error_codes() -> None:
+    """P3-08: callers branch on ``code``, never on the message."""
+    from app.models.record_metadata import (
+        MetadataSchema,
+        MetadataValidationError,
+        PropertyDefinition,
+        PropertyType,
+        validate_values,
+    )
+
+    schema = MetadataSchema(schema_id="o:k:1", properties=(PropertyDefinition(name="n", type=PropertyType.INT, display_label="N"),))
+    for raw, code in (({"orgId": 1}, "PROPERTY_RESERVED"), ({"zzz": 1}, "PROPERTY_UNKNOWN"), ({"n": "x"}, "PROPERTY_INVALID")):
+        with pytest.raises(MetadataValidationError) as e:
+            validate_values(schema, raw, source="push")
+        assert e.value.code == code
+    assert MetadataValidationError("p", "m").code == "PROPERTY_INVALID"

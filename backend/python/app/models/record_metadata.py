@@ -40,9 +40,11 @@ PROPERTY_NAME_PATTERN = r"^[a-z][a-zA-Z0-9_]{0,63}$"
 #: manifests, mapping nodes); a property of the same name would shadow one.
 PIPELINE_FIELD_NAMES = frozenset({
     "orgId", "virtualRecordId", "recordId", "blockId", "blockIndex", "blockType",
-    "isBlock", "isBlockGroup", "rev", "contentRev", "currentRev", "previousRev",
-    "manifestDocId", "schemaId", "connectorId", "connectorIds", "recordGroupIds",
-    "rootRecordGroupIds", "metadata", "page_content",
+    "isBlock", "isBlockGroup", "rowBlockIds", "rev", "contentRev", "currentRev", "previousRev",
+    "manifestDocId", "storedRev", "storedRun", "storedMeta", "currentRun", "switchSeq",
+    "switchDoc", "switchUpdatedAt", "lastSwitchAt", "retired",
+    "schemaId", "connectorId", "connectorIds", "recordGroupIds", "rootRecordGroupIds",
+    "metadata", "page_content",
 })
 
 
@@ -216,11 +218,17 @@ class RecordMetadata(BaseModel):
 
 
 class MetadataValidationError(ValueError):
-    """A value or name that does not fit the schema; ``property`` names it."""
+    """A value or name that does not fit the schema; ``property`` names it.
 
-    def __init__(self, property_name: str, message: str) -> None:
+    ``code`` is the machine-readable kind: ``PROPERTY_RESERVED``,
+    ``PROPERTY_UNKNOWN`` or (the default) ``PROPERTY_INVALID``. Callers branch on
+    it rather than on the message text.
+    """
+
+    def __init__(self, property_name: str, message: str, code: str = "PROPERTY_INVALID") -> None:
         super().__init__(f"property {property_name!r}: {message}")
         self.property = property_name
+        self.code = code
 
 
 def _string(name: str, value: object) -> str:
@@ -308,10 +316,10 @@ def validate_values(
     values: dict[str, MetadataValue] = {}
     for name in sorted(raw):
         if name in RESERVED_PROPERTY_NAMES:
-            raise MetadataValidationError(name, "the name is reserved")
+            raise MetadataValidationError(name, "the name is reserved", "PROPERTY_RESERVED")
         prop = schema.get_property(name)
         if prop is None:
-            raise MetadataValidationError(name, f"not in schema {schema.schema_id}")
+            raise MetadataValidationError(name, f"not in schema {schema.schema_id}", "PROPERTY_UNKNOWN")
         if raw[name] is None:
             continue
         values[name] = MetadataValue(

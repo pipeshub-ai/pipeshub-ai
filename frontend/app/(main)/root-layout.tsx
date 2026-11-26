@@ -1,7 +1,7 @@
 'use client'
 
+import { IconFontScript } from '@/app/components/ui/icon-font-script';
 import React, { Suspense, useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
 import { Flex, Box, Text } from "@radix-ui/themes"
 import { MaterialIcon } from "../components/ui/MaterialIcon"
 import { ThemeProvider, ThemeScript } from "../components/theme-provider"
@@ -18,9 +18,7 @@ import { OrgProfileInitializer } from './components/org-profile-initializer'
 import { ElectronLocalSyncBootstrap } from './components/electron-local-sync-bootstrap'
 import { UserBackgroundSurvey } from "./components/surveys/user-background"
 import { OnboardingTour } from "./components/tours/onboarding"
-import { useOnboardingStore } from "./onboarding/store"
-import { getOnboardingStatus } from "./onboarding/api"
-import { useAuthStore } from "@/config"
+import { useOnboardingRedirect } from "./onboarding/use-onboarding-redirect"
 import { useAppliedSidebarWidth } from "@/lib/store/sidebar-width-store"
 import { AuthGuard } from '@/app/components/ui/auth-guard'
 import { HealthGate } from '@/app/components/ui/health-gate'
@@ -36,6 +34,7 @@ import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-but
 import { useNavHidden } from '@/app/components/sidebar/use-nav-hidden'
 import { SIDEBAR_WIDTH } from "@/app/components/sidebar/constants"
 import { MobileMenuButton } from './components/mobile-menu-button'
+import { useInboxLive } from '@/lib/harness-jobs/use-inbox-live'
 
 // Extra pixels beyond sidebarWidth needed to accommodate the "More Chats"
 // secondary panel that SidebarBase adds when open (it widens the cluster).
@@ -79,14 +78,7 @@ export default function RootLayout({
     <html lang={currentLang} suppressHydrationWarning>
       <head>
         <ThemeScript />
-        <link
-          href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined|Material+Icons"
-          rel="stylesheet"
-        />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block"
-          rel="stylesheet"
-        />
+        <IconFontScript />
       </head>
       <body style={{ backgroundColor: 'var(--olive-1, #f8f8f5)' }}>
         <I18nextProvider i18n={i18n}>
@@ -132,10 +124,6 @@ function AppLayout({
   children: React.ReactNode
   sidebar: React.ReactNode
 }) {
-  const router = useRouter()
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
-  const isHydrated = useAuthStore((s) => s.isHydrated)
-  const setOnboardingActive = useOnboardingStore((s) => s.setOnboardingActive)
   const sidebarWidth = useAppliedSidebarWidth()
   const navHidden = useNavHidden()
 
@@ -152,31 +140,9 @@ function AppLayout({
   }
   // ──────────────────────────────────────────────────────────────────────────
 
-  // ── Onboarding gate ────────────────────────────────────────────────────────
-  useEffect(() => {
-    // 0. Already on the onboarding page — bail out to prevent an infinite redirect loop
-    if (window.location.pathname.startsWith('/onboarding')) {
-      return
-    }
-
-    // 1. Not yet hydrated or not authenticated — too early to check
-    if (!isHydrated || !isAuthenticated) {
-      return
-    }
-
-    // 2. Call the API and decide
-    getOnboardingStatus()
-      .then(({ status }) => {
-        if (status === 'notConfigured') {
-          setOnboardingActive(true)
-          router.replace('/onboarding')
-        }
-      })
-      .catch(() => {
-        // If the check fails (network, permissions) proceed normally — don't block the app
-      })
-  }, [isHydrated, isAuthenticated])
-  // ──────────────────────────────────────────────────────────────────────────
+  useOnboardingRedirect()
+  // The Needs you count for the badge, the menu dot and the Jobs page; after NotificationProvider opens its socket.
+  useInboxLive()
 
   return (
     <SWRConfig

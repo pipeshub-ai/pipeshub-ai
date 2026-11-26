@@ -21,9 +21,12 @@ from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.redaction import REDACTED_PLACEHOLDER
 from app.connectors.api.router import (
+    _ensure_connector_initialized,
+    _OAuthAppSave,
     _require_auth_is_object,
     update_connector_instance_auth_config,
 )
+from tests.unit.connectors.services.local_run_stub import end_local_run, local_run
 
 _ROUTER = "app.connectors.api.router"
 
@@ -286,7 +289,8 @@ class TestAdminOAuthUpdatesExistingConfigFound:
         graph_provider.get_document = AsyncMock(return_value={"scope": "personal"})
 
         with (
-            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
+            # A team connector: an admin changes an org app only there.
+            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance(scope="team")),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
             patch(_PATCH_NAME_CONFLICT) as mock_conflict,
             patch(
@@ -605,7 +609,7 @@ class TestOAuthMetadataRedirectUriNoBaseUrl:
 
 
 class TestConnectorScopeMissing:
-    """9. Connector scope missing -> fetches from graph_provider."""
+    """9. The connector instance carries no scope -> fetches it from graph_provider."""
 
     async def test_fetches_scope_from_graph_when_missing(self):
         # Instance config has no connectorScope
@@ -631,7 +635,7 @@ class TestConnectorScopeMissing:
         )
 
         with (
-            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
+            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance(scope=None)),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
             patch(_PATCH_TIMESTAMP, return_value=1234567890),
         ):
@@ -683,6 +687,42 @@ class TestCleanupExistingConnector:
         mock_connector.cleanup.assert_called_once()
         # Connector should be removed from the map
         assert "conn1" not in connectors_map
+
+
+    async def test_a_credential_change_mid_sync_rebuilds_and_closes_the_old_instance_after_the_run(
+        self,
+    ) -> None:
+        """A kept instance would sync on with the old credentials after re-enable."""
+        old_connector = AsyncMock()
+        connectors_map = {"conn1": old_connector}
+        container = _make_container(_make_config_service(), connectors_map=connectors_map)
+        request = _make_request(
+            body={"auth": {"apiToken": "new-token"}},
+            container=container,
+            connector_registry=_make_connector_registry(),
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={"scope": "personal"})
+        fresh_connector = MagicMock()
+
+        with local_run() as run, \
+             patch(_PATCH_VALIDATE, new_callable=AsyncMock,
+                   return_value=_base_instance(authType="API_TOKEN")), \
+             patch(_PATCH_TIMESTAMP, return_value=1234567890), \
+             patch("app.connectors.api.router._build_and_store_connector",
+                   new_callable=AsyncMock, return_value=fresh_connector) as build:
+            await update_connector_instance_auth_config("conn1", request, graph_provider)
+            enabled = await _ensure_connector_initialized(
+                container, "conn1", "Jira", MagicMock(), graph_provider, "u1", "o1",
+                is_admin=True, logger=logging.getLogger("test"),
+            )
+
+            assert enabled is fresh_connector
+            build.assert_awaited_once()
+            old_connector.cleanup.assert_not_awaited()
+            await end_local_run(run)
+
+        old_connector.cleanup.assert_awaited_once()
 
 
 class TestCleanupErrorIsLoggedNotRaised:
@@ -871,7 +911,8 @@ class TestAdminOAuthUpdateExistingChangeName:
         graph_provider.get_document = AsyncMock(return_value={"scope": "personal"})
 
         with (
-            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
+            # A team connector: an admin changes an org app only there.
+            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance(scope="team")),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
             patch(_PATCH_NAME_CONFLICT) as mock_conflict,
             patch(
@@ -1064,7 +1105,7 @@ class TestOAuthFieldFilteringKeepsMetadataFields:
             },
             "baseUrl": "https://app.example.com",
         }
-        # Use non-admin to skip admin OAuth creation path and test only filtering
+        # Only the filtering is under test: the OAuth app write is stubbed to keep the link.
         request = _make_request(
             body=body,
             container=container,
@@ -1080,6 +1121,7 @@ class TestOAuthFieldFilteringKeepsMetadataFields:
             patch(_PATCH_SECRET_OAUTH_FIELDS, return_value={"clientSecret"}),
             patch(_PATCH_TIMESTAMP, return_value=1234567890),
             patch(f"{_ROUTER}.resolve_oauth_config", AsyncMock(return_value=linked_app)),
+            patch(f"{_ROUTER}._handle_oauth_config_creation", AsyncMock(return_value=_OAuthAppSave("oauth-1", written=True))),
         ):
             result = await update_connector_instance_auth_config(
                 "conn1", request, graph_provider

@@ -5,9 +5,11 @@ The browser is the fake from web_behaviour_fakes; ``Crawl4AIFetcher`` and the
 connector's batching run for real.
 """
 
+import asyncio
 import json
 
 import pytest
+from fastapi import HTTPException
 from web_behaviour_fakes import (
     HEAD_HANGS_UP,
     START_URL,
@@ -22,12 +24,22 @@ from web_behaviour_fakes import (
     html_page,
 )
 
-from app.config.constants.arangodb import ProgressStatus
+from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.sources.web import crawl4ai_fetcher
 from app.connectors.sources.web.browser_supervisor import BrowserUnavailableError
+from app.models.entities import FileRecord, RecordType
 
 SHELL = b"<html><head><title>App</title></head><body><div id='root'></div></body></html>"
 LONG_TEXT = "This paragraph is only there once the page's scripts have run. " * 5
+
+
+def _legacy_record(url: str) -> FileRecord:
+    """A page stored before content was kept, so opening it fetches the site live."""
+    return FileRecord(
+        id="legacy-1", org_id="org-1", record_name="Guide", record_type=RecordType.FILE,
+        external_record_id=url, version=0, origin="CONNECTOR", connector_name="WEB",
+        connector_id="web-1", weburl=url, is_file=True, mime_type=MimeTypes.HTML.value,
+    )
 
 
 async def test_robust_mode_crawls_every_page_through_the_browser(
@@ -229,21 +241,151 @@ async def test_robust_mode_without_a_working_browser_fails_the_sync(
     assert db.pages() == {}
 
 
-async def test_the_shared_browser_is_closed_when_the_last_connector_is_cleaned_up(
+async def test_a_sync_holds_the_browser_only_while_it_runs(
     browser: FakeWeb, make_connector: MakeConnector
 ) -> None:
     browser.html(START_URL, "Home")
     first = await make_connector(use_headless_browser=True)
     second = await make_connector(use_headless_browser=True)
+
     await first.run_sync()
+    assert first.crawl4ai_fetcher is None
+    assert crawl4ai_fetcher._ref_count == 0
     await second.run_sync()
-    assert first.crawl4ai_fetcher is not None and first.crawl4ai_fetcher is second.crawl4ai_fetcher
 
-    await first.cleanup()
-    assert crawl4ai_fetcher._shared_instance is second.crawl4ai_fetcher
+    assert browser.browser_starts == 1  # the second run came within the idle grace
+    assert crawl4ai_fetcher._idle_close is not None
 
-    await second.cleanup()
+
+async def test_concurrent_fallbacks_in_a_run_take_one_reference(
+    browser: FakeWeb, make_connector: MakeConnector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connector = await make_connector()
+
+    first, second = await asyncio.gather(connector._ensure_crawl4ai_fetcher(), connector._ensure_crawl4ai_fetcher())
+
+    assert first is second is not None
+    assert crawl4ai_fetcher._ref_count == 1
+    monkeypatch.setenv("WEB_BROWSER_IDLE_CLOSE_SECONDS", "0")
+    await connector._release_crawl4ai_fetcher()
     assert crawl4ai_fetcher._shared_instance is None
+
+
+async def test_a_failed_sync_gives_the_browser_back(
+    browser: FakeWeb, make_connector: MakeConnector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    browser.html(START_URL, "Home")
+    connector = await make_connector(use_headless_browser=True)
+
+    async def fails(*_: object, **__: object) -> None:
+        assert crawl4ai_fetcher._ref_count == 1
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(connector, "process_retry_urls", fails)
+
+    with pytest.raises(RuntimeError, match="store down"):
+        await connector.run_sync()
+
+    assert connector.crawl4ai_fetcher is None
+    assert crawl4ai_fetcher._ref_count == 0
+
+
+async def test_a_sync_that_only_probed_for_scripts_holds_no_reference(
+    browser: FakeWeb, make_connector: MakeConnector
+) -> None:
+    browser.html(START_URL, "Home", text=LONG_TEXT)
+    connector = await make_connector()
+
+    await connector.run_sync()
+
+    assert browser.browser_visits == [START_URL]  # the rendering check, then plain HTTP
+    assert connector.crawl4ai_fetcher is None
+    assert crawl4ai_fetcher._ref_count == 0
+
+
+async def test_cleanup_after_a_sync_gives_nothing_back_twice(
+    browser: FakeWeb, make_connector: MakeConnector
+) -> None:
+    browser.html(START_URL, "Home")
+    other_holder = await crawl4ai_fetcher.get_shared_fetcher()
+    connector = await make_connector(use_headless_browser=True)
+
+    await connector.run_sync()
+    await connector.cleanup()
+
+    assert crawl4ai_fetcher._ref_count == 1
+    assert crawl4ai_fetcher._shared_instance is other_holder
+    await crawl4ai_fetcher.release_shared_fetcher()
+
+
+async def test_opening_a_page_live_leaves_a_running_syncs_browser_alone(
+    browser: FakeWeb, make_connector: MakeConnector
+) -> None:
+    browser.html(START_URL, "Home")
+    browser.html("http://site.test/guide", "Guide", text="Live through the browser")
+    connector = await make_connector(use_headless_browser=True)
+    syncs_fetcher = await connector._ensure_crawl4ai_fetcher()
+
+    response = await connector.stream_record(_legacy_record("http://site.test/guide"))
+
+    assert b"Live through the browser" in b"".join([chunk async for chunk in response.body_iterator])
+    assert connector.crawl4ai_fetcher is syncs_fetcher
+    assert crawl4ai_fetcher._ref_count == 1
+
+
+async def test_opening_a_page_gives_the_browser_back_when_it_fails(
+    browser: FakeWeb, make_connector: MakeConnector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    browser.html(START_URL, "Home")
+    connector = await make_connector(use_headless_browser=True)
+
+    async def dead(*_: object, **__: object) -> object:
+        raise BrowserUnavailableError("gone")
+
+    monkeypatch.setattr(crawl4ai_fetcher.Crawl4AIFetcher, "fetch", dead)
+
+    with pytest.raises(HTTPException):
+        await connector.stream_record(_legacy_record("http://site.test/guide"))
+
+    assert connector.crawl4ai_fetcher is None
+    assert crawl4ai_fetcher._ref_count == 0
+
+
+async def test_pages_opened_before_any_sync_keep_their_cookies_to_their_own_connector(
+    browser: FakeWeb, make_connector: MakeConnector
+) -> None:
+    browser.html(START_URL, "Home")
+    browser.html("http://site.test/guide", "Guide", text="Live through the browser")
+    first = await make_connector(use_headless_browser=True)
+    second = await make_connector(use_headless_browser=True, connector_id="web-2")
+
+    for connector in (first, second, first):
+        await connector.stream_record(_legacy_record("http://site.test/guide"))
+
+    first_key, second_key, first_again = browser.browser_context_keys
+    assert first_key is not None
+    assert first_again == first_key
+    assert second_key not in (None, first_key)
+
+
+async def test_a_sync_starts_a_browser_context_of_its_own_that_later_pages_opened_join(
+    browser: FakeWeb, make_connector: MakeConnector
+) -> None:
+    browser.html(START_URL, "Home", "/guide")
+    browser.html("http://site.test/guide", "Guide", text="Live through the browser")
+    connector = await make_connector(use_headless_browser=True)
+    await connector.stream_record(_legacy_record("http://site.test/guide"))
+    [live_key] = browser.browser_context_keys
+
+    await connector.run_sync()
+    sync_keys = set(browser.browser_context_keys[1:])
+    await connector.stream_record(_legacy_record("http://site.test/guide"))
+
+    assert len(sync_keys) == 1
+    assert None not in sync_keys
+    assert live_key is not None
+    assert live_key not in sync_keys
+    assert browser.browser_context_keys[-1] in sync_keys
 
 
 async def test_robust_mode_stores_a_redirected_page_once(

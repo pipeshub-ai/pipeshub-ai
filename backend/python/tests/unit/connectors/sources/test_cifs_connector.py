@@ -26,7 +26,9 @@ from app.connectors.sources.network_share.errors import (
     DirectoryListingError,
     NetworkShareAuthError,
     ShareListingError,
+    ShareWalkIncompleteError,
 )
+from app.connectors.sources.network_share.permissions import share_permissions
 from app.connectors.sources.network_share.record_mapper import revision_id
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType, User
 from app.models.permission import EntityType, PermissionType
@@ -34,13 +36,15 @@ from app.sources.client.cifs.cifs import CLIENT_NETBIOS_NAME, REPARSE_POINT, Cif
 from app.sources.external.cifs.cifs import CifsDataSource
 from tests.unit.connectors.sources.test_network_share_walker import (
     FakeNetworkShareDataSource,
+    _folder_filter,
+    _share_tree,
 )
 
 
 @pytest.fixture(autouse=True)
 def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
     # The address check has its own tests (test_connector_address_rule.py); these hosts are made up.
-    monkeypatch.setattr("app.sources.client.cifs.cifs.dial_address", lambda server: server)
+    monkeypatch.setattr("app.sources.client.cifs.cifs.dial_address", lambda server, **_: server)
 
 
 NOW = datetime(2024, 6, 1, tzinfo=timezone.utc)
@@ -358,6 +362,28 @@ class TestCifsDialectGuard:
                 client.list_directory(SHARE, "")
             assert conn.connect.call_count >= 2
 
+    def test_a_folder_access_denied_is_a_listing_error_not_a_refused_sign_in(self):
+        with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
+            conn = MagicMock()
+            conn.connect.return_value = True
+            conn.isUsingSMB2 = False
+            conn.listPath.side_effect = ValueError("Access denied: private")
+            cls.return_value = conn
+            client = CifsClient(server="h", username="u", password="p", remote_name="H")
+            with pytest.raises(DirectoryListingError):
+                client.list_directory(SHARE, "private")
+
+    def test_a_folder_named_logon_is_not_a_refused_sign_in(self):
+        with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
+            conn = MagicMock()
+            conn.connect.return_value = True
+            conn.isUsingSMB2 = False
+            conn.listPath.side_effect = ValueError("Failed to list /logon on public: Unable to open directory")
+            cls.return_value = conn
+            client = CifsClient(server="h", username="u", password="p", remote_name="H")
+            with pytest.raises(DirectoryListingError):
+                client.list_directory(SHARE, "logon")
+
     def test_reconnect_succeeds_on_second_attempt(self):
         with patch("app.sources.client.cifs.cifs.SMBConnection") as cls:
             conn = MagicMock()
@@ -534,9 +560,55 @@ class TestCifsConnectorSync:
         cifs_connector.configured_share = SHARE
         stored = _file_record(ext_id=f"{SHARE}/a.txt", revision="old")
         mock_processor.get_records_by_record_type = AsyncMock(return_value=[stored])
-        await cifs_connector.run_sync()
+        with pytest.raises(ShareWalkIncompleteError):
+            await cifs_connector.run_sync()
         mock_processor.on_record_deleted.assert_not_awaited()
         cifs_connector.record_sync_point.update_sync_point.assert_not_awaited()
+        cifs_connector.notify.assert_awaited_once()
+        assert cifs_connector.notify.await_args.kwargs["title"] == "CIFS: Sync could not read the share"
+        assert SHARE in cifs_connector.notify.await_args.kwargs["message"]
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_one_unreadable_subfolder_fails_the_run_with_one_notice(self, mock_filters, cifs_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        cifs_connector.data_source = _ds(
+            tree={(SHARE, ""): [_entry("locked", is_directory=True, file_id=5)]},
+            fail_dirs={(SHARE, "locked")},
+        )
+        cifs_connector.configured_share = SHARE
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[])
+        with pytest.raises(ShareWalkIncompleteError):
+            await cifs_connector.run_sync()
+        mock_processor.on_record_deleted.assert_not_awaited()
+        cifs_connector.notify.assert_awaited_once()
+        assert cifs_connector.notify.await_args.kwargs["title"] == "CIFS: Some folders could not be read"
+        assert not cifs_connector.full_sync_coverage().complete
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_sync_with_no_share_does_not_reuse_the_last_walk(self, mock_filters, cifs_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        cifs_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt", file_id=5)]})
+        cifs_connector.configured_share = SHARE
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[])
+        await cifs_connector.run_sync()
+        assert cifs_connector.full_sync_coverage().complete
+
+        cifs_connector.configured_share = None
+        await cifs_connector.run_sync()
+
+        assert not cifs_connector.full_sync_coverage().complete
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_refused_sign_in_notifies_and_fails_the_run(self, mock_filters, cifs_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        cifs_connector.data_source = _ds(refused_dirs={(SHARE, "")})
+        cifs_connector.configured_share = SHARE
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[])
+        with pytest.raises(NetworkShareAuthError):
+            await cifs_connector.run_sync()
+        title = cifs_connector.notify.await_args.kwargs["title"]
+        assert "Sign-in refused" in title
+        mock_processor.on_record_deleted.assert_not_awaited()
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_same_revision_reuses_id(self, mock_filters, cifs_connector, mock_processor):
@@ -591,6 +663,8 @@ class TestCifsConnectorSync:
         cifs_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
         cifs_connector.configured_share = SHARE
         await cifs_connector.run_sync()
+        # A cached creator email is not looked up again.
+        mock_data_store_provider.transaction.return_value.get_user_by_user_id.assert_not_awaited()
         mock_processor.on_new_app_users.assert_awaited()
         mock_processor.ensure_team_app_edge.assert_not_awaited()
         record, perms = mock_processor.on_new_records.await_args.args[0][0]
@@ -614,6 +688,38 @@ class TestCifsConnectorSync:
         _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
         assert [(p.type, p.entity_type, p.external_id) for p in group_perms] == [
             (PermissionType.READ, EntityType.ORG, "org-1")
+        ]
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_failed_creator_lookup_keeps_the_stored_share_grants(
+        self, mock_filters, cifs_connector, mock_processor, mock_data_store_provider
+    ):
+        mock_filters.return_value = _empty_filters()
+        tx = mock_data_store_provider.transaction.return_value
+        tx.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("store down"))
+        cifs_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
+        cifs_connector.configured_share = SHARE
+        await cifs_connector.run_sync()
+        tx.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert group_perms is None
+        assert cifs_connector.creator_email is None
+        mock_processor.on_new_records.assert_awaited()
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_creator_lookup_that_failed_at_init_is_retried_at_sync(
+        self, mock_filters, cifs_connector, mock_processor, mock_data_store_provider
+    ):
+        mock_filters.return_value = _empty_filters()
+        tx = mock_data_store_provider.transaction.return_value
+        cifs_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
+        cifs_connector.configured_share = SHARE
+        assert cifs_connector.creator_email is None
+        await cifs_connector.run_sync()
+        tx.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert [(p.type, p.entity_type, p.email) for p in group_perms] == [
+            (PermissionType.OWNER, EntityType.USER, "user@test.com")
         ]
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
@@ -746,3 +852,136 @@ class TestCifsConnectorStreamAndFilters:
         assert isinstance(created, CifsConnector)
         # The factory's processor, not a second one with its own Redis connection.
         assert created.data_entities_processor is mock_processor
+
+
+def _folder_filters(*values: str):
+    return (FilterCollection(filters=[_folder_filter(*values)]), FilterCollection())
+
+
+class TestCifsFolderPatterns:
+    @pytest.fixture(autouse=True)
+    def _nothing_stored_in_the_share(self, mock_processor):
+        mock_processor.get_records_in_record_group = AsyncMock(return_value=[])
+
+    def test_the_folder_filter_takes_patterns(self):
+        fields = CifsConnector._connector_metadata["config"]["filters"]["sync"]["schema"]["fields"]
+        field = next(f for f in fields if f["name"] == "folder_paths")
+        assert (field["pathStyle"], field["folderWildcards"]) == ("windows", True)
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_complete_walk_flags_a_pattern_that_matched_nothing(self, mock_filters, cifs_connector):
+        mock_filters.return_value = _folder_filters("customer/*/quotes", "custmer/*/quotes", "**/drafts")
+        cifs_connector.data_source = _ds(tree=_share_tree("customer/acme/quotes/q.txt", share=SHARE))
+        cifs_connector.configured_share = SHARE
+        await cifs_connector.run_sync()
+        [item] = cifs_connector.last_action_items
+        assert item.code == "folder_filter_unmatched"
+        assert item.title == "2 folder patterns matched nothing"
+        assert item.params == {"count": "2", "values": '"**/drafts", "custmer/*/quotes"', "context": "several"}
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_an_incomplete_walk_leaves_the_flag_as_it_was(self, mock_filters, cifs_connector):
+        mock_filters.return_value = _folder_filters("custmer/*/quotes", "customer/*/quotes")
+        tree = _share_tree("customer/acme/quotes/q.txt", share=SHARE)
+        cifs_connector.configured_share = SHARE
+        cifs_connector.data_source = _ds(tree=tree)
+        await cifs_connector.run_sync()
+        flagged = cifs_connector.last_action_items
+        assert [i.code for i in flagged] == ["folder_filter_unmatched"]
+        # The typo is fixed, but this walk could not read everything: it cannot tell.
+        mock_filters.return_value = _folder_filters("customer/*/quotes")
+        cifs_connector.data_source = _ds(tree=tree, fail_dirs={(SHARE, "customer/acme")})
+        with pytest.raises(ShareWalkIncompleteError):
+            await cifs_connector.run_sync()
+        assert cifs_connector.last_action_items is flagged
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_an_exclude_pattern_that_matched_nothing_is_worded_as_excluding_nothing(
+        self, mock_filters, cifs_connector
+    ):
+        mock_filters.return_value = (
+            FilterCollection(filters=[_folder_filter("**/archve", exclude=True)]), FilterCollection()
+        )
+        cifs_connector.data_source = _ds(tree=_share_tree("a/archive/q.txt", share=SHARE))
+        cifs_connector.configured_share = SHARE
+        await cifs_connector.run_sync()
+        [item] = cifs_connector.last_action_items
+        assert item.message.endswith("so it excludes nothing. Check the spelling in the Folders filter.")
+        assert item.params["context"] == "exclude"
+
+    async def test_a_pattern_matched_in_one_share_only_is_not_flagged(self, mock_processor):
+        from app.connectors.sources.network_share.operations import walk_shares
+        from app.connectors.sources.network_share.record_mapper import RecordMapper
+
+        tree = _share_tree("customer/acme/quotes/q.txt", share="one") | _share_tree("customer/beta/x.txt", share="two")
+        sync_point = MagicMock()
+        sync_point.read_sync_point = AsyncMock(return_value=None)
+        sync_point.update_sync_point = AsyncMock()
+
+        async def walk(values: tuple[str, ...]):
+            return await walk_shares(
+                data_source=_ds(tree=tree), processor=mock_processor, mapper=RecordMapper(),
+                logger=logging.getLogger("test.cifs"), connector_name=Connectors.CIFS, connector_id="cifs-1",
+                batch_size=50, scope="personal", created_by="user-1", creator_email=None, shares=["one", "two"],
+                sync_filters=FilterCollection(filters=[_folder_filter(*values)]),
+                indexing_filters=FilterCollection(), record_sync_point=sync_point, prune=False,
+            )
+
+        report = await walk(("customer/*/quotes",))
+        assert report.complete
+        assert report.unmatched_patterns_item() is None
+        report = await walk(("customer/*/drafts",))
+        assert report.unmatched_patterns_item().params["values"] == '"customer/*/drafts"'
+
+
+class TestShareGrantsWithoutACreator:
+    """A personal connector whose creator lookup succeeds but names no one
+    grants its shares to nobody, not the organisation."""
+
+    @pytest.mark.parametrize("user", [None, {"email": None}, {}], ids=["deleted", "no-email", "empty"])
+    async def test_a_personal_connector_with_no_creator_email_grants_nobody(
+        self, user, cifs_connector, mock_data_store_provider, caplog
+    ):
+        tx = mock_data_store_provider.transaction.return_value
+        tx.get_user_by_user_id = AsyncMock(return_value=user)
+        with caplog.at_level(logging.WARNING, logger="test.cifs"):
+            assert await share_permissions(cifs_connector) == []
+        tx.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        assert [r.getMessage() for r in caplog.records] == [
+            "Personal connector cifs-1 has no creator email; its shares are shared with no one"
+        ]
+
+    async def test_a_personal_connector_whose_creator_is_found_grants_them_without_a_warning(
+        self, cifs_connector, mock_data_store_provider, caplog
+    ):
+        tx = mock_data_store_provider.transaction.return_value
+        tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+        with caplog.at_level(logging.WARNING, logger="test.cifs"):
+            perms = await share_permissions(cifs_connector)
+        assert [(p.type, p.entity_type, p.email, p.external_id) for p in perms] == [
+            (PermissionType.OWNER, EntityType.USER, "user@test.com", "user-1")
+        ]
+        assert caplog.records == []
+
+    async def test_a_personal_connector_with_no_created_by_grants_nobody(
+        self, cifs_connector, mock_data_store_provider, caplog
+    ):
+        cifs_connector.created_by = None
+        with caplog.at_level(logging.WARNING, logger="test.cifs"):
+            assert await share_permissions(cifs_connector) == []
+        mock_data_store_provider.transaction.return_value.get_user_by_user_id.assert_not_awaited()
+        assert "cifs-1" in caplog.text
+
+    async def test_a_team_connector_still_grants_the_organisation(
+        self, mock_logger, mock_processor, mock_data_store_provider, mock_config_service, caplog
+    ):
+        team = _connector(
+            mock_logger, mock_processor, mock_data_store_provider, mock_config_service, scope=ConnectorScope.TEAM.value
+        )
+        with caplog.at_level(logging.WARNING, logger="test.cifs"):
+            perms = await share_permissions(team)
+        assert [(p.type, p.entity_type, p.external_id) for p in perms] == [
+            (PermissionType.READ, EntityType.ORG, "org-1")
+        ]
+        mock_data_store_provider.transaction.return_value.get_user_by_user_id.assert_not_awaited()
+        assert caplog.records == []

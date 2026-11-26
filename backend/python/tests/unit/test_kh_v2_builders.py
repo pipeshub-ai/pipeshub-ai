@@ -376,7 +376,8 @@ def test_the_search_term_is_matched_literally(
         text = " ".join(conditions)
         assert "LIKE" not in text.upper(), f"{name}: search reintroduced LIKE"
         assert "CONTAINS" in text.upper(), f"{name}: expected a substring match"
-        assert params["kh_search"] == "50% off_a", "the term should be lowercased as-is"
+        assert params["kh_search"] == "50% off a", "the term should be lowercased, separators read as spaces"
+        assert params["kh_norm"] is True, "a spaced term compares names with separators read as spaces"
 
 
 def test_only_containers_is_applied_by_both(
@@ -516,6 +517,15 @@ def test_the_status_reason_travels_with_the_row(
     for text in (neo4j._kh_v2_projection_cypher(), arango._kh_v2_projection_aql()):
         fields = _projection_fields(text)
         assert {"indexingStatus", "reason"} <= fields, sorted(fields)
+
+
+def test_embedding_progress_travels_with_the_row(
+    neo4j: Neo4jProvider, arango: ArangoHTTPProvider
+) -> None:
+    """The list shows 'Embedding 340 / 1,200 chunks' from these two counts."""
+    for text in (neo4j._kh_v2_projection_cypher(), arango._kh_v2_projection_aql()):
+        fields = _projection_fields(text)
+        assert {"embedDone", "embedTotal"} <= fields, sorted(fields)
 
 
 def test_the_comparator_output_is_returned(

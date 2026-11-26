@@ -1,0 +1,27 @@
+- id: REGR-08
+  title: Unknown accessRule fails closed (and hides what is below); then the rule is cleared and reads OPEN
+  source: independent review of the conformance harness
+  rule: intersection
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: s, kind: group, connector: A, rule: OPEN, parents: [A], inherits: [A], belongs: [A]}
+      - {id: x, kind: record, connector: A, rule: INHERITED, parents: [s], inherits: [s], belongs: [s]}
+      - {id: y, kind: record, connector: A, rule: OPEN, parents: [x], inherits: [x], belongs: [s]}
+      - {id: fg, kind: group, connector: A, rule: OPEN, org: other, parents: [s], inherits: [s]}
+      - {id: z, kind: record, connector: A, rule: OPEN, parents: [fg], inherits: [fg], belongs: [s]}
+    grants:
+      - [u, x]
+    gates:
+      - [u, A]
+  mutations:
+    - {kind: rule_set, node: x}
+  expect:
+    before:
+      u: {x: deny, y: deny, fg: deny, z: admit}
+    verdicts:
+      u: {x: admit, y: admit}
+  tags: [regression, qa, unknown-rule, org-isolation]
+  comment: 'ArangoDB cannot store an unknown accessRule, so the before state is checked on Neo4j only. fg belongs to another org: it is never readable itself, but today the walk passes through it (z is admitted); this pins it.'

@@ -46,7 +46,7 @@ class TestCreateIndexingPipeline:
     @pytest.mark.asyncio
     async def test_creates_pipeline(self):
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.IndexingPipeline") as MockPipeline:
+        with patch("app.modules.indexing.run.IndexingPipeline") as MockPipeline:
             mock_instance = MagicMock()
             MockPipeline.return_value = mock_instance
             result = await cu.create_indexing_pipeline(
@@ -59,7 +59,7 @@ class TestCreateVectorStore:
     @pytest.mark.asyncio
     async def test_creates_vector_store(self):
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.VectorStore") as MockVS:
+        with patch("app.modules.transformers.vectorstore.VectorStore") as MockVS:
             mock_instance = MagicMock()
             MockVS.return_value = mock_instance
             result = await cu.create_vector_store(
@@ -72,7 +72,7 @@ class TestCreateGraphdb:
     @pytest.mark.asyncio
     async def test_creates_graphdb(self):
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.GraphDBTransformer") as MockGDB:
+        with patch("app.modules.transformers.graphdb.GraphDBTransformer") as MockGDB:
             mock_instance = MagicMock()
             MockGDB.return_value = mock_instance
             result = await cu.create_graphdb(MagicMock(), MagicMock())
@@ -83,7 +83,7 @@ class TestCreateSinkOrchestrator:
     @pytest.mark.asyncio
     async def test_creates_orchestrator(self):
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.SinkOrchestrator") as MockSO:
+        with patch("app.modules.transformers.sink_orchestrator.SinkOrchestrator") as MockSO:
             mock_instance = MagicMock()
             MockSO.return_value = mock_instance
             result = await cu.create_sink_orchestrator(
@@ -96,7 +96,7 @@ class TestCreateDocumentExtractor:
     @pytest.mark.asyncio
     async def test_creates_extractor(self):
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.DocumentExtraction") as MockDE:
+        with patch("app.modules.transformers.document_extraction.DocumentExtraction") as MockDE:
             mock_instance = MagicMock()
             MockDE.return_value = mock_instance
             result = await cu.create_document_extractor(
@@ -109,7 +109,7 @@ class TestCreateBlobStorage:
     @pytest.mark.asyncio
     async def test_creates_blob_storage(self):
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.BlobStorage") as MockBS:
+        with patch("app.modules.transformers.blob_storage.BlobStorage") as MockBS:
             mock_instance = MagicMock()
             MockBS.return_value = mock_instance
             result = await cu.create_blob_storage(
@@ -122,16 +122,16 @@ class TestCreateParsers:
     @pytest.mark.asyncio
     async def test_creates_all_parsers(self):
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.DocParser"), \
-             patch("app.containers.utils.utils.PPTXParser"), \
-             patch("app.containers.utils.utils.PPTParser"), \
-             patch("app.containers.utils.utils.HTMLParser"), \
-             patch("app.containers.utils.utils.MarkdownParser"), \
-             patch("app.containers.utils.utils.MDXParser"), \
-             patch("app.containers.utils.utils.CSVParser"), \
-             patch("app.containers.utils.utils.ExcelParser"), \
-             patch("app.containers.utils.utils.XLSParser"), \
-             patch("app.containers.utils.utils.ImageParser"):
+        with patch("app.modules.parsers.docx.docparser.DocParser"), \
+             patch("app.modules.parsers.pptx.pptx_parser.PPTXParser"), \
+             patch("app.modules.parsers.pptx.ppt_parser.PPTParser"), \
+             patch("app.modules.parsers.html_parser.html_parser.HTMLParser"), \
+             patch("app.modules.parsers.markdown.markdown_parser.MarkdownParser"), \
+             patch("app.modules.parsers.markdown.mdx_parser.MDXParser"), \
+             patch("app.modules.parsers.csv.csv_parser.CSVParser"), \
+             patch("app.modules.parsers.excel.excel_parser.ExcelParser"), \
+             patch("app.modules.parsers.excel.xls_parser.XLSParser"), \
+             patch("app.modules.parsers.image_parser.image_parser.ImageParser"):
             parsers = await cu.create_parsers(MagicMock(), MagicMock())
             assert isinstance(parsers, dict)
             assert len(parsers) > 0
@@ -141,7 +141,7 @@ class TestCreateProcessor:
     @pytest.mark.asyncio
     async def test_creates_processor(self):
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.Processor") as MockProc:
+        with patch("app.events.processor.Processor") as MockProc:
             mock_instance = MagicMock()
             MockProc.return_value = mock_instance
             result = await cu.create_processor(
@@ -155,7 +155,7 @@ class TestCreateEventProcessor:
     @pytest.mark.asyncio
     async def test_creates_event_processor(self):
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.EventProcessor") as MockEP:
+        with patch("app.events.events.EventProcessor") as MockEP:
             mock_instance = MagicMock()
             MockEP.return_value = mock_instance
             result = await cu.create_event_processor(
@@ -168,7 +168,7 @@ class TestCreateRetrievalService:
     @pytest.mark.asyncio
     async def test_creates_service(self):
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.RetrievalService") as MockRS:
+        with patch("app.modules.retrieval.retrieval_service.RetrievalService") as MockRS:
             mock_instance = MagicMock()
             MockRS.return_value = mock_instance
             result = await cu.create_retrieval_service(

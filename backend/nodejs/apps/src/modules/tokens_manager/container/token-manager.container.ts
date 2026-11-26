@@ -1,6 +1,8 @@
 import type { ICacheService } from '../../../libs/services/cache/cacheService.interface';
 import { Container } from 'inversify';
 import { AppConfig, loadAppConfig } from '../config/config';
+import { initDocStore } from '../../../libs/repositories/doc-store';
+import { usesMongo } from '../../../libs/repositories/store-select';
 import { MongoService } from '../../../libs/services/mongo.service';
 import {
   RedisService,
@@ -59,11 +61,15 @@ export class TokenManagerContainer {
     config: AppConfig,
   ): Promise<void> {
     try {
-      const mongoService = new MongoService(config.mongo);
-      await mongoService.initialize();
-      container
-        .bind<MongoService>('MongoService')
-        .toConstantValue(mongoService);
+      // Under DOC_STORE=postgres no MongoDB is contacted at all (unless DOC_STORE_MONGO_REPOS keeps a repository on it).
+      if (usesMongo()) {
+        const mongoService = new MongoService(config.mongo);
+        await mongoService.initialize();
+        container
+          .bind<MongoService>('MongoService')
+          .toConstantValue(mongoService);
+      }
+      await initDocStore(process.env.APP_VERSION ?? 'dev');
 
       // Shared across containers (R11): the auth and token-manager containers
       // both need cache access, and two instances means two connections --
@@ -164,9 +170,7 @@ export class TokenManagerContainer {
         .toConstantValue(authMiddleware);
     } catch (error) {
       const logger = container.get<Logger>('Logger');
-      logger.error('Failed to initialize services', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
+      logger.error('Failed to initialize services', { error });
       throw error;
     }
   }
@@ -213,9 +217,7 @@ export class TokenManagerContainer {
 
         this.logger.info('All services disconnected successfully');
       } catch (error) {
-        this.logger.error('Error while disconnecting services', {
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
+        this.logger.error('Error while disconnecting services', { error });
       } finally {
         this.instance = null!;
       }

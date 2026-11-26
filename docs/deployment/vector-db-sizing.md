@@ -165,3 +165,40 @@ temporarily more disk space while old and new segments coexist. If
 
 Raising the memory limit to the figure above gives the same speed without the
 out-of-memory risk, so prefer that.
+
+## Datastore memory settings on small machines
+
+The Compose deployment reads these optional variables from `.env`. Leaving one
+unset keeps the default below.
+
+| Variable | Default | Controls |
+|---|---|---|
+| `MONGO_CACHE_GB` | `1` | WiredTiger cache size (GB) |
+| `MONGO_MEMORY_LIMIT` / `MONGO_MEMORY_RESERVATION` | `2G` / `512M` | MongoDB container limit and reservation (`docker-compose.yml` only; `docker-compose.build.neo4j.yml` sets no MongoDB limit or reservation) |
+| `QDRANT_MEMORY_LIMIT` / `QDRANT_MEMORY_RESERVATION` | `6G` / `2G` (`4G` / `2G` in `docker-compose.build.neo4j.yml`) | Qdrant container limit and reservation |
+| `NEO4J_HEAP_INITIAL` / `NEO4J_HEAP_MAX` | `1G` / `2G` | Neo4j JVM heap at start and at most |
+| `NEO4J_PAGECACHE` | `1G` | Neo4j page cache |
+| `NEO4J_MEMORY_LIMIT` / `NEO4J_MEMORY_RESERVATION` | `4G` / `2G` | Neo4j container limit and reservation |
+
+- Neo4j also uses memory outside the heap and page cache (thread stacks,
+  metaspace, network buffers). The default limit leaves 1G for it above heap
+  maximum + page cache. Knowledge Hub listings over a large graph do grow the
+  heap to its maximum: with the limit equal to heap maximum + page cache (3G),
+  the kernel killed Neo4j within the first minute of concurrent listings over
+  400,000 records. When you change these values, keep heap maximum + page cache
+  at least 1G below the container limit.
+- A reservation is not a cap. The container limit is what protects the rest of
+  the machine, so lower the limit and the heap together.
+- The Neo4j page cache holds the graph store. If the store outgrows it, graph
+  queries read from disk and slow down; raise `NEO4J_PAGECACHE` first.
+- Neo4j caps transaction memory at 70 % of its heap maximum, and that pool is
+  shared by every running transaction, not given to each one. A small heap
+  therefore limits how many relationships all concurrent writes can hold
+  together, and several large writes at once can use up the pool even when each
+  would fit alone. Lower `NEO4J_HEAP_MAX` only for small data sets.
+- Neo4j does not start if the initial heap is larger than the maximum. If you
+  set `NEO4J_HEAP_MAX` below `1G`, also lower `NEO4J_HEAP_INITIAL` to that value
+  or less.
+
+If your override file already sets the `NEO4J_dbms_memory_*` keys, it keeps
+working: those key names are unchanged.

@@ -1,6 +1,9 @@
 import { injectable, inject } from 'inversify';
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
+import { forOrg } from '../../../libs/context/orgContext';
+import { getIdentityLookup } from '../../../libs/repositories/identity-lookup';
+import { docStore } from '../../../libs/repositories/store-select';
 import {
   OAuthAppService,
   APP_WORKSPACE_MISMATCH_MESSAGE,
@@ -14,7 +17,6 @@ import {
   InvalidGrantError,
   InvalidClientError,
   UnsupportedGrantTypeError,
-  TokenExchangeError,
   InvalidScopeError,
   AccessDeniedError,
   InvalidRedirectUriError,
@@ -25,24 +27,44 @@ import {
   ForbiddenError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import { BaseError } from '../../../libs/errors/base.error';
 import {
   AuthorizeRequest,
   TokenRequest,
   TokenResponse,
   ConsentData,
-  OAuthErrorResponse,
 } from '../types/oauth.types';
-import { Users } from '../../user_management/schema/users.schema';
+import {
+  answerOAuthServerFailure,
+  isOAuthRefusal,
+  logOAuthRefusal,
+  logOAuthServerFailure,
+  OAUTH_SERVER_FAILURE,
+  oauthErrorBody,
+  oauthErrorCode,
+} from '../utils/oauth-failure';
+import { markRequestError } from '../../../libs/middlewares/access-log.middleware';
+import { NO_CONTROL_CHARACTERS } from '../validators/oauth.validators';
+import { getUserRepository } from '../../../libs/repositories/user';
+import { idOf, isValidId } from '../../../libs/repositories/ids';
+import { getOrgRepository } from '../../../libs/repositories/org';
 import {
   isKnowledgeLimitWithin,
   toKnowledgeLimit,
-} from '../schema/knowledge_limit.schema';
-import { Org } from '../../user_management/schema/org.schema';
+} from '../types/knowledge_limit';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
+import { isClientIdMetadataUrl } from '../services/client_metadata_document';
 import { OAuthDeviceService } from '../services/oauth.device.service';
+import { AgentRegistrationService } from '../services/agent-registration.service';
+import {
+  AGENT_CLAIM_GRANT,
+  JWT_BEARER_GRANT,
+} from '../constants/agent-auth.constants';
 import { TokenExchangeService } from '../services/token-exchange.service';
-import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import { clientTags } from '../../../libs/services/telemetry/identity';
+import {
+  clientTags,
+  recordEvent,
+} from '../../../libs/services/telemetry/telemetry-impl';
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -69,6 +91,8 @@ export class OAuthProviderController {
     private oauthDeviceService: OAuthDeviceService,
     @inject('TokenExchangeService')
     private tokenExchangeService: TokenExchangeService,
+    @inject('AgentRegistrationService')
+    private agentRegistrationService: AgentRegistrationService,
   ) {}
 
   /**
@@ -90,7 +114,9 @@ export class OAuthProviderController {
 
     try {
       // Validate client first
-      app = await this.oauthAppService.getAppByClientId(query.client_id);
+      ({ app } = await this.oauthDcrService.resolveAuthorizeClient(
+        query.client_id,
+      ));
 
       // Validate redirect URI - MUST be done before any error redirect
       this.oauthAppService.validateRedirectUriForApp(app, query.redirect_uri);
@@ -126,6 +152,8 @@ export class OAuthProviderController {
     }
 
     try {
+      this.oauthTokenService.audienceFor(query.resource);
+
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(
         query.scope,
@@ -159,11 +187,19 @@ export class OAuthProviderController {
           description: s.description,
           category: s.category,
         }));
-      const org = await Org.findOne({ _id: user.orgId, isDeleted: false })
-        .select('registeredName shortName')
-        .lean()
-        .exec();
+      const org = await getOrgRepository().getNames(user.orgId);
       const workspaceName = org?.shortName || org?.registeredName;
+      // Any member may register an app under any name, so the consent page
+      // says who did. A dynamically registered client has no such person.
+      const registeredBy =
+        app.isDynamic === true || !isValidId(idOf(app.createdBy))
+          ? undefined
+          : (
+              await getUserRepository().listNamesByIds(user.orgId, [
+                idOf(app.createdBy),
+              ])
+            )[0];
+      const registeredByLabel = registeredBy?.fullName || registeredBy?.email;
 
       const consentData: ConsentData = {
         app: {
@@ -173,6 +209,10 @@ export class OAuthProviderController {
           homepageUrl: app.homepageUrl,
           privacyPolicyUrl: app.privacyPolicyUrl,
           isDynamic: app.isDynamic === true,
+          ...(isClientIdMetadataUrl(app.clientId)
+            ? { clientIdHost: new URL(app.clientId).host }
+            : {}),
+          ...(registeredByLabel ? { registeredBy: registeredByLabel } : {}),
           knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
         },
         scopes: toScopeInfo(granted),
@@ -197,10 +237,16 @@ export class OAuthProviderController {
       });
     } catch (error) {
       // Now we can safely redirect errors since redirect_uri is validated
-      const errorResponse = this.buildErrorResponse(
-        error as Error,
-        query.state,
-      );
+      const refused = isOAuthRefusal(error);
+      if (refused) this.logRefusal(error);
+      else logOAuthServerFailure(this.logger, res, error);
+      const errorResponse = refused
+        ? oauthErrorBody(error, query.state)
+        : {
+            error: 'server_error',
+            error_description: OAUTH_SERVER_FAILURE,
+            state: query.state,
+          };
       const redirectUrl = new URL(validatedRedirectUri);
       redirectUrl.searchParams.set('error', errorResponse.error);
       if (errorResponse.error_description) {
@@ -236,7 +282,9 @@ export class OAuthProviderController {
       } = req.body;
 
       // Validate client
-      const app = await this.oauthAppService.getAppByClientId(client_id);
+      const client =
+        await this.oauthDcrService.resolveAuthorizeClient(client_id);
+      const { app } = client;
 
       // Validate redirect URI
       this.oauthAppService.validateRedirectUriForApp(app, redirect_uri);
@@ -285,6 +333,9 @@ export class OAuthProviderController {
         app.allowedScopes,
       );
 
+      // A metadata document client is stored only now, once the person has consented.
+      await client.store({ orgId: user.orgId, userId: user.userId });
+
       // Generate authorization code
       const code = await this.authorizationCodeService.generateCode(
         client_id,
@@ -301,12 +352,6 @@ export class OAuthProviderController {
       const redirectUrl = new URL(redirect_uri);
       redirectUrl.searchParams.set('code', code);
       redirectUrl.searchParams.set('state', state);
-
-      this.logger.info('Authorization code issued', {
-        clientId: client_id,
-        userId: user.userId,
-        scopes: granted,
-      });
 
       res.json({ redirectUrl: redirectUrl.toString() });
     } catch (error) {
@@ -335,6 +380,15 @@ export class OAuthProviderController {
         if (colonIndex !== -1) {
           clientId = credentials.substring(0, colonIndex);
           clientSecret = credentials.substring(colonIndex + 1);
+          // The header is not schema-checked: refuse what the body schema refuses, before any store read.
+          if (
+            !NO_CONTROL_CHARACTERS.test(clientId) ||
+            !NO_CONTROL_CHARACTERS.test(clientSecret)
+          ) {
+            throw new InvalidClientError(
+              'Client credentials must not contain control characters',
+            );
+          }
         }
       }
 
@@ -361,50 +415,76 @@ export class OAuthProviderController {
         return;
       }
 
+      // The agent grants, like token exchange, authenticate with the credential they present (claim_token, assertion): no client_id.
+      if (
+        tokenRequest.grant_type === AGENT_CLAIM_GRANT ||
+        tokenRequest.grant_type === JWT_BEARER_GRANT
+      ) {
+        const issued =
+          tokenRequest.grant_type === AGENT_CLAIM_GRANT
+            ? await this.agentRegistrationService.claimGrant(
+                tokenRequest.claim_token ?? '',
+              )
+            : await this.agentRegistrationService.jwtBearerGrant(
+                tokenRequest.assertion ?? '',
+              );
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Pragma', 'no-cache');
+        res.json(issued);
+        return;
+      }
+
       if (!clientId) {
         throw new InvalidClientError('client_id is required');
       }
 
-      let tokenResponse: TokenResponse;
+      const grant = async (): Promise<TokenResponse> => {
+        switch (tokenRequest.grant_type) {
+          case 'authorization_code':
+            return await this.handleAuthorizationCodeGrant(
+              clientId,
+              clientSecret,
+              tokenRequest,
+            );
 
-      switch (tokenRequest.grant_type) {
-        case 'authorization_code':
-          tokenResponse = await this.handleAuthorizationCodeGrant(
-            clientId,
-            clientSecret,
-            tokenRequest,
-          );
-          break;
+          case 'client_credentials':
+            return await this.handleClientCredentialsGrant(
+              clientId,
+              clientSecret!,
+              tokenRequest,
+            );
 
-        case 'client_credentials':
-          tokenResponse = await this.handleClientCredentialsGrant(
-            clientId,
-            clientSecret!,
-            tokenRequest,
-          );
-          break;
+          case 'refresh_token':
+            return await this.handleRefreshTokenGrant(
+              clientId,
+              clientSecret,
+              tokenRequest,
+            );
 
-        case 'refresh_token':
-          tokenResponse = await this.handleRefreshTokenGrant(
-            clientId,
-            clientSecret,
-            tokenRequest,
-          );
-          break;
+          case 'urn:ietf:params:oauth:grant-type:device_code':
+            return await this.oauthDeviceService.poll(
+              clientId,
+              clientSecret,
+              tokenRequest.device_code || '',
+            );
 
-        case 'urn:ietf:params:oauth:grant-type:device_code':
-          tokenResponse = await this.oauthDeviceService.poll(
-            clientId,
-            clientSecret,
-            tokenRequest.device_code || '',
-          );
-          break;
+          case 'urn:ietf:params:oauth:grant-type:token-exchange': // answered above
+          case AGENT_CLAIM_GRANT: // answered above
+          case JWT_BEARER_GRANT: // answered above
+          default:
+            throw new UnsupportedGrantTypeError(
+              `Unsupported grant_type: ${tokenRequest.grant_type}`,
+            );
+        }
+      };
 
-        default:
-          throw new UnsupportedGrantTypeError(
-            `Unsupported grant_type: ${tokenRequest.grant_type}`,
-          );
-      }
+      // The endpoint has no session: on PostgreSQL the grant runs as the org that granted it (the org of the authorization code or the
+      // refresh token). A device poll finds the approving org itself, after the approval is claimed.
+      const tokenResponse = await this.runGrantInOrg(
+        tokenRequest,
+        clientId,
+        grant,
+      );
 
       // Set cache headers as per RFC 6749
       res.setHeader('Cache-Control', 'no-store');
@@ -421,10 +501,33 @@ export class OAuthProviderController {
         });
       }
     } catch (error) {
-      // OAuth errors should return 400 with JSON body
-      const oauthError = this.buildErrorResponse(error as Error);
-      res.status(this.getErrorStatusCode(error as Error)).json(oauthError);
+      this.answerFailure(res, error);
     }
+  }
+
+  /** Runs a grant as the org that granted it (PostgreSQL); Mongo needs no org. */
+  private async runGrantInOrg(
+    tokenRequest: {
+      grant_type: string;
+      code?: string;
+      refresh_token?: string;
+    },
+    clientId: string,
+    grant: () => Promise<TokenResponse>,
+  ): Promise<TokenResponse> {
+    if (docStore() !== 'postgres') return grant();
+    const lookup = getIdentityLookup();
+    let orgId: string | null = null;
+    if (tokenRequest.grant_type === 'authorization_code' && tokenRequest.code)
+      orgId = await lookup.resolveCodeOrg(tokenRequest.code, clientId);
+    else if (
+      tokenRequest.grant_type === 'refresh_token' &&
+      tokenRequest.refresh_token
+    )
+      orgId = await lookup.resolveRefreshOrg(tokenRequest.refresh_token);
+    else if (tokenRequest.grant_type === 'client_credentials')
+      orgId = (await lookup.resolveClient(clientId))?.orgId ?? null;
+    return orgId ? forOrg(orgId, 'oauth.token', grant) : grant();
   }
 
   /**
@@ -440,10 +543,19 @@ export class OAuthProviderController {
       const { token, token_type_hint, client_id, client_secret } = req.body as {
         token: string;
         token_type_hint?: 'refresh_token' | 'access_token';
-        client_id: string;
+        client_id?: string;
         // A JSON body can carry any type here, null included.
         client_secret?: unknown;
       };
+
+      // An agent's assertion or access token is its own credential: it has no client_id to authenticate.
+      if (await this.oauthTokenService.revokeAgentToken(token)) {
+        res.status(200).send();
+        return;
+      }
+      if (!client_id) {
+        throw new InvalidClientError('client_id is required');
+      }
 
       // RFC 7009: authenticate the client. A public client (the first-party
       // device app) has no secret and is identified by client_id alone, as the
@@ -473,13 +585,17 @@ export class OAuthProviderController {
       // RFC 7009: Always return 200 OK, even if token was invalid/already revoked
       res.status(200).send();
     } catch (error) {
-      // Even on error, RFC 7009 recommends returning 200 for security
-      // Only return error if client authentication fails
       if (error instanceof InvalidClientError) {
-        res.status(401).json(this.buildErrorResponse(error));
+        this.answerRefusal(res, error);
         return;
       }
-      res.status(200).send();
+      // RFC 7009 2.2: an invalid token is not an error. 2.2.1: when we could not
+      // revoke, 503, so the client keeps treating the token as live and retries.
+      if (isOAuthRefusal(error)) {
+        res.status(200).send();
+        return;
+      }
+      answerOAuthServerFailure(this.logger, res, error, 503);
     }
   }
 
@@ -511,9 +627,11 @@ export class OAuthProviderController {
       res.json(result);
     } catch (error) {
       if (error instanceof InvalidClientError) {
-        res.status(401).json(this.buildErrorResponse(error));
+        this.answerRefusal(res, error);
         return;
       }
+      if (!isOAuthRefusal(error))
+        logOAuthServerFailure(this.logger, res, error);
       // RFC 7662: For other errors, return inactive token to prevent information disclosure
       res.json({ active: false });
     }
@@ -575,8 +693,7 @@ export class OAuthProviderController {
       );
       res.status(200).json(result);
     } catch (error) {
-      const oauthError = this.buildErrorResponse(error as Error);
-      res.status(this.getErrorStatusCode(error as Error)).json(oauthError);
+      this.answerFailure(res, error);
     }
   }
 
@@ -607,7 +724,7 @@ export class OAuthProviderController {
         return;
       }
       if (error instanceof DeviceGrantError) {
-        res.status(400).json(this.buildErrorResponse(error));
+        res.status(400).json(oauthErrorBody(error));
         return;
       }
       next(error);
@@ -641,7 +758,7 @@ export class OAuthProviderController {
         return;
       }
       if (error instanceof DeviceGrantError) {
-        res.status(400).json(this.buildErrorResponse(error));
+        res.status(400).json(oauthErrorBody(error));
         return;
       }
       next(error);
@@ -661,6 +778,8 @@ export class OAuthProviderController {
     if (!request.redirect_uri) {
       throw new InvalidGrantError('redirect_uri is required');
     }
+    // Checked before the code is spent, so a bad resource does not cost the client its code.
+    const audience = this.oauthTokenService.audienceFor(request.resource);
 
     // Get app
     const app = await this.oauthAppService.getAppByClientId(clientId);
@@ -713,27 +832,18 @@ export class OAuthProviderController {
     let fullName: string | undefined;
     let accountType: string | undefined;
     if (codeResult.userId) {
-      const user = await Users.findOne({
-        _id: codeResult.userId,
-        orgId: codeResult.orgId,
-        isDeleted: false,
-      })
-        .select('fullName')
-        .lean()
-        .exec();
+      const user = await getUserRepository().getLiveFields(
+        codeResult.orgId,
+        codeResult.userId,
+        ['fullName'],
+      );
       if (user) {
         fullName = user.fullName;
       }
 
-      const org = await Org.findOne({
-        _id: codeResult.orgId,
-        isDeleted: false,
-      })
-        .select('accountType')
-        .lean()
-        .exec();
+      const org = await getOrgRepository().getAccountType(codeResult.orgId);
       if (org) {
-        accountType = (org as any).accountType;
+        accountType = org.accountType;
       }
     }
 
@@ -753,6 +863,7 @@ export class OAuthProviderController {
       {
         recheckAppScopes: true,
         grantedKnowledgeLimit: codeResult.knowledgeLimit ?? null,
+        audience,
       },
     );
 
@@ -775,11 +886,6 @@ export class OAuthProviderController {
       }
       throw new InvalidGrantError('Authorization code has already been used');
     }
-
-    this.logger.info('Authorization code grant completed', {
-      clientId,
-      userId: codeResult.userId,
-    });
 
     return {
       access_token: tokens.accessToken,
@@ -835,14 +941,11 @@ export class OAuthProviderController {
     // authenticates as that identity for as long as it lives.
     const identityId = app.tokenIdentityUserId ?? app.createdBy;
     if (identityId) {
-      const identity = await Users.findOne({
-        _id: identityId,
-        orgId: app.orgId,
-        isDeleted: false,
-      })
-        .select('fullName isDisabled restoreOpId')
-        .lean()
-        .exec();
+      const identity = await getUserRepository().getLiveFields(
+        app.orgId,
+        identityId,
+        ['fullName', 'isDisabled', 'restoreOpId'],
+      );
 
       // Refused rather than issued against an identity that cannot be used.
       // A client_credentials token is stored without a userId, so it is not
@@ -867,30 +970,22 @@ export class OAuthProviderController {
       fullName = identity.fullName;
     }
 
-    const org = await Org.findOne({
-      _id: app.orgId,
-      isDeleted: false,
-    })
-      .select('accountType')
-      .lean()
-      .exec();
+    const org = await getOrgRepository().getAccountType(app.orgId);
     if (org) {
-      accountType = (org as any).accountType;
+      accountType = org.accountType;
     }
 
     // Generate tokens (no refresh token for client_credentials)
     const tokens = await this.oauthTokenService.generateTokens(
       app,
       null, // No user
-      app.orgId.toString(),
+      app.orgId,
       filteredScopes,
       false, // No refresh token
       fullName,
       accountType,
       { recheckAppScopes: true },
     );
-
-    this.logger.info('Client credentials grant completed', { clientId });
 
     return {
       access_token: tokens.accessToken,
@@ -941,14 +1036,14 @@ export class OAuthProviderController {
       ? this.scopeValidatorService.parseScopes(request.scope)
       : undefined;
 
-    // Refresh tokens (implements token rotation per RFC 9700)
+    // Refresh tokens (implements token rotation per RFC 9700). The agent app's tokens are cut to the current
+    // MCP_SCOPES as every other grant of it is: its stored list only ever grows.
     const tokens = await this.oauthTokenService.refreshTokens(
-      app,
+      { ...app, allowedScopes: this.oauthDeviceService.allowedScopesOf(app) },
       request.refresh_token,
       requestedScopes,
+      this.oauthTokenService.audienceFor(request.resource),
     );
-
-    this.logger.info('Refresh token grant completed', { clientId });
 
     return {
       access_token: tokens.accessToken,
@@ -959,36 +1054,26 @@ export class OAuthProviderController {
     };
   }
 
-  private buildErrorResponse(error: Error, state?: string): OAuthErrorResponse {
-    let errorCode = 'server_error';
-    const description = error.message;
-
-    if (error instanceof InvalidGrantError) {
-      errorCode = 'invalid_grant';
-    } else if (error instanceof DeviceGrantError) {
-      errorCode = error.oauthError;
-    } else if (error instanceof TokenExchangeError) {
-      errorCode = error.oauthError;
-    } else if (error instanceof InvalidClientError) {
-      errorCode = 'invalid_client';
-    } else if (error instanceof UnsupportedGrantTypeError) {
-      errorCode = 'unsupported_grant_type';
-    } else if (error instanceof InvalidScopeError) {
-      errorCode = 'invalid_scope';
-    } else if (error instanceof AccessDeniedError) {
-      errorCode = 'access_denied';
+  /** Answers a failed RFC 6749 endpoint: a refusal with its code, anything else as our failure. */
+  private answerFailure(res: Response, error: unknown): void {
+    if (isOAuthRefusal(error)) {
+      this.answerRefusal(res, error);
+      return;
     }
+    answerOAuthServerFailure(this.logger, res, error);
+  }
 
-    const response: OAuthErrorResponse = {
-      error: errorCode,
-      error_description: description,
-    };
+  private logRefusal(error: BaseError): void {
+    logOAuthRefusal(this.logger, oauthErrorCode(error));
+  }
 
-    if (state) {
-      response.state = state;
-    }
-
-    return response;
+  private answerRefusal(res: Response, error: BaseError): void {
+    this.logRefusal(error);
+    // A submitted client credential that is wrong is the caller's bad request, not an expired session.
+    if (error instanceof InvalidClientError)
+      markRequestError(res, 'bad_request');
+    if (res.headersSent) return;
+    res.status(this.getErrorStatusCode(error)).json(oauthErrorBody(error));
   }
 
   private getErrorStatusCode(error: Error): number {

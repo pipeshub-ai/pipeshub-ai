@@ -1,0 +1,64 @@
+{
+ "messages": [
+  {
+   "content": "be brief",
+   "role": "system"
+  },
+  {
+   "content": "find the bug",
+   "role": "user"
+  },
+  {
+   "content": "looking",
+   "role": "assistant",
+   "tool_calls": [
+    {
+     "function": {
+      "arguments": "{\"q\": \"bug\"}",
+      "name": "lookup"
+     },
+     "id": "toolu_01",
+     "type": "function"
+    }
+   ]
+  },
+  {
+   "content": "found PROJ-1",
+   "role": "tool",
+   "tool_call_id": "toolu_01"
+  },
+  {
+   "content": "now file it",
+   "role": "user"
+  }
+ ],
+ "model": "gpt-x",
+ "tools": [
+  {
+   "function": {
+    "description": "Look up",
+    "name": "lookup",
+    "parameters": {
+     "properties": {
+      "q": {
+       "type": "string"
+      }
+     },
+     "type": "object"
+    }
+   },
+   "type": "function"
+  },
+  {
+   "function": {
+    "description": "File",
+    "name": "create_issue",
+    "parameters": {
+     "properties": {},
+     "type": "object"
+    }
+   },
+   "type": "function"
+  }
+ ]
+}

@@ -250,6 +250,7 @@ class TestSkipUnchanged:
         collection, ids, payload = service.update_payload_by_ids.await_args.args
         assert ids == [EntityVectorStore._point_id("org-1", "topic", "k1")]
         assert payload == {"connectorIds": ["c1", "c2"], "recordGroupIds": []}
+        assert service.update_payload_by_ids.await_args.kwargs == {"org_id": "org-1"}
 
     async def test_text_changes_are_embedded_and_membership_changes_are_not(self) -> None:
         service = MagicMock()
@@ -372,7 +373,7 @@ class TestMembershipReadIsByPointId:
             for point in points:
                 stored[point.id] = point
 
-        async def _update_by_ids(collection_name, ids, payload):
+        async def _update_by_ids(collection_name, ids, payload, *, org_id):
             for point_id in ids:
                 if point_id in stored:
                     stored[point_id].payload.update(payload)
@@ -462,10 +463,9 @@ class TestInitHousekeeping:
         assert {"metadata.orgId", "metadata.level", "connectorIds", "recordGroupIds"} <= fields
 
     async def test_missing_ai_models_config_uses_the_default_model(self, monkeypatch) -> None:
-        from app.modules.transformers import entity_vectorstore as module
 
         default = MagicMock(embed_query=MagicMock(return_value=[0.1, 0.2]))
-        monkeypatch.setattr(module, "get_default_embedding_model", lambda: default)
+        monkeypatch.setattr("app.utils.llm.get_default_embedding_model", lambda: default)
         service = MagicMock()
         service.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
         store = EntityVectorStore(logger=MagicMock(), config_service=embedding_config_service(), vector_db_service=service)
@@ -593,6 +593,21 @@ class TestTitlesSearchedApart:
         assert requests[0].filter["must_not"] == {"metadata.entityType": "record"}
         assert requests[1].filter["must"]["metadata.entityType"] == "record"
         assert [h["entityId"] for h in hits] == ["t1", "r1", "t2"]
+
+    async def test_an_odd_top_k_is_not_exceeded(self) -> None:
+        """Each group asks for half of top_k rounded up, so both answering
+        would return one more than asked; the merged pass is cut to top_k."""
+        from app.modules.transformers.entity_vectorstore import EntitySearchPass
+        from app.services.vector_db.models import SearchResult
+
+        def _r(entity_id: str, entity_type: str) -> SearchResult:
+            return SearchResult(id=entity_id, score=0.5, payload={"metadata": {"entityId": entity_id, "entityType": entity_type}})
+
+        service = MagicMock()
+        service.query_nearest_points = AsyncMock(return_value=[[_r("t1", "topic")], [_r("r1", "record")]])
+        store = _make_store(service)
+        (hits,) = await store.search_entities_passes("q", "org-1", [EntitySearchPass(org_wide=True)], top_k=1)
+        assert [h["entityId"] for h in hits] == ["t1"]
 
     async def test_asking_for_records_only_is_one_request(self) -> None:
         from app.modules.transformers.entity_vectorstore import EntitySearchPass

@@ -1,10 +1,12 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { DropdownMenu, IconButton, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { PermissionLockIcon } from '@/config';
 
 // ========================================
 // Types
@@ -32,6 +34,8 @@ export interface MenuAction {
   isLoading?: boolean;
   /** Render the item in a disabled state (not interactive). */
   disabled?: boolean;
+  /** The caller's group permissions do not allow this action: disabled, with a lock. */
+  permissionLocked?: boolean;
 }
 
 export interface ItemActionMenuProps {
@@ -58,7 +62,15 @@ export interface ItemActionMenuProps {
  * The parent is responsible for positioning (e.g. absolute for sidebar,
  * inline for list rows). This component renders the trigger + dropdown.
  */
+function isEditableElement(el: Element | null): boolean {
+  if (!el) return false;
+  if (el instanceof HTMLTextAreaElement) return true;
+  if (el instanceof HTMLInputElement) return !['button', 'checkbox', 'radio'].includes(el.type);
+  return el instanceof HTMLElement && el.isContentEditable;
+}
+
 export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, triggerSize = '1' }: ItemActionMenuProps) {
+  const { t } = useTranslation();
   const visibleActions = actions.filter(Boolean) as MenuAction[];
   // Phones get 44px rows, as the workspace row menus do.
   const isMobile = useIsMobile();
@@ -76,7 +88,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
           variant="ghost"
           size={triggerSize}
           color="gray"
-          aria-label={triggerLabel}
+          aria-label={triggerLabel ?? t('common.moreOptions')}
           onClick={(e) => e.stopPropagation()}
           style={{
             cursor: 'pointer',
@@ -90,25 +102,36 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
       </DropdownMenu.Trigger>
       <DropdownMenu.Content
         size="1"
+        // Same rows, hover and colours as the settings tables' row menu (entity-row-action-menu)
+        className="row-action-menu"
         style={{
-          minWidth: isMobile ? 200 : 140,
+          minWidth: isMobile ? 200 : 178,
           // The viewport already pads 4px (globals.css); a second 4 here doubles it.
           padding: 0,
-          background: 'var(--olive-2)',
+          // Frosted surface comes from the shared .rt-BaseMenuContent rule in globals.css
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-1)',
-          backdropFilter: 'blur(25px)',
-          WebkitBackdropFilter: 'blur(25px)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
         }}
         onClick={(e) => e.stopPropagation()}
+        onCloseAutoFocus={(e) => {
+          // An action such as Rename focuses its own field while the menu is still
+          // closing; handing focus back to the trigger would take it away again.
+          if (isEditableElement(document.activeElement)) e.preventDefault();
+        }}
       >
         {visibleActions.map((action, i) => {
           const iconColor =
             action.iconColor ||
-            (action.color === 'red' ? 'var(--red-11)' : 'var(--neutral-11)');
+            (action.color === 'red' ? 'var(--red-11)' : 'var(--slate-11)');
           const isPending = pendingIndex === i || action.isLoading === true;
           const anyPending = pendingIndex !== null;
-          const isBlocked = isPending || (anyPending && pendingIndex !== i) || action.disabled === true;
+          const isBlocked =
+            isPending ||
+            (anyPending && pendingIndex !== i) ||
+            action.disabled === true ||
+            action.permissionLocked === true;
 
           return (
             <React.Fragment key={i}>
@@ -144,7 +167,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
                   }
                 }}
               >
-                <Flex align="center" gap="1">
+                <Flex align="center" gap="2">
                   {isPending ? (
                     <Spinner size={14} color={iconColor} />
                   ) : (
@@ -156,11 +179,12 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
                       fontWeight: 400,
                       letterSpacing: '0.04px',
                       lineHeight: '16px',
-                      color: action.color === 'red' ? 'var(--red-11)' : 'var(--neutral-11)',
+                      color: action.color === 'red' ? 'var(--red-11)' : 'var(--slate-11)',
                     }}
                   >
                     {action.label}
                   </Text>
+                  {action.permissionLocked && <PermissionLockIcon />}
                 </Flex>
               </DropdownMenu.Item>
             </React.Fragment>

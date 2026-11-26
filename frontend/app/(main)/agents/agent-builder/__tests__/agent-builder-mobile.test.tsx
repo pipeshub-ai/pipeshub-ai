@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import { agentDetail, installBrowserShims, knowledgeBase, model, renderInTheme, toolset } from './agent-builder-harness';
 
 vi.setConfig({ testTimeout: 20_000 });
@@ -23,7 +24,8 @@ vi.mock('next/navigation', () => ({
 }));
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
-vi.mock('@/config', () => ({
+vi.mock('@/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config')>()),
   useUserPermission: (key: string) => !permissions.denied.has(key),
   PermissionLockIcon: () => <span>Locked</span>,
   InheritedConfigNotice: () => null,
@@ -42,20 +44,23 @@ const agentsApi = vi.hoisted(() => ({
   createAgent: vi.fn(),
   updateAgent: vi.fn(),
   deleteAgent: vi.fn(),
-  getAllKnowledgeBasesForBuilder: vi.fn(),
-  getAllKnowledgeHubAppNodes: vi.fn(),
+  knowledgeBasePage: vi.fn(),
+  knowledgeHubAppPage: vi.fn(),
 }));
 vi.mock('../../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api')>()),
   AgentsApi: agentsApi,
 }));
 
-const fetchAvailableLlms = vi.hoisted(() => vi.fn());
-vi.mock('@/chat/api', () => ({ ChatApi: { fetchAvailableLlms } }));
+const fetchOrgModels = vi.hoisted(() => vi.fn());
+vi.mock('@/chat/utils/fetch-models-for-context', () => ({
+  fetchModelsForContext: fetchOrgModels,
+  invalidateModelsForContext: vi.fn(),
+}));
 
 const toolsetsApi = vi.hoisted(() => ({
-  getAllMyToolsets: vi.fn(),
-  getAllAgentToolsets: vi.fn(),
+  getMyToolsets: vi.fn(),
+  getAgentToolsets: vi.fn(),
   getToolsetRegistrySchema: vi.fn(),
   findAgentToolsetByInstanceId: vi.fn(),
   authenticateAgentToolset: vi.fn(),
@@ -86,12 +91,13 @@ import { AgentBuilder } from '../agent-builder';
 
 beforeEach(() => {
   installBrowserShims();
+  clearSessionCache();
   useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false, ENABLE_SKILLS: false } });
-  agentsApi.getAllKnowledgeBasesForBuilder.mockResolvedValue({ knowledgeBases: [knowledgeBase()] });
-  agentsApi.getAllKnowledgeHubAppNodes.mockResolvedValue([]);
-  fetchAvailableLlms.mockResolvedValue([model()]);
-  toolsetsApi.getAllMyToolsets.mockResolvedValue({ toolsets: [toolset()] });
-  toolsetsApi.getAllAgentToolsets.mockResolvedValue([]);
+  agentsApi.knowledgeBasePage.mockResolvedValue({ items: [knowledgeBase()], next: null });
+  agentsApi.knowledgeHubAppPage.mockResolvedValue({ items: [], next: null });
+  fetchOrgModels.mockResolvedValue([model()]);
+  toolsetsApi.getMyToolsets.mockResolvedValue({ toolsets: [toolset()] });
+  toolsetsApi.getAgentToolsets.mockResolvedValue({ toolsets: [] });
   getUsersByIds.mockResolvedValue([]);
 });
 

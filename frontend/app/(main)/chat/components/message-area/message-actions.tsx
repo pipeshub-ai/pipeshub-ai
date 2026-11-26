@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Flex, Box, Text, IconButton, Popover, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -9,11 +9,13 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import {
   stripMarkdownAndCitations,
   formatChatMode,
+  answerSearchSource,
 } from '@/lib/utils/formatters';
-import type { ModelInfo, AppliedFilters } from '@/chat/types';
+import type { ModelInfo, AppliedFilters, MessagePart } from '@/chat/types';
 import type { CitationMaps } from './response-tabs/citations';
 import { useCommandStore } from '@/lib/store/command-store';
-import { ChatMessageExtras } from '@/config';
+import { BUILTIN_BUS } from '../../builtin-commands';
+import { ChatMessageExtras, chatModelOptions, FeedbackDislikeExtras } from '@/config';
 import { toast } from '@/lib/store/toast-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { touchTarget } from '@/app/components/ui/responsive';
@@ -22,6 +24,7 @@ import { AgentsApi } from '@/app/(main)/agents/api';
 import { ChatApi, type FeedbackPayload } from '../../api';
 import { buildChatHref } from '../../build-chat-url';
 import { useChatStore } from '../../store';
+import { modelDisplayLabel } from '../../utils/apply-conversation-model-info';
 
 // ========================================
 // Types & Constants
@@ -73,6 +76,10 @@ interface MessageActionsProps {
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** False for a reply that ran an action a person approved: regenerating could run it again. */
   canRegenerate?: boolean;
+  /** A durable run wrote it (G-15). */
+  runLinked?: boolean;
+  /** The answer's tool activity: the footer names the search it actually used. */
+  parts?: MessagePart[];
 }
 
 /**
@@ -126,6 +133,8 @@ export function MessageActions({
   appliedFilters,
   feedbackInfo,
   canRegenerate = true,
+  runLinked = false,
+  parts,
 }: MessageActionsProps) {
   const isMobile = useIsMobile();
   const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(feedbackInfo?.value ?? null);
@@ -156,6 +165,8 @@ export function MessageActions({
   const [dislikeShowOther, setDislikeShowOther] = useState(false);
   const [dislikeComment, setDislikeComment] = useState('');
   const [dislikeSubmitting, setDislikeSubmitting] = useState(false);
+  // Fields the popover's extras add to this rating's body; reset each time it opens.
+  const [dislikeExtra, setDislikeExtra] = useState<Record<string, unknown>>({});
 
   const switchingRef = useRef(false);
 
@@ -245,6 +256,7 @@ export function MessageActions({
     }
     setDislikeShowOther(false);
     setDislikeComment('');
+    setDislikeExtra({});
     setDislikeOpen(true);
   }, [messageId, likeOpen]);
 
@@ -257,12 +269,16 @@ export function MessageActions({
     setFeedbackGiven('dislike');
     setDislikeOpen(false);
     try {
-      await submitFeedbackToApi(messageId, { isHelpful: false, categories: [cat.value] });
+      await submitFeedbackToApi(messageId, {
+        isHelpful: false,
+        categories: [cat.value],
+        ...dislikeExtra,
+      });
       toast.success(t('chat.thankYouForFeedback'), { description: t('chat.feedbackHelpsImprove') });
     } catch {
       toast.error(t('chat.feedbackError', 'Failed to submit feedback'));
     }
-  }, [messageId, t]);
+  }, [messageId, t, dislikeExtra]);
 
   const handleDislikeOtherSubmit = useCallback(async () => {
     if (!messageId) return;
@@ -272,6 +288,7 @@ export function MessageActions({
         isHelpful: false,
         categories: [OTHER_VALUE],
         ...(dislikeComment.trim() ? { comments: { negative: dislikeComment.trim() } } : {}),
+        ...dislikeExtra,
       });
       setFeedbackGiven('dislike');
       setDislikeOpen(false);
@@ -281,7 +298,7 @@ export function MessageActions({
     } finally {
       setDislikeSubmitting(false);
     }
-  }, [messageId, dislikeComment, t]);
+  }, [messageId, dislikeComment, t, dislikeExtra]);
 
   const handleDislikePopoverClose = useCallback(() => {
     if (switchingRef.current) {
@@ -301,7 +318,8 @@ export function MessageActions({
   const handleFork = useCallback(async () => {
     if (!messageId || isForking) return;
     const state = useChatStore.getState();
-    const slot = state.activeSlotId ? state.slots[state.activeSlotId] : null;
+    const slotId = state.activeSlotId;
+    const slot = slotId ? state.slots[slotId] : null;
     const convId = slot?.convId;
     if (!convId) return;
 
@@ -312,6 +330,15 @@ export function MessageActions({
         ? await AgentsApi.forkAgentConversation(agentId, convId, messageId)
         : await ChatApi.forkConversation(convId, messageId);
       bumpConversationsVersion();
+      // The original keeps its cached copy when the user comes back, so it learns of the fork now, not on reload.
+      // Read the slot again: a reload during the request may have changed its forks or the chat it holds.
+      const latest = useChatStore.getState();
+      const current = slotId ? latest.slots[slotId] : null;
+      if (slotId && current?.convId === convId && !current.forks?.some((f) => f.conversationId === result.id)) {
+        latest.updateSlot(slotId, {
+          forks: [...(current.forks ?? []), { conversationId: result.id, title: result.title, fromMessageId: messageId }],
+        });
+      }
       router.push(
         buildChatHref({
           agentId,
@@ -351,19 +378,54 @@ export function MessageActions({
     copyToClipboard(resolved, t('chat.copiedAsMarkdown'));
   }, [content, citationMaps, copyToClipboard, t]);
 
+  const availableModels = useChatStore((s) => s.settings.availableModels);
+
   const handleCopyText = useCallback(() => {
     const plainText = stripMarkdownAndCitations(content);
     copyToClipboard(plainText, t('chat.copiedAsText'));
   }, [content, copyToClipboard, t]);
 
+  // `/copy` and `/feedback` (SLASH2) act on the last answer with these same handlers; none while it streams.
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const builtinsOn = isLastMessage && !isStreaming;
+  useEffect(() => {
+    if (!builtinsOn) return undefined;
+    const { register, unregister } = useCommandStore.getState();
+    register(BUILTIN_BUS.copyLastAnswer, () => handleCopyMarkdown());
+    return () => unregister(BUILTIN_BUS.copyLastAnswer);
+  }, [builtinsOn, handleCopyMarkdown]);
+  useEffect(() => {
+    if (!builtinsOn || !messageId) return undefined;
+    const { register, unregister } = useCommandStore.getState();
+    register(BUILTIN_BUS.feedbackLastAnswer, (payload) => {
+      actionsRef.current?.scrollIntoView({ block: 'nearest' });
+      if (payload === 'like') handleLikeClick();
+      else handleDislikeClick();
+    });
+    return () => unregister(BUILTIN_BUS.feedbackLastAnswer);
+  }, [builtinsOn, messageId, handleLikeClick, handleDislikeClick]);
+
   if (isStreaming) return null;
 
-  const chatModeLabel = formatChatMode(modelInfo?.chatMode);
-  const modelName = modelInfo?.modelFriendlyName || modelInfo?.modelName || '';
+  // Plain assistant turns all run as `agent`; the Internal/Web search toggles
+  // only gate tools, so the tools it called say what this answer used.
+  const searchSource = modelInfo?.chatMode === 'agent' ? answerSearchSource(parts) : null;
+  const chatModeLabel =
+    searchSource === 'internal'
+      ? t('chat.answerMode.internalSearch', 'Internal search')
+      : searchSource === 'web'
+        ? t('chat.answerMode.webSearch', 'Web search')
+        : searchSource === 'internal_and_web'
+          ? t('chat.answerMode.internalAndWebSearch', 'Internal + web search')
+          : formatChatMode(modelInfo?.chatMode);
+  const answerLabel = chatModelOptions.answerLabel(t, modelInfo);
+  const catalogModels = Object.values(availableModels).flatMap((entry) => entry.models);
+  const modelName = answerLabel?.label || modelDisplayLabel(modelInfo, catalogModels);
 
   return (
     <>
       <Flex
+        ref={actionsRef}
         data-testid="message-actions"
         align="center"
         justify="between"
@@ -384,6 +446,7 @@ export function MessageActions({
             <Tooltip content={t('chat.like', 'Helpful')} side="top">
               <Popover.Trigger>
                 <IconButton
+                  aria-label={t('chat.like', 'Helpful')}
                   variant="ghost"
                   color="gray"
                   size="2"
@@ -422,6 +485,7 @@ export function MessageActions({
                 <Flex direction="column" gap="2">
                   <Flex align="center" gap="1">
                     <IconButton
+                      aria-label={t('common.back')}
                       variant="ghost"
                       color="gray"
                       size="1"
@@ -434,13 +498,14 @@ export function MessageActions({
                       {t('chat.feedbackLikeTitle', 'What did you like about this response? (optional)')}
                     </Text>
                     <IconButton
+                      aria-label={t('common.close')}
                       variant="ghost"
                       color="gray"
                       size="1"
                       onClick={handleLikePopoverClose}
                       style={{ cursor: 'pointer', flexShrink: 0 }}
                     >
-                      <MaterialIcon name="close" size={16} color="var(--slate-9)" />
+                      <MaterialIcon name="close" size={16} color="var(--slate-11)" />
                     </IconButton>
                   </Flex>
                   <Box style={{ position: 'relative' }}>
@@ -468,6 +533,7 @@ export function MessageActions({
                       onBlur={(e) => { e.target.style.borderColor = 'var(--gray-a5)'; }}
                     />
                     <IconButton
+                      aria-label={t('common.send')}
                       variant="solid"
                       color="gray"
                       highContrast
@@ -493,13 +559,14 @@ export function MessageActions({
                       {t('chat.feedbackLikeTitle', 'What did you like about this response? (optional)')}
                     </Text>
                     <IconButton
+                      aria-label={t('common.close')}
                       variant="ghost"
                       color="gray"
                       size="1"
                       onClick={handleLikePopoverClose}
                       style={{ cursor: 'pointer', flexShrink: 0, marginLeft: '4px' }}
                     >
-                      <MaterialIcon name="close" size={16} color="var(--slate-9)" />
+                      <MaterialIcon name="close" size={16} color="var(--slate-11)" />
                     </IconButton>
                   </Flex>
                   <Flex wrap="wrap" gap="2">
@@ -524,6 +591,7 @@ export function MessageActions({
             <Tooltip content={t('chat.dislike', 'Not helpful')} side="top">
               <Popover.Trigger>
                 <IconButton
+                  aria-label={t('chat.dislike', 'Not helpful')}
                   variant="ghost"
                   color="gray"
                   size="2"
@@ -562,6 +630,7 @@ export function MessageActions({
                 <Flex direction="column" gap="2">
                   <Flex align="center" gap="1">
                     <IconButton
+                      aria-label={t('common.back')}
                       variant="ghost"
                       color="gray"
                       size="1"
@@ -574,13 +643,14 @@ export function MessageActions({
                       {t('chat.feedbackDislikeTitle', "What didn't you like about this response?")}
                     </Text>
                     <IconButton
+                      aria-label={t('common.close')}
                       variant="ghost"
                       color="gray"
                       size="1"
                       onClick={handleDislikePopoverClose}
                       style={{ cursor: 'pointer', flexShrink: 0 }}
                     >
-                      <MaterialIcon name="close" size={16} color="var(--slate-9)" />
+                      <MaterialIcon name="close" size={16} color="var(--slate-11)" />
                     </IconButton>
                   </Flex>
                   <Box style={{ position: 'relative' }}>
@@ -608,6 +678,7 @@ export function MessageActions({
                       onBlur={(e) => { e.target.style.borderColor = 'var(--gray-a5)'; }}
                     />
                     <IconButton
+                      aria-label={t('common.send')}
                       variant="solid"
                       color="gray"
                       highContrast
@@ -625,6 +696,7 @@ export function MessageActions({
                       <MaterialIcon name="arrow_upward" size={14} color="var(--gray-1)" />
                     </IconButton>
                   </Box>
+                  <FeedbackDislikeExtras messageId={messageId} runLinked={runLinked} onChange={setDislikeExtra} />
                 </Flex>
               ) : (
                 <Flex direction="column" gap="2">
@@ -633,13 +705,14 @@ export function MessageActions({
                       {t('chat.feedbackDislikeTitle', "What didn't you like about this response?")}
                     </Text>
                     <IconButton
+                      aria-label={t('common.close')}
                       variant="ghost"
                       color="gray"
                       size="1"
                       onClick={handleDislikePopoverClose}
                       style={{ cursor: 'pointer', flexShrink: 0, marginLeft: '4px' }}
                     >
-                      <MaterialIcon name="close" size={16} color="var(--slate-9)" />
+                      <MaterialIcon name="close" size={16} color="var(--slate-11)" />
                     </IconButton>
                   </Flex>
                   <Flex wrap="wrap" gap="2">
@@ -652,6 +725,7 @@ export function MessageActions({
                       />
                     ))}
                   </Flex>
+                  <FeedbackDislikeExtras messageId={messageId} runLinked={runLinked} onChange={setDislikeExtra} />
                 </Flex>
               )}
             </Popover.Content>
@@ -673,6 +747,7 @@ export function MessageActions({
             >
               <Popover.Trigger>
                 <IconButton
+                  aria-label={t('chat.copy')}
                   variant="ghost"
                   color="gray"
                   size="2"
@@ -680,7 +755,7 @@ export function MessageActions({
                     ...touchTarget(isMobile),
                     margin: 0,
                     cursor: 'pointer',
-                    color: 'var(--slate-9)',
+                    color: 'var(--slate-11)',
                     borderRadius: 'var(--radius-1)',
                   }}
                 >
@@ -725,7 +800,7 @@ export function MessageActions({
                   borderRadius: 'var(--radius-1)',
                   border: '1px solid var(--olive-3)',
                   background: 'var(--olive-2)',
-                  backdropFilter: 'blur(25px)',
+                  backdropFilter: 'var(--frost-filter)',
                   gap: 'var(--space-1)',
                 }}
               >
@@ -757,7 +832,7 @@ export function MessageActions({
                 ...touchTarget(isMobile),
                 margin: 0,
                 cursor: isForking ? 'default' : 'pointer',
-                color: 'var(--slate-9)',
+                color: 'var(--slate-11)',
                 borderRadius: 'var(--radius-1)',
               }}
             >
@@ -784,7 +859,7 @@ export function MessageActions({
                 ...touchTarget(isMobile),
                 margin: 0,
                 cursor: messageId ? 'pointer' : 'default',
-                color: 'var(--slate-9)',
+                color: 'var(--slate-11)',
                 borderRadius: 'var(--radius-1)',
               }}
             >
@@ -797,6 +872,7 @@ export function MessageActions({
         {isTtsSupported && (
           <Tooltip content={isSpeaking ? t('chat.stopReading') : t('chat.readAloud')} side="top">
             <IconButton
+              aria-label={isSpeaking ? t('chat.stopReading') : t('chat.readAloud')}
               variant="ghost"
               color="gray"
               size="2"
@@ -809,7 +885,7 @@ export function MessageActions({
                 cursor: 'pointer',
                 borderRadius: 'var(--radius-1)',
                 backgroundColor: isSpeaking ? 'var(--accent-a4)' : readAloudHovered ? 'var(--slate-a3)' : 'transparent',
-                color: isSpeaking ? 'var(--accent-11)' : 'var(--slate-9)',
+                color: isSpeaking ? 'var(--accent-11)' : 'var(--slate-11)',
               }}
             >
               <MaterialIcon
@@ -856,32 +932,36 @@ export function MessageActions({
 
         {/* Model name with icon */}
         {modelName && (
-          <Flex
-            align="center"
-            justify="center"
-            gap="1"
-            style={{
-              height: '24px',
-              padding: '0 var(--space-2)',
-              borderRadius: 'var(--radius-1)',
-            }}
-          >
-            <MaterialIcon
-              name="memory"
-              size={ICON_SIZES.PRIMARY}
-              color="var(--slate-11)"
-            />
-            <Text
-              size="1"
+          <OptionalTooltip content={answerLabel?.tooltip}>
+            <Flex
+              align="center"
+              justify="center"
+              gap="1"
+              // Focusable only when it opens a tooltip, so keyboard users can read it.
+              tabIndex={answerLabel?.tooltip ? 0 : undefined}
               style={{
-                color: 'var(--slate-11)',
-                lineHeight: 'var(--line-height-1)',
-                whiteSpace: 'nowrap',
+                height: '24px',
+                padding: '0 var(--space-2)',
+                borderRadius: 'var(--radius-1)',
               }}
             >
-              {modelName}
-            </Text>
-          </Flex>
+              <MaterialIcon
+                name={answerLabel?.icon ?? 'memory'}
+                size={ICON_SIZES.PRIMARY}
+                color="var(--slate-11)"
+              />
+              <Text
+                size="1"
+                style={{
+                  color: 'var(--slate-11)',
+                  lineHeight: 'var(--line-height-1)',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {modelName}
+              </Text>
+            </Flex>
+          </OptionalTooltip>
         )}
       </Flex>
       </Flex>
@@ -988,4 +1068,8 @@ function FeedbackChip({ label, selected, onClick }: FeedbackChipProps) {
       </button>
     </Box>
   );
+}
+
+function OptionalTooltip({ content, children }: { content?: string; children: React.ReactElement }) {
+  return content ? <Tooltip content={content} side="top">{children}</Tooltip> : children;
 }

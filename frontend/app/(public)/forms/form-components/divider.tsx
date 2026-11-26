@@ -23,7 +23,7 @@ export default function Divider({ label = 'or continue with' }: DividerProps) {
       <Box style={{ flex: 1, height: '1px', backgroundColor: 'var(--gray-a5)' }} />
       <Text
         size="1"
-        style={{ color: 'var(--gray-10)', whiteSpace: 'nowrap', fontWeight: 400 }}
+        style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap', fontWeight: 400 }}
       >
         {label}
       </Text>

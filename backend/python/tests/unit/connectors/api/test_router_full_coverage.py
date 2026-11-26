@@ -5,8 +5,7 @@ Targets uncovered lines:
   - get_pdf_conversion_info: PPT/PPTX detection
   - _parse_reindex_body: statusFilters validation
   - _apply_tenant_to_microsoft_oauth_url: regex substitution
-  - _validate_admin_oauth_config_before_creation: update + create paths
-  - _validate_non_admin_oauth_selection: credentials check, missing config
+  - _validate_oauth_app_before_creation: update, create and member paths
   - _get_secret_oauth_field_names_from_registry: auth_fields iteration, exceptions
   - _build_oauth_flow_config: optional fields, tenant substitution, field normalization
   - _get_streaming_connector: lazy init, disabled connector, missing type
@@ -292,16 +291,33 @@ class TestApplyConfluenceJiraScopeAlreadyPresent:
 
 
 # ============================================================================
-# _validate_admin_oauth_config_before_creation — lines 7250-7253
+# _validate_oauth_app_before_creation
 # ============================================================================
 
 
-class TestValidateAdminOAuthConfigBeforeCreation:
+async def _validate(config, oauth_config_id, cs, *, is_admin=True, scope="team", user_id="u1") -> None:
+    from app.connectors.api.router import _validate_oauth_app_before_creation
+
+    await _validate_oauth_app_before_creation(
+        "GOOGLE_DRIVE",
+        config,
+        oauth_config_id,
+        "My Instance",
+        user_id,
+        "o1",
+        is_admin=is_admin,
+        connector_scope=scope,
+        config_service=cs,
+        container=None,
+    )
+
+
+class TestValidateOAuthAppBeforeCreation:
     @pytest.mark.asyncio
     async def test_update_with_name_change(self):
-        from app.connectors.api.router import _validate_admin_oauth_config_before_creation
         existing_configs = [
-            {"_id": "cfg1", "orgId": "o1", "oauthInstanceName": "Old Name"},
+            # The app's own client ID: a new one would also need its secret.
+            {"_id": "cfg1", "orgId": "o1", "oauthInstanceName": "Old Name", "config": {"clientId": "c1"}},
             {"_id": "cfg2", "orgId": "o1", "oauthInstanceName": "Other"},
         ]
         cs = AsyncMock()
@@ -311,20 +327,12 @@ class TestValidateAdminOAuthConfigBeforeCreation:
         with patch(f"{_ROUTER}._get_oauth_config_path", return_value="/path"), \
              patch(f"{_ROUTER}._get_oauth_field_names_from_registry", return_value=["clientId"]), \
              patch(f"{_ROUTER}._check_oauth_name_conflict") as mock_check:
-            await _validate_admin_oauth_config_before_creation(
-                connector_type="GOOGLE_DRIVE",
-                config=config,
-                oauth_config_id="cfg1",
-                instance_name="My Instance",
-                org_id="o1",
-                config_service=cs,
-                logger=MagicMock(),
-            )
+            await _validate(config, "cfg1", cs)
         mock_check.assert_called_once()
+        assert mock_check.call_args.kwargs["owner_user_id"] is None
 
     @pytest.mark.asyncio
     async def test_create_new_config(self):
-        from app.connectors.api.router import _validate_admin_oauth_config_before_creation
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
         config = {"auth": {"clientId": "c1"}}
@@ -332,21 +340,12 @@ class TestValidateAdminOAuthConfigBeforeCreation:
         with patch(f"{_ROUTER}._get_oauth_config_path", return_value="/path"), \
              patch(f"{_ROUTER}._get_oauth_field_names_from_registry", return_value=["clientId"]), \
              patch(f"{_ROUTER}._check_oauth_name_conflict") as mock_check:
-            await _validate_admin_oauth_config_before_creation(
-                connector_type="GOOGLE_DRIVE",
-                config=config,
-                oauth_config_id=None,
-                instance_name="My Instance",
-                org_id="o1",
-                config_service=cs,
-                logger=MagicMock(),
-            )
+            await _validate(config, None, cs)
         mock_check.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_config_not_found_creates_new(self):
         """Config with provided ID not found → create new path."""
-        from app.connectors.api.router import _validate_admin_oauth_config_before_creation
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
         config = {"auth": {"oauthConfigId": "missing-id", "clientId": "c1"}}
@@ -354,91 +353,67 @@ class TestValidateAdminOAuthConfigBeforeCreation:
         with patch(f"{_ROUTER}._get_oauth_config_path", return_value="/path"), \
              patch(f"{_ROUTER}._get_oauth_field_names_from_registry", return_value=["clientId"]), \
              patch(f"{_ROUTER}._check_oauth_name_conflict") as mock_check:
-            await _validate_admin_oauth_config_before_creation(
-                connector_type="GOOGLE_DRIVE",
-                config=config,
-                oauth_config_id="missing-id",
-                instance_name="My Instance",
-                org_id="o1",
-                config_service=cs,
-                logger=MagicMock(),
-            )
+            await _validate(config, "missing-id", cs)
         mock_check.assert_called_once()
 
-
-# ============================================================================
-# _validate_non_admin_oauth_selection — lines 7299-7337
-# ============================================================================
-
-
-class TestValidateNonAdminOAuthSelection:
     @pytest.mark.asyncio
-    async def test_credentials_provided_rejected(self):
-        """Lines 7308-7309 — non-admin providing OAuth creds."""
-        from app.connectors.api.router import _validate_non_admin_oauth_selection
+    async def test_member_credentials_on_a_personal_connector_plan_their_own_app(self) -> None:
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value=[])
         config = {"auth": {"clientId": "id1", "clientSecret": "sec"}}
 
-        with patch(f"{_ROUTER}._get_oauth_field_names_from_registry",
-                   return_value=["clientId", "clientSecret"]):
-            with pytest.raises(HTTPException) as exc:
-                await _validate_non_admin_oauth_selection(
-                    "GOOGLE_DRIVE", config, None, "u1", "o1", AsyncMock(), MagicMock()
-                )
-            assert exc.value.status_code == 403
+        with patch(f"{_ROUTER}._check_oauth_name_conflict") as mock_check:
+            await _validate(config, None, cs, is_admin=False, scope="personal")
+        assert mock_check.call_args.kwargs["owner_user_id"] == "u1"
 
     @pytest.mark.asyncio
-    async def test_no_oauth_config_id(self):
-        """Lines 7318-7319 — no oauthConfigId provided."""
-        from app.connectors.api.router import _validate_non_admin_oauth_selection
+    async def test_member_credentials_without_the_secret_are_refused(self) -> None:
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value=[])
 
         with pytest.raises(HTTPException) as exc:
-            await _validate_non_admin_oauth_selection(
-                "GOOGLE_DRIVE", None, None, "u1", "o1", AsyncMock(), MagicMock()
-            )
+            await _validate({"auth": {"clientId": "id1"}}, None, cs, is_admin=False, scope="personal")
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_member_without_an_app_or_credentials(self) -> None:
+        with pytest.raises(HTTPException) as exc:
+            await _validate(None, None, AsyncMock(), is_admin=False, scope="personal")
         assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_config_not_found(self):
-        """Lines 7336-7337 — config ID not found in etcd."""
-        from app.connectors.api.router import _validate_non_admin_oauth_selection
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
 
-        with patch(f"{_ROUTER}._get_oauth_config_path", return_value="/path"), \
-             patch(f"{_ROUTER}._find_oauth_config_by_id", return_value=None):
-            with pytest.raises(HTTPException) as exc:
-                await _validate_non_admin_oauth_selection(
-                    "GOOGLE_DRIVE", None, "cfg-missing", "u1", "o1", cs, MagicMock()
-                )
-            assert exc.value.status_code == 404
+        with pytest.raises(HTTPException) as exc:
+            await _validate(None, "cfg-missing", cs, is_admin=False, scope="personal")
+        assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_non_list_configs_coerced(self):
-        """Line 7329 — non-list configs coerced to empty."""
-        from app.connectors.api.router import _validate_non_admin_oauth_selection
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value="bad")
 
-        with patch(f"{_ROUTER}._get_oauth_config_path", return_value="/path"), \
-             patch(f"{_ROUTER}._find_oauth_config_by_id", return_value=None):
-            with pytest.raises(HTTPException) as exc:
-                await _validate_non_admin_oauth_selection(
-                    "GOOGLE_DRIVE", None, "cfg1", "u1", "o1", cs, MagicMock()
-                )
-            assert exc.value.status_code == 404
+        with pytest.raises(HTTPException) as exc:
+            await _validate(None, "cfg1", cs, is_admin=False, scope="personal")
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_someone_else_s_personal_app_is_not_found(self) -> None:
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value=[{"_id": "cfg1", "orgId": "o1", "ownerUserId": "u2"}])
+
+        with pytest.raises(HTTPException) as exc:
+            await _validate(None, "cfg1", cs, is_admin=False, scope="personal")
+        assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_valid_selection(self):
-        """Happy path — valid config found."""
-        from app.connectors.api.router import _validate_non_admin_oauth_selection
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[{"_id": "cfg1", "orgId": "o1"}])
 
-        with patch(f"{_ROUTER}._get_oauth_config_path", return_value="/path"), \
-             patch(f"{_ROUTER}._find_oauth_config_by_id", return_value={"_id": "cfg1"}):
-            await _validate_non_admin_oauth_selection(
-                "GOOGLE_DRIVE", None, "cfg1", "u1", "o1", cs, MagicMock()
-            )
+        await _validate(None, "cfg1", cs, is_admin=False, scope="personal")
 
 
 # ============================================================================
@@ -845,6 +820,15 @@ class TestGetPdfConversionInfo:
         needs, name, ext = get_pdf_conversion_info(record)
         assert needs is True
         assert "ppt" in ext
+
+    def test_legacy_doc_needs_conversion(self) -> None:
+        from app.connectors.api.router import get_pdf_conversion_info
+        record = MagicMock()
+        record.record_name = "tiny_random"
+        record.mime_type = "application/msword"
+        needs, name, ext = get_pdf_conversion_info(record)
+        assert needs is True
+        assert ext == "doc"
 
     def test_pdf_no_conversion(self):
         from app.connectors.api.router import get_pdf_conversion_info

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
+import React, { useContext, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -14,6 +14,7 @@ import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types'
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { useChatStore } from '../../store';
+import { RenderSlotContext } from './render-slot';
 import type { McpBlockedServer, McpConfigMissingDetails } from '../../stream-error';
 
 /** Whether the person in the chat can fix this server themselves, right here. */
@@ -39,6 +40,7 @@ interface McpConnectRequiredCardProps {
 
 /** Shown instead of the error text when an agent chat stopped because MCP servers aren't connected. */
 export function McpConnectRequiredCard({ details, question }: McpConnectRequiredCardProps) {
+  const slotOverride = useContext(RenderSlotContext);
   const { t } = useTranslation();
   const [connected, setConnected] = useState<ReadonlySet<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -90,7 +92,7 @@ export function McpConnectRequiredCard({ details, question }: McpConnectRequired
   };
 
   const tryAgain = () => {
-    const slotId = useChatStore.getState().activeSlotId;
+    const slotId = slotOverride ?? useChatStore.getState().activeSlotId;
     if (!slotId) return;
     const request = buildStreamChatRequestForSlot(slotId, question);
     if (!request) return;
@@ -148,7 +150,7 @@ export function McpConnectRequiredCard({ details, question }: McpConnectRequired
                     {busyId === server.instanceId ? t('chat.mcpConnect.connecting') : t('chat.mcpConnect.connect')}
                   </Button>
                 ) : (
-                  <Text size="1" style={{ color: 'var(--slate-10)', textAlign: 'right' }}>
+                  <Text size="1" style={{ color: 'var(--slate-11)', textAlign: 'right' }}>
                     {server.problem === 'not_found'
                       ? t('chat.mcpConnect.removed')
                       : server.sharedCredential

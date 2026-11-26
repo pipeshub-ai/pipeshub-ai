@@ -5,7 +5,9 @@ import inspect
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from neo4j.exceptions import Neo4jError
 
+from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 
@@ -15,7 +17,9 @@ def _provider() -> Neo4jProvider:
     p.client = MagicMock(execute_query=AsyncMock(return_value=[]))
     # Every other coroutine the delete may call (cleanup steps added later) is a mock too.
     for name, _ in inspect.getmembers(Neo4jProvider, inspect.iscoroutinefunction):
-        if name != "_delete_connector_instance":
+        if name not in (
+            "_delete_connector_instance", "_sweep_writes_during_delete", "sweep_deleted_connector_writes",
+        ):
             setattr(p, name, AsyncMock())
     p.get_document = AsyncMock(return_value={"type": "Jira"})
     p._collect_connector_entities = AsyncMock(return_value={
@@ -36,6 +40,7 @@ def _provider() -> Neo4jProvider:
     p._delete_nodes_by_keys.side_effect = lambda *a, **k: (1, 0)
     p._delete_nodes_by_connector_id = AsyncMock(return_value=(0, True))
     p._delete_stage_states_by_connector_id = AsyncMock(return_value=(0, True))
+    p._count_connector_blocks_and_stage_states = AsyncMock(return_value=0)
     p.remove_authenticated_as = AsyncMock()
     p._stash_connector_delete_handles = AsyncMock(side_effect=lambda _c, groups, vrids: (list(groups), vrids))
     p._delete_connector_with_its_delete_handles = AsyncMock(return_value=1)
@@ -55,7 +60,7 @@ async def test_connector_delete_does_not_open_an_explicit_transaction() -> None:
 async def test_failed_batch_keeps_the_app_node() -> None:
     p = _provider()
     p._collect_connector_entities.return_value["role_keys"] = ["r1"]
-    p._delete_nodes_by_keys.side_effect = lambda _tx, keys, coll: (0, 1) if keys == ["r1"] else (1, 0)
+    p._delete_nodes_by_keys.side_effect = lambda _tx, keys, coll, **_: (0, 1) if keys == ["r1"] else (1, 0)
 
     result = await p._delete_connector_instance("c1", "org")
 
@@ -147,3 +152,253 @@ class TestStash:
         p.client.execute_query.side_effect = [[], ConnectionError("graph down")]
         with pytest.raises(ConnectionError):
             await p._stash_connector_delete_handles("c1", ["g1"], None)
+
+
+# ---- a delete that races a push, or a second deleter ---------------------------------
+
+
+
+def _deadlock() -> Neo4jError:
+    return Neo4jError._hydrate_neo4j(code="Neo.TransientError.Transaction.DeadlockDetected", message="deadlock")
+
+
+def _real_rule(p: Neo4jProvider) -> None:
+    p._assert_none_remain = Neo4jProvider._assert_none_remain.__get__(p)
+
+
+@pytest.mark.asyncio
+async def test_a_second_deleter_that_found_the_nodes_gone_succeeds() -> None:
+    """A rival (the finisher, an owner's retry) removed every node first: nothing remains, so this delete is done."""
+    p = _provider()
+    _real_rule(p)
+    p._collect_connector_entities.return_value.update(record_keys=["r1"], record_group_keys=["g1"])
+    p._delete_nodes_by_keys.side_effect = lambda *a, **k: (0, 0)
+    p.get_existing_keys = AsyncMock(return_value=set())
+
+    result = await p._delete_connector_instance("c1", "org")
+
+    assert result["success"] is True, result
+    checked = {c.args[0] for c in p.get_existing_keys.await_args_list}
+    assert {"records", "recordGroups", "apps"} <= checked
+
+
+@pytest.mark.asyncio
+async def test_a_node_that_remains_fails_the_delete_and_keeps_the_app() -> None:
+    p = _provider()
+    _real_rule(p)
+    p._collect_connector_entities.return_value.update(record_keys=["r1", "r2"])
+    p._delete_nodes_by_keys.side_effect = lambda *a, **k: (1, 0)
+    p.get_existing_keys = AsyncMock(side_effect=lambda coll, keys, tx=None: {"r2"} if coll == "records" else set())
+
+    result = await p._delete_connector_instance("c1", "org")
+
+    assert result["success"] is False and "remain" in result["error"]
+    p._delete_connector_with_its_delete_handles.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_type_docs_are_measured_per_collection() -> None:
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = MagicMock()
+    p.client = MagicMock()
+    p._delete_nodes_by_keys = AsyncMock(return_value=(0, 0))
+    p.get_existing_keys = AsyncMock(return_value=set())
+    targets = [{"collection": "files", "key": "f1"}, {"collection": "mails", "key": "m1"}]
+
+    total, _ = await p._delete_isoftype_targets_from_collected("t", targets)
+
+    assert total == 0
+    assert [c.args[0] for c in p.get_existing_keys.await_args_list] == ["files", "mails"]
+    p.get_existing_keys = AsyncMock(side_effect=lambda coll, keys, tx=None: {"m1"} if coll == "mails" else set())
+    with pytest.raises(Exception, match="mails"):
+        await p._delete_isoftype_targets_from_collected("t", targets)
+
+
+@pytest.mark.asyncio
+async def test_the_type_nodes_a_connector_delete_collects_are_named_by_their_collection() -> None:
+    """Every record type's node is found, and named by the collection the delete addresses, not by its label."""
+    from app.config.constants.arangodb import RECORD_TYPE_COLLECTION_MAPPING
+    from app.config.constants.neo4j import collection_to_label
+
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = MagicMock()
+    rows = [
+        {"target": {"label": collection_to_label(c), "key": f"k-{c}", "full_id": f"k-{c}"}}
+        for c in sorted(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+    ]
+    p.client = MagicMock(execute_query=AsyncMock(return_value=rows))
+
+    targets, ok = await p._collect_isoftype_targets(None, "c1")
+
+    assert ok is True
+    assert sorted(t["collection"] for t in targets) == sorted(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
+    assert all(t["key"] == f"k-{t['collection']}" for t in targets)
+    asked = p.client.execute_query.await_args.kwargs["parameters"]["type_labels"]
+    assert set(asked) == {collection_to_label(c) for c in RECORD_TYPE_COLLECTION_MAPPING.values()}
+
+
+def _batch_provider(errors: list[BaseException]) -> tuple[Neo4jProvider, AsyncMock]:
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = MagicMock()
+    outcomes = [*errors, [{"deleted_count": 2}]]
+    execute = AsyncMock(side_effect=outcomes)
+    p.client = MagicMock(execute_query=execute)
+    return p, execute
+
+
+@pytest.mark.asyncio
+async def test_a_batch_that_deadlocked_with_a_push_runs_again() -> None:
+    p, execute = _batch_provider([_deadlock()])
+    stats: dict[str, int] = {}
+
+    deleted, failed = await p._delete_nodes_by_keys(None, ["a", "b"], "records", retry_conflicts=True, stats=stats)
+
+    assert (deleted, failed) == (2, 0)
+    assert execute.await_count == 2 and stats == {"retries": 1}
+
+
+@pytest.mark.asyncio
+async def test_without_the_retry_the_deadlock_fails_the_batch() -> None:
+    """Negative control for the cascade retry: the round-3 code left the KB DELETING with its record."""
+    p, execute = _batch_provider([_deadlock()])
+
+    deleted, failed = await p._delete_nodes_by_keys(None, ["a", "b"], "records")
+
+    assert (deleted, failed) == (0, 1) and execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_the_batch_retry_is_bounded_and_ignores_other_errors() -> None:
+    from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
+
+    p, execute = _batch_provider([_deadlock() for _ in range(CASCADE_ATTEMPTS)])
+    assert await p._delete_nodes_by_keys(None, ["a"], "records", retry_conflicts=True) == (0, 1)
+    assert execute.await_count == CASCADE_ATTEMPTS
+
+    p, execute = _batch_provider([RuntimeError("syntax")])
+    assert await p._delete_nodes_by_keys(None, ["a"], "records", retry_conflicts=True) == (0, 1)
+    assert execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_existing_keys_reads_the_collection_and_raises_on_a_failed_read() -> None:
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = MagicMock()
+    p.client = MagicMock(execute_query=AsyncMock(return_value=[{"id": "a"}]))
+    assert await p.get_existing_keys("records", ["a", "b", "a", ""]) == {"a"}
+    assert p.client.execute_query.await_args.kwargs["parameters"] == {"keys": ["a", "b"]}
+    p.client.execute_query.side_effect = RuntimeError("down")
+    with pytest.raises(RuntimeError):
+        await p.get_existing_keys("records", ["a"])
+    assert await p.get_existing_keys("records", []) == set()
+
+
+
+@pytest.fixture
+def no_wait(monkeypatch) -> AsyncMock:
+    wait = AsyncMock()
+    monkeypatch.setattr("app.services.graph_db.neo4j.neo4j_provider.cascade_backoff", wait)
+    return wait
+
+
+@pytest.mark.asyncio
+async def test_blocks_and_stage_states_written_during_the_delete_are_swept_until_none_is_left(no_wait) -> None:
+    """A duplicate code file indexed while the delete runs projects its blocks after the blocks
+    step; a stage job can record a state. The delete has committed and nothing runs it again,
+    so the sweep repeats until the connector has none left."""
+    p = _provider()
+    p.delete_blocks_by_connector_id = AsyncMock(side_effect=[0, 6, 0])
+    p._delete_stage_states_by_connector_id = AsyncMock(side_effect=[(0, True), (0, False), (1, True)])
+    p._count_connector_blocks_and_stage_states = AsyncMock(side_effect=[1, 0])
+
+    result = await p._delete_connector_instance("c1", "org")
+
+    assert result["success"] is True and result["cleanupPending"] is False, result
+    assert [c.args for c in p.delete_blocks_by_connector_id.await_args_list] == [("c1",)] * 3
+    assert p._delete_stage_states_by_connector_id.await_args_list[-1].args == (None, "c1")
+    assert no_wait.await_args.kwargs["base"] >= 0.5
+    p.logger.error.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_what_outlasts_every_sweep_is_reported_pending_for_the_late_write_sweep(no_wait) -> None:
+    p = _provider()
+    p._count_connector_blocks_and_stage_states = AsyncMock(return_value=2)
+
+    result = await p._delete_connector_instance("c1", "org")
+
+    assert result["success"] is True and result["cleanupPending"] is True, result
+    assert p._count_connector_blocks_and_stage_states.await_count == CASCADE_ATTEMPTS
+    assert any(
+        "still has 2 block(s) or stage state(s)" in c.args[0] and "late-write sweep" in c.args[0]
+        for c in p.logger.warning.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_one_late_write_pass_removes_blocks_and_stage_states_then_counts() -> None:
+    p = _provider()
+    p.delete_blocks_by_connector_id = AsyncMock(return_value=4)
+    p._delete_stage_states_by_connector_id = AsyncMock(return_value=(2, True))
+    p._count_connector_blocks_and_stage_states = AsyncMock(return_value=1)
+
+    assert await p.sweep_deleted_connector_writes("c1") == (6, 1)
+    p._delete_stage_states_by_connector_id.assert_awaited_once_with(None, "c1")
+
+
+@pytest.mark.asyncio
+async def test_a_block_removal_that_fails_does_not_hold_back_the_stage_states() -> None:
+    """Both removals run in every pass; the pass still fails, so the next one retries the blocks."""
+    p = _provider()
+    p.delete_blocks_by_connector_id = AsyncMock(side_effect=RuntimeError("blocks"))
+    p._delete_stage_states_by_connector_id = AsyncMock(return_value=(2, True))
+    p._count_connector_blocks_and_stage_states = AsyncMock(return_value=0)
+
+    with pytest.raises(RuntimeError, match="blocks"):
+        await p.sweep_deleted_connector_writes("c1")
+    p._delete_stage_states_by_connector_id.assert_awaited_once_with(None, "c1")
+    p._count_connector_blocks_and_stage_states.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_late_write_pass_raises_what_the_store_raises() -> None:
+    """The late-write sweep retries a pass that failed; it must not read as an empty connector."""
+    p = _provider()
+    p._count_connector_blocks_and_stage_states = AsyncMock(side_effect=RuntimeError("unavailable"))
+    with pytest.raises(RuntimeError):
+        await p.sweep_deleted_connector_writes("c1")
+
+
+@pytest.mark.asyncio
+async def test_a_connector_delete_backs_off_its_node_batches_like_its_other_steps() -> None:
+    """Indexing still writing a deleted connector's records conflicts with its node batches too:
+    at the cascade's 50 ms base they lost every attempt before the sweep could run."""
+    from app.services.graph_db.common.cascade_retry import CONNECTOR_DELETE_BASE_SECONDS
+
+    p = _provider()
+    p._collect_isoftype_targets = AsyncMock(return_value=([{"id": "f1", "collection": "files"}], True))
+
+    result = await p._delete_connector_instance("c1", "org")
+
+    assert result["success"] is True, result
+    assert p._delete_isoftype_targets_from_collected.await_args.kwargs["backoff_base"] == CONNECTOR_DELETE_BASE_SECONDS
+    batch_calls = p._delete_nodes_by_keys.await_args_list
+    assert batch_calls and all(c.kwargs.get("backoff_base") == CONNECTOR_DELETE_BASE_SECONDS for c in batch_calls
+                               if c.kwargs.get("retry_conflicts"))
+
+
+@pytest.mark.asyncio
+async def test_a_node_batch_that_loses_to_a_writer_waits_the_base_it_was_given(no_wait) -> None:
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = MagicMock()
+    conflict = Neo4jError("deadlock")
+    p.is_write_conflict = MagicMock(return_value=True)
+    p.client = MagicMock(execute_query=AsyncMock(side_effect=[conflict, [{"deleted_count": 1}]]))
+
+    assert await p._delete_nodes_by_keys("txn", ["a"], "records", retry_conflicts=True, backoff_base=0.5) == (1, 0)
+    assert no_wait.await_args.kwargs["base"] == 0.5
+
+    no_wait.reset_mock()
+    p.client.execute_query = AsyncMock(side_effect=[conflict, [{"deleted_count": 1}]])
+    assert await p._delete_nodes_by_keys("txn", ["a"], "records", retry_conflicts=True) == (1, 0)
+    assert "base" not in no_wait.await_args.kwargs

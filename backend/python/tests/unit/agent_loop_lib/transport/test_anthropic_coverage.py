@@ -194,7 +194,8 @@ class TestFormatMessage:
         transport = _transport()
         msg = SystemMessage(content="be nice")
         formatted = transport._format_message(msg)
-        assert formatted == {"role": "system", "content": "be nice"}
+        # E3c FB-1: the Messages API refuses a system role inside `messages`.
+        assert formatted == {"role": "user", "content": [{"type": "text", "text": "be nice"}]}
 
     def test_empty_string_user_content_defaults(self) -> None:
         transport = _transport()
@@ -703,3 +704,17 @@ class TestStream:
         with pytest.raises(TransportError):
             async for _ in transport.stream([UserMessage(content="hi")]):
                 pass
+
+
+class TestEmptyAssistantTurn:
+    def test_format_messages_skips_empty_assistant_turn(self) -> None:
+        transport = _transport()
+        formatted = transport._format_messages(
+            [
+                UserMessage(content="hi"),
+                AssistantMessage(content=[]),
+                UserMessage(content="Your last reply came through empty"),
+            ]
+        )
+        assert [m["role"] for m in formatted] == ["user", "user"]
+        assert all({"type": "text", "text": ""} not in m["content"] for m in formatted if isinstance(m["content"], list))

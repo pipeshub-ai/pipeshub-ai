@@ -66,6 +66,7 @@ from app.models.blocks import BlockSubType, BlockType, GroupSubType  # noqa: E40
 from app.models.entities import RecordType  # noqa: E402
 from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
+from helper.second_user import SecondUser  # noqa: E402
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 from validation.graph_entity_validator import (  # noqa: E402
     assert_graph_entity_matches,
@@ -142,8 +143,25 @@ pytestmark = [
 _STREAM_TIMEOUT_SECONDS = 240
 
 
+def _stream_as(reader: SecondUser, record_id: str) -> requests.Response:
+    """Stream a record as ``reader``: a Notion record is open only to the workspace's members."""
+    response = requests.get(
+        f"{reader.base_url}/api/v1/knowledgeBase/stream/record/{record_id}",
+        headers=reader.headers,
+        timeout=_STREAM_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    return response
+
+
+def _edit_time(revision: object) -> str:
+    """The ``last_edited_time`` a record's revision was made from, without the open-minute
+    mark or the comment and row suffixes the connector adds to it."""
+    return str(revision or "").split("|", 1)[0].removesuffix("#open")
+
+
 async def _stream_container(
-    pipeshub_client: PipeshubClient,
+    reader: SecondUser,
     graph_provider: GraphProviderProtocol,
     connector_id: str,
     external_id: str,
@@ -151,7 +169,7 @@ async def _stream_container(
     """Stream a record's ``BlocksContainer`` and return it parsed."""
     record = await graph_provider.get_record_by_external_id(connector_id, external_id)
     assert record is not None, f"record {external_id} not synced — cannot stream"
-    response = pipeshub_client.stream_record(record.id, timeout=_STREAM_TIMEOUT_SECONDS)
+    response = _stream_as(reader, record.id)
     assert response.headers.get("content-type", "").startswith("application/octet-stream"), (
         f"expected an octet-stream blocks body, got {response.headers.get('content-type')!r}"
     )
@@ -716,11 +734,13 @@ class TestNotionRecordProperties:
         await assert_graph_entity_with_edges(
             expected, actual, entity="file_record",
             connector_id=connector_id, graph_provider=graph_provider,
-            # signed_url holds an expiring Notion token that rotates between fetches.
-            skip_compare=RECORD_SKIP_COMPARE | frozenset({"signed_url"}),
+            # signed_url holds an expiring Notion token that rotates between fetches; the
+            # revision is checked below, without the mark a recent edit gives it.
+            skip_compare=RECORD_SKIP_COMPARE | frozenset({"signed_url", "external_revision_id"}),
             # A file hangs off its page as an ATTACHMENT, not a PARENT_CHILD.
             parent_relation_type="ATTACHMENT",
         )
+        assert _edit_time(actual.external_revision_id) == block_data["last_edited_time"]
         assert actual.is_file is True
         assert str(actual.parent_external_record_id) == notion_seed.rich_page_id
         # signed_url is deliberately NOT asserted: it lives only on to_kafka_record, never on
@@ -843,7 +863,7 @@ class TestNotionStreaming:
         self,
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
-        pipeshub_client: PipeshubClient,
+        notion_reader: SecondUser,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-STREAM-001: page container matches the committed snapshot; nesting is preserved.
@@ -852,7 +872,7 @@ class TestNotionStreaming:
         """
         connector_id = notion_connector["connector_id"]
         container = await _stream_container(
-            pipeshub_client, graph_provider, connector_id, notion_seed.rich_page_id
+            notion_reader, graph_provider, connector_id, notion_seed.rich_page_id
         )
 
         # Wrapper groups preserve hierarchy for callout / quote (has_children=true).
@@ -881,13 +901,13 @@ class TestNotionStreaming:
         self,
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
-        pipeshub_client: PipeshubClient,
+        notion_reader: SecondUser,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-STREAM-001b: a page with more blocks than one API page returns all of them."""
         connector_id = notion_connector["connector_id"]
         container = await _stream_container(
-            pipeshub_client, graph_provider, connector_id, notion_seed.deep_page_id
+            notion_reader, graph_provider, connector_id, notion_seed.deep_page_id
         )
         text = _all_text(container)
         missing = [
@@ -905,13 +925,13 @@ class TestNotionStreaming:
         self,
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
-        pipeshub_client: PipeshubClient,
+        notion_reader: SecondUser,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-STREAM-002: image blocks carry base64 data URIs, and SVG is converted to PNG."""
         connector_id = notion_connector["connector_id"]
         container = await _stream_container(
-            pipeshub_client, graph_provider, connector_id, notion_seed.rich_page_id
+            notion_reader, graph_provider, connector_id, notion_seed.rich_page_id
         )
 
         expected_images = 2 if notion_seed.has_svg_image else 1
@@ -945,13 +965,13 @@ class TestNotionStreaming:
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
         notion_source_helper: NotionSourceHelper,
-        pipeshub_client: PipeshubClient,
+        notion_reader: SecondUser,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-STREAM-003: comments attach to blocks, thread into groups, and keep attachments."""
         connector_id = notion_connector["connector_id"]
         container = await _stream_container(
-            pipeshub_client, graph_provider, connector_id, notion_seed.commented_page_id
+            notion_reader, graph_provider, connector_id, notion_seed.commented_page_id
         )
         text = _all_text(container)
 
@@ -998,7 +1018,7 @@ class TestNotionStreaming:
         self,
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
-        pipeshub_client: PipeshubClient,
+        notion_reader: SecondUser,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-STREAM-004: child_page / child_database blocks resolve to ChildRecords.
@@ -1007,7 +1027,7 @@ class TestNotionStreaming:
         """
         connector_id = notion_connector["connector_id"]
         container = await _stream_container(
-            pipeshub_client, graph_provider, connector_id, notion_seed.rich_page_id
+            notion_reader, graph_provider, connector_id, notion_seed.rich_page_id
         )
 
         child_blocks = [
@@ -1052,13 +1072,13 @@ class TestNotionStreaming:
         self,
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
-        pipeshub_client: PipeshubClient,
+        notion_reader: SecondUser,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-STREAM-005: a data source streams as a TABLE with one row per database row."""
         connector_id = notion_connector["connector_id"]
         container = await _stream_container(
-            pipeshub_client, graph_provider, connector_id, notion_seed.fixture_data_source_id
+            notion_reader, graph_provider, connector_id, notion_seed.fixture_data_source_id
         )
 
         rows = blocks_of_type(container, BlockType.TABLE_ROW.value)
@@ -1092,13 +1112,13 @@ class TestNotionStreaming:
         self,
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
-        pipeshub_client: PipeshubClient,
+        notion_reader: SecondUser,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-STREAM-005b: a data source with more rows than one API page returns all of them."""
         connector_id = notion_connector["connector_id"]
         container = await _stream_container(
-            pipeshub_client, graph_provider, connector_id, notion_seed.bulk_data_source_id
+            notion_reader, graph_provider, connector_id, notion_seed.bulk_data_source_id
         )
         rows = blocks_of_type(container, BlockType.TABLE_ROW.value)
         expected_ids = set(notion_seed.bulk_row_ids)
@@ -1133,13 +1153,13 @@ class TestNotionStreaming:
         self,
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
-        pipeshub_client: PipeshubClient,
+        notion_reader: SecondUser,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-STREAM-006: bookmark / embed / external video appear as LINK blocks."""
         connector_id = notion_connector["connector_id"]
         container = await _stream_container(
-            pipeshub_client, graph_provider, connector_id, notion_seed.rich_page_id
+            notion_reader, graph_provider, connector_id, notion_seed.rich_page_id
         )
 
         link_blocks = [
@@ -1160,6 +1180,7 @@ class TestNotionStreaming:
         notion_seed: NotionSeed,
         notion_source_helper: NotionSourceHelper,
         pipeshub_client: PipeshubClient,
+        notion_reader: SecondUser,
         graph_provider: GraphProviderProtocol,
     ) -> None:
         """TC-STREAM-007: streaming a FileRecord returns the uploaded bytes.
@@ -1175,7 +1196,7 @@ class TestNotionStreaming:
         pdf_block_id = notion_seed.file_block_ids["pdf"]
         record = await graph_provider.get_record_by_external_id(connector_id, pdf_block_id)
         assert record is not None, "pdf FileRecord not synced"
-        response = pipeshub_client.stream_record(record.id, timeout=_STREAM_TIMEOUT_SECONDS)
+        response = _stream_as(notion_reader, record.id)
         assert response.content == expected_bytes, (
             "streamed block attachment bytes differ from the uploaded sample file"
         )
@@ -1191,9 +1212,7 @@ class TestNotionStreaming:
             connector_id, notion_seed.comment_attachment_external_id
         )
         assert comment_record is not None, "comment attachment FileRecord not synced"
-        comment_response = pipeshub_client.stream_record(
-            comment_record.id, timeout=_STREAM_TIMEOUT_SECONDS
-        )
+        comment_response = _stream_as(notion_reader, comment_record.id)
         assert comment_response.content == expected_bytes, (
             "streamed comment attachment bytes differ from the uploaded sample file"
         )
@@ -1347,15 +1366,17 @@ class TestNotionIncremental:
 
         actual = await graph_provider.get_typed_record_by_external_id(connector_id, page_id)
         assert actual is not None, f"new page {page_id} not synced"
+        page_data = await notion_source_helper.retrieve_page(page_id)
         expected = NotionExpected.webpage_record(
-            await notion_source_helper.retrieve_page(page_id),
-            connector_id=connector_id, workspace_id=notion_seed.workspace_id,
+            page_data, connector_id=connector_id, workspace_id=notion_seed.workspace_id,
         )
         await assert_graph_entity_with_edges(
             expected, actual, entity="webpage_record",
             connector_id=connector_id, graph_provider=graph_provider,
-            skip_compare=RECORD_SKIP_COMPARE,
+            # A page synced within minutes of its creation carries an open revision.
+            skip_compare=RECORD_SKIP_COMPARE | frozenset({"external_revision_id"}),
         )
+        assert _edit_time(actual.external_revision_id) == page_data["last_edited_time"]
         logger.info("TC-INCR-PAGE-001 passed: %s", page_id)
 
     @pytest.mark.order(24)
@@ -1393,7 +1414,7 @@ class TestNotionIncremental:
                 f"external_revision_id did not advance ({before.external_revision_id!r})"
             )
             live = await notion_source_helper.retrieve_page(page_id)
-            assert str(after.external_revision_id) == str(live["last_edited_time"]), (
+            assert _edit_time(after.external_revision_id) == str(live["last_edited_time"]), (
                 "external_revision_id does not match Notion's last_edited_time"
             )
             assert after.source_updated_at > before.source_updated_at, (
@@ -1630,7 +1651,7 @@ class TestNotionIncremental:
         notion_connector: dict[str, Any],
         notion_seed: NotionSeed,
         notion_source_helper: NotionSourceHelper,
-        pipeshub_client: PipeshubClient,
+        notion_reader: SecondUser,
         graph_provider: GraphProviderProtocol,
         incr_additions: dict[str, Any],
     ) -> None:
@@ -1639,7 +1660,7 @@ class TestNotionIncremental:
         page_id = incr_additions["comment_page_id"]
 
         container = await _stream_container(
-            pipeshub_client, graph_provider, connector_id, page_id
+            notion_reader, graph_provider, connector_id, page_id
         )
         text = _all_text(container)
         for expected in (
@@ -1726,7 +1747,7 @@ class TestNotionDeltaSync:
             edited = await graph_provider.get_record_by_external_id(connector_id, page_id)
             assert edited is not None, "edited page missing"
             live = await notion_source_helper.retrieve_page(page_id)
-            assert str(edited.external_revision_id) == str(live["last_edited_time"]), (
+            assert _edit_time(edited.external_revision_id) == str(live["last_edited_time"]), (
                 "the edited page was not reprocessed"
             )
 

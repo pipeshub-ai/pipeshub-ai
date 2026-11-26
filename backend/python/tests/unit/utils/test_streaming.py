@@ -2,6 +2,9 @@
 
 import json
 import logging
+import random
+import re
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,6 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel
 
 from app.utils.streaming import (
+    INCOMPLETE_CITE_RE,
     AnswerParserState,
     _append_task_markers,
     _apply_structured_output,
@@ -23,8 +27,8 @@ from app.utils.streaming import (
     escape_ctl,
     extract_json_from_string,
     find_unescaped_quote,
-    invoke_with_row_descriptions_and_reflection,
     invoke_with_structured_output_and_reflection,
+    link_workspace_files,
     stream_content,
     strip_llm_authored_markers_in_parts,
 )
@@ -468,6 +472,18 @@ class TestAppendTaskMarkers:
         result = _append_task_markers(text, None)
         assert "[see details](/knowledge-base/123)" in result
 
+    def test_flattens_relative_link_that_is_no_app_route(self) -> None:
+        """CHAT-TL R2: `[out/12_jokes.pdf](out/12_jokes.pdf)` resolved to /chat/out/12_jokes.pdf, a dead page."""
+        assert _flatten_unusable_markdown_links("[out/x.pdf](out/x.pdf)") == "out/x.pdf"
+        assert _flatten_unusable_markdown_links("[x](./x.pdf)") == "x"
+        assert _flatten_unusable_markdown_links("[top](#answer)") == "[top](#answer)"
+
+    def test_keeps_citation_refs_the_finalizer_resolves_later(self) -> None:
+        """CTL-2 regression (golden journals): the sanitizer runs before citations are normalized, so `[source](ref1)`
+        must survive it to become a cited link."""
+        for text in ("[source](ref1)", "[source](ref1, ref2)", "[1](ref12)"):
+            assert _flatten_unusable_markdown_links(text) == text
+
     def test_flatten_unusable_markdown_links_direct(self):
         assert (
             _flatten_unusable_markdown_links("[Download](attachment://x.pdf)")
@@ -568,6 +584,36 @@ class TestAppendTaskMarkers:
 # ---------------------------------------------------------------------------
 # strip_llm_authored_markers_in_parts
 # ---------------------------------------------------------------------------
+class TestLinkWorkspaceFiles:
+    """CHAT-TL R2: an engine names the files it wrote by sandbox path; the reader gets the artifact."""
+
+    FILES = {"12_jokes.pdf": "rec-1", "travel_policy.md": "rec-2"}
+
+    def test_a_link_to_a_published_file_links_its_artifact(self) -> None:
+        text = "Created **[out/12_jokes.pdf](out/12_jokes.pdf)**, a PDF."
+        assert link_workspace_files(text, self.FILES) == "Created **[12_jokes.pdf](/record/rec-1)**, a PDF."
+
+    def test_a_code_span_path_links_its_artifact(self) -> None:
+        text = "I wrote **`out/travel_policy.md`**, which summarizes the rules."
+        assert link_workspace_files(text, self.FILES) == (
+            "I wrote **[travel_policy.md](/record/rec-2)**, which summarizes the rules."
+        )
+
+    def test_a_bare_path_links_its_artifact(self) -> None:
+        assert link_workspace_files("Saved to out/travel_policy.md.", self.FILES) == (
+            "Saved to [travel_policy.md](/record/rec-2)."
+        )
+
+    def test_a_file_that_was_not_published_is_its_name_without_a_link(self) -> None:
+        assert link_workspace_files("See `out/scratch.csv` and [notes](out/notes.txt).", {}) == (
+            "See scratch.csv and notes."
+        )
+
+    def test_prose_and_real_links_are_untouched(self) -> None:
+        text = "Log in/out first, then read [the guide](https://example.com/in/guide.pdf)."
+        assert link_workspace_files(text, self.FILES) == text
+
+
 class TestStripLlmAuthoredMarkersInParts:
     """The activity timeline renders narration `text` parts as raw markdown
     with no marker parsing, so a marker the model copied out of an earlier
@@ -1186,6 +1232,46 @@ class TestInvokeWithStructuredOutputAndReflection:
         assert result is not None
         assert result.answer == "pydantic"
 
+    async def test_reply_without_structured_answer_is_asked_again(self) -> None:
+        """A tool-calling parser yields None when the model answers without the tool; that reply is asked for again."""
+        from langchain_aws import ChatBedrockConverse
+
+        mock_llm = MagicMock(spec=ChatBedrockConverse)
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.ainvoke = AsyncMock(
+            side_effect=[None, self.SimpleSchema(answer="second", confidence="High")],
+        )
+        mock_llm.with_structured_output = MagicMock(return_value=mock_structured_llm)
+
+        result = await invoke_with_structured_output_and_reflection(
+            mock_llm, [HumanMessage(content="test")], self.SimpleSchema, raise_call_errors=True,
+        )
+
+        assert result is not None
+        assert result.answer == "second"
+        reflection_request = mock_structured_llm.ainvoke.await_args_list[1].args[0]
+        # No empty assistant turn stands in for the missing reply.
+        assert [type(m) for m in reflection_request] == [HumanMessage, HumanMessage]
+        assert "did not contain the requested JSON answer" in reflection_request[-1].content
+
+    async def test_replies_never_holding_the_answer_return_none(self) -> None:
+        """Every reply without the structured answer ends in None, which callers read as a reply that did not fit."""
+        from langchain_aws import ChatBedrockConverse
+
+        mock_llm = MagicMock(spec=ChatBedrockConverse)
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.ainvoke = AsyncMock(return_value=None)
+        mock_llm.with_structured_output = MagicMock(return_value=mock_structured_llm)
+
+        result = await invoke_with_structured_output_and_reflection(
+            mock_llm, [HumanMessage(content="test")], self.SimpleSchema, raise_call_errors=True,
+        )
+
+        assert result is None
+        assert mock_structured_llm.ainvoke.await_count == 3
+        last_request = mock_structured_llm.ainvoke.await_args_list[-1].args[0]
+        assert not any(isinstance(m, AIMessage) for m in last_request)
+
     async def test_llm_invocation_failure_returns_none(self):
         """If the LLM invocation itself fails, return None."""
         from langchain_openai import ChatOpenAI
@@ -1404,127 +1490,6 @@ class TestInvokeWithStructuredOutputAndReflection:
         assert result is None
         # Only the initial call should happen (no retries)
         assert mock_structured_llm.ainvoke.call_count == 1
-
-
-# ---------------------------------------------------------------------------
-# invoke_with_row_descriptions_and_reflection
-# ---------------------------------------------------------------------------
-class TestInvokeWithRowDescriptionsAndReflection:
-    """Tests for invoke_with_row_descriptions_and_reflection."""
-
-    async def test_success_correct_count(self):
-        """Successful invocation returning correct number of descriptions."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        expected = RowDescriptions(descriptions=["desc1", "desc2", "desc3"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=expected,
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is not None
-        assert len(result.descriptions) == 3
-
-    async def test_initial_parse_failure_returns_none(self):
-        """If initial parse fails, return None."""
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            return_value=None,
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is None
-
-    async def test_count_mismatch_reflection_success(self):
-        """Count mismatch triggers reflection that succeeds."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        wrong_count = RowDescriptions(descriptions=["d1", "d2"])
-        correct_count = RowDescriptions(descriptions=["d1", "d2", "d3"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            side_effect=[wrong_count, correct_count],
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is not None
-        assert len(result.descriptions) == 3
-
-    async def test_count_mismatch_reflection_still_wrong(self):
-        """Count mismatch, reflection also returns wrong count -> None."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        wrong1 = RowDescriptions(descriptions=["d1", "d2"])
-        wrong2 = RowDescriptions(descriptions=["d1", "d2", "d3", "d4"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            side_effect=[wrong1, wrong2],
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is None
-
-    async def test_count_mismatch_reflection_parse_failure(self):
-        """Count mismatch, reflection itself fails to parse -> None."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        wrong = RowDescriptions(descriptions=["d1"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            side_effect=[wrong, None],
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is None
-
-    async def test_count_mismatch_reflection_exception(self):
-        """Count mismatch, reflection raises an exception -> None."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        wrong = RowDescriptions(descriptions=["d1"])
-
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new_callable=AsyncMock,
-            side_effect=[wrong, RuntimeError("reflection exploded")],
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=3
-            )
-        assert result is None
-
-    async def test_exact_match_no_reflection(self):
-        """When count matches, no reflection should be attempted."""
-        from app.modules.parsers.excel.prompt_template import RowDescriptions
-
-        exact = RowDescriptions(descriptions=["a", "b"])
-
-        mock_invoke = AsyncMock(return_value=exact)
-        with patch(
-            "app.utils.streaming.invoke_with_structured_output_and_reflection",
-            new=mock_invoke,
-        ):
-            result = await invoke_with_row_descriptions_and_reflection(
-                MagicMock(), [HumanMessage(content="test")], expected_count=2
-            )
-        assert result is not None
-        # Should only be called once (no reflection)
-        assert mock_invoke.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2523,15 +2488,50 @@ class TestStreamContentUrlParseException:
 
     @pytest.mark.asyncio
     async def test_url_parse_fallback(self):
-        """The URL parse succeeds for normal URLs, test with very long URL."""
-        long_url = "https://example.com/" + "a" * 300
-        # This just tests that the function initializes correctly with a long URL
-        # It will fail at the HTTP request, but the URL parsing should succeed
-        import aiohttp
-        from fastapi import HTTPException
+        """A presigned URL longer than the log's limit is still requested unchanged (only the log is shortened)."""
+        long_url = "https://example.com/" + "a" * 300 + "?X-Amz-Signature=sig"
 
-        with pytest.raises((HTTPException, TypeError, aiohttp.ClientError, Exception)):
-            async for _ in stream_content(long_url, record_id="r1", file_name="test.pdf"):
-                pass
+        response = AsyncMock()
+        response.status = 200
+
+        async def iter_chunked(size: int) -> AsyncIterator[bytes]:
+            yield b"body"
+
+        response.content = MagicMock()
+        response.content.iter_chunked = iter_chunked
+        response.__aenter__ = AsyncMock(return_value=response)
+        response.__aexit__ = AsyncMock(return_value=False)
+        session = AsyncMock()
+        session.get = MagicMock(return_value=response)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("app.utils.streaming.aiohttp.ClientSession", return_value=session):
+            chunks = [chunk async for chunk in stream_content(long_url, record_id="r1", file_name="test.pdf")]
+
+        assert chunks == [b"body"]
+        assert session.get.call_args.args == (long_url,)
 
 
+class TestIncompleteCitationScanIsBounded:
+    """The check runs on the whole answer for every chunk, so it must stay linear."""
+
+    @pytest.mark.parametrize("text", [
+        pytest.param("[" * 50_000 + "]x", id="open-brackets-closed-once"),
+        pytest.param("[a](" * 12_500 + ")x]", id="unclosed-targets"),
+    ])
+    def test_stays_fast(self, text: str) -> None:
+        from tests.support.cpu_budget import thread_cpu
+
+        with thread_cpu() as cpu:
+            INCOMPLETE_CITE_RE.search(text)
+        assert cpu.seconds < 1.0
+
+    @pytest.mark.parametrize("seed", range(4))
+    def test_finds_what_it_always_did(self, seed: int) -> None:
+        legacy = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
+        tokens = ["[", "[", "]", "](", ")", "(", " ", "\n", "source", "ref1", "https://a.io/b", "x"]
+        rng = random.Random(seed)
+        for _ in range(30_000):
+            text = "".join(rng.choice(tokens) for _ in range(rng.randint(0, 9)))
+            assert bool(INCOMPLETE_CITE_RE.search(text)) == bool(legacy.search(text)), repr(text)

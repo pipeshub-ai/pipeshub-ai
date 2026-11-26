@@ -1,12 +1,13 @@
 'use client';
 
-import React, { useEffect, useMemo, useCallback, useRef, Suspense } from 'react';
+import React, { useEffect, useMemo, useCallback, useRef, useState, Suspense } from 'react';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text, Badge } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/config';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useNewestRequest } from '@/lib/hooks/use-newest-request';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
 import { FilterDropdown, DateRangePicker } from '@/app/components/ui';
@@ -19,6 +20,7 @@ import {
   EntityEmptyState,
   EntityRowActionMenu,
   AvatarCell,
+  ConfirmationDialog,
 } from '../components';
 import type { ColumnConfig } from '../components';
 import type { FilterChipConfig } from '../components/entity-filter-bar';
@@ -29,6 +31,7 @@ import { UsersApi } from '../users/api';
 import type { Team } from './types';
 import { CreateTeamSidebar, TeamDetailSidebar } from './components';
 import { usePaginatedFilterOptions } from '../hooks/use-paginated-filter-options';
+import { PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Constants
@@ -96,7 +99,9 @@ function TeamsPageContent() {
   });
 
   // ── Fetch teams (server-paginated + server-filtered) ──
+  const beginRequest = useNewestRequest();
   const fetchTeams = useCallback(async () => {
+    const isStale = beginRequest();
     setLoading(true);
     setError(null);
     try {
@@ -119,14 +124,16 @@ function TeamsPageContent() {
       }
 
       const result = await TeamsApi.listTeams(params);
+      if (isStale()) return;
       setTeams(result.teams, result.totalCount);
     } catch (err: unknown) {
+      if (isStale()) return;
       const message = err instanceof Error ? err.message : 'Failed to load teams';
       setError(message);
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
-  }, [page, limit, searchQuery, filters, setTeams, setLoading, setError]);
+  }, [beginRequest, page, limit, searchQuery, filters, setTeams, setLoading, setError]);
 
   useEffect(() => {
     if (isProfileInitialized) {
@@ -409,7 +416,7 @@ function TeamsPageContent() {
         render: (team) => {
           const creator = team.createdByUser;
           if (!creator) {
-            return <Text size="2" style={{ color: 'var(--slate-9)' }}>-</Text>;
+            return <Text size="2" style={{ color: 'var(--slate-11)' }}>-</Text>;
           }
           const currentUserId = (profile?.userId ?? currentUser?.id ?? '').trim();
           return (
@@ -438,6 +445,9 @@ function TeamsPageContent() {
   );
 
   // ── Row actions ────────────
+  const [teamPendingDelete, setTeamPendingDelete] = useState<Team | null>(null);
+  const [isDeletingTeam, setIsDeletingTeam] = useState(false);
+
   const renderRowActions = useCallback(
     (team: Team) => {
       const actions: (RowAction | false)[] = [
@@ -453,29 +463,36 @@ function TeamsPageContent() {
           label: t('workspace.teams.actions.delete'),
           variant: 'danger' as const,
           separatorBefore: true,
-          onClick: async () => {
-            try {
-              await TeamsApi.deleteTeam(team.id);
-              addToast({
-                variant: 'success',
-                title: t('workspace.teams.actions.deleteSuccess', 'Team deleted'),
-                duration: 3000,
-              });
-              fetchTeams();
-            } catch {
-              addToast({
-                variant: 'error',
-                title: t('workspace.teams.actions.deleteError', 'Failed to delete team'),
-                duration: 5000,
-              });
-            }
-          },
+          onClick: () => setTeamPendingDelete(team),
         },
       ];
       return <EntityRowActionMenu actions={actions} />;
     },
-    [t, navigateToDetailPanel, fetchTeams, addToast]
+    [t, navigateToDetailPanel]
   );
+
+  const handleConfirmDeleteTeam = useCallback(async () => {
+    if (!teamPendingDelete) return;
+    setIsDeletingTeam(true);
+    try {
+      await TeamsApi.deleteTeam(teamPendingDelete.id);
+      addToast({
+        variant: 'success',
+        title: t('workspace.teams.actions.deleteSuccess', 'Team deleted'),
+        duration: 3000,
+      });
+      setTeamPendingDelete(null);
+      fetchTeams();
+    } catch {
+      addToast({
+        variant: 'error',
+        title: t('workspace.teams.actions.deleteError', 'Failed to delete team'),
+        duration: 5000,
+      });
+    } finally {
+      setIsDeletingTeam(false);
+    }
+  }, [teamPendingDelete, fetchTeams, addToast, t]);
 
   // ── Empty state ──
   const hasActiveFilters = !!(
@@ -501,6 +518,9 @@ function TeamsPageContent() {
         height: '100%',
         width: '100%',
         paddingInline: pagePaddingX(40),
+        // Same gap below the table frame as above the page title
+        paddingBottom: PAGE_PADDING_TOP,
+        boxSizing: 'border-box',
       }}
     >
       {/* Header */}
@@ -538,8 +558,9 @@ function TeamsPageContent() {
             style={{
               flex: 1,
               overflow: 'hidden',
-              border: '1px solid var(--slate-6)',
-              borderRadius: 'var(--radius-3)',
+              border: '1px solid var(--olive-3)',
+              borderRadius: 'var(--radius-1)',
+              backgroundColor: 'var(--olive-1)',
             }}
           >
             {/* Filter bar */}
@@ -553,11 +574,11 @@ function TeamsPageContent() {
                 gap="2"
                 style={{ flex: 1, padding: 'var(--space-6)' }}
               >
-                <MaterialIcon name="filter_list_off" size={32} color="var(--slate-8)" />
+                <MaterialIcon name="filter_list_off" size={32} color="var(--slate-11)" />
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
                   {t('workspace.teams.noFilterResults', 'No teams match the applied filters')}
                 </Text>
-                <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
                   {t('workspace.teams.noFilterResultsHint', 'Try adjusting or clearing the filters above')}
                 </Text>
               </Flex>
@@ -573,6 +594,7 @@ function TeamsPageContent() {
                   renderRowActions={renderRowActions}
                   isLoading={isLoading}
                   onRowClick={(team) => navigateToDetailPanel(team)}
+                  ariaLabel={t('workspace.teams.title')}
                 />
 
                 {/* Pagination */}
@@ -592,6 +614,25 @@ function TeamsPageContent() {
       {/* ── Panels ── */}
       <CreateTeamSidebar onCreateSuccess={fetchTeams} />
       <TeamDetailSidebar onUpdateSuccess={fetchTeams} />
+
+      <ConfirmationDialog
+        open={!!teamPendingDelete}
+        onOpenChange={(open) => {
+          if (!open && !isDeletingTeam) setTeamPendingDelete(null);
+        }}
+        title={t('workspace.teams.actions.deleteConfirmTitle', 'Delete team?')}
+        message={t('workspace.teams.actions.deleteConfirmMessage', {
+          name: teamPendingDelete?.name ?? '',
+          defaultValue:
+            '"{{name}}" will be deleted and its members will lose access shared through it. This can\'t be undone.',
+        })}
+        confirmLabel={t('workspace.teams.actions.deleteConfirmButton', 'Delete team')}
+        cancelLabel={t('common.cancel', 'Cancel')}
+        confirmVariant="danger"
+        isLoading={isDeletingTeam}
+        confirmLoadingLabel={t('workspace.teams.actions.deleting', 'Deleting…')}
+        onConfirm={() => void handleConfirmDeleteTeam()}
+      />
     </Flex>
   );
 }

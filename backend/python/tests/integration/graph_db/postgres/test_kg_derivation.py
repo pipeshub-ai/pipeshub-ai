@@ -1,0 +1,286 @@
+"""The projection's pieces, put together by hand: a small world is written to the graph through the provider, read back by ``kg.reader``, derived by
+``kg.model`` and written by ``kg.writers``; what the typed tables then hold is compared with what the test says they must hold, written out from the
+world and not from the code under test."""
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING
+
+import pytest
+
+from app.core.org_context import OrgContext, bind
+from app.services.graph_db.postgres.kg import dependents, reader
+from app.services.graph_db.postgres.kg.model import (
+    LINK_GROUP,
+    LINK_HIERARCHY,
+    LINK_PARENT_CHILD,
+    UAR,
+    derive,
+)
+from app.services.graph_db.postgres.kg.writers import KgWriter
+from app.services.graph_db.postgres.provider import PostgresGraphProvider
+from tests.support import plan_gate
+
+from .pg_support import new_org
+
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
+pytestmark = pytest.mark.integration
+
+
+def prov(pg_db) -> PostgresGraphProvider:
+    return PostgresGraphProvider(logging.getLogger("kg-derivation"), pg_db)
+
+
+def ctx(org: str) -> AbstractContextManager:
+    return bind(OrgContext(org, None, "job", "job:kg-test", "t"))
+
+
+def edge(frm: str, fc: str, to: str, tc: str, **props: object) -> dict:
+    return {"from_id": frm, "from_collection": fc, "to_id": to, "to_collection": tc, **props}
+
+
+async def load_world(p: PostgresGraphProvider, org: str) -> None:
+    """An app with a record group, a folder with two files in it (one of them also in a second group), a user in a team and the organisation, and the grants."""
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "Shared", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"},
+                                    {"_key": "g2", "groupName": "Other", "connectorId": "app1", "orgId": org}], "recordGroups")
+        await p.batch_upsert_nodes([
+            {"_key": "fold", "recordName": "Folder", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", "externalRecordId": "x-fold",
+             "mimeType": "application/vnd.folder", "createdAtTimestamp": 5, "updatedAtTimestamp": 7},
+            {"_key": "f1", "recordName": "One.TXT", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", "virtualRecordId": "vr1",
+             "sourceLastModifiedTimestamp": 40, "sourceCreatedAtTimestamp": 30, "sizeInBytes": 12, "isDeleted": True},
+            {"_key": "f2", "recordName": "Two", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "UPLOAD", "isPlaceholder": True},
+        ], "records")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_upsert_nodes([{"_key": "team1", "orgId": org}], "teams")
+        await p.batch_upsert_nodes([{"_key": org, "name": "Org"}], "organizations")
+        await p.batch_create_edges([edge("fold", "records", "f1", "records", relationshipType="PARENT_CHILD"),
+                                    edge("fold", "records", "f2", "records", relationshipType="ATTACHMENT"),
+                                    edge("g1", "recordGroups", "f2", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+        await p.batch_create_edges([edge("f1", "records", "g1", "recordGroups"), edge("f1", "records", "g2", "recordGroups"), edge("fold", "records", "g1", "recordGroups"),
+                                    edge("u1", "users", org, "organizations")], "belongsTo")
+        await p.batch_create_edges([edge("u1", "users", "f1", "records", type="USER", role="READER"),
+                                    edge("u1", "users", "team1", "teams", type="USER"),
+                                    edge("team1", "teams", "g1", "recordGroups", type="TEAM", role="WRITER")], "permission")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+
+
+FOCUS = {("apps", "app1"), ("recordGroups", "g1"), ("recordGroups", "g2"), ("records", "fold"), ("records", "f1"), ("records", "f2"),
+         ("users", "u1"), ("teams", "team1")}
+
+
+async def project(p: PostgresGraphProvider, org: str, focus: set) -> None:
+    """The write of one projection: allocate the keys, read the graph around ``focus``, derive, write the typed rows."""
+    async def go(tx) -> None:
+        w = KgWriter(tx)
+        snap = await reader.snapshot(tx, org, focus, w.nodes_upsert)
+        d = derive(focus, snap)
+        await w.records_upsert([{"sk": sk, **row} for sk, row in sorted(d.records.items())])
+        await w.listing_set([(sk, r["coll"], r["id"], r["kind"], r["folder"], r["hide_children"], r["alien"], r["name_sort"]) for sk, r in sorted(d.records.items())])
+        await w.records_delete(sorted(d.gone))
+        await w.links_set(sorted(d.links))
+        await w.grants_set([(pr, nd, g, role, app, leaf) for (pr, nd, g), (role, app, leaf) in sorted(d.grants.items())])
+        await w.closure_set([(u, pr, app, via) for (u, pr, app), via in sorted(d.closure.items())])
+    with ctx(org):
+        await p._q(go, None, write=True)
+
+
+async def held(p: PostgresGraphProvider, org: str) -> dict:
+    """What the typed tables hold for ``org``, with the surrogate keys turned back into node ids."""
+    async def go(tx) -> dict:
+        ids = {r["sk"]: r["id"] for r in await tx.fetch("SELECT sk, id FROM kg.node_keys WHERE org_id = $1", org)}
+        recs = {r["id"]: (r["kind"], ids.get(r["app_sk"]), ids.get(r["group_sk"]), ids.get(r["parent_sk"]), r["name"], r["name_key"], r["updated_ms"], r["created_ms"],
+                          r["size_bytes"], r["vrid"], r["rule"], r["model"], r["origin"], r["deleted"], r["placeholder"], r["granted"])
+                for r in await tx.fetch("SELECT * FROM kg.records WHERE org_id = $1", org)}
+        links = {(ids[r["parent_sk"]], r["kind"], ids[r["child_sk"]]) for r in await tx.fetch("SELECT * FROM kg.links WHERE org_id = $1", org)}
+        grants = {(ids[r["principal_sk"]], ids[r["node_sk"]], r["gtype"]): (r["role"], ids.get(r["app_sk"]), r["leaf"])
+                  for r in await tx.fetch("SELECT * FROM kg.scope_members WHERE org_id = $1", org)}
+        closure = {(ids[r["user_sk"]], ids[r["principal_sk"]], ids.get(r["app_sk"], "-")): r["via"] for r in await tx.fetch("SELECT * FROM kg.principal_closure WHERE org_id = $1", org)}
+        return {"records": recs, "links": links, "grants": grants, "closure": closure}
+    with ctx(org):
+        return await p._q(go, None)
+
+
+EXPECTED = {
+    "records": {
+        # kind, app, group, parent, name, name_key, updated, created, size, vrid, rule, model, origin, deleted, placeholder, granted
+        "app1": (1, "app1", None, None, "Drive", "drive", 0, 0, None, None, None, None, None, False, False, False),
+        "g1": (2, "app1", None, None, "Shared", "shared", 0, 0, None, None, "OPEN", "RECORD_LEVEL", None, False, False, True),
+        "g2": (2, "app1", None, None, "Other", "other", 0, 0, None, None, None, None, None, False, False, False),
+        "fold": (3, "app1", "g1", None, "Folder", "folder", 7, 5, None, None, None, None, "CONNECTOR", False, False, False),
+        "f1": (3, "app1", "g1", "fold", "One.TXT", "one.txt", 40, 30, 12, "vr1", None, None, "CONNECTOR", True, False, True),
+        "f2": (3, "app1", None, "g1", "Two", "two", 0, 0, None, None, None, None, "UPLOAD", False, True, False),
+    },
+    # f1 is also in g2 (its second group); f2 has the folder as a second hierarchy parent (an attachment) after the group; every PARENT_CHILD parent is a kind-3 link
+    "links": {("g2", LINK_GROUP, "f1"), ("fold", LINK_HIERARCHY, "f2"), ("fold", LINK_PARENT_CHILD, "f1"), ("g1", LINK_PARENT_CHILD, "f2")},
+    # (principal, node, type) -> (role, the node's app, the node is a leaf record); a membership of a team is a closure row below, not a grant on a node
+    "grants": {("u1", "f1", "USER"): ("READER", "app1", True), ("team1", "g1", "TEAM"): ("WRITER", "app1", False), ("u1", "app1", UAR): (None, "app1", False)},
+    "closure": {("u1", "u1", "-"): "self", ("u1", "team1", "-"): "membership", ("u1", "org", "-"): "org"},
+}
+
+
+def expected_for(org: str) -> dict:
+    """The organisation node of the world is keyed by the organisation's own id."""
+    return {"records": dict(EXPECTED["records"]), "links": set(EXPECTED["links"]), "grants": dict(EXPECTED["grants"]),
+            "closure": {(u, org if pr == "org" else pr, app): via for (u, pr, app), via in EXPECTED["closure"].items()}}
+
+
+async def test_a_world_is_projected_into_the_typed_tables_as_it_is_described(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await load_world(p, org)
+    await project(p, org, FOCUS)
+    got, want = await held(p, org), expected_for(org)
+    assert got["records"] == want["records"]
+    assert got["links"] == want["links"]
+    assert got["grants"] == want["grants"]
+    assert got["closure"] == want["closure"]
+
+
+async def test_projecting_again_changes_nothing_and_another_organisations_rows_are_not_touched(pg_db) -> None:
+    p, a, b = prov(pg_db), new_org(), new_org()
+    for org in (a, b):
+        await load_world(p, org)
+    await project(p, a, FOCUS)
+    first = await held(p, a)
+    assert await held(p, b) == {"records": {}, "links": set(), "grants": {}, "closure": {}}        # organisation b has the same ids and nothing projected
+    await project(p, a, FOCUS)
+    assert await held(p, a) == first
+    await project(p, b, FOCUS)
+    assert (await held(p, b))["records"] == expected_for(b)["records"] and await held(p, a) == first
+
+
+async def test_a_node_that_is_gone_loses_its_row(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await load_world(p, org)
+    await project(p, org, FOCUS)
+    with ctx(org):
+        await p.delete_nodes(["f2"], "records")
+    await project(p, org, {("records", "f2")})
+    got = await held(p, org)
+    assert "f2" not in got["records"] and set(got["records"]) == set(EXPECTED["records"]) - {"f2"}
+
+
+async def test_a_hierarchy_edge_to_another_collection_does_not_count_as_a_child_of_a_node_of_the_same_id(pg_db) -> None:
+    """The child is the node of the collection the edge names: an edge to ``files/x`` is not a child because ``records/x`` exists."""
+    p, org = prov(pg_db), new_org()
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, **rec} for k in ("lone", "real", "x", "y")], "records")
+        await p.batch_create_edges([edge("lone", "records", "x", "files", relationshipType="PARENT_CHILD"),
+                                    edge("real", "records", "y", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+        keys = {("records", "lone"), ("records", "real")}
+        got = await p._q(lambda tx: reader.load_has_children(tx, org, keys), None)
+    assert got == {("records", "real")}
+
+
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
+async def test_has_children_reads_one_child_per_parent_not_all_of_them(pg_db) -> None:
+    """A parent's ``leaf`` needs one existing hierarchy child, never the list: a batch that touches a record group of 3,000 children reads a few edges of it, fresh and analysed.
+    Children whose node is gone, and links that are not hierarchy links, still do not count."""
+    from .test_kg_read import _admin
+    p, org = prov(pg_db), new_org()
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "big", "groupName": "big", "connectorId": "app1", "orgId": org}], "recordGroups")
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, **rec} for k in ("leaf", "ghosts", "late", "linked", "y")], "records")
+        await p.batch_create_edges([edge("ghosts", "records", "gone1", "records", relationshipType="PARENT_CHILD"),
+                                    edge("late", "records", "gone2", "records", relationshipType="ATTACHMENT"),
+                                    edge("late", "records", "y", "records", relationshipType="PARENT_CHILD"),
+                                    edge("linked", "records", "y", "records", relationshipType="LINKED_TO")], "nodeRelations")
+    await _admin("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1::text, 'records', 'kid-' || g, jsonb_build_object('_key', 'kid-' || g, 'orgId', $1::text,
+          'connectorId', 'app1', 'recordName', 'K' || g) FROM generate_series(1, 3000) g""", org)
+    await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, doc) SELECT $1, 'nodeRelations', 'recordGroups', 'big', 'records', 'kid-' || g,
+          '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(1, 3000) g""", org)
+    keys = {("recordGroups", "big"), *(("records", k) for k in ("leaf", "ghosts", "late", "linked"))}
+    with ctx(org):
+        assert await p._q(lambda tx: reader.load_has_children(tx, org, keys), None) == {("recordGroups", "big"), ("records", "late")}
+    colls, ids = reader._split({("recordGroups", "big"), ("records", "leaf")})
+    for state in ("fresh", "analysed"):
+        if state == "analysed":
+            await _admin("ANALYZE graph.nodes; ANALYZE graph.edges")
+
+        async def go(tx) -> tuple[int, list]:
+            async with reader.seeks(tx):         # as load_has_children runs it
+                ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + reader.HAS_CHILDREN, org, colls, ids, list(reader.HIERARCHY), list(reader.RECORD_COLLS))
+            # every edge row a scan produced or filtered away, over all its loops (EXPLAIN shows both per loop)
+            return (sum(round((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0) + n.get("Rows Removed by Index Recheck", 0)) * n.get("Actual Loops", 1))
+                        for n in plan_gate.scans(ran, "edges")),
+                    [(n["Node Type"], n.get("Index Name"), plan_gate.bounds(n)) for n in plan_gate.nodes(ran)])
+        with ctx(org):
+            read, plan = await pg_db.run(go, custom_plan=True)
+        assert read <= 2, f"{state}: {read} edge rows read to learn that 2 parents have a child; plan {plan}"
+
+
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
+async def test_the_children_of_a_page_of_records_are_read_by_seeks_not_by_the_orgs_relations(pg_db) -> None:
+    """A restamp page asks for the children of its 200 records: the read costs their own edges, not the org's 6,000 relations under three large folders, fresh and analysed."""
+    from .test_kg_read import _admin
+    p, org = prov(pg_db), new_org()
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, **rec} for k in ("pa", "pb", "pc", "c1", "c2")], "records")
+        await p.batch_create_edges([edge("pa", "records", "c1", "records", relationshipType="PARENT_CHILD"),
+                                    edge("pb", "records", "c2", "records", relationshipType="ATTACHMENT")], "nodeRelations")
+    await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, doc) SELECT $1, 'nodeRelations', 'records', 'big' || (g % 3), 'records', 'kid-' || g,
+          '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(1, 6000) g""", org)
+    page = {("records", f"leaf{i}") for i in range(200)} | {("records", "pa"), ("records", "pb"), ("records", "pc")}
+    for state in ("fresh", "analysed"):
+        if state == "analysed":
+            await _admin("ANALYZE graph.edges")
+
+        async def go(tx) -> tuple[set, int]:
+            q = "SELECT coalesce(sum(seq_tup_read + coalesce(idx_tup_fetch, 0)), 0) FROM pg_stat_xact_user_tables WHERE schemaname = 'graph' AND relname LIKE 'edges%'"
+            before = await tx.fetchval(q)
+            kids = await dependents.children_of(tx, org, page)
+            return kids, await tx.fetchval(q) - before
+        with ctx(org):
+            kids, read = await p._q(go, None)
+        assert kids == {("records", "c1"), ("records", "c2")}
+        assert read <= 50, f"{state}: {read} edge rows read for the children of 203 records"
+
+
+async def test_the_dependents_of_a_record_do_not_include_those_of_a_record_group_of_the_same_id(pg_db) -> None:
+    """An edge end is matched on its collection and id: the parents, children and members of ``recordGroups/x`` are not those of ``records/x``."""
+    p, org = prov(pg_db), new_org()
+    rec = {"connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k, **rec} for k in ("x", "up", "kid", "member")], "records")
+        await p.batch_upsert_nodes([{"_key": "x", "groupName": "same id", "connectorId": "app1", "orgId": org}], "recordGroups")
+        await p.batch_create_edges([edge("up", "records", "x", "recordGroups", relationshipType="PARENT_CHILD"),
+                                    edge("x", "recordGroups", "kid", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+        await p.batch_create_edges([edge("member", "records", "x", "recordGroups")], "belongsTo")
+        key = {("records", "x")}
+        parents = await p._q(lambda tx: dependents.parents_of(tx, org, key), None)
+        kids = await p._q(lambda tx: dependents.children_of(tx, org, key), None)
+        moved = await p._q(lambda tx: dependents.moved_parents(tx, org, key), None)
+    assert (parents, kids, moved) == (set(), set(), set())
+
+
+async def listing_columns(p: PostgresGraphProvider, org: str) -> dict:
+    async def go(tx) -> dict:
+        return {r["id"]: (r["folder"], r["hide_children"], r["alien"]) for r in await tx.fetch("SELECT id, folder, hide_children, alien FROM kg.records WHERE org_id = $1", org)}
+    with ctx(org):
+        return await p._q(go, None)
+
+
+async def test_the_listing_columns_follow_the_hub_node_type_the_hidden_children_and_the_organisation(pg_db) -> None:
+    """folder: a record whose mime type is a folder's or whose type is FOLDER (any case), never a group; hide_children: a record group that says so (a record's flag does not count);
+    alien: a node of another organisation (or of none). Each row below fails the column it names when its rule is dropped."""
+    p, org = prov(pg_db), new_org()
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "hide", "groupName": "H", "connectorId": "app1", "orgId": org, "hideChildren": True, "mimeType": "application/vnd.folder"},
+                                    {"_key": "show", "groupName": "S", "connectorId": "app1", "orgId": org, "hideChildren": "false"}], "recordGroups")
+        await p.batch_upsert_nodes([
+            {"_key": "bymime", "recordName": "A", "connectorId": "app1", "orgId": org, "recordType": "FILE", "mimeType": "application/vnd.folder"},
+            {"_key": "bytype", "recordName": "B", "connectorId": "app1", "orgId": org, "recordType": "folder"},
+            {"_key": "file", "recordName": "C", "connectorId": "app1", "orgId": org, "recordType": "FILE", "mimeType": "text/plain", "hideChildren": True},
+            {"_key": "other", "recordName": "D", "connectorId": "app1", "orgId": "another-org", "recordType": "FILE"},
+        ], "records")
+    await project(p, org, {("apps", "app1"), ("recordGroups", "hide"), ("recordGroups", "show"), ("records", "bymime"), ("records", "bytype"), ("records", "file"), ("records", "other")})
+    assert await listing_columns(p, org) == {
+        "app1": (False, False, False), "hide": (False, True, False), "show": (False, False, False),
+        "bymime": (True, False, False), "bytype": (True, False, False), "file": (False, False, False), "other": (False, False, True)}

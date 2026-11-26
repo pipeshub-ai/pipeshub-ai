@@ -33,6 +33,7 @@ class AuthFieldKeys:
     CLIENT_SECRET = "clientSecret"
     CLIENT_SECRET_ALT = "client_secret"
     INSTANCE_URL = "instanceUrl"
+    INSTANCE_URL_ALT = "instance_url"
     LOGIN_URL = "loginUrl"
     HAS_ADMIN_CONSENT = "hasAdminConsent"
     AUTHORIZE_URL = "authorizeUrl"
@@ -120,6 +121,8 @@ class ConnectorStateKeys:
     IS_CONFIGURED = "isConfigured"
     IS_AUTHENTICATED = "isAuthenticated"
     IS_ACTIVE = "isActive"
+    # Counts sync toggles; each appEnabled/appDisabled event a toggle sends carries the count it took.
+    TOGGLE_SEQ = "toggleSeq"
     PENDING_FULL_SYNC = "pendingFullSync"
     VECTOR_MEMBERSHIP_BACKFILLED = "vectorMembershipBackfilled"
     VECTOR_MEMBERSHIP_BACKFILL_AFTER_KEY = "vectorMembershipBackfillAfterKey"
@@ -131,6 +134,7 @@ class ConnectorStateKeys:
     PENDING_RESYNC = "pendingResync"
     LAST_SYNC_STARTED_AT = "lastSyncStartedAtTimestamp"
     LAST_SYNC_FINISHED_AT = "lastSyncFinishedAtTimestamp"
+    USER_LINK_STARTED_AT = "userLinkStartedAtTimestamp"
     LAST_SYNC_OUTCOME = "lastSyncOutcome"
     LAST_SYNC_SUMMARY = "lastSyncSummary"
     ACTION_ITEMS = "actionItems"
@@ -160,11 +164,46 @@ CONNECTOR_NOTION_TEAM_ACCESS_INFO = (
 )
 
 
-# The permission lists must match what test_connection_and_access checks.
+# These sources have no per-user access rules PipesHub can apply, so a team
+# connector's data is readable by the whole organization.
+_PERSONAL_CONNECTOR_HINT = (
+    "A team connector is for data the whole organization may read. To keep the data to "
+    "yourself, set it up as a personal connector instead."
+)
 _OBJECT_STORE_TEAM_ACCESS_INFO = (
     "If you create a team connector, everyone in your organization can search every bucket it "
-    "syncs. With Bucket Names empty, that is every bucket the key can list."
+    "syncs. With Bucket Names empty, that is every bucket the key can list. "
+    + _PERSONAL_CONNECTOR_HINT
 )
+CONNECTOR_AZURE_BLOB_TEAM_ACCESS_INFO = (
+    "If you create a team connector, everyone in your organization can search every container "
+    "it syncs. With Container Names empty, that is every container the credentials can list. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+CONNECTOR_AZURE_FILES_TEAM_ACCESS_INFO = (
+    "If you create a team connector, everyone in your organization can search every file share "
+    "it syncs. With File Share Names empty, that is every share the credentials can list. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+CONNECTOR_GCS_INFO = (
+    "If you create a team connector, everyone in your organization can search every bucket it "
+    "syncs. With Bucket Names empty, that is every bucket the service account can list. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+CONNECTOR_POSTGRES_INFO = (
+    "If you create a team connector, everyone in your organization can search every table it "
+    "syncs; table and database permissions are not applied. With Schemas and Tables empty, that "
+    "is every table the database user can read. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+CONNECTOR_MARIADB_INFO = (
+    "If you create a team connector, everyone in your organization can search every table it "
+    "syncs; table and database permissions are not applied. With Tables empty, that is every "
+    "table the database user can read. "
+    + _PERSONAL_CONNECTOR_HINT
+)
+
+# The permission lists must match what test_connection_and_access checks.
 CONNECTOR_S3_INFO = (
     "This connector only lists and reads objects, so give it a read-only key. Its IAM policy "
     "needs s3:ListBucket, s3:GetBucketLocation and s3:GetObject on the buckets to sync. It needs "
@@ -176,6 +215,12 @@ CONNECTOR_MINIO_INFO = (
     "This connector only lists and reads objects, so give it a read-only key. Its MinIO policy "
     "needs s3:ListBucket and s3:GetObject on the buckets to sync. It needs s3:ListAllMyBuckets "
     "to discover the buckets and to load the Bucket Names options."
+    "\n\n" + _OBJECT_STORE_TEAM_ACCESS_INFO
+)
+CONNECTOR_CLOUDFLARE_R2_INFO = (
+    "This connector only lists and reads objects, so give it a read-only R2 API token that can list "
+    "buckets and read objects. An Admin Read only token can do both, and it can read every bucket in "
+    "the account. An Object Read only token limited to the buckets to sync is tighter, if it can list them."
     "\n\n" + _OBJECT_STORE_TEAM_ACCESS_INFO
 )
 

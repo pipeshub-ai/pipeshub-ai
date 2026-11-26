@@ -27,7 +27,11 @@ import httpx
 
 from app.models.entities import MessageRecord, Record, RecordGroup
 from app.models.permission import EntityType
-from app.services.graph_db.common.record_visibility import is_live_record
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+    matches_visibility,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -341,6 +345,8 @@ class SlackWorkspace:
             return {"ok": False, "error": "channel_not_found"}
         if channel["is_private"]:
             return {"ok": False, "error": "method_not_supported_for_channel_type"}
+        if channel["is_archived"]:
+            return {"ok": False, "error": "is_archived"}
         channel["is_member"] = True
         return {"ok": True, "channel": channel}
 
@@ -349,7 +355,9 @@ class SlackWorkspace:
         channel = self.channels.get(cid)
         if not channel:
             return {"ok": False, "error": "channel_not_found"}
-        if not channel["is_member"]:
+        # Slack: only a user token reads a public channel it is not in.
+        user_reads_public = not channel["is_private"] and (self.calls[-1].token or "").startswith("xoxp-")
+        if not channel["is_member"] and not user_reads_public:
             return {"ok": False, "error": "not_in_channel"}
         msgs = sorted(
             (m for m in self.history[cid] if self._in_window(m["ts"], params)),
@@ -434,6 +442,8 @@ class FakeSlackStore:
         self.record_batches: list[list[Record]] = []
         self.content_updates: list[Record] = []
         self.reindexed: list[Record] = []
+        # Whether a full sync of the connector is in progress, as the processor tracks it.
+        self.full_sync_in_progress = False
 
     async def on_new_app_users(self, users: list[Any]) -> None:
         for user in users:
@@ -492,7 +502,8 @@ class FakeSlackStore:
             if existing:
                 group.id = existing.id
             self.record_groups[group.external_group_id] = group
-            self.group_access[group.external_group_id] = list(permissions)
+            if permissions is not None:  # None: the grants are unknown and the stored ones stay
+                self.group_access[group.external_group_id] = list(permissions)
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
         return self.record_groups.get(external_id)
@@ -522,6 +533,40 @@ class FakeSlackStore:
             and (record_type is None or r.record_type.value == record_type)
             and is_live_record(r)
         ]
+
+    def full_sync_running(self, connector_id: str) -> bool:
+        return self.full_sync_in_progress
+
+    async def get_records_in_record_group(
+        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> list[Record]:
+        group = self.record_groups.get(external_group_id)
+        if group is None:
+            return []
+        return await self.get_records_by_status(
+            connector_id, None, limit=limit, record_group_id=group.id, after_key=after_key, visibility=visibility,
+        )
+
+    async def get_records_by_status(
+        self, connector_id: str, status_filters: list[str] | None, limit: int | None = None, offset: int = 0,
+        record_group_id: str | None = None, is_placeholder: bool | None = None, after_key: str | None = None,
+        exclude_statuses: list[str] | None = None, visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> list[Record]:
+        """Ordered by id and paged by ``after_key``, as the graph stores answer it."""
+        found = sorted(
+            (
+                r for r in self.records.values()
+                if (record_group_id is None or r.record_group_id == record_group_id)
+                and (status_filters is None or r.indexing_status in status_filters)
+                and r.indexing_status not in (exclude_statuses or [])
+                and (is_placeholder is None or r.is_placeholder == is_placeholder)
+                and (after_key is None or r.id > after_key)
+                and matches_visibility(r, visibility)
+            ),
+            key=lambda r: r.id,
+        )[offset:]
+        return found if limit is None else found[:limit]
 
     async def on_record_content_update(self, record: Record) -> None:
         self.content_updates.append(record)
@@ -608,10 +653,14 @@ class FakeConfigService:
             return copy.deepcopy(self.config)
         return copy.deepcopy(self.others.get(path, default))
 
-    async def set_config(self, path: str, value: Any) -> bool:  # noqa: ANN401 - any etcd value
+    async def set_config(self, path: str, value: Any, **_: object) -> bool:  # noqa: ANN401 - any etcd value
         if path == self.path:
             self.config = copy.deepcopy(value)
             self.writes.append(copy.deepcopy(value))
         else:
             self.others[path] = copy.deepcopy(value)
         return True
+
+    async def delete_config(self, path: str) -> bool:
+        """False for a key that was not set, as the store answers."""
+        return self.others.pop(path, None) is not None

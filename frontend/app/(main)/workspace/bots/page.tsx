@@ -20,11 +20,13 @@ export default function BotsPage() {
   const router = useRouter();
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  // A profile that failed to load leaves isAdmin null; General is open to
+  // everyone, so that goes there too (as Prompts does).
   useEffect(() => {
-    if (isProfileInitialized && isAdmin === false) {
+    if (isProfileInitialized && isAdmin !== true) {
       router.replace('/workspace/general');
     }
-  }, [isProfileInitialized, isAdmin]);
+  }, [isProfileInitialized, isAdmin, router]);
 
   const {
     slackBotConfigs,
@@ -66,14 +68,20 @@ export default function BotsPage() {
     }
   }, [setConfigs, setAgents, setLoading, setError]);
 
+  // Only an admin may read these; a member would get a 403 before the redirect.
   useEffect(() => {
+    if (!isProfileInitialized || isAdmin !== true) return;
     fetchData();
-  }, [fetchData]);
+  }, [isProfileInitialized, isAdmin, fetchData]);
 
   const handleRefresh = useCallback(() => {
     fetchData();
     toast.success(t('workspace.bots.refreshed'));
   }, [fetchData]);
+
+  if (!isProfileInitialized || isAdmin !== true) {
+    return null;
+  }
 
   return (
     <ServiceGate services={['query']}>

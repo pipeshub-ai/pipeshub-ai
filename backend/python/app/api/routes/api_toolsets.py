@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -31,15 +30,15 @@ from app.agents.openapi.spec_compiler import MAX_SPEC_BYTES, SpecError, compile_
 from app.agents.openapi.store import ApiToolsetStore
 from app.api.middlewares.auth import require_scopes
 from app.api.middlewares.caller_role import fetch_caller_role
+from app.api.middlewares.request_log import path_log_fields
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
 from app.services.featureflag.platform_settings import is_api_toolsets_enabled
 from app.utils.desktop_state import strip_desktop_state
+from app.utils.user_lookup import await_or_503
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_ENDPOINTS_PATH = "/services/endpoints"
 # What a test call shows of the API's answer.
@@ -72,7 +71,10 @@ async def _require_enabled(request: Request) -> None:
         raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="API Toolsets are disabled for this organization.")
 
 
-router = APIRouter(prefix="/api/v1/api-toolsets", tags=["api-toolsets"], dependencies=[Depends(_require_enabled)])
+router = APIRouter(
+    prefix="/api/v1/api-toolsets", tags=["api-toolsets"],
+    dependencies=[Depends(_require_enabled), Depends(path_log_fields(instance_id="toolset_id"))],
+)
 
 
 def _store(request: Request) -> ApiToolsetStore:
@@ -226,17 +228,19 @@ async def _save(request: Request, body: InstanceRequest, instance_id: str, exist
     except service.ApiToolsetError as e:
         raise _bad_request(e) from e
     oauth_app = service.oauth_client_from(body.oauth_client_id, body.oauth_client_secret)
-    if instance.auth_scheme.type is AuthType.OAUTH2_AUTHORIZATION_CODE:
+    uses_oauth_app = instance.auth_scheme.type is AuthType.OAUTH2_AUTHORIZATION_CODE
+    if uses_oauth_app:
         current = await store.get_oauth_client(instance_id)
         if oauth_app is None and current is None:
             raise _bad_request(service.ApiToolsetError("Enter the client ID of the OAuth app registered with the API."))
-        if oauth_app is not None:
-            if oauth_app.client_secret is None and current is not None and current.client_id == oauth_app.client_id:
-                # A blank secret on an edit keeps the one already stored.
-                oauth_app = oauth_app.model_copy(update={"client_secret": current.client_secret})
-            await store.save_oauth_client(instance_id, oauth_app)
+        if oauth_app is not None and oauth_app.client_secret is None and current is not None and current.client_id == oauth_app.client_id:
+            # A blank secret on an edit keeps the one already stored.
+            oauth_app = oauth_app.model_copy(update={"client_secret": current.client_secret})
     if existing is not None and not service.credentials_still_apply(existing, instance):
-        await store.delete_instance_credentials(instance_id)
+        # Before anything new is saved, so a failed delete changes nothing else.
+        await await_or_503(store.delete_instance_credentials(instance_id))
+    if uses_oauth_app and oauth_app is not None:
+        await store.save_oauth_client(instance_id, oauth_app)
     await store.save_instance(instance)
     return await _admin_view(store, instance, user_id)
 
@@ -262,7 +266,7 @@ async def delete_api_toolset(request: Request, instance_id: str) -> dict[str, An
     store = _store(request)
     instance = await _instance_or_404(store, org_id, instance_id)
     await _assert_not_in_use(request, instance)
-    await store.delete_instance(instance_id)
+    await await_or_503(store.delete_instance(instance_id))
     return {"success": True}
 
 
@@ -276,7 +280,6 @@ async def _assert_not_in_use(request: Request, instance: ApiToolsetInstance) -> 
     try:
         agent_names = await graph_provider.check_api_toolset_in_use(instance.id)
     except Exception as e:
-        logger.error("Could not check which agents use API toolset %s: %s", instance.id, e)
         raise HTTPException(
             status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
             detail="Couldn't check which agents use this API action, so it wasn't deleted. Try again.",
@@ -326,7 +329,7 @@ async def _save_credentials(store: ApiToolsetStore, instance: ApiToolsetInstance
 
 
 async def _delete_credentials(store: ApiToolsetStore, instance: ApiToolsetInstance, user_id: str) -> dict[str, Any]:
-    await store.delete_credentials(instance.id, service.credential_owner(instance, user_id))
+    await await_or_503(store.delete_credentials(instance.id, service.credential_owner(instance, user_id)))
     return {"success": True, "isConnected": instance.auth_scheme.type is AuthType.NONE}
 
 

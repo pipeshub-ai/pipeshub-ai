@@ -1,9 +1,11 @@
 import { apiClient } from '@/lib/api';
+import type { KnowledgeLimit } from '@/app/components/knowledge-limit';
 import type {
   CreatePatApiResponse,
   CreatePatPayload,
   PatListApiResponse,
   PatScopesApiResponse,
+  UpdatePatKnowledgeLimitResponse,
 } from './types';
 
 const BASE_URL = '/api/v1/personal-access-tokens';
@@ -43,6 +45,24 @@ export const PatApi = {
   },
 
   /**
+   * Change what one of the calling user's own tokens can see; null for
+   * everything they can see. The token itself does not change.
+   * PATCH /api/v1/personal-access-tokens/:id
+   */
+  async updateKnowledgeLimit(
+    id: string,
+    knowledgeLimit: KnowledgeLimit | null
+  ): Promise<UpdatePatKnowledgeLimitResponse> {
+    const { data } = await apiClient.patch<UpdatePatKnowledgeLimitResponse>(
+      `${BASE_URL}/${id}`,
+      { knowledgeLimit },
+      // The access panel words its own error, including when the outcome is unknown.
+      { suppressErrorToast: true }
+    );
+    return data;
+  },
+
+  /**
    * Revoke one of the calling user's own personal access tokens.
    * DELETE /api/v1/personal-access-tokens/:id
    */
@@ -50,5 +70,27 @@ export const PatApi = {
     await apiClient.delete(`${BASE_URL}/${id}`, {
       data: reason ? { reason } : undefined,
     });
+  },
+};
+
+export interface AgentSignIn {
+  id: string;
+  status: 'claimed' | 'consumed';
+  created_at: string;
+  updated_at: string;
+}
+
+export const AgentSignInApi = {
+  /** GET /api/v1/agent/registrations: the agents the calling user approved. */
+  async list(): Promise<AgentSignIn[]> {
+    const { data } = await apiClient.get<{ registrations: AgentSignIn[] }>(
+      '/api/v1/agent/registrations'
+    );
+    return data.registrations ?? [];
+  },
+
+  /** DELETE /api/v1/agent/registrations/:id */
+  async revoke(id: string): Promise<void> {
+    await apiClient.delete(`/api/v1/agent/registrations/${id}`);
   },
 };

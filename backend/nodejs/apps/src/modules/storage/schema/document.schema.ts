@@ -10,7 +10,9 @@ import {
 } from '../types/storage.service.types';
 
 // Extend the existing Document interface with Mongoose.Document
-export interface DocumentModel extends IDocument, MongooseDocument {}
+// _id comes from MongooseDocument; the plain row type (IDocument) carries it as a string.
+export interface DocumentModel
+  extends Omit<IDocument, '_id'>, MongooseDocument {}
 
 // Create schema for S3 and AzureBlob (without localPath)
 const RemoteStorageInfoSchema = new Schema<StorageInfo>(
@@ -28,7 +30,6 @@ const LocalStorageInfoSchema = new Schema<StorageInfo>(
   },
   { _id: false },
 );
-
 
 // Create schema from CustomMetadata interface
 const CustomMetadataSchema = new Schema<CustomMetadata>(
@@ -60,7 +61,11 @@ const DocumentVersionSchema = new Schema<DocumentVersion>(
 const ArtifactSetSchema = new Schema<ArtifactSet>(
   {
     virtualRecordId: { type: String, required: true },
+    // The set's key in the unique index below: the revision, or `{rev}-{writeId}` for a stored write's own set.
     rev: { type: String, required: true },
+    // A stored write's own set only: its revision and write. Not indexed; nothing looks a set up by them.
+    contentRev: { type: String },
+    writeId: { type: String },
     root: { type: String, required: true },
     // Set when a delete claims the revision; presign refuses it from then on.
     retiringAt: { type: Number },
@@ -179,6 +184,30 @@ const DocumentSchema = new Schema(
     artifactSet: {
       type: ArtifactSetSchema,
     },
+    // Server clock (ms) of the retire mark: the document was replaced by a
+    // newer stored write and must take no more in-place buffer writes.
+    // Downloads and reads are unaffected.
+    retiredAt: {
+      type: Number,
+      default: null,
+    },
+    // Write state: a counter that only grows and the writers that may be mid-write. Hidden from every
+    // query (`select: false`, lean or not) so no reader returns or re-saves them; nothing writes them yet.
+    writeSeq: {
+      type: Number,
+      select: false,
+    },
+    writers: {
+      type: [
+        {
+          t: { type: String },
+          until: { type: Number },
+          _id: false,
+        },
+      ],
+      select: false,
+      default: undefined,
+    },
   },
   {
     timestamps: {
@@ -200,9 +229,11 @@ DocumentSchema.index(
     partialFilterExpression: { idempotencyKey: { $type: 'string' } },
   },
 );
-// One document per content revision of a virtual record, so two presigns of
-// the same revision racing each other settle on one. Its prefix also serves
-// listing and purging a virtual record's revisions.
+// One document per set key (`artifactSet.rev`: a revision's shared set, or a
+// stored write's own `{rev}-{writeId}`), so two presigns of the same set racing
+// each other settle on one. Its prefix also serves listing and purging a virtual
+// record's sets. Keep it as it is: builds from before writes had their own sets
+// declare it too, and rebuild it at boot.
 DocumentSchema.index(
   { orgId: 1, 'artifactSet.virtualRecordId': 1, 'artifactSet.rev': 1 },
   {
@@ -214,4 +245,7 @@ DocumentSchema.index(
 );
 
 // Create and export the model
-export const DocumentModel = mongoose.model<DocumentModel>('Document', DocumentSchema);
+export const DocumentModel = mongoose.model<DocumentModel>(
+  'Document',
+  DocumentSchema,
+);

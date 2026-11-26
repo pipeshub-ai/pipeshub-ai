@@ -12,9 +12,10 @@ import logging
 import os
 from typing import Any, Optional
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import SUPPORTED_CODE_FILE_EXTENSIONS, Connectors
 from app.models.entities import ArtifactType
 from app.sandbox.models import ArtifactOutput, ExecutionResult
+from app.sandbox.roots import sandbox_roots
 from app.utils.conversation_tasks import _rows_to_csv_bytes, register_task
 
 logger = logging.getLogger(__name__)
@@ -43,8 +44,28 @@ MIME_TO_ARTIFACT_TYPE: dict[str, ArtifactType] = {
 }
 
 
-def infer_artifact_type(mime_type: str) -> ArtifactType:
+# Source files go by extension: their MIME guesses are unreliable
+# (`mimetypes` reads ".ts" as an MPEG stream or a Qt translation file).
+# HTML and Markdown stay DOCUMENT through their MIME.
+CODE_FILE_EXTENSIONS = frozenset(SUPPORTED_CODE_FILE_EXTENSIONS - {"html", "htm", "md"})
+
+
+def infer_artifact_type(mime_type: str, file_name: str = "") -> ArtifactType:
+    if os.path.splitext(file_name)[1].lower().lstrip(".") in CODE_FILE_EXTENSIONS:
+        return ArtifactType.CODE
     return MIME_TO_ARTIFACT_TYPE.get(mime_type, ArtifactType.OTHER)
+
+
+async def _record_provenance(graph_provider: Any, artifact_id: str, provenance: Any) -> None:  # noqa: ANN401
+    """Version 1 of a record `create_artifact_record` just made."""
+    if provenance is None:
+        return
+    from app.agents.agent_loop.artifact_provenance import record_output_provenance
+    from app.services.artifact_registry import ArtifactRegistryService
+
+    await record_output_provenance(
+        ArtifactRegistryService(graph_provider, blob_store=None), artifact_id, 1, provenance,
+    )
 
 
 async def create_artifact_record(
@@ -81,7 +102,7 @@ async def create_artifact_record(
         actor=actor,
         document_id=document_id,
         name=file_name,
-        artifact_type=infer_artifact_type(mime_type),
+        artifact_type=infer_artifact_type(mime_type, file_name),
         mime_type=mime_type,
         size_bytes=size_bytes,
         conversation_id=conversation_id,
@@ -107,8 +128,12 @@ async def save_query_result_csv(
     rows: list[tuple],
     file_name: str,
     source_tool: str,
+    provenance: Any = None,  # noqa: ANN401 - ArtifactProvenance
 ) -> dict[str, Any] | None:
     """Store a SQL tool's full result as a CSV artifact record of the conversation.
+
+    ``provenance`` is stored for the record when given; without it the export's
+    sources are unknown and a shared viewer does not see it (SS0).
 
     With a user and graph, this writes what `VersionManager.create` writes —
     a version-enabled blob plus the record/artifact/OWNER-edge triple — so the
@@ -168,6 +193,8 @@ async def save_query_result_csv(
                 entry["version"] = 1
             except Exception:
                 logger.exception("Failed to create ArtifactRecord for CSV export %s", file_name)
+            else:
+                await _record_provenance(graph_provider, entry["recordId"], provenance)
         # Without a record or a signed URL nobody can download it; storage itself
         # has no user-facing route, so report the export as failed.
         if not entry.get("recordId") and not entry.get("signedUrl"):
@@ -233,7 +260,7 @@ async def upload_bytes_artifact(
             metadata, version = await registry.register_output(
                 actor=actor,
                 name=file_name,
-                artifact_type=infer_artifact_type(mime_type),
+                artifact_type=infer_artifact_type(mime_type, file_name),
                 mime_type=mime_type,
                 content=file_bytes,
                 conversation_id=conversation_id,
@@ -291,11 +318,13 @@ async def upload_artifacts_to_blob(
     graph_provider: Any = None,
     connector_name: Connectors = Connectors.CODING_SANDBOX,
     source_tool: str | None = None,
+    provenance: Any = None,  # noqa: ANN401 - ArtifactProvenance
 ) -> list[dict[str, Any]]:
     """Upload a list of ArtifactOutput files to blob storage.
 
     When ``user_id`` and ``graph_provider`` are provided, also creates
-    ArtifactRecords in ArangoDB with permission edges.
+    ArtifactRecords in ArangoDB with permission edges, and stores
+    ``provenance`` for each (SS0: without it a shared viewer never sees them).
 
     Returns a list of upload info dicts, each containing
     ``fileName``, ``mimeType``, ``sizeBytes``, ``signedUrl``/``downloadUrl``,
@@ -321,7 +350,7 @@ async def upload_artifacts_to_blob(
                 **upload_info,
                 "mimeType": artifact.mime_type,
                 "sizeBytes": artifact.size_bytes,
-                "artifactType": infer_artifact_type(artifact.mime_type).value,
+                "artifactType": infer_artifact_type(artifact.mime_type, artifact.file_name).value,
             }
 
             if user_id and graph_provider:
@@ -345,6 +374,8 @@ async def upload_artifacts_to_blob(
                         logger.exception(
                             "Failed to create ArtifactRecord for %s", artifact.file_name,
                         )
+                    else:
+                        await _record_provenance(graph_provider, record_id, provenance)
 
             uploaded.append(result_entry)
         except Exception:
@@ -364,6 +395,7 @@ def schedule_artifact_upload_task(
     graph_provider: Any = None,
     connector_name: Connectors = Connectors.CODING_SANDBOX,
     source_tool: str | None = None,
+    provenance: Any = None,  # noqa: ANN401 - ArtifactProvenance
 ) -> None:
     """Schedule artifact uploads as a background conversation task.
 
@@ -396,6 +428,7 @@ def schedule_artifact_upload_task(
                 graph_provider=graph_provider,
                 connector_name=connector_name,
                 source_tool=source_tool,
+                provenance=provenance,
             )
             if results:
                 return {"type": "artifacts", "artifacts": results}
@@ -415,13 +448,8 @@ def _read_file_bytes(path: str, max_bytes: int = MAX_ARTIFACT_BYTES) -> bytes | 
     artifact. Returns ``None`` if the file is outside the sandbox roots, not
     readable, or exceeds the size cap.
     """
-    import tempfile
-
-    tmp = os.path.realpath(tempfile.gettempdir())
-    sandbox_roots = (
-        os.path.realpath(os.path.join(tmp, "pipeshub_sandbox")),
-        os.path.realpath(os.path.join(tmp, "pipeshub_sandbox_docker")),
-    )
+    # The executors' own roots (R13-ROOT), resolved by the one function they are made from.
+    allowed = sandbox_roots()
     if os.path.islink(path):
         # A symlink artifact could point at a host file; realpath containment
         # below catches an outside target, but refuse links outright (SB-5).
@@ -431,7 +459,7 @@ def _read_file_bytes(path: str, max_bytes: int = MAX_ARTIFACT_BYTES) -> bytes | 
     resolved = os.path.realpath(path)
     if not any(
         resolved.startswith(root + os.sep) or resolved == root
-        for root in sandbox_roots
+        for root in allowed
     ):
         logger.warning("Refusing to read file outside sandbox roots: %s", path)
         return None

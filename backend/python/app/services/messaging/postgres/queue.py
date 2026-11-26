@@ -15,9 +15,16 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from app.services.pg_runtime import QUEUE_CHANNEL, RuntimeDb
+from app.utils.log_redaction import redact_secrets_in_text
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Iterator
 
 _GROUPS = """/* pipeshub:queue.groups */
 SELECT group_id FROM platform.queue_groups WHERE topic = $1 FOR SHARE"""
@@ -53,13 +60,15 @@ upd AS (
   UPDATE platform.queue_deliveries d
   SET status = 'claimed', attempts = d.attempts + 1, locked_until = now() + make_interval(secs => $4::double precision), consumer = $5
   FROM picked p WHERE d.group_id = p.group_id AND d.topic = p.topic AND d.message_id = p.message_id
-  RETURNING d.topic, d.message_id, d.attempts)
-SELECT u.topic, u.message_id, u.attempts, m.value, m.msg_key
+  RETURNING d.topic, d.message_id, d.attempts, d.admission_ms, d.admission_mac)
+SELECT u.topic, u.message_id, u.attempts, m.value, m.msg_key, u.admission_ms, u.admission_mac
 FROM upd u JOIN platform.queue_messages m ON m.id = u.message_id ORDER BY u.message_id"""
 # Per-key order. Serialised per group by a transaction-scoped advisory lock, so a claimer sees what the previous one claimed and
 # committed. A delivery is handed out only when no other delivery of its key (same group and topic) is open AND earlier, and none is
 # held by a live claim whatever its id (ids follow the sequence, not commit order: a late-committing earlier message must not start
-# beside a later one already running). Both are probes of queue_deliveries_key, so the claim costs O(batch), not O(backlog).
+# beside a later one already running). Both are probes of queue_deliveries_key, so the claim costs O(batch), not O(backlog). Group and
+# topic are compared as (col || '') so that no other index can serve the probe: PostgreSQL 18 skip-scans the primary key on the topic alone
+# and walks the whole backlog for each candidate.
 _LOCK_ORDERED = """/* pipeshub:queue.lockordered */
 SELECT pg_advisory_xact_lock(7401, hashtext($1 || '/' || $2))"""
 _CLAIM_ORDERED = """/* pipeshub:queue.claimordered */
@@ -69,7 +78,7 @@ WITH picked AS (
     AND ((d.status = 'ready' AND d.visible_at <= now()) OR (d.status = 'claimed' AND d.locked_until <= now()))
     AND (d.msg_key IS NULL OR NOT EXISTS (
       SELECT 1 FROM platform.queue_deliveries e
-      WHERE e.msg_key = d.msg_key AND (e.group_id || '') = $1 AND e.topic = ($2::text[])[1] AND e.message_id <> d.message_id
+      WHERE e.msg_key = d.msg_key AND (e.group_id || '') = $1 AND (e.topic || '') = ($2::text[])[1] AND e.message_id <> d.message_id
         AND e.status <> 'dead'   -- open: ready or claimed (an acked row is gone); not IN (...), see queue_deliveries_key
         AND (e.message_id < d.message_id OR (e.status = 'claimed' AND e.locked_until > now()))))
   ORDER BY d.message_id LIMIT $3 FOR UPDATE OF d SKIP LOCKED),
@@ -77,8 +86,8 @@ upd AS (
   UPDATE platform.queue_deliveries d
   SET status = 'claimed', attempts = d.attempts + 1, locked_until = now() + make_interval(secs => $4::double precision), consumer = $5
   FROM picked p WHERE d.group_id = p.group_id AND d.topic = p.topic AND d.message_id = p.message_id
-  RETURNING d.topic, d.message_id, d.attempts)
-SELECT u.topic, u.message_id, u.attempts, m.value, m.msg_key
+  RETURNING d.topic, d.message_id, d.attempts, d.admission_ms, d.admission_mac)
+SELECT u.topic, u.message_id, u.attempts, m.value, m.msg_key, u.admission_ms, u.admission_mac
 FROM upd u JOIN platform.queue_messages m ON m.id = u.message_id ORDER BY u.message_id"""
 # Seconds until the next delivery of this group becomes claimable (a retry backoff ending, or a claim expiring); NULL when none is open.
 _NEXT_DUE = """/* pipeshub:queue.nextdue */
@@ -89,8 +98,14 @@ DELETE FROM platform.queue_deliveries WHERE group_id = $1 AND topic = $2 AND mes
 _NACK = """/* pipeshub:queue.nack */
 UPDATE platform.queue_deliveries SET status = 'ready', locked_until = NULL, consumer = NULL, last_error = $5,
   attempts = attempts - $7::int,
-  visible_at = now() + make_interval(secs => $6::double precision)
+  visible_at = now() + make_interval(secs => $6::double precision),
+  admission_ms = COALESCE($8::bigint, admission_ms), admission_mac = COALESCE($9::text, admission_mac)
 WHERE group_id = $1 AND topic = $2 AND message_id = $3 AND attempts = $4 AND status = 'claimed'"""
+_ADMIT = """/* pipeshub:queue.admit */
+UPDATE platform.queue_deliveries SET admission_ms = $5, admission_mac = $6
+WHERE group_id = $1 AND topic = $2 AND message_id = $3 AND attempts = $4 AND status = 'claimed'"""
+_REISSUE = """/* pipeshub:queue.reissue */
+UPDATE platform.queue_messages SET value = $2 WHERE id = $1"""
 _DEAD = """/* pipeshub:queue.dead */
 UPDATE platform.queue_deliveries SET status = 'dead', locked_until = NULL, visible_at = now(), last_error = $5
 WHERE group_id = $1 AND topic = $2 AND message_id = $3 AND attempts = $4 AND status = 'claimed'"""
@@ -120,6 +135,29 @@ _TOPICS = """/* pipeshub:queue.topics */
 SELECT DISTINCT topic FROM platform.queue_groups UNION SELECT DISTINCT topic FROM platform.queue_messages ORDER BY 1"""
 
 
+#: Set by :func:`joined_to`: runs a function on the open unit of work of a write that the published messages must commit with.
+_JOINED: ContextVar[Callable[[Callable[[Any], Awaitable[None]]], Awaitable[Any]] | None] = ContextVar("pg_queue_joined", default=None)
+
+
+@contextmanager
+def joined_to(run: Callable[[Callable[[Any], Awaitable[None]]], Awaitable[Any]]) -> Iterator[None]:
+    """Publishes in the block go into the transaction ``run`` executes in, so they are delivered exactly when it commits."""
+    token = _JOINED.set(run)
+    try:
+        yield
+    finally:
+        _JOINED.reset(token)
+
+
+def joined() -> bool:
+    return _JOINED.get() is not None
+
+
+def stored_error(error: str) -> str:
+    """The text kept in ``last_error``: redacted first, then cut, so the cut cannot leave half a secret."""
+    return redact_secrets_in_text(error)[:500]
+
+
 @dataclass(frozen=True, slots=True)
 class Delivery:
     topic: str
@@ -127,6 +165,8 @@ class Delivery:
     attempts: int
     value: str
     key: str | None
+    admission_ms: int | None = None   # when a consumer admitted this delivery's message, and the MAC that proves it (see app.core.envelope)
+    admission_mac: str | None = None
 
 
 class PgQueue:
@@ -137,17 +177,27 @@ class PgQueue:
         return (await self.rt.db()).runtime_uow(write=True)
 
     async def publish(self, topic: str, items: list[tuple[str | None, str]]) -> None:
-        """Append messages in order; one transaction, one NOTIFY."""
+        """Append messages in order; one transaction, one NOTIFY. Inside :func:`joined_to`, the joined transaction instead."""
         if not items:
             return
+        if (run := _JOINED.get()) is not None:
+            async def at_commit(tx: Any) -> None:  # noqa: ANN401 - the unit of work
+                # Written last, right before COMMIT: the group read's FOR SHARE, which a group being created waits for (ensure_group),
+                # is then held no longer than by a publish in a transaction of its own, not for the rest of the joined write.
+                tx.before_commit.append(lambda t: self.publish_in(t, topic, items))
+
+            await run(at_commit)
+            return
         async with await self._write() as tx:
-            # FOR SHARE on the group rows conflicts with add_group's table lock: a group is either seen here or backfilled from this
-            # message, never neither.
-            groups = [r["group_id"] for r in await tx.fetch(_GROUPS, topic)]
-            await tx.execute(
-                _INSERT, topic, [k for k, _ in items], [v for _, v in items], groups
-            )
-            await tx.execute(_NOTIFY, topic)
+            await self.publish_in(tx, topic, items)
+
+    @staticmethod
+    async def publish_in(tx: Any, topic: str, items: list[tuple[str | None, str]]) -> None:  # noqa: ANN401 - the unit of work
+        # FOR SHARE on the group rows conflicts with add_group's table lock: a group is either seen here or backfilled from this
+        # message, never neither.
+        groups = [r["group_id"] for r in await tx.fetch(_GROUPS, topic)]
+        await tx.execute(_INSERT, topic, [k for k, _ in items], [v for _, v in items], groups)
+        await tx.execute(_NOTIFY, topic)  # sent at COMMIT, so a consumer wakes only for what committed
 
     async def ensure_group(
         self, topic: str, group_id: str, *, from_start: bool, ephemeral: bool = False
@@ -220,7 +270,7 @@ class PgQueue:
             )
         return [
             Delivery(
-                r["topic"], r["message_id"], r["attempts"], r["value"], r["msg_key"]
+                r["topic"], r["message_id"], r["attempts"], r["value"], r["msg_key"], r["admission_ms"], r["admission_mac"]
             )
             for r in rows
         ]
@@ -231,33 +281,54 @@ class PgQueue:
 
     async def ack(self, group_id: str, d: Delivery) -> bool:
         async with await self._write() as tx:
+            return await self.ack_in(tx, group_id, d)
+
+    @staticmethod
+    async def ack_in(tx: Any, group_id: str, d: Delivery) -> bool:  # noqa: ANN401 - the unit of work
+        """The ack as one statement of the caller's unit of work (the consumer inbox records the event in the same one)."""
+        return (await tx.execute(_ACK, group_id, d.topic, d.message_id, d.attempts)).endswith(" 1")
+
+    async def admit(self, group_id: str, d: Delivery, admission_ms: int, admission_mac: str) -> bool:
+        """Record that this claim opened its message. Applied only while the claim still stands, so a consumer that lost the row writes nothing."""
+        async with await self._write() as tx:
             return (
-                await tx.execute(_ACK, group_id, d.topic, d.message_id, d.attempts)
+                await tx.execute(_ADMIT, group_id, d.topic, d.message_id, d.attempts, admission_ms, admission_mac)
             ).endswith(" 1")
 
     async def nack(
-        self, group_id: str, d: Delivery, delay_s: float, error: str = "", *, refund: bool = False
+        self, group_id: str, d: Delivery, delay_s: float, error: str = "", *, refund: bool = False, value: str | None = None,
+        admission: tuple[int, str] | None = None,
     ) -> bool:
-        """Make the delivery visible again after ``delay_s``. ``refund`` gives back the attempt the claim counted (queue time, not failure)."""
+        """Make the delivery visible again after ``delay_s``. ``refund`` gives back the attempt the claim counted (queue time, not failure).
+
+        ``value`` replaces the stored message in the same transaction: the same event, signed again, so a message that waits
+        through many hand-backs does not outlive its envelope. It is applied only when this nack took effect.
+        ``admission`` (stamp, MAC) renews the delivery's admission in the same statement; None leaves it as it was.
+        """
         async with await self._write() as tx:
-            return (
+            nacked = (
                 await tx.execute(
                     _NACK,
                     group_id,
                     d.topic,
                     d.message_id,
                     d.attempts,
-                    error[:500],
+                    stored_error(error),
                     delay_s,
                     1 if refund else 0,
+                    admission[0] if admission else None,
+                    admission[1] if admission else None,
                 )
             ).endswith(" 1")
+            if nacked and value is not None:
+                await tx.execute(_REISSUE, d.message_id, value)
+            return nacked
 
     async def dead(self, group_id: str, d: Delivery, error: str = "") -> bool:
         async with await self._write() as tx:
             return (
                 await tx.execute(
-                    _DEAD, group_id, d.topic, d.message_id, d.attempts, error[:500]
+                    _DEAD, group_id, d.topic, d.message_id, d.attempts, stored_error(error)
                 )
             ).endswith(" 1")
 
@@ -320,4 +391,4 @@ class PgQueue:
             return [r["topic"] for r in await tx.fetch(_TOPICS)]
 
 
-__all__ = ["Delivery", "PgQueue", "QUEUE_CHANNEL"]
+__all__ = ["Delivery", "PgQueue", "QUEUE_CHANNEL", "joined", "joined_to"]

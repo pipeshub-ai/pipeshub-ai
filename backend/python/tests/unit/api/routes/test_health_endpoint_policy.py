@@ -30,7 +30,7 @@ def _request() -> MagicMock:
 
 
 def _config(endpoint: str | None) -> dict:
-    return {"provider": "openAICompatible", "configuration": {"model": "m", "endpoint": endpoint}}
+    return {"provider": "openAICompatible", "configuration": {"model": "m", "endpoint": endpoint, "apiKey": "k"}}
 
 
 def _body(response) -> dict:

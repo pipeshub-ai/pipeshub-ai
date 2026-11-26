@@ -18,6 +18,7 @@ from app.connectors.sources.microsoft.outlook_individual.connector import (
     OutlookIndividualConnector,
 )
 from app.models.entities import RecordType
+from tests.support.data_store import runs_in_its_transaction
 
 
 @pytest.fixture
@@ -42,7 +43,7 @@ def mock_data_store_provider():
     tx.get_record_by_external_id = AsyncMock(return_value=None)
     tx.delete_record_by_external_id = AsyncMock()
     provider.transaction.return_value = tx
-    return provider
+    return runs_in_its_transaction(provider)
 
 
 @pytest.fixture
@@ -727,6 +728,43 @@ class TestDeltaAndMessageProcessing:
         )
 
         assert updates == []
+
+    @pytest.mark.asyncio
+    async def test_individual_keeps_a_stored_attachment_listed_without_a_content_type(self, connector) -> None:
+        attachment = MagicMock(id="a1", odata_type="#microsoft.graph.fileAttachment", content_type=None,
+                               last_modified_date_time=None)
+        connector._get_message_attachments_external = AsyncMock(return_value=[attachment])
+        connector._get_existing_record = AsyncMock(return_value=MagicMock(
+            id="rec-a1", external_revision_id=None, external_record_group_id="folder-1"))
+        connector.data_entities_processor.note_kept_records = MagicMock()
+        kept_ids: set[str] = set()
+
+        updates = await connector._process_email_attachments_with_folder(
+            "org-1", MagicMock(), MagicMock(id="msg-1", web_link="https://x"), [], "folder-1", "Inbox",
+            "mail-record-id", kept_ids=kept_ids,
+        )
+
+        assert updates == []
+        assert kept_ids == {"a1"}
+        connector.data_entities_processor.note_kept_records.assert_called_once_with(connector.connector_id, ["rec-a1"])
+
+    @pytest.mark.asyncio
+    async def test_individual_does_not_keep_an_unstored_attachment_without_content_type(self, connector) -> None:
+        attachment = MagicMock(id="a1", odata_type="#microsoft.graph.fileAttachment", content_type=None,
+                               last_modified_date_time=None)
+        connector._get_message_attachments_external = AsyncMock(return_value=[attachment])
+        connector._get_existing_record = AsyncMock(return_value=None)
+        connector.data_entities_processor.note_kept_records = MagicMock()
+        kept_ids: set[str] = set()
+
+        updates = await connector._process_email_attachments_with_folder(
+            "org-1", MagicMock(), MagicMock(id="msg-1", web_link="https://x"), [], "folder-1", "Inbox",
+            "mail-record-id", kept_ids=kept_ids,
+        )
+
+        assert updates == []
+        assert kept_ids == {"a1"}
+        connector.data_entities_processor.note_kept_records.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_message_attachments_external_raises_on_api_failure(self, connector):

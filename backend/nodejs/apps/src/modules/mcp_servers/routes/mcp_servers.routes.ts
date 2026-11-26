@@ -19,12 +19,16 @@ import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
 import {
   listMcpCatalog,
+  listPopularMcpServers,
   getMcpCatalogTemplate,
   listMcpInstances,
   createMcpInstance,
   getMcpInstance,
   updateMcpInstance,
   deleteMcpInstance,
+  getMcpLogos,
+  setMcpInstanceLogo,
+  removeMcpInstanceLogo,
   authenticateMcpInstance,
   updateMcpCredentials,
   removeMcpCredentials,
@@ -47,11 +51,18 @@ import {
   getMyMcpToolRules,
   updateMyMcpToolRules,
 } from '../controller/mcp_servers.controller';
-import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import {
+  bindPathLogFields,
+  guardPathParams,
+} from '../../../libs/middlewares/safe-path-params.middleware';
 
 export function createMcpServersRouter(container: Container): Router {
   const router = Router();
   guardPathParams(router, 'typeId', 'instanceId', 'agentKey');
+  bindPathLogFields(router, {
+    instanceId: 'mcp_server_id',
+    agentKey: 'agent_id',
+  });
   const config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
 
@@ -59,10 +70,23 @@ export function createMcpServersRouter(container: Container): Router {
 
   router.get('/catalog', authMiddleware.authenticate, requireScopes(OAuthScopeNames.MCP_READ), listMcpCatalog(config));
   router.get('/catalog/:typeId', authMiddleware.authenticate, requireScopes(OAuthScopeNames.MCP_READ), getMcpCatalogTemplate(config));
+  router.get(
+    '/popular',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.MCP_READ),
+    listPopularMcpServers(config),
+  );
 
   // ---- Discovery / consumption (before '/instances/:instanceId' so 'my-mcp-servers' never matches as an id) --
 
   router.get('/my-mcp-servers', authMiddleware.authenticate, requireScopes(OAuthScopeNames.MCP_READ), getMyMcpServers(config));
+  // The uploaded logos of the custom servers the caller can see.
+  router.get(
+    '/logos',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.MCP_READ),
+    getMcpLogos(config),
+  );
 
   // ---- OAuth callback / discovery (state-keyed, instance-agnostic paths) --
 
@@ -80,6 +104,19 @@ export function createMcpServersRouter(container: Container): Router {
   router.put('/instances/:instanceId', authMiddleware.authenticate, requireScopes(OAuthScopeNames.MCP_WRITE), updateMcpInstance(config));
   router.delete('/instances/:instanceId', authMiddleware.authenticate, requireScopes(OAuthScopeNames.MCP_DELETE), deleteMcpInstance(config));
   router.get('/instances/:instanceId/tools', authMiddleware.authenticate, requireScopes(OAuthScopeNames.MCP_READ), getMcpInstanceTools(config));
+  router.put(
+    '/instances/:instanceId/logo',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.MCP_WRITE),
+    setMcpInstanceLogo(config),
+  );
+  // Removing a logo edits the server and destroys nothing, so it needs write, not delete.
+  router.delete(
+    '/instances/:instanceId/logo',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.MCP_WRITE),
+    removeMcpInstanceLogo(config),
+  );
   // Tool approvals: the caller's own rules.
   router.get(
     '/instances/:instanceId/my-tool-rules',

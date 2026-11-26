@@ -12,8 +12,14 @@ import {
   ExpiredTokenError,
   InvalidGrantError,
   InvalidScopeError,
+  InvalidTargetError,
 } from '../../../../src/libs/errors/oauth.errors'
-import { createMockLogger } from '../../../helpers/mock-logger'
+import { createMockLogger, createSnakeCaseLogKeyGuard } from '../../../helpers/mock-logger'
+import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
+import { NO_APP_CREATOR } from '../../../../src/libs/repositories/oauth-app'
+
+// OAuthAccessToken.findOne is read with .lean(); a fake has to answer it.
+const leanResult = (value: unknown): any => ({ lean: () => Promise.resolve(value) })
 
 // The re-read after a user grant stores its tokens.
 function stubCurrentApp(doc: { allowedScopes: string[]; knowledgeLimit?: unknown } | null) {
@@ -50,7 +56,11 @@ describe('OAuthTokenService', () => {
     service = new OAuthTokenService(mockLogger, jwtConfig, testIssuer)
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -80,6 +90,59 @@ describe('OAuthTokenService', () => {
       createdBy: new Types.ObjectId(),
     } as any
 
+    describe('resource indicators (RFC 8707)', () => {
+      const mcp = 'http://test-issuer.com/mcp'
+
+      it('names the /mcp audience for that resource, and none when no resource is named', () => {
+        expect(service.mcpResource).to.equal(mcp)
+        expect(service.audienceFor(undefined)).to.be.undefined
+        expect(service.audienceFor('')).to.be.undefined
+        expect(service.audienceFor(mcp)).to.equal(mcp)
+        expect(service.audienceFor(`${mcp}/`)).to.equal(mcp)
+        expect(service.audienceFor([mcp, mcp])).to.equal(mcp)
+      })
+
+      it('refuses a resource it does not issue tokens for', () => {
+        for (const resource of ['https://other.example/api', [mcp, 'https://other.example/api']]) {
+          expect(() => service.audienceFor(resource)).to.throw(InvalidTargetError)
+        }
+      })
+
+      it('stamps the audience on the access token and keeps it in the refresh token', async () => {
+        sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        const result = await service.generateTokens(
+          mockApp, new Types.ObjectId().toString(), new Types.ObjectId().toString(),
+          ['kb:read', 'offline_access'], true, undefined, undefined, { audience: mcp },
+        )
+
+        expect((jwt.decode(result.accessToken) as any).aud).to.equal(mcp)
+        expect((jwt.decode(result.refreshToken!) as any).resource).to.equal(mcp)
+      })
+
+      it('issues tokens without an audience when none is asked for, as before', async () => {
+        sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        const result = await service.generateTokens(mockApp, null, new Types.ObjectId().toString(), ['org:read'], false)
+        expect(jwt.decode(result.accessToken)).to.not.have.property('aud')
+      })
+
+      it('refuses a refresh that swaps the resource, before touching the stored token', async () => {
+        const refreshToken = jwt.sign(
+          { isRefreshToken: true, userId: 'u1', orgId: 'o1', resource: mcp },
+          testSecret,
+        )
+        const findOne = sinon.stub(OAuthRefreshToken, 'findOne').resolves(null)
+        try {
+          await service.refreshTokens({ clientId: 'c1', orgId: 'o1' } as any, refreshToken, undefined, 'https://other.example/api')
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidTargetError)
+        }
+        expect(findOne.called).to.be.false
+      })
+    })
+
     it('should generate access token without refresh token', async () => {
       sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
 
@@ -95,6 +158,65 @@ describe('OAuthTokenService', () => {
       expect(result.tokenType).to.equal('Bearer')
       expect(result.expiresIn).to.equal(3600)
       expect(result.refreshToken).to.be.undefined
+    })
+
+    it('names no creator in the tokens of a client registered once for the instance; an app a person made keeps theirs', async () => {
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+      const userId = new Types.ObjectId().toString()
+      const org = new Types.ObjectId().toString()
+      const claims = async (app: any) => {
+        const t = await service.generateTokens(app, userId, org, ['org:read', 'offline_access'], true)
+        return [jwt.decode(t.accessToken) as any, jwt.decode(t.refreshToken as string) as any]
+      }
+
+      // A dynamic client stored before this change still names the person it borrowed.
+      for (const app of [
+        { ...mockApp, isDynamic: true, createdBy: new Types.ObjectId().toString() },
+        { ...mockApp, clientId: FIRST_PARTY_DEVICE_CLIENT_ID, createdBy: NO_APP_CREATOR },
+        { ...mockApp, createdBy: NO_APP_CREATOR },
+      ]) {
+        for (const payload of await claims(app)) {
+          expect(payload, app.clientId).to.not.have.property('createdBy')
+          expect(payload.userId).to.equal(userId)
+        }
+      }
+
+      const creator = new Types.ObjectId().toString()
+      for (const payload of await claims({ ...mockApp, createdBy: creator })) {
+        expect(payload.createdBy).to.equal(creator)
+      }
+    })
+
+    it('marks only a token that acts as the app\'s service account', async () => {
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      const org = new Types.ObjectId().toString()
+      const serviceAccount = new Types.ObjectId()
+      const marker = async (app: any, userId: string | null) =>
+        (jwt.decode((await service.generateTokens(app, userId, org, ['org:read'], false)).accessToken) as any)
+          .actsAsServiceAccount
+
+      expect(await marker({ ...mockApp, tokenIdentityUserId: serviceAccount }, null)).to.equal(true)
+      // An app that still acts as its creator speaks as a person.
+      expect(await marker(mockApp, null)).to.equal(undefined)
+      // A user grant on the same app speaks as the user who granted it.
+      expect(await marker({ ...mockApp, tokenIdentityUserId: serviceAccount }, new Types.ObjectId().toString()))
+        .to.equal(undefined)
+      // An instance app names no identity at all.
+      expect(await marker({ ...mockApp, tokenIdentityUserId: serviceAccount, isDynamic: true }, null))
+        .to.equal(undefined)
+    })
+
+    it('stamps the agent registration on the access token only when asked', async () => {
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      const org = new Types.ObjectId().toString()
+      const withReg = await service.generateTokens(
+        mockApp, null, org, ['org:read'], false, undefined, undefined,
+        { agentRegistrationId: 'reg_' + 'a'.repeat(24) },
+      )
+      expect((jwt.decode(withReg.accessToken) as any).agent_registration_id).to.equal('reg_' + 'a'.repeat(24))
+      const without = await service.generateTokens(mockApp, null, org, ['org:read'], false)
+      expect(jwt.decode(without.accessToken)).to.not.have.property('agent_registration_id')
     })
 
     it('should generate access and refresh tokens when offline_access scope present', async () => {
@@ -353,11 +475,13 @@ describe('OAuthTokenService', () => {
       }
       const token = jwt.sign(payload, testSecret, { algorithm: 'HS256' })
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ _id: 'row-1', isRevoked: false } as any))
 
       const result = await service.verifyAccessToken(token)
       expect(result.userId).to.equal('user-1')
       expect(result.client_id).to.equal('client-1')
+      // The stored row's id, which token lists and revocation use, not the jti claim.
+      expect(result.tokenRowId).to.equal('row-1')
     })
 
     it('rejects a signed token whose scope claim is empty or missing', async () => {
@@ -369,7 +493,7 @@ describe('OAuthTokenService', () => {
         tokenType: 'oauth',
         jti: 'jti-1',
       }
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false } as any))
 
       for (const claims of [{ ...base, scope: '' }, base]) {
         const token = jwt.sign(claims, testSecret, { algorithm: 'HS256' })
@@ -397,7 +521,7 @@ describe('OAuthTokenService', () => {
 
       const findOneStub = sinon
         .stub(OAuthAccessToken, 'findOne')
-        .resolves({ isRevoked: false } as any)
+        .returns(leanResult({ isRevoked: false } as any))
 
       const result = await service.verifyAccessToken(`phpat_${token}`)
       expect(result.userId).to.equal('user-1')
@@ -405,10 +529,100 @@ describe('OAuthTokenService', () => {
       // The prefix must never leak into the hash lookup — a phpat_-prefixed
       // token has to resolve to the same stored hash as its bare JWT.
       const bareResult = await service.verifyAccessToken(token)
-      expect(findOneStub.firstCall.args[0].tokenHash).to.deep.equal(
-        findOneStub.secondCall.args[0].tokenHash,
+      expect(findOneStub.firstCall.args[0]!.tokenHash).to.deep.equal(
+        findOneStub.secondCall.args[0]!.tokenHash,
       )
       expect(bareResult.userId).to.equal('user-1')
+    })
+
+    describe('knowledge limit', () => {
+      const signedLimit = { apps: ['signed-app'], recordGroups: [], records: [] }
+      const storedLimit = { apps: [], recordGroups: ['stored-rg'], records: [] }
+      const signed = (clientId: string) =>
+        jwt.sign(
+          {
+            userId: 'user-1', orgId: 'org-1', iss: testIssuer, scope: 'org:read',
+            client_id: clientId, tokenType: 'oauth', jti: 'jti-kl', knowledgeLimit: signedLimit,
+          },
+          testSecret,
+          { algorithm: 'HS256' },
+        )
+
+      it("answers with a personal access token's stored limit, which its owner may have changed", async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false, knowledgeLimit: storedLimit } as any))
+
+        const result = await service.verifyAccessToken(`phpat_${signed('pat-system:org-1')}`)
+
+        expect(result.knowledgeLimit).to.deep.equal(storedLimit)
+      })
+
+      it('drops the signed limit of a personal access token whose owner removed it', async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false } as any))
+
+        const result = await service.verifyAccessToken(signed('pat-system:org-1'))
+
+        expect(result.knowledgeLimit).to.equal(undefined)
+      })
+
+      // A stored value that is neither absent nor a readable limit must not
+      // be read as "everything": the token is refused until its owner saves it again.
+      const unreadable: Array<[string, unknown]> = [
+        ['false', false],
+        ['a string', 'app-1'],
+        ['a list that is not an array', { apps: 'app-1', recordGroups: [], records: [] }],
+        ['ids that are not strings', { apps: [1], recordGroups: [], records: [] }],
+        ['three empty lists', { apps: [], recordGroups: [], records: [] }],
+      ]
+      for (const [what, stored] of unreadable) {
+        it(`refuses a personal access token whose stored limit is ${what}`, async () => {
+          sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false, knowledgeLimit: stored } as any))
+
+          try {
+            await service.verifyAccessToken(signed('pat-system:org-1'))
+            expect.fail('Should have thrown')
+          } catch (error) {
+            expect(error).to.be.instanceOf(InvalidTokenError)
+          }
+        })
+      }
+
+      it('reads a stored limit that leaves out an empty list', async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false, knowledgeLimit: { apps: ['app-1'] } } as any))
+
+        const result = await service.verifyAccessToken(signed('pat-system:org-1'))
+
+        expect(result.knowledgeLimit).to.deep.equal({ apps: ['app-1'], recordGroups: [], records: [] })
+      })
+
+      it('treats a stored null as everything', async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false, knowledgeLimit: null } as any))
+
+        const result = await service.verifyAccessToken(signed('pat-system:org-1'))
+
+        expect(result.knowledgeLimit).to.equal(undefined)
+      })
+
+      it('verifies a token signed without a client id, leaving its claims alone', async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false, knowledgeLimit: storedLimit } as any))
+        const token = jwt.sign(
+          { userId: 'user-1', orgId: 'org-1', iss: testIssuer, scope: 'org:read', tokenType: 'oauth', jti: 'jti-nc' },
+          testSecret,
+          { algorithm: 'HS256' },
+        )
+
+        const result = await service.verifyAccessToken(token)
+
+        expect(result.userId).to.equal('user-1')
+        expect(result.knowledgeLimit).to.equal(undefined)
+      })
+
+      it("keeps an OAuth app token's signed limit, the one its user agreed to", async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false, knowledgeLimit: storedLimit } as any))
+
+        const result = await service.verifyAccessToken(signed('client-1'))
+
+        expect(result.knowledgeLimit).to.deep.equal(signedLimit)
+      })
     })
 
     it('should throw InvalidTokenError for refresh token used as access token', async () => {
@@ -444,7 +658,7 @@ describe('OAuthTokenService', () => {
       }
       const token = jwt.sign(payload, testSecret, { algorithm: 'HS256' })
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(null)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(null))
 
       try {
         await service.verifyAccessToken(token)
@@ -461,7 +675,7 @@ describe('OAuthTokenService', () => {
       const clock = sinon.useFakeTimers({ now: Date.now(), toFake: ['Date'] })
       try {
         sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
-        sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any)
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false } as any))
         const sevenDays = 7 * 24 * 60 * 60
         const { accessToken } = await service.generateTokens(
           { clientId: 'svc-system:org-1', allowedScopes: ['kb:read'], accessTokenLifetime: 3600 } as any,
@@ -597,7 +811,7 @@ describe('OAuthTokenService', () => {
       sinon.stub(OAuthRefreshToken, 'updateMany').resolves({} as any)
 
       await service.revokeAllTokensForApp('client-1')
-      expect(mockLogger.info.called).to.be.true
+      expect(mockLogger.info.args).to.deep.equal([['All tokens revoked for app', { client_id: 'client-1' }]])
     })
   })
 
@@ -624,8 +838,11 @@ describe('OAuthTokenService', () => {
       sinon.stub(OAuthAccessToken, 'updateMany').resolves({} as any)
       sinon.stub(OAuthRefreshToken, 'updateMany').resolves({} as any)
 
-      await service.revokeAllTokensForUser('client-1', new Types.ObjectId().toString())
-      expect(mockLogger.info.called).to.be.true
+      const userId = new Types.ObjectId().toString()
+      await service.revokeAllTokensForUser('client-1', userId)
+      expect(mockLogger.info.args).to.deep.equal([
+        ['All tokens revoked for user in app', { client_id: 'client-1', target_user_id: userId }],
+      ])
     })
   })
 
@@ -642,10 +859,10 @@ describe('OAuthTokenService', () => {
       }
       const token = jwt.sign(payload, testSecret, { algorithm: 'HS256' })
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({
         isRevoked: false,
         userId: new Types.ObjectId(),
-      } as any)
+      } as any))
 
       const result = await service.introspectToken(token, 'client-1')
       expect(result.active).to.be.true
@@ -698,7 +915,7 @@ describe('OAuthTokenService', () => {
       }
       const token = jwt.sign(payload, testSecret, { algorithm: 'HS256' })
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(null)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(null))
 
       const result = await service.introspectToken(token, 'client-1')
       expect(result.active).to.be.false
@@ -743,7 +960,7 @@ describe('OAuthTokenService', () => {
       const tokens = await service.listTokensForApp('client-1')
       expect(tokens).to.have.lengthOf(2)
       // Should be sorted by createdAt desc
-      expect(tokens[0].tokenType).to.equal('refresh')
+      expect(tokens[0]!.tokenType).to.equal('refresh')
     })
   })
 
@@ -777,7 +994,7 @@ describe('OAuthTokenService', () => {
       expect(decoded.exp - decoded.iat).to.equal(oneYearSeconds)
       // App's own accessTokenLifetime (3600) must not leak in when overridden.
       expect(result.expiresIn).to.not.equal(mockApp.accessTokenLifetime)
-      void createStub
+      createStub
     })
 
     it('passes opts.name through to the stored OAuthAccessToken document', async () => {
@@ -843,8 +1060,22 @@ describe('OAuthTokenService', () => {
         clientId: { $eq: 'client-1' },
       })
       expect(tokens).to.have.lengthOf(1)
-      expect(tokens[0].name).to.equal('ci token')
-      expect(tokens[0].lastUsedAt).to.equal(now)
+      expect(tokens[0]!.name).to.equal('ci token')
+      expect(tokens[0]!.lastUsedAt).to.equal(now)
+      expect(mockLogger.warn.called).to.be.false
+    })
+
+    it('warns, naming whose list, when the list reaches its limit', async () => {
+      const userId = new Types.ObjectId().toString()
+      const row = { _id: new Types.ObjectId(), userId, scopes: [], createdAt: new Date(), expiresAt: new Date(), isRevoked: false }
+      const chainable = { sort: sinon.stub().returnsThis(), limit: sinon.stub().returnsThis(), exec: sinon.stub().resolves([row]) }
+      sinon.stub(OAuthAccessToken, 'find').returns(chainable as any)
+
+      await service.listAccessTokensForUser('client-1', userId, 1)
+
+      expect(mockLogger.warn.args).to.deep.equal([
+        ['Token list reached its limit; older tokens are not shown', { client_id: 'client-1', target_user_id: userId, limit: 1 }],
+      ])
     })
   })
 
@@ -926,6 +1157,10 @@ describe('OAuthTokenService', () => {
       const result = await service.revokeAccessTokenById(id, 'client-1', userId, userId, 'no longer needed')
 
       expect(result).to.be.true
+      // The token's owner: a service account's, when an admin revokes its key.
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Access token revoked by id', { id, client_id: 'client-1', target_user_id: userId }],
+      ])
       const filter = updateStub.firstCall.args[0] as Record<string, unknown>
       expect(filter).to.have.property('clientId')
       expect(filter).to.have.property('userId')
@@ -984,6 +1219,9 @@ describe('OAuthTokenService', () => {
       expect(filter).to.not.have.property('userId')
       const update = updateStub.firstCall.args[1] as Record<string, unknown>
       expect(update.revokedBy).to.deep.equal(new Types.ObjectId(adminId))
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Access token revoked by id (admin)', { id, client_id: 'client-1', user_id: adminId }],
+      ])
     })
 
     it('returns false when no document matched', async () => {
@@ -1032,7 +1270,7 @@ describe('OAuthTokenService', () => {
 
     it('updates lastUsedAt when the stored token has never been touched', async () => {
       const tokenDoc = { _id: new Types.ObjectId(), isRevoked: false, lastUsedAt: undefined }
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(tokenDoc as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(tokenDoc as any))
       const updateStub = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
 
       await service.verifyAccessToken(signValidToken())
@@ -1048,7 +1286,7 @@ describe('OAuthTokenService', () => {
         isRevoked: false,
         lastUsedAt: new Date(Date.now() - 60 * 1000), // 1 minute ago
       }
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(tokenDoc as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(tokenDoc as any))
       const updateStub = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
 
       await service.verifyAccessToken(signValidToken())
@@ -1063,7 +1301,7 @@ describe('OAuthTokenService', () => {
         isRevoked: false,
         lastUsedAt: new Date(Date.now() - 6 * 60 * 1000), // 6 minutes ago
       }
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(tokenDoc as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(tokenDoc as any))
       const updateStub = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
 
       await service.verifyAccessToken(signValidToken())
@@ -1105,7 +1343,11 @@ describe('OAuthTokenService - branch coverage', () => {
     )
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -1149,6 +1391,11 @@ describe('OAuthTokenService - branch coverage', () => {
       expect(result.accessToken).to.be.a('string')
       expect(result.refreshToken).to.be.undefined
       expect(result.tokenType).to.equal('Bearer')
+      expect(mockLogger.info.args).to.deep.equal([
+        ['OAuth tokens generated', {
+          client_id: 'client-1', target_user_id: VALID_USER_ID, scopes: ['user:read'], refresh_issued: false,
+        }],
+      ])
     })
 
     it('should generate refresh token when includeRefreshToken is true, userId exists, and scope includes offline_access', async () => {
@@ -1168,6 +1415,12 @@ describe('OAuthTokenService - branch coverage', () => {
 
       expect(result.accessToken).to.be.a('string')
       expect(result.refreshToken).to.be.a('string')
+      // `target_user_id`: a token minted for a service account by an admin names the account, not the admin.
+      expect(mockLogger.info.args).to.deep.equal([
+        ['OAuth tokens generated', {
+          client_id: 'client-1', target_user_id: VALID_USER_ID, scopes: ['user:read', 'offline_access'], refresh_issued: true,
+        }],
+      ])
     })
 
     it('should NOT generate refresh token when userId is null', async () => {
@@ -1244,7 +1497,7 @@ describe('OAuthTokenService - branch coverage', () => {
       // Create a token with isRefreshToken: true
       const token = jwt.sign({ isRefreshToken: true, userId: 'u1', orgId: 'o1' }, 'test-secret-key-for-signing-tokens-at-least-32-bytes')
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({} as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({} as any))
 
       try {
         await service.verifyAccessToken(token)
@@ -1261,7 +1514,7 @@ describe('OAuthTokenService - branch coverage', () => {
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(null)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(null))
 
       try {
         await service.verifyAccessToken(token)
@@ -1301,7 +1554,7 @@ describe('OAuthTokenService - branch coverage', () => {
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({ tokenHash: 'hash' } as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ tokenHash: 'hash' } as any))
 
       const payload = await service.verifyAccessToken(token)
       expect(payload.userId).to.equal('u1')
@@ -1422,7 +1675,7 @@ describe('OAuthTokenService - branch coverage', () => {
       } catch (error) {
         expect(error).to.be.instanceOf(InvalidGrantError)
       }
-      expect(findOne.calledOnce).to.be.true
+      expect(findOne.called).to.be.false
     })
 
     it('should throw InvalidTokenError when stored refresh token not found', async () => {
@@ -1431,9 +1684,7 @@ describe('OAuthTokenService - branch coverage', () => {
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
-      sinon.stub(OAuthRefreshToken, 'findOne')
-        .onFirstCall().resolves({} as any) // verifyRefreshToken check
-        .onSecondCall().resolves(null) // refreshTokens check
+      sinon.stub(OAuthRefreshToken, 'findOne').resolves(null)
 
       try {
         await service.refreshTokens({ clientId: 'c1', orgId: 'o1' } as any, refreshToken)
@@ -1486,18 +1737,23 @@ describe('OAuthTokenService - branch coverage', () => {
       ) => ({
         clientId,
         allowedScopes,
-        orgId,
+        orgId: orgId.toString(),
         accessTokenLifetime: 3600,
         refreshTokenLifetime: 86400,
         createdBy: new Types.ObjectId(),
       }) as any
 
-      it('refuses the second of two refreshes presenting the same token and issues nothing', async () => {
-        const stored = storedRefreshToken('client-a')
+      it('revokes the live grant when an already-rotated refresh token is presented again', async () => {
+        const stored = {
+          ...storedRefreshToken('client-a'),
+          isRevoked: true,
+          revokedReason: 'rotated',
+        }
         sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
-        rotate.resolves({ modifiedCount: 0 } as any)
         const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+        const accessFamily = sinon.stub(OAuthAccessToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+        const refreshFamily = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
 
         let error: unknown
         try {
@@ -1509,13 +1765,112 @@ describe('OAuthTokenService - branch coverage', () => {
         expect((error as Error).message).to.include('already been used')
         expect(accessCreate.called).to.be.false
         expect(refreshCreate.called).to.be.false
+        expect(accessFamily.calledOnce).to.be.true
+        expect(refreshFamily.calledOnce).to.be.true
+      })
+
+      it('does not family-revoke when a different client presents a rotated token', async () => {
+        const stored = {
+          ...storedRefreshToken('client-a'),
+          isRevoked: true,
+          revokedReason: 'rotated',
+        }
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
+        const accessFamily = sinon.stub(OAuthAccessToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+        const refreshFamily = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+
+        let error: unknown
+        try {
+          await service.refreshTokens(app('client-b'), signRefreshToken('client-a'))
+        } catch (e) {
+          error = e
+        }
+        expect(error).to.be.instanceOf(InvalidGrantError)
+        expect((error as Error).message).to.include('not issued to this client')
+        expect(accessFamily.called).to.be.false
+        expect(refreshFamily.called).to.be.false
+      })
+
+      it('does not family-revoke when the refresh token was revoked by the user', async () => {
+        const stored = {
+          ...storedRefreshToken('client-a'),
+          isRevoked: true,
+        }
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
+        const accessFamily = sinon.stub(OAuthAccessToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+        const refreshFamily = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+
+        let error: unknown
+        try {
+          await service.refreshTokens(app('client-a'), signRefreshToken('client-a'))
+        } catch (e) {
+          error = e
+        }
+        expect(error).to.be.instanceOf(InvalidTokenError)
+        expect((error as Error).message).to.equal('Refresh token has been revoked')
+        expect(accessFamily.called).to.be.false
+        expect(refreshFamily.called).to.be.false
+      })
+
+      it('refuses the second of two refreshes presenting the same token and issues nothing', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
+        rotate.resolves({ modifiedCount: 0 } as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+        const accessFamily = sinon.stub(OAuthAccessToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+        const refreshFamily = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+
+        let error: unknown
+        try {
+          await service.refreshTokens(app('client-a'), signRefreshToken('client-a'))
+        } catch (e) {
+          error = e
+        }
+        expect(error).to.be.instanceOf(InvalidGrantError)
+        expect((error as Error).message).to.include('already been used')
+        expect(accessCreate.called).to.be.false
+        expect(refreshCreate.called).to.be.false
+        expect(accessFamily.calledOnce).to.be.true
+        expect(refreshFamily.calledOnce).to.be.true
+        expect(accessFamily.firstCall.args[1]).to.include({
+          revokedReason: 'refresh_reuse_detected',
+        })
+      })
+
+      it('revokes the minted pair when the old token is replayed during rotation', async () => {
+        const stored = storedRefreshToken('client-a')
+        const replayed = {
+          ...stored,
+          isRevoked: true,
+          revokedReason: 'refresh_reuse_detected',
+        }
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(replayed as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+        sinon.stub(OAuthAccessToken, 'updateOne').resolves({ modifiedCount: 1 } as any)
+        const accessFamily = sinon.stub(OAuthAccessToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+        const refreshFamily = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({ modifiedCount: 1 } as any)
+
+        let error: unknown
+        try {
+          await service.refreshTokens(app('client-a'), signRefreshToken('client-a'))
+        } catch (e) {
+          error = e
+        }
+        expect(error).to.be.instanceOf(InvalidGrantError)
+        expect((error as Error).message).to.include('already been used')
+        expect(accessCreate.calledOnce).to.be.true
+        expect(refreshCreate.calledOnce).to.be.true
+        expect(accessFamily.calledOnce).to.be.true
+        expect(refreshFamily.calledOnce).to.be.true
       })
 
       it('rotates and issues new tokens when the presenting client matches the issuing client', async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
 
@@ -1526,17 +1881,20 @@ describe('OAuthTokenService - branch coverage', () => {
         const [filter, update] = rotate.firstCall.args as any[]
         expect(filter).to.deep.equal({ _id: stored._id, isRevoked: false })
         expect(update.$set.isRevoked).to.equal(true)
+        expect(update.$set.revokedReason).to.equal('rotated')
         expect(accessCreate.calledOnce).to.be.true
         expect(refreshCreate.calledOnce).to.be.true
+        // The token endpoint has no signed-in user: `user_id` fills the line's identity with the user the grant acts for.
+        expect(mockLogger.info.args.filter(([message]: [string]) => message === 'Tokens refreshed')).to.deep.equal([
+          ['Tokens refreshed', { client_id: 'client-a', user_id: userId.toString(), rotation_count: 1 }],
+        ])
       })
 
       it('keeps the limit the user agreed to when the app has widened since', async () => {
         const agreed = { apps: ['app-1'], recordGroups: [], records: [] }
         const widened = { apps: ['app-1', 'app-2'], recordGroups: [], records: [] }
         const stored = { ...storedRefreshToken('client-a'), knowledgeLimit: agreed }
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
         const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
@@ -1557,9 +1915,7 @@ describe('OAuthTokenService - branch coverage', () => {
         const agreed = { apps: ['app-1', 'app-2'], recordGroups: [], records: [] }
         const narrowed = { apps: ['app-1'], recordGroups: [], records: [] }
         const stored = { ...storedRefreshToken('client-a'), knowledgeLimit: agreed }
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
         const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
@@ -1577,9 +1933,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
       it("gives a refresh token stored without a limit the app's current one", async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
         const knowledgeLimit = { apps: ['app-1'], recordGroups: [], records: ['folder-1'] }
@@ -1597,9 +1951,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
       it('drops scopes the app no longer allows from the refreshed tokens', async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
 
@@ -1613,9 +1965,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
       it('does not rotate when the app no longer allows any granted scope', async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         const accessCreate = sinon.stub(OAuthAccessToken, 'create')
 
         try {
@@ -1635,9 +1985,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
       it('does not rotate when the requested scopes do not overlap the grant', async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
 
         try {
           await service.refreshTokens(
@@ -1656,9 +2004,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
       it('rejects a refresh token issued to a different client with invalid_grant', async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
 
@@ -1671,13 +2017,16 @@ describe('OAuthTokenService - branch coverage', () => {
 
         expect(accessCreate.called).to.be.false
         expect(refreshCreate.called).to.be.false
+        expect(mockLogger.warn.args).to.deep.equal([
+          ['Refresh token presented by a different client', {
+            issued_to: 'client-a', presented_by: 'client-b', user_id: userId.toString(),
+          }],
+        ])
       })
 
       it('does not rotate or revoke the stored token when a different client is rejected', async () => {
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
 
@@ -1697,9 +2046,7 @@ describe('OAuthTokenService - branch coverage', () => {
         // client-a must still be rejected for client-b: the database row is
         // the source of truth for who the grant was issued to.
         const stored = storedRefreshToken('client-a')
-        sinon.stub(OAuthRefreshToken, 'findOne')
-          .onFirstCall().resolves(stored as any)
-          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
         sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
 
@@ -1734,7 +2081,7 @@ describe('OAuthTokenService - branch coverage', () => {
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(null)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(null))
 
       const result = await service.introspectToken(token, 'client-1')
       expect(result.active).to.be.false
@@ -1746,9 +2093,9 @@ describe('OAuthTokenService - branch coverage', () => {
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({
         userId: new Types.ObjectId(),
-      } as any)
+      } as any))
 
       const result = await service.introspectToken(token, 'client-1')
       expect(result.active).to.be.true
@@ -1783,7 +2130,7 @@ describe('OAuthTokenService - branch coverage', () => {
       )
 
       const userId = new Types.ObjectId()
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({ userId } as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ userId } as any))
 
       const result = await service.introspectToken(token, 'client-1')
       expect(result.username).to.equal(userId.toString())
@@ -1795,7 +2142,7 @@ describe('OAuthTokenService - branch coverage', () => {
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({ userId: null } as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ userId: null } as any))
 
       const result = await service.introspectToken(token, 'client-1')
       expect(result.username).to.be.undefined

@@ -10,6 +10,7 @@ from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -18,6 +19,14 @@ from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.redshift.redshift import RedshiftClient
 from app.sources.external.redshift.redshift_ import RedshiftDataSource
 from app.utils.conversation_tasks import register_task
+from app.utils.sql_limits import (
+    SQL_MAX_ROWS,
+    SQL_QUERY_TIMEOUT_S,
+    cap_rows,
+    clip_cells,
+    friendly_sql_error,
+    truncation_note,
+)
 from app.services.artifact_registry.models import artifact_owner_id
 
 logger = logging.getLogger(__name__)
@@ -71,7 +80,7 @@ class GetTablesSchemaInput(BaseModel):
     tables: list[str] = Field(..., description="List of table names to fetch schema for")
 
 
-@ToolsetBuilder("Redshift")\
+@ToolsetBuilder("Redshift", provider=ToolProvider.CONNECTOR)\
     .in_group("Database")\
     .with_description("Amazon Redshift toolset for schema introspection and SQL execution")\
     .with_category(ToolsetCategory.DATABASE)\
@@ -165,7 +174,7 @@ class Redshift:
         short_description="List all schemas in the Redshift database",
         description="List all schemas in the connected Redshift database. Returns a JSON list of schema names.",
         parameters=[],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_schemas(self) -> tuple[bool, str]:
         """List all schemas in the connected Redshift database."""
@@ -200,7 +209,7 @@ class Redshift:
             "Returns a JSON object with schemas, each containing their list of tables."
         ),
         parameters=[],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_schemas_and_tables(self) -> tuple[bool, str]:
         """List all schemas and tables in the Redshift database in one call."""
@@ -262,7 +271,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_table_ddl(
         self,
@@ -313,7 +322,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_schema_ddl(
         self,
@@ -388,7 +397,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_tables_schema(
         self,
@@ -463,7 +472,7 @@ class Redshift:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def fetch_db_schema(
         self,
@@ -581,33 +590,37 @@ class Redshift:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def execute_query(
         self,
         query: str,
     ) -> tuple[bool, str]:
         """Execute SQL query using configured Redshift client."""
-        # Redshift has no read-only transaction or timeout here (server-side enforcement is not
-        # verified): only the statement classifier (read_only_statement) protects it.
+        # Redshift has no read-only transaction here (server-side enforcement is not verified):
+        # only the statement classifier (read_only_statement) protects it. The statement
+        # timeout and the row bound are set on the server session / cursor.
         try:
             if not query:
                 return self._result(False, {
                     "error": "Missing required parameter: query",
                 })
 
-            query_resp = await self.client.execute_query(query=query)
+            query_resp = await self.client.execute_query(
+                query=query, timeout_s=SQL_QUERY_TIMEOUT_S, max_rows=SQL_MAX_ROWS + 1
+            )
             if not query_resp.success:
                 return self._result(False, {
-                    "error": query_resp.error or "Query execution failed",
+                    "error": friendly_sql_error(query_resp.error or "Query execution failed"),
                     "message": query_resp.message,
                 })
 
-            rows = query_resp.data if isinstance(query_resp.data, list) else []
+            rows, rows_cut = cap_rows(query_resp.data if isinstance(query_resp.data, list) else [])
             DISPLAY_LIMIT = 100
-            displayed_rows = rows[:DISPLAY_LIMIT]
+            displayed_rows = [clip_cells(r) if isinstance(r, dict) else r for r in rows[:DISPLAY_LIMIT]]
             result_payload = {
-                "message": query_resp.message or "Query executed successfully",
+                "message": truncation_note() if rows_cut else query_resp.message or "Query executed successfully",
+                **({"rows_cut_at": SQL_MAX_ROWS} if rows_cut else {}),
                 "row_count": len(rows),
                 "data": displayed_rows,
                 **(
@@ -662,7 +675,7 @@ class Redshift:
                     conversation_id=conversation_id,
                     columns=raw_columns,
                     rows=raw_rows,
-                    file_name=f"query_result_{int(time.time())}.csv",
+                    file_name=f"query_result_{int(time.time())}{f'_first_{SQL_MAX_ROWS}_rows' if rows_cut else ''}.csv",
                     source_tool="redshift.execute_query",
                 ))
                 register_task(conversation_id, task)
@@ -687,7 +700,7 @@ class Redshift:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="database"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="database"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_tables(
         self,

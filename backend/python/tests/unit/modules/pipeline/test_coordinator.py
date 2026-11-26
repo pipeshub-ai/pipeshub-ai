@@ -415,3 +415,480 @@ async def test_a_revision_is_seen_once_its_external_prerequisite_is_recorded() -
     await h.coordinator.on_external_done("embed", _view(), priority=Priority.BULK, trigger="newRecord")
     assert await h.coordinator.has_seen_revision(VRID, REV) is True
     assert await h.coordinator.has_seen_revision(VRID, "another-rev") is False
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_stage_is_left_for_a_redrive_and_its_siblings_still_run() -> None:
+    registry = _classify_after_embed()
+    registry.register(_stage("entities", "embed"))
+    h = _Harness(registry)
+
+    dispatched = await h.coordinator.on_external_done(
+        "embed", _view(), priority=Priority.BULK, trigger="newRecord", defer=frozenset({"classify"})
+    )
+
+    assert dispatched == [f"{VRID}:{REV}:entities@1"]
+    assert h.status("classify") is None
+    assert h.headlines.writes == []
+    # First use: an unforced redrive dispatches it from the embed state.
+    assert await h.coordinator.redrive_revision(
+        VRID, REV, ["classify"], priority=Priority.INTERACTIVE, force=False
+    ) == [f"{VRID}:{REV}:classify@1"]
+    assert StageJob.model_validate(h.producer.jobs("pipeline.classify")[-1]).force is False
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_runs_each_follow_up_in_its_own_org_and_skips_a_state_with_none() -> None:
+    from app.core.org_context import current_org_id, system
+    from app.modules.pipeline.coordinator import REPUBLISH_BACKSTOP_MS
+
+    h = _Harness(_classify_after_embed())
+    seen: list[tuple[str, str]] = []
+    cas, send = h.states.cas, h.coordinator._send
+
+    async def recording_cas(key: str, **kwargs: object) -> bool:
+        seen.append(("cas", current_org_id()))
+        return await cas(key, **kwargs)  # type: ignore[arg-type]
+
+    async def recording_send(job: StageJob) -> bool:
+        seen.append(("send", current_org_id()))
+        return await send(job)
+
+    mark = h.coordinator._mark_published
+
+    async def recording_mark(job: StageJob) -> None:
+        seen.append(("mark", current_org_id()))
+        await mark(job)
+
+    h.states.cas, h.coordinator._send = recording_cas, recording_send  # type: ignore[method-assign]
+    h.coordinator._mark_published = recording_mark  # type: ignore[method-assign]
+    for org in ("org-a", "org-b", None):
+        job = StageJob(
+            stage="classify", stage_version=1, org_id="org-x", virtual_record_id=f"vr-{org}", rev=REV,
+            record_ids=("rec-1",), connector_id="conn-1", tier=ParseTier.LIGHT, priority=Priority.BULK,
+            trigger="test", text_digest="t", blocks_digest="b", text_chars=10, has_tables=False, has_images=False,
+        )
+        state = StageState.from_job(job, ProgressStatus.PAUSED, h.clock()).model_copy(update={"org_id": org})
+        h.states.put(state)
+    h.clock.advance(REPUBLISH_BACKSTOP_MS + 1)
+
+    with system("stage_sweep_test"):
+        report = await h.coordinator.sweep(queued_older_than_ms=60_000, limit=10)
+
+    assert set(seen) == {("cas", "org-a"), ("cas", "org-b"), ("send", "org-a"), ("send", "org-b"),
+                     ("mark", "org-a"), ("mark", "org-b")}
+    assert (report.republished, report.skipped_no_org) == (2, 1)
+    assert h.states.states[stage_state_key("vr-None", REV, "classify")].status is ProgressStatus.PAUSED
+
+
+# ---- the pause budget survives automatic claims ---------------------------------------------------------
+
+from app.modules.pipeline.pause_budget import PauseState  # noqa: E402
+from app.modules.pipeline.pause_store import PauseStore  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_pause_budget_survives_automatic_claims(fleet) -> None:
+    """A forced claim (a user's redrive) deletes the revision's pause key, an automatic one (a dispatch after a
+    prerequisite, a connector re-sync, the sweep) keeps it: a revision whose budget is spent cannot start over by being
+    dispatched again."""
+    registry = _classify_after_embed()
+    h = _Harness(registry)
+    store = PauseStore()
+    coordinator = Coordinator(
+        registry, h.states, h.headlines, h.producer,  # type: ignore[arg-type]
+        policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("test"), clock_ms=h.clock, pause_store=store,
+    )
+    view = _view()
+    key = stage_state_key(VRID, REV, "classify")
+    spent = PauseState(since_ms=h.clock(), charged=6, sends=6)
+    await store.put(key, spent)
+    h.complete("embed")
+    h.states.put(
+        StageState.from_job(
+            StageJob.for_view(view, stage="classify", stage_version=1, priority=Priority.BULK, trigger="t", force=False),
+            ProgressStatus.FAILED, h.clock(),
+        )
+    )
+
+    # automatic: the prerequisite finished again, and the stage is dispatched without force
+    assert await coordinator.on_external_done("embed", view, priority=Priority.BULK, trigger="resync") == [f"{key}@1"]
+    assert await store.get(key) == spent
+
+    # automatic: an unforced redrive (what the sweep and a re-index event do)
+    h.states.put(h.states.states[key].model_copy(update={"status": ProgressStatus.FAILED}))
+    assert await coordinator.redrive(view, "classify", priority=Priority.BULK, force=False) == f"{key}@1"
+    assert await store.get(key) == spent
+
+    # forced: a user's redrive starts the budget over
+    h.states.put(h.states.states[key].model_copy(update={"status": ProgressStatus.FAILED}))
+    assert await coordinator.redrive(view, "classify", priority=Priority.BULK, force=True) == f"{key}@1"
+    assert await store.get(key) is None
+
+
+@pytest.mark.asyncio
+async def test_a_forced_claim_that_does_not_win_keeps_the_budget(fleet) -> None:
+    registry = _classify_after_embed()
+    h = _Harness(registry)
+    store = PauseStore()
+    coordinator = Coordinator(
+        registry, h.states, h.headlines, h.producer,  # type: ignore[arg-type]
+        policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("test"), clock_ms=h.clock, pause_store=store,
+    )
+    view = _view()
+    key = stage_state_key(VRID, REV, "classify")
+    h.states.put(
+        StageState.from_job(
+            StageJob.for_view(view, stage="classify", stage_version=1, priority=Priority.BULK, trigger="t", force=False),
+            ProgressStatus.IN_PROGRESS, h.clock(),
+        )
+    )
+    await store.put(key, PauseState(since_ms=h.clock(), charged=3, sends=4))
+    assert await coordinator.redrive(view, "classify", priority=Priority.BULK, force=True) is None  # still running
+    assert await store.get(key) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_forced_redrive_does_not_inherit_a_superseded_runs_reservation(fleet) -> None:
+    """A run that crashed after reserving leaves its reservation behind. A forced redrive starts a fresh allowance: the
+    reservation of that earlier run (a lower attempt) is dropped with the budget, not charged to the new one."""
+    registry = _classify_after_embed()
+    h = _Harness(registry)
+    store = PauseStore()
+    coordinator = Coordinator(
+        registry, h.states, h.headlines, h.producer,  # type: ignore[arg-type]
+        policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("test"), clock_ms=h.clock, pause_store=store,
+    )
+    view = _view()
+    key = stage_state_key(VRID, REV, "classify")
+    job = StageJob.for_view(view, stage="classify", stage_version=1, priority=Priority.BULK, trigger="t", force=False)
+    failed = StageState.from_job(job, ProgressStatus.FAILED, h.clock()).model_copy(update={"attempt": 3})
+    h.states.put(failed)
+    await store.put(key, PauseState(since_ms=h.clock(), sends=5))
+    assert await store.reserve(key, attempt=3, absolute=20, now_ms=h.clock(), stale_ms=10**9) == 15  # then it crashed
+
+    assert await coordinator.redrive(view, "classify", priority=Priority.BULK, force=True) == f"{key}@1"
+
+    # the next run (attempt 4), live or long after, is granted the full allowance
+    assert await store.reserve(key, attempt=4, absolute=20, now_ms=h.clock() + 10**6, stale_ms=1) == 20
+    assert await store.get(key) is None
+
+
+@pytest.mark.asyncio
+async def test_a_forced_redrive_keeps_a_live_twins_reservation(fleet) -> None:
+    store = PauseStore()
+    key = "vr:rev:classify"
+    now = 1_000_000
+    assert await store.reserve(key, attempt=5, absolute=20, now_ms=now, stale_ms=10**9) == 20  # a run newer than the claim
+    await store.reset(key, attempt=3)
+    assert await store.reserve(key, attempt=6, absolute=20, now_ms=now, stale_ms=10**9) == 0
+
+
+# ---- redrive_unchanged: the same-bytes update's re-dispatch (unforced) -----------------------------------
+
+from app.modules.pipeline.ingress import StageIngress  # noqa: E402
+
+
+def _ingress_for(h: _Harness, store: PauseStore, registry: StageRegistry | None = None) -> StageIngress:
+    coordinator = Coordinator(
+        registry or _classify_after_embed(), h.states, h.headlines, h.producer,  # type: ignore[arg-type]
+        policy_for=lambda _org: DEFAULT_POLICY, logger=logging.getLogger("test"), clock_ms=h.clock, pause_store=store,
+    )
+    return StageIngress(coordinator, graph=None, logger=logging.getLogger("test"))  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_redrive_unchanged_keeps_the_pause_budget(fleet) -> None:
+    h = _Harness(_classify_after_embed())
+    store = PauseStore()
+    ingress = _ingress_for(h, store)
+    key = stage_state_key(VRID, REV, "classify")
+    spent = PauseState(since_ms=h.clock(), charged=6, sends=6)
+    await store.put(key, spent)
+    h.complete("embed")
+    h.states.put(
+        StageState.from_job(
+            StageJob.for_view(_view(), stage="classify", stage_version=1, priority=Priority.BULK, trigger="t", force=False),
+            ProgressStatus.PAUSED, h.clock(),
+        )
+    )
+
+    assert await ingress.redrive_unchanged(VRID, REV) == [f"{key}@1"]
+
+    assert await store.get(key) == spent
+    [(_topic, _event, payload, _key)] = h.producer.sent
+    job = StageJob.model_validate(payload)
+    assert job.force is False and job.priority is Priority.BULK
+
+
+@pytest.mark.asyncio
+async def test_redrive_unchanged_without_a_recorded_revision_is_none(fleet) -> None:
+    h = _Harness(_classify_after_embed())
+    assert await _ingress_for(h, PauseStore()).redrive_unchanged(VRID, REV) is None
+
+
+@pytest.mark.asyncio
+async def test_redrive_unchanged_leaves_finished_and_deferred_stages_alone(fleet) -> None:
+    """A finished stage is not claimed (the claim writes the record's headline status and its finish clears `reason`),
+    and a stage with no state stays deferred."""
+    h = _Harness(_classify_after_embed())
+    ingress = _ingress_for(h, PauseStore())
+    h.complete("embed")
+    h.complete("classify")
+
+    assert await ingress.redrive_unchanged(VRID, REV) == []
+    assert h.producer.sent == [] and h.headlines.writes == []
+
+    del h.states.states[stage_state_key(VRID, REV, "classify")]
+    assert await ingress.redrive_unchanged(VRID, REV) == []
+
+
+@pytest.mark.asyncio
+async def test_the_claim_itself_refuses_a_stage_that_finished_after_the_snapshot(fleet) -> None:
+    """The snapshot said PAUSED; by the claim the stage is COMPLETED. The restricted claim does not queue it again."""
+    from app.modules.pipeline.coordinator import _UNFINISHED
+
+    h = _Harness(_classify_after_embed())
+    h.complete("embed")
+    h.complete("classify")
+
+    assert await h.coordinator.redrive(_view(), "classify", priority=Priority.BULK, force=False, only_from=_UNFINISHED) is None
+    assert h.status("classify") is ProgressStatus.COMPLETED
+    assert h.producer.sent == [] and h.headlines.writes == []
+    # Unrestricted, the same redrive claims it, as before.
+    assert await h.coordinator.redrive(_view(), "classify", priority=Priority.BULK, force=False) is not None
+
+
+@pytest.mark.asyncio
+async def test_redrive_unchanged_recovers_an_interrupted_classify_hand_off(fleet) -> None:
+    """embed is recorded, classify never got a state, and the record still waits for classification (QUEUED): owed.
+    A deferred classification (NOT_STARTED) stays deferred."""
+    h = _Harness(_classify_after_embed())
+    ingress = _ingress_for(h, PauseStore())
+    h.complete("embed")
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "NOT_STARTED"}) == []
+    assert h.status("classify") is None
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"}) == [f"{stage_state_key(VRID, REV, 'classify')}@1"]
+    assert h.status("classify") is ProgressStatus.QUEUED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [ProgressStatus.FAILED, ProgressStatus.PAUSED, ProgressStatus.IN_PROGRESS])
+async def test_redrive_unchanged_claims_only_a_failed_or_paused_stage(fleet, status: ProgressStatus) -> None:
+    h = _Harness(_classify_after_embed())
+    ingress = _ingress_for(h, PauseStore())
+    h.complete("embed")
+    h.states.put(
+        StageState.from_job(
+            StageJob.for_view(_view(), stage="classify", stage_version=1, priority=Priority.BULK, trigger="t", force=False),
+            status, h.clock(),
+        )
+    )
+
+    dispatched = await ingress.redrive_unchanged(VRID, REV)
+
+    if status is ProgressStatus.IN_PROGRESS:
+        assert dispatched == [] and h.producer.sent == []
+    else:
+        assert dispatched == [f"{stage_state_key(VRID, REV, 'classify')}@1"]
+
+
+def _classify_and_entities(*, entities_applies: bool = True, classify_applies: bool = True) -> StageRegistry:
+    registry = StageRegistry()
+    registry.register_external("embed")
+    registry.register(_stage("classify", "embed", applicable=classify_applies, headline=HeadlineField.EXTRACTION))
+    registry.register(_stage("entities", "embed", applicable=entities_applies))
+    return registry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("applies", "expected"), [(True, ProgressStatus.QUEUED), (False, ProgressStatus.SKIPPED)])
+async def test_redrive_unchanged_recovers_entities_lost_after_the_classify_claim(
+    fleet, applies: bool, expected: ProgressStatus
+) -> None:
+    """embed is recorded and classify finished, but the process stopped before entities got a state: the hand-off
+    is unfinished whatever the record's extraction status says. It goes through the normal applicability check."""
+    registry = _classify_and_entities(entities_applies=applies)
+    h = _Harness(registry)
+    ingress = _ingress_for(h, PauseStore(), registry)
+    h.complete("embed")
+    h.complete("classify")
+
+    dispatched = await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "COMPLETED"})
+
+    assert h.status("entities") is expected
+    assert dispatched == ([f"{stage_state_key(VRID, REV, 'entities')}@1"] if applies else [])
+    assert h.status("classify") is ProgressStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_redrive_unchanged_does_not_publish_a_classify_that_does_not_apply(fleet) -> None:
+    """The record is QUEUED for classification and the hand-off died before the applicability check (no text, no
+    images): the recovery records SKIPPED and publishes nothing, as a finished hand-off would have."""
+    registry = _classify_and_entities(classify_applies=False, entities_applies=False)
+    h = _Harness(registry)
+    ingress = _ingress_for(h, PauseStore(), registry)
+    h.complete("embed")
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"}) == []
+
+    assert h.status("classify") is ProgressStatus.SKIPPED and h.status("entities") is ProgressStatus.SKIPPED
+    assert h.producer.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_stop_between_the_classify_dispatch_and_the_entities_claim_is_healed_once(fleet) -> None:
+    """The hand-off claims successors one by one. The process stopped after classify was dispatched and before entities
+    was claimed: a same-bytes update dispatches entities exactly once, and never claims classify again."""
+    registry = _classify_and_entities()
+    h = _Harness(registry)
+    ingress = _ingress_for(h, PauseStore(), registry)
+    real_claim = h.coordinator._claim
+    claims: list[str] = []
+
+    async def stop_before_entities(job: StageJob, only_from: frozenset[ProgressStatus] | None = None) -> ProgressStatus | None:
+        if job.stage == "entities":
+            raise RuntimeError("process stopped")
+        claims.append(job.stage)
+        return await real_claim(job, only_from)
+
+    h.coordinator._claim = stop_before_entities  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="process stopped"):
+        await h.coordinator.on_external_done("embed", _view(), priority=Priority.BULK, trigger="index")
+    assert claims == ["classify"] and h.status("entities") is None
+    h.states.put(h.states.states[stage_state_key(VRID, REV, "classify")].model_copy(update={"status": ProgressStatus.COMPLETED}))
+    h.producer.sent.clear()
+
+    for _ in range(3):  # idempotent: later same-bytes updates find nothing more to do
+        await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "COMPLETED"})
+
+    assert [t for t, *_ in h.producer.sent] == ["pipeline.entities"]
+    assert h.status("classify") is ProgressStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_a_stage_that_finishes_after_the_snapshot_is_not_requeued(fleet) -> None:
+    """The snapshot says PAUSED; the worker finishes the stage before the claim; the claim refuses it."""
+    h = _Harness(_classify_after_embed())
+    ingress = _ingress_for(h, PauseStore())
+    h.complete("embed")
+    key = stage_state_key(VRID, REV, "classify")
+    h.states.put(
+        StageState.from_job(
+            StageJob.for_view(_view(), stage="classify", stage_version=1, priority=Priority.BULK, trigger="t", force=False),
+            ProgressStatus.PAUSED, h.clock(),
+        )
+    )
+    real = h.states.get_many
+
+    async def stale_snapshot(*a: str, **k: str) -> dict[str, StageState]:
+        snap = await real(*a, **k)
+        h.states.put(h.states.states[key].model_copy(update={"status": ProgressStatus.COMPLETED}))
+        return snap
+
+    h.states.get_many = stale_snapshot  # type: ignore[method-assign,assignment]
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"}) == []
+    assert h.status("classify") is ProgressStatus.COMPLETED
+    assert h.producer.sent == [] and h.headlines.writes == []
+
+
+@pytest.mark.asyncio
+async def test_a_refused_publish_in_the_recovery_stays_queued_and_is_retried_once_per_sweep_pass(fleet) -> None:
+    """The recovery creates the missing classify state and the broker refuses the publish. The claim stays QUEUED and
+    unpublished (nothing is raised, so nothing books a failure); each sweep pass sends it once, and once it is on the
+    broker the next pass sends nothing."""
+    h = _Harness(_classify_after_embed(), reject_next=2)
+    ingress = _ingress_for(h, PauseStore())
+    h.complete("embed")
+    key = stage_state_key(VRID, REV, "classify")
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "QUEUED"}) == [f"{key}@1"]
+    assert h.status("classify") is ProgressStatus.QUEUED and h.producer.sent == []
+
+    h.clock.advance(120_000)
+    first = await h.coordinator.sweep(queued_older_than_ms=60_000, limit=10)  # refused again
+    assert (first.republished, h.producer.sent) == (0, [])
+    h.clock.advance(120_000)
+    second = await h.coordinator.sweep(queued_older_than_ms=60_000, limit=10)
+    assert second.republished == 1 and [t for t, *_ in h.producer.sent] == ["pipeline.classify"]
+    third = await h.coordinator.sweep(queued_older_than_ms=60_000, limit=10)
+    assert third.republished == 0 and len(h.producer.sent) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [ProgressStatus.COMPLETED, ProgressStatus.SKIPPED])
+async def test_a_missing_stage_that_finishes_after_the_snapshot_is_not_requeued(fleet, status: ProgressStatus) -> None:
+    """The snapshot shows entities missing; the interrupted hand-off's own job creates and finishes it before the
+    recovery's claim, which therefore must not queue it again."""
+    registry = _classify_and_entities()
+    h = _Harness(registry)
+    ingress = _ingress_for(h, PauseStore(), registry)
+    h.complete("embed")
+    h.complete("classify")
+    real = h.states.get_many
+    calls = 0
+
+    async def stale_snapshot(*a: str, **k: str) -> dict[str, StageState]:
+        nonlocal calls
+        snap = await real(*a, **k)
+        calls += 1
+        if calls == 1:
+            job = StageJob.for_view(_view(), stage="entities", stage_version=1, priority=Priority.BULK, trigger="t", force=False)
+            h.states.put(StageState.from_job(job, status, h.clock()))
+        return snap
+
+    h.states.get_many = stale_snapshot  # type: ignore[method-assign,assignment]
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "COMPLETED"}) == []
+    assert h.status("entities") is status and h.producer.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_stage_behind_a_missing_prerequisite_waits_for_it(fleet) -> None:
+    """A stage that requires classify is not dispatched while classify is deferred: the last prerequisite to finish
+    dispatches it."""
+    registry = StageRegistry()
+    registry.register_external("embed")
+    registry.register(_stage("classify", "embed", headline=HeadlineField.EXTRACTION))
+    registry.register(_stage("after-classify", "classify"))
+    h = _Harness(registry)
+    ingress = _ingress_for(h, PauseStore(), registry)
+    h.complete("embed")
+
+    assert await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "NOT_STARTED"}) == []
+    assert h.status("classify") is None and h.status("after-classify") is None
+    assert h.producer.sent == []
+
+
+def _registry_with_entities_that_runs_when_off() -> StageRegistry:
+    registry = StageRegistry()
+    registry.register_external("embed")
+    registry.register(_stage("classify", "embed", applicable=False, headline=HeadlineField.EXTRACTION))
+    entities = _stage("entities", "embed", applicable=False)
+    entities.runs_when_not_applicable = True
+    registry.register(entities)
+    return registry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [ProgressStatus.FAILED, ProgressStatus.PAUSED, ProgressStatus.NOT_STARTED])
+async def test_an_unfinished_stage_that_no_longer_applies_ends_skipped_and_is_not_claimed(fleet, status: ProgressStatus) -> None:
+    """Classification turned off after its job failed or paused: the redrive records SKIPPED and spends nothing. The
+    entities stage is the exception (it must run to clear what it wrote), so it is still claimed."""
+    registry = _registry_with_entities_that_runs_when_off()
+    h = _Harness(registry)
+    ingress = _ingress_for(h, PauseStore(), registry)
+    h.complete("embed")
+    for stage in ("classify", "entities"):
+        job = StageJob.for_view(_view(), stage=stage, stage_version=1, priority=Priority.BULK, trigger="t", force=False)
+        h.states.put(StageState.from_job(job, status, h.clock()))
+
+    dispatched = await ingress.redrive_unchanged(VRID, REV, {"extractionStatus": "COMPLETED"})
+
+    assert h.status("classify") is ProgressStatus.SKIPPED
+    assert dispatched == [f"{stage_state_key(VRID, REV, 'entities')}@1"]
+    assert [t for t, *_ in h.producer.sent] == ["pipeline.entities"]
+    assert h.headlines.writes and h.headlines.writes[-1][2] is ProgressStatus.SKIPPED

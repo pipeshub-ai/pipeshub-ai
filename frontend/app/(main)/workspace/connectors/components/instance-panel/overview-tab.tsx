@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { Flex, Text, Box } from '@radix-ui/themes';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { ConnectorOverviewExtras } from '@/config';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
@@ -27,7 +28,10 @@ import type {
 import { IndexingStatsPanel } from '@/app/components/indexing-stats/indexing-stats-panel';
 import { CodeGraphStatus } from './code-graph-status';
 import { LastRunSummary } from './last-run-summary';
+import { PermissionFreshness } from './permission-freshness';
 import { ActionItemsCallout } from './action-items-callout';
+import { AccessCheckDialog } from './access-check-dialog';
+import { ConnectedUsers } from '../user-access/connected-users';
 
 // ========================================
 // Props
@@ -75,6 +79,7 @@ export function OverviewTab({
   const [isRetryClassificationBusy, setIsRetryClassificationBusy] = useState(false);
   const [isRetryEntitiesBusy, setIsRetryEntitiesBusy] = useState(false);
   const [isStopBusy, setIsStopBusy] = useState(false);
+  const isAdmin = useUserStore(selectIsAdmin);
 
   // The panel outlives the run, so a stop the backend could not complete
   // synchronously would otherwise leave this stuck and block the next stop.
@@ -321,7 +326,7 @@ export function OverviewTab({
       {/* Local watcher status */}
       {localSyncStatus && (
         <Flex align="center" justify="between" style={{ marginBottom: 4 }}>
-          <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.connectors.overview.localWatcherLabel')}
           </Text>
           <Text size="1" style={{ color: 'var(--gray-11)' }}>
@@ -348,6 +353,14 @@ export function OverviewTab({
         <CodeGraphStatus connectorId={instance._key} />
       )}
       <LastRunSummary instance={instance} />
+
+      {/* keyed by connector: its save feedback and any save still in flight belong to that connector alone */}
+      <PermissionFreshness
+        key={instance._key}
+        instance={instance}
+        onSyncNow={instance.isActive && !isSyncRunning(instance.status) ? handleOverviewResync : undefined}
+        syncBusy={isHeaderSyncBusy}
+      />
 
       {/* Shared stats panel */}
       <IndexingStatsPanel
@@ -417,6 +430,14 @@ export function OverviewTab({
         isLoading={isStopBusy}
         onConfirm={() => void handleConfirmStopSync()}
       />
+      {isAdmin === true && instance._key && instance.scope === 'team' ? (
+        <ConnectedUsers connectorId={instance._key} container={nestedModalHost} />
+      ) : null}
+      {isAdmin === true && instance._key ? (
+        <Flex>
+          <AccessCheckDialog connectorId={instance._key} container={nestedModalHost} />
+        </Flex>
+      ) : null}
       <ConnectorOverviewExtras connectorId={instance._key ?? null} refreshKey={panelRefreshKey} />
     </Flex>
   );

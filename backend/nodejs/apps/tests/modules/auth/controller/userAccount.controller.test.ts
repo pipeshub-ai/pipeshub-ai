@@ -1,10 +1,12 @@
 import 'reflect-metadata';
+import { createMockQuery } from '../../../helpers/mock-mongo';
 import { expect } from 'chai';
 import { DEFAULT_BRAND, setBrandResolver } from '../../../../src/libs/branding';
 import sinon from 'sinon';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
+import nock from 'nock';
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
 import {
   UserAccountController,
@@ -19,19 +21,26 @@ import {
   ACCOUNT_NO_LONGER_ACTIVE,
   RESET_LINK_ALREADY_USED,
   RESET_LINK_NOT_CHECKED,
+  SESSION_NO_LONGER_VALID,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
+import { IamService } from '../../../../src/modules/auth/services/iam.service';
 import { UsedPasswordResetLink } from '../../../../src/modules/auth/schema/usedPasswordResetLink.schema';
 import { SIGN_IN_METHOD_NOT_ALLOWED } from '../../../../src/modules/auth/utils/authMethodGuard';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service';
+import { setSessionFamilyRepository } from '../../../../src/libs/repositories/session-family';
+import { InMemorySessionFamilies } from '../../../support/auth/in-memory-session-families';
+import { PLAIN_SESSION_COOKIE, signOutSessionCookie } from '../../../../src/modules/auth/session-cookie';
 import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum';
 import { jwtGeneratorForForgotPasswordLink } from '../../../../src/libs/utils/createJwt';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
+import { MAX_WRONG_CREDENTIAL_ATTEMPTS } from '../../../../src/libs/repositories/credential/types';
 
 type ClaimedCredentials = Awaited<ReturnType<typeof UserCredentials.findOneAndUpdate>>;
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import { AgentPrincipalErasureModel } from '../../../../src/libs/repositories/agent-harness/principal-erasure/schema/principal-erasure.schema';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import {
   BadRequestError,
@@ -42,6 +51,7 @@ import {
   ServiceUnavailableError,
 } from '../../../../src/libs/errors/http.errors';
 import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
+import { stubGoogleIdTokenCheck } from '../../../helpers/google-id-token';
 
 // The account-locked email is sent in the background; this lets it run.
 const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -547,14 +557,14 @@ describe('UserAccountController', () => {
       const reserved = { wrongCredentialCount: 3 };
       const update = sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(reserved as any);
 
-      expect(await controller.reserveCredentialAttempt('u1', 'o1')).to.equal(reserved);
+      expect(await controller.reserveCredentialAttempt('u1', 'o1')).to.deep.equal(reserved);
       expect(update.firstCall.args).to.deep.equal([
         {
           userId: 'u1',
           orgId: 'o1',
           isDeleted: false,
           isBlocked: { $ne: true },
-          wrongCredentialCount: { $lt: 5 },
+          wrongCredentialCount: { $lt: MAX_WRONG_CREDENTIAL_ATTEMPTS },
         },
         { $inc: { wrongCredentialCount: 1 } },
         { returnDocument: 'after' },
@@ -674,9 +684,7 @@ describe('UserAccountController', () => {
 
   describe('hasPasswordMethod', () => {
   const stubPolicy = (policy: unknown) =>
-    sinon.stub(OrgAuthConfig, 'findOne').returns({
-      select: () => ({ lean: async () => policy }),
-    } as any);
+    sinon.stub(OrgAuthConfig, 'findOne').resolves(policy as any);
 
     it('should return isPasswordAuthEnabled true when password method exists', async () => {
       const req: any = {
@@ -1061,32 +1069,37 @@ describe('UserAccountController', () => {
       expect(res.send.calledOnce).to.be.true;
     });
 
-    it('takes the same time for a known and an unknown address', async function () {
-      this.timeout(30000);
-      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
-      mockIamService.getUserByEmail.callsFake(async (email: string) =>
-        delayed(email.startsWith('known') ? 25 : 2, {
-          statusCode: email.startsWith('known') ? 200 : 404,
-          data: email.startsWith('known') ? { ...knownUser, email } : {},
-        }),
-      );
-      mockMailService.sendMail.callsFake(() => delayed(25, { statusCode: 200 }));
+    it('takes the same time for a known and an unknown address', async () => {
+      const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+      try {
+        sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+        mockIamService.getUserByEmail.callsFake(async (email: string) =>
+          delayed(email.startsWith('known') ? 25 : 2, {
+            statusCode: email.startsWith('known') ? 200 : 404,
+            data: email.startsWith('known') ? { ...knownUser, email } : {},
+          }),
+        );
+        mockMailService.sendMail.callsFake(() => delayed(25, { statusCode: 200 }));
 
-      const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[xs.length >> 1];
-      const time = async (email: string) => {
-        const start = process.hrtime.bigint();
-        await controller.forgotPasswordEmail({ body: { email }, ip: '127.0.0.1' } as any, res, next);
-        return Number(process.hrtime.bigint() - start) / 1e6;
-      };
-      const known: number[] = [];
-      const unknown: number[] = [];
-      for (let i = 0; i < 50; i++) {
-        known.push(await time(`known${i}@example.com`));
-        unknown.push(await time(`unknown${i}@example.com`));
+        // On the fake clock the lookup takes 25 ms for a known address and 2 ms
+        // for an unknown one, and the mail 25 ms more: an answer that waited for
+        // either would come later for a known address.
+        const answeredAfter = async (email: string): Promise<number> => {
+          const start = Date.now();
+          const answered = controller
+            .forgotPasswordEmail({ body: { email }, ip: '127.0.0.1' } as any, res, next)
+            .then(() => Date.now() - start);
+          await clock.tickAsync(100);
+          return answered;
+        };
+        for (let i = 0; i < 3; i++) {
+          expect(await answeredAfter(`known${i}@example.com`), 'known address').to.equal(0);
+          expect(await answeredAfter(`unknown${i}@example.com`), 'unknown address').to.equal(0);
+        }
+        expect(mockMailService.sendMail.callCount).to.equal(3);
+      } finally {
+        clock.restore();
       }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      expect(Math.abs(median(known) - median(unknown))).to.be.lessThan(3);
     });
   });
 
@@ -1159,6 +1172,62 @@ describe('UserAccountController', () => {
       expect(next.firstCall.args[0].message).to.equal(
         'Previous password not found',
       );
+    });
+  });
+
+  describe('password setup for users without a password', () => {
+    // Called with req.user only and no bound org context, so the handlers must not need one.
+    const authedReq: any = {
+      user: { userId: '507f1f77bcf86cd799439011', orgId: '507f1f77bcf86cd799439012' },
+    };
+
+    it('getPasswordStatus reports hasPassword false when no credentials are stored', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+
+      await controller.getPasswordStatus(authedReq, res, next);
+
+      expect(res.json.calledWith({ hasPassword: false })).to.be.true;
+    });
+
+    it('getPasswordStatus reports hasPassword true when a hashed password is stored', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves({ hashedPassword: 'x' } as any);
+
+      await controller.getPasswordStatus(authedReq, res, next);
+
+      expect(res.json.calledWith({ hasPassword: true })).to.be.true;
+    });
+
+    it('sendPasswordSetupEmail mails a reset link to a user with no password', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+      mockIamService.getUserById.resolves({
+        statusCode: 200,
+        data: { _id: 'u1', orgId: 'o1', email: 'test@test.com', fullName: 'T' },
+      });
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.sendPasswordSetupEmail(authedReq, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
+      expect(mockMailService.sendMail.firstCall?.args[0]?.usersMails).to.deep.equal(['test@test.com']);
+      expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    it('sendPasswordSetupEmail refuses a request with no authenticated user', async () => {
+      await controller.sendPasswordSetupEmail({} as any, res, next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+
+    it('sendPasswordSetupEmail refuses a user who already has a password', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves({ hashedPassword: 'x' } as any);
+
+      await controller.sendPasswordSetupEmail(authedReq, res, next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(mockMailService.sendMail.called).to.be.false;
     });
   });
 
@@ -1285,6 +1354,26 @@ describe('UserAccountController', () => {
 
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.end.calledOnce).to.be.true;
+    });
+
+    it('ends the session family of the cookie it signed out, so a refresh minted just before stops working (R48MIGFIX-3)', async () => {
+      const families = new InMemorySessionFamilies();
+      setSessionFamilyRepository(families);
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      const started = await (controller as any).sessions.start('u1', 'o1');
+      const req: any = {
+        user: { orgId: 'o1', userId: 'u1' },
+        ip: '127.0.0.1',
+        headers: { authorization: 'Bearer access', cookie: `${PLAIN_SESSION_COOKIE}=${started.refreshToken}`, host: 'h' },
+      };
+      res.locals = {};
+      res.clearCookie = sinon.stub();
+      signOutSessionCookie()(req, res, () => undefined);
+
+      await controller.logoutSession(req, res, next);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      expect((await families.get('o1', started.familyId))?.revokedReason).to.equal('signed_out');
     });
 
     it('should call next(error) if UserActivities.create throws', async () => {
@@ -1788,30 +1877,33 @@ describe('UserAccountController', () => {
   });
 
   describe('verifyOTP (additional)', () => {
-    it('should block account, set cooldown expiry and send mail after 5 wrong OTPs', async () => {
+    it('should block account, set cooldown expiry and send mail after the last allowed wrong OTP', async () => {
       const hashedOTP = await bcrypt.hash('654321', 10);
       const saveStub = sinon.stub().resolves();
       const updatedCredential: any = {
         hashedOTP,
-        wrongCredentialCount: 5,
+        wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
         isBlocked: false,
         blockExpiresAt: null,
         save: saveStub,
       };
 
-      sinon.stub(UserCredentials, 'findOne').resolves({
-        isBlocked: false,
-        hashedOTP,
-        otpValidity: Date.now() + 600000,
-        wrongCredentialCount: 1,
-        save: sinon.stub().resolves(),
-      } as any);
+      // the first read is the sign-in check; the lock then reads the account's credential again to save it
+      sinon.stub(UserCredentials, 'findOne')
+        .onFirstCall().resolves({
+          isBlocked: false,
+          hashedOTP,
+          otpValidity: Date.now() + 600000,
+          wrongCredentialCount: 1,
+          save: sinon.stub().resolves(),
+        } as any)
+        .onSecondCall().resolves(updatedCredential);
 
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(updatedCredential);
 
       const createStub = sinon.stub(UserActivities, 'create').resolves({} as any);
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
-      sinon.stub(Users, 'findOne').resolves({ fullName: 'Test User' } as any);
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ fullName: 'Test User' }) as any);
       mockMailService.sendMail.resolves({ statusCode: 200 });
 
       try {
@@ -2143,29 +2235,31 @@ describe('UserAccountController', () => {
       expect(compare.getCalls().some((c) => c.args[1] === hashedPassword)).to.be.false;
     });
 
-    it('should block account after 5 wrong passwords, set cooldown expiry and send mail', async () => {
+    it('should block account after the last allowed wrong password, set cooldown expiry and send mail', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
       const hashedPassword = await bcrypt.hash('CorrectPass1!', 10);
       const saveStub = sinon.stub().resolves();
       const updatedCredential: any = {
         hashedPassword,
-        wrongCredentialCount: 5,
+        wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
         isBlocked: false,
         blockExpiresAt: null,
         save: saveStub,
       };
 
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
-      sinon.stub(UserCredentials, 'findOne').resolves({
-        hashedPassword,
-        isBlocked: false,
-        wrongCredentialCount: 4,
-        save: sinon.stub().resolves(),
-      } as any);
+      sinon.stub(UserCredentials, 'findOne')
+        .onFirstCall().resolves({
+          hashedPassword,
+          isBlocked: false,
+          wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS - 1,
+          save: sinon.stub().resolves(),
+        } as any)
+        .onSecondCall().resolves(updatedCredential);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(updatedCredential);
       const createStub = sinon.stub(UserActivities, 'create').resolves({} as any);
       sinon.stub(Users, 'findOne').callsFake((() =>
-        Promise.resolve({ fullName: 'Test User' })) as unknown as typeof Users.findOne);
+        createMockQuery({ fullName: 'Test User' })) as unknown as typeof Users.findOne);
       mockMailService.sendMail.resolves({ statusCode: 200 });
 
       try {
@@ -2520,6 +2614,9 @@ describe('UserAccountController', () => {
       });
 
       sinon.stub(Org, 'findOne').resolves(null);
+      // No org is being deleted either (ORGDEL: sign-in falls back to such an org's methods).
+      const noJob = { sort: () => noJob, select: () => noJob, lean: () => Promise.resolve(null) };
+      sinon.stub(AgentPrincipalErasureModel, 'findOne').returns(noJob as never);
 
       mockSessionService.createSession.resolves({
         token: 'session-nojit-123',
@@ -2655,6 +2752,37 @@ describe('UserAccountController', () => {
       expect(rebuild.calledOnce).to.be.true;
       expect(next.called).to.be.false;
       expect(used.size).to.equal(1);
+    });
+
+    // Through the real IAM client: a deleted account comes back from IAM as an
+    // HTTP 404, which used to reach the error middleware as a raw axios error
+    // and be answered with a 500.
+    describe('when the account was deleted after the link was sent', () => {
+      beforeEach(() => {
+        const realIam = new IamService(mockConfig);
+        mockIamService.getUserById.callsFake((id: string, token: string) =>
+          realIam.getUserById(id, token),
+        );
+        nock(mockConfig.iamBackend)
+          .get('/api/v1/users/internal/u1')
+          .reply(404, { error: { message: 'User not found' } });
+      });
+
+      afterEach(() => {
+        nock.cleanAll();
+      });
+
+      it('answers that the link is no longer valid (404), changing nothing', async () => {
+        const used = fakeUsedResetLinks();
+
+        await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+        const error = next.firstCall.args[0];
+        expect(error).to.be.instanceOf(NotFoundError);
+        expect(error.message).to.equal(SESSION_NO_LONGER_VALID);
+        expect((UserCredentials.prototype.save as sinon.SinonStub).called).to.be.false;
+        expect(used.size).to.equal(0, 'the link is handed back, as for any reset that changed nothing');
+      });
     });
 
     it('refuses a link that was already used', async () => {
@@ -2807,6 +2935,15 @@ describe('UserAccountController', () => {
         ipAddress: null,
         save: sinon.stub().resolves(),
       } as any);
+      // Third call: the repository re-reads the credential to store the new hash
+      findOneStub.onThirdCall().resolves({
+        isBlocked: false,
+        hashedPassword: hashedPassword,
+        orgId: 'o1',
+        userId: 'u1',
+        ipAddress: null,
+        save: sinon.stub().resolves(),
+      } as any);
 
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockIamService.getUserById.resolves({
@@ -2888,6 +3025,7 @@ describe('UserAccountController', () => {
         commitTransaction: sinon.stub().resolves(),
         abortTransaction: sinon.stub().resolves(),
         endSession: sinon.stub(),
+        withTransaction: sinon.stub().callsFake((fn: () => Promise<unknown>) => fn()),
       };
       sinon.stub(mongoose, 'startSession').resolves(mockSession as any);
 
@@ -3325,12 +3463,9 @@ describe('UserAccountController', () => {
         data: { clientId: 'google-client-id' },
       });
 
-      // Stub OAuth2Client to return null payload
-      const { OAuth2Client } = require('google-auth-library');
-      const verifyStub = sinon.stub().resolves({
+      stubGoogleIdTokenCheck().resolves({
         getPayload: () => null,
-      });
-      sinon.stub(OAuth2Client.prototype, 'verifyIdToken').callsFake(verifyStub);
+      } as any);
 
       try {
         await controller.authenticateWithGoogle(user, 'fake-credential', '127.0.0.1');
@@ -3347,10 +3482,9 @@ describe('UserAccountController', () => {
         data: { clientId: 'google-client-id' },
       });
 
-      const { OAuth2Client } = require('google-auth-library');
-      sinon.stub(OAuth2Client.prototype, 'verifyIdToken').resolves({
+      stubGoogleIdTokenCheck().resolves({
         getPayload: () => ({ email: 'other@test.com' }),
-      });
+      } as any);
 
       try {
         await controller.authenticateWithGoogle(user, 'fake-credential', '127.0.0.1');
@@ -3368,10 +3502,9 @@ describe('UserAccountController', () => {
         data: { clientId: 'google-client-id' },
       });
 
-      const { OAuth2Client } = require('google-auth-library');
-      sinon.stub(OAuth2Client.prototype, 'verifyIdToken').resolves({
+      stubGoogleIdTokenCheck().resolves({
         getPayload: () => ({ email: 'test@test.com' }),
-      });
+      } as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
       await controller.authenticateWithGoogle(user, 'fake-credential', '127.0.0.1');
@@ -3429,8 +3562,10 @@ describe('UserAccountController', () => {
   // -----------------------------------------------------------------------
   describe('getAccessTokenFromRefreshToken - success with credential update', () => {
     it('should update credentials and return new access token', async () => {
+      const { refreshToken } = await (controller as any).sessions.start('u1', 'o1');
       const req: any = {
-        tokenPayload: { orgId: 'o1', userId: 'u1' },
+        tokenPayload: jwt.decode(refreshToken),
+        verifiedToken: refreshToken,
         ip: '127.0.0.1',
       };
 
@@ -3453,6 +3588,147 @@ describe('UserAccountController', () => {
       expect(res.json.calledOnce).to.be.true;
       const jsonArg = res.json.firstCall.args[0];
       expect(jsonArg).to.have.property('accessToken');
+      // R43AUTH-FU-1: a bearer client gets the replacement refresh token, of the same sign-in.
+      const replaced = jwt.decode(jsonArg.refreshToken) as Record<string, unknown>;
+      const presented = jwt.decode(refreshToken) as Record<string, unknown>;
+      expect(replaced.sid).to.equal(presented.sid);
+      expect(replaced.jti).to.not.equal(presented.jti);
+      expect(replaced.exp).to.equal(presented.exp);
+    });
+
+    // R43AUTH-FU-1: a replaced token presented after the grace ends the sign-in and is recorded once.
+    it('ends the sign-in and records it when a replaced refresh token comes back', async () => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      mockIamService.getUserById.resolves({ statusCode: 200, data: { _id: 'u1', orgId: 'o1', email: 'test@test.com' } });
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({ isBlocked: false } as any);
+      const generateAuthTokenMod = require('../../../../src/modules/auth/utils/generateAuthToken');
+      sinon.stub(generateAuthTokenMod, 'generateAuthToken').resolves('access-token-123');
+      const audit = sinon.stub().resolves();
+      (controller as any).sessionReplayAudit = audit;
+      const { refreshToken, familyId } = await (controller as any).sessions.start('u1', 'o1');
+      const request = (): any => ({ tokenPayload: jwt.decode(refreshToken), verifiedToken: refreshToken, ip: '127.0.0.1' });
+
+      await controller.getAccessTokenFromRefreshToken(request(), res, next);
+      expect(next.called).to.be.false;
+      const clock = sinon.useFakeTimers({ now: Date.now() + 61_000, toFake: ['Date'] });
+      try {
+        await controller.getAccessTokenFromRefreshToken(request(), res, next);
+      } finally {
+        clock.restore();
+      }
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(audit.calledOnce).to.be.true;
+      expect(audit.firstCall.args[0]).to.deep.equal({ orgId: 'o1', userId: 'u1', familyId });
+      expect(JSON.stringify(audit.firstCall.args[0])).to.not.contain(refreshToken);
+    });
+
+    // R41OPS-FU-7: the web app moves the refresh token it kept in localStorage into the HttpOnly cookie.
+    it('sets the cookie from the verified bearer token only when the page asked for it', async () => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      mockIamService.getUserById.resolves({
+        statusCode: 200,
+        data: { _id: 'u1', orgId: 'o1', email: 'test@test.com', fullName: 'Test User' },
+      });
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({ isBlocked: false, lastLogin: Date.now() } as any);
+      const generateAuthTokenMod = require('../../../../src/modules/auth/utils/generateAuthToken');
+      sinon.stub(generateAuthTokenMod, 'generateAuthToken').resolves('access-token-123');
+      const refresh = jwt.sign({ userId: 'u1', orgId: 'o1' }, 'k', { expiresIn: '1h' });
+      const request = (): any => ({
+        tokenPayload: jwt.decode(refresh),
+        verifiedToken: refresh,
+        ip: '127.0.0.1',
+        headers: { origin: 'https://pipeshub.example.com' },
+      });
+
+      res.cookie = sinon.stub();
+      res.locals = {};
+      await controller.getAccessTokenFromRefreshToken(request(), res, next);
+      expect(res.cookie.called).to.be.false;
+      // The old token was adopted into a family and replaced; the bearer client keeps the replacement.
+      const replacement = res.json.lastCall.args[0].refreshToken as string;
+      expect(replacement).to.be.a('string').and.not.equal(refresh);
+
+      res.locals = { sessionAdoptIntoCookie: true };
+      await controller.getAccessTokenFromRefreshToken(
+        { ...request(), tokenPayload: jwt.decode(replacement), verifiedToken: replacement },
+        res,
+        next,
+      );
+      expect(res.cookie.calledOnce).to.be.true;
+      const [name, value, options] = res.cookie.firstCall.args;
+      expect(name).to.equal('__Host-pipeshub_refresh');
+      expect((jwt.decode(value) as Record<string, unknown>).sid).to.equal(
+        (jwt.decode(replacement) as Record<string, unknown>).sid,
+      );
+      expect(value).to.not.equal(replacement);
+      expect(options).to.include({ httpOnly: true, secure: true, sameSite: 'strict', path: '/' });
+      expect(res.json.lastCall.args[0]).to.not.have.property('refreshToken');
+    });
+  });
+
+  // R51-COMPAT item 7 (R50OFF-FU-1, ADR-OPS-07): on the compatibility profile a body-token refresh keeps its token,
+  // answered as before rotation, unless the client asks for rotation.
+  describe('getAccessTokenFromRefreshToken - compatibility profile', () => {
+    let saved: string | undefined;
+    beforeEach(() => {
+      saved = process.env.PIPESHUB_HARDENED;
+      delete process.env.PIPESHUB_HARDENED;
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      mockIamService.getUserById.resolves({ statusCode: 200, data: { _id: 'u1', orgId: 'o1', email: 'test@test.com' } });
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({ isBlocked: false } as any);
+      const generateAuthTokenMod = require('../../../../src/modules/auth/utils/generateAuthToken');
+      sinon.stub(generateAuthTokenMod, 'generateAuthToken').resolves('access-token-123');
+    });
+    afterEach(() => {
+      if (saved === undefined) delete process.env.PIPESHUB_HARDENED;
+      else process.env.PIPESHUB_HARDENED = saved;
+    });
+
+    it('answers user and accessToken only, and the same token works again a minute later', async () => {
+      const { refreshToken } = await (controller as any).sessions.start('u1', 'o1');
+      const request = (): any => ({ tokenPayload: jwt.decode(refreshToken), verifiedToken: refreshToken, ip: '127.0.0.1', headers: {} });
+      await controller.getAccessTokenFromRefreshToken(request(), res, next);
+      expect(res.json.lastCall.args[0]).to.have.all.keys('user', 'accessToken');
+      const clock = sinon.useFakeTimers({ now: Date.now() + 61_000, toFake: ['Date'] });
+      try {
+        await controller.getAccessTokenFromRefreshToken(request(), res, next);
+      } finally {
+        clock.restore();
+      }
+      expect(next.called).to.be.false;
+      expect(res.json.callCount).to.equal(2);
+    });
+
+    it('rotates for a client that sends X-PipesHub-Refresh-Rotation: 1', async () => {
+      const { refreshToken } = await (controller as any).sessions.start('u1', 'o1');
+      await controller.getAccessTokenFromRefreshToken(
+        { tokenPayload: jwt.decode(refreshToken), verifiedToken: refreshToken, ip: '127.0.0.1', headers: { 'x-pipeshub-refresh-rotation': '1' } } as any,
+        res,
+        next,
+      );
+      const replaced = res.json.lastCall.args[0].refreshToken as string;
+      expect(replaced).to.be.a('string').and.not.equal(refreshToken);
+    });
+
+    it('still refuses a token its family replaced, after the grace, and records the replay', async () => {
+      const audit = sinon.stub().resolves();
+      (controller as any).sessionReplayAudit = audit;
+      const { refreshToken } = await (controller as any).sessions.start('u1', 'o1');
+      await (controller as any).sessions.rotate(refreshToken, jwt.decode(refreshToken));
+      const clock = sinon.useFakeTimers({ now: Date.now() + 61_000, toFake: ['Date'] });
+      try {
+        await controller.getAccessTokenFromRefreshToken(
+          { tokenPayload: jwt.decode(refreshToken), verifiedToken: refreshToken, ip: '127.0.0.1', headers: {} } as any,
+          res,
+          next,
+        );
+      } finally {
+        clock.restore();
+      }
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(audit.calledOnce).to.be.true;
     });
   });
 
@@ -3603,7 +3879,7 @@ describe('UserAccountController', () => {
 
       expect(result.statusCode).to.equal(200);
       expect(save.calledOnce).to.be.true;
-      expect(mockLogger.error.calledWith("The sign-in code email couldn't be sent")).to.be.true;
+      expect(mockLogger.warn.calledWith("The sign-in code email couldn't be sent")).to.be.true;
     });
   });
 
@@ -3632,10 +3908,8 @@ describe('UserAccountController', () => {
   // -----------------------------------------------------------------------
   describe('hasPasswordMethod - via tokenPayload', () => {
     it('should return isPasswordAuthEnabled based on OrgAuthConfig', async () => {
-      sinon.stub(OrgAuthConfig, 'findOne').returns({
-        select: () => ({
-          lean: async () => ({ authSteps: [{ order: 1, allowedMethods: [{ type: 'password' }] }] }),
-        }),
+      sinon.stub(OrgAuthConfig, 'findOne').resolves({
+        authSteps: [{ order: 1, allowedMethods: [{ type: 'password' }] }],
       } as any);
 
       const req: any = {
@@ -3690,7 +3964,9 @@ describe('UserAccountController', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
-      expect(next.firstCall.args[0].message).to.include('already in use')
+      // The reply and the error log line carry the message: never the address.
+      expect(next.firstCall.args[0].message).to.equal('Email already in use')
+      expect(next.firstCall.args[0].message).to.not.include('taken@example.com')
     })
 
     it('does not sync the graph when Mongo has no user for the token', async () => {
@@ -3775,9 +4051,9 @@ describe('UserAccountController', () => {
 
       expect(createStub.calledOnce).to.be.true
       const activityArg = createStub.firstCall.args[0]
-      expect(activityArg.orgId).to.equal('org1')
-      expect(activityArg.userId).to.equal('u1')
-      expect(activityArg.ipAddress).to.equal('10.0.0.1')
+      expect(activityArg!.orgId).to.equal('org1')
+      expect(activityArg!.userId).to.equal('u1')
+      expect(activityArg!.ipAddress).to.equal('10.0.0.1')
     })
   });
 
@@ -3793,7 +4069,7 @@ describe('UserAccountController', () => {
       expect(uri).to.equal('http://connectors:8088/api/v1/entity/user/email')
       expect(method).to.equal('PATCH')
       expect(body).to.deep.equal({ email: 'new@email.com' })
-      const claims = jwt.verify(headers.Authorization.replace('Bearer ', ''), 'test-scoped-secret') as Record<string, unknown>
+      const claims = jwt.verify(headers.Authorization!.replace('Bearer ', ''), 'test-scoped-secret') as Record<string, unknown>
       expect(claims).to.include({ userId: 'u1', orgId: 'org1' })
       expect(claims.scopes).to.deep.equal(['entity:user:write'])
     })

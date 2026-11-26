@@ -20,30 +20,15 @@ class KeyData(Generic[T]):
         expiry: Optional expiration timestamp
     """
 
+    # No logging here: every store operation checks every key for expiry, so a
+    # line per key made one read cost as many log records as the store has keys.
     def __init__(self, value: T, ttl: Optional[int] = None) -> None:
-        logger.debug("🔧 Creating KeyData instance")
-        logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
-
         self.value = value
         self.expiry = time.time() + ttl if ttl else None
-        if self.expiry:
-            logger.debug(
-                "📋 Expiry set to: %s",
-                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.expiry)),
-            )
 
     def is_expired(self) -> bool:
         """Check if the value has expired."""
-        if not self.expiry:
-            logger.debug("📋 No expiry set, returning False")
-            return False
-        is_expired = time.time() > self.expiry
-        logger.debug(
-            "🔍 Checking expiry: %s (expired: %s)",
-            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.expiry)),
-            is_expired,
-        )
-        return is_expired
+        return self.expiry is not None and time.time() > self.expiry
 
 
 class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
@@ -89,14 +74,10 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
         expired_keys = [
             key for key, data in self.store.items() if data.is_expired()
         ]
+        for key in expired_keys:
+            del self.store[key]
         if expired_keys:
-            logger.debug("📋 Found expired keys: %s", expired_keys)
-            for key in expired_keys:
-                logger.debug("🔄 Removing expired key: %s", key)
-                del self.store[key]
-            logger.debug(
-                "✅ Cleanup complete, removed %d keys", len(expired_keys)
-            )
+            logger.debug("Removed %d expired keys", len(expired_keys))
 
     def _notify_watchers(self, key: str, value: Optional[T]) -> None:
         """Notify all watchers of a key about value changes."""
@@ -160,7 +141,6 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
         with self.lock:
             self._cleanup_expired_keys()
             if key not in self.store or self.store[key].is_expired():
-                logger.error("❌ Key does not exist: %s", key)
                 raise KeyError(f'Key "{key}" does not exist.')
 
             logger.debug("🔄 Updating value")
@@ -232,7 +212,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             valid_keys = [
                 key for key, data in self.store.items() if not data.is_expired()
             ]
-            logger.debug("📋 Found %d valid keys: %s", len(valid_keys), valid_keys)
+            logger.debug("📋 Found %d valid keys", len(valid_keys))
             return valid_keys
 
     async def watch_key(

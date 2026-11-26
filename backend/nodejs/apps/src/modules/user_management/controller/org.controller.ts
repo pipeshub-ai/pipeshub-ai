@@ -1,31 +1,62 @@
+import { getSlackUserLinkRepository } from '../../../libs/repositories/slack-user-link';
+import {
+  INBOX_ERASER,
+  type InboxEraser,
+} from '../../agent-harness/ports/inbox';
+import {
+  ENGINE_SIGNIN_ERASER,
+  type EngineSignInEraser,
+} from '../../agent-harness/ports/engine-signins';
+import {
+  PERSONAL_INSTANCE_ERASER,
+  type PersonalInstanceEraser,
+} from '../../agent-harness/ports/personal-instances';
 import { Response, NextFunction } from 'express';
-import mongoose from 'mongoose';
+import {
+  SCHEDULE_ERASER,
+  ScheduleEraser,
+} from '../../agent-harness/ports/schedules';
 import bcrypt from 'bcryptjs';
+import type { OrgQueryServiceEraser } from '../../agent-harness/ports/principal-erasure';
+import { ORG_QUERY_SERVICE_ERASER } from '../../agent-harness/binders/tokens';
+import { orgLifecycle } from '../../../libs/org-lifecycle';
 
-import { Org } from '../schema/org.schema';
-import { Users } from '../schema/users.schema';
-import { UserGroups } from '../schema/userGroup.schema';
+import { getOrgRepository } from '../../../libs/repositories/org';
+import { asAccount } from '../../../libs/context/orgContext';
+import { createUnitOfWork } from '../../../libs/repositories/doc-store';
+import { kickOutbox } from '../../../libs/services/outbox/outbox.dispatcher';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { OrgLogos } from '../schema/orgLogo.schema';
 import {
   detectRasterImageFormat,
   readImageUpload,
   sharp,
 } from '../../../libs/utils/image.utils';
-import { inject, injectable } from 'inversify';
-import { MailService } from '../services/mail.service';
-import { getBrandConfig } from '../../../libs/branding';
+import { inject, injectable, optional } from 'inversify';
 import {
-  AuthMethodType,
-  OrgAuthConfig,
-} from '../../auth/schema/orgAuthConfiguration.schema';
-import { UserCredentials } from '../../auth/schema/userCredentials.schema';
+  MODEL_ACCOUNT_ERASER,
+  ModelAccountEraser,
+} from '../../agent-harness/ports/model-accounts';
+import {
+  MEMORY_ERASER,
+  MemoryEraser,
+} from '../../agent-harness/ports/memory-store';
+import {
+  DATA_ERASER_EXTENSION,
+  DataEraserExtension,
+} from '../../agent-harness/ports/data-eraser-extension';
+import { MailService } from '../services/mail.service';
+import {
+  PRINCIPAL_DELETION,
+  type PrincipalDeletionService,
+} from '../services/principal-deletion.service';
+import { getBrandConfig } from '../../../libs/branding';
 import { passwordValidator } from '../../auth/utils/passwordValidator';
 import { SALT_ROUNDS } from '../../auth/controller/userAccount.controller';
 import {
   BadRequestError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import {
   markClientSafe,
@@ -44,12 +75,41 @@ import {
 } from '../services/entity_events.service';
 import { mailJwtGenerator } from '../../../libs/utils/createJwt';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import {
   domainFromEmail,
+  recordEvent,
   signupSource,
-} from '../../../libs/services/telemetry/identity';
+} from '../../../libs/services/telemetry/telemetry-impl';
 import { ORG_CREATED_EVENT } from '../constants/constants';
+import { audit } from '../../../libs/services/audit';
+import { withCause } from '../../../libs/errors/base.error';
+import { hardenedProfile } from '../../../libs/utils/security-profile';
+import { erasureOnDelete } from '../../agent-harness/config';
+
+/**
+ * How many pages of the query service's org erase one delete asks for. Each
+ * page is idempotent, so a delete that runs out of pages leaves the org as it
+ * is and the next delete continues where this one stopped.
+ */
+export const ORG_DELETE_QUERY_SERVICE_PAGES = 200;
+
+/** The refusal of a delete whose typed name is not the org's. */
+export const ORG_DELETE_NAME_MISMATCH = 'org_delete_name_mismatch';
+
+/**
+ * What an admin types to delete the org: its registered name, else its
+ * display name, else its contact email (an individual account may have no
+ * registered name). The UI asks for the same.
+ */
+export const orgConfirmationName = (org: {
+  registeredName?: string | null;
+  shortName?: string | null;
+  contactEmail?: string | null;
+}): string =>
+  org.registeredName?.trim() ||
+  org.shortName?.trim() ||
+  org.contactEmail?.trim() ||
+  '';
 
 const ADDRESS_FIELDS = [
   'addressLine1',
@@ -59,6 +119,13 @@ const ADDRESS_FIELDS = [
   'postCode',
 ] as const;
 
+/** The onboarding status as an audit reason (snake_case). */
+const ONBOARDING_REASONS: Readonly<Record<string, string>> = {
+  configured: 'configured',
+  notConfigured: 'not_configured',
+  skipped: 'skipped',
+};
+
 @injectable()
 export class OrgController {
   constructor(
@@ -67,6 +134,36 @@ export class OrgController {
     @inject('Logger') protected logger: Logger,
     @inject('EntitiesEventProducer')
     protected eventService: EntitiesEventProducer,
+    @inject(MODEL_ACCOUNT_ERASER)
+    @optional()
+    protected modelAccounts: ModelAccountEraser | null = null,
+    @inject(SCHEDULE_ERASER)
+    @optional()
+    protected schedules: ScheduleEraser | null = null,
+    @inject(MEMORY_ERASER)
+    @optional()
+    protected memories: MemoryEraser | null = null,
+    @inject(ENGINE_SIGNIN_ERASER)
+    @optional()
+    protected engineSignIns: EngineSignInEraser | null = null,
+    @inject(PERSONAL_INSTANCE_ERASER)
+    @optional()
+    protected personalInstances: PersonalInstanceEraser | null = null,
+    @inject(DATA_ERASER_EXTENSION)
+    @optional()
+    protected extension: DataEraserExtension | null = null,
+    @inject(INBOX_ERASER)
+    @optional()
+    protected inbox: InboxEraser | null = null,
+    @inject(ORG_QUERY_SERVICE_ERASER)
+    @optional()
+    protected queryService: OrgQueryServiceEraser | null = null,
+    @inject(PRINCIPAL_DELETION)
+    @optional()
+    protected principalDeletion: Pick<
+      PrincipalDeletionService,
+      'requestOrg'
+    > | null = null,
   ) {}
 
   getDomainFromEmail(email: string) {
@@ -98,20 +195,24 @@ export class OrgController {
       }
 
       const svgString = svgBuffer.toString('utf-8');
-      
+
       // Limit string length to prevent ReDoS - only check first portion if too long
       const maxCheckLength = 1000000; // 1MB in characters for validation
-      const checkString = svgString.length > maxCheckLength 
-        ? svgString.substring(0, maxCheckLength) 
-        : svgString;
-      
+      const checkString =
+        svgString.length > maxCheckLength
+          ? svgString.substring(0, maxCheckLength)
+          : svgString;
+
       // Use limited quantifiers [^>]{0,10000} to prevent ReDoS attacks
       // Check for dangerous patterns - throw error if found
-      
+
       // Check for script tags (opening, closing, or incomplete)
       const scriptTagPattern = /<[\s]*script[^>]{0,10000}>/gi;
       const scriptClosingPattern = /<\/[\s]*script[^>]{0,10000}>/gi;
-      if (scriptTagPattern.test(checkString) || scriptClosingPattern.test(checkString)) {
+      if (
+        scriptTagPattern.test(checkString) ||
+        scriptClosingPattern.test(checkString)
+      ) {
         throw new BadRequestError(
           'SVG file contains script tags which are not allowed for security reasons',
         );
@@ -166,7 +267,7 @@ export class OrgController {
   }
 
   async checkOrgExistence(res: Response): Promise<void> {
-    const count = await Org.countDocuments();
+    const count = await getOrgRepository().count();
 
     res.status(200).json({ exists: count != 0 });
   }
@@ -177,7 +278,6 @@ export class OrgController {
       throw new NotFoundError('Container not found');
     }
 
-    let session: mongoose.ClientSession | null = null;
     try {
       const { contactEmail, adminFullName, password, sendEmail } = req.body as {
         contactEmail: string;
@@ -192,7 +292,7 @@ export class OrgController {
         );
       }
 
-      const count = await Org.countDocuments();
+      const count = await getOrgRepository().count();
       if (count > 0) {
         throw new BadRequestError('There is already an organization');
       }
@@ -203,123 +303,78 @@ export class OrgController {
         );
       }
 
+      const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+
+      // Either the organisation and the events that announce it both land, or
+      // neither does (on a replica set). An organisation that exists without
+      // those events is invisible to the permission graph. Without a replica
+      // set the events are still recorded durably and delivered with retries;
+      // only the atomicity is unavailable.
       const source = signupSource(
         req.body as { ref?: unknown; referrerDomain?: unknown },
       );
-      const org = new Org({
-        ...req.body,
-        domain,
-        onBoardingStatus: 'notConfigured', // Set default onboarding status when org is created
-        signupChannel: source.channel,
-        signupReferrerDomain: source.referrerDomain,
+      const ids = getOrgRepository().allocateIds();
+      // The unit runs as the new organisation and its first administrator: the ids are chosen first and the
+      // context is bound from them (nothing here comes from the request's own identity).
+      const { org, adminUserId } = await asAccount(
+        ids.orgId,
+        ids.adminUserId,
+        'org-create',
+        () =>
+          createUnitOfWork(this.config.rsAvailable === 'true').run(
+            async (tx) => {
+              const created = await getOrgRepository().createWithAdmin(
+                {
+                  ids,
+                  org: {
+                    ...req.body,
+                    domain,
+                    onBoardingStatus: 'notConfigured', // Set default onboarding status when org is created
+                    signupChannel: source.channel,
+                    signupReferrerDomain: source.referrerDomain,
+                  },
+                  admin: { fullName: adminFullName, email: contactEmail },
+                  passwordHash: hashedPassword,
+                  ipAddress: req.ip,
+                },
+                tx,
+              );
+              const orgCreatedEvent: Event = {
+                eventType: EventType.OrgCreatedEvent,
+                timestamp: Date.now(),
+                payload: {
+                  orgId: created.org._id,
+                  accountType: created.org.accountType,
+                  registeredName: created.org.registeredName,
+                } as OrgAddedEvent,
+              };
+              const adminUserEvent: Event = {
+                eventType: EventType.NewUserEvent,
+                timestamp: Date.now(),
+                payload: {
+                  orgId: created.org._id,
+                  userId: created.adminUserId,
+                  fullName: adminFullName,
+                  email: created.adminEmail,
+                  syncAction: 'none',
+                } as UserAddedEvent,
+              };
+              await this.eventService.publishEvent(orgCreatedEvent, tx);
+              await this.eventService.publishEvent(adminUserEvent, tx);
+              return created;
+            },
+          ),
+      );
+      // The admin signs in and calls next; the poll interval would leave their graph user missing until then.
+      kickOutbox();
+      audit('org.create', {
+        actor: adminUserId,
+        org: org._id,
+        outcome: 'success',
       });
-
-      const adminUser = new Users({
-        fullName: adminFullName,
-        email: contactEmail,
-        orgId: org._id,
-        role: 'admin',
-      });
-
-      const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-
-      const adminUserCredentials = new UserCredentials({
-        userId: adminUser._id,
-        orgId: org._id,
-        isDeleted: false,
-        hashedPassword,
-        ipAddress: req.ip,
-      });
-
-      const allUsersGroup = new UserGroups({
-        type: 'everyone',
-        name: 'everyone',
-        orgId: org._id,
-        users: [adminUser._id],
-      });
-
-      const standardUsersGroup = new UserGroups({
-        type: 'standard',
-        name: 'standard',
-        orgId: org._id,
-        users: [],
-      });
-
-      if (!org._id) {
-        throw new NotFoundError('Org Id not found');
-      }
-      if (!adminUser._id) {
-        throw new NotFoundError('Admin User Id not found');
-      }
-
-      const orgAuthConfig = new OrgAuthConfig({
-        orgId: org._id,
-        authSteps: [
-          {
-            order: 1,
-            allowedMethods: [{ type: AuthMethodType.PASSWORD }],
-          },
-        ],
-      });
-
-      // Built before the save so the transactional branch can store them with
-      // the same commit. An organisation that exists without the events that
-      // announce it is invisible to the permission graph, which is the pair
-      // this transaction is here to keep together.
-      const orgCreatedEvent: Event = {
-        eventType: EventType.OrgCreatedEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: org._id.toString(),
-          accountType: org.accountType,
-          registeredName: org.registeredName,
-        } as OrgAddedEvent,
-      };
-      const adminUserEvent: Event = {
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: adminUser.orgId.toString(),
-          userId: adminUser._id.toString(),
-          fullName: adminUser.fullName,
-          email: adminUser.email,
-          syncAction: 'none',
-        } as UserAddedEvent,
-      };
-
-      const rsAvailable = this.config.rsAvailable === 'true';
-      if (rsAvailable) {
-        session = await mongoose.startSession();
-
-        session.startTransaction();
-        await orgAuthConfig.save({ session });
-        await allUsersGroup.save({ session });
-        await standardUsersGroup.save({ session });
-        await adminUser.save({ session });
-        await adminUserCredentials.save({ session });
-        await org.save({ session });
-        // Inside the transaction: either the organisation and the events that
-        // describe it both land, or neither does.
-        await this.eventService.publishEvent(orgCreatedEvent, session);
-        await this.eventService.publishEvent(adminUserEvent, session);
-        await session.commitTransaction();
-      } else {
-        await orgAuthConfig.save();
-        await allUsersGroup.save();
-        await standardUsersGroup.save();
-        await adminUser.save();
-        await adminUserCredentials.save();
-        await org.save();
-        // No replica set, so no transaction to join. The events are still
-        // recorded durably and delivered with retries; only the atomicity is
-        // unavailable here.
-        await this.eventService.publishEvent(orgCreatedEvent);
-        await this.eventService.publishEvent(adminUserEvent);
-      }
-
       recordEvent(ORG_CREATED_EVENT, {
-        orgId: (org._id as mongoose.Types.ObjectId).toString(),
-        userId: (adminUser._id as mongoose.Types.ObjectId).toString(),
+        orgId: org._id,
+        userId: adminUserId,
         email: contactEmail,
         domain: domainFromEmail(contactEmail),
         fullName: adminFullName,
@@ -337,7 +392,7 @@ export class OrgController {
               contactEmail,
               this.config.scopedJwtSecret,
             ),
-            orgId: org._id.toString(),
+            orgId: org._id,
           },
           usersMails: [contactEmail],
           subject: 'New Org Account Creation',
@@ -355,14 +410,14 @@ export class OrgController {
       if (error instanceof BadRequestError || error instanceof NotFoundError) {
         throw error;
       }
-      this.logger.error('Creating the organisation failed', { error });
       throw markClientSafe(
-        new InternalServerError(serverFailureMessage('create the organisation')),
+        withCause(
+          new InternalServerError(
+            serverFailureMessage('create the organisation'),
+          ),
+          error,
+        ),
       );
-    } finally {
-      if (session) {
-        session.endSession();
-      }
     }
   }
 
@@ -372,9 +427,8 @@ export class OrgController {
     next: NextFunction,
   ): Promise<void> {
     const orgId = req.user?.orgId;
-    this.logger.debug(orgId);
     try {
-      const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
+      const org = await getOrgRepository().getLive(orgId as string);
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
@@ -448,7 +502,7 @@ export class OrgController {
 
       const orgId = req.user?.orgId;
 
-      const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
+      const org = await getOrgRepository().getLive(orgId as string);
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
@@ -469,16 +523,18 @@ export class OrgController {
       }
 
       // Perform the update
-      const updatedOrg = await Org.findByIdAndUpdate(orgId, updateData, {
-        returnDocument: 'after',
-      });
+      const updatedOrg = await getOrgRepository().update(
+        orgId as string,
+        updateData,
+      );
+      audit('org.update', { outcome: 'success' });
 
       await this.eventService.start();
       let event: Event = {
         eventType: EventType.OrgUpdatedEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: org._id.toString(),
+          orgId: org._id,
           registeredName: org.registeredName,
         } as OrgUpdatedEvent,
       };
@@ -503,22 +559,64 @@ export class OrgController {
   ): Promise<void> {
     try {
       const orgId = req.user?.orgId;
-      const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
+      const org = await getOrgRepository().getLive(orgId as string);
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
       }
 
+      // The server, not only the dialog, asks for the org's name, so a stray call cannot delete it. On the
+      // compatibility profile (ADR-OPS-07) an API caller may leave it out, as before ORGDEL; one that sends it is held to it.
+      const { confirmName } = (req.body ?? {}) as { confirmName?: unknown };
+      const expected = orgConfirmationName(org);
+      const confirmationRequired = hardenedProfile();
+      if (
+        (confirmName !== undefined || confirmationRequired) &&
+        (typeof confirmName !== 'string' ||
+          expected === '' ||
+          confirmName.trim() !== expected)
+      ) {
+        throw new BadRequestError(
+          "Type the organization's name exactly as shown to delete it.",
+          { reasonCode: ORG_DELETE_NAME_MISMATCH },
+        );
+      }
+
+      const hook = orgLifecycle().orgLifecycleHook;
+      if (hook !== null) {
+        res.status(200).json(
+          await hook.deleteOrg({
+            org,
+            orgId: org._id,
+            byUserId: String(req.user?.userId),
+            config: {
+              frontendUrl: this.config.frontendUrl,
+              scopedJwtSecret: this.config.scopedJwtSecret,
+            },
+          }),
+        );
+        return;
+      }
+
+      // Erasure, beyond the soft delete a release without it did, runs where the harness is on for the org or the
+      // install is hardened (ADR-OPS-07, ADR-OPS-08); otherwise the org's data stays as that release kept it.
+      if (await erasureOnDelete(org._id)) {
+        await this.eraseOrgData(org._id, String(req.user?.userId));
+      }
+
       // Soft delete: set isDeleted to true
-      org.isDeleted = true;
-      await org.save();
+      const deleted = await getOrgRepository().softDelete(orgId as string);
+      if (!deleted) {
+        throw new NotFoundError('Organisation not found');
+      }
+      audit('org.delete', { outcome: 'success' });
 
       await this.eventService.start();
       let event: Event = {
         eventType: EventType.OrgDeletedEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: org._id.toString(),
+          orgId: org._id,
         } as OrgDeletedEvent,
       };
       await this.eventService.publishEvent(event);
@@ -527,12 +625,45 @@ export class OrgController {
 
       res.status(200).json({
         message: 'Organization marked as deleted successfully',
-        data: org,
+        data: deleted,
       });
       return;
     } catch (error) {
       next(error);
     }
+  }
+
+  /** Before the org is marked deleted, so a failed erasure can be retried. */
+  private async eraseOrgData(orgId: string, byUserId: string): Promise<void> {
+    await this.modelAccounts?.eraseOrg(orgId);
+    await this.schedules?.eraseOrg(orgId);
+    await this.memories?.eraseOrg(orgId);
+    // And what stores this build does not know of keep for it (`DataEraserExtension`).
+    await this.extension?.eraseOrg(orgId);
+    // And every person's own Claude sign-in (SIGNIN): records removed, live sandboxes signed out.
+    await this.engineSignIns?.eraseOrg(orgId);
+    // And every member's Inbox settings, run-notice claims and watch leases (G2).
+    await this.inbox?.eraseOrg(orgId);
+    // And every member's own toolset and MCP instances (main #4324).
+    await this.personalInstances?.eraseOrg(orgId);
+    // And what the query service holds for it: artifacts, chat attachments, skill candidates, agent versions.
+    await this.eraseQueryServiceData(orgId);
+    // And its Slack account links (ADR-SLACKID-01), which hold a person's email and Slack name.
+    await getSlackUserLinkRepository().removeForOrg(orgId);
+    // And the rest through the org's durable erasure job: its sessions (journals, payloads, workspaces), its harness
+    // documents, its data keys and its audit chain, which no request could erase in one go.
+    await this.principalDeletion?.requestOrg(orgId, byUserId);
+  }
+
+  /** Page by page until nothing is left; a page that fails, or too many pages, leave the org undeleted. */
+  private async eraseQueryServiceData(orgId: string): Promise<void> {
+    if (this.queryService === null) return;
+    for (let page = 0; page < ORG_DELETE_QUERY_SERVICE_PAGES; page += 1) {
+      if (!(await this.queryService.eraseOrg(orgId)).remaining) return;
+    }
+    throw new ServiceUnavailableError(
+      "The organization's data is still being erased. Delete it again to continue.",
+    );
   }
 
   async updateOrgLogo(
@@ -585,13 +716,8 @@ export class OrgController {
       }
 
       const base64Logo = processedBuffer.toString('base64');
-      await OrgLogos.findOneAndUpdate(
-        {
-          orgId,
-        },
-        { orgId, logo: base64Logo, mimeType },
-        { returnDocument: 'after', upsert: true },
-      );
+      await getOrgRepository().setLogo(orgId as string, base64Logo, mimeType);
+      audit('org.logo.update', { outcome: 'success', reason: 'set' });
 
       // Return JSON response instead of raw buffer - prevents XSS vulnerability
       // The frontend doesn't use the response and fetches the logo separately via getOrgLogo()
@@ -613,7 +739,7 @@ export class OrgController {
     try {
       const orgId = req.user?.orgId;
 
-      const orgLogo = await OrgLogos.findOne({ orgId }).lean().exec();
+      const orgLogo = await getOrgRepository().getLogo(orgId as string);
 
       if (!orgLogo || !orgLogo.logo) {
         res.status(204).end();
@@ -624,6 +750,12 @@ export class OrgController {
       if (orgLogo.mimeType) {
         res.setHeader('Content-Type', orgLogo.mimeType);
       }
+      // An SVG logo opened as a page must not run script on this origin.
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      );
 
       res.status(200).send(logoBuffer);
       return;
@@ -639,15 +771,11 @@ export class OrgController {
   ): Promise<void> {
     try {
       const orgId = req.user?.orgId;
-      const orgLogo = await OrgLogos.findOne({ orgId }).exec();
+      const orgLogo = await getOrgRepository().removeLogo(orgId as string);
       if (!orgLogo) {
         throw new NotFoundError('Organisation logo not found');
       }
-
-      orgLogo.logo = null;
-      orgLogo.mimeType = null;
-
-      await orgLogo.save();
+      audit('org.logo.update', { outcome: 'success', reason: 'removed' });
 
       res.status(200).send(orgLogo);
       return;
@@ -664,9 +792,7 @@ export class OrgController {
     try {
       const orgId = req.user?.orgId;
 
-      const org = await Org.findOne({ _id: orgId, isDeleted: false })
-        .select('onBoardingStatus')
-        .lean();
+      const org = await getOrgRepository().getOnboardingStatus(orgId as string);
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
@@ -697,15 +823,18 @@ export class OrgController {
         );
       }
 
-      const org = await Org.findOne({ _id: orgId, isDeleted: false });
+      const org = await getOrgRepository().setOnboardingStatus(
+        orgId as string,
+        status,
+      );
 
       if (!org) {
         throw new NotFoundError('Organisation not found');
       }
-
-      // Update the onboarding status
-      org.onBoardingStatus = status;
-      await org.save();
+      audit('org.onboarding.update', {
+        outcome: 'success',
+        reason: ONBOARDING_REASONS[status as string],
+      });
 
       res.status(200).json({
         message: 'Onboarding status updated successfully',

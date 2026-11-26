@@ -25,7 +25,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import Connectors
-from app.models.record_metadata import MetadataSchema, PropertyDefinition
+from app.models.record_metadata import MetadataSchema, PropertyDefinition, PropertyType
 from app.modules.record_metadata.builtin import builtin_properties
 
 if TYPE_CHECKING:
@@ -37,6 +37,55 @@ MAX_SCHEMA_VERSIONS = 1000
 
 class MetadataSchemaError(Exception):
     """A stored schema is unreadable, another org's, or past ``MAX_SCHEMA_VERSIONS``."""
+
+
+class SchemaRuleError(ValueError):
+    """A proposed schema breaks a registration rule; ``code`` and ``property`` say which."""
+
+    def __init__(self, code: str, property_name: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.property = property_name
+
+
+#: The types whose values a facet can bucket exactly: a closed set (ENUM, BOOL) or one bucket per item.
+FACETABLE_TYPES = frozenset({PropertyType.ENUM, PropertyType.BOOL, PropertyType.STRING_LIST})
+
+
+def check_new_schema(previous: Iterable[MetadataSchema], proposed: Iterable[PropertyDefinition]) -> None:
+    """The rules a schema must meet to be *registered*; ``SchemaRuleError`` when it does not.
+
+    - A name keeps its type across versions: stored values and every filter on them are typed.
+    - ``facetable`` only on ``FACETABLE_TYPES``, and only with ``retrievable`` (a bucket shows the value).
+
+    Applied at registration only, never when a stored version is read: versions shipped before these
+    rules (a facetable STRING, a changed type) stay readable, and registering a property set that an
+    existing version already holds is a lookup, not a new schema, so it is not checked again.
+    """
+    proposed = tuple(proposed)
+    versions = tuple(previous)
+    if any(_same(version.properties, proposed) for version in versions):
+        return
+    types: dict[str, PropertyType] = {}
+    for version in versions:
+        for prop in version.properties:
+            types.setdefault(prop.name, prop.type)
+    for prop in proposed:
+        if prop.name in types and types[prop.name] is not prop.type:
+            raise SchemaRuleError(
+                "PROPERTY_TYPE_IMMUTABLE", prop.name,
+                f"property {prop.name!r} was registered as {types[prop.name].value} and cannot become {prop.type.value}",
+            )
+        if prop.facetable and prop.type not in FACETABLE_TYPES:
+            raise SchemaRuleError(
+                "PROPERTY_FACET_TYPE", prop.name,
+                f"property {prop.name!r}: only enum, boolean and string-list properties can be facetable",
+            )
+        if prop.facetable and not prop.retrievable:
+            raise SchemaRuleError(
+                "PROPERTY_FACET_RETRIEVABLE", prop.name,
+                f"property {prop.name!r}: a facetable property must be retrievable",
+            )
 
 
 def _schemas_key(connector_id: str) -> str:
@@ -121,6 +170,16 @@ class MetadataSchemaRegistry:
             if properties is not None and _same(found.properties, properties):
                 return version, found
         return version, latest if properties is None else None
+
+    async def versions(self, org_id: str, connector_id: str) -> tuple[MetadataSchema, ...]:
+        """Every registered version, oldest first."""
+        found: list[MetadataSchema] = []
+        while len(found) < MAX_SCHEMA_VERSIONS:
+            schema = await self._read(org_id, connector_id, len(found) + 1)
+            if schema is None:
+                break
+            found.append(schema)
+        return tuple(found)
 
     async def get(self, org_id: str, connector_id: str, version: int | None = None) -> MetadataSchema | None:
         """Version ``version`` of the connector's schema, or the one registered last; None when there is none."""

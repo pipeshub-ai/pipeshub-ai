@@ -45,7 +45,7 @@ logger = logging.getLogger("vrid-mapping-lookup-it")
 
 
 def _current(vrid: str, doc_id: str) -> dict:
-    """As ``store_virtual_record_mapping`` writes it: keyed by the vrid."""
+    """As a stored write's switch leaves it: keyed by the vrid."""
     return {"id": vrid, "orgId": "org-it", "virtualRecordId": vrid, "documentId": doc_id,
             "record_doc_id": doc_id, "fileSizeBytes": 7, "updatedAt": 1}
 

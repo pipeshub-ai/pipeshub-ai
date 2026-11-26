@@ -3,13 +3,14 @@
 import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useAui } from '@assistant-ui/react';
-import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
+import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView, ContinuePrivately, forkMode } from './components';
 import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
 import { AgentChatHeader } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import { ConversationHeaderOverlay } from '@/config';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
+import { onLeaveChat, onNewChat } from './compare/compare-controller';
 import {
   applyConversationModelInfoToStore,
   findModelInfoInConversationLists,
@@ -18,6 +19,7 @@ import {
 import { ChatSuggestion, type AppliedFilters } from '@/chat/types';
 import { appliedFiltersFromNodes, restoreAppliedFilters } from '@/chat/utils/restore-applied-filters';
 import { ChatApi } from '@/chat/api';
+import { resumeActiveDurableRunForSlot } from '@/chat/streaming';
 import { buildChatHref } from '@/chat/build-chat-url';
 import {
   AgentsApi,
@@ -27,7 +29,9 @@ import {
   extractAgentKnowledgeConnectors,
   extractAgentKnowledgeCollectionRows,
 } from '@/app/(main)/agents/api';
-import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
+import type { GetAgentResult } from '@/app/(main)/agents/types';
+import { useAgentDetail } from '@/chat/hooks/use-agent-detail';
+import { showErrorToast } from '@/lib/api/error-toast';
 import { buildExternalStoreConfig, loadHistoricalMessages } from '@/chat/runtime';
 import { debugLog } from '@/chat/debug-logger';
 import { useCommandStore } from '@/lib/store/command-store';
@@ -42,8 +46,11 @@ import { FilePreviewInlinePanel, FilePreviewFullscreen } from '@/app/components/
 import { FilePreviewMobile } from '@/app/components/file-preview/file-preview-mobile';
 import { ShareSidebar, ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
-import { createChatShareAdapter } from './share-adapter';
+import { createChatShareAdapter, toChatSharedMembers } from './share-adapter';
 import { ChatSearch } from './components/search';
+import { ActivityPanelHost, useActivityPanelLayout, useActivityPanelStore, useJobPanelUrl } from './components/activity-panel';
+import { BackgroundAgentsButton, BackgroundAgentsHost, useBackgroundAgentsOpen } from './components/background-agents';
+import { ChatGrantsButton } from './components/chat-grants';
 import { isCommandKey } from '@/lib/utils/platform';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github-stars';
@@ -56,19 +63,40 @@ import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useBrand } from '@/lib/branding';
 import { chatContentColumnStyle, clampSplitWidth } from './constants';
 import { useSplitWidth } from '@/chat/hooks/use-split-width';
-import { UsersApi } from '@/app/(main)/workspace/users/api';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { userDisplayName } from '@/lib/utils/formatters';
 import {
   useFeatureFlagsStore,
   selectProjectsEnabled,
   selectApiToolsetsEnabled,
+  selectAgentHarnessResumeEnabled,
+  selectContinuePrivatelyEnabled,
 } from '@/lib/store/feature-flags-store';
 import { ApiToolsetsApi } from '@/app/(main)/workspace/api-toolsets/api';
 import { buildApiActionGroups } from '@/chat/tool-groups';
-import { ProjectApi } from '@/chat/project-api';
-import type { ProjectDetail } from '@/chat/project-types';
+import { useProjectDetail } from '@/chat/hooks/use-project-detail';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
 import { useRemoteRunPoll } from '@/chat/hooks/use-remote-run-poll';
 import { useHydrateUnreadConversations } from '@/chat/hooks/use-hydrate-unread-conversations';
+import { engineKinds } from '@/chat/sandbox-commands';
+import { agentGatesOf } from '@/app/(main)/agents/agent-gates';
+import { chatPreviewProps } from './preview-props';
+
+/** Empties the agent fields the chat page fills from the agent detail. */
+function clearAgentContext(): void {
+  const store = useChatStore.getState();
+  store.hydrateAgentChatResources(null);
+  store.setAgentContextDisplayName(null);
+  store.setAgentContextCreatedBy(null);
+  store.setAgentContextAccess(null);
+}
+
+function deprecatedAgentToolNames(agent: GetAgentResult['agent']): string[] {
+  return (agent?.toolsets ?? [])
+    .flatMap((ts) => ts.tools ?? [])
+    .filter((tool) => tool.deprecated === true)
+    .map((tool) => tool.name);
+}
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -100,6 +128,7 @@ function ChatFooterLinks() {
         href={githubUrl}
         target="_blank"
         rel="noopener noreferrer"
+        className="touch-hit"
         style={footerLinkStyle}
         onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
         onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7'; }}
@@ -111,18 +140,18 @@ function ChatFooterLinks() {
           alt=""
           style={{ flexShrink: 0 }}
         />
-        <span style={{ fontSize: 12, color: 'var(--olive-9)', whiteSpace: 'nowrap' }}>
+        <span style={{ fontSize: 12, color: 'var(--olive-11)', whiteSpace: 'nowrap' }}>
           GitHub
         </span>
         {stars && (
           <>
-            <Text style={{ color: 'var(--olive-6)', fontSize: 12 }}>·</Text>
-            <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--slate-10)', whiteSpace: 'nowrap' }}>
+            <Text style={{ color: 'var(--olive-11)', fontSize: 12 }}>·</Text>
+            <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--slate-11)', whiteSpace: 'nowrap' }}>
               {stars}
               <MaterialIcon
                 name="star"
                 size={11}
-                color="var(--slate-10)"
+                color="var(--slate-11)"
                 style={{ marginLeft: 1, verticalAlign: 'middle' }}
               />
             </span>
@@ -132,7 +161,7 @@ function ChatFooterLinks() {
       ) : null}
 
       {githubUrl && docsUrl ? (
-      <Text style={{ color: 'var(--olive-6)', fontSize: 12 }}>·</Text>
+      <Text style={{ color: 'var(--olive-11)', fontSize: 12 }}>·</Text>
       ) : null}
 
       {docsUrl ? (
@@ -140,6 +169,7 @@ function ChatFooterLinks() {
         href={docsUrl}
         target="_blank"
         rel="noopener noreferrer"
+        className="touch-hit"
         style={footerLinkStyle}
         onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
         onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7'; }}
@@ -151,7 +181,7 @@ function ChatFooterLinks() {
           alt=""
           style={{ flexShrink: 0 }}
         />
-        <span style={{ fontSize: 12, color: 'var(--olive-9)', whiteSpace: 'nowrap' }}>
+        <span style={{ fontSize: 12, color: 'var(--olive-11)', whiteSpace: 'nowrap' }}>
           {t('common.docs')}
         </span>
       </a>
@@ -184,6 +214,7 @@ function ChatContent() {
   const rawAgentParam = searchParams.get('agentId');
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
+  const continuePrivatelyServed = useFeatureFlagsStore(selectContinuePrivatelyEnabled);
   const apiActionsEnabled = useFeatureFlagsStore(selectApiToolsetsEnabled);
   // A thread can't be scoped to both an agent and a project — agentId wins.
   // When the feature flag is off, projectId is always null so the UI degrades
@@ -238,6 +269,9 @@ function ChatContent() {
   const activeSlotIsOwner = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null
   );
+  const activeSlotIsShared = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.isShared === true : false
+  );
   const activeSlotConversationModelInfo = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.conversationModelInfo : undefined
   );
@@ -265,11 +299,19 @@ function ChatContent() {
 
   // ── Command palette state ──
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  /** `/resume text` (SLASH2) opens the palette already filtered by the text. */
+  const [paletteQuery, setPaletteQuery] = useState('');
+
+  useEffect(() => {
+    const mountedAt = window.location.pathname;
+    return () => onLeaveChat(mountedAt);
+  }, []);
 
   // Register the 'newChat' command so any trigger (CMD+N, buttons) works
   useEffect(() => {
     const { register, unregister } = useCommandStore.getState();
     register('newChat', () => {
+      onNewChat();
       useNotificationStore.getState().closePanel();
       const store = useChatStore.getState();
 
@@ -308,7 +350,8 @@ function ChatContent() {
     });
 
     // Register 'openCommandPalette' command for sidebar / external triggers
-    register('openCommandPalette', () => {
+    register('openCommandPalette', (query) => {
+      setPaletteQuery(typeof query === 'string' ? query : '');
       setIsCommandPaletteOpen(true);
     });
 
@@ -328,6 +371,7 @@ function ChatContent() {
       // ⌘+K → Open/close command palette
       if (!e.shiftKey && e.key.toLowerCase() === 'k') {
         e.preventDefault();
+        setPaletteQuery('');
         setIsCommandPaletteOpen((prev) => !prev);
         return;
       }
@@ -347,127 +391,109 @@ function ChatContent() {
     };
   }, [router]);
 
-  // Populate agent side-effects (tools, display name) and kick off the model
-  // fetch for the current context. The shared `fetchModelsForContext` handles
-  // caching, default resolution, and stale-selection invalidation per ctxKey.
+  // Populate agent side-effects (tools, display name) from the shared agent
+  // detail. Models for the composer are loaded by `ChatInputWrapper`.
+  const {
+    detail: agentDetail,
+    unavailable: agentUnavailable,
+    error: agentDetailError,
+  } = useAgentDetail(agentId);
+
+  // Opening an existing chat: a chat shared with the user may belong to an agent they cannot
+  // open, and the chat itself loads without it, so only a new agent chat reports the failure.
+  useEffect(() => {
+    if (!agentUnavailable || conversationId) return;
+    if (isProcessedError(agentDetailError)) showErrorToast(agentDetailError);
+  }, [agentUnavailable, agentDetailError]);
+
   useEffect(() => {
     let cancelled = false;
+    const store = useChatStore.getState();
+
+    if (!agentId?.trim()) {
+      clearAgentContext();
+      return;
+    }
+    if (agentUnavailable) {
+      console.error('Failed to fetch agent details:', agentDetailError);
+      clearAgentContext();
+      return;
+    }
+    // Still loading this agent: show none of the previous agent's tools or knowledge meanwhile.
+    if (!agentDetail) {
+      clearAgentContext();
+      return;
+    }
 
     const load = async () => {
-      const store = useChatStore.getState();
-      const ctxKey = ctxKeyFromAgent(agentId);
+      try {
+        const { agent, toolFullNames } = agentDetail;
+        const knowledgeDefaults = extractAgentKnowledgeDefaults(agent);
+        const collectionRows = extractAgentKnowledgeCollectionRows(agent);
+        const wholeCollections = collectionRows.filter((r) => !r.nodeType);
+        const kbIds =
+          wholeCollections.length > 0
+            ? wholeCollections.map((r) => r.id)
+            : knowledgeDefaults.kb;
+        const knowledgeDefaultsForStore = {
+          ...knowledgeDefaults,
+          kb: kbIds,
+        };
+        const connectors = extractAgentKnowledgeConnectors(agent);
+        const attachedApiTools = apiActionsEnabled ? (agent?.apiToolsetTools ?? []) : [];
+        // Without the list there is nothing to name the operations by: treat it as no API actions.
+        const apiActionGroups = attachedApiTools.length
+          ? buildApiActionGroups(await ApiToolsetsApi.listInstances().catch(() => []), attachedApiTools)
+          : [];
+        if (cancelled) return;
+        store.hydrateAgentChatResources({
+          toolCatalogFullNames: [...toolFullNames, ...apiActionGroups.flatMap((g) => g.fullNames)],
+          toolGroups: [...buildAgentChatToolGroups(agent), ...apiActionGroups],
+          mcpGroups: buildAgentChatMcpGroups(agent),
+          connectors,
+          kbIds,
+          knowledgeCollectionRows: collectionRows,
+          knowledgeDefaults: knowledgeDefaultsForStore,
+          deprecatedToolNames: deprecatedAgentToolNames(agent),
+          hasWebSearch: agent?.webSearch != null,
+          needsHarness: agent?.engineProfile != null,
+          engines: engineKinds(agent?.engineProfile),
+          gates: agentGatesOf(agent?.gates),
+        });
+        store.setAgentContextDisplayName(agent?.name?.trim() || null);
+        store.setAgentContextCreatedBy(agent?.createdBy ?? null);
+        store.setAgentContextAccess(
+          agent ? getAgentSidebarRowMenuAccess(agent) : null,
+        );
 
-      if (agentId?.trim()) {
-        try {
-          // Opening an existing chat: a chat shared with the user may belong to an agent they cannot
-          // open, and the chat itself loads without it, so that is not worth an error toast.
-          const { agent, toolFullNames } = await AgentsApi.getAgent(agentId, { quiet: Boolean(conversationId) });
-          if (cancelled) return;
-          const knowledgeDefaults = extractAgentKnowledgeDefaults(agent);
-          const collectionRows = extractAgentKnowledgeCollectionRows(agent);
-          const wholeCollections = collectionRows.filter((r) => !r.nodeType);
-          const kbIds =
-            wholeCollections.length > 0
-              ? wholeCollections.map((r) => r.id)
-              : knowledgeDefaults.kb;
-          const knowledgeDefaultsForStore = {
-            ...knowledgeDefaults,
-            kb: kbIds,
-          };
-          const connectors = extractAgentKnowledgeConnectors(agent);
-          const attachedApiTools = apiActionsEnabled ? (agent?.apiToolsetTools ?? []) : [];
-          // Without the list there is nothing to name the operations by: treat it as no API actions.
-          const apiActionGroups = attachedApiTools.length
-            ? buildApiActionGroups(await ApiToolsetsApi.listInstances().catch(() => []), attachedApiTools)
-            : [];
-          if (cancelled) return;
-          const toolGroups = [...buildAgentChatToolGroups(agent), ...apiActionGroups];
-          const mcpGroups = buildAgentChatMcpGroups(agent);
-          const deprecatedToolNames = (agent?.toolsets ?? [])
-            .flatMap((ts) => ts.tools ?? [])
-            .filter((tool) => tool.deprecated === true)
-            .map((tool) => tool.name);
-          store.hydrateAgentChatResources({
-            toolCatalogFullNames: [...toolFullNames, ...apiActionGroups.flatMap((g) => g.fullNames)],
-            toolGroups,
-            mcpGroups,
-            connectors,
-            kbIds,
-            knowledgeCollectionRows: collectionRows,
-            knowledgeDefaults: knowledgeDefaultsForStore,
-            deprecatedToolNames,
-            hasWebSearch: agent?.webSearch != null,
-          });
-          store.setAgentContextDisplayName(agent?.name?.trim() || null);
-          store.setAgentContextCreatedBy(agent?.createdBy ?? null);
-          store.setAgentContextAccess(
-            agent ? getAgentSidebarRowMenuAccess(agent) : null,
-          );
-
-          // Warn when any tool attached to this agent has been removed from
-          // server code since the agent was last saved (deprecated=true is
-          // stamped by the GET /agent/:id handler at read time).
-          if (deprecatedToolNames.length > 0) {
-            toast.error(t('chat.toasts.deprecatedTools'), {
-              action: {
-                label: t('chat.toasts.openAgentBuilder'),
-                onClick: () =>
-                  router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId!)}`),
-              },
-            });
-          }
-
-          // hydrateAgentChatResources always resets agentKnowledgeScope to null.
-          // On page reload with an existing conversationId, loadHistory may have
-          // already set the scope from the last message's appliedFilters before
-          // getAgent resolved. Re-apply it so the race doesn't wipe it out.
-          if (conversationId) {
-            const freshStore = useChatStore.getState();
-            const existing = freshStore.getSlotByConvId(conversationId, { forAgentId: agentId });
-            if (existing?.slot.isInitialized) {
-              const lastWithFilters = [...existing.slot.messages].reverse().find(
-                (msg) =>
-                  msg.role === 'user' &&
-                  (msg.metadata as { custom?: { appliedFilters?: import('./types').AppliedFilters } })
-                    ?.custom?.appliedFilters != null
-              );
-              const af = (
-                lastWithFilters?.metadata as {
-                  custom?: { appliedFilters?: import('./types').AppliedFilters };
-                }
-              )?.custom?.appliedFilters;
-              // Every bucket, not only apps and collections: a folder or record
-              // the agent chat was narrowed to stays in its scope.
-              if (af) restoreAppliedFilters(af, true);
-            }
-          }
-        } catch (error) {
-          if (!cancelled) {
-            console.error('Failed to fetch agent details:', error);
-            store.hydrateAgentChatResources(null);
-            store.setAgentContextDisplayName(null);
-            store.setAgentContextCreatedBy(null);
-            store.setAgentContextAccess(null);
+        // hydrateAgentChatResources always resets agentKnowledgeScope to null.
+        // On page reload with an existing conversationId, loadHistory may have
+        // already set the scope from the last message's appliedFilters before
+        // the agent arrived. Re-apply it so the race doesn't wipe it out.
+        if (conversationId) {
+          const freshStore = useChatStore.getState();
+          const existing = freshStore.getSlotByConvId(conversationId, { forAgentId: agentId });
+          if (existing?.slot.isInitialized) {
+            const lastWithFilters = [...existing.slot.messages].reverse().find(
+              (msg) =>
+                msg.role === 'user' &&
+                (msg.metadata as { custom?: { appliedFilters?: import('./types').AppliedFilters } })
+                  ?.custom?.appliedFilters != null
+            );
+            const af = (
+              lastWithFilters?.metadata as {
+                custom?: { appliedFilters?: import('./types').AppliedFilters };
+              }
+            )?.custom?.appliedFilters;
+            // Every bucket, not only apps and collections: a folder or record
+            // the agent chat was narrowed to stays in its scope.
+            if (af) restoreAppliedFilters(af, true);
           }
         }
-      } else {
-        store.hydrateAgentChatResources(null);
-        store.setAgentContextDisplayName(null);
-        store.setAgentContextCreatedBy(null);
-        store.setAgentContextAccess(null);
-      }
-
-      try {
-        // Force a refetch for agent contexts: the agent's configured models
-        // can change between visits (Agent Builder save, admin edits) and
-        // stale cached lists would surface wrong defaults in the pill and
-        // the model selector. Assistant (org-wide) models change far less
-        // often, so the normal freshness window is fine there.
-        const force = Boolean(agentId?.trim());
-        await fetchModelsForContext(ctxKey, { force });
       } catch (error) {
-        if (!cancelled && useServicesHealthStore.getState().apiServerReachable) {
-          console.error('Failed to fetch models for context', ctxKey, error);
+        if (!cancelled) {
+          console.error('Failed to apply agent details:', error);
+          clearAgentContext();
         }
       }
     };
@@ -477,7 +503,26 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [agentId, apiActionsEnabled, router, t]);
+  }, [agentId, agentDetail, agentUnavailable, apiActionsEnabled, router, t]);
+
+  // Leaving the chat page drops the agent's fields, as the agent sidebar's unmount used to.
+  // Unmount only: clearing in the effect above would also run before each re-fill.
+  useEffect(() => clearAgentContext, []);
+
+  // Warn when any tool attached to this agent has been removed from server code
+  // since the agent was last saved (deprecated=true is stamped by the GET
+  // /agent/:id handler at read time). Keyed on the loaded detail only: once per
+  // detail SWR hands over (a new agent always brings a new one), never per
+  // re-hydration from `apiActionsEnabled` or `t` changes.
+  useEffect(() => {
+    if (!agentId || !agentDetail || deprecatedAgentToolNames(agentDetail.agent).length === 0) return;
+    toast.error(t('chat.toasts.deprecatedTools'), {
+      action: {
+        label: t('chat.toasts.openAgentBuilder'),
+        onClick: () => router.push(`/agents/edit?agentKey=${encodeURIComponent(agentId)}`),
+      },
+    });
+  }, [agentDetail]);
 
   // Keep the store's `activeProjectId` (read by ProjectsSection /
   // ProjectConversationsSidebar to highlight the open project) in sync with the URL.
@@ -526,7 +571,9 @@ function ChatContent() {
         // for a *different* project scope was active — don't leak it here.
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'switch-project-scope' });
         store.clearActiveSlot();
-      } else if (store.activeSlotId && (!activeSlot || !activeSlot.isTemp)) {
+      } else if (store.activeSlotId && (!activeSlot || !activeSlot.isTemp || activeSlot.convId)) {
+        // A first turn that has its id is a chat, not the new-chat draft: /chat/ without that id means the person
+        // left it (the new interface's New chat is a plain link), and its answer keeps streaming in its slot.
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: null });
         useChatStore.setState({ activeSlotId: null });
       }
@@ -697,6 +744,9 @@ function ChatContent() {
 
         const messages = detail.messages;
         const isOwner = detail.conversation.access?.isOwner ?? false;
+        // Agent threads are not shared from the UI; only a shared chat can be continued privately.
+        const isShared =
+          !historyAndShareAgentId && (detail.conversation as { isShared?: boolean }).isShared === true;
         const apiPagination = detail.pagination;
         const modelInfo = pickModelInfoFromConversationBundle({
           modelInfo: detail.conversation.modelInfo,
@@ -726,14 +776,31 @@ function ChatContent() {
           hasLoaded: true,
           remoteRunInProgress: detail.conversation.status === 'Inprogress',
           isOwner,
+          isShared,
+          durable: (detail.conversation as { durable?: boolean }).durable === true,
+          sharedWith: detail.conversation.sharedWith ?? null,
+          forkedFrom: detail.conversation.forkedFrom ?? null,
+          forks: detail.conversation.forks ?? [],
           messagePagination: {
             currentPage: apiPagination.page,
             hasOlderMessages: apiPagination.hasNextPage,
             isLoadingOlder: false,
           },
           ...(modelInfo ? { conversationModelInfo: modelInfo } : {}),
+          // A project conversation opened from anywhere stays project-scoped (UX3 PS-2).
+          ...('projectId' in detail.conversation && detail.conversation.projectId
+            ? { projectId: String(detail.conversation.projectId) }
+            : {}),
           pendingAskUserQuestion: unansweredAskUserQuestion,
         });
+        if (selectAgentHarnessResumeEnabled(useFeatureFlagsStore.getState())) {
+          void resumeActiveDurableRunForSlot(
+            activeSlotId,
+            historyAndShareAgentId ?? undefined,
+            convId,
+            detail.conversation.activeRunId,
+          );
+        }
       } catch (error) {
         if (!cancelled && generationOf() !== generation) {
           return retryStale(attempt);
@@ -843,22 +910,22 @@ function ChatContent() {
   // `/projects?projectId=…` and linked from the sidebar.
   //
   // The loaded detail also drives the composer's allow-list (connectors,
-  // collections, tools) via `useProjectScopeHydration`. `projectsVersion`
-  // bumps whenever project settings are saved anywhere in the app, so the
-  // composer picks up changes without a reload.
-  const projectsVersion = useChatStore((s) => s.projectsVersion);
-  const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(null);
+  // collections, tools) via `useProjectScopeHydration`. The project workspace
+  // writes its edits into the shared cache, so the composer follows them.
+  const {
+    project: projectDetail,
+    unavailable: projectUnavailable,
+    gone: projectGone,
+  } = useProjectDetail(projectId);
   useEffect(() => {
-    if (!projectId) { setProjectDetail(null); return; }
-    let cancelled = false;
-    ProjectApi.get(projectId).then((p) => {
-      if (!cancelled) setProjectDetail(p);
-    }).catch(() => {
-      if (!cancelled) setProjectDetail(null);
-      toast.error(t('chat.projects.workspace.failedToLoad'));
-    });
-    return () => { cancelled = true; };
-  }, [projectId, projectsVersion, t]);
+    if (!projectUnavailable) return;
+    toast.error(t('chat.projects.workspace.failedToLoad'));
+    // A project the user can't open left them a working composer inside a
+    // nameless project. Fall back to a plain chat (keeping an open thread).
+    if (projectGone) {
+      router.replace(buildChatHref({ conversationId }));
+    }
+  }, [projectId, projectUnavailable, projectGone]);
   useProjectScopeHydration(projectDetail);
   const projectName = projectDetail?.name ?? null;
   const projectColor = projectDetail?.color ?? null;
@@ -956,36 +1023,9 @@ function ChatContent() {
   const isBelowDesktop = useIsBelowDesktop();
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);
   const agentContextCreatedBy = useChatStore((s) => s.agentContextCreatedBy);
-  const [agentCreatorName, setAgentCreatorName] = useState<string | null>(null);
-  const [agentCreatorAvatarUrl, setAgentCreatorAvatarUrl] = useState<string | undefined>(
-    undefined
-  );
-
-  useEffect(() => {
-    const mongoUserId = historyAndShareAgentId ? agentContextCreatedBy : null;
-    if (!mongoUserId) {
-      setAgentCreatorName(null);
-      setAgentCreatorAvatarUrl(undefined);
-      return;
-    }
-    let cancelled = false;
-    UsersApi.getUsersByIds([mongoUserId])
-      .then((users) => {
-        if (cancelled) return;
-        const user = users[0];
-        setAgentCreatorName(user?.name?.trim() || user?.email?.trim() || null);
-        setAgentCreatorAvatarUrl(user?.profilePicture ?? undefined);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setAgentCreatorName(null);
-          setAgentCreatorAvatarUrl(undefined);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [historyAndShareAgentId, agentContextCreatedBy]);
+  const agentCreator = useUserDirectoryEntry(historyAndShareAgentId ? agentContextCreatedBy : null);
+  const agentCreatorName = userDisplayName(agentCreator);
+  const agentCreatorAvatarUrl = agentCreator?.profilePicture;
 
   // Render decisions
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */
@@ -1032,25 +1072,49 @@ function ChatContent() {
     }
   }, [showConversationShare, isShareSidebarOpen]);
 
+  const forkDialog = forkMode({
+    served: continuePrivatelyServed,
+    conversationId: conversationId ?? null,
+    isOwner: activeSlotIsOwner,
+    isShared: activeSlotIsShared,
+    agentThread: Boolean(historyAndShareAgentId),
+  });
+
+  const handleContinuedPrivately = useCallback(
+    (copyId: string) => {
+      useChatStore.getState().bumpConversationsVersion();
+      // A fork of an agent conversation is that agent's conversation: it opens only under its agent.
+      router.push(buildChatHref({ conversationId: copyId, agentId: historyAndShareAgentId }));
+    },
+    [router, historyAndShareAgentId]
+  );
+
   const handleShareClick = useCallback(() => {
     if (!chatShareAdapter) return;
     setIsShareSidebarOpen(true);
   }, [chatShareAdapter]);
 
   // ── Load shared members for header avatars ───────────────────────
-  // Fires whenever the active conversation changes. Uses the same
-  // getSharedMembers() path as the share sidebar so IDs stay consistent.
+  // From the `sharedWith` the open conversation was loaded with (or the last
+  // share/unshare answer), built the same way as the share sidebar's rows.
+  // Only the slot the URL names: while switching chats the previous slot is
+  // still active for a render.
+  const activeSlotSharedWith = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.sharedWith ?? null : null
+  );
+  const headerSharedWith =
+    showConversationShare && activeSlotConvId === conversationId ? activeSlotSharedWith : null;
   useEffect(() => {
-    if (!conversationId || !chatShareAdapter || !showConversationShare) {
+    // The owner is not in the avatar row, so a chat shared with nobody needs no lookup.
+    if (!headerSharedWith?.length) {
       setSharedMembers([]);
       return;
     }
 
     let cancelled = false;
 
-    chatShareAdapter.getSharedMembers().then((members) => {
+    toChatSharedMembers(headerSharedWith).then((members) => {
       if (cancelled) return;
-      // Exclude the owner from the avatar row (same shape as onShareSuccess)
       setSharedMembers(
         members
           .filter((m) => !m.isOwner)
@@ -1068,7 +1132,7 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [conversationId, chatShareAdapter, showConversationShare]);
+  }, [headerSharedWith]);
 
   // Show new chat view when no active slot, or slot is new with no messages
   const showNewChatView = !activeSlotId || (
@@ -1100,15 +1164,18 @@ function ChatContent() {
     activeSlotIsOwner !== false &&
     !(activeSlotIsOwner === null && (showInitialLoading || showLoading));
 
-  // Search mode: show results view when in search mode with results/in-progress search
+  // Search mode: show the results view once a query is submitted, so empty and failed
+  // searches show their state instead of falling back to the welcome screen.
   const mode = useChatStore((s) => s.settings.mode);
-  const hasSearchResults = useChatStore((s) => s.searchResults.length > 0);
+  const hasSearchQuery = useChatStore((s) => s.searchQuery !== '');
   const isSearching = useChatStore((s) => s.isSearching);
-  const showSearchView = mode === 'search' && (hasSearchResults || isSearching) && !conversationId;
+  const showSearchView = mode === 'search' && (hasSearchQuery || isSearching) && !conversationId;
 
   // ── Split-pane layout: chat left | drag handle | preview right ────────────
   // Desktop only: on phones and tablets the two columns leave the document too narrow.
   const showSplitPane = !!previewFile && previewMode === 'sidebar' && !isBelowDesktop;
+  const backgroundAgentsOpen = useBackgroundAgentsOpen(conversationId);
+  const activityPanel = useActivityPanelLayout(isMobile, showSplitPane);
 
   // ── Auto-close preview when the active conversation changes ──────────────
   // Tracks the previous conversationId so we only clear on actual changes,
@@ -1123,8 +1190,13 @@ function ChatContent() {
     if (prevConversationIdRef.current !== conversationId) {
       prevConversationIdRef.current = conversationId;
       clearPreview();
+      // The drawer shows one answer's run; another conversation opens with it closed (CTL-3).
+      useActivityPanelStore.setState({ open: false, sheetOpen: false, run: null });
     }
   }, [conversationId, clearPreview]);
+
+  // CJ-3: the job details panel follows the URL (`&job=…[&section=…]`, `&ask=…`); after the close above on purpose.
+  useJobPanelUrl(searchParams, { conversationId, agentId, isMobile });
 
   // ── Collapse nav sidebar when split-pane preview opens, restore on close ──
   const didAutoCollapseNavRef = useRef(false);
@@ -1247,6 +1319,8 @@ function ChatContent() {
       {/* Agent creator chip and share group, top-right. */}
       <ConversationHeaderOverlay
         conversationId={conversationId}
+        backgroundAgents={conversationId ? <BackgroundAgentsButton isMobile={isMobile} onClosePreview={clearPreview} /> : null}
+        grants={conversationId ? <ChatGrantsButton isMobile={isMobile} /> : null}
         agentChip={
           historyAndShareAgentId && agentCreatorName ? (
             <Tooltip content={`${t('agentBuilder.createdBy')}: ${agentCreatorName}`}>
@@ -1285,11 +1359,32 @@ function ChatContent() {
           ) : null
         }
         shareGroup={
-          showConversationShare ? (
-            <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
+          showConversationShare || forkDialog === 'shared' ? (
+            /* Share header group (owners only) and "Continue privately" (any participant of a shared chat) */
+            <Flex align="center" gap="4">
+              {forkDialog === 'shared' && conversationId && (
+                <ContinuePrivately
+                  conversationId={conversationId}
+                  isOwner={activeSlotIsOwner === true}
+                  onContinued={handleContinuedPrivately}
+                />
+              )}
+              {showConversationShare && (
+                <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
+              )}
+            </Flex>
           ) : null
         }
       />
+      {forkDialog === 'own' && conversationId && (
+        <ContinuePrivately
+          conversationId={conversationId}
+          isOwner
+          onContinued={handleContinuedPrivately}
+          mode="own"
+          agentKey={historyAndShareAgentId}
+        />
+      )}
 
       {/* Full-width pane: message list scrolls here (scrollbar on the pane edge).
           Message content + composer share chatContentColumnStyle so widths match. */}
@@ -1356,12 +1451,12 @@ function ChatContent() {
                       <MaterialIcon
                         name="folder"
                         size={28}
-                        color={projectColor || 'var(--accent-9)'}
+                        color={projectColor || 'var(--accent-11)'}
                       />
                       <Text size="5" weight="bold" style={{ color: 'var(--slate-12)' }}>
                         {projectName ?? '…'}
                       </Text>
-                      <MaterialIcon name="settings" size={16} color="var(--slate-9)" />
+                      <MaterialIcon name="settings" size={16} color="var(--slate-11)" />
                     </Flex>
                   </>
                 ) : (
@@ -1436,33 +1531,7 @@ function ChatContent() {
   // ─────────────────────────────────────────────────────────────────────────
 
   // Props for the full-screen / phone preview overlay.
-  const previewProps = previewFile ? {
-    source: 'chat' as const,
-    file: {
-      id: previewFile.id,
-      name: previewFile.name,
-      url: previewFile.url,
-      blob: previewFile.blob,
-      type: previewFile.type,
-      size: previewFile.size,
-      webUrl: previewFile.webUrl,
-      previewRenderable: previewFile.previewRenderable,
-      version: previewFile.version,
-    },
-    isLoading: previewFile.isLoading,
-    error: previewFile.error,
-    recordDetails: previewFile.recordDetails,
-    initialPage: previewFile.initialPage,
-    highlightBox: previewFile.highlightBox,
-    citations: previewFile.citations,
-    initialCitationId: previewFile.initialCitationId,
-    hideFileDetails: previewFile.hideFileDetails,
-    showDownload: previewFile.showDownload,
-    latestVersion: previewFile.latestVersion,
-    onVersionChange: previewFile.onVersionChange,
-    isSwitchingVersion: previewFile.isSwitchingVersion,
-    defaultTab: 'preview' as const,
-  } : null;
+  const previewProps = previewFile ? chatPreviewProps(previewFile) : null;
 
   return (
     <Flex
@@ -1496,6 +1565,12 @@ function ChatContent() {
         >
           {chatColumnBody}
         </Flex>
+
+        {activityPanel.visible && activityPanel.run && !isMobile && (
+          <ActivityPanelHost run={activityPanel.run} isMobile={false} />
+        )}
+
+        {backgroundAgentsOpen && !activityPanel.visible && !showSplitPane && !isMobile && <BackgroundAgentsHost isMobile={false} />}
 
         {/* Drag handle + preview panel — appear when split-pane is active */}
         {showSplitPane && (
@@ -1550,6 +1625,7 @@ function ChatContent() {
                     url: previewFile.url,
                     blob: previewFile.blob,
                     type: previewFile.type,
+                    sourceType: previewFile.sourceType,
                     size: previewFile.size,
                     webUrl: previewFile.webUrl,
                     previewRenderable: previewFile.previewRenderable,
@@ -1562,6 +1638,7 @@ function ChatContent() {
                   highlightBox={previewFile.highlightBox}
                   citations={previewFile.citations}
                   initialCitationId={previewFile.initialCitationId}
+                  jumpSeq={previewFile.jumpSeq}
                   hideFileDetails={previewFile.hideFileDetails}
                   showDownload={previewFile.showDownload}
                   latestVersion={previewFile.latestVersion}
@@ -1598,32 +1675,25 @@ function ChatContent() {
         )
       )}
 
+      {activityPanel.visible && activityPanel.run && isMobile && (
+        <ActivityPanelHost run={activityPanel.run} isMobile />
+      )}
+
+      {backgroundAgentsOpen && !activityPanel.visible && isMobile && <BackgroundAgentsHost isMobile />}
+
       {/* Share Sidebar */}
       {showConversationShare && chatShareAdapter && (
         <ShareSidebar
           open={isShareSidebarOpen}
           onOpenChange={setIsShareSidebarOpen}
           adapter={chatShareAdapter}
-          onShareSuccess={() => {
-            chatShareAdapter.getSharedMembers().then((members) => {
-              setSharedMembers(
-                members
-                  .filter((m) => !m.isOwner)
-                  .map((m) => ({
-                    id: m.id,
-                    name: m.name,
-                    avatarUrl: m.avatarUrl || undefined,
-                    type: m.type,
-                  }))
-              );
-            });
-          }}
         />
       )}
 
       {/* Command palette overlay (⌘+K) */}
       <ChatSearch
         open={isCommandPaletteOpen}
+        initialQuery={paletteQuery}
         onClose={() => setIsCommandPaletteOpen(false)}
       />
     </Flex>
@@ -1649,10 +1719,14 @@ export default function ChatPage() {
   const activeIsStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming : false
   );
+  // A new chat gets its server id on the same slot: the thread's owner must follow it.
+  const activeConvId = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.convId : null
+  );
 
   const liveConfig = useMemo(
     () => buildExternalStoreConfig(activeSlotId),
-    [activeSlotId, activeMessages, activeIsStreaming]
+    [activeSlotId, activeMessages, activeIsStreaming, activeConvId]
   );
 
   const runtime = useExternalStoreRuntime(liveConfig);

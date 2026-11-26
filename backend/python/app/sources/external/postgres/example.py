@@ -20,7 +20,6 @@ Optional:
 """
 
 import asyncio
-import json
 import os
 import sys
 from datetime import datetime
@@ -31,9 +30,8 @@ if __name__ == "__main__":
     backend_path = Path(__file__).parent.parent.parent.parent
     sys.path.insert(0, str(backend_path))
 
-from app.sources.client.postgres.postgres import PostgreSQLClient, PostgreSQLConfig
+from app.sources.client.postgres.postgres import PostgreSQLConfig
 from app.sources.external.postgres.postgres_ import PostgreSQLDataSource
-
 
 # --- Configuration from environment ---
 HOST = os.getenv("POSTGRES_HOST")
@@ -83,7 +81,7 @@ async def main() -> None:
         print("\n[ERROR] POSTGRES_USER is required")
         return
     
-    print(f"\nConnection Details:")
+    print("\nConnection Details:")
     print(f"  Host: {HOST}")
     print(f"  Port: {PORT}")
     print(f"  Database: {DATABASE}")
@@ -118,7 +116,7 @@ async def main() -> None:
         
         # Get connection info
         conn_info = client.get_connection_info()
-        print(f"\nConnection Info:")
+        print("\nConnection Info:")
         print(f"  Host: {conn_info['host']}")
         print(f"  Port: {conn_info['port']}")
         print(f"  Database: {conn_info['database']}")
@@ -127,7 +125,7 @@ async def main() -> None:
         # Test with version query
         response = await data_source.test_connection()
         if response.success:
-            print(f"\n[OK] Connection test successful")
+            print("\n[OK] Connection test successful")
             if response.data:
                 print(f"  PostgreSQL Version: {response.data.get('version', 'Unknown')}")
                 print(f"  Current Database: {response.data.get('database', 'Unknown')}")
@@ -226,7 +224,7 @@ async def main() -> None:
     try:
         rows = await client.execute_query(custom_query)
         if rows:
-            print(f"\nTop 5 largest tables in public schema:")
+            print("\nTop 5 largest tables in public schema:")
             for row in rows:
                 print(f"  - {row['table']}: {row['size']}")
         else:

@@ -1,0 +1,74 @@
+- id: CONF-S-05
+  title: Page nested 52 deep; Confluence has no depth limit, the graph walk stops at 50 hops
+  source: hierarchies deeper than 50 hops lose everything below); rules H21, H22
+  rule: intersection
+  world:
+    principals:
+      - {id: v}
+      - {id: 'g:readers', kind: group}
+    nodes:
+      - {id: app, kind: app, app_type: CONFLUENCE}
+      - {id: 'space:DEEP', kind: group, connector: app, rule: RESTRICTED, parents: [app], inherits: [app], belongs: [app]}
+      - {id: 'page:1', kind: record, connector: app, rule: STRICT, parents: ['space:DEEP'], inherits: ['space:DEEP'], belongs: ['space:DEEP']}
+      - {id: 'page:2', kind: record, connector: app, rule: STRICT, parents: ['page:1'], inherits: ['page:1'], belongs: ['space:DEEP']}
+      - {id: 'page:3', kind: record, connector: app, rule: STRICT, parents: ['page:2'], inherits: ['page:2'], belongs: ['space:DEEP']}
+      - {id: 'page:4', kind: record, connector: app, rule: STRICT, parents: ['page:3'], inherits: ['page:3'], belongs: ['space:DEEP']}
+      - {id: 'page:5', kind: record, connector: app, rule: STRICT, parents: ['page:4'], inherits: ['page:4'], belongs: ['space:DEEP']}
+      - {id: 'page:6', kind: record, connector: app, rule: STRICT, parents: ['page:5'], inherits: ['page:5'], belongs: ['space:DEEP']}
+      - {id: 'page:7', kind: record, connector: app, rule: STRICT, parents: ['page:6'], inherits: ['page:6'], belongs: ['space:DEEP']}
+      - {id: 'page:8', kind: record, connector: app, rule: STRICT, parents: ['page:7'], inherits: ['page:7'], belongs: ['space:DEEP']}
+      - {id: 'page:9', kind: record, connector: app, rule: STRICT, parents: ['page:8'], inherits: ['page:8'], belongs: ['space:DEEP']}
+      - {id: 'page:10', kind: record, connector: app, rule: STRICT, parents: ['page:9'], inherits: ['page:9'], belongs: ['space:DEEP']}
+      - {id: 'page:11', kind: record, connector: app, rule: STRICT, parents: ['page:10'], inherits: ['page:10'], belongs: ['space:DEEP']}
+      - {id: 'page:12', kind: record, connector: app, rule: STRICT, parents: ['page:11'], inherits: ['page:11'], belongs: ['space:DEEP']}
+      - {id: 'page:13', kind: record, connector: app, rule: STRICT, parents: ['page:12'], inherits: ['page:12'], belongs: ['space:DEEP']}
+      - {id: 'page:14', kind: record, connector: app, rule: STRICT, parents: ['page:13'], inherits: ['page:13'], belongs: ['space:DEEP']}
+      - {id: 'page:15', kind: record, connector: app, rule: STRICT, parents: ['page:14'], inherits: ['page:14'], belongs: ['space:DEEP']}
+      - {id: 'page:16', kind: record, connector: app, rule: STRICT, parents: ['page:15'], inherits: ['page:15'], belongs: ['space:DEEP']}
+      - {id: 'page:17', kind: record, connector: app, rule: STRICT, parents: ['page:16'], inherits: ['page:16'], belongs: ['space:DEEP']}
+      - {id: 'page:18', kind: record, connector: app, rule: STRICT, parents: ['page:17'], inherits: ['page:17'], belongs: ['space:DEEP']}
+      - {id: 'page:19', kind: record, connector: app, rule: STRICT, parents: ['page:18'], inherits: ['page:18'], belongs: ['space:DEEP']}
+      - {id: 'page:20', kind: record, connector: app, rule: STRICT, parents: ['page:19'], inherits: ['page:19'], belongs: ['space:DEEP']}
+      - {id: 'page:21', kind: record, connector: app, rule: STRICT, parents: ['page:20'], inherits: ['page:20'], belongs: ['space:DEEP']}
+      - {id: 'page:22', kind: record, connector: app, rule: STRICT, parents: ['page:21'], inherits: ['page:21'], belongs: ['space:DEEP']}
+      - {id: 'page:23', kind: record, connector: app, rule: STRICT, parents: ['page:22'], inherits: ['page:22'], belongs: ['space:DEEP']}
+      - {id: 'page:24', kind: record, connector: app, rule: STRICT, parents: ['page:23'], inherits: ['page:23'], belongs: ['space:DEEP']}
+      - {id: 'page:25', kind: record, connector: app, rule: STRICT, parents: ['page:24'], inherits: ['page:24'], belongs: ['space:DEEP']}
+      - {id: 'page:26', kind: record, connector: app, rule: STRICT, parents: ['page:25'], inherits: ['page:25'], belongs: ['space:DEEP']}
+      - {id: 'page:27', kind: record, connector: app, rule: STRICT, parents: ['page:26'], inherits: ['page:26'], belongs: ['space:DEEP']}
+      - {id: 'page:28', kind: record, connector: app, rule: STRICT, parents: ['page:27'], inherits: ['page:27'], belongs: ['space:DEEP']}
+      - {id: 'page:29', kind: record, connector: app, rule: STRICT, parents: ['page:28'], inherits: ['page:28'], belongs: ['space:DEEP']}
+      - {id: 'page:30', kind: record, connector: app, rule: STRICT, parents: ['page:29'], inherits: ['page:29'], belongs: ['space:DEEP']}
+      - {id: 'page:31', kind: record, connector: app, rule: STRICT, parents: ['page:30'], inherits: ['page:30'], belongs: ['space:DEEP']}
+      - {id: 'page:32', kind: record, connector: app, rule: STRICT, parents: ['page:31'], inherits: ['page:31'], belongs: ['space:DEEP']}
+      - {id: 'page:33', kind: record, connector: app, rule: STRICT, parents: ['page:32'], inherits: ['page:32'], belongs: ['space:DEEP']}
+      - {id: 'page:34', kind: record, connector: app, rule: STRICT, parents: ['page:33'], inherits: ['page:33'], belongs: ['space:DEEP']}
+      - {id: 'page:35', kind: record, connector: app, rule: STRICT, parents: ['page:34'], inherits: ['page:34'], belongs: ['space:DEEP']}
+      - {id: 'page:36', kind: record, connector: app, rule: STRICT, parents: ['page:35'], inherits: ['page:35'], belongs: ['space:DEEP']}
+      - {id: 'page:37', kind: record, connector: app, rule: STRICT, parents: ['page:36'], inherits: ['page:36'], belongs: ['space:DEEP']}
+      - {id: 'page:38', kind: record, connector: app, rule: STRICT, parents: ['page:37'], inherits: ['page:37'], belongs: ['space:DEEP']}
+      - {id: 'page:39', kind: record, connector: app, rule: STRICT, parents: ['page:38'], inherits: ['page:38'], belongs: ['space:DEEP']}
+      - {id: 'page:40', kind: record, connector: app, rule: STRICT, parents: ['page:39'], inherits: ['page:39'], belongs: ['space:DEEP']}
+      - {id: 'page:41', kind: record, connector: app, rule: STRICT, parents: ['page:40'], inherits: ['page:40'], belongs: ['space:DEEP']}
+      - {id: 'page:42', kind: record, connector: app, rule: STRICT, parents: ['page:41'], inherits: ['page:41'], belongs: ['space:DEEP']}
+      - {id: 'page:43', kind: record, connector: app, rule: STRICT, parents: ['page:42'], inherits: ['page:42'], belongs: ['space:DEEP']}
+      - {id: 'page:44', kind: record, connector: app, rule: STRICT, parents: ['page:43'], inherits: ['page:43'], belongs: ['space:DEEP']}
+      - {id: 'page:45', kind: record, connector: app, rule: STRICT, parents: ['page:44'], inherits: ['page:44'], belongs: ['space:DEEP']}
+      - {id: 'page:46', kind: record, connector: app, rule: STRICT, parents: ['page:45'], inherits: ['page:45'], belongs: ['space:DEEP']}
+      - {id: 'page:47', kind: record, connector: app, rule: STRICT, parents: ['page:46'], inherits: ['page:46'], belongs: ['space:DEEP']}
+      - {id: 'page:48', kind: record, connector: app, rule: STRICT, parents: ['page:47'], inherits: ['page:47'], belongs: ['space:DEEP']}
+      - {id: 'page:49', kind: record, connector: app, rule: STRICT, parents: ['page:48'], inherits: ['page:48'], belongs: ['space:DEEP']}
+      - {id: 'page:50', kind: record, connector: app, rule: STRICT, parents: ['page:49'], inherits: ['page:49'], belongs: ['space:DEEP']}
+      - {id: 'page:51', kind: record, connector: app, rule: STRICT, parents: ['page:50'], inherits: ['page:50'], belongs: ['space:DEEP']}
+      - {id: 'page:52', kind: record, connector: app, rule: STRICT, parents: ['page:51'], inherits: ['page:51'], belongs: ['space:DEEP']}
+    grants:
+      - ['g:readers', 'space:DEEP']
+    memberships:
+      - [v, 'g:readers']
+    gates:
+      - [v, app]
+  expect:
+    verdicts:
+      v: {'page:10': admit, 'page:52': admit}
+    source_delta: DELTA-05
+  tags: [confluence, 'cell:confluence/depth-over-50']

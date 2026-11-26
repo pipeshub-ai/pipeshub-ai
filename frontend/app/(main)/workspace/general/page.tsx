@@ -7,7 +7,6 @@ import {
   Flex,
   Text,
   Heading,
-  Switch,
   TextField,
   Avatar,
 } from '@radix-ui/themes';
@@ -21,9 +20,17 @@ import {
 import { useToastStore } from '@/lib/store/toast-store';
 import { useGeneralStore } from './store';
 import type { GeneralFormData } from './store';
-import { OrgApi, MetricsApi } from './api';
+import { OrgApi, type OrgResponse } from './api';
+import { useOrg, useOrgLogo } from './use-org';
+import { useDataCollection, DataCollectionSection } from './data-collection';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { orgConfirmationName } from '@/lib/org-deletion';
+import { DeleteOrgSection, GeneralSettingsExtras } from '@/config';
+import {
+  useFeatureFlagsStore,
+  selectAgentHarnessOn,
+} from '@/lib/store/feature-flags-store';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
@@ -50,7 +57,7 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.sidebar.nav.general')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--gray-11)', marginTop: 'var(--space-1)', display: 'block' }}>
             {t('workspace.general.subtitle')}
           </Text>
         </Box>
@@ -89,6 +96,21 @@ function ReadOnlyGeneralPage({ form, logoUrl }: ReadOnlyGeneralPageProps) {
   );
 }
 
+function toGeneralForm(org: OrgResponse, optIn: boolean): GeneralFormData {
+  return {
+    registeredName: org.registeredName || '',
+    displayName: org.shortName || '',
+    contactEmail: org.contactEmail || '',
+    streetAddress: org.permanentAddress?.addressLine1 || '',
+    country: org.permanentAddress?.country || '',
+    state: org.permanentAddress?.state || '',
+    city: org.permanentAddress?.city || '',
+    zipCode: org.permanentAddress?.postCode || '',
+    optIn,
+    logoFileName: null,
+  };
+}
+
 // ========================================
 // Main Page
 // ========================================
@@ -98,15 +120,28 @@ export default function GeneralPage() {
   const addToast = useToastStore((s) => s.addToast);
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  const harnessOn = useFeatureFlagsStore(selectAgentHarnessOn);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  // Blob URL for the currently saved logo (fetched via auth)
-  const [logoUrl, setLogoUrl] = useState<string | null>(null);
-  /** True when the org has a logo on the server (controls delete visibility). */
-  const [hasServerLogo, setHasServerLogo] = useState(false);
+  const { data: org, error: orgError, isValidating: orgValidating, mutate: rereadOrg } = useOrg();
+  const { data: savedLogoUrl, isLoading: logoLoading } = useOrgLogo();
+  const {
+    loaded: optInLoaded,
+    error: optInError,
+    validating: optInValidating,
+    reread: rereadOptIn,
+    value: savedOptIn,
+    save: saveOptIn,
+  } = useDataCollection();
+  // Local preview of a logo while it uploads; the saved logo comes from the cache.
+  const [previewLogoUrl, setPreviewLogoUrl] = useState<string | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
   const [logoDeleting, setLogoDeleting] = useState(false);
-  // Last server-confirmed logo URL — used to revert preview on discard
-  const savedLogoUrlRef = useRef<string | null>(null);
+  const logoUrl = previewLogoUrl ?? savedLogoUrl ?? null;
+  const hasServerLogo = Boolean(savedLogoUrl);
+  // Until the form holds the server's values, Save stays hidden: it would send blanks over them.
+  const [formSeeded, setFormSeeded] = useState(false);
+  const loadErrorShownRef = useRef(false);
+  const cachedErrorRetriedRef = useRef(false);
 
   // ── Store selectors ────────────────────────────────────────
   const form = useGeneralStore((s) => s.form);
@@ -131,70 +166,40 @@ export default function GeneralPage() {
     }
   }, []);
 
-  // ── Load org data on mount ─────────────────────────────────
+  // ── Fill the form from the cached org ──────────────────────
 
+  // Seeded once per visit: later refreshes (after Save) must not replace what is being edited.
   useEffect(() => {
-    // Wait until the profile is initialized before deciding which branch to fetch
-    // — isAdmin is null until resolved, which would cause the wrong branch to run.
-    if (!isProfileInitialized) return;
-    const fetchOrg = async () => {
-      try {
-        if (isAdmin) {
-          const [org, logoObjectUrl, metricsConfig] = await Promise.all([
-            OrgApi.getOrg(),
-            OrgApi.getLogoUrl(),
-            MetricsApi.getMetricsCollection(),
-          ]);
-          const loaded: GeneralFormData = {
-            registeredName: org.registeredName || '',
-            displayName: org.shortName || '',
-            contactEmail: org.contactEmail || '',
-            streetAddress: org.permanentAddress?.addressLine1 || '',
-            country: org.permanentAddress?.country || '',
-            state: org.permanentAddress?.state || '',
-            city: org.permanentAddress?.city || '',
-            zipCode: org.permanentAddress?.postCode || '',
-            dataCollection: metricsConfig.enableMetricCollection === 'true',
-            logoFileName: null,
-          };
-          setForm(loaded);
-          setLogoUrl(logoObjectUrl);
-          savedLogoUrlRef.current = logoObjectUrl;
-          setHasServerLogo(logoObjectUrl !== null);
-        } else {
-          const [org, logoObjectUrl] = await Promise.all([
-            OrgApi.getOrg(),
-            OrgApi.getLogoUrl(),
-          ]);
-          const loaded: GeneralFormData = {
-            registeredName: org.registeredName || '',
-            displayName: org.shortName || '',
-            contactEmail: org.contactEmail || '',
-            streetAddress: org.permanentAddress?.addressLine1 || '',
-            country: org.permanentAddress?.country || '',
-            state: org.permanentAddress?.state || '',
-            city: org.permanentAddress?.city || '',
-            zipCode: org.permanentAddress?.postCode || '',
-            dataCollection: false,
-            logoFileName: null,
-          };
-          setForm(loaded);
-          setLogoUrl(logoObjectUrl);
-          savedLogoUrlRef.current = logoObjectUrl;
-          setHasServerLogo(logoObjectUrl !== null);
-        }
-      } catch {
-        addToast({
-          variant: 'error',
-          title: t('workspace.general.toasts.loadError'),
-          description: t('workspace.general.toasts.loadErrorDescription'),
-        });
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchOrg();
-  }, [isAdmin, isProfileInitialized, addToast, setForm, setLoading]);
+    // isAdmin is null until the profile is initialized, which would pick the wrong branch.
+    if (!isProfileInitialized || formSeeded) return;
+    if (org && !logoLoading && (!isAdmin || optInLoaded)) {
+      setFormSeeded(true);
+      setForm(toGeneralForm(org, Boolean(isAdmin) && savedOptIn));
+      setLoading(false);
+      return;
+    }
+    const orgFailed = orgError && !org && !orgValidating;
+    const optInFailed = isAdmin && optInError && !optInLoaded && !optInValidating;
+    if (!orgFailed && !optInFailed) return;
+    // An error left in the cache by an earlier read (the sidebar footer) is not this visit's answer:
+    // ask once more before reporting it. So a real outage makes two reads before the toast.
+    if (!cachedErrorRetriedRef.current) {
+      cachedErrorRetriedRef.current = true;
+      if (orgFailed) void rereadOrg();
+      if (optInFailed) void rereadOptIn();
+      return;
+    }
+    if (!loadErrorShownRef.current) {
+      loadErrorShownRef.current = true;
+      addToast({
+        variant: 'error',
+        title: t('workspace.general.toasts.loadError'),
+        description: t('workspace.general.toasts.loadErrorDescription'),
+      });
+    }
+    setLoading(false);
+  }, [isAdmin, isProfileInitialized, formSeeded, org, logoLoading, optInLoaded, savedOptIn, orgError, orgValidating,
+    optInError, optInValidating, rereadOrg, rereadOptIn, addToast, setForm, setLoading]);
 
   // ── Handlers ───────────────────────────────────────────────
 
@@ -211,7 +216,8 @@ export default function GeneralPage() {
   }, [form.contactEmail, form.zipCode, setErrors]);
 
   const handleSave = useCallback(async () => {
-    if (!validate()) return;
+    // Before the form holds the server's values, a save would send blanks over them.
+    if (!formSeeded || !validate()) return;
     try {
       // 1. Update org details
       await OrgApi.updateOrg({
@@ -225,13 +231,10 @@ export default function GeneralPage() {
           city: form.city,
           postCode: form.zipCode,
         },
-        dataCollectionConsent: form.dataCollection,
       });
 
-      // 2. Toggle metrics collection if the value changed
-      if (form.dataCollection !== savedForm.dataCollection) {
-        await MetricsApi.toggleMetricsCollection(form.dataCollection);
-      }
+      // 2. Save the opt-in setting, where there is one
+      await saveOptIn(form.optIn, savedForm.optIn);
 
       markSaved();
       addToast({
@@ -246,14 +249,14 @@ export default function GeneralPage() {
         description: t('workspace.general.toasts.saveErrorDescription'),
       });
     }
-  }, [form, savedForm, validate, markSaved, addToast]);
+  }, [formSeeded, form, savedForm, validate, saveOptIn, markSaved, addToast]);
 
   const handleDiscard = useCallback(() => {
     setDiscardDialogOpen(true);
   }, [setDiscardDialogOpen]);
 
   const handleDiscardConfirm = useCallback(() => {
-    setLogoUrl(savedLogoUrlRef.current);
+    setPreviewLogoUrl(null);
     discardChanges();
     addToast({
       variant: 'success',
@@ -268,33 +271,26 @@ export default function GeneralPage() {
       if (!file) return;
       e.target.value = '';
 
-      const previousSavedUrl = savedLogoUrlRef.current;
       const previewUrl = URL.createObjectURL(file);
-      setLogoUrl(previewUrl);
+      setPreviewLogoUrl(previewUrl);
 
       setLogoUploading(true);
       try {
         await OrgApi.uploadLogo(file);
-        const freshUrl = await OrgApi.getLogoUrl();
-        setLogoUrl(freshUrl);
-        savedLogoUrlRef.current = freshUrl;
-        setHasServerLogo(freshUrl !== null);
-        if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
-        if (previousSavedUrl?.startsWith('blob:')) URL.revokeObjectURL(previousSavedUrl);
         addToast({
           variant: 'success',
           title: t('workspace.general.toasts.logoUpdated'),
           description: t('workspace.general.toasts.logoUpdatedDescription'),
         });
       } catch {
-        if (previewUrl.startsWith('blob:')) URL.revokeObjectURL(previewUrl);
-        setLogoUrl(savedLogoUrlRef.current);
         addToast({
           variant: 'error',
           title: t('workspace.general.toasts.logoUploadError'),
           description: t('workspace.general.toasts.logoUploadErrorDescription'),
         });
       } finally {
+        URL.revokeObjectURL(previewUrl);
+        setPreviewLogoUrl(null);
         setLogoUploading(false);
       }
     },
@@ -302,16 +298,9 @@ export default function GeneralPage() {
   );
 
   const handleDeleteLogo = useCallback(async () => {
-    const saved = savedLogoUrlRef.current;
-    const preview = logoUrl;
     setLogoDeleting(true);
     try {
       await OrgApi.deleteLogo();
-      if (saved?.startsWith('blob:')) URL.revokeObjectURL(saved);
-      if (preview?.startsWith('blob:') && preview !== saved) URL.revokeObjectURL(preview);
-      savedLogoUrlRef.current = null;
-      setLogoUrl(null);
-      setHasServerLogo(false);
       addToast({
         variant: 'success',
         title: t('workspace.general.toasts.logoRemoved'),
@@ -326,7 +315,7 @@ export default function GeneralPage() {
     } finally {
       setLogoDeleting(false);
     }
-  }, [logoUrl, addToast]);
+  }, [addToast]);
 
   const logoInitial = form.displayName
     ? form.displayName.charAt(0).toUpperCase()
@@ -368,7 +357,7 @@ export default function GeneralPage() {
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {t('workspace.sidebar.nav.general')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', display: 'block' }}>
            {t('workspace.general.manageSubtitle')}
           </Text>
         </Box>
@@ -497,58 +486,29 @@ export default function GeneralPage() {
           </SettingsSection>
         </Box>
 
-        {/* ── Data Collection Settings Section ── */}
+        {/* The section spaces itself, so a build without it leaves no gap */}
+        <DataCollectionSection />
+
+        {/* ── An edition's cards, beside the org's deletion ── */}
+        {harnessOn && (
+          <Flex direction="column" gap="5" style={{ marginBottom: 'var(--space-5)' }}>
+            <GeneralSettingsExtras />
+          </Flex>
+        )}
+
+        {/* ── Delete organization ── */}
         {/* Extra bottom padding so save bar doesn't overlap last section */}
         <Box style={{ marginBottom: 80 }}>
-          <SettingsSection
-            title={t('workspace.general.dataCollection')}
-            rightAction={
-              <Flex align="center" gap="2">
-                <Switch
-                  checked={form.dataCollection}
-                  onCheckedChange={(checked) => setField('dataCollection', checked)}
-                  size="1"
-                />
-                <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                  {t('workspace.general.enableDataCollection')}
-                </Text>
-              </Flex>
-            }
-          >
-            <Box style={{ padding: 'var(--space-4) var(--space-5)' }}>
-              <Text
-                size="2"
-                style={{ color: 'var(--slate-11)', display: 'block', marginBottom: 'var(--space-3)' }}
-              >
-                {t('workspace.general.dataCollectionDescription')}
-              </Text>
-              <Flex direction="column" gap="2" style={{ paddingLeft: 'var(--space-1)' }}>
-                {[
-                  t('workspace.general.dataCollectionReason1'),
-                  t('workspace.general.dataCollectionReason2'),
-                  t('workspace.general.dataCollectionReason3'),
-                  t('workspace.general.dataCollectionReason4'),
-                  t('workspace.general.dataCollectionReason5'),
-                ].map((item) => (
-                  <Flex key={item} align="start" gap="2">
-                    <Box
-                      style={{
-                        width: 'var(--space-1)',
-                        height: 'var(--space-1)',
-                        borderRadius: '50%',
-                        backgroundColor: 'var(--slate-9)',
-                        marginTop: 'var(--space-2)',
-                        flexShrink: 0,
-                      }}
-                    />
-                    <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                      {item}
-                    </Text>
-                  </Flex>
-                ))}
-              </Flex>
-            </Box>
-          </SettingsSection>
+          {harnessOn && (
+            <DeleteOrgSection
+              orgName={savedForm.displayName || savedForm.registeredName}
+              confirmName={orgConfirmationName({
+                registeredName: savedForm.registeredName,
+                shortName: savedForm.displayName,
+                contactEmail: savedForm.contactEmail,
+              })}
+            />
+          )}
         </Box>
       </SettingsPageContainer>
 
@@ -565,7 +525,7 @@ export default function GeneralPage() {
       />
 
       {/* ── Settings Save Bar (shown when dirty) ── */}
-      <SettingsSaveBar visible={isDirty()} onDiscard={handleDiscard} onSave={handleSave} />
+      <SettingsSaveBar visible={formSeeded && isDirty()} onDiscard={handleDiscard} onSave={handleSave} />
     </Box>
   );
 }

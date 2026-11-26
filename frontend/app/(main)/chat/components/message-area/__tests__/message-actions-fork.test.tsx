@@ -8,9 +8,10 @@ const h = vi.hoisted(() => ({
   bump: vi.fn(),
   forkConversation: vi.fn(),
   forkAgentConversation: vi.fn(),
+  updateSlot: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
-  slot: { convId: 'conv-1', threadAgentId: undefined as string | undefined, projectId: undefined as string | undefined, isOwner: true as boolean | null },
+  slot: { convId: 'conv-1', threadAgentId: undefined as string | undefined, projectId: undefined as string | undefined, isOwner: true as boolean | null, forks: [] as Array<{ conversationId: string; title: string; fromMessageId: string }> },
 }));
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: h.push }) }));
@@ -22,7 +23,10 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null })
 vi.mock('@/lib/hooks/use-chat-speech-synthesis', () => ({
   useChatSpeechSynthesis: () => ({ isSupported: false, isSpeaking: false, speak: vi.fn(), stop: vi.fn() }),
 }));
-vi.mock('@/lib/store/command-store', () => ({ useCommandStore: { getState: () => ({ dispatch: vi.fn() }) } }));
+// The last answer also registers the /copy and /feedback commands (our side).
+vi.mock('@/lib/store/command-store', () => ({
+  useCommandStore: { getState: () => ({ dispatch: vi.fn(), register: vi.fn(), unregister: vi.fn() }) },
+}));
 vi.mock('@/lib/store/toast-store', () => ({ toast: { success: h.toastSuccess, error: h.toastError } }));
 vi.mock('@/app/(main)/agents/api', () => ({ AgentsApi: { forkAgentConversation: h.forkAgentConversation } }));
 vi.mock('../../../api', () => ({
@@ -33,6 +37,9 @@ vi.mock('../../../store', () => {
     activeSlotId: 's1',
     slots: { s1: h.slot },
     bumpConversationsVersion: h.bump,
+    // The harness's model badge reads the configured models (our side).
+    settings: { availableModels: [] },
+    updateSlot: h.updateSlot,
   });
   const useChatStore = Object.assign((selector: (s: ReturnType<typeof state>) => unknown) => selector(state()), {
     getState: state,
@@ -57,6 +64,7 @@ beforeEach(() => {
   h.slot.threadAgentId = undefined;
   h.slot.projectId = undefined;
   h.slot.isOwner = true;
+  h.slot.forks = [];
 });
 
 describe('fork button on a message', () => {
@@ -99,6 +107,65 @@ describe('fork button on a message', () => {
     expect(h.forkConversation).toHaveBeenCalledWith('conv-1', 'msg-2');
     expect(h.bump).toHaveBeenCalled();
     expect(h.toastSuccess).toHaveBeenCalledWith('chat.toasts.forkSuccess');
+  });
+
+  it('adds the new fork to the original right away, so its "forked into" line needs no reload', async () => {
+    h.forkConversation.mockResolvedValue({ id: 'fork-9', title: 'Fork of A', forkedFrom: {}, messageCount: 2 });
+    renderActions('msg-2');
+
+    fireEvent.click(screen.getByLabelText('chat.forkFromHere'));
+
+    await waitFor(() => expect(h.push).toHaveBeenCalled());
+    expect(h.updateSlot).toHaveBeenCalledWith('s1', {
+      forks: [{ conversationId: 'fork-9', title: 'Fork of A', fromMessageId: 'msg-2' }],
+    });
+  });
+
+  it('keeps the forks the original already had', async () => {
+    h.slot.forks = [{ conversationId: 'fork-1', title: 'Older', fromMessageId: 'msg-1' }];
+    h.forkConversation.mockResolvedValue({ id: 'fork-9', title: 'Fork of A', forkedFrom: {}, messageCount: 2 });
+    renderActions('msg-2');
+
+    fireEvent.click(screen.getByLabelText('chat.forkFromHere'));
+
+    await waitFor(() => expect(h.push).toHaveBeenCalled());
+    expect(h.updateSlot.mock.calls[0][1].forks.map((f: { conversationId: string }) => f.conversationId)).toEqual(['fork-1', 'fork-9']);
+  });
+
+  it('keeps a fork that a reload added while the request was in flight, and does not add it twice', async () => {
+    h.forkConversation.mockImplementation(async () => {
+      h.slot.forks = [{ conversationId: 'fork-9', title: 'Fork of A', fromMessageId: 'msg-2' }];
+      return { id: 'fork-9', title: 'Fork of A', forkedFrom: {}, messageCount: 2 };
+    });
+    renderActions('msg-2');
+
+    fireEvent.click(screen.getByLabelText('chat.forkFromHere'));
+
+    await waitFor(() => expect(h.push).toHaveBeenCalled());
+    expect(h.updateSlot).not.toHaveBeenCalled();
+  });
+
+  it('does not touch the slot if it now holds a different chat', async () => {
+    h.forkConversation.mockImplementation(async () => {
+      h.slot.convId = 'conv-other';
+      return { id: 'fork-9', title: 'Fork of A', forkedFrom: {}, messageCount: 2 };
+    });
+    renderActions('msg-2');
+
+    fireEvent.click(screen.getByLabelText('chat.forkFromHere'));
+
+    await waitFor(() => expect(h.push).toHaveBeenCalled());
+    expect(h.updateSlot).not.toHaveBeenCalled();
+  });
+
+  it('adds nothing when the fork fails', async () => {
+    h.forkConversation.mockRejectedValue(new Error('boom'));
+    renderActions('msg-2');
+
+    fireEvent.click(screen.getByLabelText('chat.forkFromHere'));
+
+    await waitFor(() => expect(h.toastError).toHaveBeenCalled());
+    expect(h.updateSlot).not.toHaveBeenCalled();
   });
 
   it('forks an agent chat through the agent route and stays on that agent', async () => {

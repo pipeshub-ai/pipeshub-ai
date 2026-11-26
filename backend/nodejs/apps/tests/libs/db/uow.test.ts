@@ -82,6 +82,15 @@ describe('libs/db unit of work', () => {
   })
 
   describe('prologue', () => {
+    it('turns jit off for the unit, read or write, fenced or not', async () => {
+      for (const opts of [{}, { write: true }]) {
+        for (const fence of [undefined, { fn: 'kernel.assert_store_epoch', epoch: () => 7 }]) {
+          const pool = new FakePool()
+          await inOrg('o', () => rtFor(pool, { fence }).withUow(opts, async () => 1))
+          expect(pool.prologue.text).to.contain("set_config('jit', 'off', true)")
+        }
+      }
+    })
     it('is one statement; read units are READ ONLY, write units are not', async () => {
       const pool = new FakePool()
       const rt = rtFor(pool)
@@ -402,6 +411,10 @@ describe('libs/db unit of work', () => {
       expect(() => registerLockKey('profile_fence', 7341)).to.throw(UowUsageError)
       const forged = { name: 'forged', classId: 7341 }
       expect(() => lockKeyArgs(forged, 1)).to.throw(UowUsageError)
+      // the object id is a PostgreSQL int: the whole signed 32-bit range, including a hash of -2^31
+      expect(lockKeyArgs(key, -(2 ** 31))).to.deep.equal([7_340_101, -(2 ** 31)])
+      expect(lockKeyArgs(key, 2 ** 31 - 1)).to.deep.equal([7_340_101, 2 ** 31 - 1])
+      for (const bad of [2 ** 31, -(2 ** 31) - 1, 1.5, Number.NaN]) expect(() => lockKeyArgs(key, bad), String(bad)).to.throw(UowUsageError)
       const pool = new FakePool((t) => (t.includes('try_advisory') ? { rows: [{ ok: true }] } : {}))
       await inOrg('o', () => rtFor(pool).withUow({}, async (tx) => {
         await tx.advisoryXactLock(key, 5)

@@ -72,6 +72,22 @@ class TestSpecificCauses:
     def test_scanned_document(self) -> None:
         assert ue.to_user_reason(IndexingError(ue.SCANNED_DOCUMENT_NEEDS_OCR)) == ue.SCANNED_DOCUMENT_NEEDS_OCR
 
+    def test_ai_settings_that_could_not_be_read_are_a_temporary_problem(self) -> None:
+        from app.exceptions.indexing_exceptions import AISettingsUnavailableError
+
+        unread = AISettingsUnavailableError("Could not read the workspace's AI settings")
+        unread.__cause__ = KeyError("etcd key")  # a cause no other rule recognises
+        assert ue.to_user_reason(unread) == ue.TEMPORARY_PROBLEM
+
+    def test_no_model_that_reads_images_gives_the_scanned_document_reason_even_when_wrapped(self) -> None:
+        from app.exceptions.indexing_exceptions import MultimodalModelNotConfiguredError
+
+        missing = MultimodalModelNotConfiguredError("No multimodal LLM found in configuration.")
+        assert ue.to_user_reason(missing) == ue.SCANNED_DOCUMENT_NEEDS_OCR
+        # The in-process OCR path wraps whatever OCR raised.
+        wrapped = _wrapped(DocumentProcessingError(f"Failed to process document: {missing}"), missing)
+        assert ue.to_user_reason(wrapped) == ue.SCANNED_DOCUMENT_NEEDS_OCR
+
     @pytest.mark.parametrize(
         "reason",
         [
@@ -190,6 +206,15 @@ class TestAIProviders:
             cause,
         )
         assert ue.to_user_reason(exc) == ue._ai_messages("embedding model")["timeout"]
+
+    def test_embedding_account_out_of_credit(self) -> None:
+        response = httpx.Response(429, request=_REQUEST)
+        body = {"error": {"message": "no credit", "type": "insufficient_quota", "code": "insufficient_quota"}}
+        cause = openai.RateLimitError("Error code: 429", response=response, body=body)
+        exc = _wrapped(EmbeddingError("Dense embedding failed"), cause)
+        assert ue.provider_error_code(cause) == "quota_exceeded"
+        assert ue.to_user_reason(exc) == ue._ai_messages("embedding model")["quota_exceeded"]
+        assert "out of credit" in ue.to_user_reason(exc)
 
     def test_embedding_rate_limited(self) -> None:
         exc = _wrapped(EmbeddingError("Dense embedding failed"), _status_error(openai.RateLimitError, 429))
@@ -458,10 +483,18 @@ _JARGON = re.compile(
 
 
 def test_no_reason_shown_to_people_uses_internal_words() -> None:
-    texts = [v for k, v in vars(ue).items() if k.isupper() and isinstance(v, str)]
+    texts = [v for k, v in vars(ue).items() if k.isupper() and isinstance(v, str) and k != "PDF_PAGE_LIMIT_NOTE"]
     texts += [*ue._ai_messages("AI model").values(), ue.unsupported_file_type("xyz")]
     for text in texts:
         assert not _JARGON.search(text), text
+
+
+def test_the_page_limit_texts_use_no_internal_words() -> None:
+    """They state the limit, a number of three digits that the status-code pattern above would flag."""
+    words = re.compile(_JARGON.pattern.replace(r"|\d{3}", ""), re.IGNORECASE)
+    assert r"\d{3}" not in words.pattern
+    for text in (ue.PDF_PAGE_LIMIT_NOTE, ue.pdf_over_page_limit(501)):
+        assert not words.search(text), text
 
 
 # Record reasons in the indexing path come from the mapper or a constant, never

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -32,7 +33,7 @@ const VARIANT_CONFIG: Record<ToastVariant, VariantConfig> = {
   },
   error: {
     icon: 'error_outline',
-    iconColor: 'var(--red-10)',
+    iconColor: 'var(--red-11)',
     iconBgColor: 'var(--olive-3)',
   },
   info: {
@@ -42,7 +43,7 @@ const VARIANT_CONFIG: Record<ToastVariant, VariantConfig> = {
   },
   warning: {
     icon: 'warning',
-    iconColor: 'var(--orange-9)',
+    iconColor: 'var(--orange-11)',
     iconBgColor: 'var(--olive-3)',
   },
 };
@@ -63,6 +64,7 @@ function handleDescriptionWheel(event: React.WheelEvent<HTMLDivElement>) {
 }
 
 export function Toast({ toast, onDismiss, style }: ToastProps) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
   const config = VARIANT_CONFIG[toast.variant];
 
@@ -91,7 +93,7 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-2)',
         boxShadow:
-          '0 12px 32px -16px var(--slate-a5, rgba(217, 237, 254, 0.15)), 0 12px 60px 0 var(--Black--a3, rgba(0, 0, 0, 0.15))',
+          '0 12px 32px -16px var(--slate-a5, rgba(217, 237, 254, 0.15)), 0 12px 60px 0 rgba(0, 0, 0, 0.15)',
         padding: 'var(--space-3)',
         opacity: toast.isExiting ? 0 : 1,
         transform: toast.isExiting ? 'translateX(100%)' : 'translateX(0)',
@@ -263,6 +265,7 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
 
         {toast.showCloseButton && (
           <IconButton
+            aria-label={t('common.close')}
             variant="ghost"
             color="gray"
             size="1"

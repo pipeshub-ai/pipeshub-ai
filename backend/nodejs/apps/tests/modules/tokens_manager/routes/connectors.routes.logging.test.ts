@@ -9,7 +9,6 @@ import {
   startHarness,
 } from './connectors-http-harness'
 import axios from 'axios'
-import * as axiosRetryModule from 'axios-retry'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
 
@@ -18,9 +17,7 @@ const admin = ADMIN
 // These modules take their logger once, at load, and a mocha worker shares
 // module state across files, so whatever logger they got first is not ours to
 // observe. Load private copies that log into the recorder, then put the cached
-// originals back so later files in the same worker are unaffected. The routes
-// module also calls axiosRetry() on the process-wide axios client when it
-// loads; that call is skipped here so the copy adds no interceptors.
+// originals back so later files in the same worker are unaffected.
 const RELOADED = [
   'libs/commands/connector_service/connector.service.command.ts',
   'libs/commands/configuration_manager/cm.service.command.ts',
@@ -41,14 +38,10 @@ const privateConnectorRouter = (): RoutesModule['createConnectorRouter'] => {
   }
   const strays: string[] = []
   let routes: RoutesModule
-  const retry = sinon
-    .stub(axiosRetryModule, 'default')
-    .returns({ requestInterceptorId: -1, responseInterceptorId: -1 })
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     routes = require('../../../../src/modules/tokens_manager/routes/connectors.routes') as RoutesModule
   } finally {
-    retry.restore()
     for (const key of Object.keys(require.cache)) {
       if (originals.has(key)) require.cache[key] = originals.get(key)
       else if (!before.has(key)) {
@@ -102,10 +95,15 @@ describe('Connector routes: failed service calls keep credentials out of the log
     const getInstance = sinon.stub(Logger, 'getInstance').returns(recorder as unknown as Logger)
     const createRouter = privateConnectorRouter()
     getInstance.restore()
+    // The upstream call line takes its logger when it is written, not at load.
+    const realGetInstance = Logger.getInstance.bind(Logger)
+    sinon
+      .stub(Logger, 'getInstance')
+      .callsFake((config) => (config?.service === 'UpstreamCall' ? (recorder as unknown as Logger) : realGetInstance(config)))
     h = await startHarness({ createRouter })
   })
 
-  it('loads its private copy without adding retry interceptors to the shared axios client', () => {
+  it('adds no retry interceptors to the shared axios client when it loads', () => {
     const before = interceptorCounts()
 
     privateConnectorRouter()
@@ -129,7 +127,7 @@ describe('Connector routes: failed service calls keep credentials out of the log
 
     expect(r.status).to.equal(503)
     expect(r.body.error).to.include({ message: SERVICE_UNAVAILABLE_MESSAGE })
-    expect(logged.map((e) => e.label)).to.include('error: Connector service command failed')
+    expect(logged.map((e) => e.label)).to.include('warn: upstream.call.end')
     expect(
       leaking((text) => text.includes(token) || JWT_SHAPE.test(text) || text.includes('client-secret-do-not-log')),
     ).to.deep.equal([])
@@ -141,7 +139,7 @@ describe('Connector routes: failed service calls keep credentials out of the log
     const r = await call(h, 'GET', '/oauth/callback?code=oauth-code-do-not-log&state=oauth-state-do-not-log', sessionToken(h, admin))
 
     expect(r.status).to.equal(503)
-    expect(logged.map((e) => e.label)).to.include('error: Connector service command failed')
+    expect(logged.map((e) => e.label)).to.include('warn: upstream.call.end')
     expect(leaking((text) => text.includes('oauth-code-do-not-log') || text.includes('oauth-state-do-not-log'))).to.deep.equal([])
   })
 
@@ -151,7 +149,7 @@ describe('Connector routes: failed service calls keep credentials out of the log
     const r = await call(h, 'POST', '/getTokenFromCode', sessionToken(h, admin), { tempCode: 'code-1' })
 
     expect(r.status).to.be.within(500, 599)
-    expect(logged.map((e) => e.label)).to.include('error: Configuration Manager service command failed')
+    expect(logged.map((e) => e.label)).to.include('warn: upstream.call.end')
     expect(leaking((text) => JWT_SHAPE.test(text))).to.deep.equal([])
   })
 })

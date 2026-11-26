@@ -10,6 +10,7 @@ import { KeyValueStoreService } from '../../libs/services/keyValueStore.service'
 import { storageEtcdPaths } from './constants/constants';
 import { storageTypes } from '../configuration_manager/constants/constants';
 import { Logger } from '../../libs/services/logger.service';
+import { parseKvObject } from '../../libs/utils/kv-object.utils';
 import AzureBlobStorageAdapter from './providers/azure.provider';
 import { StorageServiceAdapter } from './adapter/base-storage.adapter';
 import { DefaultStorageConfig } from '../tokens_manager/services/cm.service';
@@ -23,27 +24,24 @@ export class StorageService {
     @inject('KeyValueStoreService')
     private readonly keyValueStoreService: KeyValueStoreService,
     private readonly config:
-      | S3StorageConfig
-      | AzureBlobStorageConfig
-      | LocalStorageConfig,
+      S3StorageConfig | AzureBlobStorageConfig | LocalStorageConfig,
     private readonly defaultConfig: DefaultStorageConfig,
+    // A caller that has already resolved the storage type passes it, so the
+    // adapter matches what that caller resolved instead of a second read.
+    private readonly storageType?: string,
   ) {}
 
   public async initialize(): Promise<void> {
     if (!this.isInitialized) {
-      try {
+      let storageType = this.storageType;
+      if (storageType === undefined) {
         const storageConfig =
           (await this.keyValueStoreService.get<string>(storageEtcdPaths)) ||
           '{}';
-        const { storageType } = JSON.parse(storageConfig) || storageTypes.LOCAL;
-        this.adapter = await this.initializeStorageAdapter(storageType);
-        this.isInitialized = true;
-      } catch (error) {
-        logger.error('Failed to initialize storage service', {
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
-        throw error;
+        ({ storageType } = parseKvObject(storageConfig) || storageTypes.LOCAL);
       }
+      this.adapter = await this.initializeStorageAdapter(storageType as string);
+      this.isInitialized = true;
     }
   }
 
@@ -57,10 +55,13 @@ export class StorageService {
         return new StorageServiceAdapter(
           new AzureBlobStorageAdapter(this.extractAzureBlobCredentials()),
         );
-      case 'local':
-        return new StorageServiceAdapter(
-          new LocalStorageAdapter(this.extractLocalStorageCredentials()),
+      case 'local': {
+        const local = new LocalStorageAdapter(
+          this.extractLocalStorageCredentials(),
         );
+        await local.ensureReady();
+        return new StorageServiceAdapter(local);
+      }
       default:
         throw new Error(`Unsupported storage type: ${storageType}`);
     }

@@ -1,0 +1,48 @@
+name: Supply chain weekly
+
+# SEC-SC-07/08 (docs/agent-harness-v2/guides/SUPPLY-CHAIN.md): the checks that need the network. A fresh uv
+# resolve against the cutoff recorded in the locks must write the committed files byte for byte, every locked
+# hash must be one PyPI (or the PyTorch CPU index) publishes for that release, and integration-tests/uv.lock must
+# still match its pyproject. Weekly rather than per pull request: an index can add files to an old release,
+# which is worth a look but should not block unrelated work. The offline rules run on every pull request
+# (main.yml, job supply-chain).
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  locks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      # uv from the hashed tools lock, in a venv of its own.
+      - name: Install uv
+        run: |
+          python3 -m venv "$RUNNER_TEMP/locktools"
+          PYTHON="$RUNNER_TEMP/locktools/bin/python" backend/python/requirements/install.sh tools
+
+      - name: Offline rules
+        run: python3 scripts/supply_chain.py check
+
+      - name: A fresh resolve writes the committed locks
+        run: UV="$RUNNER_TEMP/locktools/bin/uv" python3 scripts/supply_chain.py lock --check
+
+      - name: Every locked hash is published by its index
+        run: python3 scripts/supply_chain.py verify-hashes
+
+      - name: integration-tests/uv.lock matches its pyproject
+        working-directory: integration-tests
+        run: '"$RUNNER_TEMP/locktools/bin/uv" lock --check'

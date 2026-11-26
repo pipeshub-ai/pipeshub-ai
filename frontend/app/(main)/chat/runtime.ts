@@ -2,17 +2,20 @@
  * External Store Runtime bridge for assistant-ui.
  *
  * Provides:
- * 1. `buildExternalStoreConfig(activeSlotId)` â€” returns the config object
+ * 1. `buildExternalStoreConfig(activeSlotId)` — returns the config object
  *    consumed by `useExternalStoreRuntime`. Reads `messages` and `isRunning`
  *    from the active slot; wires `onNew` and `onCancel` to streaming.ts.
  *
- * 2. `loadHistoricalMessages()` â€” transforms backend ConversationMessage[]
+ * 2. `loadHistoricalMessages()` — transforms backend ConversationMessage[]
  *    into ThreadMessageLike[] (used when initializing a slot).
  */
 
+import { runOutcome } from './run-outcome';
+import { runFailureWords } from './run-failure-words';
+import { i18n } from '@/lib/i18n';
 import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, getRequestReasoningEffort, projectAgentCapabilities } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import { showNoModelToast } from './utils/no-model-toast';
 import { showRemoteRunInProgressToast } from './utils/remote-run-toast';
@@ -40,6 +43,7 @@ import {
   buildCitationMapsFromApi,
 } from './components/message-area/response-tabs/citations';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
+import { chatHarnessField, turnHarnessChoice } from './assistant-harness';
 import { bareToolFullName } from './tool-groups';
 import {
   hasUnansweredQuestions,
@@ -47,10 +51,19 @@ import {
   parseAnswerMessage,
 } from './components/message-area/ask-user-question-card';
 import { appendResumeParts } from './utils/tool-display';
+import { answerErrorText } from './harness-errors';
+import type { ChatStreamErrorInfo } from './stream-error';
+import { toSentCommand } from './commands';
 import { isToolApprovalResumeQuery } from './tool-approval';
+import { heldRepository, useRepositoryStore } from './repository-store';
+import { turnGatesField, useRunGatesStore } from './run-gates';
+import { applyCompareToRequest, onPrimarySettled, settleBeforeSend } from './compare/compare-controller';
+import { compareModelForSlot } from './compare/compare-store';
+import type { ThreadOwner } from './hooks/use-thread-owner';
+import { ANSWER_FAILED } from './stream-error';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
-const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
+export const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
 
 /** Prefer the `isFinal` text part from the transcript over `msg.content`.
  * Handles pre-fix conversations where `content` had narration mixed in,
@@ -162,7 +175,7 @@ function resolveAssistantFiltersFromSlot(
 }
 
 /**
- * Resolve KB/app filters for a chat POST â€” either from the outgoing composer message
+ * Resolve KB/app filters for a chat POST — either from the outgoing composer message
  * (normal send) or from the latest prior user turn that carried attachments (questionnaire submit).
  */
 export function resolveAssistantFiltersForChatSubmit(
@@ -202,6 +215,20 @@ function effectiveAgentIdForSlot(slot: ChatSlot): string | undefined {
   return slotAgent ?? agentIdFromUrl ?? undefined;
 }
 
+/** The engine `/engine` held for this new chat (CMDUI2): only on the request that creates it, for its own agent. */
+function newChatEngineField(convId: string | null, agentId: string | null): Pick<StreamChatRequest, 'codingEngine'> {
+  const pending = useChatStore.getState().pendingCodingEngine;
+  if (convId || !pending || pending.agentId !== agentId) return {};
+  return { codingEngine: pending.engine };
+}
+
+/** The repository the picker held for this new chat (WP-26), for the request that creates it. */
+export function newChatRepositoryField(convId: string | null, agentId: string | null): Pick<StreamChatRequest, 'repository'> {
+  const held = heldRepository(useRepositoryStore.getState().pending, agentId);
+  if (convId || !held) return {};
+  return { repository: { url: held.url, ...(held.baseRef ? { baseRef: held.baseRef } : {}), toolsetInstanceId: held.toolsetInstanceId } };
+}
+
 /**
  * Build the streaming POST body for the given slot (agent vs assistant, filters,
  * tools, model). Used by questionnaire submit and the chat composer bridge.
@@ -235,6 +262,9 @@ export function buildStreamChatRequestForSlot(
   // Project context is hydrated from the URL/workspace (`useProjectScopeHydration`), the same
   // way `agentId` is read from the URL above. The server re-applies the allow-list regardless.
   const projectScope = effectiveAgentId ? null : currentState.projectScope;
+  const projectIdForCaps = effectiveAgentId
+    ? null
+    : currentSlot.projectId ?? projectScope?.projectId ?? null;
 
   const toolsSel = effectiveAgentId
     ? currentState.agentStreamTools
@@ -256,18 +286,13 @@ export function buildStreamChatRequestForSlot(
       : [];
 
   const modelCtxKey = ctxKeyFromAgent(effectiveAgentId ?? null);
-  const rawModel = getEffectiveModel(modelCtxKey);
+  // A compared slot keeps its own model for card and approval follow-ups, whatever the composer shows.
+  const rawModel = compareModelForSlot(slotId) ?? getEffectiveModel(modelCtxKey);
   if (!rawModel) {
     showNoModelToast();
   }
   const effectiveModel = rawModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
-  // Neither the user nor the agent chose an effort → leave it off the request
-  // so the backend applies the model's own default, then "high".
-  const reasoningEffortOverride = currentState.settings.reasoningEffort[modelCtxKey] ?? null;
-  const agentDefault = getAgentDefaultReasoningEffort(modelCtxKey);
-  const reasoningEffort =
-    reasoningEffortOverride ??
-    (isModelReasoningCapable(modelCtxKey, effectiveModel) ? agentDefault : null);
+  const reasoningEffort = getRequestReasoningEffort(modelCtxKey, effectiveModel);
 
   const isAgent = Boolean(effectiveAgentId);
   const knowledgeScope = currentState.agentKnowledgeScope;
@@ -360,6 +385,11 @@ export function buildStreamChatRequestForSlot(
     ...(!currentSlot.convId && currentSlot.projectId
       ? { projectId: currentSlot.projectId }
       : {}),
+    ...chatHarnessField(turnHarnessChoice(currentSlot, currentState.settings.queryMode, isAgent)),
+    ...newChatEngineField(currentSlot.convId, effectiveAgentId ?? null),
+    ...newChatRepositoryField(currentSlot.convId, effectiveAgentId ?? null),
+    // G-03..G-05: the gates the person turned on for this message; an approval's answer carries none of its own.
+    ...(toolApproval ? {} : turnGatesField(useRunGatesStore.getState().turn, effectiveAgentId ? currentState.agentGates : null)),
     ...(effectiveAgentId
       ? {
           agentId: effectiveAgentId,
@@ -378,7 +408,9 @@ export function buildStreamChatRequestForSlot(
       : isUniversalAgentMode
         ? {
             ...(toolsSel !== null ? { agentStreamTools: streamTools } : {}),
-            agentCapabilities: currentState.settings.agentCapabilities,
+            agentCapabilities: projectIdForCaps
+              ? projectAgentCapabilities(currentState.scopedAgentCapabilities, projectIdForCaps)
+              : currentState.settings.agentCapabilities,
           }
         : {}),
     ...(toolApproval ? { toolApproval } : {}),
@@ -392,7 +424,7 @@ export interface LoadHistoricalResult {
   unansweredAskUserQuestion: PendingAskUserQuestion | null;
 }
 
-function isAskUserQuestionResumeQuery(text: string | undefined | null): boolean {
+export function isAskUserQuestionResumeQuery(text: string | undefined | null): boolean {
   return typeof text === 'string' && text.trimStart().startsWith('User selections:');
 }
 
@@ -651,13 +683,35 @@ export function loadHistoricalMessages(
         mergeNextBotIntoId = null;
         continue;
       }
+      // A saved failure names an error answer's code or a run ending's: either is worded here, with its next step.
+      const code = typeof msg.errorCode === 'string' && msg.errorCode ? msg.errorCode : null;
+      const answerWords = answerErrorText(code);
+      // WP-89/WP-100: worded from the run's typed outcome as the live RUN_ERROR is; the message's own fields from before it.
+      const failureWords = runFailureWords(code, runOutcome(msg.runOutcome), {
+        servers: msg.errorServers,
+        details: msg.errorStop,
+      });
+      const streamError: ChatStreamErrorInfo | null =
+        code === null ? null : { code, source: answerWords !== null ? 'answer' : 'run' };
       result.push({
         id: msg._id,
         role: 'assistant' as const,
-        content: [{ type: 'text' as const, text: msg.content || 'An error occurred. Please try again.' }],
+        content: [
+          {
+            type: 'text' as const,
+            text: failureWords ?? (msg.content || 'An error occurred. Please try again.'),
+          },
+        ],
         metadata: {
           custom: {
             citationMaps: buildCitationMapsFromApi([]),
+            // Shown as an error, not as an answer: the saved code when the row has one, a failed answer otherwise.
+            streamError: streamError ?? { code: ANSWER_FAILED },
+            // A failed durable run keeps the messages the user sent while it ran.
+            ...(msg.parts?.length ? { persistedParts: msg.parts } : {}),
+            ...(msg.runId ? { durableRunId: msg.runId } : {}),
+            ...(msg.copied ? { copied: true } : {}),
+            ...(msg.answerHidden ? { answerHidden: msg.answerHidden } : {}),
           },
         },
       });
@@ -710,7 +764,9 @@ export function loadHistoricalMessages(
           ? { value: 'dislike' as const }
           : undefined;
 
-      const answerText = extractFinalAnswer(msg.parts, msg.content);
+      const answerText = msg.foreignTurn
+        ? i18n.t('chat.continuePrivately.foreignTurn')
+        : extractFinalAnswer(msg.parts, msg.content);
       // A run stopped before any text arrived is saved as an empty stopped
       // reply. The live view drops that row (`buildStoppedMessages`); showing
       // it after a reload would add an empty "Stopped" bubble the user never saw.
@@ -738,6 +794,9 @@ export function loadHistoricalMessages(
           const prevCustom = (last.metadata?.custom ?? {}) as Record<string, unknown>;
           const prevCustomRest = { ...prevCustom };
           delete prevCustomRest.status;
+          // The row shows this reply's answer: its not-found fact is this reply's, never the asking row's.
+          delete prevCustomRest.notFound;
+          delete prevCustomRest.limits;
           const prevParts = Array.isArray(prevCustomRest.persistedParts)
             ? (prevCustomRest.persistedParts as MessagePart[])
             : [];
@@ -754,7 +813,14 @@ export function loadHistoricalMessages(
                 modelInfo: msg.modelInfo,
                 ...(feedbackInfo ? { feedbackInfo } : {}),
                 ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
+                ...(msg.truncatedBy ? { truncatedBy: msg.truncatedBy } : {}),
+                ...(msg.budgetScope ? { budgetScope: msg.budgetScope } : {}),
+                ...(msg.notFound !== undefined ? { notFound: msg.notFound } : {}),
+            ...(msg.limits !== undefined ? { limits: msg.limits } : {}),
+                ...(msg.limits !== undefined ? { limits: msg.limits } : {}),
                 ...(nextParts.length ? { persistedParts: nextParts } : {}),
+                // The row shows this reply's answer, so its summary, cost and activity are this run's (FU-2).
+                ...(msg.runId ? { durableRunId: msg.runId } : {}),
               },
             },
           });
@@ -774,6 +840,11 @@ export function loadHistoricalMessages(
             modelInfo: msg.modelInfo,
             ...(feedbackInfo ? { feedbackInfo } : {}),
             ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
+            // BUDGETEND: the answer a limit cut short shows a notice (the saved message names the limit).
+            ...(msg.truncatedBy ? { truncatedBy: msg.truncatedBy } : {}),
+            ...(msg.budgetScope ? { budgetScope: msg.budgetScope } : {}),
+            ...(msg.notFound !== undefined ? { notFound: msg.notFound } : {}),
+            ...(msg.answerHidden ? { answerHidden: msg.answerHidden } : {}),
             ...(capturedPayload
               ? { persistedAskUserQuestion: capturedPayload }
               : {}),
@@ -782,6 +853,8 @@ export function loadHistoricalMessages(
             // legacy protocol and every pre-existing conversation; consumers
             // fall back to plain `content` (see AgentActivityTimeline).
             ...(msg.parts?.length ? { persistedParts: msg.parts } : {}),
+            ...(msg.runId ? { durableRunId: msg.runId } : {}),
+            ...(msg.copied ? { copied: true } : {}),
           },
         },
       });
@@ -886,15 +959,24 @@ export function loadHistoricalMessages(
     }
     // A real question: the reply after it is its own row, whatever came before.
     mergeNextBotIntoId = null;
+    const sentCommand = msg.foreignTurn ? null : toSentCommand(msg.command, msg.content);
     result.push({
       id: msg._id,
       role: 'user' as const,
-      content: [{ type: 'text' as const, text: msg.content }],
+      content: [
+        {
+          type: 'text' as const,
+          text: msg.foreignTurn
+            ? i18n.t('chat.continuePrivately.foreignTurn')
+            : (sentCommand?.typed ?? msg.content),
+        },
+      ],
       metadata: {
         custom: {
           createdAt: msg.createdAt,
           ...(msg.appliedFilters ? { appliedFilters: msg.appliedFilters } : {}),
           ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
+          ...(sentCommand ? { command: sentCommand } : {}),
         },
       },
     });
@@ -1008,7 +1090,7 @@ export function reconcilePendingAfterPrepend(
  * It reads the active slot's messages + streaming state and provides
  * `onNew` / `onCancel` callbacks routed to slot-scoped streaming.
  *
- * @param activeSlotId â€” current active slot key (or null for new chat screen)
+ * @param activeSlotId — current active slot key (or null for new chat screen)
  */
 export function buildExternalStoreConfig(
   activeSlotId: string | null
@@ -1019,12 +1101,14 @@ export function buildExternalStoreConfig(
   return {
     messages: slot?.messages ?? [],
     isRunning: slot?.isStreaming ?? false,
+    // Applied with the messages, so the thread can tell whose they are (FIX-NAV).
+    extras: { slotId: activeSlotId, convId: slot?.convId ?? null } satisfies ThreadOwner,
 
-    // Required when T = ThreadMessageLike (identity â€” our messages are already ThreadMessageLike)
+    // Required when T = ThreadMessageLike (identity — our messages are already ThreadMessageLike)
     convertMessage: (msg: ThreadMessageLike) => msg,
 
     onNew: async (message) => {
-      // Read activeSlotId from store at invocation time â€” NOT from the
+      // Read activeSlotId from store at invocation time — NOT from the
       // closure. ChatInputWrapper.handleSend creates a slot and sets
       // activeSlotId synchronously in Zustand before calling
       // threadRuntime.append(), but React hasn't re-rendered yet, so
@@ -1046,6 +1130,10 @@ export function buildExternalStoreConfig(
         showRemoteRunInProgressToast();
         return;
       }
+
+      // Sending on without choosing keeps the primary answer and drops the branch.
+      const settling = settleBeforeSend(targetSlotId);
+      if (settling) await settling;
 
       const msgAttachments = msgAttachmentsEarly;
 
@@ -1072,9 +1160,12 @@ export function buildExternalStoreConfig(
         request.attachments = msgAttachments;
       }
 
-      // Fire-and-forget â€” streaming.ts handles all state updates.
+      const compared = applyCompareToRequest(targetSlotId, request, displayQuery);
+
+      // Fire-and-forget — streaming.ts handles all state updates.
       // Keep `displayQuery` for the slot user row + streamingQuestion so attachment-only turns still match an empty text bubble.
-      streamMessageForSlot(targetSlotId, displayQuery, request);
+      const run = streamMessageForSlot(targetSlotId, displayQuery, request);
+      if (compared) void run.finally(() => onPrimarySettled(targetSlotId));
     },
 
     onCancel: async () => {

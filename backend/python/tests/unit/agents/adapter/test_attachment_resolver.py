@@ -19,6 +19,7 @@ from app.agents.agent_loop.hooks.attachment_resolver import (
     resolve_attachments_for_goal,
     shape_image_injection,
 )
+from tests.support.record_access import InMemoryRecordAccess
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -82,8 +83,7 @@ _LOG = logging.getLogger("test_attachment_resolver")
 def _granting_graph() -> AsyncMock:
     graph = AsyncMock()
     graph.get_records_by_virtual_record_id.return_value = ["rec-vrid-1"]
-    graph.check_record_access_with_details.return_value = {"id": "rec-vrid-1"}
-    return graph
+    return InMemoryRecordAccess().readable("user-1", "org-1", "rec-vrid-1").serve(graph)
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +332,9 @@ class TestAttachmentRehydration:
         assert "resume.pdf" in goal.constraints[0]
         assert "knowledgegraph__fetch_record" in goal.constraints[0]
         assert "rec-vrid-1" in goal.constraints[0]
+        for app in ("Slack", "Outlook", "Gmail", "Salesforce", "Jira", "Confluence"):
+            assert app in goal.constraints[0]
+        assert "any tool that has that parameter" in goal.constraints[0]
 
     async def test_skips_already_populated_vrids(self):
         blob = AsyncMock()
@@ -376,7 +379,7 @@ class TestAttachmentRehydration:
         blob = AsyncMock()
         graph = AsyncMock()
         graph.get_records_by_virtual_record_id.return_value = ["rec-vrid-1"]
-        graph.check_record_access_with_details.return_value = None
+        InMemoryRecordAccess().user("user-1", "org-1").record("rec-vrid-1", "org-1").serve(graph)
 
         ctx_data, goal = _make_turn_ctx()
         context = _make_context(

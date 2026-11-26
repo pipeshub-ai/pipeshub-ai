@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { streamSSEGet, streamSSERequest, type SSEEvent, type SSEStreamingOptions } from '@/lib/api/streaming';
 import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type {
@@ -15,6 +16,16 @@ import type {
 } from './types';
 
 const BASE = '/api/v1/configurationManager';
+
+/** SWR keys of the AI-model reads. The registry is the server's provider catalog: no write changes it. */
+export const AI_MODEL_KEYS = {
+  registry: (capability?: string) => [SWR_NS.aiModelRegistry, capability ?? 'all'] as const,
+  all: [SWR_NS.aiModelConfig, 'all'] as const,
+  roles: [SWR_NS.aiModelConfig, 'roles'] as const,
+};
+
+/** Refreshes every cached view of the configured models (settings, chat model lists, speech). */
+const invalidateModelConfig = () => revalidateSwrNamespace(SWR_NS.aiModelConfig);
 
 export const AIModelsApi = {
   // Registry endpoints (proxied to Python backend)
@@ -49,18 +60,21 @@ export const AIModelsApi = {
         isMultimodal: boolean;
         isReasoning: boolean;
         contextLength?: number | null;
+        configuration?: Record<string, unknown>;
       }>;
       defaultModel?: string;
       connectionId?: string;
     },
     options: SSEStreamingOptions,
-  ) => streamSSERequest(`${BASE}/ai-models/providers/batch`, body, options),
+    // Rows fail one by one through onError while others are saved, so refresh however it ends.
+  ) => streamSSERequest(`${BASE}/ai-models/providers/batch`, body, options).finally(invalidateModelConfig),
 
   rotateConnectionCredentials: async (connectionId: string, configuration: Record<string, unknown>) => {
     const { data } = await apiClient.put(
       `${BASE}/ai-models/connections/${encodeURIComponent(connectionId)}/credentials`,
       { configuration },
     );
+    invalidateModelConfig();
     return data;
   },
 
@@ -72,6 +86,7 @@ export const AIModelsApi = {
       `${BASE}/ai-models/connections/${encodeURIComponent(connectionId)}/identity-forwarding`,
       settings,
     );
+    invalidateModelConfig();
     return data;
   },
 
@@ -142,6 +157,7 @@ export const AIModelsApi = {
     const { data } = await apiClient.post(`${BASE}/ai-models/providers`, body, {
       suppressErrorToast: true,
     });
+    invalidateModelConfig();
     return data;
   },
 
@@ -162,6 +178,7 @@ export const AIModelsApi = {
       payload,
       { suppressErrorToast: true }
     );
+    invalidateModelConfig();
     return data;
   },
 
@@ -170,6 +187,7 @@ export const AIModelsApi = {
       `${BASE}/ai-models/providers/${modelType}/${modelKey}`,
       { suppressErrorToast: true }
     );
+    invalidateModelConfig();
     return data;
   },
 
@@ -177,6 +195,7 @@ export const AIModelsApi = {
     const { data } = await apiClient.put(
       `${BASE}/ai-models/default/${modelType}/${modelKey}`
     );
+    invalidateModelConfig();
     return data;
   },
 

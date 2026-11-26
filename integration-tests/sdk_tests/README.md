@@ -59,6 +59,13 @@ The three suites run at the same time against one app.
   workflow for them sets `x-speakeasy-test-security` to `bearerAuth: "x-env:
   PIPESHUB_SESSION_TOKEN"` (`with_oauth_app.py` signs in and sets it). A step's own
   `x-speakeasy-test-security` stays in force for the steps after it.
+- The OAuth app's tokens act as a service account, which is never an admin. A case that
+  needs an admin (team connectors, OAuth configurations) uses the same session: the
+  workflow sets that security, a hand-written test uses the admin client
+  (`createAdminClient`, the `admin` fixture, `newAdminClient`).
+- Speakeasy leaves out of the SDKs, with only a warning, an operation whose schemas use
+  `not`. `check_sdk_spec.py` fails on one; fold a refused pattern into `pattern` with a
+  negative lookahead, or say the rule in the description.
 - In `tests.arazzo.yaml`: a step whose output a later step uses needs a
   response-body condition; conditions support only `==` and `!=`; a condition value
   cannot contain spaces or refer to a step output; do not read a list item by
@@ -73,7 +80,7 @@ The three suites run at the same time against one app.
 
 ## Run it locally
 
-Needs a running app, the Speakeasy CLI with `SPEAKEASY_API_KEY`, Node, Python and
+Needs a running app, the Speakeasy CLI with `SPEAKEASY_API_KEY`, Node, Python 3.12 and
 Go 1.24, and a checkout of `pipeshub-ai/open-api` at the `OPEN_API_REF` in the
 workflow. The Go SDK's `go.mod` can ask for a newer Go; with a newer Go installed,
 use `GOTOOLCHAIN=go1.24.9+auto`, as Speakeasy's staticcheck cannot read packages
@@ -84,6 +91,11 @@ an org, an OAuth app, AI models and a knowledge base.
 
 ```bash
 cd integration-tests/sdk_tests
+
+# 0. The helpers' packages, from their hashed lock (run_sdk_tests.sh installs the test tools from tests.lock).
+python3.12 -m venv /tmp/sdk-helpers
+/tmp/sdk-helpers/bin/pip install --require-hashes --no-deps --only-binary=:all: -r requirements/helpers.lock
+source /tmp/sdk-helpers/bin/activate
 
 # 1. Org, AI models and one indexed document.
 python provision_sdk_test_env.py

@@ -1,7 +1,9 @@
 import { RedisConfig } from '../../../libs/types/messaging.types';
-import { ConfigService } from '../services/cm.service';
+import { ConfigService, SandboxPlaneEndpoints } from '../services/cm.service';
 import { passwordResetLinkLifetime } from '../../../libs/utils/createJwt';
 import { ParsedTrustProxy, parseTrustProxy } from '../../../libs/utils/trust-proxy';
+import { parsePositiveIntSafe } from '../../../libs/utils/env.utils';
+import { addUpstreams } from '../../../libs/http/upstream-call';
 
 export interface AppConfig {
   jwtSecret: string;
@@ -22,6 +24,8 @@ export interface AppConfig {
   connectorBackend: string;
   connectorPublicUrl: string;
   indexingBackend: string;
+  /** Published to the store at load for the Python processes; optional so a config built without it still types. */
+  sandboxPlane?: SandboxPlaneEndpoints;
   kafka: {
     brokers: string[];
     ssl?: boolean;
@@ -96,13 +100,23 @@ export interface AppConfig {
   };
 }
 
+/**
+ * A rate limit from the environment, or the default when unset or malformed.
+ * parseInt read "abc" as NaN, which express-rate-limit never exceeds (the limit
+ * was off), and "0" as 0, which refuses every request.
+ */
+function perMinuteLimit(name: string, fallback: number): number {
+  const raw = process.env[name];
+  return parsePositiveIntSafe(raw === '' ? undefined : raw, fallback, name);
+}
+
 export const loadAppConfig = async (): Promise<AppConfig> => {
   // Fails startup on an unusable PASSWORD_RESET_LINK_EXPIRY, rather than
   // letting every reset link be issued already expired.
   passwordResetLinkLifetime();
   const configService = ConfigService.getInstance();
 
-  return {
+  const appConfig: AppConfig = {
     jwtSecret: await configService.getJwtSecret(),
     scopedJwtSecret: await configService.getScopedJwtSecret(),
     cookieSecret: await configService.getCookieSecret(),
@@ -119,6 +133,7 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     connectorPublicUrl: await configService.getConnectorPublicUrl(),
     indexingBackend: await configService.getIndexingUrl(),
     aiBackend: await configService.getAiBackendUrl(),
+    sandboxPlane: await configService.getSandboxPlaneEndpoints(),
     storageBackend: await configService.getStorageBackendUrl(),
     tokenBackend: await configService.getTokenBackendUrl(),
     kafka: await configService.getKafkaConfig(),
@@ -147,18 +162,61 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     skipDomainCheck: process.env.SKIP_DOMAIN_CHECK === 'true',
 
     // Rate limit config
-    maxRequestsPerMinute: process.env.MAX_REQUESTS_PER_MINUTE
-      ? parseInt(process.env.MAX_REQUESTS_PER_MINUTE, 10)
-      : 1000,
-    maxOAuthClientRequestsPerMinute: process.env.MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE
-      ? parseInt(process.env.MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE, 10)
-      : 1000,
-    maxAuthRequestsPerMinute: process.env.MAX_AUTH_REQUESTS_PER_MINUTE
-      ? parseInt(process.env.MAX_AUTH_REQUESTS_PER_MINUTE, 10)
-      : 10,
+    maxRequestsPerMinute: perMinuteLimit('MAX_REQUESTS_PER_MINUTE', 1000),
+    maxOAuthClientRequestsPerMinute: perMinuteLimit(
+      'MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE',
+      1000,
+    ),
+    maxAuthRequestsPerMinute: perMinuteLimit(
+      'MAX_AUTH_REQUESTS_PER_MINUTE',
+      10,
+    ),
 
     trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
 
     deployment: await configService.getDeploymentConfig() as AppConfig['deployment'],
   };
+  // Here rather than at boot: a reload (connectors.routes.ts) re-registers the URLs it read.
+  registerAppUpstreams(appConfig);
+  return appConfig;
 };
+
+/**
+ * Registers the config's PipesHub services: the only bases `upstreamFetch` sends to, and the names its lines use.
+ * Every base an earlier load registered stays registered: a container built before a reload keeps the URLs it
+ * read then, and must still reach its service. Bases only ever come from config, never from a request.
+ */
+export function registerAppUpstreams(
+  appConfig: Partial<
+    Pick<
+      AppConfig,
+      | 'aiBackend'
+      | 'connectorBackend'
+      | 'indexingBackend'
+      | 'iamBackend'
+      | 'authBackend'
+      | 'cmBackend'
+      | 'kbBackend'
+      | 'esBackend'
+      | 'storageBackend'
+      | 'tokenBackend'
+      | 'communicationBackend'
+    >
+  >,
+): void {
+  addUpstreams({
+    query: [appConfig.aiBackend],
+    connector: [appConfig.connectorBackend],
+    indexing: [appConfig.indexingBackend],
+    nodejs: [
+      appConfig.iamBackend,
+      appConfig.authBackend,
+      appConfig.cmBackend,
+      appConfig.kbBackend,
+      appConfig.esBackend,
+      appConfig.storageBackend,
+      appConfig.tokenBackend,
+      appConfig.communicationBackend,
+    ],
+  });
+}

@@ -6,7 +6,9 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { PermissionLockIcon } from '@/config';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { touchTarget } from '@/app/components/ui/responsive';
+import { KbSelectionActions } from '@/config';
 import type { PageViewMode } from '../types';
+import type { KbTableItem } from '../utils/kb-table-item-actions';
 
 interface SelectionActionBarProps {
   selectedCount: number;
@@ -16,6 +18,10 @@ interface SelectionActionBarProps {
   onDelete?: () => void;
   deletePermissionDenied?: boolean;
   pageViewMode?: PageViewMode;
+  /** The ticked rows, for edition-provided actions. */
+  selectedItems?: KbTableItem[];
+  /** Called after an edition-provided action changed the selected items. */
+  onChanged?: () => void;
 }
 
 export function SelectionActionBar({
@@ -26,6 +32,8 @@ export function SelectionActionBar({
   onDelete,
   deletePermissionDenied,
   pageViewMode = 'collections',
+  selectedItems = [],
+  onChanged,
 }: SelectionActionBarProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -36,13 +44,14 @@ export function SelectionActionBar({
       align="center"
       gap="2"
       style={{
+        flexWrap: isMobile ? 'wrap' : 'nowrap',
         position: 'fixed',
         bottom: '40px',
         left: isMobile ? '50%' : '60%',
         maxWidth: 'calc(100vw - 16px)',
         transform: 'translateX(-50%)',
-        background: 'var(--effects-translucent)',
-        backdropFilter: 'blur(25px)',
+        background: 'var(--frost-bg-strong)',
+        backdropFilter: 'var(--frost-filter)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
         boxShadow: '0 20px 28px 0 rgba(0, 0, 0, 0.15)',
@@ -129,7 +138,7 @@ export function SelectionActionBar({
           }}
           style={{
             borderColor: 'var(--red-7)',
-            color: 'var(--red-9)',
+            color: 'var(--red-11)',
             cursor: deletePermissionDenied ? 'not-allowed' : 'pointer',
             ...touchTarget(isMobile),
           }}
@@ -139,6 +148,8 @@ export function SelectionActionBar({
           {deletePermissionDenied && <PermissionLockIcon />}
         </Button>
       )}
+
+      <KbSelectionActions selectedItems={selectedItems} pageViewMode={pageViewMode} onChanged={onChanged} />
     </Flex>
   );
 }

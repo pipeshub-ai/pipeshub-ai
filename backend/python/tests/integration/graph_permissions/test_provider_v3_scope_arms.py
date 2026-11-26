@@ -59,6 +59,8 @@ from .fixture_graph import (
 )
 from .loaders import load_into_neo4j
 
+pytestmark = pytest.mark.integration
+
 APP = "v3-app"
 KB_APP = "v3-kb"
 RGL = "RECORD_GROUP_LEVEL"
@@ -90,7 +92,8 @@ ITEM = {"record_type": "FILE", "connector_id": APP}
 #   v3-dec-restricted  arm 4: RESTRICTED, but the declaration wins
 #   v3-dec-r3 / v3-dec-nested-granted  granted AND in the declared scope
 #   v3-dec-nested-hidden  arm 3: a nested group (its own flag hides only children)
-#   v3-foreign-dec(-r1) / v3-noconn-dec(-r1)  declarations the stop must NOT apply to
+#   v3-foreign-dec(-r1) / v3-noconn-dec(-r1)  declarations the stop must NOT apply to: the walk descends them to
+#                   their records, but a group is judged in the App its own connectorId names, so they are not listed
 #   v3-hide-folder  arm 1: an undeclared group that hides its children
 CORRECT_VISIBLE = {
     "v3-open", "v3-dec", "v3-dec-r1", "v3-dec-r2", "v3-dec-nested",
@@ -98,7 +101,7 @@ CORRECT_VISIBLE = {
     "v3-open-r1", "v3-dec-walked", "v3-dec-walked-r1", "v3-dec-folder",
     "v3-dec-attach-granted", "v3-dec-restricted", "v3-dec-r3",
     "v3-dec-nested-granted", "v3-dec-nested-hidden",
-    "v3-foreign-dec", "v3-foreign-dec-r1", "v3-noconn-dec", "v3-noconn-dec-r1",
+    "v3-foreign-dec-r1", "v3-noconn-dec-r1",
     "v3-hide-folder",
 }
 
@@ -113,6 +116,7 @@ PRUNE_GAP = {"v3-dec-attach", "v3-dec-via-rec"}
 OFF_CONNECTOR = {"v3-foreign-dec", "v3-noconn-dec", "v3-kb-r1", "v3-kb-deleted"}
 
 EXPECTED_HIDDEN = PRUNE_GAP | {
+    "v3-foreign-dec", "v3-noconn-dec",  # name another connector or none: the check refuses them under APP, so the listing does too
     "v3-dec-r3-child",         # inherits from a granted node that is not a seed
     "v3-dec-nested-granted-child",
     "v3-app-loose",            # BELONGS_TO a non-KB, non-APP_LEVEL app
@@ -354,7 +358,8 @@ async def _page(provider, *, app_id: str = APP, **overrides) -> dict:
         "app_id": app_id, "org_id": ORG,
         "grantee_ids": access["grantee_ids"],
         "gated_app_ids": access["gated_app_ids"],
-        "granted_ids": access["by_connector"].get(app_id) or [],
+        # Every gated connector's grants: a walk can pass through a node of another (an App's own grants alone are refused).
+        "grants_by_connector": {**access["by_connector"], **({app_id: overrides.pop("granted_ids")} if "granted_ids" in overrides else {})},
         "limit": 500, "flatten": True, "sort_field": "name", "sort_dir": "ASC",
         "include_total": True,
     }
@@ -376,6 +381,8 @@ async def _page_query(provider, monkeypatch, **overrides) -> str:
         return await original(query, *args, **kwargs)
 
     monkeypatch.setattr(provider.client, "execute_query", spy)
+    # The shape pinned here is the legacy statement's: the split browse writes no rule into it (docs/knowledge-hub-browse.md).
+    monkeypatch.setenv("KH_BROWSE_MODE", "legacy")
     await _page(provider, **overrides)
     monkeypatch.setattr(provider.client, "execute_query", original)
     return [q for q in seen if "$kh_limit" in q][-1]
@@ -488,12 +495,14 @@ async def test_deleted_nodes_are_excluded_from_every_arm(
 
 async def test_placeholders_are_browsed_but_never_results(v3_graph, neo4j_provider) -> None:
     """The global flatten and a filtered browse drop placeholders on the node;
-    browsing into a group lists them (``test_provider_v3_placeholders.py``)."""
+    browsing into a group lists those with something readable below them
+    (``test_provider_v3_placeholders.py``)."""
     assert "v3-dec-placeholder" not in await _visible(neo4j_provider)
     browsed = await _visible(
         neo4j_provider, start_id="v3-dec", start_type="recordGroup", flatten=False,
     )
-    assert {"v3-dec-folder", "v3-dec-placeholder"} <= browsed
+    assert "v3-dec-folder" in browsed
+    assert "v3-dec-placeholder" not in browsed  # nothing readable below it
     searched = await _visible(
         neo4j_provider, start_id="v3-dec", start_type="recordGroup", flatten=False,
         filters={"search_query": "placeholder"},
@@ -523,7 +532,7 @@ async def test_the_total_matches_the_rows(v3_graph, neo4j_provider) -> None:
         app_id=APP, org_id=ORG,
         grantee_ids=access["grantee_ids"],
         gated_app_ids=access["gated_app_ids"],
-        granted_ids=access["by_connector"].get(APP) or [],
+        grants_by_connector=access["by_connector"],
         limit=3, flatten=True, sort_field="name", sort_dir="ASC",
         include_total=True,
     )
@@ -546,7 +555,7 @@ async def test_a_user_with_no_grants_sees_nothing_here(
         app_id=APP, org_id=ORG,
         grantee_ids=access["grantee_ids"],
         gated_app_ids=access["gated_app_ids"],
-        granted_ids=access["by_connector"].get(APP) or [],
+        grants_by_connector=access["by_connector"],
         limit=500, flatten=True, sort_field="name", sort_dir="ASC",
         include_total=True,
     )
@@ -595,8 +604,9 @@ async def test_granted_nodes_in_the_declared_scope_do_not_seed_their_children(
 
 async def test_the_walk_stops_at_a_declared_group(v3_graph, neo4j_provider) -> None:
     """What only the walk reached below v3-dec leaves the global flatten; a
-    granted node there still comes back as a seed; folder browse, which walks
-    hop by hop, still shows all of it."""
+    granted node there still comes back as a seed; folder browse lists the
+    same, since the access check does not walk on from a member of a declared
+    group either."""
     visible = await _visible(neo4j_provider)
     assert PRUNE_GAP.isdisjoint(visible)
     assert "v3-dec-attach-granted" in visible
@@ -604,7 +614,7 @@ async def test_the_walk_stops_at_a_declared_group(v3_graph, neo4j_provider) -> N
         neo4j_provider, start_id="v3-dec-folder", start_type="record",
         flatten=False,
     )
-    assert browsed == PRUNE_GAP | {"v3-dec-attach-granted"}
+    assert browsed == {"v3-dec-attach-granted"}
 
 
 async def test_browsing_into_a_declared_group_still_walks_it(
@@ -698,7 +708,7 @@ async def test_direct_children_of_the_app(v3_graph, neo4j_provider) -> None:
     v3-dec-attach-granted has an open parent and stays under it."""
     assert await _visible(neo4j_provider, flatten=False) == {
         "v3-open", "v3-dec", "v3-hidden", "v3-hide-folder",
-        "v3-dec-walked", "v3-foreign-dec", "v3-noconn-dec", "v3-seed",
+        "v3-dec-walked", "v3-seed",
     }
 
 
@@ -711,12 +721,14 @@ async def test_the_flatten_query_shape(v3_graph, neo4j_provider, monkeypatch) ->
     assert not re.search(
         r"\.id IN (regionA|declared|declaredScope|belowDeclared|seeds)\b", flatten,
     )
+    # A browse stops inheritance at a declared group (a flatten stops its walk there once, above), so its
+    # query carries the same test, once for each place the browse rule is written.
     for overrides in (
         {"flatten": False},
         {"start_id": "v3-dec", "start_type": "recordGroup"},
     ):
         query = await _page_query(neo4j_provider, monkeypatch, **overrides)
-        assert DECLARED_STOP not in query, overrides
+        assert "= 'RECORD_GROUP_LEVEL'" in query, overrides
     # Browse walks up from its start: bound in the pattern, the App becomes the
     # planner's starting point and the walk covers the whole connector.
     browse = await _page_query(neo4j_provider, monkeypatch, start_id="v3-dec-folder", start_type="record")
@@ -830,3 +842,22 @@ async def test_a_hidden_nested_group_hides_its_contents(
     """The group is listed; its records are not, in the flatten as in browse."""
     assert "v3-dec-nested-hidden" in await _visible(neo4j_provider)
     assert "v3-dec-nested-hidden-r1" not in await _visible(neo4j_provider)
+
+
+# Planning time grows much faster than the statement: on a small server the browse page statement, a few dozen KB,
+# takes minutes to plan without a cached plan, and milliseconds to run once one is. These are the sizes of today's
+# statements; a change that grows one past its budget has to show that it still plans in time, then raise the budget.
+_PAGE_STATEMENT_BUDGET = {
+    # page: (request, (bytes, EXISTS subqueries)); measured 17,802/19, 42,515/80 and 57,698/103 on this fixture
+    "app-flatten": ({"flatten": True}, (18_700, 20)),
+    "app-browse": ({"flatten": False}, (44_700, 84)),
+    "folder-browse": ({"start_id": "v3-dec-folder", "start_type": "record", "flatten": False}, (60_600, 108)),
+}
+
+
+@pytest.mark.parametrize("page", list(_PAGE_STATEMENT_BUDGET))
+async def test_the_page_statement_stays_within_its_planning_budget(v3_graph, neo4j_provider, monkeypatch, page) -> None:
+    request, (max_bytes, max_exists) = _PAGE_STATEMENT_BUDGET[page]
+    query = await _page_query(neo4j_provider, monkeypatch, **request)
+    assert len(query) <= max_bytes
+    assert query.count("EXISTS") <= max_exists

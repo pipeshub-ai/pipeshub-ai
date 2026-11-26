@@ -24,7 +24,10 @@ from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.postgres.consumer import PgMessagingConsumer
 from app.services.messaging.postgres.producer import PgMessagingProducer
-from app.services.messaging.postgres.queue import PgQueue
+from app.services.messaging.postgres.queue import Delivery, PgQueue
+from app.services.messaging.redis_streams.broadcast_consumer import (
+    RedisStreamsBroadcastConsumer,
+)
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
 from app.services.redis.config import RedisConnectionConfig
@@ -75,7 +78,9 @@ class Backend:
         if self.kind == "postgres":
             c = PgMessagingConsumer(LOG, cfg, queue=self.queue)
         else:
-            c = RedisStreamsConsumer(LOG, cfg, provider=self.provider)
+            # A broadcast subscriber is its own class on Redis (it joins no group), as MessagingFactory builds it.
+            consumer_cls = RedisStreamsBroadcastConsumer if cfg.broadcast else RedisStreamsConsumer
+            c = consumer_cls(LOG, cfg, provider=self.provider)
         self.consumers.append(c)
         await c.start(handler)
         return c
@@ -161,7 +166,7 @@ async def test_an_ephemeral_group_starts_at_the_tail(backend) -> None:
     seen, h = collector()
     await backend.consume("stay", collector()[1])  # keeps the topic's messages retained
     await send(backend, 3)
-    await backend.consume("temp", h, ephemeral_group=True)
+    await backend.consume("temp", h, broadcast=True)
     await send(backend, 2, start=3)
     await until(lambda: len(seen) == 2)
     assert sorted(seen) == [3, 4]
@@ -504,32 +509,58 @@ async def test_pg_two_indexing_workers_share_one_cluster_wide_cap(
     )  # four handlers could have run (2 workers x 2 slots): the cap held across both
 
 
+class _Rollback(Exception):
+    pass
+
+
+async def _claim_buffers(pg) -> int:
+    """Buffer pages the ordered claim touches (planner and executor counts, not a clock). EXPLAIN ANALYZE runs the claim, so
+    it runs in a transaction that is rolled back."""
+    from app.services.messaging.postgres import queue as qmod
+
+    statement = qmod._CLAIM_ORDERED.split("*/", 1)[1]
+    try:
+        async with (await pg.runtime.db()).runtime_uow(write=True) as tx:
+            raw = await tx.fetchval(
+                "/* pipeshub:test.explain */ EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)" + statement,
+                "g", [pg.topic], 7, 600.0, "c",
+            )
+            plan = json.loads(raw)[0]["Plan"]
+            raise_after = plan["Shared Hit Blocks"] + plan["Shared Read Blocks"]
+            raise _Rollback(raise_after)
+    except _Rollback as done:
+        return int(done.args[0])
+    return 0
+
+
 @pytest.mark.perf
 @pytest.mark.timeout(300)       # 100k rows published and a slow host: the claim itself is asserted, not the set-up
 async def test_pg_ordered_claim_costs_the_batch_not_the_backlog(pg) -> None:
-    """100k queued messages with distinct keys (an initial sync): a claim of a few records takes milliseconds, not minutes."""
-    import statistics
-    import time
+    """100k queued messages with distinct keys (an initial sync): a claim of a few records reads pages for the batch, not the backlog.
 
+    Counted in buffer pages at 10k and at 100k queued messages, not timed: a claim that walked the backlog reads about ten times
+    as many pages at 100k (it was 3.7 s at 1k messages and minutes at 100k), a claim of the batch reads about the same."""
     await pg.queue.ensure_group(pg.topic, "g", from_start=False)
-    for start in range(0, 100_000, 5000):
-        await pg.queue.publish(
-            pg.topic, [(f"rec{start + i}", "{}") for i in range(5000)]
-        )
-    async with (await pg.runtime.db()).runtime_uow(write=True) as tx:
-        await tx.execute(
-            "/* pipeshub:test.analyze */ ANALYZE platform.queue_deliveries"
-        )
-    times, held = [], []
+
+    async def publish(first: int, last: int) -> None:
+        for start in range(first, last, 5000):
+            await pg.queue.publish(pg.topic, [(f"rec{start + i}", "{}") for i in range(5000)])
+        async with (await pg.runtime.db()).runtime_uow(write=True) as tx:
+            await tx.execute("/* pipeshub:test.analyze */ ANALYZE platform.queue_deliveries")
+
+    await publish(0, 10_000)
+    small = await _claim_buffers(pg)
+    await publish(10_000, 100_000)
+    large = await _claim_buffers(pg)
+    # Ten times the backlog. A claim of the batch reads about 4 to 5 times the pages at worst (index depth, and heap pages when
+    # autovacuum has not yet set the visibility map); a claim that walks the backlog reads 9 to 10 times.
+    assert large <= 6 * small + 100, (small, large)
+
+    held = []
     for _ in range(15):
-        t0 = time.perf_counter()
         got = await pg.queue.claim("g", [pg.topic], "c", 7, 600.0, ordered=True)
-        times.append(1000 * (time.perf_counter() - t0))
         assert len(got) == 7
         held += got
-    assert statistics.median(times) < 50, (
-        times
-    )  # was 3.7 s at 1k messages and minutes at 100k
     assert len({d.key for d in held}) == len(held)  # and each record once
     await pg.queue.drop_group(pg.topic, "g")
     await pg.queue.sweep()
@@ -608,6 +639,34 @@ async def test_pg_the_sweep_clears_a_burst_in_one_call_and_counts_a_dead_letter_
     assert age is not None and age < 5  # stamped when it died, not when it was queued
 
 
+def _indexes_scanned_for(plan: list[str], relation: str) -> list[str]:
+    """The indexes the plan reads for `relation` (e.g. " on d e "), or [] when it reads none (a sequential scan).
+
+    A bitmap heap scan names no index on its own line; its indexes are the bitmap index scans beneath it."""
+    found: list[str] = []
+    for i, line in enumerate(plan):
+        if relation not in line + " ":
+            continue
+        if "Index Scan using " in line or "Index Only Scan using " in line:
+            found.append(line.split(" using ", 1)[1].split()[0])
+        elif "Bitmap Heap Scan" in line:
+            depth = len(line) - len(line.lstrip())
+            for child in plan[i + 1:]:
+                if child.strip() and len(child) - len(child.lstrip()) <= depth:
+                    break
+                if "Bitmap Index Scan on " in child:
+                    found.append(child.split("Bitmap Index Scan on ", 1)[1].split()[0])
+        else:
+            return []
+    return found
+
+
+def _pages_read(plan: list[str]) -> int:
+    """Shared buffers the whole statement touched (hit + read), from the root node's Buffers line."""
+    line = next(line for line in plan if line.strip().startswith("Buffers:"))
+    return sum(int(part.split("=")[1]) for part in line.split() if part.startswith(("hit=", "read=")))
+
+
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("analysed", [False, True], ids=["cold", "analysed"])
 async def test_pg_ordered_claim_probes_the_key_index_on_a_cold_table(analysed) -> None:
@@ -635,15 +694,269 @@ async def test_pg_ordered_claim_probes_the_key_index_on_a_cold_table(analysed) -
         tx = con.transaction()
         await tx.start()
         try:
-            plan = [r[0] for r in await con.fetch("EXPLAIN (ANALYZE, COSTS OFF) " + sql, "go", ["t"], 7, 60.0, "x")]
+            plan = [r[0] for r in await con.fetch("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) " + sql, "go", ["t"], 7, 60.0, "x")]
         finally:
             await tx.rollback()
         text = "\n".join(plan)
-        probes = [line for line in plan if "Index" in line and " on d e" in line]
+        probes = _indexes_scanned_for(plan, " on d e ")
         assert probes, text
-        assert all("msg_key" in line for line in probes), text         # the key index, not d_pkey or the open index
-        ms = float(next(line for line in plan if "Execution Time" in line).split(":")[1].split()[0])
-        assert ms < 25, text                                            # milliseconds; ~1 ms when it holds, 75+ on a backlog walk
+        assert all("msg_key" in name for name in probes), text         # the key index, not d_pkey or the open index
+        assert _pages_read(plan) < 1000, text                          # about 200 when it holds; a backlog walk reads the table per candidate
     finally:
         await con.execute("DROP SCHEMA IF EXISTS plan_test CASCADE")
         await con.close()
+
+
+async def test_pg_a_nack_with_a_refund_gives_back_the_attempt_the_claim_counted(pg) -> None:
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await send(pg, 1)
+    (first,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert first.attempts == 1
+    assert await pg.queue.nack("g", first, 0.0, "waiting", refund=True)
+    (again,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert again.attempts == 1  # the hand-back cost no attempt
+    assert await pg.queue.nack("g", again, 0.0, "failed")
+    (third,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert third.attempts == 2  # a failure is counted
+
+
+async def test_pg_a_message_handed_back_for_ever_is_never_dead_lettered(pg) -> None:
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await send(pg, 1)
+    for _ in range(8):  # more than MAX_DELIVERY_ATTEMPTS (3)
+        (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+        assert d.attempts == 1
+        assert await pg.queue.nack("g", d, 0.0, "waiting for the embedding precision", refund=True)
+
+
+# -- queue admissions: a delivery a consumer already opened is not judged by its age again, and nobody without the key can say so --------
+
+
+def _admission_keys():  # noqa: ANN202
+    from app.core.envelope import derive_key
+
+    return derive_key("admission-contract-secret")
+
+
+def _old_signed(topic: str, issued_at: int, record: str = "r1") -> str:
+    from app.core.envelope import sign
+    from app.core.org_context import OrgContext
+
+    return json.dumps(sign(_admission_keys(), topic, {"orgId": "org-a", "recordId": record}, OrgContext("org-a", "u", "user", "jwt", "req"),
+                           event_type="newRecord", issued_at=issued_at))
+
+
+async def _publish_raw(pg: Backend, value: str) -> None:
+    await pg.queue.publish(pg.topic, [(None, value)])
+
+
+async def test_pg_admit_is_stored_and_returned_by_the_plain_and_the_ordered_claim(pg) -> None:
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await _publish_raw(pg, "{}")
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 0.0)
+    assert d.admission_ms is None and d.admission_mac is None
+    assert await pg.queue.admit("g", d, 1234, "mac")
+    await asyncio.sleep(0)  # visibility 0: the claim has lapsed and the row is handed out again
+    (again,) = await pg.queue.claim("g", [pg.topic], "c", 1, 0.0)
+    assert (again.admission_ms, again.admission_mac) == (1234, "mac")
+    (ordered,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0, ordered=True)
+    assert (ordered.admission_ms, ordered.admission_mac) == (1234, "mac")
+
+
+async def test_pg_admit_writes_nothing_for_a_claim_that_no_longer_stands(pg) -> None:
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await _publish_raw(pg, "{}")
+    (first,) = await pg.queue.claim("g", [pg.topic], "c1", 1, 0.0)
+    (second,) = await pg.queue.claim("g", [pg.topic], "c2", 1, 30.0)  # the first lease lapsed; attempts moved on
+    assert not await pg.queue.admit("g", first, 1, "late")
+    assert await pg.queue.nack("g", second, 0.0, "x")
+    (third,) = await pg.queue.claim("g", [pg.topic], "c3", 1, 30.0)
+    assert third.admission_ms is None
+
+
+async def test_pg_a_dead_lettered_delivery_is_not_handed_out_again(pg) -> None:
+    """A message dead-lettered as stale is not redriven by the queue: only a new publish, from the source, replaces it."""
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await _publish_raw(pg, "{}")
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert await pg.queue.dead("g", d, "envelope rejected: stale")
+    assert await pg.queue.claim("g", [pg.topic], "c", 1, 30.0) == []
+
+
+async def test_pg_a_nack_renews_the_admission_in_its_own_statement_and_a_plain_nack_leaves_it(pg) -> None:
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await _publish_raw(pg, "{}")
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert await pg.queue.nack("g", d, 0.0, "x", admission=(10, "m1"))
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert (d.admission_ms, d.admission_mac) == (10, "m1")
+    assert await pg.queue.nack("g", d, 0.0, "y")
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert (d.admission_ms, d.admission_mac) == (10, "m1")
+
+
+async def test_pg_an_admission_is_per_delivery_not_per_message(pg) -> None:
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await pg.queue.ensure_group(pg.topic, "h", from_start=True)
+    await _publish_raw(pg, "{}")
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    assert await pg.queue.admit("g", d, 5, "mac")
+    (other,) = await pg.queue.claim("h", [pg.topic], "c", 1, 30.0)
+    assert other.admission_ms is None and other.admission_mac is None
+
+
+async def test_pg_a_forged_row_is_not_admitted(pg, monkeypatch) -> None:
+    """A writer with SQL access and no key: swap the stored value under a good admission, insert a row with the columns set, copy to another group."""
+    import time
+
+    from app.core import envelope
+
+    key = _admission_keys()
+
+    async def keys():  # noqa: ANN202
+        return (key,)
+
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
+    envelope.configure(keys, key)
+    try:
+        old_a = _old_signed(pg.topic, int(time.time()) - 10 * 900, "a")
+        old_b = _old_signed(pg.topic, int(time.time()) - 10 * 900, "b")
+        await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+        await pg.queue.ensure_group(pg.topic, "h", from_start=True)
+        await _publish_raw(pg, old_a)
+        (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 0.0)
+        stamp = await envelope.new_admission(pg.topic, "g", d.message_id, json.loads(old_a))
+        assert stamp and await pg.queue.admit("g", d, *stamp)
+
+        async def admitted(delivery, group: str) -> bool:
+            return await envelope.configured_admission_valid(
+                pg.topic, group, delivery.message_id, json.loads(delivery.value), delivery.admission_ms, delivery.admission_mac
+            )
+
+        (genuine,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+        assert await admitted(genuine, "g")  # control: the real admission verifies on the real row
+
+        db = await pg.runtime.db()
+        async with db.runtime_uow(write=True) as tx:  # 1. another old message under the same admission
+            await tx.execute("UPDATE platform.queue_messages SET value = $2 WHERE id = $1", genuine.message_id, old_b)
+        swapped = Delivery(genuine.topic, genuine.message_id, genuine.attempts, old_b, None, genuine.admission_ms, genuine.admission_mac)
+        assert not await admitted(swapped, "g")
+
+        async with db.runtime_uow(write=True) as tx:  # 2. a row inserted with the columns set to made-up values
+            await tx.execute("UPDATE platform.queue_messages SET value = $2 WHERE id = $1", genuine.message_id, old_a)
+        await _publish_raw(pg, old_a)
+        async with db.runtime_uow(write=True) as tx:
+            await tx.execute(
+                "UPDATE platform.queue_deliveries SET admission_ms = $3, admission_mac = 'forged' WHERE group_id = 'g' AND topic = $1 AND message_id > $2",
+                pg.topic, genuine.message_id, int(time.time() * 1000),
+            )
+        (forged,) = [x for x in await pg.queue.claim("g", [pg.topic], "c", 5, 30.0) if x.message_id > genuine.message_id]
+        assert forged.admission_mac == "forged" and not await admitted(forged, "g")
+
+        async with db.runtime_uow(write=True) as tx:  # 3. the genuine columns copied onto another group's delivery of the same message
+            await tx.execute(
+                "UPDATE platform.queue_deliveries SET admission_ms = $3, admission_mac = $4 WHERE group_id = 'h' AND topic = $1 AND message_id = $2",
+                pg.topic, genuine.message_id, genuine.admission_ms, genuine.admission_mac,
+            )
+        (copied,) = [x for x in await pg.queue.claim("h", [pg.topic], "c", 5, 30.0) if x.message_id == genuine.message_id]
+        assert copied.admission_mac == genuine.admission_mac and not await admitted(copied, "h")
+    finally:
+        envelope.configure(None)
+
+
+async def test_pg_the_statements_per_delivery_are_counted(pg) -> None:
+    """One claim, one admit, one ack: the admission adds exactly one statement per opened message (throughput on this host is not measured)."""
+    await pg.queue.ensure_group(pg.topic, "g", from_start=True)
+    await _publish_raw(pg, "{}")
+    import contextlib
+
+    seen: list[str] = []
+    original = pg.queue._write
+
+    class _Counting:
+        """The transaction, recording the name of every statement it runs."""
+
+        def __init__(self, tx) -> None:
+            self._tx = tx
+
+        def __getattr__(self, name):  # noqa: ANN204
+            attr = getattr(self._tx, name)
+            if name not in ("execute", "fetch", "fetchrow", "fetchval"):
+                return attr
+
+            async def run(sql, *a, **k):  # noqa: ANN202
+                seen.append(sql.split("*/")[0].split(":")[-1].strip())
+                return await attr(sql, *a, **k)
+
+            return run
+
+    async def counting():  # noqa: ANN202
+        unit = await original()  # a context manager that yields the transaction
+
+        @contextlib.asynccontextmanager
+        async def wrapped():  # noqa: ANN202
+            async with unit as tx:
+                yield _Counting(tx)
+
+        return wrapped()
+
+    pg.queue._write = counting
+    (d,) = await pg.queue.claim("g", [pg.topic], "c", 1, 30.0)
+    await pg.queue.admit("g", d, 1, "m")
+    await pg.queue.ack("g", d)
+    assert [x for x in seen if x in ("queue.admit", "queue.ack")] == ["queue.admit", "queue.ack"]
+    assert seen.count("queue.admit") == 1
+
+
+# -- a handler failed only by the database: no attempt is spent, and the hand-back backstop still ends one that never recovers ---------
+
+
+def _dropping_handler(pg: Backend, drops: int) -> tuple[list[int], Callable[[StreamMessage], Awaitable[bool]]]:
+    """A handler whose database connection is cut under it ``drops`` times (a superuser ends its backend, as a failover does), then
+    works. The service roles may not end a backend, so this needs ``PG_ADMIN_URL``."""
+    import asyncpg
+
+    admin_url = os.environ.get("PG_ADMIN_URL")
+    if not admin_url:
+        missing("PG_ADMIN_URL is not set")
+    runs: list[int] = []
+
+    async def handler(m: StreamMessage) -> bool:
+        runs.append(m.payload["i"])
+        async with (await pg.runtime.db()).runtime_uow() as tx:
+            pid = await tx.fetchval("/* pipeshub:test.pid */ SELECT pg_backend_pid()")
+            if len(runs) <= drops:
+                admin = await asyncpg.connect(admin_url)
+                try:
+                    await admin.execute("SELECT pg_terminate_backend($1)", pid)
+                finally:
+                    await admin.close()
+            await tx.fetchval("/* pipeshub:test.after */ SELECT 1")
+        return True
+
+    return runs, handler
+
+
+async def test_pg_a_database_cut_more_often_than_the_attempt_limit_does_not_dead_letter_the_event(pg, monkeypatch) -> None:
+    monkeypatch.setenv("PG_QUEUE_HANDBACK_BASE_S", "0.01")
+    runs, handler = _dropping_handler(pg, drops=5)  # more than MAX_DELIVERY_ATTEMPTS (3)
+    await pg.consume("g", handler)
+    await send(pg, 1)
+    await until(lambda: len(runs) == 6)
+    await asyncio.sleep(0.5)  # the ack lands
+    assert await pg.queue.backlog("g", [pg.topic]) == {}  # acked: handled once the database answered again
+    assert runs == [0] * 6
+
+
+async def test_pg_a_database_that_never_answers_is_dead_lettered_by_the_backstop(pg, monkeypatch) -> None:
+    monkeypatch.setenv("PG_QUEUE_HANDBACK_BASE_S", "0.01")
+    monkeypatch.setenv("PG_QUEUE_HANDBACK_LIMIT", "4")
+    runs, handler = _dropping_handler(pg, drops=1000)
+    await pg.consume("g", handler)
+    await send(pg, 1)
+    for _ in range(100):
+        if await pg.queue.backlog("g", [pg.topic]) == {"dead": 1}:
+            break
+        await asyncio.sleep(0.1)
+    assert await pg.queue.backlog("g", [pg.topic]) == {"dead": 1}
+    assert len(runs) == 7  # four refunded hand-backs, then the three attempts

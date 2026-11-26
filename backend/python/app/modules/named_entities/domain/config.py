@@ -46,6 +46,8 @@ class NamedEntityConfig(BaseModel):
 
     tz: str = "UTC"
     enabled_kinds: list[str] = Field(default_factory=list)
+    # Name lookups also reach a company's or product's learned short and full forms.
+    link_aliases: bool = True
     budgets: NamedEntityBudgets = Field(default_factory=NamedEntityBudgets)
 
     def enabled(self) -> frozenset[EntityKind]:

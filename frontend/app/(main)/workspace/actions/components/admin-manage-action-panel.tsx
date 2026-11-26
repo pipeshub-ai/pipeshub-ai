@@ -16,6 +16,7 @@ import {
   TextField,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { FootNote } from '@/app/components/ui/foot-note';
 import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
@@ -26,7 +27,7 @@ import {
   type ToolsetOauthConfigListRow,
 } from '@/app/(main)/toolsets/api';
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
-import { FormField } from '@/app/(main)/workspace/components/form-field';
+import { FormField, FormFieldSelectTrigger, FormFieldTextField } from '@/app/(main)/workspace/components/form-field';
 import type { AuthSchemaField, SchemaField } from '@/app/(main)/workspace/connectors/types';
 import {
   apiErrorDetail,
@@ -726,7 +727,7 @@ export function AdminManageActionPanel({
                 style={{ flex: 1 }}
                 onClick={() => void copyRedirect()}
               />
-              <IconButton type="button" variant="soft" color="gray" onClick={() => void copyRedirect()}>
+              <IconButton aria-label={t('workspace.actions.copyRedirectUri')} type="button" variant="soft" color="gray" onClick={() => void copyRedirect()}>
                 <MaterialIcon name="content_copy" size={16} color="var(--gray-11)" />
               </IconButton>
             </Flex>
@@ -755,7 +756,7 @@ export function AdminManageActionPanel({
                   setSelectedOauthConfigId(val);
                 }}
               >
-                <Select.Trigger style={{ width: '100%' }} />
+                <FormFieldSelectTrigger style={{ width: '100%' }} />
                 <Select.Content
                   position="popper"
                   container={nestedModalHost ?? undefined}
@@ -779,7 +780,7 @@ export function AdminManageActionPanel({
           required
           error={instanceNameError ?? undefined}
         >
-          <TextField.Root
+          <FormFieldTextField
             value={instanceName}
             onChange={(e) => {
               setInstanceName(e.target.value);
@@ -831,9 +832,7 @@ export function AdminManageActionPanel({
               ))}
             </Flex>
           ) : (
-            <Callout.Root color="amber" variant="surface" size="1">
-              <Callout.Text size="1">{t('agentBuilder.noCredentialFields')}</Callout.Text>
-            </Callout.Root>
+            <FootNote icon="warning">{t('agentBuilder.noCredentialFields')}</FootNote>
           )}
         </>
       ) : credentialsSectionLoading ? (

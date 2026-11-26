@@ -1,6 +1,6 @@
 import React from 'react';
 import { AxiosError, AxiosHeaders, type InternalAxiosRequestConfig } from 'axios';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import { processError, type ProcessedError } from '@/lib/api/api-error';
 import type { AvailableLlmModel } from '@/chat/types';
@@ -108,6 +108,9 @@ export function toolset(overrides: Partial<BuilderSidebarToolset> = {}): Builder
   };
 }
 
+/** A well-formed user id: the creator lookup skips ids the server would refuse. */
+export const OWNER_USER_ID = '507f1f77bcf86cd799439011';
+
 export function agentDetail(overrides: Partial<AgentDetail> = {}): AgentDetail {
   return {
     models: [],
@@ -120,7 +123,7 @@ export function agentDetail(overrides: Partial<AgentDetail> = {}): AgentDetail {
     systemPrompt: 'You are a helpful sales assistant.',
     createdAtTimestamp: 0,
     isDeleted: false,
-    createdBy: 'user-owner',
+    createdBy: OWNER_USER_ID,
     name: 'Sales helper',
     id: 'agent-1',
     _key: 'agent-1',
@@ -168,4 +171,11 @@ export function startDraggingPaletteItem(label: string | RegExp) {
   const labelEl = screen.getAllByText(label)[0];
   const row = (labelEl.closest('[draggable]') ?? labelEl.parentElement) as HTMLElement;
   fireEvent.dragStart(row, { dataTransfer: createDataTransfer() });
+}
+
+/** OWD-14: "Publish" in the header, then the dialog's "Publish" (with no note), as an editor publishes edits. */
+export async function publishEdits() {
+  fireEvent.click(screen.getByRole('button', { name: /publish$/i }));
+  const dialog = await screen.findByRole('alertdialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: /^publish$/i }));
 }

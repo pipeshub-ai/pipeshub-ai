@@ -4,6 +4,7 @@ import random
 import re
 import threading
 import uuid
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Callable, Generic, List, Optional, TypeVar
 
 from app.config.key_value_store import KeyValueStore
@@ -24,6 +25,11 @@ T = TypeVar("T")
 
 # Characters SCAN MATCH reads as a glob.
 _GLOB_SPECIAL = re.compile(r"([\\*?\[\]])")
+
+# Keys SCAN examines per round trip. SCAN walks the whole database whatever MATCH is, and
+# Redis' default of 10 made every directory listing one round trip per 10 keys in it, which
+# took seconds on a shared Redis.
+_SCAN_COUNT = 1000
 
 # Retry configuration
 RETRY_BASE_DELAY = 0.5  # seconds
@@ -265,8 +271,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             return True
 
         except Exception as e:
-            logger.error("Failed to create key %s: %s", key, str(e))
-            raise ConnectionError(f"Failed to create key: {str(e)}")
+            raise ConnectionError(f"Failed to create key: {e}") from e
 
     async def update_value(
         self, key: str, value: T, ttl: Optional[int] = None
@@ -294,8 +299,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         except KeyError:
             raise
         except Exception as e:
-            logger.error("Failed to update key %s: %s", key, str(e))
-            raise ConnectionError(f"Failed to update key: {str(e)}")
+            raise ConnectionError(f"Failed to update key: {e}") from e
 
     async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         """Get value for key from Redis."""
@@ -320,17 +324,16 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                     raise ValueError("Stored value could not be decoded")
                 return deserialized
             except json.JSONDecodeError as e:
-                logger.error("Failed to deserialize value: %s", str(e))
                 # A stored value that cannot be read is not an absent one.
                 # Surfaces as ConnectionError via the handler below, as every
                 # failed read from this store does.
                 if raise_on_error:
                     raise
+                logger.error("Failed to deserialize value: %s", str(e))
                 return None
 
         except Exception as e:
-            logger.error("Failed to get key %s: %s", key, str(e))
-            raise ConnectionError(f"Failed to get key: {str(e)}")
+            raise ConnectionError(f"Failed to get key: {e}") from e
 
     async def delete_key(self, key: str) -> bool:
         """Delete a key from Redis."""
@@ -347,8 +350,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             return result > 0
 
         except Exception as e:
-            logger.error("Failed to delete key %s: %s", key, str(e))
-            raise ConnectionError(f"Failed to delete key: {str(e)}")
+            raise ConnectionError(f"Failed to delete key: {e}") from e
 
     async def get_all_keys(self) -> List[str]:
         """Get all keys from Redis with the configured prefix."""
@@ -358,7 +360,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             pattern = f"{self._key_namespace_prefix}{self.key_prefix}*"
             keys = []
 
-            async for key in self._get_client().scan_iter(match=pattern):
+            async for key in self._get_client().scan_iter(match=pattern, count=_SCAN_COUNT):
                 # Decode if bytes
                 if isinstance(key, bytes):
                     key = key.decode("utf-8")
@@ -368,8 +370,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             return keys
 
         except Exception as e:
-            logger.error("Failed to get all keys: %s", str(e))
-            raise ConnectionError(f"Failed to get all keys: {str(e)}")
+            raise ConnectionError(f"Failed to get all keys: {e}") from e
 
     async def _notify_watchers(self, key: str, value: Optional[T]) -> None:
         """Notify all watchers of a key about value changes."""
@@ -437,7 +438,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
 
             keys = []
-            async for key in self._get_client().scan_iter(match=pattern):
+            async for key in self._get_client().scan_iter(match=pattern, count=_SCAN_COUNT):
                 if isinstance(key, bytes):
                     key = key.decode("utf-8")
                 keys.append(self._strip_prefix(key))
@@ -446,10 +447,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             return keys
 
         except Exception as e:
-            logger.error(
-                "Failed to list keys in directory (%s)", type(e).__name__
-            )
-            raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
+            raise ConnectionError(f"Failed to list keys in directory: {e}") from e
 
     async def close(self) -> None:
         """Clean up resources and close connection."""
@@ -633,7 +631,10 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
     # -- KeyValueStore cross-process notification interface (R15) -----------
 
-    async def subscribe_changes(self, callback: Callable[[str], None]) -> asyncio.Task:
+    async def subscribe_changes(
+        self, callback: Callable[[str], None], *, keys: Collection[str] | None = None
+    ) -> asyncio.Task:
+        # One channel carries every key; a component's ACL user may subscribe to it (ADR-KEY-02 D3).
         return await self.subscribe_cache_invalidation(callback)
 
     async def publish_change(self, key: str) -> None:

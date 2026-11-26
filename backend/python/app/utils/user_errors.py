@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from app.agents.agent_loop.error_classification import classify_error
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordTypes
 from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
     BlockContainerValidationError,
     ChunkingError,
     DocumentProcessingError,
@@ -23,14 +24,19 @@ from app.exceptions.indexing_exceptions import (
     EmbeddingModelUnavailableError,
     EmbeddingNotConfiguredError,
     ExtractionError,
+    MultimodalModelNotConfiguredError,
     PasswordProtectedError,
     ProcessingError,
+    ProviderRateLimitedTooLongError,
     RecordStatusUpdateError,
     VectorStoreError,
 )
 from app.exceptions.storage_exceptions import StorageRequestRejectedError
+from app.modules.parsers.worker_deaths import is_retrying_death
 from app.services.base_client import ServiceCallError
 from app.services.parsing.interface import ParseErrorCode
+from app.utils.api_call import ApiCallError
+from app.utils.embedding_retry import is_quota_exhausted
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -122,6 +128,14 @@ EPUB_NO_READABLE_CHAPTERS = (
     "This e-book has no chapters we could read. Check that it opens in an e-book reader, "
     "save a fresh copy from there, and upload it again."
 )
+EXCEL_TOO_LARGE = (
+    "This spreadsheet is too large to index: it holds more data than PipesHub reads from one workbook. "
+    "Split it into several smaller workbooks, or remove unused rows and columns, and upload it again."
+)
+PARSE_WORKER_UNAVAILABLE = (
+    "PipesHub could not start the process that reads this file, so it wasn't indexed. "
+    "Try Reindex; if it keeps failing, ask your admin for help."
+)
 GENERATED_FILE_SKIPPED = (
     "This is a generated file (a lock file, minified bundle, source map, test snapshot or "
     "a file its generator marked DO NOT EDIT), "
@@ -140,6 +154,21 @@ PARSE_WORKER_OUT_OF_MEMORY = (
     "into smaller files and sync or upload them again; if it keeps failing, ask your admin "
     "to give PipesHub more memory."
 )
+PARSE_WORKER_KILLED_RETRYING = (
+    "The process reading this file was stopped because the server was short of memory, "
+    "which is not a problem with the file. PipesHub will retry it automatically."
+)
+
+
+def retry_reason(exc: BaseException | None) -> str:
+    """The reason to store on a record that failed this time and is queued to run again.
+
+    A parse worker killed under memory pressure says so: the next delivery usually succeeds once the
+    other work has eased, and nobody needs to split the file yet. Any other failure is the generic text.
+    """
+    if is_retrying_death(exc):
+        return PARSE_WORKER_KILLED_RETRYING
+    return RETRY_SCHEDULED
 
 
 # Written for people by the code that raised them, and more specific than any
@@ -151,7 +180,10 @@ _STORED_AS_WRITTEN = frozenset({
     EPUB_TOO_LARGE,
     EPUB_UNSAFE_PATHS,
     EPUB_NO_READABLE_CHAPTERS,
+    EXCEL_TOO_LARGE,
+    UNREADABLE_FILE,
     PARSE_WORKER_OUT_OF_MEMORY,
+    PARSE_WORKER_UNAVAILABLE,
     PROCESSING_TIMED_OUT,
 })
 
@@ -160,6 +192,58 @@ def unsupported_file_type(extension: str | None) -> str:
     ext = (extension or "").strip().lstrip(".").lower()
     what = f".{ext} files" if ext and ext not in {"unknown", "none"} else "this type of file"
     return f"PipesHub can't read {what} yet. Convert the file to PDF, DOCX or TXT to make it searchable."
+
+
+def _size_label(size: int) -> str:
+    return f"{size // (1024 * 1024)} MB" if size >= 1024 * 1024 else f"{size // 1024} KiB"
+
+
+def file_too_large_to_read(extension: str | None) -> str:
+    from app.config.file_types import TEXT_LOG_HARD_LIMIT_BYTES
+
+    ext = (extension or "").strip().lstrip(".").lower()
+    what = f".{ext} file" if ext and ext not in {"unknown", "none"} else "file"
+    return (
+        f"This {what} is too large to index (over {_size_label(TEXT_LOG_HARD_LIMIT_BYTES)}). "
+        "It can still be found by its name."
+    )
+
+
+# A fixed product limit of this edition, kept on purpose: PDFs over it are indexed only by the edition
+# _EDITION_TEXT names. Do not raise it, remove it, make it configurable or read it from a hook.
+MAX_INDEXED_PDF_PAGES = 500
+
+_EDITION_TEXT = "Supported in Enterprise Edition."
+
+
+def pdf_over_page_limit(pages: int) -> str:
+    return f"This PDF has {pages:,} pages; PDFs over {MAX_INDEXED_PDF_PAGES} pages are not indexed. {_EDITION_TEXT}"
+
+
+PDF_PAGE_LIMIT_NOTE = (
+    f"Indexed before the {MAX_INDEXED_PDF_PAGES}-page limit; it stays indexed until a change to its bytes is detected. "
+    f"PDFs over {MAX_INDEXED_PDF_PAGES} pages: {_EDITION_TEXT}"
+)
+
+
+# The record field for a note on how a record was indexed (shown on a COMPLETED record), kept apart
+# from `reason`, which says why a record or one of its stages was not done.
+INDEXING_NOTE_FIELD = "indexingNote"
+
+
+def partly_indexed_text() -> str:
+    from app.config.file_types import TEXT_LOG_MAX_BYTES
+
+    return (
+        "Only the first and last part of this file is indexed "
+        f"(file is larger than {_size_label(TEXT_LOG_MAX_BYTES)})."
+    )
+
+
+def binary_text_file(extension: str | None) -> str:
+    ext = (extension or "").strip().lstrip(".").lower()
+    what = f".{ext} file" if ext and ext not in {"unknown", "none"} else "file"
+    return f"This {what} holds binary data, not text, so PipesHub can't read it."
 
 
 # What a synced item is called in a reason. Some sources let a file be fixed
@@ -324,6 +408,11 @@ def _ai_messages(model: str) -> dict[str, str]:
         "rate_limit": (
             f"The {model} is busy right now, so this file wasn't indexed. Reindex it in "
             "a few minutes."
+        ),
+        "quota_exceeded": (
+            f"The {model}'s provider account is out of credit, so this file wasn't indexed. "
+            "An admin can add credit with the provider or choose another model in "
+            "Workspace → AI Models, then Reindex the file."
         ),
         "auth_error": (
             f"The {model} rejected PipesHub's API key, so this file wasn't indexed. An "
@@ -518,6 +607,9 @@ def _provider_code(chain: list[BaseException]) -> str:
         if _aws_error_code(e) == "NotAuthorized":
             return "auth_error"
         status = _status_code(e)
+        # An empty balance: OpenAI answers it 429 and Anthropic 400, and neither is fixed by waiting.
+        if status in (400, 402, 429) and is_quota_exhausted(e):
+            return "quota_exceeded"
         if status == 429:
             return "rate_limit"
         if status in (401, 403):
@@ -533,7 +625,7 @@ def _provider_code(chain: list[BaseException]) -> str:
     for e in theirs:
         name = type(e).__name__
         if "RateLimit" in name:
-            return "rate_limit"
+            return "quota_exceeded" if is_quota_exhausted(e) else "rate_limit"
         if "Authentication" in name or "PermissionDenied" in name:
             return "auth_error"
         if "ContextWindow" in name or "ContextLength" in name:
@@ -590,6 +682,11 @@ def _ai_failure_code(chain: list[BaseException]) -> str:
 def provider_error_code(exc: BaseException) -> str:
     """`classify_error`'s code for an exception raised by an AI provider's SDK."""
     return _provider_code(list(_chain(exc)))
+
+
+def provider_response_status(exc: BaseException) -> int | None:
+    """The HTTP status of the response an AI provider sent, or ``None`` when no response arrived."""
+    return next((status for e in _chain(exc) if not _ours(e) and (status := _status_code(e)) is not None), None)
 
 
 def _llm_not_configured(exc: BaseException) -> bool:
@@ -680,7 +777,15 @@ def _reason(exc: BaseException | None) -> str:
         return GENERIC_FAILURE
     chain = list(_chain(exc))
 
+    # The final text of a record whose worker was killed: the retry promised while it waited did not come, so this
+    # is the second death (or the last attempt) and the advice is to make the file smaller.
+    if is_retrying_death(exc):
+        return PARSE_WORKER_OUT_OF_MEMORY
+
     for e in chain:
+        # The source refused the item, and the connector said why in its own words.
+        if isinstance(e, ApiCallError) and e.source_reason:
+            return e.source_reason
         if isinstance(e, PasswordProtectedError):
             return PASSWORD_PROTECTED
         # ParseError raised in-process, or ParsingClientError carrying the
@@ -688,12 +793,24 @@ def _reason(exc: BaseException | None) -> str:
         if getattr(e, "code", None) == ParseErrorCode.UNSUPPORTED_FORMAT:
             details = getattr(e, "details", None) or {}
             return unsupported_file_type(details.get("extension"))
+        # A file found damaged says why in its own words, ahead of the processing error
+        # that wraps it in-process (which would read as a generic unreadable file).
+        if getattr(e, "code", None) == ParseErrorCode.PARSE_FAILED:
+            user_reason = (getattr(e, "details", None) or {}).get("user_reason")
+            if isinstance(user_reason, str) and user_reason:
+                return user_reason
+        if isinstance(e, ProviderRateLimitedTooLongError):
+            return str(e)
         if _llm_not_configured(e):
             return str(e)
         if e.args and isinstance(e.args[0], str) and e.args[0] in _STORED_AS_WRITTEN:
             return e.args[0]
         if isinstance(e, EmbeddingNotConfiguredError):
             return EMBEDDING_NOT_CONFIGURED
+        if isinstance(e, MultimodalModelNotConfiguredError):
+            return SCANNED_DOCUMENT_NEEDS_OCR
+        if isinstance(e, AISettingsUnavailableError):
+            return TEMPORARY_PROBLEM
         if isinstance(e, StorageRequestRejectedError):
             # Refused for what it is, not for when it was sent: not a temporary problem.
             return FILE_TOO_LARGE if e.too_large else GENERIC_FAILURE

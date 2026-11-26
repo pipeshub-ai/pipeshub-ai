@@ -20,6 +20,7 @@ interface NotificationServiceInternals {
   connectedUsers: Set<string>;
   notificationQueue: Map<string, unknown[]>;
   queueNotification(userId: string, event: string, data: unknown): void;
+  sessionRefusal: sinon.SinonStub;
 }
 const RECORD_SEPARATOR = '\x1e';
 
@@ -140,6 +141,8 @@ describe('NotificationService over a real socket', () => {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     service = new NotificationService(new AuthTokenService(JWT_SECRET, 'scoped-secret'));
+    // Every session is live unless a test says otherwise; the rules themselves are tested in user-session.utils.
+    internals().sessionRefusal = sinon.stub().resolves(null);
     intervalSpy = sinon.spy(global, 'setInterval');
     service.initialize(server);
   });
@@ -181,6 +184,27 @@ describe('NotificationService over a real socket', () => {
       expect(await c.next()).to.equal('41');
       expect(service.sendToUser('user-legacy', 'notification', {})).to.be.false;
     });
+
+    it('signs out a session that has since ended, then drops the connection', async () => {
+      internals().sessionRefusal.resolves('Session expired, please login again');
+      const c = client();
+      const reply = await c.connect({ token: sessionToken(alice) });
+
+      expect(reply.startsWith('40')).to.be.true;
+      expect(await c.nextEvent()).to.deep.equal(['force_logout', { reason: 'session_ended' }]);
+      expect(await c.next()).to.equal('41');
+      expect(internals().sessionRefusal.firstCall.args[0]).to.include(alice);
+      expect(service.sendToUser(alice.userId, 'notification', {})).to.be.false;
+    });
+
+    it('turns away, without signing out, a session that cannot be checked right now', async () => {
+      internals().sessionRefusal.rejects(new Error('mongo down'));
+      const reply = await client().connect({ token: sessionToken(alice) });
+
+      expect(reply.startsWith('44')).to.be.true;
+      expect(JSON.parse(reply.slice(2)).message).to.equal('Unable to check the session right now');
+      expect(service.sendToUser(alice.userId, 'notification', {})).to.be.false;
+    });
   });
 
   describe('delivery', () => {
@@ -216,6 +240,35 @@ describe('NotificationService over a real socket', () => {
 
       expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['notification', { n: 1 }]);
       expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['notification', { n: 2 }]);
+    });
+
+    describe('a scheduled notification (visibleAt ahead)', () => {
+      const future = () => new Date(Date.now() + 3600_000).toISOString();
+
+      it('is not emitted to a connected user, and the next notification is the next thing they receive', async () => {
+        const aliceSocket = await connectAs(alice);
+        expect(service.sendToUser(alice.userId, 'newNotification', { id: 'scheduled', visibleAt: future() })).to.be.false;
+        expect(service.sendToUser(alice.userId, 'newNotification', { id: 'plain' })).to.be.true;
+        expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['newNotification', { id: 'plain' }]);
+      });
+
+      it('is not put in the queue of an offline user, and is not delivered when they connect', async () => {
+        expect(service.sendToUser(alice.userId, 'newNotification', { id: 'scheduled', visibleAt: future() })).to.be.false;
+        expect(internals().notificationQueue.has(alice.userId)).to.equal(false);
+        expect(service.sendToUser(alice.userId, 'newNotification', { id: 'plain' })).to.be.false;
+        expect(internals().notificationQueue.get(alice.userId)).to.have.length(1);
+        const aliceSocket = await connectAs(alice);
+        expect(await within(1000, aliceSocket.nextEvent())).to.deep.equal(['newNotification', { id: 'plain' }]);
+      });
+
+      it('is pushed like any other once its visibleAt has passed or when it has none', async () => {
+        const aliceSocket = await connectAs(alice);
+        const past = new Date(Date.now() - 1000).toISOString();
+        expect(service.sendToUser(alice.userId, 'newNotification', { id: 'due', visibleAt: past })).to.be.true;
+        expect(service.sendToUser(alice.userId, 'newNotification', { id: 'none' })).to.be.true;
+        expect(await aliceSocket.nextEvent()).to.deep.equal(['newNotification', { id: 'due', visibleAt: past }]);
+        expect(await aliceSocket.nextEvent()).to.deep.equal(['newNotification', { id: 'none' }]);
+      });
     });
 
     it('goes back to holding notifications once the user disconnects', async () => {
