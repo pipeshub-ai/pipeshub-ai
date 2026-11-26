@@ -342,6 +342,9 @@ def _shared_graph(owners: dict[str, str]) -> AsyncMock:
     graph.get_document = AsyncMock(
         side_effect=lambda key, *a, **k: {"_key": key, "orgId": owners[key], "connectorId": "c9", "recordGroupId": None}
     )
+    graph.get_nodes_by_field_in = AsyncMock(
+        side_effect=lambda _c, _f, keys, **k: [{"id": key, "orgId": owners[key]} for key in keys]
+    )
     graph.get_edges_from_node = AsyncMock(return_value=[])
     return graph
 
