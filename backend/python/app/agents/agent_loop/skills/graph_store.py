@@ -344,14 +344,27 @@ def edge_source_key(edge: dict[str, Any]) -> str:
     return (edge.get("_from") or "").split("/", 1)[-1]
 
 
+def _requires_bound_to(edge: Mapping[str, Any], skill: Mapping[str, Any]) -> bool:
+    """Whether a `requires` edge was written for this creation of the skill. Neo4j links only
+    to a node that exists; ArangoDB and PostgreSQL also keep an edge to a name nobody holds
+    yet, which would claim whatever skill is created under it later. An edge written before
+    edges carried `toGeneration` counts when it is not older than the creation."""
+    if "toGeneration" in edge:
+        return edge["toGeneration"] == skill.get("generation")
+    return int(edge.get("createdAtTimestamp") or 0) >= int(skill.get("createdAtTimestamp") or 0)
+
+
 async def collect_referential_usage(
     graph: "IGraphDBProvider",
     org_id: str,
     name: str,
+    *,
+    skill: Mapping[str, Any],
 ) -> SkillReferentialUsage:
-    """Who currently depends on this skill — `AGENT_HAS_SKILL` assignments
-    and `agentSkillRelation` `type == "requires"` edges. Shared by
-    `GraphSkillStore.get_referential_usage` and the REST usage helper."""
+    """Who currently depends on `skill`, the doc read under `name` — `AGENT_HAS_SKILL`
+    assignments and the `agentSkillRelation` `type == "requires"` edges written for that
+    creation — whoever may see them. Only `GraphSkillStore.get_referential_usage` calls it,
+    and narrows the result to what its caller may see."""
     skill_full_id = f"{_SKILLS}/{org_id}_{name}"
 
     agent_edges = await graph.get_edges_to_node(skill_full_id, _AGENT_HAS_SKILL)
@@ -368,7 +381,7 @@ async def collect_referential_usage(
     required_by_skills = sorted({
         edge_source_key(edge).removeprefix(f"{org_id}_")
         for edge in relation_edges
-        if edge.get("type") == "requires" and edge_source_key(edge)
+        if edge.get("type") == "requires" and edge_source_key(edge) and _requires_bound_to(edge, skill)
     })
     return SkillReferentialUsage(
         used_by_agents=used_by_agents,
@@ -1054,7 +1067,32 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         return True
 
     async def get_referential_usage(self, name: str) -> SkillReferentialUsage:
-        return await collect_referential_usage(self._graph, self._org_id, name)
+        """Usage as this caller may see it. A skill the caller cannot see has none, as a
+        missing one. Agents the caller has no access to and skills it cannot see are only
+        counted: the delete guard needs them, the caller may not learn who they are.
+
+        The edges are read by name, so the result belongs to the skill that was checked
+        only while the name still holds that creation after the read."""
+        doc = await self._get_org_doc(name)
+        if doc is None:
+            return SkillReferentialUsage()
+        usage = await collect_referential_usage(self._graph, self._org_id, name, skill=doc)
+        current = await self._get_unscoped_org_doc(name)
+        if current is None or current.get("generation") != doc.get("generation"):
+            return SkillReferentialUsage()
+        agents = [agent for agent in usage.used_by_agents if await self._may_see_agent(agent["id"])]
+        skills = [skill for skill in usage.required_by_skills if await self._get_org_doc(skill) is not None]
+        return SkillReferentialUsage(
+            used_by_agents=agents,
+            required_by_skills=skills,
+            other_agent_count=len(usage.used_by_agents) - len(agents),
+            other_skill_count=len(usage.required_by_skills) - len(skills),
+        )
+
+    async def _may_see_agent(self, agent_id: str) -> bool:
+        """Whether the caller can open the agent, by the agent's own access rule as the
+        provider decides it for this org; it answers None when it cannot tell, so that is not shown."""
+        return await self._graph.check_agent_permission(agent_id, self._user_id, self._org_id) is not None
 
     async def detach_from_agents(self, name: str) -> None:
         """Reads and writes nothing. The agent edges go with the skill in `delete_skill`,
@@ -1397,11 +1435,19 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
                 "type": "related", "createdAtTimestamp": now,
             })
         for required_name in metadata.requires:
-            edges.append({
+            # Bound to the creation that holds the name now, and none while nobody holds it
+            # (as Neo4j, which links only to an existing node): see `_requires_bound_to`.
+            required = await self._get_unscoped_org_doc(required_name)
+            if required is None:
+                continue
+            edge = {
                 "from_id": from_key, "from_collection": _SKILLS,
                 "to_id": self._key(required_name), "to_collection": _SKILLS,
                 "type": "requires", "createdAtTimestamp": now,
-            })
+            }
+            if required.get("generation") is not None:
+                edge["toGeneration"] = required["generation"]
+            edges.append(edge)
         if metadata.replaced_by:
             edges.append({
                 "from_id": from_key, "from_collection": _SKILLS,

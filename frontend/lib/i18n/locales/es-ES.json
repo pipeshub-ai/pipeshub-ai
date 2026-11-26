@@ -5482,6 +5482,7 @@
         "deleteTitle": "¿Eliminar \"{{name}}\"?",
         "deleteBody": "¿Seguro que quiere eliminar esta skill? Esta acción no se puede deshacer.",
         "cannotDeleteTitle": "No se puede eliminar esta skill",
+        "notVisibleCount": "{{count}} que no puede ver",
         "requiredBy": "Otras skills necesitan esta skill: {{names}}. Márquela como obsoleta para que las dependientes se sigan resolviendo.",
         "usedByAgents": "Esta skill está asignada a: {{names}}. Si la elimina, se desasignará de ellos."
       },

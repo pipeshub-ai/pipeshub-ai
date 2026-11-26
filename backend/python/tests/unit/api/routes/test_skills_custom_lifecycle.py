@@ -51,7 +51,6 @@ if TYPE_CHECKING:
 
 _SKILLS = CollectionNames.AGENT_SKILLS.value
 _AGENT_HAS_SKILL = CollectionNames.AGENT_HAS_SKILL.value
-_AGENT_INSTANCES = CollectionNames.AGENT_INSTANCES.value
 
 _logger = logging.getLogger("test_skills_custom_lifecycle")
 
@@ -183,9 +182,7 @@ class TestFullLifecycle:
 
         # 3. assign to an agent (agent.py's edge-creation helper)
         agent_key = "agent-1"
-        await graph.batch_upsert_nodes(
-            [{"id": agent_key, "name": "Deploy Bot"}], _AGENT_INSTANCES,
-        )
+        graph.add_agent(agent_key, "Deploy Bot", owner="user-a-key")
         linked = await _create_skill_edges(
             agent_key, ["deploy-runbook"], "org-1", "user-a-key", graph, _logger,
         )

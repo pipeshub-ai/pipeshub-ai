@@ -263,19 +263,15 @@ class SkillManager:
         usage = await self._store.get_referential_usage(name)
         if binding is not None and await self._store.deletion_binding(name) != binding:
             raise SkillConflictError(name, current_updated_at=0)
-        if usage.required_by_skills:
+        if usage.has_dependent_skills or (usage.has_agents and not detach):
             raise SkillInUseError(
                 name,
                 used_by_agents=list(usage.used_by_agents),
                 required_by_skills=list(usage.required_by_skills),
+                other_agent_count=usage.other_agent_count,
+                other_skill_count=usage.other_skill_count,
             )
-        if usage.used_by_agents and not detach:
-            raise SkillInUseError(
-                name,
-                used_by_agents=list(usage.used_by_agents),
-                required_by_skills=list(usage.required_by_skills),
-            )
-        if usage.used_by_agents and detach:
+        if usage.has_agents and detach:
             await self._store.detach_from_agents(name)
         ok = await self._store.delete_skill(name, expected=binding)
         if ok:

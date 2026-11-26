@@ -101,7 +101,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
 )
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.control_plane.directory.owner_team import OwnerTeamRefused
-from app.core.org_context import bound_org_id, current_org_id
+from app.core.org_context import bound_org_id, current_org_id, org_of
 from app.harness.agent_deletion import agent_deletion_state
 from app.harness.agent_names import MAX_AGENT_KEYS, agent_names, latest_versions
 from app.harness.credentials.sources import configured_llm_entries
@@ -2554,6 +2554,38 @@ def _parse_skills(raw_skills: list[Any]) -> list[str]:
     return names
 
 
+# What an agent shows of a skill on it that the caller cannot see: which skill it runs, and
+# whether that skill still works (the builder warns on a disabled or replaced one). The skill's
+# content, resources, usage and the rest of its metadata stay with its owner.
+_SKILL_FIELDS_SHOWN_WITH_AN_AGENT = ("name", "description", "status", "replacedBy")
+
+
+async def _skills_as_the_caller_may_see_them(
+    skills: list[dict[str, Any]],
+    org_id: str,
+    user_key: str,
+    graph_provider: IGraphDBProvider,
+) -> list[dict[str, Any]]:
+    """The agent's skill entries, each skill the caller cannot see (`SkillVisibility`, or no
+    longer readable) cut to `_SKILL_FIELDS_SHOWN_WITH_AN_AGENT`."""
+    if not skills:
+        return []
+    try:
+        teams = [str(r["teamId"]) for r in await graph_provider.get_user_team_roles(user_key, org_id) or []]
+    except Exception:
+        teams = []  # an unreadable membership shows no team's skill
+    visible = SkillVisibility.of([user_key], teams=teams)
+    shown: list[dict[str, Any]] = []
+    for skill in skills:
+        name = skill.get("name")
+        doc = await graph_provider.get_document(f"{org_id}_{name}", CollectionNames.AGENT_SKILLS.value) if name else None
+        if isinstance(doc, dict) and org_of(doc) == org_id and visible.allows(doc):
+            shown.append(skill)
+        else:
+            shown.append({field: skill.get(field) for field in _SKILL_FIELDS_SHOWN_WITH_AN_AGENT})
+    return shown
+
+
 async def _create_skill_edges(
     agent_key: str,
     skill_names: list[str],
@@ -3613,6 +3645,9 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
             versioning = None
 
         agent.update(perm)
+        agent["skills"] = await _skills_as_the_caller_may_see_them(
+            agent.get("skills") or [], org_key, user_doc["_key"], services["graph_provider"],
+        )
         if versioning is not None:
             agent["versioning"] = versioning
 
@@ -3722,7 +3757,15 @@ async def get_agent_version(request: Request, agent_id: str, version: int) -> JS
         found = await AgentVersionStore(services["graph_provider"]).get(current_org_id(), agent_id, version)
         if found is None:
             raise HTTPException(status_code=404, detail="This agent has no such version")
-        return JSONResponse(status_code=200, content={"version": found.wire()})
+        wire = found.wire()
+        if wire["definition"].get("skills"):
+            graph = services["graph_provider"]
+            user_doc = await _get_user_document(user_context["userId"], graph, services["logger"])
+            wire["definition"]["skills"] = await _skills_as_the_caller_may_see_them(
+                [s for s in wire["definition"]["skills"] if isinstance(s, dict)],
+                current_org_id(), user_doc["_key"], graph,
+            )
+        return JSONResponse(status_code=200, content={"version": wire})
     except HTTPException:
         raise
     except Exception as e:
