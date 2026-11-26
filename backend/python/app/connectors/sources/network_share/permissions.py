@@ -1,5 +1,7 @@
 """APP_LEVEL permission stubs. RECORD_LEVEL ACL mapping is a later change here."""
 
+from typing import Any
+
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.models.permission import EntityType, Permission, PermissionType
 
@@ -35,3 +37,25 @@ def app_level_permissions(
             external_id=org_id,
         )
     ]
+
+
+async def share_permissions(connector: Any) -> list[Permission] | None:  # noqa: ANN401
+    """The grants on a share's record group. None when a personal connector could
+    not look up its creator: the stored grants stay as they are, instead of
+    falling back to the whole organisation.
+    """
+    if connector.scope != ConnectorScope.TEAM.value and not connector.creator_email:
+        try:
+            await connector._load_creator_email(raise_on_error=True)
+        except Exception as e:
+            connector.logger.warning(
+                "Personal connector %s could not look up its creator; its share grants are kept: %s",
+                connector.connector_id, type(e).__name__,
+            )
+            return None
+    return app_level_permissions(
+        scope=connector.scope,
+        org_id=connector.data_entities_processor.org_id,
+        creator_email=connector.creator_email,
+        created_by=connector.created_by,
+    )
