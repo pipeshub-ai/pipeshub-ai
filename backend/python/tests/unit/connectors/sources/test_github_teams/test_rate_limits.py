@@ -22,6 +22,13 @@ from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.stream_purpose import streaming_for_indexing
+from app.connectors.core.sync.run_context import (
+    SyncRunStats,
+    bind_run_stats,
+    reset_run_stats,
+    reset_run_sync_id,
+    set_run_sync_id,
+)
 from app.connectors.sources.github_teams.issues import IssuesSync
 from app.connectors.sources.github_teams.runtime import RuntimeHelper
 from app.connectors.sources.github_teams.streaming import StreamingHelper
@@ -524,6 +531,112 @@ class TestDsCallWaitsOutShortLimits:
 
         assert res.status_code == HttpStatusCode.FORBIDDEN.value
         assert calls["n"] == 1
+        no_sleep.assert_not_awaited()
+
+
+
+@pytest.fixture()
+def in_sync_run() -> Iterator[SyncRunStats]:
+    """What sync_runner binds around run_sync: the run's id and its tally."""
+    stats = SyncRunStats()
+    run, tally = set_run_sync_id("run-1"), bind_run_stats(stats)
+    try:
+        yield stats
+    finally:
+        reset_run_stats(tally)
+        reset_run_sync_id(run)
+
+
+class TestSyncRunWaitsForTheReset:
+    """A sync used to stop at a primary limit whose reset was more than 90s away and fail,
+    so it finished only on a later scheduled run. Inside a sync run nobody waits on the
+    call: it waits until x-ratelimit-reset and reads on, as GitHub asks."""
+
+    async def test_a_distant_reset_is_waited_out_and_the_sync_reads_on(
+        self, no_sleep: AsyncMock, in_sync_run: SyncRunStats,
+    ) -> None:
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return _primary_limit(reset_in=2400) if calls["n"] == 1 else httpx.Response(200, json={"number": 7})
+
+        clock = [time.time()]
+
+        async def sleep(seconds: float) -> None:
+            clock[0] += seconds
+
+        no_sleep.side_effect = sleep
+        ds = _data_source(handler)
+        c, runtime = _runtime_over(ds)
+        with patch.object(github_async, "time", SimpleNamespace(time=lambda: clock[0])):
+            res = await runtime.ds_call(ds.get_issue, "acme", "widgets", 7)
+
+        assert res.success is True
+        assert calls["n"] == 2
+        [wait] = [call.args[0] for call in no_sleep.await_args_list]
+        assert 2399 <= wait <= 2407
+        assert 2399 <= in_sync_run.backoff_wait_s <= 2407
+        logged = " ".join(str(a) for call in c.logger.warning.call_args_list for a in call.args)
+        assert "until" in logged and " UTC" in logged
+
+    async def test_a_wait_past_one_window_still_stops(self, no_sleep: AsyncMock, in_sync_run: SyncRunStats) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(429, json={"message": SECONDARY_MESSAGE}, headers={"retry-after": "7200"})
+
+        ds = _data_source(handler)
+        _c, runtime = _runtime_over(ds)
+        res = await runtime.ds_call(ds.get_issue, "acme", "widgets", 7)
+
+        assert res.is_rate_limited is True
+        no_sleep.assert_not_awaited()
+
+    async def test_a_secondary_limit_without_retry_after_backs_off_exponentially(
+        self, no_sleep: AsyncMock, in_sync_run: SyncRunStats,
+    ) -> None:
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                return httpx.Response(403, json={"message": SECONDARY_MESSAGE})
+            return httpx.Response(200, json={"number": 7})
+
+        ds = _data_source(handler)
+        _c, runtime = _runtime_over(ds)
+        res = await runtime.ds_call(ds.get_issue, "acme", "widgets", 7)
+
+        assert res.success is True
+        first, second = [call.args[0] for call in no_sleep.await_args_list]
+        assert 61 <= first <= 67
+        assert 121 <= second <= 133
+
+    async def test_a_reset_in_the_past_backs_off_instead_of_retrying_at_once(
+        self, no_sleep: AsyncMock, in_sync_run: SyncRunStats,
+    ) -> None:
+        """Our clock ahead of GitHub's: the reset looks passed while GitHub still refuses."""
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return _primary_limit(reset_in=-30) if calls["n"] <= 2 else httpx.Response(200, json={"number": 7})
+
+        ds = _data_source(handler)
+        _c, runtime = _runtime_over(ds)
+        res = await runtime.ds_call(ds.get_issue, "acme", "widgets", 7)
+
+        assert res.success is True
+        assert calls["n"] == 3
+        first, second = [call.args[0] for call in no_sleep.await_args_list]
+        assert first < 3  # the reset second itself
+        assert second >= 120
+
+    async def test_outside_a_sync_run_a_distant_reset_still_returns_at_once(self, no_sleep: AsyncMock) -> None:
+        ds = _data_source(lambda request: _primary_limit(reset_in=2400))
+        _c, runtime = _runtime_over(ds)
+        res = await runtime.ds_call(ds.get_issue, "acme", "widgets", 7)
+
+        assert res.status_code == HttpStatusCode.TOO_MANY_REQUESTS.value
         no_sleep.assert_not_awaited()
 
 

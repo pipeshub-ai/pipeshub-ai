@@ -10,6 +10,7 @@ Covers:
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -108,6 +109,13 @@ def _issue(
         closed_at=datetime(2024, 1, 2, tzinfo=timezone.utc) if state == "closed" else None,
         pull_request=SimpleNamespace() if is_pr else None,
     )
+
+
+def _assert_finished_and_place_cleared(sync: IssuesSync) -> None:
+    """The listing kept its place per page and, once it finished, moved the watermark and dropped the place."""
+    (_group, written), _ = sync._write_checkpoint.await_args
+    assert "last_sync_time" in written
+    assert written["listing_resume_page"] is None
 
 
 class TestFetchIssuesBatched:
@@ -229,7 +237,7 @@ class TestFetchIssuesBatched:
         await sync.fetch_issues_batched(repo)
 
         assert [k.get("after") for k in calls] == [None, "cursor-2"]
-        sync._write_checkpoint.assert_awaited_once()
+        _assert_finished_and_place_cleared(sync)
 
     async def test_a_full_cursor_page_without_a_next_link_ends_the_listing(self) -> None:
         """GitHub sends no next link on the cursor page that holds the rest of the
@@ -258,7 +266,7 @@ class TestFetchIssuesBatched:
         assert await sync.fetch_issues_batched(repo) is True
 
         assert len(calls) == 2
-        sync._write_checkpoint.assert_awaited_once()
+        _assert_finished_and_place_cleared(sync)
 
     async def test_a_repeated_cursor_stops_without_advancing_the_checkpoint(self) -> None:
         """A cursor that does not move would page forever."""
@@ -285,7 +293,10 @@ class TestFetchIssuesBatched:
         assert await sync.fetch_issues_batched(repo) is False
 
         assert len(calls) == 2
-        sync._write_checkpoint.assert_not_awaited()
+        writes = [call.args[1] for call in sync._write_checkpoint.await_args_list]
+        assert not any("last_sync_time" in w for w in writes), "the watermark moved"
+        # The place kept after page 1 is dropped: it leads to the same stuck cursor.
+        assert writes[-1]["listing_resume_page"] is None
 
     async def test_without_a_cursor_the_next_page_number_is_read(self) -> None:
         """A server that offers no cursor is still read to the end, by page number."""
@@ -387,6 +398,27 @@ class TestResumeInterruptedListing:
         sync = self._sync(c, {})
 
         assert await sync.fetch_issues_batched(make_repo(repo_id=1)) is False
+
+        sync._write_checkpoint.assert_awaited_with("1-work-items", {
+            "listing_resume_page": 2,
+            "listing_resume_cursor": "cursor-2",
+            "listing_resume_since": None,
+            "listing_resume_watermark": epoch_ms_or_now(datetime(2024, 1, 2, tzinfo=timezone.utc)),
+            "listing_resume_created": 100,
+            "listing_resume_window": None,
+        })
+
+    async def test_a_sync_stopped_between_pages_keeps_its_place(self) -> None:
+        """A sync stopped while it waits for a page (a restart during a rate-limit wait) reads on
+        from the page it reached, not from page 1: the place is kept before the next page is asked."""
+        c = make_mock_connector()
+        first = ok_response([_issue(number=n) for n in range(100)])
+        first.next_cursor = "cursor-2"
+        c.runtime.ds_call = AsyncMock(side_effect=[first, asyncio.CancelledError()])
+        sync = self._sync(c, {})
+
+        with pytest.raises(asyncio.CancelledError):
+            await sync.fetch_issues_batched(make_repo(repo_id=1))
 
         sync._write_checkpoint.assert_awaited_once_with("1-work-items", {
             "listing_resume_page": 2,
