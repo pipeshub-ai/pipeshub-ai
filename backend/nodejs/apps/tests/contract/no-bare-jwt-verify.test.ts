@@ -56,7 +56,9 @@ const REMOVED_EXPORTS = [
   'jwtValidator',
 ];
 
-describe('contract: no jsonwebtoken verify outside the allowlist', () => {
+describe('contract: no jsonwebtoken verify outside the allowlist', function () {
+  // Parses every file under src/: slower than the default timeout on a shared CI runner.
+  this.timeout(120000);
   it('verifies a JWT only in the allowlisted files, with the allowlisted keys', () => {
     const offenders = unlistedVerifyCalls(SRC, SRC, ALLOWED_VERIFIERS);
     expect(offenders).to.deep.equal([]);
