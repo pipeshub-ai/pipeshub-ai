@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -96,6 +97,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Iterable, Mapping
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "GraphSkillStore",
@@ -937,8 +940,14 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         except Exception:
             # A skill without its edges would hold the name with nothing to finish it: undo this creation (and any
             # edge it got) so the create can be retried. A failed undo must not hide why the create failed.
+            undone = False
             with contextlib.suppress(Exception):
-                await self._graph.delete_node_if_match(self._key(name), _SKILLS, expected=self._bound_to(doc))
+                undone = await self._graph.delete_node_if_match(self._key(name), _SKILLS, expected=self._bound_to(doc))
+            if not undone:
+                logger.error(
+                    "Skill %r was stored without its edges and could not be removed; an admin delete frees the name",
+                    name,
+                )
             raise
         return skill.metadata
 

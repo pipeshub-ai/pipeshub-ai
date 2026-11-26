@@ -818,6 +818,40 @@ class TestACreateWhoseEdgesFailIsUndone:
         assert {e["type"] for e in graph._edges["agentSkillRelation"]} == {"requires", "related"}
 
 
+class _UndoFails(_RelationEdgesFailOnce):
+    """As above, and the undo of the half-made create does not land either."""
+
+    def __init__(self, *, raises: bool) -> None:
+        super().__init__()
+        self.raises = raises
+        self.undo_failures = 1
+
+    async def delete_node_if_match(self, *args: object, **kwargs: object) -> bool:
+        if self.undo_failures:
+            self.undo_failures -= 1
+            if self.raises:
+                raise RuntimeError("undo failed")
+            return False
+        return await super().delete_node_if_match(*args, **kwargs)
+
+
+class TestACreateWhoseUndoFailsIsReported:
+    @pytest.mark.parametrize("raises", [True, False])
+    async def test_the_create_error_stands_the_leftover_is_logged_and_an_admin_delete_frees_the_name(
+        self, raises: bool, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        graph = _UndoFails(raises=raises)
+        owner = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
+        with caplog.at_level("ERROR"), pytest.raises(RuntimeError, match="edge write failed"):
+            await owner.create_skill(_NAME, _OWNER_MD)
+        assert any(_NAME in r.getMessage() and "without its edges" in r.getMessage() for r in caplog.records)
+        with pytest.raises(SkillAlreadyExistsError):
+            await owner.create_skill(_NAME, _OWNER_MD)
+        assert await skill_store(graph, "org-1", "user-c", is_admin=True).delete_skill(_NAME)
+        await owner.create_skill(_NAME, _OWNER_MD)
+        assert graph._col("agentSkills")[_KEY]["createdBy"] == "user-a"
+
+
 class _OthersWriteBeforeTheSnapshot(FakeGraphProvider):
     """As the store is about to archive the version it read, `interleave` runs: other writes that land first."""
 
