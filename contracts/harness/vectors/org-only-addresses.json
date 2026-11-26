@@ -1,0 +1,43 @@
+{
+  "description": "WP83-FU-3: an org's websites.orgOnlyAddresses and repositories.hosts[].publicReadable. Node (the websites and repositories section saves) accepts every 'valid' entry and refuses every 'invalid' one; the worker (harness_core.security.reachability.PublicReachability) reads every valid entry and replays every 'cases' row: whether content from host, reached at addresses, may be the organization's alone (orgOnly true: never public). 'readable' rows: whether an allowed git host entry is public-readable.",
+  "valid": [
+    "intranet.acme.com",
+    "*.corp.acme.com",
+    "git",
+    "203.0.113.0/24",
+    "198.51.100.7",
+    "2001:db8::/32",
+    "2001:db8::1"
+  ],
+  "invalid": [
+    "",
+    "*",
+    "*.",
+    "Intranet.Acme.com",
+    "https://intranet.acme.com",
+    "intranet.acme.com/path",
+    "intra net.acme.com",
+    "10.0.0.0/33",
+    "2001:db8::/129",
+    "999.1.1.1",
+    "a.*.acme.com"
+  ],
+  "cases": [
+    {"name": "an org-only name", "entries": ["intranet.acme.com"], "host": "intranet.acme.com", "addresses": ["140.82.112.3"], "orgOnly": true},
+    {"name": "a name is that host only", "entries": ["acme.com"], "host": "www.acme.com", "addresses": [], "orgOnly": false},
+    {"name": "a wildcard covers subdomains", "entries": ["*.corp.acme.com"], "host": "wiki.corp.acme.com", "addresses": [], "orgOnly": true},
+    {"name": "a wildcard is not its domain", "entries": ["*.corp.acme.com"], "host": "corp.acme.com", "addresses": [], "orgOnly": false},
+    {"name": "an address in a declared range", "entries": ["203.0.113.0/24"], "host": "git.acme.com", "addresses": ["203.0.113.9"], "orgOnly": true},
+    {"name": "one address in a range is enough", "entries": ["203.0.113.0/24"], "host": "git.acme.com", "addresses": ["140.82.112.3", "203.0.113.9"], "orgOnly": true},
+    {"name": "an IPv4-mapped address", "entries": ["198.51.100.7"], "host": "git.acme.com", "addresses": ["::ffff:198.51.100.7"], "orgOnly": true},
+    {"name": "outside every range", "entries": ["203.0.113.0/24", "2001:db8::/32"], "host": "docs.python.org", "addresses": ["151.101.0.223"], "orgOnly": false},
+    {"name": "ranges declared and no address known: not cleared", "entries": ["203.0.113.0/24"], "host": "docs.python.org", "addresses": [], "orgOnly": true},
+    {"name": "nothing declared", "entries": [], "host": "docs.python.org", "addresses": [], "orgOnly": false}
+  ],
+  "readable": [
+    {"name": "a preset's host", "entry": {"host": "github.com", "preset": "github-public"}, "readable": true},
+    {"name": "a hand-added host, by default", "entry": {"host": "git.example.com"}, "readable": false},
+    {"name": "a hand-added host the admin marked", "entry": {"host": "git.example.com", "publicReadable": true}, "readable": true},
+    {"name": "a hand-added host marked off", "entry": {"host": "git.example.com", "publicReadable": false}, "readable": false}
+  ]
+}

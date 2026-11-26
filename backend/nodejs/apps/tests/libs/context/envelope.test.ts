@@ -217,7 +217,7 @@ describe('envelope v2', () => {
 
   it('a stale signature follows the mode, and the window is configurable', async () => {
     const old = msg(undefined, Math.floor(Date.now() / 1000) - 901)
-    await withEnv({ ORG_CONTEXT_MODE: undefined, ENVELOPE_MAX_AGE_SECONDS: undefined }, async () => {
+    await withEnv({ ORG_CONTEXT_MODE: 'shadow', ENVELOPE_MAX_AGE_SECONDS: undefined }, async () => {
       const before = envelopeStale.get(T) ?? 0
       expect((await open(old)).ctx?.orgId).to.equal('org_b') // shadow: counted, accepted
       expect(envelopeStale.get(T)).to.equal(before + 1)
@@ -233,7 +233,7 @@ describe('envelope v2', () => {
 
   it('a stripped ctx is counted as stripped while signing is on, plain v1 while it is off', async () => {
     const legacy = { eventType: 'x', payload: { orgId: 'org_b' } }
-    await withEnv({ ENVELOPE_SIGN: undefined, ORG_CONTEXT_MODE: undefined }, async () => {
+    await withEnv({ ENVELOPE_SIGN: undefined, ORG_CONTEXT_MODE: 'shadow' }, async () => {
       const [s0, m0] = [envelopeStripped.get(T) ?? 0, envelopeCtxMissing.get(T) ?? 0]
       await open(legacy)
       expect([envelopeStripped.get(T) ?? 0, envelopeCtxMissing.get(T)]).to.deep.equal([s0, m0 + 1])
@@ -255,7 +255,7 @@ describe('envelope v2', () => {
   })
 
   it('no key while signing is on is never silent: counted in shadow, rejected in enforce', async () => {
-    await withEnv({ ENVELOPE_SIGN: 'true', ORG_CONTEXT_MODE: undefined }, async () => {
+    await withEnv({ ENVELOPE_SIGN: 'true', ORG_CONTEXT_MODE: 'shadow' }, async () => {
       const before = envelopeUnverified.get(T) ?? 0
       expect((await open(msg(), { keys: [] })).ctx?.source).to.equal('legacy-payload')
       expect(envelopeUnverified.get(T)).to.equal(before + 1)
@@ -266,7 +266,7 @@ describe('envelope v2', () => {
 
   it('a producer with signing on and no key is counted, and throws in enforce', async () => {
     const flat = { eventType: 'T', payload: { orgId: 'org_b' } }
-    await withEnv({ ENVELOPE_SIGN: 'true', ORG_CONTEXT_MODE: undefined }, async () => {
+    await withEnv({ ENVELOPE_SIGN: 'true', ORG_CONTEXT_MODE: 'shadow' }, async () => {
       configureEnvelope(null)
       runWithOrgContext(CTX_B, () => {
         const before = envelopeUnsigned.get(`${T}:no_key`) ?? 0
@@ -294,7 +294,7 @@ describe('envelope v2', () => {
     let calls = 0
     const reload = async () => (++calls < 3 ? undefined : 'retry-secret')
     try {
-      await withEnv({ ENVELOPE_SIGN: 'true', ORG_CONTEXT_MODE: undefined }, async () => {
+      await withEnv({ ENVELOPE_SIGN: 'true', ORG_CONTEXT_MODE: 'shadow' }, async () => {
         configureEnvelopeFromSecret(undefined, reload)
         // no key yet: shadow counts and processes, enforce rejects
         const before = envelopeUnverified.get(T) ?? 0

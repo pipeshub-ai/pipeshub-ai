@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/model.fallback.schema.json",
+  "title": "ModelFallbackEvent",
+  "description": "A run's model calls moved to a fallback route: the worker's kernel for a loop run; Node for an engine run, from the Model Gateway's report (G-48, WP-100).",
+  "x-writer": [
+    "node",
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "model.fallback"
+    },
+    "writer": {
+      "enum": [
+        "node",
+        "worker"
+      ]
+    },
+    "data": {
+      "$ref": "#/$defs/ModelFallbackData"
+    }
+  },
+  "$defs": {
+    "ModelFallbackData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to",
+        "reason"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "../common.schema.json#/$defs/ModelRef"
+        },
+        "to": {
+          "$ref": "../common.schema.json#/$defs/ModelRef"
+        },
+        "reason": {
+          "enum": [
+            "5xx",
+            "429_exhausted",
+            "content_filter",
+            "timeout"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "model.fallback",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "from": {
+          "provider": "anthropic",
+          "model": "a"
+        },
+        "to": {
+          "provider": "openai",
+          "model": "b"
+        },
+        "reason": "429_exhausted"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

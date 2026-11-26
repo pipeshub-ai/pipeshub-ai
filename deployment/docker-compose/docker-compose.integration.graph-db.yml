@@ -8,9 +8,27 @@
 #
 # Start one graph service to test one backend; the other's cases skip.
 # Ports and the password are the defaults the tests read.
+
+# Every service that runs an image the base file runs keeps the base file's
+# baseline (ADR-OPS-02): no capability but those its image proves it needs, with
+# the reason beside each, no privilege gain, and memory and process limits.
+# tests/unit/harness/security/test_container_baseline.py checks it.
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
 services:
   neo4j-graph-it:
-    image: neo4j:5.26.0
+    <<: *hardened
+    # Its entrypoint, as root, hands /data, /logs and the plugin folder to the
+    # neo4j user (CHOWN, DAC_OVERRIDE, FOWNER) and drops to it (SETUID, SETGID).
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, KILL]
+    image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
+    ulimits:
+      nofile:
+        soft: 60000
+        hard: 60000
     ports:
       - "17687:7687"
     environment:
@@ -19,15 +37,30 @@ services:
       # holds one so a write fails partway; a write already committing cannot be
       # terminated, only timed out.
       - NEO4J_db_lock_acquisition_timeout=10s
+      # Unset, Neo4j sizes its heap and page cache from the host's memory, which
+      # exceeds the 4G limit below, and it exits 3 at start.
+      - NEO4J_server_memory_heap_initial__size=1G
+      - NEO4J_server_memory_heap_max__size=2G
+      - NEO4J_server_memory_pagecache_size=1G
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 30
       start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          pids: 4096
 
   arango-graph-it:
-    image: arangodb:3.12.4
+    <<: *hardened
+    image: arangodb:3.12.4@sha256:b7cc8dbf5f24c0fe235b6e50a26dbcfaebaf9abe0d322acefcf3dab63b5a0102
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     ports:
       - "18529:8529"
     environment:
@@ -37,3 +70,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          pids: 4096

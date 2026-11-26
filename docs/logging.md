@@ -254,8 +254,11 @@ the auth middleware bound.
   anywhere below is handed over by the exception handler, which then calls the handler registered before it.
 - Ids: `bind_request_log_fields(request, toolset_id=…)` puts them on the route's lines and on this one. A router binds its path
   parameters with `dependencies=[Depends(path_log_fields(instance_id="toolset_id"))]` (an async dependency: a sync one runs in
-  a thread, and the route's own lines would lose the binding). A route marks the `HTTPException` it raises, not its cause, then
-  raises it `from` the cause. `add_request_log_fields(request, oauth_error=…)` adds a bounded event field to this line only.
+  a thread, and the route's own lines would lose the binding). A path value is bound only when it is shaped like an id (letters,
+  digits, `._:-`, at most 128), the rule Node applies to an id field it binds from a route's params; an email, a name with a
+  space or a path is not bound, and a single token such as `ada` still is. A route marks the
+  `HTTPException` it raises, not its cause, then raises it `from` the cause. `add_request_log_fields(request, oauth_error=…)` adds
+  a bounded event field to this line only.
 - `cause_type` is the type name of the innermost cause (`__cause__`, else `__context__` unless suppressed; a group counts as its
   first leaf), on a failure line whose exception has a chain (`error_class.has_chain`; omitted otherwise, since it would repeat
   `error_type`; `http.request.end` and `index.end` follow this rule); it is a type name only, so it stays with
@@ -621,7 +624,9 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   A callback that is not for the sign-in in progress (a stale or replayed state, a used code, or a code another callback
   claimed: `OAuthStateError`) is `bad_request` at WARNING on both the connector and the toolset callback, as on the MCP
   one; so are the connector callback's missing `code` or `state` (`reason=missing_parameters`) and a state it cannot
-  decode or that is not a string `state` and `connector_id` (`reason=invalid_state`, no text).
+  decode or that is not a string `state` and `connector_id` (`reason=invalid_state`, no text), and a toolset callback
+  state that cannot be decoded or is not a string `state`, `instance_id` and `user_id` (`reason=OAuthConfigError`). The toolset callback's line carries `toolset_id`
+  (and `agent_id` for an agent's sign-in) only once the instance is found for the caller: the state is the caller's own text.
   Both callbacks class their token exchange's failure as a refresh classes the same answer
   (`credential_refresh_log.token_endpoint_error_class`): an unusable token URL, a 2xx answer that is not a token or whose
   `error` is neither a dead grant nor busy, and a token field that cannot be parsed are ERROR `misconfigured`. A 2xx answer
@@ -1052,9 +1057,27 @@ cut after the service committed, a 2xx whose body does not parse) has no audit l
 connector service's own line with the same `request_id`, record the attempt. A create resent after a cut connection (the
 connector, connector OAuth app and toolset creates are sent up to three times) may have been made twice with one line.
 
+OAuth clients (Developer Settings, `/api/v1/oauth-clients`) are saved by Node itself: the controller writes
+`config.oauth_client.*` once the OAuth app service returned (it throws on a refusal or a failure, which then has no line),
+with `target` the app's id (as above, an id that is not a PipesHub id gives `target` null and `reason` `invalid_id`
+instead of the table's reason). Any member registers and manages their own apps, so these lines include a member's own apps;
+`actor` says who. The service's own INFO lines (`OAuth app created`, `OAuth app suspended`, …, with `app_id`, and
+`client_id` where the service has it) stay next to the audit line.
+
+| Event | Route | `reason` | `target` |
+| --- | --- | --- | --- |
+| `config.oauth_client.create` | `POST /api/v1/oauth-clients/` | | the new app's id |
+| `config.oauth_client.update` | `PUT /:appId` | `settings` | the app |
+| `config.oauth_client.update` | `PUT /:appId/token-identity` | `token_identity` | the app |
+| `config.oauth_client.update` | `POST /:appId/regenerate-secret` | `secret_rotate` | the app |
+| `config.oauth_client.update` | `POST /:appId/suspend`, `POST /:appId/activate` | `suspend`, `activate` | the app |
+| `config.oauth_client.update` | `POST /:appId/revoke-all-tokens` | `tokens_revoked` | the app |
+| `config.oauth_client.delete` | `DELETE /:appId` | | the app |
+
 Not audited: writes by other services on the configuration manager's `/internal/` routes (service tokens), reads,
 validation 400s and other refusals before the write, system failures (the error middleware logs those once), boot-time
-migrations, and settings saved through other routers (OAuth clients).
+migrations, and writes that are not settings: a member's own credentials and sign-ins, OAuth callbacks, agent
+credentials, and operations such as sync, reindex and test.
 
 ## Upstream calls (Node)
 
@@ -1150,12 +1173,13 @@ run. Each says why it failed on the request's lines:
   `500 server_error` (`/revoke` and the bearer check: `503 temporarily_unavailable`, so the client keeps the token and
   retries; `/authorize`: a `server_error` redirect; `/introspect`: `active: false`, as before) with a fixed description.
   `server_error` is never a refusal's code. A change that succeeds (an OAuth app, a personal access token, a code or token
-  grant, an agent registration) is written by the service that made the write, never also by the controller; a step the
-  change runs keeps its own line (`OAuth tokens generated`, `All tokens revoked for app`). The lines carry `client_id`,
-  `app_id`, `pat_id` or `registration_id`; `user_id` is the request's user (the request's own identity wins; on the token
-  endpoint, the user the grant acts for), and the user a token is minted for or revoked from is `target_user_id`. A
-  delegation's user (whom a service account may act for) is `subject_user_id`, and the admin who granted or revoked it is
-  `granted_by` / `revoked_by`. A personal access token's name is not logged.
+  grant, an agent registration) is written by the service that made the write, never also by the controller (an OAuth
+  client's controller adds only its `config.oauth_client.*` audit line); a step the change runs keeps its own line
+  (`OAuth tokens generated`, `All tokens revoked for app`). The lines carry `client_id`, `app_id`, `pat_id` or
+  `registration_id`; `user_id` is the request's user (the request's own identity wins; on the token endpoint, the user the
+  grant acts for), and the user a token is minted for or revoked from is `target_user_id`. A delegation's user (whom a
+  service account may act for) is `subject_user_id`, and the admin who granted or revoked it is `granted_by` / `revoked_by`.
+  A personal access token's name is not logged.
 
 The MCP endpoint (`modules/mcp`) passes its failures to the error middleware, and writes one INFO `mcp.tool_call.end` per tool
 call: `tool`, `duration_ms`, `outcome` (`failure` when the tool answered an error), `client_id` (the OAuth app) and

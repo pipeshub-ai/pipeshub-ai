@@ -1,0 +1,81 @@
+[
+ {
+  "inputIndex": 2,
+  "messages": [
+   {
+    "content": "[A turn by another participant in this shared conversation is not shown to you.]",
+    "injected": false,
+    "pinned": false,
+    "role": "user"
+   },
+   {
+    "content": [
+     {
+      "text": "[A turn by another participant in this shared conversation is not shown to you.]",
+      "type": "text"
+     }
+    ],
+    "role": "assistant",
+    "tool_calls": null,
+    "truncated": false
+   },
+   {
+    "content": "bob asks",
+    "injected": false,
+    "pinned": false,
+    "role": "user"
+   }
+  ],
+  "slots": {},
+  "system": null,
+  "tools": null
+ },
+ {
+  "inputIndex": 4,
+  "messages": [
+   {
+    "content": "alice asks",
+    "injected": false,
+    "pinned": false,
+    "role": "user"
+   },
+   {
+    "content": [
+     {
+      "text": "alice's answer",
+      "type": "text"
+     }
+    ],
+    "role": "assistant",
+    "tool_calls": null,
+    "truncated": false
+   },
+   {
+    "content": "bob asks",
+    "injected": false,
+    "pinned": false,
+    "role": "user"
+   },
+   {
+    "content": [
+     {
+      "text": "bob's answer",
+      "type": "text"
+     }
+    ],
+    "role": "assistant",
+    "tool_calls": null,
+    "truncated": false
+   },
+   {
+    "content": "bob again",
+    "injected": false,
+    "pinned": false,
+    "role": "user"
+   }
+  ],
+  "slots": {},
+  "system": null,
+  "tools": null
+ }
+]

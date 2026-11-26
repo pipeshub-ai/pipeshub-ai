@@ -7,6 +7,7 @@ import pytest
 from app.services.resource_governor.gate import AdmissionGate
 from app.services.resource_governor.models import Limits, Pool, PoolDemand
 from app.services.resource_governor.registry import LimitRegistry
+from harness_core.testing.virtual_time import run_on_virtual_time
 from tests.support.loop_clock import virtual_loop_time
 
 
@@ -106,41 +107,43 @@ class TestAdmissionGateBasics:
         assert gate.in_use == 0
 
 
-@pytest.mark.asyncio
 class TestAdmissionGateWaking:
-    async def test_waiters_wake_promptly_when_limit_rises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        virtual_loop_time(monkeypatch)  # the 0.5 s below is then exact: a missed wake is served only by the 1 s safety net
-        registry = _registry(limit=1)
-        gate = AdmissionGate(Pool.HEAVY_PARSE, registry)
-        await gate.acquire(cost=1)  # occupy the only slot
+    """A waiter is woken by the release or the rise itself, not by its 1 s safety-net poll: on a virtual-time loop
+    the poll is a timer, so the loop's clock still reads the moment of the wake when the waiter is admitted."""
 
-        async def waiter() -> bool:
-            return await gate.acquire(cost=1, timeout=5.0)
+    def test_waiters_wake_promptly_when_limit_rises(self) -> None:
+        async def main() -> None:
+            loop = asyncio.get_running_loop()
+            registry = _registry(limit=1)
+            gate = AdmissionGate(Pool.HEAVY_PARSE, registry, clock=loop.time)
+            await gate.acquire(cost=1)  # occupy the only slot
+            task = asyncio.create_task(gate.acquire(cost=1, timeout=5.0))
+            await asyncio.sleep(0.05)
+            assert not task.done()
 
-        task = asyncio.create_task(waiter())
-        await asyncio.sleep(0.05)
-        assert not task.done()
+            raised_at = loop.time()
+            registry.set(Pool.HEAVY_PARSE, 2)
 
-        registry.set(Pool.HEAVY_PARSE, 2)  # raise the limit -> should wake immediately
+            assert await task is True
+            assert loop.time() == raised_at
 
-        result = await asyncio.wait_for(task, timeout=0.5)
-        assert result is True
+        run_on_virtual_time(main)
 
-    async def test_waiters_wake_on_release(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        virtual_loop_time(monkeypatch)
-        registry = _registry(limit=1)
-        gate = AdmissionGate(Pool.HEAVY_PARSE, registry)
-        await gate.acquire(cost=1)
+    def test_waiters_wake_on_release(self) -> None:
+        async def main() -> None:
+            loop = asyncio.get_running_loop()
+            gate = AdmissionGate(Pool.HEAVY_PARSE, _registry(limit=1), clock=loop.time)
+            await gate.acquire(cost=1)
+            task = asyncio.create_task(gate.acquire(cost=1, timeout=5.0))
+            await asyncio.sleep(0.05)
 
-        async def waiter() -> bool:
-            return await gate.acquire(cost=1, timeout=5.0)
+            released_at = loop.time()
+            gate.release(cost=1)
 
-        task = asyncio.create_task(waiter())
-        await asyncio.sleep(0.05)
-        gate.release(cost=1)
+            assert await task is True
+            assert loop.time() == released_at
 
-        result = await asyncio.wait_for(task, timeout=0.5)
-        assert result is True
+        run_on_virtual_time(main)
 
 
 @pytest.mark.asyncio

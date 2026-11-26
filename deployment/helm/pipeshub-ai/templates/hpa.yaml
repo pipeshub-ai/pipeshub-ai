@@ -1,4 +1,7 @@
 {{- if .Values.autoscaling.enabled }}
+{{- if and .Values.autoscaling.eventLoopUtilization.enabled (not .Values.metrics.enabled) }}
+{{- fail "autoscaling.eventLoopUtilization needs metrics.enabled: Node serves the metric on metrics.node.port" }}
+{{- end }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -13,6 +16,15 @@ spec:
   minReplicas: {{ .Values.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.autoscaling.maxReplicas }}
   metrics:
+    {{- if .Values.autoscaling.eventLoopUtilization.enabled }}
+    - type: Pods
+      pods:
+        metric:
+          name: {{ .Values.autoscaling.eventLoopUtilization.metricName }}
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.eventLoopUtilization.targetAverageValue | quote }}
+    {{- end }}
     {{- if .Values.autoscaling.targetCPUUtilizationPercentage }}
     - type: Resource
       resource:
@@ -20,6 +32,13 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    {{- else if .Values.autoscaling.targetCPUAverageValue }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.targetCPUAverageValue | quote }}
     {{- end }}
     {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
     - type: Resource

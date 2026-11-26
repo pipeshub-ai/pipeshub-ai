@@ -3440,7 +3440,7 @@ class TestConvertToPdf:
         with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_process):
             with patch("os.path.exists", return_value=False):
                 with pytest.raises(HTTPException):
-                    await conn._convert_to_pdf("/tmp/test.docx", str(tmp_path))
+                    await conn._convert_to_pdf(str(tmp_path / "test.docx"), str(tmp_path))
 
     @pytest.mark.asyncio
     async def test_timeout(self):

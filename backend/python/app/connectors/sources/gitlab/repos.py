@@ -48,6 +48,7 @@ from app.modules.code_graph.synced_commit import record_synced_commit
 from app.modules.parsers.code_parser.file_role import (
     FileRole,
     classify_file_role,
+    is_sensitive_path,
 )
 from app.modules.parsers.code_parser.gitattributes import (
     LinguistExclusions,
@@ -111,13 +112,18 @@ class ReposSync:
         return code_branch(self.c.sync_filters) or "HEAD"
 
     async def run(
-        self, project_id: int, project_path: str, default_branch: str
+        self, project_id: int, project_path: str, default_branch: str | None
     ) -> None:
         """Sync code repository using incremental compare when a checkpoint exists,
         falling back to a full sync when the compare fails."""
         c = self.c
         chosen_branch = code_branch(c.sync_filters)
         branch = chosen_branch or default_branch
+        if branch is None:
+            # GitLab names no default branch only for an empty repository: no code is left,
+            # so nothing is written and the runner unlinks what was stored.
+            self.logger.info("Project %s (%s) has an empty repository; no code to sync", project_id, project_path)
+            return
         branch_res = await c.runtime.ds_call(
             c.data_source.get_branch, project_id=project_id, branch=branch,
         )
@@ -133,8 +139,14 @@ class ReposSync:
                     f"code of project {project_path}: branch {chosen_branch!r} chosen in the "
                     "connector's filters does not exist; existing records kept"
                 )
+            elif getattr(branch_res, "status_code", None) == HttpStatusCode.NOT_FOUND.value:
+                # Renamed or removed since the listing named it: the code is not known to be gone.
+                self.logger.warning(
+                    "Default branch %s of project %s (%s) not found; its code stays as stored",
+                    branch, project_id, project_path,
+                )
+                await self._keep_stored_code(project_id, project_path)
             else:
-                # 404: an empty repository has no branch yet.
                 c.note_failed_read(f"branch {branch} of project {project_path}", branch_res)
             return
 
@@ -144,6 +156,7 @@ class ReposSync:
                 "No commit SHA on branch %s for project %s (%s)",
                 branch, project_id, project_path,
             )
+            await self._keep_stored_code(project_id, project_path)
             return
         # A chosen branch is walked at its head commit and its records pinned to it, so
         # content streams from that branch; the default branch keeps walking HEAD.
@@ -363,6 +376,25 @@ class ReposSync:
             all_ok = await self._remove_unwalked(project_id, seen)
         return all_ok
 
+    async def _keep_stored_code(self, project_id: int, project_path: str) -> None:
+        """Note the project's stored files and folders kept for this run, so the unlink after
+        a full sync leaves them alone; a lookup that fails makes the run incomplete instead."""
+        c = self.c
+        try:
+            async with c.data_store_provider.transaction() as tx_store:
+                nodes = await tx_store.get_nodes_by_filters(
+                    collection=CollectionNames.RECORDS.value,
+                    filters={"connectorId": c.connector_id, "externalGroupId": f"{project_id}-code-repository"},
+                    return_fields=["_key"],
+                    raise_on_error=True,
+                )
+        except Exception as e:
+            self.logger.error("Could not read the stored code of project %s to keep it: %s", project_id, e)
+            c.note_sync_problem(f"code of project {project_path}: stored code could not be kept: {e}")
+            return
+        record_ids = [rid for n in nodes if (rid := n.get("id") or n.get("_key"))]
+        c.data_entities_processor.note_kept_records(c.connector_id, record_ids)
+
     async def _remove_unwalked(self, project_id: int, seen: set[str]) -> bool:
         """After a complete walk, remove the stored files and folders it did not meet:
         deleted, moved, renamed, now excluded, or stored under an old project path."""
@@ -428,9 +460,9 @@ class ReposSync:
     ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         """Fetch one ``paginatedTree`` page. Returns ``(kind, trees, blobs, page_info)``.
 
-        ``kind`` is ``"data"``, ``"empty"`` (nothing left to walk — empty repo,
-        archived, missing scope, or a page past the end) or ``"abort"`` (the
-        caller must not advance the checkpoint).
+        ``kind`` is ``"data"``, ``"empty"`` (nothing left to walk) or ``"abort"``
+        (the caller must not advance the checkpoint). A missing tree aborts, and a
+        page with no entries that says more follow is retried like a failed one.
 
         Transport failures are retried ``_GITLAB_TREE_PAGE_MAX_ATTEMPTS`` times
         with exponential backoff before aborting: one transiently slow page must
@@ -496,16 +528,23 @@ class ReposSync:
             )
             return "abort", empty, empty, {}, None, None
 
-        project = (data.get("data") or {}).get("project") or {}
-        paginated_tree = (project.get("repository") or {}).get("paginatedTree") or {}
-        if not paginated_tree:
-            self.logger.info(
-                "No repository tree for project %s (empty repo, missing scope, or archived)", project_id
+        project = (data.get("data") or {}).get("project")
+        repository = (project or {}).get("repository")
+        paginated_tree = (repository or {}).get("paginatedTree")
+        if paginated_tree is None:
+            # An empty repository never reaches the walk, so a missing tree cannot vouch
+            # that the stored code is gone.
+            self.logger.error(
+                "GitLab returned no repository tree for project %s although its branch has a commit",
+                project_id,
             )
-            return "empty", empty, empty, {}, None, None
+            return "abort", empty, empty, {}, None, None
         nodes = paginated_tree.get("nodes") or []
         page_info = paginated_tree.get("pageInfo") or {}
         if not nodes:
+            # More pages are promised, with or without a cursor: the walk cannot end here.
+            if page_info.get("hasNextPage"):
+                return "retry", empty, empty, {}, "page carried no entries although more follow", None
             return "empty", empty, empty, page_info, None, None
         entry: dict[str, Any] = nodes[0]
         trees = (entry.get("trees") or {}).get("nodes") or []
@@ -1470,8 +1509,11 @@ def _classify_compare_diffs(
     seen_modify: set[str] = set()
     seen_rename_old: set[str] = set()
 
+    # A credential file's delete always goes through: its record may predate the rule that now excludes it.
     def _add_delete(path: str) -> None:
-        if path and path not in seen_delete and not _should_skip_dotfile_repo_path(path, policy):
+        if path and path not in seen_delete and (
+            is_sensitive_path(path) or not _should_skip_dotfile_repo_path(path, policy)
+        ):
             deletes.append(path)
             seen_delete.add(path)
 
@@ -1481,6 +1523,9 @@ def _classify_compare_diffs(
             seen_add.add(path)
 
     def _add_modify(path: str) -> None:
+        if is_sensitive_path(path):
+            _add_delete(path)  # the stored record holds the old content, secret included
+            return
         if path and path not in seen_modify and not _should_skip_dotfile_repo_path(path, policy):
             modifies.append(path)
             seen_modify.add(path)
@@ -1502,6 +1547,7 @@ def _classify_compare_diffs(
                 _add_delete(effective_old)
                 continue
             if _should_skip_dotfile_repo_path(effective_old, policy):
+                _add_delete(effective_old)
                 _add_add(effective_new)
                 continue
             if effective_old and effective_old not in seen_rename_old:

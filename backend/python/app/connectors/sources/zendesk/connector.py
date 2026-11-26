@@ -150,6 +150,8 @@ STAFF_ROLES = ["agent", "admin"]
 # has to fit. Bounded because the connector process outlives any one sync.
 SIDELOADED_USER_CACHE_SIZE = 20_000
 PAGE_SIZE = 100
+# show_many returns at most 100 tickets per call.
+SHOW_MANY_TICKETS_LIMIT = 100
 # Matches the Jira connectors: cap how many records go into one on_new_records call.
 BATCH_PROCESSING_SIZE = 100
 # Zendesk rejects an incremental start_time inside the last minute.
@@ -1554,9 +1556,9 @@ class ZendeskConnector(BaseConnector):
         seen_ticket_updated: dict[str, int] = {}
         # The export cursor moves past a ticket whose comments failed, so it is kept
         # here and re-read by id every sync until it goes through.
-        pending_ticket_ids = await self._retry_pending_tickets(
-            [str(ticket_id) for ticket_id in saved_state.get("pendingTicketIds") or []]
-        )
+        retried_ids = [str(ticket_id) for ticket_id in saved_state.get("pendingTicketIds") or []]
+        pending_ticket_ids = await self._retry_pending_tickets(retried_ids)
+        rewritten_ids = set(retried_ids) - pending_ticket_ids
         while True:
             response = await self._call_incremental(
                 "incremental_tickets",
@@ -1690,6 +1692,14 @@ class ZendeskConnector(BaseConnector):
             return synced
         if self._rebuild_ticket_edges:
             removed += await self._remove_records_outside_date_filters(RecordType.TICKET)
+            page_synced, page_removed, failed_ids = await self._sync_tickets_missing_from_export(
+                set(seen_ticket_updated) | rewritten_ids
+            )
+            synced += page_synced
+            removed += page_removed
+            pending_ticket_ids.update(failed_ids)
+            if failed_ids:
+                self._skip("some tickets")
         await self.records_sync_point.update_sync_point(
             SYNC_POINT_KEY,
             {
@@ -1924,6 +1934,93 @@ class ZendeskConnector(BaseConnector):
             _, _, failed_ids = await self._process_ticket_batch([ticket], replace_grants=True)
             still_pending.update(failed_ids)
         return still_pending
+
+    async def _sync_tickets_missing_from_export(
+        self, exported_ids: set[str]
+    ) -> tuple[int, int, list[str]]:
+        """Settle each stored ticket a complete full-sync export did not return.
+
+        Absence alone is not deletion: the export holds back the last minute, so a ticket
+        edited moments ago is missing from it. Zendesk is asked for each one by id.
+        Returned: it is synced like the rest. Not returned: it is gone, and the unlink
+        after the full sync takes it. No answer: it is kept as stored.
+
+        Returns (stored, removed, ids set aside because their comments failed).
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                held = await tx_store.get_records_by_record_type(
+                    self.connector_id, RecordType.TICKET.value
+                )
+        except Exception as e:
+            self.logger.warning(
+                f"Zendesk: could not list stored tickets; this full sync unlinks nothing: {e}"
+            )
+            self._skip("tickets")
+            return 0, 0, []
+        missing = {
+            record.external_record_id: record
+            for record in held
+            if record.external_record_id not in exported_ids
+            and str(record.external_record_id).isdigit()
+        }
+        if not missing:
+            return 0, 0, []
+        synced = 0
+        removed = 0
+        failed_ids: list[str] = []
+        datasource = await self._get_fresh_datasource()
+        ids = sorted(missing, key=int)
+        for start in range(0, len(ids), SHOW_MANY_TICKETS_LIMIT):
+            chunk = ids[start:start + SHOW_MANY_TICKETS_LIMIT]
+            try:
+                response = await self._call_api_with_retry(
+                    datasource.show_multiple_tickets,
+                    "zendesk/show_multiple_tickets",
+                    ids=",".join(chunk),
+                    include="users,groups,organizations",
+                )
+            except Exception as e:
+                self.logger.warning(f"Zendesk: show_multiple_tickets failed: {e}")
+                response = None
+            payload = response.data if response is not None and response.success else None
+            answered = payload.get("tickets") if isinstance(payload, dict) else None
+            # A malformed entry may be any of the requested tickets: unknown is not gone.
+            if not isinstance(answered, list) or not all(
+                isinstance(ticket, dict) and ticket.get("id") is not None for ticket in answered
+            ):
+                self.logger.warning(
+                    f"Zendesk did not answer for {len(chunk)} tickets left out of the "
+                    "export; keeping them as stored"
+                )
+                await self._keep_tickets([missing[ticket_id] for ticket_id in chunk])
+                continue
+            self._cache_sideloads(payload)
+            await self._add_sideloaded_org_members(payload)
+            chunk_set = set(chunk)
+            tickets = [ticket for ticket in answered if str(ticket["id"]) in chunk_set]
+            chunk_synced, chunk_removed, chunk_failed = await self._process_ticket_batch(tickets)
+            synced += chunk_synced
+            removed += chunk_removed
+            failed_ids.extend(chunk_failed)
+        return synced, removed, failed_ids
+
+    async def _keep_tickets(self, records: list[Record]) -> None:
+        """Keep unanswered stored tickets and their attachments through a full sync's unlink.
+
+        A failed keep reports the run incomplete instead, so nothing is unlinked.
+        """
+        try:
+            record_ids: list[str] = []
+            for record in records:
+                record_ids.extend(await self._with_attachment_ids(record))
+            self.data_entities_processor.note_kept_records(self.connector_id, record_ids)
+        except Exception as e:
+            self._skip("tickets")
+            self.logger.warning(
+                f"Zendesk: could not keep {len(records)} stored tickets; "
+                f"this full sync unlinks nothing: {e}"
+            )
 
     async def _replace_changed_record_permissions(
         self,

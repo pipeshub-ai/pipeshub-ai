@@ -1,0 +1,2870 @@
+{
+  "description": "Engine profile resolution (E4a): release defaults narrowed by the org ceiling, the agent and the request, in that order; one table for Node (domain/engine-profiles.ts) and Python (harness_core.engines.profiles). `release` is what this release ships (harness_engines/allowlist.json, Node's RELEASE_ENGINE_PROFILES). `releases` are the engines the cases resolve against: two native, one ACP agent (acp-<agent>), and an older opencode version beside the first (C14.01: an engine's first entry is its default version; `kind@version` picks another). A case's `acpOptIn` says who opts an ACP engine in (absent: `release`, every released one, where no org can set a ceiling; `org`, only one the org's ceiling names, ACP-driver). A refusal is `widening` (naming the first dimension in registry order and the layer) or `invalid` (a layer that is not a narrowing: unknown key, null, repeated item). `profileDigest` is the canonical digest of `profile` (executor.engine.profileDigest).",
+  "release": [
+    {
+      "engine": {
+        "kind": "opencode",
+        "version": "1.18.34",
+        "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+      },
+      "mode": "build",
+      "isolationMin": "gvisor",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 1000,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "accountKinds": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key",
+        "user_plan_sandbox_login"
+      ]
+    },
+    {
+      "engine": {
+        "kind": "codex",
+        "version": "0.160.0",
+        "binaryDigest": "sha256:d9244ef26a5193aec701e61c2f9280d44040efbedb9c16b4c0c6f41e354bcdd3"
+      },
+      "mode": "build",
+      "isolationMin": "gvisor",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 1000,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "accountKinds": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key",
+        "user_plan_sandbox_login"
+      ]
+    },
+    {
+      "engine": {
+        "kind": "claude_code",
+        "version": "2.1.319",
+        "binaryDigest": "sha256:dabafec82ca1319fa43d8be36a10fc61b1d11821cb98ad5df04ad95e199b8eed"
+      },
+      "mode": "build",
+      "isolationMin": "gvisor",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 1000,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "accountKinds": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key",
+        "user_plan_sandbox_login"
+      ]
+    },
+    {
+      "engine": {
+        "kind": "acp-opencode",
+        "version": "1.18.34",
+        "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+      },
+      "mode": "build",
+      "isolationMin": "gvisor",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 1000,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "accountKinds": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key",
+        "user_plan_sandbox_login"
+      ]
+    },
+    {
+      "engine": {
+        "kind": "acp-gemini",
+        "version": "0.63.0",
+        "binaryDigest": "sha256:5aee9ecb65b0b821e36a12f6e9e837301636de1a849a5a8bcc9c2b2620bbd72e"
+      },
+      "mode": "build",
+      "isolationMin": "gvisor",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 1000,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "accountKinds": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key",
+        "user_plan_sandbox_login"
+      ]
+    },
+    {
+      "engine": {
+        "kind": "acp-goose",
+        "version": "1.57.0",
+        "binaryDigest": "sha256:bb259a6f0dd02ce9c5e3793edb91e68a84d40eb24478e8b28dd556ebf3681dc1"
+      },
+      "mode": "build",
+      "isolationMin": "gvisor",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 1000,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "accountKinds": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key",
+        "user_plan_sandbox_login"
+      ]
+    },
+    {
+      "engine": {
+        "kind": "acp-qwen",
+        "version": "0.26.5",
+        "binaryDigest": "sha256:246f1cb65502335863d28a17ea43a10c6d9537bfb209b6f0beafccbf443c4435"
+      },
+      "mode": "build",
+      "isolationMin": "gvisor",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 1000,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "accountKinds": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key",
+        "user_plan_sandbox_login"
+      ]
+    },
+    {
+      "engine": {
+        "kind": "acp-dsh",
+        "version": "0.2.2-rc.1",
+        "binaryDigest": "sha256:b6640801a5a65aae9f53ca21bcce3b2ea28bd9e9554c939c1ff7c4448d91fa18"
+      },
+      "mode": "build",
+      "isolationMin": "gvisor",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 1000,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "accountKinds": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key",
+        "user_plan_sandbox_login"
+      ]
+    }
+  ],
+  "releases": [
+    {
+      "mode": "build",
+      "isolationMin": "docker",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "engine": {
+        "kind": "opencode",
+        "version": "1.18.34",
+        "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "accountKinds": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key",
+        "user_plan_sandbox_login"
+      ]
+    },
+    {
+      "mode": "build",
+      "isolationMin": "docker",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "engine": {
+        "kind": "codex",
+        "version": "0.160.0",
+        "binaryDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "accountKinds": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key",
+        "user_plan_sandbox_login"
+      ]
+    },
+    {
+      "mode": "build",
+      "isolationMin": "docker",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "engine": {
+        "kind": "acp-fake",
+        "version": "0.4.2",
+        "binaryDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "accountKinds": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key",
+        "user_plan_sandbox_login"
+      ]
+    },
+    {
+      "mode": "build",
+      "isolationMin": "docker",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "engine": {
+        "kind": "opencode",
+        "version": "1.17.0",
+        "binaryDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "accountKinds": [
+        "org_api_key",
+        "org_cloud",
+        "user_api_key",
+        "user_plan_sandbox_login"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "EV-1",
+      "behaviour": "no layer: the first release engine with the release defaults",
+      "layers": {},
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:73ae4bec7a44282d298375f5b112fb5220e600323cc57cccc1d0835f25e805e9"
+      }
+    },
+    {
+      "id": "EV-2",
+      "behaviour": "the org admits only the second engine: it runs",
+      "layers": {
+        "org": {
+          "engines": [
+            "codex"
+          ]
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "codex",
+            "version": "0.160.0",
+            "binaryDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:001c16bf6a3fe0ad453271dd50539cf55ed164841c292c96a9b08458bf7a6fdd"
+      }
+    },
+    {
+      "id": "EV-3",
+      "behaviour": "the org admits both, the agent picks one by version",
+      "layers": {
+        "org": {
+          "engines": [
+            "opencode",
+            "codex"
+          ]
+        },
+        "agent": {
+          "engines": [
+            "codex@0.160.0"
+          ]
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "codex",
+            "version": "0.160.0",
+            "binaryDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:001c16bf6a3fe0ad453271dd50539cf55ed164841c292c96a9b08458bf7a6fdd"
+      }
+    },
+    {
+      "id": "EV-4",
+      "behaviour": "the agent asks for an engine the org left out",
+      "layers": {
+        "org": {
+          "engines": [
+            "opencode"
+          ]
+        },
+        "agent": {
+          "engines": [
+            "codex"
+          ]
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engine",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-5",
+      "behaviour": "an engine version nobody released",
+      "layers": {
+        "agent": {
+          "engines": [
+            "opencode@9.9.9"
+          ]
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engine",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-6",
+      "behaviour": "the org raises the isolation floor and the agent raises it further",
+      "layers": {
+        "org": {
+          "isolationMin": "gvisor"
+        },
+        "agent": {
+          "isolationMin": "microvm"
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "microvm",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:8b22e842a24d4deb48061dc10fac1b25e4dd697220ebca93e7bfe85bfd0b4ec6"
+      }
+    },
+    {
+      "id": "EV-7",
+      "behaviour": "the agent lowers the org's isolation floor",
+      "layers": {
+        "org": {
+          "isolationMin": "gvisor"
+        },
+        "agent": {
+          "isolationMin": "docker"
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "isolationMin",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-8",
+      "behaviour": "an isolation of the same rank is a narrowing",
+      "layers": {
+        "org": {
+          "isolationMin": "gvisor"
+        },
+        "agent": {
+          "isolationMin": "k8s"
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "k8s",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:8471366f9e7fa15d361f2a41462fa127a408e773572bc2b93354852522314e05"
+      }
+    },
+    {
+      "id": "EV-9",
+      "behaviour": "plan narrows build",
+      "layers": {
+        "agent": {
+          "mode": "plan"
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "plan",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:65603f28af4cd20419797fb4abb58d282d835e678f83b190d387ba35727e572d"
+      }
+    },
+    {
+      "id": "EV-10",
+      "behaviour": "build after plan widens",
+      "layers": {
+        "agent": {
+          "mode": "plan"
+        },
+        "request": {
+          "mode": "build"
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "mode",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "EV-11",
+      "behaviour": "review after plan widens",
+      "layers": {
+        "org": {
+          "mode": "plan"
+        },
+        "request": {
+          "mode": "review"
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "mode",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "EV-12",
+      "behaviour": "egress none stays none",
+      "layers": {
+        "request": {
+          "egress": "none"
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:73ae4bec7a44282d298375f5b112fb5220e600323cc57cccc1d0835f25e805e9"
+      }
+    },
+    {
+      "id": "EV-13",
+      "behaviour": "an egress allowlist over none widens",
+      "layers": {
+        "request": {
+          "egress": "allowlist:pypi"
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "egress",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "EV-14",
+      "behaviour": "tool ceilings narrow layer by layer",
+      "layers": {
+        "org": {
+          "tools": {
+            "maxTools": 50
+          }
+        },
+        "agent": {
+          "tools": {
+            "maxTools": 20
+          }
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": 20,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:2b50bc17ab91623bd008f206971e57ce3db7d9832f28fc4e591ea0087a92f469"
+      }
+    },
+    {
+      "id": "EV-15",
+      "behaviour": "more tools than the layer above",
+      "layers": {
+        "org": {
+          "tools": {
+            "maxTools": 50
+          }
+        },
+        "agent": {
+          "tools": {
+            "maxTools": 20
+          }
+        },
+        "request": {
+          "tools": {
+            "maxTools": 30
+          }
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "tools.maxTools",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "EV-16",
+      "behaviour": "a read-only tool grant",
+      "layers": {
+        "request": {
+          "tools": {
+            "effects": [
+              "read"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "read"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:c06cca38443cd9c2cecce224915993196b3b5a2b33dbcdff8fc9c3db9ead0525"
+      }
+    },
+    {
+      "id": "EV-17",
+      "behaviour": "an effect class the org left out",
+      "layers": {
+        "org": {
+          "tools": {
+            "effects": [
+              "read",
+              "write"
+            ]
+          }
+        },
+        "agent": {
+          "tools": {
+            "effects": [
+              "execute",
+              "read"
+            ]
+          }
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "tools.effects",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-18",
+      "behaviour": "limits from three layers combine",
+      "layers": {
+        "org": {
+          "limits": {
+            "maxUsd": 5,
+            "maxTokens": 1000000
+          }
+        },
+        "agent": {
+          "limits": {
+            "maxSteps": 20
+          }
+        },
+        "request": {
+          "limits": {
+            "maxWallS": 600,
+            "maxUsd": 1.5
+          }
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 20,
+            "maxWallS": 600,
+            "maxTokens": 1000000,
+            "maxUsd": 1.5
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:bd9c6d4ea5e4819868ccac1ad3c725847e88e87fc165738f40f9a76f8ad6fa70"
+      }
+    },
+    {
+      "id": "EV-19",
+      "behaviour": "a step limit above the org's",
+      "layers": {
+        "org": {
+          "limits": {
+            "maxSteps": 30
+          }
+        },
+        "agent": {
+          "limits": {
+            "maxSteps": 40
+          }
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "limits.maxSteps",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-20",
+      "behaviour": "a step limit above the release's",
+      "layers": {
+        "request": {
+          "limits": {
+            "maxSteps": 51
+          }
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "limits.maxSteps",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "EV-21",
+      "behaviour": "a cost limit above the org's",
+      "layers": {
+        "org": {
+          "limits": {
+            "maxUsd": 2.5
+          }
+        },
+        "agent": {
+          "limits": {
+            "maxUsd": 2.6
+          }
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "limits.maxUsd",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-22",
+      "behaviour": "a limit the release leaves unlimited can be set, then only lowered",
+      "layers": {
+        "org": {
+          "limits": {
+            "maxTokens": 500000
+          }
+        },
+        "request": {
+          "limits": {
+            "maxTokens": 400000
+          }
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": 400000,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:a5d2d1ffe7d6d191d73a44cf0b56db1d630a1c25f09e220219e773acd17fa0c8"
+      }
+    },
+    {
+      "id": "EV-23",
+      "behaviour": "sub-agents on when the release has them off",
+      "layers": {
+        "agent": {
+          "subAgents": {
+            "enabled": true,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          }
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "subAgents.enabled",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-24",
+      "behaviour": "sub-agents off again is a narrowing",
+      "layers": {
+        "request": {
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          }
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:73ae4bec7a44282d298375f5b112fb5220e600323cc57cccc1d0835f25e805e9"
+      }
+    },
+    {
+      "id": "EV-25",
+      "behaviour": "reasoning effort narrows, then a higher one widens",
+      "layers": {
+        "org": {
+          "reasoningEffort": "medium"
+        },
+        "agent": {
+          "reasoningEffort": "low"
+        },
+        "request": {
+          "reasoningEffort": "high"
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "reasoningEffort",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "EV-26",
+      "behaviour": "any effort when the release sets none",
+      "layers": {
+        "agent": {
+          "reasoningEffort": "high"
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": "high",
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:d4697828d397d0e185cf29a58e27e77a471cb9fd10a7ae41893e7d8bc7c2be35"
+      }
+    },
+    {
+      "id": "EV-27",
+      "behaviour": "the org denies writes; the agent may not relax that to ask",
+      "layers": {
+        "org": {
+          "approvals": {
+            "write": "deny"
+          }
+        },
+        "agent": {
+          "approvals": {
+            "write": "ask"
+          }
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "approvals.write",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-28",
+      "behaviour": "approvals made stricter per class",
+      "layers": {
+        "org": {
+          "approvals": {
+            "write": "deny"
+          }
+        },
+        "request": {
+          "approvals": {
+            "read": "ask",
+            "execute": "deny"
+          }
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "ask",
+            "workspace": "allow",
+            "write": "deny",
+            "execute": "deny"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:b3a2b62b38f4da21c5f2e479370e5709e534a2979974e91fce1c765e5401041d"
+      }
+    },
+    {
+      "id": "EV-29",
+      "behaviour": "writes allowed without asking widens the release",
+      "layers": {
+        "agent": {
+          "approvals": {
+            "write": "allow"
+          }
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "approvals.write",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-30",
+      "behaviour": "skills narrow to a subset, then a skill outside it widens",
+      "layers": {
+        "org": {
+          "skills": [
+            "pdf",
+            "xlsx"
+          ]
+        },
+        "agent": {
+          "skills": [
+            "xlsx"
+          ]
+        },
+        "request": {
+          "skills": [
+            "docx"
+          ]
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "skills",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "EV-31",
+      "behaviour": "any skill set narrows the release's 'any'",
+      "layers": {
+        "agent": {
+          "skills": [
+            "pdf",
+            "xlsx"
+          ]
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": [
+            "pdf",
+            "xlsx"
+          ],
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:77cd70902283d3199cf2a9bf654ac0658d9e58d62bea9b8eb317cccfe3a37b95"
+      }
+    },
+    {
+      "id": "EV-32",
+      "behaviour": "a layer that widens twice is refused on the first dimension in registry order",
+      "layers": {
+        "org": {
+          "skills": [
+            "pdf"
+          ],
+          "limits": {
+            "maxSteps": 10
+          }
+        },
+        "agent": {
+          "skills": [
+            "docx"
+          ],
+          "limits": {
+            "maxSteps": 11
+          }
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "limits.maxSteps",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-33",
+      "behaviour": "a null limit (asking for unlimited) is invalid",
+      "layers": {
+        "org": {
+          "limits": {
+            "maxSteps": null
+          }
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "invalid"
+        }
+      }
+    },
+    {
+      "id": "EV-34",
+      "behaviour": "an unknown dimension is invalid",
+      "layers": {
+        "agent": {
+          "network": "open"
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "invalid"
+        }
+      }
+    },
+    {
+      "id": "EV-35",
+      "behaviour": "a repeated engine is invalid",
+      "layers": {
+        "request": {
+          "engines": [
+            "opencode",
+            "opencode"
+          ]
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "invalid"
+        }
+      }
+    },
+    {
+      "id": "EV-36",
+      "behaviour": "the stage 1 read-only task narrowing",
+      "layers": {
+        "request": {
+          "mode": "plan",
+          "tools": {
+            "effects": [
+              "read"
+            ]
+          },
+          "approvals": {
+            "write": "deny",
+            "execute": "deny"
+          },
+          "limits": {
+            "maxSteps": 20,
+            "maxWallS": 600
+          }
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "plan",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "read"
+            ]
+          },
+          "limits": {
+            "maxSteps": 20,
+            "maxWallS": 600,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "deny",
+            "execute": "deny"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:46efda2961c08c719f2411099893a9b918d06130684cf23de949ed211bcefc92"
+      }
+    },
+    {
+      "id": "EV-37",
+      "behaviour": "an org ceiling on every dimension, an empty agent layer",
+      "layers": {
+        "org": {
+          "engines": [
+            "opencode"
+          ],
+          "mode": "build",
+          "isolationMin": "gvisor",
+          "egress": "none",
+          "tools": {
+            "maxTools": 64,
+            "effects": [
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 40,
+            "maxWallS": 1200,
+            "maxTokens": 2000000,
+            "maxUsd": 10
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": "high",
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "deny"
+          },
+          "skills": [
+            "docx",
+            "pdf",
+            "pptx",
+            "xlsx"
+          ]
+        },
+        "agent": {}
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "gvisor",
+          "egress": "none",
+          "tools": {
+            "maxTools": 64,
+            "effects": [
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 40,
+            "maxWallS": 1200,
+            "maxTokens": 2000000,
+            "maxUsd": 10.0
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": "high",
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "deny"
+          },
+          "skills": [
+            "docx",
+            "pdf",
+            "pptx",
+            "xlsx"
+          ],
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:c7f13b38c429bfec32773a611813f5957a0769e31b6a952bc43faa94f5f70939"
+      }
+    },
+    {
+      "id": "EV-38",
+      "behaviour": "an empty skill set is a narrowing (no skills)",
+      "layers": {
+        "request": {
+          "skills": []
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": [],
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:86d1e7650a056e0185a1c3fc955a272c34f659f4349f466ff64ca5bff2b36373"
+      }
+    },
+    {
+      "id": "EV-39",
+      "behaviour": "an empty effect set is a narrowing (no gateway tools)",
+      "layers": {
+        "request": {
+          "tools": {
+            "effects": []
+          }
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": []
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:6d09cf01a3249a89b8d35c77bec813a05dc6cdff119a9071f4f883d2e80b54de"
+      }
+    },
+    {
+      "id": "EV-40",
+      "behaviour": "A1 EP-A1: the org narrows accountKinds to the org's own key",
+      "layers": {
+        "org": {
+          "accountKinds": [
+            "org_api_key"
+          ]
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key"
+          ]
+        },
+        "profileDigest": "sha256:b5242c82db46283a0d178a1508bf351654fd50ac1c74cff0452feedf5e5c702f"
+      }
+    },
+    {
+      "id": "EV-41",
+      "behaviour": "A1 EP-A1: org then request narrow accountKinds; the narrowest applies",
+      "layers": {
+        "org": {
+          "accountKinds": [
+            "org_api_key",
+            "user_api_key"
+          ]
+        },
+        "request": {
+          "accountKinds": [
+            "user_api_key"
+          ]
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "user_api_key"
+          ]
+        },
+        "profileDigest": "sha256:95b283d207ade10bb2e59b3e47d368a7f21a9e290f7cb359c33696430ced6e92"
+      }
+    },
+    {
+      "id": "EV-42",
+      "behaviour": "A1 EP-A2: a kind the release does not offer (a consumer plan) is a widening",
+      "layers": {
+        "agent": {
+          "accountKinds": [
+            "user_plan_injected"
+          ]
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "accountKinds",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-43",
+      "behaviour": "A1 EP-A2: a request asking back a kind the org removed is a widening",
+      "layers": {
+        "org": {
+          "accountKinds": [
+            "org_api_key"
+          ]
+        },
+        "request": {
+          "accountKinds": [
+            "org_api_key",
+            "user_api_key"
+          ]
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "accountKinds",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "EV-44",
+      "behaviour": "A1: an empty or repeated accountKinds list is not a narrowing",
+      "layers": {
+        "org": {
+          "accountKinds": []
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "invalid"
+        }
+      }
+    },
+    {
+      "id": "EV-45",
+      "behaviour": "an agent asks for an ACP engine the org never named: refused at the agent",
+      "acpOptIn": "org",
+      "layers": {
+        "agent": {
+          "engines": [
+            "acp-fake"
+          ]
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engine",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-46",
+      "behaviour": "the org names the ACP engine beside a native one, the agent picks it",
+      "acpOptIn": "org",
+      "layers": {
+        "org": {
+          "engines": [
+            "opencode",
+            "acp-fake"
+          ]
+        },
+        "agent": {
+          "engines": [
+            "acp-fake"
+          ]
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "acp-fake",
+            "version": "0.4.2",
+            "binaryDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:082a36558b401209c9997820a47fb1aa4f278877e5eb7c9bfabd9e479df60669"
+      }
+    },
+    {
+      "id": "EV-47",
+      "behaviour": "the org names only the ACP engine by version: it runs",
+      "acpOptIn": "org",
+      "layers": {
+        "org": {
+          "engines": [
+            "acp-fake@0.4.2"
+          ]
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "acp-fake",
+            "version": "0.4.2",
+            "binaryDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:082a36558b401209c9997820a47fb1aa4f278877e5eb7c9bfabd9e479df60669"
+      }
+    },
+    {
+      "id": "EV-48",
+      "behaviour": "the org names native engines only: the ACP engine stays out even for an agent with no engines",
+      "layers": {
+        "org": {
+          "engines": [
+            "codex"
+          ]
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "codex",
+            "version": "0.160.0",
+            "binaryDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:001c16bf6a3fe0ad453271dd50539cf55ed164841c292c96a9b08458bf7a6fdd"
+      }
+    },
+    {
+      "id": "EV-49",
+      "behaviour": "the org's ceiling names no engines: only the native engines are candidates",
+      "acpOptIn": "org",
+      "layers": {
+        "org": {
+          "mode": "plan"
+        },
+        "agent": {
+          "engines": [
+            "acp-fake"
+          ]
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engine",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-50",
+      "behaviour": "two versions of one engine: the kind resolves to its first (default) version",
+      "layers": {
+        "agent": {
+          "engines": [
+            "opencode"
+          ]
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:73ae4bec7a44282d298375f5b112fb5220e600323cc57cccc1d0835f25e805e9"
+      }
+    },
+    {
+      "id": "EV-51",
+      "behaviour": "the org turns the default version off: the kind resolves to the version it left on",
+      "layers": {
+        "org": {
+          "engines": [
+            "opencode@1.17.0",
+            "codex"
+          ]
+        },
+        "agent": {
+          "engines": [
+            "opencode"
+          ]
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.17.0",
+            "binaryDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:8d59f077390be3fb92f317b2ae8591a568ca79f4fde96e4b49417c67f2bb9b9e"
+      }
+    },
+    {
+      "id": "EV-52",
+      "behaviour": "a chat held to a version the org turned off is refused on that layer (admission then moves the chat to the default)",
+      "layers": {
+        "org": {
+          "engines": [
+            "opencode@1.18.34"
+          ]
+        },
+        "agent": {
+          "engines": [
+            "opencode@1.17.0"
+          ]
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engine",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-53",
+      "behaviour": "no org can opt engines in: an agent's ACP engine is a candidate with no ceiling",
+      "acpOptIn": "release",
+      "layers": {
+        "agent": {
+          "engines": [
+            "acp-fake"
+          ]
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "acp-fake",
+            "version": "0.4.2",
+            "binaryDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:082a36558b401209c9997820a47fb1aa4f278877e5eb7c9bfabd9e479df60669"
+      }
+    },
+    {
+      "id": "EV-54",
+      "behaviour": "no org can opt engines in: a ceiling that names no engines leaves the ACP engine a candidate",
+      "acpOptIn": "release",
+      "layers": {
+        "org": {
+          "mode": "plan"
+        },
+        "agent": {
+          "engines": [
+            "acp-fake"
+          ]
+        }
+      },
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "acp-fake",
+            "version": "0.4.2",
+            "binaryDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+          },
+          "mode": "plan",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:cba4654e1c82f88cbe12eec8071015bb55e764a60bb29ba7753b91cfda3b7a8f"
+      }
+    },
+    {
+      "id": "EV-55",
+      "behaviour": "no org can opt engines in: a ceiling that lists engines still leaves out an ACP engine it does not name",
+      "acpOptIn": "release",
+      "layers": {
+        "org": {
+          "engines": [
+            "opencode"
+          ]
+        },
+        "agent": {
+          "engines": [
+            "acp-fake"
+          ]
+        }
+      },
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engine",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "EV-56",
+      "behaviour": "no org can opt engines in: with no layer the first release engine still runs",
+      "acpOptIn": "release",
+      "layers": {},
+      "expect": {
+        "profile": {
+          "engine": {
+            "kind": "opencode",
+            "version": "1.18.34",
+            "binaryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "mode": "build",
+          "isolationMin": "docker",
+          "egress": "none",
+          "tools": {
+            "maxTools": null,
+            "effects": [
+              "execute",
+              "read",
+              "workspace",
+              "write"
+            ]
+          },
+          "limits": {
+            "maxSteps": 50,
+            "maxWallS": 1800,
+            "maxTokens": null,
+            "maxUsd": null
+          },
+          "subAgents": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "reasoningEffort": null,
+          "approvals": {
+            "read": "allow",
+            "workspace": "allow",
+            "write": "ask",
+            "execute": "ask"
+          },
+          "skills": null,
+          "accountKinds": [
+            "org_api_key",
+            "org_cloud",
+            "user_api_key",
+            "user_plan_sandbox_login"
+          ]
+        },
+        "profileDigest": "sha256:73ae4bec7a44282d298375f5b112fb5220e600323cc57cccc1d0835f25e805e9"
+      }
+    }
+  ]
+}

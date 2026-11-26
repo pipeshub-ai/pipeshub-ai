@@ -64,6 +64,8 @@ spec:
         {{- include "pipeshub-ai.labels" . | nindent 8 }}
         app.kubernetes.io/component: zookeeper
     spec:
+      # Store pods never call the Kubernetes API: no service-account token to steal (SEC-D-10).
+      automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.zookeeper.podSecurityContext | nindent 8 }}
       affinity:
@@ -78,7 +80,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: zookeeper
-          image: "{{ .Values.zookeeper.image.repository }}:{{ .Values.zookeeper.image.tag }}"
+          image: {{ include "pipeshub-ai.image" (dict "image" .Values.zookeeper.image "global" .Values.global) | quote }}
           imagePullPolicy: {{ .Values.zookeeper.image.pullPolicy }}
           ports:
             - containerPort: 2181

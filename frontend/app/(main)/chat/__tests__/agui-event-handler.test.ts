@@ -94,6 +94,37 @@ describe('createAGUIEventHandler', () => {
     });
   });
 
+  it('CITESTREAM: a durable run\'s live answer delta makes a streamed citation resolvable before the run ends', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const first = 'The Q3 launch moves to May [source](ref1) ';
+    const numbered = 'The Q3 launch moves to May [1](/record/r1/preview#blockIndex=0) ';
+    const citations = [{ chunkIndex: 1, content: 'The Q3 launch moves to May.', metadata: { recordId: 'r1' } }];
+    const delta = (normalizedAnswer: string, rawLength: number) =>
+      frame('STATE_DELTA', {
+        delta: [
+          { op: 'replace', path: '/citations', value: citations },
+          { op: 'replace', path: '/normalizedAnswer', value: normalizedAnswer },
+          { op: 'replace', path: '/rawLength', value: rawLength },
+        ],
+      });
+
+    handle(frame('TEXT_MESSAGE_START'));
+    handle(frame('TEXT_MESSAGE_CONTENT', { delta: first }));
+    // The projector's live answer delta: rawLength is the text this message has shown so far.
+    handle(delta(numbered, first.length));
+    expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: '', accumulated: numbered, citations });
+
+    const tail = 'and the budget is unchanged.';
+    handle(frame('TEXT_MESSAGE_CONTENT', { delta: tail }));
+    handle(frame('TEXT_MESSAGE_END'));
+    // Closing the turn keeps the numbered text and its sources.
+    handle(delta(numbered + tail, (first + tail).length));
+
+    expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: '', accumulated: numbered + tail, citations });
+    expect(spies.onComplete).not.toHaveBeenCalled();
+  });
+
   it('does not shrink the visible buffer when normalizedAnswer lags behind the raw stream', () => {
     const { callbacks, spies } = makeCallbacks();
     const handle = createAGUIEventHandler(callbacks);
@@ -306,6 +337,16 @@ describe('createAGUIEventHandler', () => {
     });
   });
 
+  it('QAFIX-8: a code task hand-off names its engine, never the role id', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('STEP_STARTED', { stepName: 'sub_agent:pipeshub-subagent', childEngine: 'codex' }));
+    handle(frame('STEP_STARTED', { stepName: 'sub_agent:pipeshub-subagent', childEngine: 'claude_code' }));
+
+    expect(spies.onStatus.mock.calls.map(([s]) => s.message)).toEqual(['Delegating to Codex...', 'Delegating to Claude Code...']);
+  });
+
   it('ignores STEP_STARTED for non sub-agent steps', () => {
     const { callbacks, spies } = makeCallbacks();
     const handle = createAGUIEventHandler(callbacks);
@@ -321,7 +362,7 @@ describe('createAGUIEventHandler', () => {
 
     handle(frame('TOOL_CALL_START', { toolCallName: 'jira_search' }));
 
-    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'executing', message: 'Using Jira Search...' });
+    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'executing', message: 'Using Jira search...' });
   });
 
   it('restores Thinking status on TEXT_MESSAGE_END so the UI is not idle between narration and the next tool', () => {
@@ -346,7 +387,7 @@ describe('createAGUIEventHandler', () => {
       toolCallId: 'call-1',
     }));
 
-    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'executing', message: 'Using Run Code...' });
+    expect(spies.onStatus).toHaveBeenCalledWith({ status: 'executing', message: 'Running code...' });
   });
 
   it('restores Thinking status after TOOL_CALL_RESULT while waiting for the next LLM turn', () => {
@@ -784,6 +825,61 @@ describe('createAGUIEventHandler — live agent-activity parts timeline', () => 
       { type: 'text', content: 'root answer', runId: 'root' },
     ]);
     // A child RUN_FINISHED must not be mistaken for the stream's own completion.
+    expect(spies.onComplete).not.toHaveBeenCalled();
+  });
+
+  it('WP62-ERR-4: a child RUN_ERROR keeps its machine errorType on the row and never shows its message as an error', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('RUN_STARTED', { runId: 'root' }));
+    handle(frame('STEP_STARTED', { runId: 'root', stepName: 'sub_agent:explorer' }));
+    handle(frame('RUN_STARTED', { runId: 'child-1', parentRunId: 'root' }));
+    handle(
+      frame('RUN_ERROR', {
+        runId: 'child-1',
+        parentRunId: 'root',
+        message: 'This sub-task reached its spending limit and was stopped.',
+        code: 'agent_error',
+        errorType: 'budget_exhausted',
+      }),
+    );
+
+    expect(spies.onParts.mock.calls.at(-1)?.[0]).toEqual([
+      { type: 'sub_agent', runId: 'child-1', roleName: 'explorer', status: 'failed', parts: [], errorType: 'budget_exhausted' },
+    ]);
+    expect(spies.onError).not.toHaveBeenCalled();
+  });
+
+  it('UI-1 (K-L): a durable deep run’s child frames nest each sub-agent under the parent', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const snapshot = (runId: string, status: string) =>
+      frame('STATE_SNAPSHOT', {
+        runId,
+        snapshot: { run_id: runId, parent_run_id: 'root', role_name: 'pipeshub-subagent', status },
+      });
+
+    // What Node projects from `child.spawned` / `child.completed` on the parent's stream.
+    handle(frame('RUN_STARTED', { threadId: 'conv-1', runId: 'root' }));
+    handle(frame('STEP_STARTED', { stepName: 'sub_agent:pipeshub-subagent-jira', runId: 'root' }));
+    handle(frame('RUN_STARTED', { threadId: 'conv-1', runId: 'child-1', parentRunId: 'root' }));
+    handle(snapshot('child-1', 'running'));
+    handle(frame('STEP_STARTED', { stepName: 'sub_agent:pipeshub-subagent-confluence', runId: 'root' }));
+    handle(frame('RUN_STARTED', { threadId: 'conv-1', runId: 'child-2', parentRunId: 'root' }));
+    handle(snapshot('child-2', 'running'));
+    handle(snapshot('child-1', 'completed'));
+    handle(frame('RUN_FINISHED', { runId: 'child-1', parentRunId: 'root' }));
+    handle(frame('STEP_FINISHED', { stepName: 'sub_agent:pipeshub-subagent-jira', runId: 'root' }));
+    handle(snapshot('child-2', 'failed'));
+    handle(frame('RUN_ERROR', { runId: 'child-2', parentRunId: 'root', message: 'auth_error', code: 'agent_error' }));
+
+    expect(spies.onParts.mock.calls.at(-1)?.[0]).toEqual([
+      { type: 'sub_agent', runId: 'child-1', roleName: 'pipeshub-subagent-jira', status: 'completed', parts: [] },
+      { type: 'sub_agent', runId: 'child-2', roleName: 'pipeshub-subagent-confluence', status: 'failed', parts: [] },
+    ]);
+    // A child's ending is not the run's.
+    expect(spies.onError).not.toHaveBeenCalled();
     expect(spies.onComplete).not.toHaveBeenCalled();
   });
 
@@ -1264,5 +1360,33 @@ describe('createAGUIEventHandler — a model call discarded mid-stream', () => {
     handle(patch('Part one, ', 10, true));
 
     expect(spies.onChunk).toHaveBeenLastCalledWith({ chunk: '', accumulated: 'Part one, ', citations: [] });
+  });
+
+  it('FU2-4: a durable stream retracts each failed attempt and leaves only the error answer', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const restarted = vi.fn();
+    const handle = createAGUIEventHandler(callbacks, undefined, {
+      replaceRestartedMessages: true,
+      onMessageRestarted: restarted,
+    });
+    for (const id of ['m1', 'm2']) {
+      handle(frame('TEXT_MESSAGE_START', { runId: 'root', messageId: id, role: 'assistant' }));
+      handle(frame('TEXT_MESSAGE_CONTENT', { runId: 'root', messageId: id, delta: 'The refund policy is' }));
+      handle(frame('TEXT_MESSAGE_END', { runId: 'root', messageId: id }));
+      handle(frame('CUSTOM', { runId: 'root', name: 'message_discarded', value: { messageId: id } }));
+      handle(patch('', 0, true));
+    }
+    handle(patch('The AI model provider is not responding.', 40));
+
+    expect(restarted).not.toHaveBeenCalled();
+    const texts = (spies.onParts.mock.calls.at(-1)?.[0] ?? [])
+      .filter((part: { type: string }) => part.type === 'text')
+      .map((part: { content: string }) => part.content);
+    expect(texts.join('')).not.toContain('The refund policy');
+    expect(spies.onChunk).toHaveBeenLastCalledWith({
+      chunk: '',
+      accumulated: 'The AI model provider is not responding.',
+      citations: [],
+    });
   });
 });

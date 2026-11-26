@@ -16,10 +16,11 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.tools.base import (
     _PYTHON_TYPES,
     ParameterType,
+    Tag,
     Tool,
     ToolOutput,
     ToolParameter,
-    _fuzzy_match_enum,
+    fuzzy_match_enum,
 )
 from app.agent_loop_lib.tools.decorators import (
     accepted_argument_names,
@@ -575,7 +576,7 @@ def _checked_value(
             value = coerced
 
     if enum_is_authoritative and param.enum is not None and value not in param.enum:
-        matched = _fuzzy_match_enum(value, param.enum)
+        matched = fuzzy_match_enum(value, param.enum)
         if matched is None:
             raise ToolValidationError(f"argument '{param.name}' must be one of {param.enum}, got {value!r}")
         value = matched
@@ -688,11 +689,16 @@ class PipesHubStructuredToolAdapter(Tool):
         app_name: str,
         tool_name: str,
         *,
+        effect: Tag | None = None,
+        sink: Tag | None = None,
+        provider: Tag | None = None,
+        flow: tuple[Tag, ...] = (),
         short_description: str | None = None,
     ) -> None:
         self._structured_tool = structured_tool
         self._app_name = app_name
         self._tool_name = tool_name
+        self._tags = [*(tag for tag in (effect, sink, provider) if tag is not None), *flow]
         self._short_description = short_description
 
     @property
@@ -722,6 +728,10 @@ class PipesHubStructuredToolAdapter(Tool):
     @property
     def path(self) -> str:
         return f"/dynamic/{self._app_name}/{self._tool_name}"
+
+    @property
+    def tags(self) -> list[Tag]:
+        return list(self._tags)
 
     @property
     def parameters(self) -> list[ToolParameter]:

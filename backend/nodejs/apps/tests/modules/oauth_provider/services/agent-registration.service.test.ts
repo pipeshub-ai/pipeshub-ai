@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import jwt from 'jsonwebtoken';
 import { AgentRegistrationService } from '../../../../src/modules/oauth_provider/services/agent-registration.service';
+import { FirstPartyDeviceAppService } from '../../../../src/modules/oauth_provider/services/oauth.first_party_device.service';
 import { OAuthTokenService } from '../../../../src/modules/oauth_provider/services/oauth_token.service';
 import {
   AgentRegistrationStatus,
@@ -128,12 +129,14 @@ describe('AgentRegistrationService', () => {
   let generate: sinon.SinonStub;
   let user: { fullName: string } | null;
   let app: { clientId: string; allowedScopes: string[] };
+  let cap: string[] | null;
   let logger: MockLogger;
   let tokensLogger: MockLogger;
 
   beforeEach(() => {
     delete process.env.PIPESHUB_ENABLE_DEVICE_GRANT;
     app = { clientId: 'pipeshub-agent', allowedScopes: [...SCOPES] };
+    cap = null;
     repo = new FakeRepo();
     setOAuthTokenRepository(repo as any);
     user = { fullName: 'Ada' };
@@ -167,7 +170,14 @@ describe('AgentRegistrationService', () => {
         resolveGrantedScopes: (r: string[]) => ({ granted: r, notGranted: [] }),
         getScopeDefinitions: (s: string[]) => s.map((name) => ({ name })),
       } as any,
-      { getOrCreate: sinon.stub().resolves('pipeshub-agent') } as any,
+      {
+        getOrCreate: sinon.stub().resolves('pipeshub-agent'),
+        // The real cap over a stubbed preset: the current MCP_SCOPES when set, else whatever the app holds.
+        resolveScopes: () => cap ?? app.allowedScopes,
+        capScopes(a: any) {
+          return FirstPartyDeviceAppService.prototype.capScopes.call(this as any, a);
+        },
+      } as any,
       { frontendUrl: 'https://app.test', oauthIssuer: ISSUER } as any,
     );
   });
@@ -199,15 +209,14 @@ describe('AgentRegistrationService', () => {
     service.register('service_auth', email);
   const attemptToken = (uri: string) =>
     new URL(uri).searchParams.get('claim_attempt_token')!;
+  /** The scope names the claim page shows for this attempt, which an approval sends back. */
+  const shownFor = async (token: string) =>
+    (await service.getClaimContext(token, USER)).scopes.map((s) => s.name);
   /** Registers, then has the person approve it. */
   const claimed = async () => {
     const r = await register();
-    await service.completeClaim(
-      attemptToken(r.claim.verification_uri),
-      r.claim.user_code,
-      'approve',
-      USER,
-    );
+    const token = attemptToken(r.claim.verification_uri);
+    await service.completeClaim(token, r.claim.user_code, 'approve', USER, await shownFor(token));
     return r;
   };
 
@@ -299,6 +308,7 @@ describe('AgentRegistrationService', () => {
         again.claim_attempt.user_code,
         'approve',
         USER,
+        await shownFor(attemptToken(again.claim_attempt.verification_uri)),
       );
     });
 
@@ -313,13 +323,13 @@ describe('AgentRegistrationService', () => {
         'invalid_claim_token',
       );
       const [row] = [...repo.rows.values()];
-      row.expiresAt = new Date(Date.now() - 1000);
+      row!.expiresAt = new Date(Date.now() - 1000);
       await expectFail(
         service.startClaim(r.claim_token, 'ada@example.com'),
         'claim_expired',
       );
-      row.expiresAt = new Date(Date.now() + 60000);
-      row.status = AgentRegistrationStatus.CLAIMED;
+      row!.expiresAt = new Date(Date.now() + 60000);
+      row!.status = AgentRegistrationStatus.CLAIMED;
       await expectFail(
         service.startClaim(r.claim_token, 'ada@example.com'),
         'claimed_or_in_flight',
@@ -354,12 +364,12 @@ describe('AgentRegistrationService', () => {
         ),
         'access_denied',
       );
-      expect([...repo.rows.values()][0].status).to.equal('pending');
+      expect([...repo.rows.values()][0]!.status).to.equal('pending');
     });
 
     it('refuses an expired attempt', async () => {
       const r = await register();
-      [...repo.rows.values()][0].attemptExpiresAt = new Date(Date.now() - 1);
+      [...repo.rows.values()][0]!.attemptExpiresAt = new Date(Date.now() - 1);
       await expectFail(
         service.completeClaim(
           attemptToken(r.claim.verification_uri),
@@ -381,11 +391,29 @@ describe('AgentRegistrationService', () => {
           'invalid_user_code',
         );
       }
-      expect([...repo.rows.values()][0].status).to.equal('expired');
+      expect([...repo.rows.values()][0]!.status).to.equal('expired');
       await expectFail(
         service.completeClaim(t, r.claim.user_code, 'approve', USER),
         'invalid_request',
       );
+    });
+
+    it('refuses an approval once MCP_SCOPES widened after the page was shown, and records exactly what was shown', async () => {
+      app.allowedScopes = ['org:read', 'kb:read', 'offline_access'];
+      cap = ['org:read', 'offline_access'];
+      const r = await register();
+      const token = attemptToken(r.claim.verification_uri);
+      const shown = await shownFor(token);
+      expect(shown).to.deep.equal(['org:read']);
+      cap = null; // MCP_SCOPES widened and the server restarted while the page was open
+      await expectFail(service.completeClaim(token, r.claim.user_code, 'approve', USER, shown), 'invalid_request');
+      await expectFail(service.completeClaim(token, r.claim.user_code, 'approve', USER), 'invalid_request');
+      expect([...repo.rows.values()][0]!.status).to.equal('pending');
+      // Reloaded, the page shows the new list, and that is what the approval records.
+      const again = await shownFor(token);
+      expect(again).to.deep.equal(['org:read', 'kb:read']);
+      await service.completeClaim(token, r.claim.user_code, 'approve', USER, again);
+      expect([...repo.rows.values()][0]!.approvedScopes).to.deep.equal(['org:read', 'kb:read']);
     });
 
     it('marks the registration revoked on deny', async () => {
@@ -398,7 +426,7 @@ describe('AgentRegistrationService', () => {
           USER,
         ),
       ).to.equal('revoked');
-      expect([...repo.rows.values()][0].status).to.equal('revoked');
+      expect([...repo.rows.values()][0]!.status).to.equal('revoked');
       expect(logger.info.lastCall.args).to.deep.equal(['claim.denied', { registration_id: r.registration_id }]);
     });
 
@@ -420,7 +448,7 @@ describe('AgentRegistrationService', () => {
     it('keeps a registration that is never claimed only to the end of its window', async () => {
       await register();
       const [row] = [...repo.rows.values()];
-      expect(row.purgeAt.getTime()).to.equal(row.expiresAt.getTime());
+      expect(row!.purgeAt.getTime()).to.equal(row!.expiresAt.getTime());
     });
 
     it('shows the signed-in person what is being granted', async () => {
@@ -455,10 +483,10 @@ describe('AgentRegistrationService', () => {
       await expectFail(service.claimGrant('clm_nope'), 'expired_token');
       const r = await register();
       const [row] = [...repo.rows.values()];
-      row.expiresAt = new Date(Date.now() - 1);
+      row!.expiresAt = new Date(Date.now() - 1);
       await expectFail(service.claimGrant(r.claim_token), 'expired_token');
-      row.expiresAt = new Date(Date.now() + 60000);
-      row.status = AgentRegistrationStatus.EXPIRED;
+      row!.expiresAt = new Date(Date.now() + 60000);
+      row!.status = AgentRegistrationStatus.EXPIRED;
       await expectFail(service.claimGrant(r.claim_token), 'expired_token');
     });
 
@@ -506,7 +534,7 @@ describe('AgentRegistrationService', () => {
       });
       const [row] = [...repo.rows.values()];
       const claims = jwt.decode(out.identity_assertion!) as jwt.JwtPayload;
-      expect(row.purgeAt.getTime()).to.be.greaterThan(claims.exp! * 1000);
+      expect(row!.purgeAt.getTime()).to.be.greaterThan(claims.exp! * 1000);
     });
 
     it('keeps to what the person approved when the app is widened afterwards', async () => {
@@ -529,6 +557,28 @@ describe('AgentRegistrationService', () => {
         service.jwtBearerGrant(out.identity_assertion!),
         'invalid_grant',
       );
+    });
+
+    it('approves and mints only what MCP_SCOPES allows now, not the agent app\'s stored list', async () => {
+      app.allowedScopes = ['org:read', 'kb:read', 'offline_access'];
+      cap = ['org:read', 'offline_access'];
+      const r = await claimed();
+      const out = await service.claimGrant(r.claim_token);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
+      generate.resetHistory();
+      await service.jwtBearerGrant(out.identity_assertion!);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
+    });
+
+    it('drops a scope MCP_SCOPES lost after the approval, at the claim and at every assertion', async () => {
+      app.allowedScopes = ['org:read', 'kb:read', 'offline_access'];
+      const r = await claimed(); // approved with org:read and kb:read
+      cap = ['org:read', 'offline_access'];
+      const out = await service.claimGrant(r.claim_token);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
+      generate.resetHistory();
+      await service.jwtBearerGrant(out.identity_assertion!);
+      expect(generate.firstCall.args[3]).to.deep.equal(['org:read']);
     });
 
     it('works once: afterwards invalid_grant', async () => {
@@ -632,7 +682,7 @@ describe('AgentRegistrationService', () => {
 
     it('refuses a revoked registration', async () => {
       const assertion = await consumed();
-      [...repo.rows.values()][0].status = AgentRegistrationStatus.REVOKED;
+      [...repo.rows.values()][0]!.status = AgentRegistrationStatus.REVOKED;
       await expectFail(service.jwtBearerGrant(assertion), 'invalid_grant');
     });
 
@@ -675,7 +725,7 @@ describe('AgentRegistrationService', () => {
       expect(await tokens.revokeAgentToken(out.identity_assertion!)).to.equal(
         true,
       );
-      expect([...repo.rows.values()][0].status).to.equal(
+      expect([...repo.rows.values()][0]!.status).to.equal(
         AgentRegistrationStatus.REVOKED,
       );
       await expectFail(
@@ -689,7 +739,7 @@ describe('AgentRegistrationService', () => {
       await service.claimGrant(r.claim_token);
       const access = accessFor(r.registration_id);
       expect(await tokens.revokeAgentToken(access)).to.equal(true);
-      expect([...repo.rows.values()][0].status).to.equal(
+      expect([...repo.rows.values()][0]!.status).to.equal(
         AgentRegistrationStatus.REVOKED,
       );
       expect(repo.revoked).to.have.length(1);
@@ -711,7 +761,7 @@ describe('AgentRegistrationService', () => {
         { algorithm: 'HS256' },
       );
       expect(await tokens.revokeAgentToken(expired)).to.equal(true);
-      expect([...repo.rows.values()][0].status).to.equal(
+      expect([...repo.rows.values()][0]!.status).to.equal(
         AgentRegistrationStatus.REVOKED,
       );
     });
@@ -739,7 +789,7 @@ describe('AgentRegistrationService', () => {
         ),
       ).to.equal(false);
       expect(await tokens.revokeAgentToken('not.a.jwt')).to.equal(false);
-      expect([...repo.rows.values()][0].status).to.equal(
+      expect([...repo.rows.values()][0]!.status).to.equal(
         AgentRegistrationStatus.CONSUMED,
       );
     });
@@ -760,9 +810,9 @@ describe('AgentRegistrationService', () => {
       } catch (e: any) {
         expect(e.statusCode ?? e.status).to.equal(404);
       }
-      expect([...repo.rows.values()][0].status).to.equal('claimed');
+      expect([...repo.rows.values()][0]!.status).to.equal('claimed');
       await service.revokeForUser(id, USER);
-      expect([...repo.rows.values()][0].status).to.equal('revoked');
+      expect([...repo.rows.values()][0]!.status).to.equal('revoked');
       expect(logger.info.lastCall.args).to.deep.equal(['registration.revoked', { registration_id: id, user_id: USER.userId }]);
     });
   });

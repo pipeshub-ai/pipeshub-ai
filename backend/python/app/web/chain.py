@@ -5,8 +5,10 @@ rejected or used up, or a rate limit is remembered for a while, so later calls s
 instead of waiting on it again.
 """
 
+import asyncio
 import logging
 import time
+import weakref
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Generic, TypeVar
@@ -45,9 +47,14 @@ class Cooldowns:
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self._until: dict[str, float] = {}
+        self._why: dict[str, WebError] = {}
 
     def cooling(self, key: str) -> bool:
         return self._until.get(key, 0.0) > self._clock()
+
+    def why(self, key: str) -> WebError | None:
+        """The failure a cooling source is sitting out."""
+        return self._why.get(key) if self.cooling(key) else None
 
     def failed(self, key: str, error: WebError) -> None:
         if error.page_level:
@@ -57,9 +64,38 @@ class Cooldowns:
             seconds = min(error.retry_after_s, _MAX_RETRY_AFTER_S)
         if seconds:
             self._until[key] = self._clock() + seconds
+            self._why[key] = error
 
     def answered(self, key: str) -> None:
         self._until.pop(key, None)
+        self._why.pop(key, None)
+
+
+class InFlight:
+    """At most ``Source.max_in_flight`` calls of a source at once, per ``cooldown_key``. One per process.
+
+    A free engine scraped from one address blocks it when several searches arrive together (WP62-SRCH:
+    of six parallel searches, three were blocked). Held to a few at a time, the first block is remembered before the
+    waiting searches reach the engine, and they skip it instead of being blocked too."""
+
+    def __init__(self) -> None:
+        # Per event loop: a semaphore is bound to the loop that first waits on it.
+        self._loops: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Semaphore]] = (
+            weakref.WeakKeyDictionary()
+        )
+
+    def slot(self, key: str, limit: int) -> asyncio.Semaphore:
+        held = self._loops.setdefault(asyncio.get_running_loop(), {})
+        if key not in held:
+            held[key] = asyncio.Semaphore(limit)
+        return held[key]
+
+
+def _skipped(source: Source, error: WebError) -> WebError:
+    """What a source cooling since this search began answers, without being asked again."""
+    skipped = type(error)(f"{error.message} (moments ago; not asked again)", source=source.id, status=error.status)
+    skipped.page_level = error.page_level
+    return skipped
 
 
 @dataclass(frozen=True)
@@ -93,12 +129,16 @@ async def run_chain(
     *,
     attempt_s: float,
     cooldowns: Cooldowns,
+    in_flight: InFlight | None = None,
 ) -> ChainOutcome[T]:
     """``call`` each source in turn until one returns. Each gets ``attempt_s`` at most, except the
     last one tried, which gets whatever time is left. Sources cooling down are skipped, unless
-    every source is."""
+    every source is. With ``in_flight``, a source that limits its concurrent calls (``max_in_flight``)
+    is waited for within its attempt's time, and skipped if it started cooling while this search waited."""
     clock = deadline.clock
-    ready = [s for s in sources if not cooldowns.cooling(s.cooldown_key)] or list(sources)
+    fresh = [s for s in sources if not cooldowns.cooling(s.cooldown_key)]
+    # Every source cooling: they are all tried anyway, so a cooldown never empties the chain.
+    ready = fresh or list(sources)
     attempts: list[Attempt] = []
     errors: list[WebError] = []
     for index, source in enumerate(ready):
@@ -109,7 +149,7 @@ async def run_chain(
         started = clock()
         try:
             try:
-                value = await call(source, step)
+                value = await _call(source, step, call, cooldowns, in_flight, recheck=bool(fresh))
             except WebError:
                 raise
             except Exception as e:
@@ -130,3 +170,30 @@ async def run_chain(
     if not errors:
         raise TimedOut("No time left to try any source")
     raise ChainFailed(errors, attempts)
+
+
+async def _call(
+    source: S,
+    step: Deadline,
+    call: Callable[[S, Deadline], Awaitable[T]],
+    cooldowns: Cooldowns,
+    in_flight: InFlight | None,
+    *,
+    recheck: bool,
+) -> T:
+    limit = getattr(source, "max_in_flight", None)
+    if in_flight is None or not isinstance(limit, int) or limit < 1:
+        return await call(source, step)
+    slot = in_flight.slot(source.cooldown_key, limit)
+    try:
+        async with asyncio.timeout(max(step.remaining(), 0.0)):
+            await slot.acquire()
+    except TimeoutError:
+        raise TimedOut(f"{source.id} was busy with other searches", source=source.id) from None
+    try:
+        why = cooldowns.why(source.cooldown_key) if recheck else None
+        if why is not None:
+            raise _skipped(source, why)
+        return await call(source, step)
+    finally:
+        slot.release()

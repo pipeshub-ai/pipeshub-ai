@@ -158,7 +158,7 @@ _ALLOWED = {
     _APP / "modules" / "transformers" / "sink_orchestrator.py",
     _APP / "events" / "events.py",
     _APP / "events" / "processor.py",
-    _APP / "api" / "routes" / "chatbot.py",
+    _APP / "services" / "chat_attachments" / "uploads.py",  # the chat-attachment record (attachment_record_doc)
     _APP / "services" / "messaging" / "kafka" / "handlers" / "record.py",
     _APP / "connectors" / "core" / "base" / "data_processor" / "data_source_entities_processor.py",
     _APP / "services" / "graph_db" / "arango" / "arango_http_provider.py",

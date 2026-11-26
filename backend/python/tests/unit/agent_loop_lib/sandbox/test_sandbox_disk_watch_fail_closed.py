@@ -190,7 +190,7 @@ class TestTheWatchFailsClosed:
 class TestTheOtherDockerRunnerIsWatched:
     @pytest.fixture
     def executor(self, tmp_path, monkeypatch) -> DockerExecutor:
-        monkeypatch.setattr("app.sandbox.docker_executor._SANDBOX_ROOT", str(tmp_path / "root"))
+        monkeypatch.setattr("app.sandbox.docker_executor._sandbox_root", lambda: str(tmp_path / "root"))
         return DockerExecutor()
 
     async def _run(self, executor: DockerExecutor, client: MagicMock, tmp_path: Path) -> ExecutionResult:

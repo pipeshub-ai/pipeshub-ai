@@ -34,7 +34,7 @@ interface ApiErrorResponse {
   errors?: Record<string, string[]>;
   details?: Record<string, unknown>;
   /** FastAPI / similar */
-  detail?: string | Array<string | { msg?: string }>;
+  detail?: string | Array<string | { msg?: string }> | { message?: unknown; reasonCode?: unknown };
   /** Retrieval/search and other services: machine-readable outcome (e.g. `accessible_records_not_found`). */
   status?: string;
   /** Why a search found nothing: codes the client words (see AccessNotice). */
@@ -79,6 +79,11 @@ export function extractApiErrorMessage(data: unknown): string | null {
 
   if (typeof d.detail === 'string' && d.detail.trim()) {
     return d.detail.trim();
+  }
+  // A Python refusal with a reason code: `{detail: {reasonCode, message}}` (e.g. `mcp_tool_unapproved`).
+  if (d.detail && typeof d.detail === 'object' && !Array.isArray(d.detail)) {
+    const message = (d.detail as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message.trim();
   }
   if (Array.isArray(d.detail) && d.detail.length > 0) {
     const first = d.detail[0];

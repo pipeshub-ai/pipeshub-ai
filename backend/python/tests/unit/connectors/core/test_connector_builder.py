@@ -1,5 +1,6 @@
 """Tests for connector_builder module: ConnectorScope, SyncStrategy, ConnectorConfigBuilder, ConnectorBuilder, CommonFields."""
 
+import importlib
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -563,3 +564,19 @@ class TestDocumentationLinkInBuilder:
             .build()
         )
         assert len(config["documentationLinks"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("module", "name"),
+    [
+        ("app.connectors.sources.github.connector", "GithubConnector"),
+        ("app.connectors.sources.github_teams.connector", "GitHubTeamsConnector"),
+        ("app.connectors.sources.gitlab.connector", "GitLabConnector"),
+        ("app.connectors.sources.gitlab_personal.connector", "GitLabPersonalConnector"),
+    ],
+)
+def test_a_git_connector_excludes_by_path_glob_and_has_no_extension_filter(module: str, name: str) -> None:
+    cls = getattr(importlib.import_module(module), name)
+    fields = {f["name"] for f in cls._connector_metadata["config"]["filters"]["sync"]["schema"]["fields"]}
+    assert "exclude_paths" in fields
+    assert "file_extensions" not in fields

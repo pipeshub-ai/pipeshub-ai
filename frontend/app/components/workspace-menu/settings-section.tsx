@@ -67,8 +67,8 @@ export function SettingsSection({
         label={
           <Flex align="center" gap="2">
             {t('workspaceMenu.appearance')}
-            <Text size="2" style={{ color: 'var(--slate-8)' }}>•</Text>
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-10)' }}>{appearanceLabel}</Text>
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>•</Text>
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>{appearanceLabel}</Text>
           </Flex>
         }
         isActive={isAppearanceActive}
@@ -93,8 +93,8 @@ export function SettingsSection({
         label={
           <Flex align="center" gap="2">
             {t('workspaceMenu.language')}
-            <Text size="2" style={{ color: 'var(--slate-8)' }}>•</Text>
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-10)' }}>{languageLabel}</Text>
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>•</Text>
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>{languageLabel}</Text>
           </Flex>
         }
         isActive={isLanguageActive}

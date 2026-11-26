@@ -1,18 +1,8 @@
-from __future__ import annotations
+"""Legacy import path; this module lives in ``harness_core.kernel.ports.knowledge``."""
 
-from abc import ABC, abstractmethod
+import sys
 
-from pydantic import BaseModel
+from harness_core.kernel.ports import knowledge as _moved
+from harness_core.kernel.ports.knowledge import *  # noqa: F403
 
-
-class KnowledgeChunk(BaseModel):
-    content: str
-    source: str
-    score: float = 1.0
-
-
-class KnowledgeProvider(ABC):
-    """Abstract read-only knowledge / RAG source."""
-
-    @abstractmethod
-    async def query(self, query: str, top_k: int = 5) -> list[KnowledgeChunk]: ...
+sys.modules[__name__] = _moved

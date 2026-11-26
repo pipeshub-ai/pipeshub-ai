@@ -15,6 +15,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from app.core.org_context import bind, spawn_detached
+from app.services.graph_db.postgres import connector_stats
 from app.services.graph_db.postgres.kg import (
     bootstrap,
     counts,
@@ -91,6 +92,12 @@ class KgWorker:
                 rows += await counts.run(self._db, org, stop=self._stop)
             except Exception:
                 logger.exception("kg counters failed for an org; retrying")
+            if self._stop.is_set():
+                break
+            try:
+                rows += await connector_stats.run(self._db, org, stop=self._stop)
+            except Exception:
+                logger.exception("connector stats counts failed for an org; retrying")
             if self._stop.is_set():
                 break
             try:

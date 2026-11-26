@@ -41,6 +41,20 @@ from app.modules.retrieval import degraded_notice
 from app.services.ai_models.discovery.catalog import lookup_catalog
 from app.services.llm_gateway.gateway import Invocable, get_llm_gateway, provider_key
 from app.utils.aimodels import coerce_message_content_to_text
+
+# The sanitizer lives in app.utils.answer_links (imports only ``re``); its names stay importable from here.
+from app.utils.answer_links import (
+    _flatten_unusable_markdown_links as _flatten_unusable_markdown_links,
+)
+from app.utils.answer_links import (
+    _strip_llm_authored_markers as _strip_llm_authored_markers,
+)
+from app.utils.answer_links import (
+    link_workspace_files as link_workspace_files,
+)
+from app.utils.answer_links import (
+    strip_llm_authored_markers_in_parts as strip_llm_authored_markers_in_parts,
+)
 from app.utils.citations import (
     detect_hallucinated_citation_urls,
     normalize_citations_and_chunks,
@@ -702,101 +716,6 @@ async def handle_simple_mode(
             yield event
 
 
-# Markers the frontend interprets as artifact / download cards. These are
-# authored ONLY by the backend (this function) — if an answer from the LLM
-# happens to contain the same syntax (directly or via prompt injection from
-# RAG content), the frontend would render attacker-controlled download cards
-# pointing at arbitrary URLs. Strip any pre-existing matches before we append
-# our own, trusted markers.
-_LLM_ARTIFACT_MARKER_RE = re.compile(
-    r"::artifact\[[^\]]+\]\([^)]+\)\{[^}]*\}",
-)
-# Mid-form: `::artifact[name]{meta}` — has the `{meta}` block but no `(url)`.
-_LLM_ARTIFACT_NO_URL_MARKER_RE = re.compile(
-    r"::artifact\[[^\]]+\]\{[^}]*\}",
-)
-# Short-form variant LLMs sometimes hallucinate (no `(url){meta}` block).
-_LLM_ARTIFACT_SHORT_MARKER_RE = re.compile(
-    r"::artifact\[[^\]]+\](?:\([^)]*\))?(?!\{)",
-)
-_LLM_DOWNLOAD_MARKER_RE = re.compile(
-    r"::download_conversation_task\[[^\]]+\]\([^)]+\)",
-)
-
-# A real, clickable download is ALWAYS delivered via the `::artifact`
-# marker this module appends below — never authored by the model itself.
-# When a generation step doesn't actually deliver a file (e.g. `run_code`
-# wrote outside `$OUTPUT_DIR`, or failed silently) a model can still hand-
-# write an ordinary markdown link like "[Download the report]
-# (sandbox://report.pdf)" claiming success anyway. The frontend's
-# `rehype-sanitize` schema only allows `http`/`https`/`mailto` hrefs
-# (`answer-content.tsx`) and drops anything else outright, so such a link
-# renders styled (colored, underlined) but is inert — worse than plain
-# text since it visually promises something that doesn't work. Flatten
-# markdown links to plain text (dropping the link, keeping the words) only
-# when the URL has an EXPLICIT non-allowed scheme — a genuine citation or
-# search-result link the model quotes always carries a real absolute
-# http(s) URL, and a same-origin relative link (no scheme at all) is left
-# untouched since the sanitizer renders those as-is.
-_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]*)\)")
-_URL_SCHEME_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*):")
-_ALLOWED_LINK_SCHEMES = frozenset({"http", "https", "mailto"})
-
-
-def _flatten_unusable_markdown_links(answer: str) -> str:
-    if not answer or "](" not in answer:
-        return answer
-
-    def _flatten_if_unusable(match: "re.Match[str]") -> str:
-        text, url = match.group(1), match.group(2).strip()
-        scheme_match = _URL_SCHEME_RE.match(url)
-        if scheme_match is None or scheme_match.group(1).lower() in _ALLOWED_LINK_SCHEMES:
-            return match.group(0)
-        return text
-
-    return _MARKDOWN_LINK_RE.sub(_flatten_if_unusable, answer)
-
-
-def _strip_llm_authored_markers(answer: str) -> str:
-    """Remove any LLM-authored artifact / download markers from *answer*,
-    and flatten any hand-written markdown link the model composed with a
-    URL scheme the frontend would render as dead (see
-    `_flatten_unusable_markdown_links`).
-
-    The frontend's marker parser runs against the full saved message, so a
-    marker anywhere in the stream is a URL-spoofing primitive. We drop them
-    before the backend appends its own known-good markers.
-    """
-    if not answer:
-        return answer
-    stripped = _LLM_ARTIFACT_MARKER_RE.sub("", answer)
-    stripped = _LLM_ARTIFACT_NO_URL_MARKER_RE.sub("", stripped)
-    stripped = _LLM_ARTIFACT_SHORT_MARKER_RE.sub("", stripped)
-    stripped = _LLM_DOWNLOAD_MARKER_RE.sub("", stripped)
-    return _flatten_unusable_markdown_links(stripped)
-
-
-def strip_llm_authored_markers_in_parts(parts: list | None) -> None:
-    """Sanitize every `text` part of a transcript in place, recursing into
-    `sub_agent` children.
-
-    :func:`_append_task_markers` only sanitizes the answer string, but the
-    activity timeline renders every OTHER text part as raw markdown with no
-    marker parsing (`agent-activity.tsx`). A marker the model copied out of
-    an earlier turn — they are persisted in message content, so they are in
-    its context — therefore surfaces there verbatim: literal
-    ``::artifact[...]`` text plus an anchor whose ``record:`` href no
-    browser can follow.
-    """
-    for part in parts or []:
-        if not isinstance(part, dict):
-            continue
-        if part.get("type") == "sub_agent":
-            strip_llm_authored_markers_in_parts(part.get("parts"))
-        elif part.get("type") == "text" and part.get("content"):
-            part["content"] = _strip_llm_authored_markers(part["content"])
-
-
 def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
     """Append ::download_conversation_task and ::artifact markers to the answer string.
 
@@ -1100,6 +1019,9 @@ def _without_number_bounds(schema: type[BaseModel]) -> type[BaseModel]:
 
 
 def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, include_raw: bool = False) -> BaseChatModel:
+    if getattr(llm, "native_structured_output", False) is True:
+        # A harness run's model: its own transport chooses how the provider is asked.
+        return llm.with_structured_output(schema, include_raw=include_raw)
     if isinstance(llm, (ChatOpenAI, AzureChatOpenAI)) and isinstance(schema, type) and issubclass(schema, BaseModel):
         schema = _without_number_bounds(schema)
     if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock,ChatBedrockConverse)):

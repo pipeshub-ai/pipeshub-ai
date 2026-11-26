@@ -18,7 +18,11 @@ from tests.integration.test_agent_turn_limit_e2e import (  # noqa: F401  (fixtur
     _ScriptedChatModel,
     chat_model,
 )
-from tests.integration.test_chat_stream_agent_loop_e2e import _drain, _events_by_name
+from tests.integration.test_chat_stream_agent_loop_e2e import (  # noqa: F401  (fixture)
+    _bound_as_auth,
+    _drain,
+    _events_by_name,
+)
 
 _QUESTION = "Which tools can search indexed knowledge?"
 _ANSWER = "The knowledge search tool can."

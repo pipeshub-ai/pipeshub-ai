@@ -35,6 +35,7 @@ from app.services.graph_db.common.utils import (
 )
 from app.utils import error_class
 from app.utils.db_query_log import query_ended, query_logged
+from harness_core.deadline import CONNECT_TIMEOUT_S, bounded_read
 
 # ArangoDB Error Code Constants
 ARANGO_ERROR_DOCUMENT_NOT_FOUND = 1202
@@ -337,6 +338,8 @@ class ArangoHTTPClient:
                 session = aiohttp.ClientSession(
                     auth=self.auth,
                     connector=aiohttp.TCPConnector(limit=self.pool_limit),
+                    # aiohttp's default total; a short connect so an unroutable server fails fast (ERR-UX).
+                    timeout=aiohttp.ClientTimeout(total=300, sock_connect=CONNECT_TIMEOUT_S),
                 )
                 self._sessions[current_loop] = session
                 self.logger.debug("Created new HTTP session for current event loop")
@@ -819,6 +822,20 @@ class ArangoHTTPClient:
         self,
         query: str,
         bind_vars: Optional[Dict[str, Any]] = None,
+        txn_id: Optional[str] = None,
+        batch_size: int = 1000,
+        options: dict | None = None,
+        max_runtime: float | None = None,
+    ) -> list[Any]:
+        """``_execute_aql``, bounded on a run's tool call by the call's remaining time (ERR-UX)."""
+        return await bounded_read(
+            "graph", self._execute_aql(query, bind_vars, txn_id, batch_size, options, max_runtime)
+        )
+
+    async def _execute_aql(
+        self,
+        query: str,
+        bind_vars: Optional[dict] = None,
         txn_id: Optional[str] = None,
         batch_size: int = 1000,
         options: dict | None = None,

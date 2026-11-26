@@ -147,7 +147,7 @@ async def test_query_shutdown_survives_a_failing_live_limit_and_ledger() -> None
     ledger = SimpleNamespace(close=MagicMock(side_effect=OSError("disk gone")))
     stop_consumers = AsyncMock()
 
-    async def _no_alerts(*_a: object) -> None:
+    async def _no_alerts(*_a: object, **_k: object) -> None:
         return None
 
     app = MagicMock()

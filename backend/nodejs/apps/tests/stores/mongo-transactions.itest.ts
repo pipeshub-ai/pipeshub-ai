@@ -33,7 +33,7 @@ import { setUserRepository, type UserRepository } from '../../src/libs/repositor
 import { MongoUserRepository, adminLeaseTiming } from '../../src/libs/repositories/user/mongo';
 import { MongoOrgRepository } from '../../src/libs/repositories/org/mongo';
 import { adminInviter, withoutSideStores } from './admin-invite-race';
-import { deleteRace, gate, waitUntil, type DeleteOutcome, type DeleteRace } from './admin-delete-race';
+import { deleteRace, gate, parkAfter, waitUntil, type DeleteOutcome, type DeleteRace } from './admin-delete-race';
 import { createRace, type CreateOutcome, type CreateRace } from './admin-create-race';
 import { USER_PROMOTED_DURING_DELETE } from '../../src/modules/user_management/controller/users.controller';
 
@@ -754,6 +754,43 @@ describe('MongoDB code paths against a real MongoDB', function () {
       expect(demote).to.be.instanceOf(BadRequestError);
       expect(await adminCount(orgId)).to.equal(1);
     });
+
+    /** Removes `target` to the end while an admin invite of `email` is parked after `method`; returns what the invite answered. */
+    const removeDuringAdminInvite = async (
+      orgId: string, a: string, target: string, email: string, method: 'listByEmails' | 'restoreByEmails',
+    ) => {
+      const park = parkAfter(new MongoUserRepository(), method);
+      const inviting = adminInviter(rsAvailable)(orgId, [email]);
+      await park.reached;
+      const del = race.start(orgId, a, target);
+      await del.parked;
+      del.release();
+      expect((await del.done).status).to.equal('deleted');
+      park.release();
+      return inviting;
+    };
+
+    it('an admin invite that read a pending member before their removal still answers, and leaves them a removed member', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const p = await newUser(orgId, 'member');
+      expect(await removeDuringAdminInvite(orgId, a, String(p._id), p.email, 'listByEmails')).to.be.an('object');
+      expect(await Users.findById(p._id).lean()).to.include({ role: 'member', isDeleted: true });
+      expect(await adminCount(orgId)).to.equal(1);
+    });
+
+    // Standalone only: on a replica set the removal waits on the grant's transaction, which holds the restored row.
+    if (!rsAvailable) {
+      it('an account the admin invite restored, removed again before the grant, stays a removed member', async () => {
+        const orgId = await newOrg();
+        const a = String((await newUser(orgId, 'admin'))._id);
+        const r = await newUser(orgId, 'member');
+        await new MongoUserRepository().markDeleted(orgId, String(r._id), { signedOut: true });
+        expect(await removeDuringAdminInvite(orgId, a, String(r._id), r.email, 'restoreByEmails')).to.be.an('object');
+        expect(await Users.findById(r._id).lean()).to.include({ role: 'member', isDeleted: true });
+        expect(await adminCount(orgId)).to.equal(1);
+      });
+    }
 
     if (rsAvailable) {
       it('a removal sent while the promotion is still uncommitted waits for it, then keeps the new admin', async () => {

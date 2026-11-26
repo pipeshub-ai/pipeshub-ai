@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.text_scoring import keyword_overlap_score, tokenize
 from app.agent_loop_lib.tools.base import ToolSummary
+from app.agent_loop_lib.tools.tags import EFFECT_TAG_KEY
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.tools.registry import ToolRegistry, ToolsetGroup
@@ -64,7 +65,11 @@ def _tool_haystack(summary: ToolSummary) -> tuple[set[str], set[str]]:
     tie-breaking convention `FilesystemSkillIndex` uses for skills."""
     name_tokens = tokenize(summary.name.replace("_", " "))
     desc_tokens = tokenize(summary.short_description)
-    tag_tokens = tokenize(" ".join(f"{t.key} {t.value}" for t in summary.tags))
+    # The durable harness's effect classification is not a capability, so a
+    # query for "write" or "read" must not rank tools by it.
+    tag_tokens = tokenize(
+        " ".join(f"{t.key} {t.value}" for t in summary.tags if t.key != EFFECT_TAG_KEY)
+    )
     return name_tokens, name_tokens | desc_tokens | tag_tokens
 
 
@@ -142,11 +147,14 @@ def _terms(text: str) -> set[str]:
 
 def _toolset_words(group: "ToolsetGroup") -> set[str]:
     """The app a toolset is for: its name (`mcp_linear` → linear), and an MCP group's server name
-    ("<server name> — attached MCP server tools"). Other descriptions ("Jira issue tracking.") say
-    what the tools do, which isn't an app's name."""
+    and what it covers ("<server name> — <summary>", ADR-OWD-07 D-DISC-2: "Atlassian Rovo — Jira,
+    Confluence, Bitbucket"), so a search that names what a server holds finds its tools though no
+    tool name says it. Other descriptions ("Jira issue tracking.") say what the tools do, which
+    isn't an app's name."""
     named = group.name.replace("_", " ")
     if " — " in group.description:
-        named += " " + group.description.split(" — ", 1)[0]
+        # "mcp": `lazy_tools_wiring.MCP_PARENT`, the category every MCP server's group is nested under.
+        named += " " + (group.description if group.parent == "mcp" else group.description.split(" — ", 1)[0])
     return {word for word in _terms(named) if len(word) >= 3 and word not in _GENERIC_TOOLSET_WORDS}
 
 
@@ -186,10 +194,17 @@ class ToolsetAwareToolIndex(ToolIndex):
             scored.sort(key=lambda pair: pair[0], reverse=True)
             return scored
 
-        queues = [
-            ranked(wanted, [s for s in summaries if words_of_tool.get(s.name, set()) & names])
-            for names, wanted in mentions
-        ]
+        def named(names: set[str], wanted: set[str]) -> list[tuple[float, ToolSummary]]:
+            """A named app's tools by the words around its name; when none has them ("jira risk", a server's
+            summary words alone), the app's tools all the same, its search tools first: naming a source finds it."""
+            covered = {s.name: len(words_of_tool.get(s.name, set()) & names) for s in summaries}
+            most = max(covered.values(), default=0)
+            # The apps the mention names best: "atlassian rovo" is Rovo, not every app with "atlassian" in its line.
+            tools = [s for s in summaries if most and covered[s.name] == most]
+            found = ranked(wanted, tools) or ranked(set(), tools)
+            return sorted(found, key=lambda pair: (-pair[0], not _finds(pair[1], words_of_tool.get(pair[1].name, set()))))
+
+        queues = [named(names, wanted) for names, wanted in mentions]
         picked: list[tuple[float, ToolSummary]] = []
         chosen: set[str] = set()
         while len(picked) < limit and any(queues):
@@ -207,6 +222,23 @@ class ToolsetAwareToolIndex(ToolIndex):
             ToolMatch(summary=summary, relevance=round(score, 3), toolset=membership.get(summary.name))
             for score, summary in picked
         ]
+
+
+_FINDING_VERBS = frozenset({"search", "find", "query", "lookup"})
+# Words of `search_items`, `searchJiraIssuesUsingJql`, `mcp_rovo_search`.
+_NAME_WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+
+
+def _finds(summary: ToolSummary, own_words: set[str]) -> bool:
+    """Whether the tool's own name (its app's prefix left out: `mcp_utracker7c4925_search_items`) starts with a
+    search verb."""
+    words = [
+        word.lower()
+        for part in re.split(r"[^A-Za-z0-9]+", summary.name)
+        if part and part.lower() not in own_words and part.lower() not in _GENERIC_TOOLSET_WORDS
+        for word in _NAME_WORD_RE.findall(part)
+    ]
+    return bool(words) and _fold(words[0]) in _FINDING_VERBS
 
 
 def _mentions(terms: list[str], app_words: set[str]) -> list[tuple[set[str], set[str]]]:

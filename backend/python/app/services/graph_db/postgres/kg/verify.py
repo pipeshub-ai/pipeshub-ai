@@ -4,7 +4,7 @@ For one connector: its nodes are read from graph.nodes in keyset batches, the ro
 of the children, the grants on the nodes); what kg holds for the connector that no node of the graph accounts for is extra. For the org's principals: the closure rows of every user. The
 digest is the SHA-256 of the expected rows in a fixed order. Two more checks that the writers cannot make: every record row's ``sk`` is the one ``kg.node_keys`` holds for its
 ``(coll, id)`` (``w_records_upsert`` takes any sk), and every connector the graph shares a hierarchy parent or a group with another connector for is marked ``cross_app``: kg may mark
-more than the graph needs (the mark is sticky, written once), never less.
+more than the graph needs (the mark is sticky, written once), never less. And no grant carries a placement mark its rows no longer give (``grant_marks``).
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from app.services.graph_db.postgres.kg import grant_marks
 from app.services.graph_db.postgres.kg.model import Key, derive
 from app.services.graph_db.postgres.kg.reader import (
     load_sks,
@@ -191,6 +192,9 @@ async def verify_app(tx: Tx, org: str, app_id: str) -> Result:
                 break
             cur = (rows[-1]["node_sk"], rows[-1]["principal_sk"], rows[-1]["gtype"])
             res.note_all("extra", [f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']} (no node)" for r in rows if r["node_sk"] not in expected_sks])
+        cur = (0, 0, "")
+        while (cur := await _check_marks(tx, org, app_sk, cur, PAGE, res)) is not None:
+            pass
         # a record row whose sk is not the one node_keys holds for its (coll, id): the writers take any sk
         res.note_all("changed", [f"s|{r['sk']} {r['coll']}:{r['id']} (node_keys holds {r['key_sk']})" for r in await tx.fetch(
             VERIFY_SK, org, app_sk, LIMIT)])
@@ -217,6 +221,15 @@ async def verify_app(tx: Tx, org: str, app_id: str) -> Result:
     res.note_all("changed", st.diffs)
     res.digest = h.hexdigest()
     return res
+
+
+async def _check_marks(tx: Tx, org: str, app_sk: int, after: tuple[int, int, str], page: int, res: Result) -> tuple[int, int, str] | None:
+    """One page of the connector's grants: a placement mark their rows no longer give (``grant_marks.unsafe``) would leave a chain-top off the browse. A mark not written
+    yet leaves nothing out, so only these differ. Where the next page goes on, or None after the last."""
+    rows = await tx.fetch(grant_marks.BY_APP, org, app_sk, *after, page)
+    res.note_all("changed", [f"m|{r['principal_sk']}|{r['node_sk']}|{r['gtype']} (marks {r['parent_held']}, {r['node_group']}; rows give {r['want_held']}, {r['want_group']})"
+                             for r in rows if grant_marks.unsafe(r)])
+    return (rows[-1]["node_sk"], rows[-1]["principal_sk"], rows[-1]["gtype"]) if len(rows) == page else None
 
 
 async def verify_principals(tx: Tx, org: str) -> Result:
@@ -271,11 +284,12 @@ async def verify_principals(tx: Tx, org: str) -> Result:
 @dataclass
 class Cursor:
     """Where a chunked verify of one connector goes on, and what it found so far."""
-    phase: str = "nodes"                     # nodes, stamps, ghosts, grants
+    phase: str = "nodes"                     # nodes, stamps, ghosts, grants, marks
     after: Key | None = None                 # nodes: the last key checked
     after_id: str | None = None              # stamps: the last record id compiled
     sk_after: int = 0                        # ghosts: the last sk checked
     grant_after: tuple[int, int, str] = (0, 0, "")
+    marks_after: tuple[int, int, str] = (0, 0, "")
     pages: int = 0
     res: Result = field(default_factory=Result)
 
@@ -329,9 +343,16 @@ async def verify_chunk(tx: Tx, org: str, app_id: str, cur: Cursor, *, page: int 
         res.note_all("extra", [f"r|{r['sk']} (no node)" for r in rows if r["ghost"]])
         res.note_all("changed", [f"s|{r['sk']} {r['coll']}:{r['id']} (node_keys holds {r['key_sk']})" for r in rows if not r["ghost"] and r["key_sk"] != r["sk"]])
         return False
+    if cur.phase == "marks":
+        nxt = await _check_marks(tx, org, app_sk, cur.marks_after, page, res)
+        if nxt is None:
+            return True
+        cur.marks_after = nxt
+        return False
     rows = await tx.fetch(GRANT_GHOSTS, org, app_sk, *cur.grant_after, page)
     if not rows:
-        return True
+        cur.phase = "marks"
+        return False
     cur.grant_after = (rows[-1]["node_sk"], rows[-1]["principal_sk"], rows[-1]["gtype"])
     res.note_all("extra", [f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']} (no node)" for r in rows if r["ghost"]])
     return False
