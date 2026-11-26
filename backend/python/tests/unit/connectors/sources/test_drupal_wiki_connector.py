@@ -17,14 +17,16 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
-from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.core.base.connector.connector_service import (
+    ConnectorInitError,
+    IncompleteSyncError,
+)
 from app.connectors.core.registry.filters import (
     Filter,
     FilterCollection,
     FilterType,
     MultiselectOperator,
 )
-from app.connectors.core.base.connector.connector_service import IncompleteSyncError
 from app.connectors.sources.drupal_wiki.connector import (
     FULL_SYNC_ENDS_KEPT_ACCESS,
     GRAPHQL_PROBE_TIMEOUT_S,
@@ -1153,7 +1155,7 @@ class TestListingWithoutLast:
         seen = []
         with pytest.raises(DrupalWikiSyncError, match="pages of space 12"):
             async for page in connector._fetch_pages(12, None):
-                seen.append(page["id"])
+                seen.append(page["id"])  # noqa: PERF401 - keeps the pages yielded before the raise
         assert seen == [1]
 
     @pytest.mark.asyncio

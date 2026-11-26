@@ -283,7 +283,7 @@ IT_WORKFLOW = ".github/workflows/integration-tests.yml"
 CONNECTOR_SHARDS = {
     "connectors-1": (
         "nextcloud", "bookstack", "bookstack_sim", "mariadb", "minio", "web", "local_fs", "local_fs_sim", "github",
-        "sharepoint",
+        "sharepoint", "drupal_wiki_sim",
     ),
     "connectors-2": (
         "jira", "azure_files", "smb", "zendesk", "outlook", "gmail_workspace", "gmail_individual", "servicenow",
@@ -361,7 +361,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
         name: ()
         for name in (
             "airtable", "asana", "bitbucket", "box", "clickhouse", "clickup", "cloudflare_r2", "databricks", "discord",
-            "dropbox_individual", "drupal_wiki", "evernote", "freshdesk", "hackernews", "lattice", "linkedin",
+            "dropbox_individual", "evernote", "freshdesk", "hackernews", "lattice", "linkedin",
             "lumos", "monday", "pagerduty", "posthog", "redshift", "trello", "workday",
             "zoom",
         )
@@ -374,6 +374,7 @@ CONNECTOR_CODE_MARKERS: dict[str, tuple[str, ...]] = {
     "demo": ("demo",),
     # external/bookstack imports external/dropbox.
     "dropbox": ("bookstack", "bookstack_sim"),
+    "drupal_wiki": ("drupal_wiki_sim",),
     "gcs": ("gcs",),
     "google_cloud_storage": ("gcs",),
     "github": ("github", "github_teams"),
@@ -398,6 +399,7 @@ CONNECTOR_TESTS = "integration-tests/connectors"
 # test_pr_changes.py checks that every test file in a folder carries one of them.
 CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
     "bookstack": ("bookstack", "bookstack_sim"),
+    "drupal_wiki": ("drupal_wiki_sim",),
     "servicenow": ("servicenow", "servicenow_sim"),
     "zammad": ("zammad", "zammad_sim"),
     "github_personal": ("github",),
