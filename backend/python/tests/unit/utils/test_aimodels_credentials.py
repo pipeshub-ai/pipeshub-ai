@@ -141,6 +141,18 @@ def test_media_builders_refuse_blank_key(server_credentials_refused, fn, provide
         fn(provider, _config(apiKey=None, endpoint=""))
 
 
+@pytest.mark.parametrize("provider", ["openRouter", "minimax"])
+def test_fixed_host_provider_refuses_blank_key_even_when_server_key_allowed(provider: str) -> None:
+    with pytest.raises(ValueError, match="Save an API key"):
+        get_generator_model(provider, _config(apiKey="", endpoint=""))
+
+
+@pytest.mark.parametrize("fn", [get_image_generation_model, get_tts_model, get_stt_model])
+def test_openrouter_media_refuses_blank_key_even_when_server_key_allowed(fn: object) -> None:
+    with pytest.raises(ValueError, match="Save an API key"):
+        fn("openRouter", _config(apiKey=None, endpoint=""))
+
+
 @pytest.mark.parametrize("fn", [get_image_generation_model, get_tts_model, get_stt_model])
 def test_media_litellm_adapter_never_gets_none(server_credentials_refused, fn) -> None:
     adapter = fn("litellmProxy", _config(apiKey=None))
