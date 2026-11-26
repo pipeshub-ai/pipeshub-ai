@@ -198,3 +198,37 @@ def test_a_repaired_cut_passes_the_same_gap_check_as_the_cut_it_replaces() -> No
     assert table_tiers.repair_cuts([13.0], body, 0.0, 100.0) is None
     wide = band_lines([w("left", 0.0, 10.0), w("right", 30.0, 40.0)])
     assert table_tiers.repair_cuts([12.0], wide, 0.0, 100.0) == [12.0]
+
+
+def test_with_the_header_above_the_first_rule_the_first_band_is_checked_like_the_body() -> None:
+    from app.modules.parsers.pdf import table_tiers
+    from app.modules.parsers.pdf.table_rows import band_lines
+
+    def w(text: str, x0: float, x1: float, top: float) -> dict:
+        return {"text": text, "x0": x0, "x1": x1, "top": top, "bottom": top + 8.0}
+
+    words = [w("Name", 2, 30, 6), w("Value", 100, 130, 6),  # the header, above the first rule (y=20)
+             w("Alpha", 2, 30, 22), w("one", 100, 120, 22),
+             w("Beta", 2, 30, 46), w("two", 100, 120, 46),
+             w("Gamma", 2, 30, 66), w("three", 100, 125, 66)]
+    ys = [20.0, 40.0, 60.0, 80.0]
+    for band_top in (31.0, 51.0):  # a word across the column cut, in the first body band and in the second
+        cand, why = table_tiers.ruled_rows((0, 0, 200, 80), ys, band_lines([*words, w("spanning", 20, 110, band_top)]), [])
+        assert cand is None and why == "cut through words", band_top
+
+
+def test_a_line_centred_near_a_row_rule_is_in_one_row_only() -> None:
+    from app.modules.parsers.pdf import table_tiers
+    from app.modules.parsers.pdf.table_rows import band_lines
+
+    def w(text: str, x0: float, x1: float, top: float) -> dict:
+        return {"text": text, "x0": x0, "x1": x1, "top": top, "bottom": top + 8.0}
+
+    words = [w("Name", 2, 30, 6), w("Value", 100, 130, 6),
+             w("Alpha", 2, 30, 26), w("one", 100, 120, 26),
+             w("Beta", 2, 30, 36.5), w("two", 100, 120, 36.5),  # centre 40.5: half a point below the rule at 40
+             w("Gamma", 2, 30, 66), w("three", 100, 125, 66)]
+    cand, why = table_tiers.ruled_rows((0, 0, 200, 80), [20.0, 40.0, 60.0, 80.0], band_lines(words), [])
+    assert cand is not None, why
+    flat = [c for row in cand.grid for c in row if c]
+    assert sum(c.count("Beta") for c in flat) == 1
