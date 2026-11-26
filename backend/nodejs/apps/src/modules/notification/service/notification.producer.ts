@@ -1,6 +1,7 @@
 import { injectable, inject } from 'inversify';
 import { IMessageProducer, StreamMessage } from '../../../libs/types/messaging.types';
 import { Logger } from '../../../libs/services/logger.service';
+import { signEnabled } from '../../../libs/context/envelope';
 
 /** What a notification event carries; `id`, when set, is the broker key. */
 export interface NotificationEventPayload {
@@ -43,10 +44,19 @@ export class NotificationProducer {
     return this.producer.isConnected();
   }
 
+  /**
+   * With `ENVELOPE_SIGN` on, the notification goes out as `{ payload: { notification, orgId } }`: the signature covers
+   * only `payload`, so the whole notification has to be inside it (`NotificationConsumer` reads it from there and
+   * ignores the top level). With signing off it is sent as before.
+   */
   async publishEvent(event: Event): Promise<void> {
-    const message: StreamMessage<NotificationEventPayload> = {
+    const doc = event.payload as NotificationEventPayload & { orgId?: unknown };
+    const value: Record<string, unknown> = signEnabled()
+      ? { payload: { notification: doc, orgId: doc.orgId } }
+      : (doc as Record<string, unknown>);
+    const message: StreamMessage<Record<string, unknown>> = {
       key: event.payload.id as string, // the broker key, when the payload carries an id
-      value: event.payload,
+      value,
       headers: {
         eventType: event.eventType,
         timestamp: event.timestamp.toString(),

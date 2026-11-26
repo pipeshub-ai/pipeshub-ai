@@ -46,7 +46,8 @@ class KafkaService:
         """Publish a Mongo notification-shaped document to the notification topic/stream."""
         try:
             await self._ensure_producer()
-            key = f"{notification.get('type')}-{get_epoch_timestamp_in_ms()}"
+            inner = (notification.get("payload") or {}).get("notification") if isinstance(notification.get("payload"), dict) else None
+            key = f"{(inner or notification).get('type')}-{get_epoch_timestamp_in_ms()}"
             return await self._producer.send_message(  # type: ignore
                 topic=Topic.NOTIFICATION.value,
                 message=notification,

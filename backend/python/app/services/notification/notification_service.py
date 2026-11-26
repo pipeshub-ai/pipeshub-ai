@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationStatus, NotificationRecipientRole
 from app.connectors.services.kafka_service import KafkaService
+from app.core.envelope import sign_enabled
 
 
 class NotificationService:
@@ -47,7 +48,10 @@ class NotificationService:
                 "recipientRoles": [role.value for role in recipient_roles] if recipient_roles else [],
                 "isDeleted": False,
             }
-            return await self._kafka_service.publish_notification(document) is True
+            # Signed, a message covers only its "payload": the whole notification goes inside it, where the consumer
+            # reads it, so its fields (org, recipients, text) cannot be changed in transit. Unsigned, it goes as before.
+            message = {"payload": {"notification": document, "orgId": org_id}} if sign_enabled() else document
+            return await self._kafka_service.publish_notification(message) is True
         except Exception as exc:  # noqa: BLE001 — must not break connector sync
             self._logger.warning(
                 "Failed to publish connector notification: \n Title: %s \n type: %s",

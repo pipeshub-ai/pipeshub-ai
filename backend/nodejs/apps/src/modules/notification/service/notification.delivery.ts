@@ -10,6 +10,7 @@ import { resolveNotificationRecipientUserIds } from '../utils/notification-recip
 import {
   NotificationBrokerMessage,
   buildNotificationDocForUser,
+  currentEnvelopeOrg,
 } from '../utils/notification-payload.resolver';
 
 // A notification type is a short dotted token (`mail.deliveryFailed`); anything else is not printed.
@@ -48,11 +49,32 @@ export const notificationEventRefused = metricsBackend.createCounter({
  * Throws DuplicateEnvelope when this delivery's event was already stored for
  * the org (the durable consumer inbox).
  */
+export const notificationLegacySigned = metricsBackend.createCounter({
+  name: 'notification_event_legacy_signed_total',
+  help: 'Signed notification events in the older shape, whose top-level fields the signature does not cover',
+  labelNames: [],
+});
+
 export function deliverToOrg(
   event: NotificationBrokerMessage,
   notificationService: NotificationService,
   logger: Logger,
 ): Promise<number> {
+  // A signed message is for the org its signature names: an event naming any other org is refused before anything is
+  // read or written (the org binding below would refuse it too, as a mismatch).
+  const signedOrg = currentEnvelopeOrg();
+  if (signedOrg !== null && String(event.orgId) !== signedOrg) {
+    notificationEventRefused.inc({ reason: 'org_not_signed' });
+    return Promise.reject(
+      new ValidationError('Notification event refused', [
+        {
+          field: 'orgId',
+          code: 'org_not_signed',
+          message: 'the event names another org than the one its signature names',
+        },
+      ]),
+    );
+  }
   // The org comes from the event, bound before any repository is touched.
   return forOrg(event.orgId, 'notification-consumer', async () => {
     const recipientUserIds = await resolveNotificationRecipientUserIds(

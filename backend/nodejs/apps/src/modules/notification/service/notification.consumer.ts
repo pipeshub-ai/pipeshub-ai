@@ -7,7 +7,8 @@ import { injectable, inject, optional } from 'inversify';
 import { isRetryableStoreError } from '../../../libs/repositories/errors';
 import { DuplicateEnvelope } from '../../../libs/context/envelope';
 import { NotificationService } from './notification.service';
-import { toBrokerMessage } from '../utils/notification-payload.resolver';
+import { notificationOf, toBrokerMessage } from '../utils/notification-payload.resolver';
+import { notificationLegacySigned } from './notification.delivery';
 import { ValidationError } from '../../../libs/errors/validation.error';
 import { deliverToOrg, messageFacts } from './notification.delivery';
 import {
@@ -73,7 +74,11 @@ export class NotificationConsumer {
               await this.handlePlatformEvent(message.value);
               return;
             }
-            const event = toBrokerMessage(message.value);
+            const { value, signedLegacy } = notificationOf(message.value);
+            // Signed, but in the older shape: its top-level fields are not covered by the signature (counted; its org is
+            // still held to the signed one at delivery).
+            if (signedLegacy) notificationLegacySigned.inc();
+            const event = toBrokerMessage(value);
             if (!event) {
               this.logger.warn(
                 'Notification event skipped: invalid orgId or type',

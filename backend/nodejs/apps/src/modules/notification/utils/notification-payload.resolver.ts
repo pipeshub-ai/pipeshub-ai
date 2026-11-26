@@ -1,5 +1,6 @@
 import { isValidId } from '../../../libs/repositories/ids';
 import type { NewNotification } from '../../../libs/repositories/notification';
+import { orgContextStorage } from '../../../libs/context/orgContext';
 
 /** Fields only present on the Kafka event; not stored on per-user notification docs. */
 const BROKER_ONLY_FIELDS = new Set(['recipientUserIds', 'recipientRoles']);
@@ -21,6 +22,31 @@ export interface NotificationBrokerMessage {
   isDeleted?: boolean;
   /** @deprecated Legacy single-assignee events */
   assignedTo?: string | string[];
+}
+
+/**
+ * The notification a consumed message carries. A producer that signs puts the whole notification under
+ * `payload.notification` (the part the signature covers) and every top-level field is ignored, so a writer to the
+ * broker cannot change what a signed notification says, who gets it or which org it names. A message without it is
+ * the older shape (fields at the top level), read as before; `signedLegacy` is true when such a message was signed,
+ * since its top-level fields are not covered.
+ */
+export function notificationOf(raw: unknown): { value: unknown; signedLegacy: boolean } {
+  if (raw == null || typeof raw !== 'object') return { value: raw, signedLegacy: false };
+  const payload = (raw as Record<string, unknown>).payload;
+  if (payload != null && typeof payload === 'object' && !Array.isArray(payload)) {
+    const inner = (payload as Record<string, unknown>).notification;
+    if (inner != null && typeof inner === 'object' && !Array.isArray(inner)) {
+      return { value: inner, signedLegacy: false };
+    }
+  }
+  return { value: raw, signedLegacy: currentEnvelopeOrg() !== null };
+}
+
+/** The org a verified envelope bound for this delivery, or null (unsigned message, or no delivery). */
+export function currentEnvelopeOrg(): string | null {
+  const ctx = orgContextStorage.getStore();
+  return ctx?.source === 'envelope' && ctx.orgId ? ctx.orgId : null;
 }
 
 export function toBrokerMessage(raw: unknown): NotificationBrokerMessage | null {
