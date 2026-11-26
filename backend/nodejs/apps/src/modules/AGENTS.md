@@ -82,7 +82,7 @@ Python refuses a Local FS sync with a 409 whose `detail` starts with a code (`DE
 
 ### Adding a module
 - Add its routes, controller and tests under `tests/modules/<module>/`. Follow the rules above for any call to a Python service.
-- If it needs rules of its own, write `<module>/AGENTS.md` with a `CLAUDE.md` holding `@AGENTS.md`, and add it to the table below.
+- A guide of its own only when it passes the test in the root guide's "Writing and keeping a guide", and only after the user agrees: `<module>/AGENTS.md` with a `CLAUDE.md` holding `@AGENTS.md`, added to the table below.
 
 ### Removing a route
 - Remove its `guardPathParams` and binding entries if no other route uses the param, its OpenAPI entry, and any audit row in docs/logging.md.

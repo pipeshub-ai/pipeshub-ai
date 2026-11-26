@@ -37,11 +37,24 @@ Some folders have their own `AGENTS.md`: what the code does, the rules it must k
 | [`backend/python/app/services/graph_db/`](./backend/python/app/services/graph_db/AGENTS.md) | Graph queries and providers, and any job that reads the graph without a request |
 | [`backend/python/app/services/messaging/`](./backend/python/app/services/messaging/AGENTS.md) | Broker consumers and producers, retries, commits |
 
+### Using a guide
+
+- **Read before you plan,** not after you have written the code. The guides on the path from the root to the file's folder all apply; a nearer guide adds to a parent's rules and wins where the two differ.
+- **Rules** are what the code must keep. Breaking one is a bug unless the user agrees and the guide is changed in the same PR.
+- **Decisions** say what was chosen, what was rejected and why (with the PR). Do not reopen a rejected option without a new reason; when you have one, tell the user.
+- **Changing this code** is the checklist for your kind of change (adding, editing or removing). Go through it before you call the work done, and run the commands under **Tests**.
+- **Check before you rely on it.** A guide names files and symbols; if one is gone or does something else, treat it as drift (below).
+- **The user comes first.** If the user asks for something a guide forbids, say which rule it breaks and why the rule exists, then follow their call.
+
 ### Writing and keeping a guide
 
 - **Same PR.** A change that makes a guide wrong (a rule, a decision, a file or symbol it names, a checklist step) updates the guide in the same PR. Reviewers treat a stale guide as a defect.
-- **Write one** for a folder whose rules an agent cannot see from the code: invariants, failure modes, decisions that look odd until you know why. Add it to the table above.
-- **No guide where one is needed: ask, then write it.** If the folder you are working in fits the line above and neither it nor a parent below the root has a guide, ask the user whether to add one. If they agree, write it in the same PR.
+- **Write a new guide only when all of these hold.** Most folders do not need one.
+  1. The folder is a module or feature with its own boundary (a service, a provider family, a group of routes), not a single file, a helper folder or one connector. Connectors follow [CONNECTOR.md](./CONNECTOR.md).
+  2. It has at least three rules an agent would plausibly break that the code, its tests and its comments do not make plain: invariants, failure modes, decisions that look odd until you know why.
+  3. No guide in a parent folder and no doc in `docs/` covers them. If one does, add the rules there or link the doc instead.
+- **Before writing one, ask the user.** If the folder you are working in passes the test above and has no guide, say which rules it would hold and ask whether to add it. If they agree, write it in the same PR and add it to the table above. Do not write a guide for a folder you only touched in passing.
+- **Keep a guide short.** It holds rules and decisions, not a tour of the code. Something an agent can read from the code or a docstring in a minute does not go in. Past about 200 lines, move the long explanations to `docs/` and link them.
 - **A guide disagrees with the code: find out which is wrong.** If the code is right, correct the guide in your PR, even when your change did not cause the drift, and say so in the PR description. If the code breaks a rule or decision the guide records, tell the user before you change either.
 - **A guide misses something important: add it.** A rule, failure mode or decision you had to learn the hard way (from a bug, a failing test or a review comment) goes into the guide, so the next agent does not learn it the same way.
 - **Shape.** Content in `AGENTS.md`; a `CLAUDE.md` beside it that holds only `@AGENTS.md`. Sections: what it is and when to read it, how it fits, files, rules, decisions (with the PR), changing this code (adding / editing / removing), tests, keeping this file true. [`backend/python/app/agents/mcp/AGENTS.md`](./backend/python/app/agents/mcp/AGENTS.md) is a full example.
