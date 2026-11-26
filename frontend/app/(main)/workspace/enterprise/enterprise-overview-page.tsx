@@ -88,7 +88,7 @@ export function EnterpriseOverviewPage() {
             <a href={enterpriseContactUrl('overview')} target="_blank" rel="noopener noreferrer">
               {/* The icon is a text ligature; hide it so the link is named by its label alone. */}
               <span aria-hidden="true" style={{ display: 'inline-flex' }}>
-                <MaterialIcon name="event" size={16} color="currentColor" />
+                <MaterialIcon name="chat" size={16} color="currentColor" />
               </span>
               {t('workspace.enterprise.contact')}
             </a>

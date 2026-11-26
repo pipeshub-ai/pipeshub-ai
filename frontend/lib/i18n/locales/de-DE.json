@@ -1742,7 +1742,7 @@
       "title": "Gruppen",
       "subtitle": "Erstellen und verwalten Sie Gruppen zur Steuerung von Zugriff und Berechtigungen",
       "enterpriseTitle": "Gruppenberechtigungen sind in der Enterprise Edition verfügbar",
-      "enterpriseMessage": "Upgraden Sie auf die Enterprise Edition, um Gruppenberechtigungen zu nutzen.",
+      "enterpriseMessage": "Legen Sie pro Gruppe fest, wer was sieht, statt für jede Person einzeln.",
       "createGroup": "Gruppe erstellen",
       "searchPlaceholder": "Suchen...",
       "emptyTitle": "Sie haben noch keine Gruppen erstellt",
@@ -1826,50 +1826,50 @@
       }
     },
     "enterprise": {
-      "contact": "30-minütige Demo buchen",
+      "contact": "Sprechen Sie mit uns",
       "scim": {
         "heading": "Die SCIM-Bereitstellung ist in der Enterprise Edition verfügbar",
-        "message": "Lassen Sie Okta oder Microsoft Entra ID Personen in Ihrem Workspace automatisch hinzufügen, aktualisieren und deaktivieren.",
+        "message": "Okta oder Microsoft Entra ID fügt Personen für Sie hinzu und entfernt sie.",
         "benefits": {
           "providers": "Funktioniert mit Okta und Microsoft Entra ID",
-          "offboarding": "Wer das Unternehmen verlässt, verliert den Zugriff, sobald Ihr Identitätsanbieter die Person deaktiviert",
-          "noManualWork": "Kein manuelles Einladen oder Entfernen von Personen mehr"
+          "offboarding": "Wer das Unternehmen verlässt, verliert sofort den Zugriff",
+          "noManualWork": "Kein manuelles Hinzufügen oder Entfernen von Personen mehr"
         }
       },
       "auditLogs": {
         "heading": "Audit-Logs sind in der Enterprise Edition verfügbar",
         "message": "Sehen Sie, wer in Ihrem Workspace was getan hat und wann.",
         "benefits": {
-          "everyEvent": "Jede Aktion – wer sie ausgeführt hat, wann und von welcher IP-Adresse",
-          "filters": "Nach Person, Aktion, Element und Ergebnis filtern",
-          "alerts": "Diagramme, Warnungen und Export für Prüfungen"
+          "everyEvent": "Jede Aktion: wer, wann und von welcher IP-Adresse",
+          "filters": "Nach Person, Aktion oder Ergebnis filtern",
+          "alerts": "Benachrichtigungen erhalten und Protokolle für Prüfungen exportieren"
         }
       },
       "usage": {
-        "heading": "Nutzung, Credits und Abrechnung sind in der Enterprise Edition verfügbar",
-        "message": "Sehen Sie die KI-Kosten nach Person, Agent, Connector und Modell, verwalten Sie Credits, Tarif und Rechnungen und legen Sie in den Verbrauchseinstellungen Ausgabenwarnungen fest.",
+        "heading": "Nutzung und Abrechnung sind in der Enterprise Edition verfügbar",
+        "message": "Sehen Sie, was KI kostet und wer sie nutzt. Verwalten Sie Guthaben und Rechnungen und erhalten Sie Ausgabenwarnungen.",
         "benefits": {
           "breakdown": "KI-Kosten nach Person, Agent, Connector und Modell",
-          "billing": "Credits, Ihr Tarif und Rechnungen an einem Ort",
-          "alerts": "Ausgabenwarnungen, die Sie in den Verbrauchseinstellungen festlegen"
+          "billing": "Guthaben, Tarif und Rechnungen an einem Ort",
+          "alerts": "Warnungen, wenn die Ausgaben Ihr Limit überschreiten"
         }
       },
       "benefitsTitle": "Das bekommen Sie",
       "relatedTitle": "Ebenfalls in Enterprise",
       "tenants": {
         "heading": "Mandantenfähigkeit ist in der Enterprise Edition verfügbar",
-        "message": "Geben Sie jedem Geschäftsbereich, jeder Region oder jedem Kunden einen eigenen Mandanten mit eigenen Personen, Connectors und Daten – auf einer einzigen Installation.",
+        "message": "Geben Sie jedem Team, jeder Region oder jedem Kunden einen eigenen Bereich, alles in einer Installation.",
         "benefits": {
-          "separate": "Jeder Mandant hält seine Personen, Connectors, Sammlungen und Agenten getrennt",
-          "inherit": "Legen Sie fest, welche Einstellungen ein Mandant von Ihnen übernimmt, etwa KI-Modelle, E-Mail und Anmeldung",
-          "manage": "Mandanten anlegen und ihre Benutzer und Gruppen an einem Ort verwalten"
+          "separate": "Jeder Mandant hat eigene Personen, Connectors, Sammlungen und Agents",
+          "inherit": "Mandanten können Ihre Einstellungen nutzen, etwa KI-Modelle, E-Mail und Anmeldung",
+          "manage": "Alle Mandanten an einem Ort anlegen und verwalten"
         }
       },
       "groups": {
         "benefits": {
-          "grantOnce": "Zugriff einmal an eine Gruppe vergeben statt Person für Person",
-          "teams": "Ganze Teams und einzelne Personen zu einer Gruppe hinzufügen",
-          "builtIn": "Mit den integrierten Gruppen Admin und Everyone starten"
+          "grantOnce": "Einer ganzen Gruppe in einem Schritt Zugriff geben",
+          "teams": "Ganze Teams oder einzelne Personen zu einer Gruppe hinzufügen",
+          "builtIn": "Mit den integrierten Gruppen „Admin“ und „Alle“ beginnen"
         }
       },
       "seeWhatsInEnterprise": "Was Enterprise bietet",
@@ -1882,10 +1882,10 @@
       "overview": {
         "currentEdition": "Sie nutzen die Community Edition",
         "title": "Enterprise Edition",
-        "subtitle": "Alles, was Sie heute nutzen, plus das, was größere Organisationen brauchen: mehrere Mandanten auf einer Installation, Single Sign-on, automatische Bereitstellung, Audit-Protokolle und Kostenkontrolle.",
+        "subtitle": "Alles, was Sie heute haben, plus das, was größere Unternehmen brauchen: mehr Kontrolle, mehr Sicherheit und einen klaren Blick auf die Kosten.",
         "seePreview": "So sieht es aus",
         "seePreviewLabel": "So sieht {{name}} aus",
-        "communityNote": "Die Community Edition bleibt Open Source und voll nutzbar.",
+        "communityNote": "Die Community Edition bleibt Open Source und kostenlos.",
         "groups": {
           "scale": "Skalierung",
           "governance": "Zugriff und Steuerung",
@@ -1895,43 +1895,43 @@
         "items": {
           "tenants": {
             "name": "Mandantenfähigkeit",
-            "description": "Mehrere Mandanten auf einer Installation, jeder mit eigenen Personen, Connectors und Daten."
+            "description": "Ein eigener Bereich für jedes Team, jede Region oder jeden Kunden, in einer Installation."
           },
           "scim": {
             "name": "SCIM-Bereitstellung",
-            "description": "Okta oder Microsoft Entra ID fügt Personen für Sie hinzu, aktualisiert und deaktiviert sie."
+            "description": "Okta oder Microsoft Entra ID fügt Personen für Sie hinzu und entfernt sie."
           },
           "groups": {
             "name": "Gruppenberechtigungen",
-            "description": "Zugriff einmal an eine Gruppe vergeben statt Person für Person."
+            "description": "Einer ganzen Gruppe in einem Schritt Zugriff geben."
           },
           "toolApprovals": {
-            "name": "Tool-Freigaben für die Organisation",
-            "description": "Legen Sie für alle fest, welche Agent-Tools laufen, vorher fragen oder nie laufen."
+            "name": "Regeln für Tool-Freigaben",
+            "description": "Legen Sie fest, welche Agent-Tools laufen dürfen, eine Freigabe brauchen oder gesperrt sind."
           },
           "actOnBehalf": {
             "name": "Im Namen einer Person handeln",
-            "description": "Ein Dienstkonto handelt im Namen einer bestimmten Person, und jeder Versuch wird protokolliert."
+            "description": "Ein Dienstkonto handelt als eine bestimmte Person. Jeder Versuch wird protokolliert."
           },
           "peoplesOwnApps": {
-            "name": "Eigene Apps und Server von Personen",
-            "description": "Prüfen und entfernen Sie die OAuth-Apps, Aktionen und MCP-Server, die Personen für sich selbst hinzufügen."
+            "name": "Persönliche Apps prüfen",
+            "description": "Apps, Aktionen und MCP-Server sehen und entfernen, die Personen für sich selbst hinzufügen."
           },
           "sso": {
             "name": "Single Sign-on",
-            "description": "Anmeldung über Okta, OneLogin oder jeden anderen SAML-2.0- oder OpenID-Connect-Anbieter."
+            "description": "Anmeldung über Okta, OneLogin oder einen anderen SAML- oder OpenID-Connect-Anbieter."
           },
           "auditLogs": {
             "name": "Audit-Protokolle",
-            "description": "Sehen Sie, wer was wann getan hat, mit Filtern, Warnungen und Export."
+            "description": "Sehen, wer was wann getan hat. Filtern, Warnungen erhalten und exportieren."
           },
           "usage": {
             "name": "Nutzung, Credits und Abrechnung",
-            "description": "KI-Kosten nach Person, Agent, Connector und Modell, mit Ausgabenwarnungen."
+            "description": "KI-Kosten nach Person, Agent, Connector und Modell sehen und Ausgabenwarnungen erhalten."
           },
           "indexingPriority": {
             "name": "Indexierungspriorität",
-            "description": "Legen Sie fest, welche Datensätze, Sammlungen und Uploads zuerst indexiert werden."
+            "description": "Festlegen, was zuerst indexiert wird."
           }
         }
       }

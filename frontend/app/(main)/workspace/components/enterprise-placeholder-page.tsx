@@ -13,7 +13,7 @@ import { EnterpriseGlimpse, type Glimpse } from './enterprise-glimpse';
 import { useEnterpriseAdminGate } from './use-enterprise-admin-gate';
 
 export interface EnterprisePlaceholderPageProps {
-  /** Which Enterprise page this is, as named in the demo link's tags. */
+  /** Which Enterprise page this is, as named in the contact link's tags. */
   feature: string;
   /** The page's own title, as the Enterprise Edition names it. */
   title: string;
@@ -156,7 +156,7 @@ export function EnterprisePlaceholderPage({
             <a href={enterpriseContactUrl(feature)} target="_blank" rel="noopener noreferrer">
               {/* The icon is a text ligature; hide it so the link is named by its label alone. */}
               <span aria-hidden="true" style={{ display: 'inline-flex' }}>
-                <MaterialIcon name="event" size={16} color="currentColor" />
+                <MaterialIcon name="chat" size={16} color="currentColor" />
               </span>
               {t('workspace.enterprise.contact')}
             </a>

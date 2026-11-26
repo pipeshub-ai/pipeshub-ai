@@ -56,7 +56,7 @@ function renderPage(glimpse: React.ComponentProps<typeof EnterprisePlaceholderPa
 }
 
 describe('EnterprisePlaceholderPage', () => {
-  it('says what is available and offers a demo booking for it', () => {
+  it('says what is available and offers a way to talk with us', () => {
     renderPage();
 
     expect(screen.getByRole('heading', { name: 'Usage' })).toBeTruthy();
@@ -69,7 +69,7 @@ describe('EnterprisePlaceholderPage', () => {
     expect(contact.getAttribute('target')).toBe('_blank');
     expect(contact.getAttribute('rel')).toBe('noopener noreferrer');
     expect(contact.className).toContain('rt-Button');
-    expect(contact.querySelector('[aria-hidden="true"]')?.textContent).toBe('event');
+    expect(contact.querySelector('[aria-hidden="true"]')?.textContent).toBe('chat');
     expect(replace).not.toHaveBeenCalled();
   });
 
@@ -115,11 +115,11 @@ describe('EnterprisePlaceholderPage', () => {
 
     expect(screen.queryByRole('list')).toBeNull();
     expect(screen.queryByRole('navigation')).toBeNull();
-    // Only the demo booking and the way to everything in Enterprise.
+    // Only talking with us and the way to everything in Enterprise.
     expect(screen.getAllByRole('link')).toHaveLength(2);
   });
 
-  it('offers the page with everything in Enterprise beside the demo booking', () => {
+  it('offers the page with everything in Enterprise beside the contact link', () => {
     renderPage();
 
     const overview = screen.getByRole('link', { name: 'workspace.enterprise.seeWhatsInEnterprise' });
@@ -158,7 +158,7 @@ describe('EnterprisePlaceholderPage', () => {
     expect(replace).not.toHaveBeenCalled();
   });
 
-  it('tags the demo link with the page it came from, and nothing about the user', () => {
+  it('tags the contact link with the page it came from, and nothing about the user', () => {
     const url = new URL(enterpriseContactUrl('tenants'));
 
     expect(`${url.origin}${url.pathname}`).toBe('https://calendly.com/rishabh-pipeshub/30min');

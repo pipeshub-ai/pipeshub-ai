@@ -1777,7 +1777,7 @@
       "title": "Grupos",
       "subtitle": "Crea y administra grupos para controlar el acceso y los permisos",
       "enterpriseTitle": "Los permisos de grupo están disponibles en la Enterprise Edition",
-      "enterpriseMessage": "Actualice a la Enterprise Edition para usar permisos de grupo.",
+      "enterpriseMessage": "Decida quién ve qué por grupos, no persona por persona.",
       "createGroup": "Crear grupo",
       "searchPlaceholder": "Buscar...",
       "emptyTitle": "Aún no has creado ningún grupo",
@@ -1861,50 +1861,50 @@
       }
     },
     "enterprise": {
-      "contact": "Reservar una demo de 30 minutos",
+      "contact": "Hable con nosotros",
       "scim": {
         "heading": "El aprovisionamiento SCIM está disponible en la Enterprise Edition",
-        "message": "Deje que Okta o Microsoft Entra ID añadan, actualicen y desactiven personas en su espacio de trabajo automáticamente.",
+        "message": "Okta o Microsoft Entra ID añade y quita personas por usted.",
         "benefits": {
           "providers": "Funciona con Okta y Microsoft Entra ID",
-          "offboarding": "Quien se va pierde el acceso en cuanto su proveedor de identidad lo desactiva",
-          "noManualWork": "Se acabó invitar o eliminar personas a mano"
+          "offboarding": "Quien se va pierde el acceso al momento",
+          "noManualWork": "Se acabó añadir o quitar personas a mano"
         }
       },
       "auditLogs": {
         "heading": "Los registros de auditoría están disponibles en la Enterprise Edition",
         "message": "Vea quién hizo qué en su espacio de trabajo y cuándo.",
         "benefits": {
-          "everyEvent": "Cada acción, con quién la hizo, cuándo y desde qué dirección IP",
-          "filters": "Filtre por persona, acción, elemento y resultado",
-          "alerts": "Gráficos, alertas y exportación para revisiones"
+          "everyEvent": "Cada acción: quién, cuándo y desde qué dirección IP",
+          "filters": "Filtre por persona, acción o resultado",
+          "alerts": "Reciba alertas y exporte los registros para revisiones"
         }
       },
       "usage": {
-        "heading": "El uso, los créditos y la facturación están disponibles en la Enterprise Edition",
-        "message": "Vea el coste de la IA por persona, agente, conector y modelo, gestione los créditos, su plan y sus facturas, y configure alertas de gasto en la Configuración de consumo.",
+        "heading": "El uso y la facturación están disponibles en la Enterprise Edition",
+        "message": "Vea cuánto cuesta la IA y quién la usa. Gestione créditos y facturas, y reciba alertas de gasto.",
         "benefits": {
           "breakdown": "Coste de la IA por persona, agente, conector y modelo",
-          "billing": "Créditos, su plan y sus facturas en un solo lugar",
-          "alerts": "Alertas de gasto que configura en la Configuración de consumo"
+          "billing": "Créditos, plan y facturas en un solo lugar",
+          "alerts": "Alertas cuando el gasto supera su límite"
         }
       },
       "benefitsTitle": "Lo que obtiene",
       "relatedTitle": "También en Enterprise",
       "tenants": {
         "heading": "La multitenencia está disponible en la Enterprise Edition",
-        "message": "Dé a cada unidad de negocio, región o cliente su propio inquilino, con sus propias personas, conectores y datos, en una sola implementación.",
+        "message": "Dé a cada equipo, región o cliente su propio espacio, todo en una sola instalación.",
         "benefits": {
-          "separate": "Cada inquilino mantiene separadas sus personas, conectores, colecciones y agentes",
-          "inherit": "Elija qué configuración hereda un inquilino de usted, como los modelos de IA, el correo y el inicio de sesión",
-          "manage": "Cree inquilinos y gestione sus usuarios y grupos desde un solo lugar"
+          "separate": "Cada inquilino tiene sus propias personas, conectores, colecciones y agentes",
+          "inherit": "Los inquilinos pueden usar su configuración, como modelos de IA, correo e inicio de sesión",
+          "manage": "Cree y gestione todos los inquilinos en un solo lugar"
         }
       },
       "groups": {
         "benefits": {
-          "grantOnce": "Dé acceso a un grupo una sola vez en lugar de persona por persona",
-          "teams": "Añada equipos completos y personas concretas a un grupo",
-          "builtIn": "Empiece con los grupos integrados Admin y Everyone"
+          "grantOnce": "Dé acceso a todo un grupo en un solo paso",
+          "teams": "Añada equipos enteros o personas sueltas a un grupo",
+          "builtIn": "Empiece con los grupos integrados Administradores y Todos"
         }
       },
       "seeWhatsInEnterprise": "Ver qué incluye Enterprise",
@@ -1917,10 +1917,10 @@
       "overview": {
         "currentEdition": "Está usando la Community Edition",
         "title": "Enterprise Edition",
-        "subtitle": "Todo lo que usa hoy, más lo que necesitan las organizaciones grandes: varios inquilinos en una sola implementación, inicio de sesión único, aprovisionamiento automático, registros de auditoría y control de costes.",
+        "subtitle": "Todo lo que tiene hoy, más lo que necesitan las empresas grandes: más control, más seguridad y una visión clara del gasto.",
         "seePreview": "Ver cómo es",
         "seePreviewLabel": "Ver cómo es {{name}}",
-        "communityNote": "La Community Edition sigue siendo de código abierto y totalmente utilizable.",
+        "communityNote": "La Community Edition sigue siendo de código abierto y gratuita.",
         "groups": {
           "scale": "Escala",
           "governance": "Acceso y gobierno",
@@ -1930,43 +1930,43 @@
         "items": {
           "tenants": {
             "name": "Multitenencia",
-            "description": "Varios inquilinos en una sola implementación, cada uno con sus propias personas, conectores y datos."
+            "description": "Un espacio propio para cada equipo, región o cliente, en una sola instalación."
           },
           "scim": {
             "name": "Aprovisionamiento SCIM",
-            "description": "Okta o Microsoft Entra ID añaden, actualizan y desactivan personas por usted."
+            "description": "Okta o Microsoft Entra ID añade y quita personas por usted."
           },
           "groups": {
             "name": "Permisos de grupo",
-            "description": "Dé acceso a un grupo una sola vez en lugar de persona por persona."
+            "description": "Dé acceso a todo un grupo en un solo paso."
           },
           "toolApprovals": {
-            "name": "Aprobaciones de herramientas de la organización",
-            "description": "Decida para todos qué herramientas de los agentes se ejecutan, preguntan antes o nunca se ejecutan."
+            "name": "Reglas de aprobación de herramientas",
+            "description": "Elija qué herramientas de los agentes pueden ejecutarse, necesitan aprobación o están bloqueadas."
           },
           "actOnBehalf": {
             "name": "Actuar en nombre de una persona",
-            "description": "Permita que una cuenta de servicio actúe como un compañero concreto, con cada intento registrado."
+            "description": "Una cuenta de servicio actúa como una persona concreta. Cada intento queda registrado."
           },
           "peoplesOwnApps": {
-            "name": "Apps y servidores propios de las personas",
-            "description": "Revise y elimine las apps OAuth, acciones y servidores MCP que las personas añaden para sí mismas."
+            "name": "Revisión de apps personales",
+            "description": "Vea y quite las apps, acciones y servidores MCP que las personas añaden para sí mismas."
           },
           "sso": {
             "name": "Inicio de sesión único",
-            "description": "Inicie sesión mediante Okta, OneLogin o cualquier otro proveedor SAML 2.0 u OpenID Connect."
+            "description": "Inicio de sesión con Okta, OneLogin o cualquier proveedor SAML u OpenID Connect."
           },
           "auditLogs": {
             "name": "Registros de auditoría",
-            "description": "Vea quién hizo qué y cuándo, con filtros, alertas y exportación."
+            "description": "Vea quién hizo qué y cuándo. Filtre, reciba alertas y exporte."
           },
           "usage": {
             "name": "Uso, créditos y facturación",
-            "description": "Coste de la IA por persona, agente, conector y modelo, con alertas de gasto."
+            "description": "Vea el gasto en IA por persona, agente, conector y modelo, y reciba alertas de gasto."
           },
           "indexingPriority": {
             "name": "Prioridad de indexación",
-            "description": "Elija qué registros, colecciones y subidas se indexan primero."
+            "description": "Elija qué se indexa primero."
           }
         }
       }

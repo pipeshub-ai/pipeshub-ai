@@ -111,13 +111,13 @@ describe('EnterpriseOverviewPage', () => {
     }
   });
 
-  it('offers a demo booking tagged as coming from this page', () => {
+  it('offers a way to talk with us, tagged as coming from this page', () => {
     renderPage();
 
-    const demo = screen.getByRole('link', { name: en.workspace.enterprise.contact });
-    expect(demo.getAttribute('href')).toBe(enterpriseContactUrl('overview'));
-    expect(demo.getAttribute('target')).toBe('_blank');
-    expect(demo.getAttribute('rel')).toBe('noopener noreferrer');
+    const contact = screen.getByRole('link', { name: en.workspace.enterprise.contact });
+    expect(contact.getAttribute('href')).toBe(enterpriseContactUrl('overview'));
+    expect(contact.getAttribute('target')).toBe('_blank');
+    expect(contact.getAttribute('rel')).toBe('noopener noreferrer');
   });
 
   it('sends a member who opens the URL to General settings, showing nothing', () => {

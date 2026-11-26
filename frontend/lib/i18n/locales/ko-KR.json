@@ -1816,7 +1816,7 @@
       "title": "그룹",
       "subtitle": "그룹을 생성하고 관리하여 접근 및 권한을 제어합니다",
       "enterpriseTitle": "그룹 권한은 Enterprise Edition에서 사용할 수 있습니다",
-      "enterpriseMessage": "그룹 권한을 사용하려면 Enterprise Edition으로 업그레이드하세요.",
+      "enterpriseMessage": "사람마다가 아니라 그룹별로 누가 무엇을 볼지 정하세요.",
       "createGroup": "그룹 생성",
       "searchPlaceholder": "검색...",
       "emptyTitle": "아직 생성된 그룹이 없습니다",
@@ -1900,50 +1900,50 @@
       }
     },
     "enterprise": {
-      "contact": "30분 데모 예약",
+      "contact": "문의하기",
       "scim": {
         "heading": "SCIM 프로비저닝은 Enterprise Edition에서 사용할 수 있습니다",
-        "message": "Okta 또는 Microsoft Entra ID가 워크스페이스 사용자를 자동으로 추가, 업데이트, 비활성화하도록 하세요.",
+        "message": "Okta 또는 Microsoft Entra ID가 사용자를 대신 추가하고 제거합니다.",
         "benefits": {
           "providers": "Okta 및 Microsoft Entra ID와 연동됩니다",
-          "offboarding": "ID 공급자에서 비활성화되는 즉시 퇴사자의 접근이 차단됩니다",
-          "noManualWork": "사용자를 직접 초대하거나 삭제할 필요가 없습니다"
+          "offboarding": "퇴사자는 바로 접근 권한을 잃습니다",
+          "noManualWork": "더 이상 사용자를 직접 추가하거나 제거하지 않아도 됩니다"
         }
       },
       "auditLogs": {
         "heading": "감사 로그는 Enterprise Edition에서 사용할 수 있습니다",
         "message": "워크스페이스에서 누가 언제 무엇을 했는지 확인하세요.",
         "benefits": {
-          "everyEvent": "누가, 언제, 어떤 IP 주소에서 했는지 모든 작업 기록",
-          "filters": "사람, 작업, 항목, 결과별 필터",
-          "alerts": "검토를 위한 차트, 알림, 내보내기"
+          "everyEvent": "모든 작업: 누가, 언제, 어떤 IP 주소에서",
+          "filters": "사람, 작업, 결과별로 필터링",
+          "alerts": "알림을 받고 검토용으로 로그 내보내기"
         }
       },
       "usage": {
-        "heading": "사용량, 크레딧 및 결제는 Enterprise Edition에서 사용할 수 있습니다",
-        "message": "사람, 에이전트, 커넥터, 모델별 AI 비용을 확인하고, 크레딧과 요금제, 청구서를 관리하며, 사용량 설정에서 지출 알림을 설정하세요.",
+        "heading": "사용량 및 결제는 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "AI 비용과 사용자를 확인하세요. 크레딧과 청구서를 관리하고 지출 알림을 받으세요.",
         "benefits": {
           "breakdown": "사람, 에이전트, 커넥터, 모델별 AI 비용",
-          "billing": "크레딧, 요금제, 청구서를 한곳에서",
-          "alerts": "사용량 설정에서 지정하는 지출 알림"
+          "billing": "크레딧, 플랜, 청구서를 한곳에서",
+          "alerts": "지출이 한도를 넘으면 알림"
         }
       },
       "benefitsTitle": "제공되는 기능",
       "relatedTitle": "Enterprise의 다른 기능",
       "tenants": {
         "heading": "멀티 테넌시는 Enterprise Edition에서 사용할 수 있습니다",
-        "message": "사업부, 지역 또는 고객마다 고유한 테넌트를 두고, 하나의 배포에서 각자의 사람, 커넥터, 데이터를 관리하세요.",
+        "message": "팀, 지역, 고객마다 별도의 공간을 하나의 설치에서 제공하세요.",
         "benefits": {
-          "separate": "각 테넌트의 사람, 커넥터, 컬렉션, 에이전트가 서로 분리됩니다",
-          "inherit": "AI 모델, 메일, 로그인 등 테넌트가 상속할 설정을 선택하세요",
-          "manage": "한곳에서 테넌트를 만들고 사용자와 그룹을 관리하세요"
+          "separate": "테넌트마다 사용자, 커넥터, 컬렉션, 에이전트가 따로 있습니다",
+          "inherit": "테넌트가 AI 모델, 이메일, 로그인 같은 내 설정을 그대로 쓸 수 있습니다",
+          "manage": "모든 테넌트를 한곳에서 만들고 관리"
         }
       },
       "groups": {
         "benefits": {
-          "grantOnce": "한 명씩 주는 대신 그룹에 한 번만 접근 권한을 주세요",
-          "teams": "팀 전체와 개별 사용자를 그룹에 추가하세요",
-          "builtIn": "기본 제공 Admin 및 Everyone 그룹으로 시작하세요"
+          "grantOnce": "한 번에 그룹 전체에 접근 권한 부여",
+          "teams": "팀 전체나 개인을 그룹에 추가",
+          "builtIn": "기본 제공되는 관리자 및 전체 그룹으로 시작"
         }
       },
       "seeWhatsInEnterprise": "Enterprise 기능 보기",
@@ -1956,10 +1956,10 @@
       "overview": {
         "currentEdition": "현재 Community Edition을 사용 중입니다",
         "title": "Enterprise Edition",
-        "subtitle": "지금 사용하는 모든 기능에 더해, 하나의 배포에서 여러 테넌트, SSO, 자동 프로비저닝, 감사 로그, 비용 관리 등 대규모 조직에 필요한 기능을 제공합니다.",
+        "subtitle": "지금 쓰는 모든 기능에 더해, 큰 조직에 필요한 더 많은 관리, 더 강한 보안, 명확한 비용 파악을 제공합니다.",
         "seePreview": "화면 미리 보기",
         "seePreviewLabel": "{{name}} 화면 미리 보기",
-        "communityNote": "Community Edition은 계속 오픈 소스이며 모든 기능을 그대로 사용할 수 있습니다.",
+        "communityNote": "Community Edition은 계속 오픈 소스이며 무료입니다.",
         "groups": {
           "scale": "확장",
           "governance": "접근 및 거버넌스",
@@ -1969,43 +1969,43 @@
         "items": {
           "tenants": {
             "name": "멀티 테넌시",
-            "description": "하나의 배포에서 여러 테넌트를 운영하며, 각 테넌트는 자체 사람, 커넥터, 데이터를 가집니다."
+            "description": "하나의 설치에서 팀, 지역, 고객마다 별도의 공간."
           },
           "scim": {
             "name": "SCIM 프로비저닝",
-            "description": "Okta 또는 Microsoft Entra ID가 사용자를 자동으로 추가, 업데이트, 비활성화합니다."
+            "description": "Okta 또는 Microsoft Entra ID가 사용자를 대신 추가하고 제거합니다."
           },
           "groups": {
             "name": "그룹 권한",
-            "description": "한 명씩 주는 대신 그룹에 한 번만 접근 권한을 주세요."
+            "description": "한 번에 그룹 전체에 접근 권한을 줍니다."
           },
           "toolApprovals": {
-            "name": "조직 도구 승인",
-            "description": "모든 사람에 대해 어떤 에이전트 도구를 실행할지, 먼저 물어볼지, 실행하지 않을지 정하세요."
+            "name": "도구 승인 규칙",
+            "description": "어떤 에이전트 도구를 실행할지, 승인이 필요할지, 차단할지 정합니다."
           },
           "actOnBehalf": {
             "name": "다른 사람을 대신해 작업",
-            "description": "서비스 계정이 특정 동료를 대신해 작업하도록 하고, 모든 시도를 기록합니다."
+            "description": "서비스 계정이 특정 사람으로 작업합니다. 모든 시도가 기록됩니다."
           },
           "peoplesOwnApps": {
-            "name": "개인이 추가한 앱과 서버",
-            "description": "사용자가 직접 추가한 OAuth 앱, 작업, MCP 서버를 검토하고 삭제하세요."
+            "name": "개인 앱 검토",
+            "description": "사용자가 직접 추가한 앱, 작업, MCP 서버를 확인하고 제거합니다."
           },
           "sso": {
             "name": "SSO(싱글 사인온)",
-            "description": "Okta, OneLogin 또는 기타 SAML 2.0이나 OpenID Connect 공급자로 로그인하세요."
+            "description": "Okta, OneLogin 또는 SAML·OpenID Connect 공급자로 로그인합니다."
           },
           "auditLogs": {
             "name": "감사 로그",
-            "description": "필터, 알림, 내보내기로 누가 언제 무엇을 했는지 확인하세요."
+            "description": "누가 언제 무엇을 했는지 봅니다. 필터, 알림, 내보내기."
           },
           "usage": {
             "name": "사용량, 크레딧 및 결제",
-            "description": "사람, 에이전트, 커넥터, 모델별 AI 비용과 지출 알림."
+            "description": "사람, 에이전트, 커넥터, 모델별 AI 비용을 보고 지출 알림을 받습니다."
           },
           "indexingPriority": {
             "name": "인덱싱 우선순위",
-            "description": "어떤 레코드, 컬렉션, 업로드를 먼저 인덱싱할지 선택하세요."
+            "description": "먼저 인덱싱할 항목을 고릅니다."
           }
         }
       }

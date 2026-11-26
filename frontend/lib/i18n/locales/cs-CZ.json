@@ -1924,7 +1924,7 @@
       "title": "Skupiny",
       "subtitle": "Vytvářejte a spravujte skupiny pro řízení přístupu a oprávnění",
       "enterpriseTitle": "Oprávnění skupin jsou k dispozici v edici Enterprise",
-      "enterpriseMessage": "Chcete-li používat oprávnění skupin, přejděte na edici Enterprise.",
+      "enterpriseMessage": "Určujte, kdo co vidí, podle skupin, ne po jednotlivých lidech.",
       "createGroup": "Vytvořit skupinu",
       "searchPlaceholder": "Hledat...",
       "emptyTitle": "Zatím jste nevytvořili žádné skupiny",
@@ -2008,50 +2008,50 @@
       }
     },
     "enterprise": {
-      "contact": "Rezervovat 30minutovou ukázku",
+      "contact": "Napište nám",
       "scim": {
         "heading": "Zřizování SCIM je k dispozici v edici Enterprise",
-        "message": "Nechte Okta nebo Microsoft Entra ID automaticky přidávat, aktualizovat a vypínat lidi ve vašem pracovním prostoru.",
+        "message": "Okta nebo Microsoft Entra ID za vás přidává a odebírá lidi.",
         "benefits": {
           "providers": "Funguje s Okta a Microsoft Entra ID",
-          "offboarding": "Kdo odejde, ztratí přístup, jakmile ho váš poskytovatel identit vypne",
-          "noManualWork": "Už žádné ruční zvaní ani odebírání lidí"
+          "offboarding": "Kdo odejde, hned ztratí přístup",
+          "noManualWork": "Žádné ruční přidávání ani odebírání lidí"
         }
       },
       "auditLogs": {
         "heading": "Protokoly auditu jsou k dispozici v edici Enterprise",
         "message": "Podívejte se, kdo co ve vašem pracovním prostoru udělal a kdy.",
         "benefits": {
-          "everyEvent": "Každá akce: kdo ji provedl, kdy a z jaké IP adresy",
-          "filters": "Filtrování podle osoby, akce, položky a výsledku",
-          "alerts": "Grafy, upozornění a export pro kontroly"
+          "everyEvent": "Každá akce: kdo, kdy a z jaké IP adresy",
+          "filters": "Filtrování podle osoby, akce nebo výsledku",
+          "alerts": "Upozornění a export protokolů pro kontroly"
         }
       },
       "usage": {
-        "heading": "Využití, kredity a fakturace jsou k dispozici v edici Enterprise",
-        "message": "Zjistěte náklady na AI podle osob, agentů, konektorů a modelů, spravujte kredity, tarif a faktury a v Nastavení kreditů nastavte upozornění na útratu.",
+        "heading": "Využití a fakturace jsou k dispozici v edici Enterprise",
+        "message": "Podívejte se, kolik AI stojí a kdo ji používá. Spravujte kredity a faktury a dostávejte upozornění na útratu.",
         "benefits": {
           "breakdown": "Náklady na AI podle osob, agentů, konektorů a modelů",
-          "billing": "Kredity, váš tarif a faktury na jednom místě",
-          "alerts": "Upozornění na útratu, která nastavíte v Nastavení kreditů"
+          "billing": "Kredity, tarif a faktury na jednom místě",
+          "alerts": "Upozornění, když útrata překročí váš limit"
         }
       },
       "benefitsTitle": "Co získáte",
       "relatedTitle": "V edici Enterprise také",
       "tenants": {
         "heading": "Multitenance je k dispozici v edici Enterprise",
-        "message": "Dejte každé obchodní jednotce, regionu nebo zákazníkovi vlastního tenanta s vlastními lidmi, konektory a daty, a to v jednom nasazení.",
+        "message": "Každý tým, region nebo zákazník dostane vlastní oddělený prostor, vše v jedné instalaci.",
         "benefits": {
-          "separate": "Každý tenant má své lidi, konektory, kolekce a agenty oddělené",
-          "inherit": "Vyberte, která nastavení tenant přebírá od vás, například modely AI, poštu a přihlašování",
-          "manage": "Vytvářejte tenanty a spravujte jejich uživatele a skupiny na jednom místě"
+          "separate": "Každý tenant má vlastní lidi, konektory, kolekce a agenty",
+          "inherit": "Tenanti mohou používat vaše nastavení, třeba modely AI, e-mail a přihlašování",
+          "manage": "Všechny tenanty vytvoříte a spravujete na jednom místě"
         }
       },
       "groups": {
         "benefits": {
-          "grantOnce": "Udělte přístup skupině jednou, ne člověku po člověku",
-          "teams": "Přidávejte do skupiny celé týmy i jednotlivé lidi",
-          "builtIn": "Začněte s vestavěnými skupinami Admin a Everyone"
+          "grantOnce": "Přístup celé skupině jedním krokem",
+          "teams": "Do skupiny přidáte celé týmy i jednotlivce",
+          "builtIn": "Začněte s vestavěnými skupinami Admin a Všichni"
         }
       },
       "seeWhatsInEnterprise": "Co nabízí edice Enterprise",
@@ -2064,10 +2064,10 @@
       "overview": {
         "currentEdition": "Používáte edici Community",
         "title": "Edice Enterprise",
-        "subtitle": "Vše, co používáte dnes, a k tomu to, co potřebují větší organizace: více tenantů v jednom nasazení, jednotné přihlašování, automatické zřizování, protokoly auditu a kontrolu nákladů.",
+        "subtitle": "Vše, co máte dnes, a k tomu to, co potřebují větší firmy: více kontroly, lepší zabezpečení a jasný přehled o nákladech.",
         "seePreview": "Jak to vypadá",
         "seePreviewLabel": "Jak vypadá {{name}}",
-        "communityNote": "Edice Community zůstává open source a plně použitelná.",
+        "communityNote": "Edice Community zůstává open source a zdarma.",
         "groups": {
           "scale": "Škálování",
           "governance": "Přístup a správa",
@@ -2077,43 +2077,43 @@
         "items": {
           "tenants": {
             "name": "Multitenance",
-            "description": "Více tenantů v jednom nasazení, každý s vlastními lidmi, konektory a daty."
+            "description": "Oddělený prostor pro každý tým, region nebo zákazníka v jedné instalaci."
           },
           "scim": {
             "name": "Zřizování SCIM",
-            "description": "Okta nebo Microsoft Entra ID za vás přidává, aktualizuje a vypíná lidi."
+            "description": "Okta nebo Microsoft Entra ID za vás přidává a odebírá lidi."
           },
           "groups": {
             "name": "Oprávnění skupin",
-            "description": "Udělte přístup skupině jednou, ne člověku po člověku."
+            "description": "Přístup celé skupině jedním krokem."
           },
           "toolApprovals": {
-            "name": "Schvalování nástrojů v organizaci",
-            "description": "Rozhodněte pro všechny, které nástroje agentů se spustí, nejprve se zeptají, nebo se nespustí nikdy."
+            "name": "Pravidla schvalování nástrojů",
+            "description": "Vyberte, které nástroje agentů smějí běžet, potřebují schválení nebo jsou blokované."
           },
           "actOnBehalf": {
             "name": "Jednání jménem osoby",
-            "description": "Nechte servisní účet jednat jako konkrétní kolega, s každým pokusem zaznamenaným."
+            "description": "Servisní účet jedná jako konkrétní člověk. Každý pokus se zaznamená."
           },
           "peoplesOwnApps": {
-            "name": "Vlastní aplikace a servery lidí",
-            "description": "Kontrolujte a odebírejte aplikace OAuth, akce a servery MCP, které si lidé přidávají sami."
+            "name": "Kontrola osobních aplikací",
+            "description": "Zobrazte a odeberte aplikace, akce a servery MCP, které si lidé přidají sami."
           },
           "sso": {
             "name": "Jednotné přihlašování",
-            "description": "Přihlašujte lidi přes Okta, OneLogin nebo jiného poskytovatele SAML 2.0 či OpenID Connect."
+            "description": "Přihlašování přes Okta, OneLogin nebo jiného poskytovatele SAML či OpenID Connect."
           },
           "auditLogs": {
             "name": "Protokoly auditu",
-            "description": "Zjistěte, kdo co a kdy udělal, s filtry, upozorněními a exportem."
+            "description": "Kdo co a kdy udělal. Filtrování, upozornění a export."
           },
           "usage": {
             "name": "Využití, kredity a fakturace",
-            "description": "Náklady na AI podle osob, agentů, konektorů a modelů, s upozorněními na útratu."
+            "description": "Náklady na AI podle osoby, agenta, konektoru a modelu a upozornění na útratu."
           },
           "indexingPriority": {
             "name": "Priorita indexování",
-            "description": "Vyberte, které záznamy, kolekce a nahrané soubory se indexují jako první."
+            "description": "Vyberte, co se indexuje jako první."
           }
         }
       }

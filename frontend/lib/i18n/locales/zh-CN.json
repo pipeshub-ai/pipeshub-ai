@@ -1816,7 +1816,7 @@
       "title": "用户组",
       "subtitle": "创建和管理用户组以控制访问和权限",
       "enterpriseTitle": "用户组权限功能仅在企业版中提供",
-      "enterpriseMessage": "升级到企业版以使用用户组权限功能。",
+      "enterpriseMessage": "按用户组决定谁能看到什么，不用逐个设置。",
       "createGroup": "创建用户组",
       "searchPlaceholder": "搜索...",
       "emptyTitle": "您尚未创建任何用户组",
@@ -1900,50 +1900,50 @@
       }
     },
     "enterprise": {
-      "contact": "预约 30 分钟演示",
+      "contact": "联系我们",
       "scim": {
         "heading": "SCIM 预配功能仅在企业版中提供",
-        "message": "让 Okta 或 Microsoft Entra ID 自动添加、更新和停用工作区中的成员。",
+        "message": "Okta 或 Microsoft Entra ID 会替你添加和移除成员。",
         "benefits": {
           "providers": "支持 Okta 和 Microsoft Entra ID",
-          "offboarding": "身份提供商停用离职人员后，其访问权限立即失效",
-          "noManualWork": "无需再手动邀请或移除成员"
+          "offboarding": "离职人员立即失去访问权限",
+          "noManualWork": "不再需要手动添加或移除成员"
         }
       },
       "auditLogs": {
         "heading": "审计日志功能仅在企业版中提供",
         "message": "查看工作区中谁在何时做了什么。",
         "benefits": {
-          "everyEvent": "记录每项操作：执行者、时间和来源 IP 地址",
-          "filters": "按人员、操作、对象和结果筛选",
-          "alerts": "用于审查的图表、提醒和导出"
+          "everyEvent": "每项操作：谁做的、何时、来自哪个 IP 地址",
+          "filters": "按人员、操作或结果筛选",
+          "alerts": "接收提醒，并导出日志用于审查"
         }
       },
       "usage": {
-        "heading": "用量、额度和账单功能仅在企业版中提供",
-        "message": "按人员、智能体、连接器和模型查看 AI 成本，管理额度、套餐和发票，并在消费设置中设置支出提醒。",
+        "heading": "用量和账单功能仅在企业版中提供",
+        "message": "查看 AI 花费和使用者。管理额度和发票，并接收支出提醒。",
         "benefits": {
           "breakdown": "按人员、智能体、连接器和模型查看 AI 成本",
-          "billing": "额度、套餐和发票集中管理",
-          "alerts": "在消费设置中设置的支出提醒"
+          "billing": "额度、套餐和发票集中在一处",
+          "alerts": "支出超出上限时提醒你"
         }
       },
       "benefitsTitle": "您将获得",
       "relatedTitle": "企业版还提供",
       "tenants": {
         "heading": "多租户功能仅在企业版中提供",
-        "message": "在同一套部署中，为每个业务部门、地区或客户提供独立的租户，各自拥有自己的成员、连接器和数据。",
+        "message": "在一套部署中，为每个团队、地区或客户提供各自独立的空间。",
         "benefits": {
-          "separate": "每个租户的成员、连接器、集合和智能体彼此隔离",
-          "inherit": "选择租户从您这里继承哪些设置，例如 AI 模型、邮件和登录方式",
-          "manage": "在一个地方创建租户并管理其用户和用户组"
+          "separate": "每个租户都有自己的成员、连接器、集合和智能体",
+          "inherit": "租户可以沿用你的设置，例如 AI 模型、邮件和登录",
+          "manage": "在一个地方创建和管理所有租户"
         }
       },
       "groups": {
         "benefits": {
-          "grantOnce": "一次授权给用户组，无需逐人授权",
-          "teams": "将整个团队和个人添加到用户组",
-          "builtIn": "从内置的 Admin 和 Everyone 用户组开始"
+          "grantOnce": "一步为整个用户组授予访问权限",
+          "teams": "把整个团队或单个成员加入用户组",
+          "builtIn": "从内置的管理员和所有人用户组开始"
         }
       },
       "seeWhatsInEnterprise": "查看企业版功能",
@@ -1956,10 +1956,10 @@
       "overview": {
         "currentEdition": "您正在使用社区版",
         "title": "企业版",
-        "subtitle": "包含您现在使用的全部功能，并提供大型组织所需的能力：同一部署中的多个租户、单点登录、自动配置、审计日志和成本控制。",
+        "subtitle": "包含你现在拥有的一切，再加上大型企业需要的：更多管控、更强安全、清晰的成本视图。",
         "seePreview": "查看界面",
         "seePreviewLabel": "查看{{name}}的界面",
-        "communityNote": "社区版依然开源，且所有功能都可正常使用。",
+        "communityNote": "社区版将继续开源且免费。",
         "groups": {
           "scale": "规模",
           "governance": "访问与治理",
@@ -1969,43 +1969,43 @@
         "items": {
           "tenants": {
             "name": "多租户",
-            "description": "在同一部署中运行多个租户，每个租户拥有自己的成员、连接器和数据。"
+            "description": "一套部署中，每个团队、地区或客户各有独立空间。"
           },
           "scim": {
             "name": "SCIM 配置",
-            "description": "Okta 或 Microsoft Entra ID 自动为您添加、更新和停用成员。"
+            "description": "Okta 或 Microsoft Entra ID 会替你添加和移除成员。"
           },
           "groups": {
             "name": "用户组权限",
-            "description": "一次授权给用户组，无需逐人授权。"
+            "description": "一步为整个用户组授予访问权限。"
           },
           "toolApprovals": {
-            "name": "组织工具审批",
-            "description": "为所有人决定哪些智能体工具可以运行、需先询问或永不运行。"
+            "name": "工具审批规则",
+            "description": "决定哪些智能体工具可以运行、需要审批或被禁止。"
           },
           "actOnBehalf": {
             "name": "代表他人执行操作",
-            "description": "允许服务账号以指定同事的身份执行操作，并记录每次尝试。"
+            "description": "让服务账号以指定成员的身份操作，每次尝试都有记录。"
           },
           "peoplesOwnApps": {
-            "name": "成员自建的应用和服务器",
-            "description": "审查并移除成员为自己添加的 OAuth 应用、操作和 MCP 服务器。"
+            "name": "审查个人应用",
+            "description": "查看并移除成员为自己添加的应用、操作和 MCP 服务器。"
           },
           "sso": {
             "name": "单点登录",
-            "description": "通过 Okta、OneLogin 或任何其他 SAML 2.0 或 OpenID Connect 提供商登录。"
+            "description": "通过 Okta、OneLogin 或任意 SAML、OpenID Connect 提供方登录。"
           },
           "auditLogs": {
             "name": "审计日志",
-            "description": "通过筛选、提醒和导出，查看谁在何时做了什么。"
+            "description": "查看谁在何时做了什么。可筛选、提醒和导出。"
           },
           "usage": {
             "name": "用量、额度和账单",
-            "description": "按人员、智能体、连接器和模型查看 AI 成本，并设置支出提醒。"
+            "description": "按成员、智能体、连接器和模型查看 AI 花费，并接收支出提醒。"
           },
           "indexingPriority": {
             "name": "索引优先级",
-            "description": "选择优先索引哪些记录、集合和上传内容。"
+            "description": "选择优先索引的内容。"
           }
         }
       }

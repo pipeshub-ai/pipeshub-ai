@@ -4,8 +4,9 @@ export const ENTERPRISE_OVERVIEW_ROUTE = '/workspace/enterprise';
 const ENTERPRISE_CONTACT_URL = 'https://calendly.com/rishabh-pipeshub/30min';
 
 /**
- * The demo booking link, tagged with the page it was opened from so sales can tell which page a
- * booking came from. The tags carry the page's name only, nothing about the person or organization.
+ * The "Talk with us" link (a call booking page), tagged with the page it was opened from so sales
+ * can tell which page a booking came from. The tags carry the page's name only, nothing about the
+ * person or organization.
  */
 export function enterpriseContactUrl(source: string): string {
   const url = new URL(ENTERPRISE_CONTACT_URL);

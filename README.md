@@ -179,17 +179,17 @@ Coding agents connect to `https://app.pipeshub.com/mcp` with a personal access t
 
 ## Enterprise Edition
 
-PipesHub is open source and complete on its own. The Enterprise Edition adds what larger organizations need to run it across many teams:
+PipesHub is open source and complete on its own. The Enterprise Edition adds what larger companies need:
 
-- **Multi-tenancy:** several tenants on one deployment, each with its own people, connectors and data, and the settings you choose for them to inherit.
-- **Single sign-on:** SAML 2.0 and OpenID Connect, through Okta, OneLogin or any other identity provider.
-- **SCIM provisioning:** Okta or Microsoft Entra ID adds, updates and switches off people for you.
-- **Group permissions:** give access to a group once instead of person by person.
-- **Audit logs:** who did what and when, with filters, alerts and export.
-- **Usage, credits and billing:** AI cost by person, agent, connector and model, with spending alerts.
-- **Governance for agents and tools:** organization-wide tool approval rules, and a review of the OAuth apps, actions and MCP servers people add for themselves.
+- **Multi-tenancy:** a separate space for each team, region or customer, on one setup. Each tenant can use your settings.
+- **Single sign-on:** people sign in with Okta, OneLogin or any SAML or OpenID Connect provider.
+- **SCIM provisioning:** Okta or Microsoft Entra ID adds and removes people for you.
+- **Group permissions:** give a whole group access in one step.
+- **Audit logs:** see who did what, and when. Filter, get alerts and export.
+- **Usage, credits and billing:** see AI cost by person, agent, connector and model, and get spending alerts.
+- **Control over agents and tools:** choose which tools can run, and review the apps and MCP servers people add for themselves.
 
-To see it, [book a 30-minute demo](https://calendly.com/rishabh-pipeshub/30min?utm_source=github&utm_medium=readme&utm_campaign=enterprise-edition).
+Want to see it? [Talk with us](https://calendly.com/rishabh-pipeshub/30min?utm_source=github&utm_medium=readme&utm_campaign=enterprise-edition).
 
 ## Connectors
 
@@ -428,7 +428,7 @@ PipesHub supports image, diagram, and scanned-file understanding, plus voice-bas
 
 ### Is there an Enterprise Edition?
 
-Yes. It adds multi-tenancy, SAML and OpenID Connect sign-on, SCIM provisioning, group permissions, audit logs, and usage and billing controls. See [Enterprise Edition](#enterprise-edition).
+Yes. It adds multi-tenancy, single sign-on, SCIM provisioning, group permissions, audit logs, and usage and billing. See [Enterprise Edition](#enterprise-edition).
 
 ### Where can I get help?
 
