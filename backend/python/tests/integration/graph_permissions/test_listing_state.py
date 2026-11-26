@@ -188,6 +188,12 @@ async def test_every_write_keeps_the_state_current(state_graph, neo4j_provider, 
     await fresh("update_nodes_fields_if_match")
     await p.create_edges_if_absent([_edge("ls-g2", G, "ls-r3", R, **parent_child)], NR)
     await fresh("create_edges_if_absent")
+    # A caller's document that carries the backend's own keys (read back raw, or forged) does not write them.
+    assert await p.update_edge(f"{G}/ls-g1", f"{R}/ls-r1", {"khOrd": "0forged", "khFrom": "elsewhere", "khChild": "x", "weight": 1}, NR)
+    await fresh("update_edge")
+    await p.update_node("ls-r1", R, {"khSortName": "forged", "khScope": "forged"})
+    await fresh("update_node with the listing's own keys")
+    assert (await _cypher(neo4j_settings, "MATCH (n {id: 'ls-r1'}) RETURN n.khScope AS s"))[0]["s"] != "forged"
 
     await p.delete_edge("ls-g2", G, "ls-r1", R, NR)
     await fresh("delete_edge")

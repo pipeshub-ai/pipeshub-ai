@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import re
 
 from app.services.graph_db.neo4j import neo4j_provider
 from tests.unit.schema.test_writer_payload_audit import _AUDITED_CYPHER_WRITERS
@@ -74,8 +75,6 @@ UNTOUCHED = {
     "transition_unsupported": "a record's indexing status and reason",
     "update_agent_permission": "permission edges' roles",
     "update_drive_sync_state": "a drive edge's sync state",
-    "update_edge": "merges properties into one edge (SET +=): the stamps are made of its ends and its child, never of the edge's own "
-                   "properties, so it cannot make them stale",
     "update_kb_permission": "permission edges' roles",
     "update_knowledge_base": "a knowledge base App",
     "update_sync_point_if": "SyncPoint nodes",
@@ -145,3 +144,51 @@ def test_a_writer_kept_by_its_caller_has_that_caller_alone_and_the_caller_stamps
         callers = [name for name, fn in functions.items() if _calls(fn, writer)]
         assert callers == [caller], (writer, callers)
         assert _calls(functions[caller], STAMPS_APART), caller
+
+
+# A whole-map write (``SET v += m``, ``SET v = $m``, ``SET v = row.m``) stores whatever keys its map holds. One whose map comes from a caller
+# builds it with a helper that drops what the backend keeps for itself (`neo4j_provider._KH_OWN_PROPERTIES`: the listing's sort name and
+# scope, the children order stamps); the validator ignores those keys, so it would let a forged or stale one through.
+SCRUBS = ("_owned(", "_arango_to_neo4j_node(", "_edges_by_labels(", "_nodes_for_upsert(")
+_MAP_SET = re.compile(r"\bSET\s+(?:[^\n]*?,\s*)?(\w+)\s*(\+=|=)\s*(\$\w+|\w+\.\w+|\w+)\b(?!\s*\()")
+
+# Whole-map writes whose map no caller supplies, or which never reach a record, a group or a hierarchy edge.
+MAPS_OF_ITS_OWN = {
+    "_move_stub_edges_query": "a user stub's edges, moved with their own properties",
+    "_record_group_link_cypher": "a map of timestamps the method builds",
+    "batch_create_entity_relations": "entity relation edges",
+    "create_organization_if_absent": "Organization nodes",
+    "ensure_app_membership": "a principal's edge to an App",
+    "link_record_to_group": "a map of fixed keys the method builds",
+    "stage_state_compare_and_set": "StageState nodes",
+    "stage_state_create": "StageState nodes",
+    "store_page_token": "PageToken nodes",
+    "update_knowledge_base": "a knowledge base App",
+    "update_sync_point_if": "SyncPoint nodes",
+    "upsert_record_under_parent": "a map of fixed keys the method builds",
+    "upsert_sync_point": "SyncPoint nodes",
+}
+
+
+def _map_writers(sources: dict[str, str]) -> set[str]:
+    out = set()
+    for name, source in sources.items():
+        for _var, op, rhs in _MAP_SET.findall(source):
+            if op == "+=" or rhs.startswith("$") or "." in rhs or rhs in ("props", "node", "node_data", "person"):
+                out.add(name)
+    return out
+
+
+def test_no_whole_map_write_takes_a_backend_key_from_its_caller() -> None:
+    sources = _sources()
+    unscrubbed = sorted(n for n in _map_writers(sources) if not any(c in sources[n] for c in SCRUBS) and n not in MAPS_OF_ITS_OWN)
+    assert unscrubbed == [], f"whole-map writes that do not drop the backend's own keys from their map: {unscrubbed}"
+    assert sorted(n for n in MAPS_OF_ITS_OWN if n not in _map_writers(sources) or any(c in sources[n] for c in SCRUBS)) == []
+
+
+def test_the_helpers_drop_the_backend_keys() -> None:
+    forged = {"id": "r", "recordName": "x", "khSortName": "a", "khScope": "s", "khFrom": "p", "khOrd": "0a", "khChild": "r"}
+    p = object.__new__(neo4j_provider.Neo4jProvider)
+    assert set(p._arango_to_neo4j_node(forged, "records")) == {"id", "recordName"}
+    rows = p._edges_by_labels([{**forged, "from_id": "p", "from_collection": "records", "to_id": "r", "to_collection": "records"}])
+    assert [set(row["props"]) for group in rows.values() for row in group] == [{"id", "recordName"}]

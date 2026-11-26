@@ -623,6 +623,14 @@ _KH_WINDOW_ORDER_HINT = "USING INDEX SEEK kh_ur:NODE_RELATION(khFrom, khOrd, khC
 _KH_STUBS_ORDER_HINT = "USING INDEX SEEK kh_r:NODE_RELATION(khFrom, khOrd, khChild)"
 # The order stamps on an edge; never part of an edge document handed out (`node_validator.INTERNAL_PROPERTIES` lists them too).
 _KH_EDGE_INTERNAL_PROPERTIES = frozenset({"khFrom", "khOrd", "khChild"})
+# What the backend derives and keeps itself on records, groups and hierarchy edges: never taken from a caller's document, which could
+# carry a stale or a forged value (the validator ignores these keys, so it would not refuse one).
+_KH_OWN_PROPERTIES = _KH_INTERNAL_PROPERTIES | _KH_EDGE_INTERNAL_PROPERTIES
+
+
+def _owned(doc: dict[str, Any]) -> dict[str, Any]:
+    """``doc`` without `_KH_OWN_PROPERTIES`, as a new dict."""
+    return {k: v for k, v in doc.items() if k not in _KH_OWN_PROPERTIES}
 
 
 def _cypher_kh_child_ord(v: str) -> str:
@@ -2137,7 +2145,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             Node in Neo4j format (with id, label)
         """
-        neo4j_node = arango_node.copy()
+        neo4j_node = _owned(arango_node)
 
         # Convert _key to id
         if "_key" in neo4j_node:
@@ -2883,10 +2891,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.logger.warning(f"Skipping invalid edge (missing required fields): {edge}")
                 continue
 
-            # Extract edge properties (excluding format-specific fields)
-            props = {k: v for k, v in edge.items() if k not in [
+            # Extract edge properties (excluding format-specific fields, and what the backend keeps itself)
+            props = _owned({k: v for k, v in edge.items() if k not in [
                 "_from", "_to", "from_id", "to_id", "from_collection", "to_collection"
-            ]}
+            ]})
 
             key = (collection_to_label(from_collection), collection_to_label(to_collection))
             grouped.setdefault(key, []).append({"from_key": from_key, "to_key": to_key, "props": props})
@@ -3770,16 +3778,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Update an edge"""
         try:
             self.validator.validate_edge_update(collection, edge_updates)
+            edge_updates = _owned(edge_updates)
             relationship_type = edge_collection_to_relationship(collection)
             from_collection, from_id = self._parse_arango_id(from_key)
             to_collection, to_id = self._parse_arango_id(to_key)
 
             from_label = collection_to_label(from_collection)
             to_label = collection_to_label(to_collection)
+            # A hierarchy edge's stamps are made of its ends and its child, which this write cannot change; rewritten here all the same,
+            # so the edge it leaves carries them true whatever it held.
+            stamps = _cypher_kh_edge_order("to") if relationship_type == Neo4jRelationshipType.NODE_RELATIONS.value else ""
 
             query = f"""
             MATCH (from:{from_label} {{id: $from_id}})-[r:{relationship_type}]->(to:{to_label} {{id: $to_id}})
             SET r += $updates
+            {stamps}
             RETURN r
             """
 
@@ -7855,7 +7868,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     raise
                 # An expected fallback (APOC not installed), whatever class the driver error reads as.
                 error_class.log_failure(self.logger, "graph.provider.step_failed", apoc_error, include_error_text=False, level=logging.WARNING,
-                                        op="migrate_legacy_relation_edge", step="apoc_rename")
+                                        op="_move_legacy_relation_edges", step="apoc_rename")
 
             if apoc_ran:
                 # APOC returns normally on partial failure, so committedOperations
@@ -10218,9 +10231,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 from_key = edge.get("from_id") or edge.get("_from", "").split("/")[-1]
                 to_key = edge.get("to_id") or edge.get("_to", "").split("/")[-1]
                 relationship_type = edge.get("relationshipType", "")
-                props = {k: v for k, v in edge.items() if k not in [
+                props = _owned({k: v for k, v in edge.items() if k not in [
                     "from_id", "to_id", "from_collection", "to_collection", "_from", "_to"
-                ]}
+                ]})
                 constraint_name = edge.get("constraintName") or ""
                 edge_data.append({
                     "from_key": from_key,
@@ -16088,6 +16101,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # Every item before the statement: it writes them all or none.
         for item in items:
             self.validator.validate_node_update(CollectionNames.RECORDS.value, item["set"])
+        items = [{**item, "set": _owned(item["set"])} for item in items]
         cleared = ", ".join(f"r.{name} = null" for name in TRASH_STATE_FIELDS)
         # Each statement commits on its own unless explicit transactions are on, so a
         # restore split over statements could stop halfway, and an external id given
@@ -17086,6 +17100,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         coll = CollectionNames.RECORDS.value
         try:
             self.validator.validate_node_update(coll, {"indexingStatus": status, **(fields or {})})
+            fields = _owned(fields) if fields else fields
             label = collection_to_label(coll)
             run_with, run_patch = cypher_parts("n", WriteKind.STATUS_VAR, status="$status")
             # One statement, so the run rule reads the stored record it writes. Internal and placeholder records are skipped.
@@ -17118,6 +17133,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return 0
         coll = CollectionNames.RECORDS.value
         self.validator.validate_node_update(coll, dict(fields))
+        fields = _owned(fields)
         label = collection_to_label(coll)
         rows = await self.client.execute_query(
             f"""
@@ -17769,6 +17785,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not keys:
             return []
         self.validator.validate_node_update(CollectionNames.RECORDS.value, fields)
+        fields = _owned(fields)
         if "indexingStatus" in fields:
             # COMPLETED sets hasIndexedCopy and EMPTY clears it, as every indexingStatus write does.
             fields = {**indexed_copy_fields(fields["indexingStatus"]), **fields}
