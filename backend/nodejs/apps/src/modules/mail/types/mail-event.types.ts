@@ -33,6 +33,22 @@ export interface MailEventPayload {
   eventId?: string;
 }
 
+/** What the mail topic carries: the job itself (unsigned), or the job under `payload` (the shape a signed envelope needs). */
+export type MailEventMessage =
+  | MailEventPayload
+  | { eventId?: string; payload: MailEventPayload };
+
+/** The job in a consumed mail message of either shape; undefined for anything else. */
+export function mailJobOf(value: unknown): MailEventPayload | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const v = value as Record<string, unknown>;
+  if ('mail' in v) return v as unknown as MailEventPayload;
+  const inner = v.payload;
+  if (inner !== null && typeof inner === 'object' && 'mail' in inner)
+    return inner as MailEventPayload;
+  return undefined;
+}
+
 export interface PasswordResetLinkTarget {
   userId: string;
   orgId: string;

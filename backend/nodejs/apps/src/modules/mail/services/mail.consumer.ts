@@ -26,6 +26,7 @@ import {
   MAIL_MESSAGE_BUDGET_MS,
   MailEventPayload,
   MailSendResult,
+  mailJobOf,
 } from '../types/mail-event.types';
 import {
   classifyError,
@@ -143,7 +144,7 @@ export class MailConsumer {
     }
 
     await this.consumer.consume(async (message: StreamMessage<T>) => {
-      const payload = message.value as MailEventPayload | undefined;
+      const payload = mailJobOf(message.value);
       const job = newMailJob(payload);
       try {
         if (!payload?.mail?.emailTemplateType) {

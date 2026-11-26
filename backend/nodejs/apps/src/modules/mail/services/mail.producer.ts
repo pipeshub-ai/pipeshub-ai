@@ -5,7 +5,8 @@ import {
   StreamMessage,
 } from '../../../libs/types/messaging.types';
 import { Logger } from '../../../libs/services/logger.service';
-import { MailEvent, MailEventPayload } from '../types/mail-event.types';
+import { signEnabled } from '../../../libs/context/envelope';
+import { MailEvent, MailEventMessage } from '../types/mail-event.types';
 
 /** Publishes mail jobs so delivery happens off the request path. */
 @injectable()
@@ -33,11 +34,21 @@ export class MailProducer {
     return this.producer.isConnected();
   }
 
-  /** Rethrows, unlike NotificationProducer: swallowing would drop the email. */
+  /**
+   * Rethrows, unlike NotificationProducer: swallowing would drop the email.
+   *
+   * With `ENVELOPE_SIGN` on, the job goes out as `{ eventId, payload: job }`: only a message with a `payload` object can be
+   * signed (under the org bound where it is published), and a consumer that enforces the envelope drops an unsigned one.
+   * With signing off the job stays flat, as before. `MailConsumer` reads both shapes.
+   */
   async publishEvent(event: MailEvent): Promise<void> {
-    const message: StreamMessage<MailEventPayload> = {
-      key: event.payload.orgId ?? event.payload.mail.emailTemplateType,
-      value: event.payload,
+    const job = event.payload;
+    const value: MailEventMessage = signEnabled()
+      ? { ...(job.eventId ? { eventId: job.eventId } : {}), payload: job }
+      : job;
+    const message: StreamMessage<MailEventMessage> = {
+      key: job.orgId ?? job.mail.emailTemplateType,
+      value,
       headers: {
         eventType: event.eventType,
         timestamp: event.timestamp.toString(),
