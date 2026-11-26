@@ -16,6 +16,7 @@ import { findSessionRefusal } from '../utils/user-session.utils';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
 import { parseScopeString } from '../../modules/oauth_provider/services/scope.validator.service';
+import { withoutRetiredScopes } from '../../modules/oauth_provider/config/scopes.config';
 import { getOrgRepository } from '../repositories/org';
 import {
   getOAuthAppRepository,
@@ -384,7 +385,8 @@ export class AuthMiddleware {
       tokenId: payload.tokenRowId,
       delegatedBy,
       oauthClientId: payload.client_id,
-      oauthScopes: tokenScopes,
+      // A token issued before config:write was retired keeps it in its claim; it no longer counts.
+      oauthScopes: withoutRetiredScopes(tokenScopes),
       oauthAudience: payload.aud,
       // The Python services take a personal access token's limit from here,
       // via /api/v1/users/me/role, because its owner can change it after the

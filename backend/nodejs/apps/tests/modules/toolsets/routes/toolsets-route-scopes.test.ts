@@ -10,6 +10,7 @@ import { resolve } from 'path';
 import { expect } from 'chai';
 import { createToolsetsRouter } from '../../../../src/modules/toolsets/routes/toolsets_routes';
 import { OAuthScopeNames } from '../../../../src/libs/enums/oauth-scopes.enum';
+import { requireSessionAuth } from '../../../../src/libs/middlewares/require-session-auth.middleware';
 import { ForbiddenError } from '../../../../src/libs/errors/http.errors';
 
 type ScopeName = keyof typeof OAuthScopeNames;
@@ -136,7 +137,14 @@ describe('toolsets router scopes (CPS TS-1, TS-2)', () => {
     for (const route of routes()) {
       const scope = OAuthScopeNames[expected(route)];
       const error = await guardError(route, oauth(scope));
-      expect(error instanceof ForbiddenError, `${route.method} ${route.path} with ${scope}`).to.equal(false);
+      // A session-only route refuses every token, whatever its scopes.
+      const sessionOnly = route.stack.some(
+        (layer) => layer.handle === requireSessionAuth,
+      );
+      expect(
+        error instanceof ForbiddenError,
+        `${route.method} ${route.path} with ${scope}`,
+      ).to.equal(sessionOnly);
     }
   });
 

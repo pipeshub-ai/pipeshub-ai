@@ -73,7 +73,7 @@ from app.agents.mcp.url_guard import (
     private_network_allowed,
 )
 from app.agents.mcp.www_authenticate import challenge_scopes
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import refuse_delegated_caller, require_scopes
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.api.middlewares.request_log import (
     add_request_log_fields,
@@ -723,6 +723,13 @@ def _without_connection_details(instance: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in instance.items() if k not in _ADMIN_ONLY_CONNECTION_FIELDS}
 
 
+def _refuse_delegated_stdio(request: Request, payload: MCPServerInstanceConfig) -> None:
+    """A STDIO server runs a command on the PipesHub host; setting one up takes an
+    interactive session, so a token cannot, whatever its scopes."""
+    if payload.transport == MCPTransport.STDIO:
+        refuse_delegated_caller(request)
+
+
 @router.post(
     "/instances",
     status_code=HttpStatusCode.CREATED.value,
@@ -732,6 +739,7 @@ async def create_instance(
     request: Request,
     payload: MCPServerInstanceConfig,
 ) -> dict[str, Any]:
+    _refuse_delegated_stdio(request, payload)
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
@@ -799,6 +807,7 @@ async def update_instance(
     instance_id: str,
     payload: MCPServerInstanceConfig,
 ) -> dict[str, Any]:
+    _refuse_delegated_stdio(request, payload)
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]

@@ -1335,3 +1335,67 @@ describe('XSS Sanitization Middleware', () => {
     })
   })
 })
+
+describe('XSS Sanitization Middleware: prototype keys', () => {
+  // express.json (JSON.parse) gives `__proto__` as an own key; copying it with `sanitized[key] = ...`
+  // would set the rebuilt object's prototype and hand the request's properties to later readers.
+  const run = (body: unknown, path = '/api/v1/toolsets/instances') => {
+    const req = createMockRequest({ path, method: 'POST', body })
+    const next = sinon.stub()
+    xssSanitizationMiddleware(req, createMockResponse(), next)
+    expect(next.calledOnceWithExactly(), 'next was called with an error').to.equal(true)
+    return req.body
+  }
+  const proto = '{"a":1,"__proto__":{"authConfig":{"clientId":"x"}},"b":"two"}'
+
+  it('drops an own __proto__ key instead of making it the prototype', () => {
+    const body = run(JSON.parse(proto))
+    expect(Object.getPrototypeOf(body)).to.equal(Object.prototype)
+    expect(Object.keys(body)).to.deep.equal(['a', 'b'])
+    expect(body.authConfig).to.equal(undefined)
+    expect(({} as any).authConfig).to.equal(undefined)
+  })
+
+  it('drops constructor and prototype keys at every depth', () => {
+    const body = run(JSON.parse(
+      '{"constructor":{"x":1},"prototype":{"y":2},"keep":{"constructor":"c","prototype":[1],"deep":{"__proto__":{"z":3},"ok":"v"}}}',
+    ))
+    expect(Object.keys(body)).to.deep.equal(['keep'])
+    expect(Object.keys(body.keep)).to.deep.equal(['deep'])
+    expect(Object.keys(body.keep.deep)).to.deep.equal(['ok'])
+    expect(body.keep.deep.z).to.equal(undefined)
+  })
+
+  it('drops them inside arrays and keeps the elements and their order', () => {
+    const body = run(JSON.parse(`{"list":[{"__proto__":{"p":1},"n":1},"s",[{"constructor":"c","m":2}],null]}`))
+    expect(body.list).to.have.length(4)
+    expect(Object.keys(body.list[0])).to.deep.equal(['n'])
+    expect(Object.getPrototypeOf(body.list[0])).to.equal(Object.prototype)
+    expect(body.list[0].p).to.equal(undefined)
+    expect(body.list[1]).to.equal('s')
+    expect(Object.keys(body.list[2][0])).to.deep.equal(['m'])
+    expect(body.list[3]).to.equal(null)
+  })
+
+  it('leaves the rebuilt objects ordinary objects, so consumers can still call Object.prototype methods', () => {
+    const body = run(JSON.parse('{"a":{"b":"c"}}'))
+    /* eslint-disable no-prototype-builtins -- calling the inherited method is what this test checks */
+    expect(body.hasOwnProperty('a')).to.equal(true)
+    expect(body.a.hasOwnProperty('b')).to.equal(true)
+    /* eslint-enable no-prototype-builtins */
+    expect(String(body)).to.equal('[object Object]')
+  })
+
+  it('does the same for query and params', () => {
+    const req = createMockRequest({
+      path: '/api/v1/x', method: 'GET', body: {},
+      query: JSON.parse('{"q":"1","__proto__":{"admin":"yes"}}'),
+      params: JSON.parse('{"id":"1","constructor":"c"}'),
+    })
+    const next = sinon.stub()
+    xssSanitizationMiddleware(req, createMockResponse(), next)
+    expect(Object.keys(req.query)).to.deep.equal(['q'])
+    expect((req.query as any).admin).to.equal(undefined)
+    expect(Object.keys(req.params)).to.deep.equal(['id'])
+  })
+})

@@ -25,6 +25,7 @@ import {
   deleteOAuthConfig,
 } from '../controllers/oauth.controllers';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 import { bindConnectorLogFields } from '../utils/connector.utils';
@@ -201,6 +202,9 @@ export function createOAuthRouter(container: Container): Router {
   router.post(
     '/:connectorType',
     authMiddleware.authenticate,
+    // An OAuth app holds a client secret and the URLs a user's grant is sent to, and a
+    // connector that links it signs in through it: interactive session only.
+    requireSessionAuth,
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     ValidationMiddleware.validate(createOAuthConfigSchema),
     createOAuthConfig(config)
@@ -225,6 +229,7 @@ export function createOAuthRouter(container: Container): Router {
   router.put(
     '/:connectorType/:configId',
     authMiddleware.authenticate,
+    requireSessionAuth,
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     ValidationMiddleware.validate(updateOAuthConfigSchema),
     updateOAuthConfig(config)
@@ -237,6 +242,7 @@ export function createOAuthRouter(container: Container): Router {
   router.delete(
     '/:connectorType/:configId',
     authMiddleware.authenticate,
+    requireSessionAuth,
     requireScopes(OAuthScopeNames.CONNECTOR_DELETE),
     ValidationMiddleware.validate(oauthConfigIdSchema),
     deleteOAuthConfig(config)

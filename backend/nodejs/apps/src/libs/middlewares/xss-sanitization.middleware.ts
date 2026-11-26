@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import xss from 'xss';
 import { Logger } from '../services/logger.service';
 import { BadRequestError } from '../errors/http.errors';
+import { DROPPED_KEYS } from '../utils/dropped-keys';
 import { pathForLog } from './access-log.middleware';
 import {
   containsEncodedScriptTag,
@@ -437,6 +438,8 @@ function sanitizeValue(
     const sanitized: Record<string, any> = {};
     for (const key in value) {
       if (Object.prototype.hasOwnProperty.call(value, key)) {
+        // See DROPPED_KEYS: copying a `__proto__` key would set the new object's prototype.
+        if (DROPPED_KEYS.has(key)) continue;
         try {
           const propValue = value[key];
           

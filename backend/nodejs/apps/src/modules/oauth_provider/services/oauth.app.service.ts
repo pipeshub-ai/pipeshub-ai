@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { Logger } from '../../../libs/services/logger.service';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { ScopeValidatorService } from './scope.validator.service';
+import { withoutRetiredScopes } from '../config/scopes.config';
 import { OAuthTokenService } from './oauth_token.service';
 import {
   getOAuthAppRepository,
@@ -541,6 +542,15 @@ export class OAuthAppService {
       throw new NotFoundError('OAuth app not found');
     }
 
+    // An app saved before config:write was retired may send it back; it is dropped
+    // rather than refused, so the app can still be edited.
+    if (data.allowedScopes) {
+      data = {
+        ...data,
+        allowedScopes: withoutRetiredScopes(data.allowedScopes),
+      };
+    }
+
     // Validate scopes if provided
     if (data.allowedScopes) {
       this.scopeValidatorService.validateRequestedScopes(
@@ -619,8 +629,15 @@ export class OAuthAppService {
     if (data.allowedGrantTypes !== undefined) {
       patch.allowedGrantTypes = data.allowedGrantTypes;
     }
-    if (data.allowedScopes !== undefined)
+    if (data.allowedScopes !== undefined) {
       patch.allowedScopes = data.allowedScopes;
+    } else if (
+      withoutRetiredScopes(app.allowedScopes).length !==
+      app.allowedScopes.length
+    ) {
+      const kept = withoutRetiredScopes(app.allowedScopes);
+      if (kept.length > 0) patch.allowedScopes = kept;
+    }
     if (data.homepageUrl !== undefined) {
       patch.homepageUrl = data.homepageUrl ?? undefined;
     }
@@ -680,7 +697,8 @@ export class OAuthAppService {
     // Tokens carry their scopes in the claim, and neither Node nor the Python
     // services compare that claim with the app on each request. Removing a
     // scope therefore only takes effect for tokens issued after the change.
-    const removedScopes = previousScopes.filter(
+    // Dropping a retired scope does not revoke tokens: they lose it when used.
+    const removedScopes = withoutRetiredScopes(previousScopes).filter(
       (scope) => !updated.allowedScopes.includes(scope),
     );
     if (removedScopes.length > 0 || limitNarrowed) {
@@ -1080,7 +1098,7 @@ export class OAuthAppService {
       description: app.description,
       redirectUris: app.redirectUris,
       allowedGrantTypes: app.allowedGrantTypes,
-      allowedScopes: app.allowedScopes,
+      allowedScopes: withoutRetiredScopes(app.allowedScopes),
       status: app.status,
       logoUrl: app.logoUrl,
       homepageUrl: app.homepageUrl,

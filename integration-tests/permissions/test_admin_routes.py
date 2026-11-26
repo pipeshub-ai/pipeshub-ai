@@ -41,6 +41,7 @@ from helper.admin_route_table import (
 )
 from helper.feature_flags import feature_flag
 from helper.http.session_client import SessionClient
+from helper.mcp_oauth import authorization_code_token, create_oauth_app, delete_oauth_app
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser, create_second_user, delete_second_user
 
@@ -159,6 +160,86 @@ class TestMembersAreRefused:
             f"A member calling {route.id} got HTTP {status}, not the admin refusal "
             f"({route.refusal_status} mentioning {route.refusal_words!r}). "
             + _error_excerpt(status, text)
+        )
+
+
+# Writes that change how people sign in, where sign-in and account links point, the mail
+# transport, a user's sign-in address or who is admin take an interactive user session. The
+# token that exercises these guards is an OAuth access token for an admin who consented to an
+# app with every scope: it holds config:write and user:write on a default install, while a
+# personal access token is capped below those scopes.
+_SESSION_ONLY_WRITES: tuple[tuple[str, str, dict[str, Any]], ...] = (
+    ("POST", "/api/v1/configurationManager/authConfig/microsoft", {}),
+    ("POST", "/api/v1/configurationManager/authConfig/google", {}),
+    ("POST", "/api/v1/configurationManager/frontendPublicUrl", {}),
+    ("POST", "/api/v1/configurationManager/connectorPublicUrl", {}),
+    ("POST", "/api/v1/configurationManager/smtpConfig", {}),
+    ("DELETE", "/api/v1/configurationManager/smtpConfig", {}),
+    ("PUT", "/api/v1/configurationManager/smtpConfig/enabled", {"enabled": True}),
+    ("PATCH", "/api/v1/users/{me}/email", {"email": "it-moved@example.invalid"}),
+    ("PUT", "/api/v1/users/{me}", {"email": "it-moved@example.invalid"}),
+    ("PUT", "/api/v1/users/{me}", {"role": "admin"}),
+    ("POST", "/api/v1/users", {"fullName": "It Person", "email": "it-new@example.invalid", "role": "admin"}),
+)
+
+
+@pytest.fixture(scope="module")
+def identity_admin_session(request: pytest.FixtureRequest) -> SessionClient:
+    """The admin's password session. Unlike the shared fixture it fails, not skips, without credentials."""
+    import os  # local: kept out of the module's import block so this section stands alone
+
+    missing = [v for v in ("PIPESHUB_TEST_USER_EMAIL", "PIPESHUB_TEST_USER_PASSWORD") if not os.getenv(v)]
+    assert not missing, f"These routes must be checked on every run; set {', '.join(missing)}"
+    return request.getfixturevalue("user_session_client")
+
+
+@pytest.fixture(scope="module")
+def identity_admin_oauth_token(identity_admin_session: SessionClient) -> Iterator[str]:
+    client = identity_admin_session
+    app = create_oauth_app(
+        client.base_url,
+        client.token,
+        f"it-admin-oauth-{uuid.uuid4().hex[:8]}",
+        grant_types=["authorization_code", "refresh_token"],
+        timeout=client.timeout_seconds,
+    )
+    try:
+        yield authorization_code_token(client.base_url, client.token, app)["access_token"]
+    finally:
+        delete_oauth_app(client.base_url, client.token, app.id, timeout=client.timeout_seconds)
+
+
+def _session_user_id(token: str) -> str:
+    """The userId claim of a session token (read, not verified: the server did that)."""
+    import base64
+    import json
+
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload))["userId"]
+
+
+class TestIdentityControlWritesRequireASession:
+    @pytest.mark.parametrize("method,path,body", _SESSION_ONLY_WRITES, ids=str)
+    def test_an_oauth_access_token_is_refused(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any],
+        identity_admin_oauth_token: str,
+        identity_admin_session: SessionClient,
+    ) -> None:
+        client = identity_admin_session
+        resp = requests.request(
+            method,
+            f"{client.base_url}{path.format(me=_session_user_id(client.token))}",
+            headers={"Authorization": f"Bearer {identity_admin_oauth_token}"},
+            json=body,
+            timeout=client.timeout_seconds,
+        )
+        assert resp.status_code == 403 and "interactive user session" in resp.text, (
+            f"An OAuth access token calling {method} {path} with {sorted(body)} got HTTP "
+            f"{resp.status_code}, not the 403 session-only refusal. Reply starts: {resp.text[:200]!r}"
         )
 
 

@@ -14,6 +14,7 @@ import {
 } from '../errors/http.errors';
 import { isClientSafeError, isReaderWritten } from '../errors/reader-friendly';
 import { jsonResponse } from '../utils/error.middleware.utils';
+import { DROPPED_KEYS } from '../utils/dropped-keys';
 import { classifyRequestError, levelFor } from '../utils/error-class';
 import {
   markRequestError,
@@ -122,7 +123,11 @@ export class ErrorMiddleware {
       const newObj: { [key: string]: any } = {};
       for (const key in obj) {
         if (Object.prototype.hasOwnProperty.call(obj, key)) {
-          if (key !== 'stack' && key !== 'stackTrace') {
+          if (
+            key !== 'stack' &&
+            key !== 'stackTrace' &&
+            !DROPPED_KEYS.has(key)
+          ) {
             newObj[key] = cloneAndSanitize(obj[key], seen);
           }
         }

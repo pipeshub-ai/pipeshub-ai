@@ -107,7 +107,7 @@ describe('OAuthAppService', () => {
       stubServiceAccount({ isDisabled: false })
       const createStub = sinon
         .stub(OAuthApp, 'create')
-        .resolves({ _id: new Types.ObjectId(), slug: 'x' } as any)
+        .resolves({ _id: new Types.ObjectId(), slug: 'x', allowedScopes: ['org:read'] } as any)
 
       await service.createApp(fakeOrgId, fakeUserId, true, {
         name: 'Nightly export',
@@ -195,7 +195,7 @@ describe('OAuthAppService', () => {
     it('still lets a member create an authorization_code app', async () => {
       const createStub = sinon
         .stub(OAuthApp, 'create')
-        .resolves({ _id: new Types.ObjectId(), slug: 'x' } as any)
+        .resolves({ _id: new Types.ObjectId(), slug: 'x', allowedScopes: ['org:read'] } as any)
 
       await service.createApp(fakeOrgId, fakeUserId, false, {
         name: 'A normal app',
@@ -210,7 +210,7 @@ describe('OAuthAppService', () => {
     it('leaves authorization_code apps alone', async () => {
       const createStub = sinon
         .stub(OAuthApp, 'create')
-        .resolves({ _id: new Types.ObjectId(), slug: 'x' } as any)
+        .resolves({ _id: new Types.ObjectId(), slug: 'x', allowedScopes: ['org:read'] } as any)
 
       // No service account, and no complaint: this grant acts as the person
       // who authorised it, so there is nothing to inherit.
