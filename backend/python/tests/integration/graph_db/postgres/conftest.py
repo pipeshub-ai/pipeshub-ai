@@ -34,6 +34,7 @@ def _no_background_sample(monkeypatch: pytest.MonkeyPatch) -> None:
 
 TABLE_LOCK_KEY = 0x6B675F7461626C65       # the advisory lock that runs a ``pg_table_lock`` test alone
 _FOLDER = Path(__file__).parent
+LOCK_HOLDER = pytest.StashKey[int]()       # the backend that holds the lock for the test
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
@@ -50,6 +51,7 @@ def pytest_runtest_protocol(item: pytest.Item) -> Iterator[None]:
         con = loop.run_until_complete(asyncpg.connect(os.environ["PG_CORE_URL"]))
         try:
             alone = item.get_closest_marker("pg_table_lock") is not None
+            item.stash[LOCK_HOLDER] = con.get_server_pid()
             loop.run_until_complete(con.execute("SELECT pg_advisory_lock($1)" if alone else "SELECT pg_advisory_lock_shared($1)", TABLE_LOCK_KEY))
             yield
         finally:

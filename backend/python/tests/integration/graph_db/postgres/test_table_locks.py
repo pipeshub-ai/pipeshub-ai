@@ -3,6 +3,8 @@ of another worker queued behind that lock waits out its ``lock_timeout``, the wa
 from __future__ import annotations
 
 import ast
+import asyncio
+import contextlib
 import os
 import re
 from pathlib import Path
@@ -11,7 +13,7 @@ import asyncpg
 import pytest
 
 from . import conftest
-from .conftest import TABLE_LOCK_KEY
+from .conftest import LOCK_HOLDER, TABLE_LOCK_KEY
 
 pytestmark = pytest.mark.integration
 # statements whose lock blocks every reader or writer of the table, in every org
@@ -41,13 +43,47 @@ async def _other_may_take(shared: bool) -> bool:
     return got
 
 
-async def test_a_test_holds_the_folder_lock_shared(pg_required: None) -> None:
-    assert await _other_may_take(shared=True)
+async def _held(request: pytest.FixtureRequest) -> str | None:
+    """The mode in which the test's lock session holds the folder lock, read from ``pg_locks``: a new request to test it would queue behind other workers' waiters."""
+    con = await asyncpg.connect(os.environ["PG_CORE_URL"])
+    try:
+        return await con.fetchval("""SELECT mode FROM pg_locks WHERE locktype = 'advisory' AND granted AND pid = $1 AND objsubid = 1
+            AND (classid::bigint << 32 | objid::bigint) = $2""", request.node.stash[LOCK_HOLDER], TABLE_LOCK_KEY)
+    finally:
+        await con.close()
+
+
+async def test_a_test_holds_the_folder_lock_shared(pg_required: None, request: pytest.FixtureRequest) -> None:
+    assert await _held(request) == "ShareLock"
     assert not await _other_may_take(shared=False)          # a pg_table_lock test waits for this one
 
 
+async def test_the_shared_hold_is_seen_while_a_table_lock_test_waits_for_it(pg_required: None, request: pytest.FixtureRequest) -> None:
+    """A marked test of another worker that asks for the lock queues behind this test's shared hold; the check of that hold must not depend on such a queue."""
+    waiter = await asyncpg.connect(os.environ["PG_CORE_URL"])
+    try:
+        queued = asyncio.ensure_future(waiter.execute("SELECT pg_advisory_lock($1)", TABLE_LOCK_KEY))
+        look = await asyncpg.connect(os.environ["PG_CORE_URL"])
+        try:
+            for _ in range(200):
+                if await look.fetchval("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND pid = $1 AND NOT granted)", waiter.get_server_pid()):
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail("the exclusive request never queued")
+        finally:
+            await look.close()
+        assert await _held(request) == "ShareLock"
+        queued.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await queued
+    finally:
+        await waiter.close()
+
+
 @pytest.mark.pg_table_lock
-async def test_a_table_lock_test_holds_the_folder_lock_alone(pg_required: None) -> None:
+async def test_a_table_lock_test_holds_the_folder_lock_alone(pg_required: None, request: pytest.FixtureRequest) -> None:
+    assert await _held(request) == "ExclusiveLock"
     assert not await _other_may_take(shared=True)            # every other test waits for this one
 
 
