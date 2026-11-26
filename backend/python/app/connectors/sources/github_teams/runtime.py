@@ -166,31 +166,34 @@ class RuntimeHelper:
             if internal_client.get_token() != access_token:
                 internal_client.set_token(access_token)
 
-    async def refresh_token_if_needed(self) -> None:
+    async def refresh_token_if_needed(self) -> bool:
         """Sync the active client token from etcd when the background refresher has rotated it.
 
-        No-op for ``API_TOKEN`` auth (PATs do not expire via OAuth).
+        No-op for ``API_TOKEN`` auth (PATs do not expire via OAuth). Returns False when the stored
+        token could not be read or installed, so a caller that just refreshed does not retry the old one.
         """
         c = self.c
         if not c.external_client:
-            return
+            return True
         try:
             config_path = f"/services/connectors/{c.connector_id}/config"
             config = await c.config_service.get_config(config_path)
             if not config:
-                return
+                return False
             auth_type = (config.get("auth") or {}).get("authType", "OAUTH")
             if auth_type == "API_TOKEN":
-                return
+                return True
             fresh_token = (config.get("credentials") or {}).get("access_token", "")
             if not fresh_token:
-                return
+                return False
             current_token = c.external_client.get_client().get_token()
             if current_token != fresh_token:
                 self.logger.debug("Updating GitHub client with refreshed OAuth token")
                 self._apply_access_token_to_clients(fresh_token)
+            return True
         except Exception as e:
             self.logger.warning("Could not refresh GitHub token: %s", e)
+            return False
 
     async def force_refresh_oauth_token(self) -> RefreshOutcome:
         """Trigger an OAuth refresh via the central ``TokenRefreshService`` and sync
@@ -235,7 +238,10 @@ class RuntimeHelper:
                 c.connector_name.value if hasattr(c.connector_name, "value") else str(c.connector_name)
             )
             await refresh_service.refresh_now(c.connector_id, connector_type, refresh_token)
-            await self.refresh_token_if_needed()
+            if not await self.refresh_token_if_needed():
+                # Refreshed, but the client still holds the old token: retrying would read its 401 as a refusal.
+                self.logger.error("GitHub token was refreshed but could not be installed; not retrying with the old one.")
+                return RefreshOutcome.UNAVAILABLE
             return RefreshOutcome.REFRESHED
         except RefreshTokenInvalidError as e:
             log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)

@@ -87,6 +87,18 @@ async def test_a_refresh_that_fails_for_a_passing_reason_is_not_a_refused_sign_i
     assert runtime.sign_in_refused is False
 
 
+async def test_a_refreshed_token_that_could_not_be_installed_is_not_retried_or_refused() -> None:
+    c, runtime = _runtime({"auth": {"authType": "OAUTH"}, "credentials": {"refresh_token": "r"}})
+    c.external_client = MagicMock()
+    # The config read after the refresh fails: the client keeps the old token.
+    c.config_service.get_config = AsyncMock(side_effect=[
+        {"auth": {"authType": "OAUTH"}, "credentials": {"refresh_token": "r"}}, ConnectionError("store down"),
+    ])
+    answer = await _call(runtime, REFUSED, REFUSED)
+    assert answer is REFUSED
+    assert runtime.sign_in_refused is False
+
+
 async def test_an_unreadable_config_is_not_a_refused_sign_in() -> None:
     _c, runtime = _runtime({})
     await _call(runtime, REFUSED)
@@ -94,14 +106,14 @@ async def test_an_unreadable_config_is_not_a_refused_sign_in() -> None:
 
 
 async def test_a_refusal_after_a_refresh_is_remembered() -> None:
-    _c, runtime = _runtime({"auth": {"authType": "OAUTH"}, "credentials": {"refresh_token": "r"}})
+    _c, runtime = _runtime({"auth": {"authType": "OAUTH"}, "credentials": {"refresh_token": "r", "access_token": "a"}})
     await _call(runtime, REFUSED, REFUSED)
     assert runtime.sign_in_refused is True
 
 
 @pytest.mark.parametrize(("last", "refused"), [(REFUSED, True), (GitHubResponse(success=True, data="x"), False)])
 async def test_a_refusal_on_the_last_attempt_is_remembered(last: GitHubResponse, refused: bool) -> None:
-    _c, runtime = _runtime({"auth": {"authType": "OAUTH"}, "credentials": {"refresh_token": "r"}})
+    _c, runtime = _runtime({"auth": {"authType": "OAUTH"}, "credentials": {"refresh_token": "r", "access_token": "a"}})
     unavailable = GitHubResponse(success=False, error="502", status_code=502)
     with patch("app.connectors.sources.github_teams.runtime.asyncio.sleep", AsyncMock()):
         await _call(runtime, *[unavailable] * (_GITHUB_MAX_RETRIES - 1), REFUSED, last)
