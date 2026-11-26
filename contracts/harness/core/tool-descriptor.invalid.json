@@ -1,0 +1,226 @@
+[
+  {
+    "description": "unknown effect class",
+    "instance": {
+      "toolId": "jira@inst_42/create_issue",
+      "modelName": "jira_create_issue",
+      "effect": "delete",
+      "idempotent": false,
+      "reconcile": {
+        "lookup": "jira_get_issue_by_client_id",
+        "readAfterWrite": true,
+        "indexLagS": 0
+      },
+      "sink": {
+        "egress": "internal_audience",
+        "argsLeaveBoundary": false,
+        "audienceResolver": "jira.project_members"
+      },
+      "resultLabels": {
+        "integrity": "internal"
+      },
+      "concurrency": "serialize_per_resource",
+      "timeoutS": 60,
+      "resultCapTokens": 8000,
+      "scopes": [
+        "connector:jira:write"
+      ],
+      "schemaDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "description": "reconcile is required (null when absent)",
+    "instance": {
+      "toolId": "jira@inst_42/create_issue",
+      "modelName": "jira_create_issue",
+      "effect": "write",
+      "idempotent": false,
+      "sink": {
+        "egress": "internal_audience",
+        "argsLeaveBoundary": false,
+        "audienceResolver": "jira.project_members"
+      },
+      "resultLabels": {
+        "integrity": "internal"
+      },
+      "concurrency": "serialize_per_resource",
+      "timeoutS": 60,
+      "resultCapTokens": 8000,
+      "scopes": [
+        "connector:jira:write"
+      ],
+      "schemaDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "description": "model name with spaces",
+    "instance": {
+      "toolId": "jira@inst_42/create_issue",
+      "modelName": "create issue",
+      "effect": "write",
+      "idempotent": false,
+      "reconcile": {
+        "lookup": "jira_get_issue_by_client_id",
+        "readAfterWrite": true,
+        "indexLagS": 0
+      },
+      "sink": {
+        "egress": "internal_audience",
+        "argsLeaveBoundary": false,
+        "audienceResolver": "jira.project_members"
+      },
+      "resultLabels": {
+        "integrity": "internal"
+      },
+      "concurrency": "serialize_per_resource",
+      "timeoutS": 60,
+      "resultCapTokens": 8000,
+      "scopes": [
+        "connector:jira:write"
+      ],
+      "schemaDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "description": "zero timeout",
+    "instance": {
+      "toolId": "jira@inst_42/create_issue",
+      "modelName": "jira_create_issue",
+      "effect": "write",
+      "idempotent": false,
+      "reconcile": {
+        "lookup": "jira_get_issue_by_client_id",
+        "readAfterWrite": true,
+        "indexLagS": 0
+      },
+      "sink": {
+        "egress": "internal_audience",
+        "argsLeaveBoundary": false,
+        "audienceResolver": "jira.project_members"
+      },
+      "resultLabels": {
+        "integrity": "internal"
+      },
+      "concurrency": "serialize_per_resource",
+      "timeoutS": 0,
+      "resultCapTokens": 8000,
+      "scopes": [
+        "connector:jira:write"
+      ],
+      "schemaDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "description": "result integrity cannot be absent",
+    "instance": {
+      "toolId": "jira@inst_42/create_issue",
+      "modelName": "jira_create_issue",
+      "effect": "write",
+      "idempotent": false,
+      "reconcile": {
+        "lookup": "jira_get_issue_by_client_id",
+        "readAfterWrite": true,
+        "indexLagS": 0
+      },
+      "sink": {
+        "egress": "internal_audience",
+        "argsLeaveBoundary": false,
+        "audienceResolver": "jira.project_members"
+      },
+      "resultLabels": {},
+      "concurrency": "serialize_per_resource",
+      "timeoutS": 60,
+      "resultCapTokens": 8000,
+      "scopes": [
+        "connector:jira:write"
+      ],
+      "schemaDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "description": "sink missing argsLeaveBoundary",
+    "instance": {
+      "toolId": "jira@inst_42/create_issue",
+      "modelName": "jira_create_issue",
+      "effect": "write",
+      "idempotent": false,
+      "reconcile": {
+        "lookup": "jira_get_issue_by_client_id",
+        "readAfterWrite": true,
+        "indexLagS": 0
+      },
+      "sink": {
+        "egress": "external"
+      },
+      "resultLabels": {
+        "integrity": "internal"
+      },
+      "concurrency": "serialize_per_resource",
+      "timeoutS": 60,
+      "resultCapTokens": 8000,
+      "scopes": [
+        "connector:jira:write"
+      ],
+      "schemaDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "description": "unknown concurrency class",
+    "instance": {
+      "toolId": "jira@inst_42/create_issue",
+      "modelName": "jira_create_issue",
+      "effect": "write",
+      "idempotent": false,
+      "reconcile": {
+        "lookup": "jira_get_issue_by_client_id",
+        "readAfterWrite": true,
+        "indexLagS": 0
+      },
+      "sink": {
+        "egress": "internal_audience",
+        "argsLeaveBoundary": false,
+        "audienceResolver": "jira.project_members"
+      },
+      "resultLabels": {
+        "integrity": "internal"
+      },
+      "concurrency": "serial",
+      "timeoutS": 60,
+      "resultCapTokens": 8000,
+      "scopes": [
+        "connector:jira:write"
+      ],
+      "schemaDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "description": "unknown risk class (OWD-7)",
+    "instance": {
+      "toolId": "jira@inst_42/create_issue",
+      "modelName": "jira_create_issue",
+      "effect": "write",
+      "idempotent": false,
+      "reconcile": {
+        "lookup": "jira_get_issue_by_client_id",
+        "readAfterWrite": true,
+        "indexLagS": 0
+      },
+      "sink": {
+        "egress": "internal_audience",
+        "argsLeaveBoundary": false,
+        "audienceResolver": "jira.project_members"
+      },
+      "resultLabels": {
+        "integrity": "internal"
+      },
+      "concurrency": "serialize_per_resource",
+      "timeoutS": 60,
+      "resultCapTokens": 8000,
+      "scopes": [
+        "connector:jira:write"
+      ],
+      "schemaDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "risk": "dangerous"
+    }
+  }
+]

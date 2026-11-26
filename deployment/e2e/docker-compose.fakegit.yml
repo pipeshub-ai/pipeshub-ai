@@ -1,0 +1,52 @@
+# R32-REPO (ADR-REPO-01): a public git host answering as github.com, for the journeys that clone a repository
+# (run.sh human-up; never the human-test stack, whose people read the real github.com: human-test-stack.sh sets
+# E2E_FAKE_GIT=0).
+#
+# The worker's repository_fetch reaches it as it reaches github.com: the name resolves on the stack's own network,
+# the address is private, so the deployment opens that one name with EGRESS_PRIVATE_ALLOW (as an enterprise mirror
+# is opened), and the worker trusts the host's test authority through HARNESS_REPO_CA_FILE. The product's checks are
+# unchanged. The alias lives only on the `pipeshub` network: no sandbox network resolves it, and the egress proxy
+# still refuses git hosts as websites.
+
+x-e2e-labels: &e2e-labels
+  pipeshub.harness.owner: x-lead
+  io.pipeshub.e2e.run: ${E2E_RUN:?set E2E_RUN}
+
+services:
+  pxh-fake-git:
+    image: ${E2E_APP_IMAGE:?}
+    build: !reset null
+    user: "${E2E_UID:?}:${E2E_GID:?}"
+    working_dir: /tmp
+    labels: *e2e-labels
+    restart: "no"
+    depends_on: !reset {}
+    entrypoint: ["python", "/e2e/pyrun.py", "/e2e/fake_git/server.py", "/git-state"]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
+    volumes:
+      - ${E2E_SRC}/backend/python:/app/python:ro
+      - ${E2E_SITE_PACKAGES}:/site:ro
+      - ${E2E_SRC}/deployment/e2e:/e2e:ro
+      - ${E2E_FAKE_GIT_DIR:?}:/git-state
+    networks:
+      pipeshub:
+        aliases:
+          - github.com
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; assert os.path.exists('/git-state/ready')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 2s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  pipeshub-ai:
+    environment:
+      - HARNESS_REPO_CA_FILE=/git-ca/ca.pem
+      - EGRESS_PRIVATE_ALLOW=github.com:443
+    volumes:
+      - ${E2E_FAKE_GIT_DIR:?}:/git-ca:ro

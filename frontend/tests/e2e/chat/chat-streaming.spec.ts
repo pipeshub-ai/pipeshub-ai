@@ -404,6 +404,110 @@ test.describe('Chat — multi-turn conversation (mocked backend)', () => {
 // fire.
 // ---------------------------------------------------------------------------
 
+/** Stop pressed while the reply is still "Thinking", with the org's agent harness on or off (WP-71). */
+async function stopWhileThinking(page: import('@playwright/test').Page, harness: boolean): Promise<void> {
+  await page.route('**/api/v1/configurationManager/platform/feature-flags/effective', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ featureFlags: {}, agentHarness: { useHarness: harness, harnessMajor: 2, reason: harness ? 'enabled' : 'disabled' } }),
+    }),
+  );
+  await page.reload();
+  await page.waitForSelector('textarea', { timeout: 15_000 });
+  const convId = 'conv-stop-thinking-001';
+  let cancelFired = false;
+
+  // First turn completes normally so the slot's `convId` is a real,
+  // already-known id (not null) so the cancel POST goes out immediately
+  // (`cancelStreamForSlot` defers it until the id exists on a brand-new chat).
+  const firstTurn = {
+    conversationId: convId,
+    userMessageId: 'msg-user-thinking-1',
+    botMessageId: 'msg-bot-thinking-1',
+    question: 'First question',
+    answer: 'First answer.',
+    modelInfo: MOCK_MODEL_INFO,
+  };
+  let stored = buildAguiConversation(firstTurn);
+  await mockConversationDetail(page, () => stored);
+  await page.route('**/api/v1/conversations/stream', (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    return route.fulfill({
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+      body: buildAguiSseBody(firstTurn),
+    });
+  });
+  await sendMessage(page, 'First question');
+  await expect(page.locator('text=First answer.').first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('[data-testid="chat-stop-button"]')).not.toBeVisible({ timeout: 5_000 });
+
+  // Second turn: hangs with zero tokens streamed ("Thinking") until the
+  // grace timer's hard-abort ends the (mocked) connection.
+  const firstTurnMessages = stored.messages;
+  const secondTurn = {
+    conversationId: convId,
+    userMessageId: 'msg-user-thinking-2',
+    botMessageId: 'msg-bot-thinking-2',
+    question: 'A question that never gets an answer',
+    modelInfo: MOCK_MODEL_INFO,
+  };
+  await page.route(`**/api/v1/conversations/${convId}/messages/stream`, async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    // Saved before any answer streams.
+    const question = buildAguiConversation(secondTurn);
+    stored = { ...stored, messages: [...firstTurnMessages, ...question.messages] };
+    await new Promise<void>((resolve) => setTimeout(resolve, 8_000));
+    await route.fulfill({
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+      body: buildAguiPartialSseBody(convId, ''),
+    }).catch(() => {});
+  });
+  await page.route(`**/api/v1/conversations/${convId}/cancel`, (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    cancelFired = true;
+    // A stopped run is saved with whatever text arrived — none here — as a
+    // stopped reply. The page must not show it (see loadHistoricalMessages).
+    const stoppedTurn = buildAguiConversation({ ...secondTurn, answer: '', stopped: true });
+    stored = { ...stored, messages: [...firstTurnMessages, ...stoppedTurn.messages] };
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ cancelled: true }),
+    });
+  });
+
+  await sendMessage(page, 'A question that never gets an answer');
+
+  const stopBtn = page.locator('[data-testid="chat-stop-button"]');
+  await expect(stopBtn).toBeVisible({ timeout: 10_000 });
+  await stopBtn.click();
+
+  // With the harness on, a Stop before the turn's first frame waits for that frame to say which loop to cancel
+  // (LAT1); the mocked stream sends it after 8 s. With it off, the cancel goes out at once.
+  await expect.poll(() => cancelFired, { timeout: harness ? 15_000 : 5_000 }).toBe(true);
+
+  // Wait out the grace timeout (`STOP_GRACE_MS` = 5s) so the hard-abort
+  // fallback has actually settled the slot before asserting its effect.
+  await expect(stopBtn).not.toBeVisible({ timeout: harness ? 25_000 : 8_000 });
+
+  // `buildStoppedMessages` drops the trailing assistant row entirely when
+  // no text ever streamed — an empty "Stopped" bubble would just be noise.
+  await expect(page.locator('[data-testid="chat-stopped-marker"]')).not.toBeVisible();
+  await expect(page.locator('text=A question that never gets an answer').first()).toBeVisible();
+
+  // The backend saved that run as an empty stopped reply (see the cancel
+  // route above). Reloading must not turn it into an empty "Stopped" bubble.
+  await page.reload();
+  await expect(page.locator('text=A question that never gets an answer').first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('text=First answer.').first()).toBeVisible();
+  await expect(page.locator('[data-testid="chat-stopped-marker"]')).not.toBeVisible();
+
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+}
+
 test.describe('Chat — stop streaming (assistant)', () => {
   test.beforeEach(async ({ page }) => {
     await mockBaselineApis(page);
@@ -494,95 +598,12 @@ test.describe('Chat — stop streaming (assistant)', () => {
   });
 
   test('stop while still "Thinking" (no answer text yet) cancels the run and drops the empty placeholder', async ({ page }) => {
-    const convId = 'conv-stop-thinking-001';
-    let cancelFired = false;
+    await stopWhileThinking(page, false);
+  });
 
-    // First turn completes normally so the slot's `convId` is a real,
-    // already-known id (not null) so the cancel POST goes out immediately
-    // (`cancelStreamForSlot` defers it until the id exists on a brand-new chat).
-    const firstTurn = {
-      conversationId: convId,
-      userMessageId: 'msg-user-thinking-1',
-      botMessageId: 'msg-bot-thinking-1',
-      question: 'First question',
-      answer: 'First answer.',
-      modelInfo: MOCK_MODEL_INFO,
-    };
-    let stored = buildAguiConversation(firstTurn);
-    await mockConversationDetail(page, () => stored);
-    await page.route('**/api/v1/conversations/stream', (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
-      return route.fulfill({
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAguiSseBody(firstTurn),
-      });
-    });
-    await sendMessage(page, 'First question');
-    await expect(page.locator('text=First answer.').first()).toBeVisible({ timeout: 20_000 });
-    await expect(page.locator('[data-testid="chat-stop-button"]')).not.toBeVisible({ timeout: 5_000 });
-
-    // Second turn: hangs with zero tokens streamed ("Thinking") until the
-    // grace timer's hard-abort ends the (mocked) connection.
-    const firstTurnMessages = stored.messages;
-    const secondTurn = {
-      conversationId: convId,
-      userMessageId: 'msg-user-thinking-2',
-      botMessageId: 'msg-bot-thinking-2',
-      question: 'A question that never gets an answer',
-      modelInfo: MOCK_MODEL_INFO,
-    };
-    await page.route(`**/api/v1/conversations/${convId}/messages/stream`, async (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
-      // Saved before any answer streams.
-      const question = buildAguiConversation(secondTurn);
-      stored = { ...stored, messages: [...firstTurnMessages, ...question.messages] };
-      await new Promise<void>((resolve) => setTimeout(resolve, 8_000));
-      await route.fulfill({
-        status: 200,
-        headers: { 'Content-Type': 'text/event-stream' },
-        body: buildAguiPartialSseBody(convId, ''),
-      }).catch(() => {});
-    });
-    await page.route(`**/api/v1/conversations/${convId}/cancel`, (route) => {
-      if (route.request().method() !== 'POST') return route.continue();
-      cancelFired = true;
-      // A stopped run is saved with whatever text arrived — none here — as a
-      // stopped reply. The page must not show it (see loadHistoricalMessages).
-      const stoppedTurn = buildAguiConversation({ ...secondTurn, answer: '', stopped: true });
-      stored = { ...stored, messages: [...firstTurnMessages, ...stoppedTurn.messages] };
-      return route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ cancelled: true }),
-      });
-    });
-
-    await sendMessage(page, 'A question that never gets an answer');
-
-    const stopBtn = page.locator('[data-testid="chat-stop-button"]');
-    await expect(stopBtn).toBeVisible({ timeout: 10_000 });
-    await stopBtn.click();
-
-    await expect.poll(() => cancelFired, { timeout: 5_000 }).toBe(true);
-
-    // Wait out the grace timeout (`STOP_GRACE_MS` = 5s) so the hard-abort
-    // fallback has actually settled the slot before asserting its effect.
-    await expect(stopBtn).not.toBeVisible({ timeout: 8_000 });
-
-    // `buildStoppedMessages` drops the trailing assistant row entirely when
-    // no text ever streamed — an empty "Stopped" bubble would just be noise.
-    await expect(page.locator('[data-testid="chat-stopped-marker"]')).not.toBeVisible();
-    await expect(page.locator('text=A question that never gets an answer').first()).toBeVisible();
-
-    // The backend saved that run as an empty stopped reply (see the cancel
-    // route above). Reloading must not turn it into an empty "Stopped" bubble.
-    await page.reload();
-    await expect(page.locator('text=A question that never gets an answer').first()).toBeVisible({ timeout: 15_000 });
-    await expect(page.locator('text=First answer.').first()).toBeVisible();
-    await expect(page.locator('[data-testid="chat-stopped-marker"]')).not.toBeVisible();
-
-    await page.unrouteAll({ behavior: 'ignoreErrors' });
+  test('WP-71: with the harness on, a Stop while still "Thinking" is sent once the first frame names the loop', async ({ page }) => {
+    test.setTimeout(120_000);
+    await stopWhileThinking(page, true);
   });
 
   test('stop during tool execution ends the run without crashing the activity timeline', async ({ page }) => {

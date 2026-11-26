@@ -340,7 +340,7 @@ export function AppSection({
             )}
           </>
         ) : (
-          <Text size="1" style={{ color: 'var(--slate-9)', padding: 'var(--space-2) var(--space-6)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)', padding: 'var(--space-2) var(--space-6)' }}>
             No items
           </Text>
         )}

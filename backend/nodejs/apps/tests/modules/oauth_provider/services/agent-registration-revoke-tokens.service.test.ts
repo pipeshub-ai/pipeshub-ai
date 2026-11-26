@@ -145,7 +145,7 @@ describe('AgentRegistrationService revocation reaches issued tokens', () => {
         resolveGrantedScopes: (r: string[]) => ({ granted: r, notGranted: [] }),
         getScopeDefinitions: (s: string[]) => s.map((name) => ({ name })),
       } as any,
-      { getOrCreate: sinon.stub().resolves('pipeshub-agent') } as any,
+      { getOrCreate: sinon.stub().resolves('pipeshub-agent'), capScopes: (a: any) => a.allowedScopes } as any,
       { frontendUrl: 'https://app.test', oauthIssuer: ISSUER } as any,
     );
   });
@@ -162,12 +162,9 @@ describe('AgentRegistrationService revocation reaches issued tokens', () => {
     new URL(uri).searchParams.get('claim_attempt_token')!;
   const claimed = async () => {
     const r = await service.register('service_auth', 'ada@example.com');
-    await service.completeClaim(
-      attemptToken(r.claim.verification_uri),
-      r.claim.user_code,
-      'approve',
-      USER,
-    );
+    const token = attemptToken(r.claim.verification_uri);
+    const shown = (await service.getClaimContext(token, USER)).scopes.map((s) => s.name);
+    await service.completeClaim(token, r.claim.user_code, 'approve', USER, shown);
     return r;
   };
 

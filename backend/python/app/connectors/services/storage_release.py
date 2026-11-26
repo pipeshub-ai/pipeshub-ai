@@ -24,6 +24,7 @@ from app.connectors.core.base.user_access import delete_all_connections
 from app.connectors.services.connector_intents import ConnectorIntentStore
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
+    build_gone_connector_cleanup_events,
     log_cleanup_publish_failure,
 )
 from app.connectors.sources.localKB.handlers.delete_lease import lease_is_held
@@ -96,12 +97,19 @@ def retry_delay_ms(attempts: int) -> int:
 async def delete_connector_credentials(
     logger: Logger, config_service: ConfigurationService, connector_id: str,
 ) -> bool:
-    """Whether the connector's credentials are gone. Never raises."""
-    key = f"/services/connectors/{connector_id}/config"
+    """Whether the connector's credentials, and every other key it kept under its own
+    directory, are gone. Never raises."""
+    directory = f"/services/connectors/{connector_id}/"
+    key = f"{directory}config"
     try:
         # Each user's own credential for a per-user connector goes with the connector's.
         users_gone = await delete_all_connections(config_service, connector_id)
-        if await delete_config_confirmed(config_service, key) and users_gone:
+        gone = await delete_config_confirmed(config_service, key) and users_gone
+        # What a connector stored for itself between syncs (Slack's pending threads, metadata
+        # schemas) belongs to no other connector and would outlive this one.
+        for leftover in await config_service.list_keys_in_directory(directory):
+            gone = await delete_config_confirmed(config_service, leftover) and gone
+        if gone:
             return True
     except Exception:
         logger.warning("Connector credentials not confirmed deleted | connector=%s", connector_id, exc_info=True)
@@ -316,17 +324,20 @@ def _connector_finisher(
                 result = await graph_provider.delete_connector_instance(connector_id=connector_id, org_id=org_id)
             finally:
                 await notify_principals_changed(org_id)
-            if not result.get("success"):
-                # gone already (a redelivery finished it): nothing left to do here
-                gone = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) is None
-                return {"success": gone}
-            events = build_connector_cleanup_events(
-                org_id=org_id, connector_id=connector_id,
-                vector_membership_backfilled=result.get("vector_membership_backfilled", False),
-                vector_membership_backfill_exhausted=result.get("vector_membership_backfill_exhausted", False),
-                connector_name=result.get("connector_name"), record_group_ids=result.get("record_group_ids"),
-                virtual_record_ids=result.get("virtual_record_ids", []),
-            )
+            if result.get("success"):
+                events = build_connector_cleanup_events(
+                    org_id=org_id, connector_id=connector_id,
+                    vector_membership_backfilled=result.get("vector_membership_backfilled", False),
+                    vector_membership_backfill_exhausted=result.get("vector_membership_backfill_exhausted", False),
+                    connector_name=result.get("connector_name"), record_group_ids=result.get("record_group_ids"),
+                    virtual_record_ids=result.get("virtual_record_ids", []),
+                )
+            elif await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) is None:
+                # Gone already (its answer was lost, or a redelivery finished it). No app doc to name it by: the name only picks
+                # a collection, and the purge spans them all.
+                events = build_gone_connector_cleanup_events(org_id=org_id, connector_id=connector_id, connector_name=None)
+            else:
+                return {"success": False}
             for event in events:
                 try:
                     if await kafka_service.publish_event("record-events", event) is False:

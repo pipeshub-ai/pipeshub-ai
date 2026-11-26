@@ -1,0 +1,233 @@
+{
+  "format": "pipeshub.harness.recording/v1",
+  "manifest": {
+    "scenario": "react-ticket-error-then-success",
+    "source": "legacy",
+    "harness": "legacy-agent-loop",
+    "model": "scripted-model",
+    "scrub_version": "1"
+  },
+  "inputs": {
+    "route": "agent",
+    "chat_mode": "react",
+    "query": "What is the status of ticket PROJ-42 and who owns it?",
+    "fixtures": {
+      "knowledge": [],
+      "tickets": [
+        {
+          "key": "PROJ-42",
+          "summary": "Login returns 500",
+          "status": "Resolved",
+          "owner": "Priya",
+          "description": ""
+        }
+      ],
+      "slack": {},
+      "emails": [],
+      "files": [],
+      "web": {}
+    }
+  },
+  "steps": [
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 2,
+        "last_user": "user query : What is the status of ticket PROJ-42 and who owns it?",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [
+          "task_complete"
+        ],
+        "digest": "a0dfc6e88f3a8034"
+      },
+      "response": {
+        "text": "Look up Jira ticket PROJ-42 and report its status and owner.",
+        "reasoning": "",
+        "tool_calls": [],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "end_turn"
+      },
+      "error": null
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 2,
+        "last_user": "What is the status of ticket PROJ-42 and who owns it?",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [
+          "drive__read_file",
+          "drive__share_file",
+          "gmail__read_email",
+          "gmail__search_emails",
+          "gmail__send_email",
+          "internaltools__ask_user_question",
+          "jira__add_comment",
+          "jira__create_issue",
+          "jira__get_issue",
+          "jira__search_issues",
+          "knowledge__read_document",
+          "knowledge__search",
+          "knowledgegraph__fetch_record",
+          "retrieve_artifact_content",
+          "search_tools",
+          "slack__read_channel",
+          "slack__send_message",
+          "web__fetch_url"
+        ],
+        "digest": "32958adf44790437"
+      },
+      "response": {
+        "text": "",
+        "reasoning": "",
+        "tool_calls": [
+          {
+            "id": "call-bad",
+            "name": "jira__get_issue",
+            "args": {
+              "issue_key": "PROJ-4"
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "tool_use"
+      },
+      "error": null
+    },
+    {
+      "kind": "tool",
+      "call_id": "call-bad",
+      "name": "jira__get_issue",
+      "args": {
+        "issue_key": "PROJ-4"
+      },
+      "status": "failed",
+      "result": null,
+      "error": "Issue PROJ-4 does not exist",
+      "sources": []
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 4,
+        "last_user": "What is the status of ticket PROJ-42 and who owns it?",
+        "last_tool": "jira__get_issue",
+        "last_tool_status": "failed",
+        "tools": [
+          "drive__read_file",
+          "drive__share_file",
+          "gmail__read_email",
+          "gmail__search_emails",
+          "gmail__send_email",
+          "internaltools__ask_user_question",
+          "jira__add_comment",
+          "jira__create_issue",
+          "jira__get_issue",
+          "jira__search_issues",
+          "knowledge__read_document",
+          "knowledge__search",
+          "knowledgegraph__fetch_record",
+          "retrieve_artifact_content",
+          "search_tools",
+          "slack__read_channel",
+          "slack__send_message",
+          "web__fetch_url"
+        ],
+        "digest": "cc47e353406f5867"
+      },
+      "response": {
+        "text": "",
+        "reasoning": "",
+        "tool_calls": [
+          {
+            "id": "call-good",
+            "name": "jira__get_issue",
+            "args": {
+              "issue_key": "PROJ-42"
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "tool_use"
+      },
+      "error": null
+    },
+    {
+      "kind": "tool",
+      "call_id": "call-good",
+      "name": "jira__get_issue",
+      "args": {
+        "issue_key": "PROJ-42"
+      },
+      "status": "succeeded",
+      "result": "{\"key\": \"PROJ-42\", \"summary\": \"Login returns 500\", \"status\": \"Resolved\", \"owner\": \"Priya\", \"description\": \"\"}",
+      "error": null,
+      "sources": []
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 6,
+        "last_user": "What is the status of ticket PROJ-42 and who owns it?",
+        "last_tool": "jira__get_issue",
+        "last_tool_status": "succeeded",
+        "tools": [
+          "drive__read_file",
+          "drive__share_file",
+          "gmail__read_email",
+          "gmail__search_emails",
+          "gmail__send_email",
+          "internaltools__ask_user_question",
+          "jira__add_comment",
+          "jira__create_issue",
+          "jira__get_issue",
+          "jira__search_issues",
+          "knowledge__read_document",
+          "knowledge__search",
+          "knowledgegraph__fetch_record",
+          "retrieve_artifact_content",
+          "search_tools",
+          "slack__read_channel",
+          "slack__send_message",
+          "web__fetch_url"
+        ],
+        "digest": "e6679d7c5219da76"
+      },
+      "response": {
+        "text": "PROJ-42 is Resolved and owned by Priya.",
+        "reasoning": "",
+        "tool_calls": [],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "end_turn"
+      },
+      "error": null
+    }
+  ],
+  "effects": [],
+  "final": {
+    "answer": "PROJ-42 is Resolved and owned by Priya.",
+    "status": "completed"
+  }
+}

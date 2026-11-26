@@ -11,6 +11,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from tests.support.agent_versions import versions_beside
+
+
+@pytest.fixture(autouse=True)
+def _agent_versions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The routes' agent versions (OWD-14) beside this file's mocked graph."""
+    versions_beside(monkeypatch, "app.api.routes.agent")
+
 # =============================================================================
 # Exception classes
 # =============================================================================
@@ -52,7 +60,7 @@ class TestExceptionClasses:
         from app.api.routes.agent import AgentTemplateNotFoundError
         err = AgentTemplateNotFoundError("tmpl-456")
         assert err.status_code == 404
-        assert "tmpl-456" in err.detail
+        assert "tmpl-456" not in err.detail
 
     def test_permission_denied(self) -> None:
         from app.api.routes.agent import PermissionDeniedError

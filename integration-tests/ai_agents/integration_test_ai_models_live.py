@@ -42,7 +42,12 @@ pytestmark = [pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.ai_mod
 
 # Node refuses a new chat's query past this many characters (es_validators.ts).
 _QUERY_MAX_CHARS = 100_000
-_PROVIDER_NAMES = {"openAI": "OpenAI", "azureOpenAI": "Azure OpenAI", "ollama": "Ollama"}
+_PROVIDER_NAMES = {
+    "openAI": "OpenAI",
+    "azureOpenAI": "Azure OpenAI",
+    "openAICompatible": "OpenAI Compatible",
+    "ollama": "Ollama",
+}
 _ENRICHMENT_TIMEOUT = 300
 
 

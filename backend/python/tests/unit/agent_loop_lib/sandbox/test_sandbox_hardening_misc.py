@@ -81,7 +81,7 @@ class TestInstallCommandsQuoteSpecs:
         import app.sandbox.docker_executor as legacy
         from app.sandbox.models import SandboxLanguage
 
-        monkeypatch.setattr(legacy, "_SANDBOX_ROOT", str(tmp_path))
+        monkeypatch.setattr(legacy, "_sandbox_root", lambda: str(tmp_path))
         monkeypatch.setattr(legacy, "ensure_egress_network_sync", lambda *a, **k: ["10.9.0.0/16"])
         executor = legacy.DockerExecutor()
         captured: dict = {}

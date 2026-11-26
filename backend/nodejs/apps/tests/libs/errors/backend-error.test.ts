@@ -11,6 +11,7 @@ import { Logger } from '../../../src/libs/services/logger.service'
 import { logLevelFor } from '../../../src/libs/utils/error.middleware.utils'
 import { classifyRequestError } from '../../../src/libs/utils/error-class'
 import {
+  BadGatewayError,
   BadRequestError,
   ConflictError,
   ForbiddenError,
@@ -22,6 +23,7 @@ import {
   TooManyRequestsError,
   UnprocessableEntityError,
 } from '../../../src/libs/errors/http.errors'
+import { BaseError } from '../../../src/libs/errors/base.error'
 
 describe('handleBackendError', () => {
   describe('a 4xx keeps the service\'s own words', () => {
@@ -306,6 +308,125 @@ describe('handleBackendError', () => {
     const result = handleBackendError({ detail: 'Name is required' }, 'create agent')
     expect(result).to.be.instanceOf(BadRequestError)
     expect(result.message).to.equal('Name is required')
+  })
+
+  // H3 RL-1..RL-7: a Python route's `{reasonCode, message}` arrives as a typed
+  // error instead of JSON text inside a generic message.
+  describe('a Python refusal with a machine code', () => {
+    const reasonOf = (error: Error): unknown => (error as BaseError).metadata?.reasonCode
+
+    it('RL-1: a 400 keeps its class, the inner sentence and the code (command and axios shapes)', () => {
+      const detail = { reasonCode: 'runner_egress_invalid', message: "egress host 'bad_host!' is not a host name" }
+      for (const failure of [
+        { statusCode: 400, data: { detail } },
+        { response: { status: 400, data: { detail } } },
+      ]) {
+        const result = handleBackendError(failure, 'Update MCP server runner settings')
+        expect(result).to.be.instanceOf(BadRequestError)
+        expect(result.message).to.equal("egress host 'bad_host!' is not a host name")
+        expect(reasonOf(result)).to.equal('runner_egress_invalid')
+      }
+    })
+
+    it('RL-2: a 409 stale manifest is a conflict with its code', () => {
+      const result = handleBackendError(
+        {
+          statusCode: 409,
+          data: { detail: { reasonCode: 'mcp_manifest_stale', message: 'reload the manifest', tool: 'search' } },
+        },
+        'Approve MCP server tool manifest',
+      )
+      expect(result).to.be.instanceOf(ConflictError)
+      expect(result.message).to.equal('reload the manifest')
+      expect(reasonOf(result)).to.equal('mcp_manifest_stale')
+    })
+
+    it('RL-3: `detail.code` and a top-level `reasonCode` are read the same way', () => {
+      const coded = handleBackendError(
+        { statusCode: 403, data: { detail: { code: 'publication_forbidden', message: 'Owners only' } } },
+        'publish',
+      )
+      expect(coded).to.be.instanceOf(ForbiddenError)
+      expect(coded.message).to.equal('Owners only')
+      expect(reasonOf(coded)).to.equal('publication_forbidden')
+
+      const topLevel = handleBackendError(
+        { response: { status: 422, data: { reasonCode: 'runner_spec_invalid', message: 'not an image reference' } } },
+        'update runner',
+      )
+      expect(topLevel).to.be.instanceOf(UnprocessableEntityError)
+      expect(topLevel.message).to.equal('not an image reference')
+      expect(reasonOf(topLevel)).to.equal('runner_spec_invalid')
+    })
+
+    for (const code of ['discovery_failed', 'mcp_url_refused', 'runner_start_failed']) {
+      it(`RL-4: a 502 ${code} stays a 502 with its code and our own sentence`, () => {
+        const upstream = 'Failed to connect to http://10.0.0.4:8090/mcp: connection refused'
+        const result = handleBackendError(
+          { statusCode: 502, data: { detail: { reasonCode: code, message: upstream } } },
+          'Get MCP server tool manifest',
+        )
+        expect(result).to.be.instanceOf(BadGatewayError)
+        expect((result as BaseError).statusCode).to.equal(502)
+        expect(reasonOf(result)).to.equal(code)
+        expect(result.message).to.equal(
+          'Something went wrong while PipesHub tried to get MCP server tool manifest. Please try again in a moment; if it keeps happening, ask your admin to check the services page.',
+        )
+        expect(result.message).to.not.include('10.0.0.4')
+      })
+    }
+
+    it('RL-5: a 502 without a code, and a 500 with one, stay the generic 500', () => {
+      const bare = handleBackendError({ statusCode: 502, data: { detail: 'bad gateway' } }, 'list')
+      expect(bare).to.be.instanceOf(InternalServerError)
+      expect(reasonOf(bare)).to.equal(undefined)
+      const coded = handleBackendError(
+        { statusCode: 500, data: { detail: { reasonCode: 'store_failed', message: 'mongo at 10.0.0.9' } } },
+        'list',
+      )
+      expect(coded).to.be.instanceOf(InternalServerError)
+      expect(reasonOf(coded)).to.equal(undefined)
+      expect(coded.message).to.not.include('10.0.0.9')
+    })
+
+    it('RL-6: a 503 with a code keeps the transient sentence and adds the code', () => {
+      const result = handleBackendError(
+        {
+          response: {
+            status: 503,
+            data: { detail: { reasonCode: 'mcp_manifest_unavailable', message: 'etcd read failed at 10.0.0.2' } },
+            headers: { 'retry-after': '3' },
+          },
+        },
+        'Get MCP server tool manifest',
+      )
+      expect(result).to.be.instanceOf(ServiceUnavailableError)
+      expect(result.message).to.include('briefly unavailable')
+      expect(result.message).to.not.include('10.0.0.2')
+      expect((result as BaseError).metadata).to.deep.equal({ retryAfter: '3', reasonCode: 'mcp_manifest_unavailable' })
+    })
+
+    for (const [label, code] of [
+      ['upper case', 'RUNNER_SPEC_INVALID'],
+      ['spaces', 'runner spec invalid'],
+      ['65 characters', `a${'b'.repeat(64)}`],
+      ['a number', 42],
+    ] as [string, unknown][]) {
+      it(`RL-7: a code with ${label} is not relayed`, () => {
+        const result = handleBackendError(
+          { statusCode: 400, data: { detail: { reasonCode: code, message: 'no' } } },
+          'update runner',
+        )
+        expect(result).to.be.instanceOf(BadRequestError)
+        expect(reasonOf(result)).to.equal(undefined)
+      })
+    }
+
+    it('RL-7: a string detail is read as before', () => {
+      const result = handleBackendError({ statusCode: 400, data: { detail: 'Pick a folder.' } }, 'sync')
+      expect(result.message).to.equal('Pick a folder.')
+      expect((result as BaseError).metadata).to.equal(undefined)
+    })
   })
 
   // The call's own upstream.call.end line and the error middleware's line report it; this layer only maps.

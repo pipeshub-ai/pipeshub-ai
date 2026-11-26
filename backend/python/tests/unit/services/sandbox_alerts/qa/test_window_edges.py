@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import TYPE_CHECKING
 
 from hypothesis import HealthCheck, given, settings
@@ -13,6 +12,7 @@ from app.agent_loop_lib.sandbox.load_ledger import FLAG_HELD, FLAG_QUALIFYING
 from app.services.sandbox_alerts.config import AlertSettings
 from app.services.sandbox_alerts.evaluator import evaluate
 from app.services.sandbox_alerts.window import STALE_AFTER_S, WindowTotals, read_window
+from tests.support.cpu_budget import thread_cpu
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -109,10 +109,12 @@ def test_a_huge_file_is_read_in_reasonable_time(tmp_path: Path) -> None:
         minutes={m: {"runs": 1} for m in range(0, 200_000)},
         ticks=dict.fromkeys(range(0, 200000), BUSY),
     ))
-    started = time.monotonic()
-    totals = read_window(tmp_path, NOW, 1800)
+    with thread_cpu() as cpu:
+        totals = read_window(tmp_path, NOW, 1800)
     assert totals.runs == 0
-    assert time.monotonic() - started < 5
+    # The parse is this thread's own work (thread_cpu: no time off the CPU, no collection of a large heap); a
+    # quadratic read of 200,000 minutes would take minutes.
+    assert cpu.seconds < 5
 
 
 @given(data=st.recursive(

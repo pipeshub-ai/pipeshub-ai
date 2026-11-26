@@ -8,11 +8,10 @@ import {
   Flex,
   IconButton,
   Text,
-  TextField,
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { ConfirmationDialog, FormField, WorkspaceRightPanel } from '../../components';
+import { ConfirmationDialog, FormField, FormFieldTextField, WorkspaceRightPanel } from '../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { DelegationsApi } from '../api';
@@ -262,7 +261,7 @@ export function ServiceAccountDelegationsPanel({
       >
         <Flex direction="column" gap="3">
           {account && (
-            <Text size="1" style={{ color: 'var(--slate-10)', ...MONO }}>
+            <Text size="1" style={{ color: 'var(--slate-11)', ...MONO }}>
               {account.email}
             </Text>
           )}
@@ -294,7 +293,7 @@ export function ServiceAccountDelegationsPanel({
     >
       <Flex direction="column" gap="4">
         {account && (
-          <Text size="1" style={{ color: 'var(--slate-10)', ...MONO }}>
+          <Text size="1" style={{ color: 'var(--slate-11)', ...MONO }}>
             {account.email}
           </Text>
         )}
@@ -320,14 +319,14 @@ export function ServiceAccountDelegationsPanel({
             label={t('workspace.serviceAccounts.delegations.subjectLabel')}
             required
           >
-            <TextField.Root
+            <FormFieldTextField
               value={subject}
               placeholder={t(
                 'workspace.serviceAccounts.delegations.subjectPlaceholder'
               )}
               onChange={(e) => setSubject(e.target.value)}
             />
-            <Text size="1" style={{ color: 'var(--slate-10)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.serviceAccounts.delegations.subjectHelp')}
             </Text>
           </FormField>
@@ -335,14 +334,14 @@ export function ServiceAccountDelegationsPanel({
             label={t('workspace.serviceAccounts.delegations.reasonLabel')}
             optional
           >
-            <TextField.Root
+            <FormFieldTextField
               value={reason}
               placeholder={t(
                 'workspace.serviceAccounts.delegations.reasonPlaceholder'
               )}
               onChange={(e) => setReason(e.target.value)}
             />
-            <Text size="1" style={{ color: 'var(--slate-10)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.serviceAccounts.delegations.reasonHelp')}
             </Text>
           </FormField>
@@ -364,11 +363,11 @@ export function ServiceAccountDelegationsPanel({
             {t('workspace.serviceAccounts.delegations.listTitle')}
           </Text>
           {isLoading && delegations.length === 0 ? (
-            <Text size="1" style={{ color: 'var(--slate-10)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.serviceAccounts.delegations.loading')}
             </Text>
           ) : delegations.length === 0 ? (
-            <Text size="1" style={{ color: 'var(--slate-10)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.serviceAccounts.delegations.none')}
             </Text>
           ) : (
@@ -397,7 +396,7 @@ export function ServiceAccountDelegationsPanel({
                     )}
                   </Flex>
                   {delegation.subjectEmail && (
-                    <Text size="1" style={{ color: 'var(--slate-10)', ...MONO }}>
+                    <Text size="1" style={{ color: 'var(--slate-11)', ...MONO }}>
                       {delegation.subjectEmail}
                     </Text>
                   )}
@@ -439,7 +438,7 @@ export function ServiceAccountDelegationsPanel({
             {t('workspace.serviceAccounts.delegations.logHelp')}
           </Text>
           {events.length === 0 ? (
-            <Text size="1" style={{ color: 'var(--slate-10)' }}>
+            <Text size="1" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.serviceAccounts.delegations.logNone')}
             </Text>
           ) : (
@@ -462,12 +461,12 @@ export function ServiceAccountDelegationsPanel({
                       {event.subjectEmail ?? event.requestedSubject}
                     </Text>
                     {event.refusedReason && (
-                      <Text size="1" style={{ color: 'var(--slate-10)', ...MONO }}>
+                      <Text size="1" style={{ color: 'var(--slate-11)', ...MONO }}>
                         {event.refusedReason}
                       </Text>
                     )}
                     {event.actedByEmail && (
-                      <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                      <Text size="1" style={{ color: 'var(--slate-11)' }}>
                         {t('workspace.serviceAccounts.delegations.byAdmin', {
                           admin: event.actedByEmail,
                         })}
@@ -479,7 +478,7 @@ export function ServiceAccountDelegationsPanel({
                       </Text>
                     )}
                   </Flex>
-                  <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                  <Text size="1" style={{ color: 'var(--slate-11)' }}>
                     {formatWhen(event.createdAt, i18n.language)}
                   </Text>
                 </Flex>

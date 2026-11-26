@@ -32,6 +32,7 @@ In-repo design docs:
 - [Knowledge Hub browse on Neo4j — the split browse and its permission model](./knowledge-hub-browse.md)
 - [Acting on behalf of someone — service-account delegation](./service-account-delegation.md)
 - [MCP hardening notes — why the MCP client works the way it does, change by change](./mcp-hardening-notes.md)
+- [Agent harness guides — user guide, builder guide, vendor DPA checklist, availability SLO and DR drill](./agent-harness-v2/guides/user-guide.md) (index: [agent-harness-v2/README.md](./agent-harness-v2/README.md))
 
 Upgrading:
 

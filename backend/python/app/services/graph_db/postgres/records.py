@@ -504,6 +504,16 @@ class RecordsMixin(PgBase):
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_sync_point")
             return None
 
+    async def list_sync_points(self, org_id: str, collection: str, *, after_key: str | None = None, limit: int = 500) -> list[dict]:
+        """One org's sync points in syncPointKey order; see the interface. Only the ambient org's: another reads nothing."""
+        org = current_org_id()
+        if org_id != org:
+            return []
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.list_sync_points */ SELECT doc FROM graph.nodes
+            WHERE org_id = $1 AND coll = $2 AND doc ? 'syncPointKey' AND ($3::text IS NULL OR doc->>'syncPointKey' > $3)
+            ORDER BY doc->>'syncPointKey' LIMIT $4""", org, collection, after_key, limit), None)
+        return [_arango(_doc(r["doc"]), collection) for r in rows]
+
     async def upsert_sync_point(self, sync_point_key: str, sync_point_data: dict, collection: str, transaction: str | None = None) -> bool:
         """Create or merge the point keyed by ``syncPointKey`` (a null clears a property). Like the Neo4j provider it stamps the caller's dict."""
         org, now = current_org_id(), get_epoch_timestamp_in_ms()

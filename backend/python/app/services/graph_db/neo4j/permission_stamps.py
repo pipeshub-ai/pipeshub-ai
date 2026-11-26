@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.core.org_context import instrument_org_methods
+from app.services.graph_db.neo4j.kh_scope import by_ids
 from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.ports import SUBTREE_DEPTH, StampApp, StampNode
 
@@ -27,7 +28,8 @@ RETURN a IS NOT NULL AND (coalesce(a.permissionModel, '') = 'APP_LEVEL' OR a.typ
 """
 
 NODES = f"""
-MATCH (n:Record|RecordGroup|App) WHERE n.id IN $ids AND n.orgId = $org
+{by_ids("n", "Record|RecordGroup|App", "$ids")}
+WITH n WHERE n.orgId = $org
 RETURN n.id AS id, CASE WHEN n:Record THEN 'record' WHEN n:RecordGroup THEN 'group' ELSE 'app' END AS kind,
        coalesce(n.connectorId, n.id) AS connector, n.accessRule AS rule, coalesce(n.isDeleted, false) AS deleted,
        coalesce(n.isPlaceholder, false) AS placeholder, n.permissionModel AS model, n.virtualRecordId AS vrid,
@@ -50,8 +52,9 @@ RETURN r.id AS id
 # The subtree is walked one level at a time (one bounded query per level over the frontier, a visited set kept here): a single variable-length
 # pattern enumerates PATHS, which grows as 2^depth on stacked diamonds or parallel edges. EVERY edge walked is a hierarchy edge (a record reached
 # only through a link edge is not below it) and every node is of this organisation.
-START = """
-MATCH (a:Record|RecordGroup) WHERE a.id IN $ids AND a.orgId = $org
+START = f"""
+{by_ids("a", "Record|RecordGroup", "$ids")}
+WITH a WHERE a.orgId = $org
 RETURN a.id AS id, a:Record AS rec, a.virtualRecordId AS vrid
 """
 

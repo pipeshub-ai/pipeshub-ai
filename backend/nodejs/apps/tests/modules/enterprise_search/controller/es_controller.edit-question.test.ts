@@ -69,7 +69,7 @@ function editFlow(options: {
       sinon.stub(ChatSessionMessage, 'deleteMany').callsFake(((filter: { _id: { $in: unknown[] } }) => {
         const doomed = new Set(filter._id.$in.map(String))
         for (let i = store.messages.length - 1; i >= 0; i -= 1) {
-          if (doomed.has(String(store.messages[i]._id))) store.messages.splice(i, 1)
+          if (doomed.has(String(store.messages[i]!._id))) store.messages.splice(i, 1)
         }
         return Promise.resolve({ deletedCount: doomed.size })
       }) as never)

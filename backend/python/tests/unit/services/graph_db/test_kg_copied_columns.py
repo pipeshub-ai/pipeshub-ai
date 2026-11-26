@@ -29,12 +29,17 @@ TABLE = "kg.records"
 COPIED = frozenset({"rule", "model", "origin", "vrid", "external_id", "record_type"})
 LISTING = "python/app/services/graph_db/postgres/kg/listing.py"
 COUNTS = "python/app/services/graph_db/postgres/kg/counts.py"
+KB_FOLDER = "python/app/services/graph_db/postgres/kg/kb_folder.py"
 
 # (source, what): the reads that may take a copied column ("*": the whole row, or anything of the source)
 ALLOWED = {
     (LISTING, "record_type"),                                                       # the listing's filter: a connector kg serves only
+    *((KB_FOLDER, c) for c in ("record_type", "origin", "external_id")),           # a knowledge-base folder's filters and search: a connector kg serves only, its own children only
     ("python/app/services/graph_db/postgres/kg/verify.py", "*"),                    # the verify compares the whole row with the graph: what must see the difference
     ("db/versions/kg/0015_counts.sql", "*"),                                        # the counter trigger takes each changed row whole; its facet keys are read as the line above says
+    # a grant's parent_held and the chain-top rows read the rule: both are read for a connector kg serves only (a row written without its rule takes the connector off the
+    # readers), and the projection that writes the rule again refreshes the marks below it, which the verify compares with the rows
+    ("python/app/services/graph_db/postgres/kg/grant_marks.py", "rule"),
 }
 # (source, tag or start of the statement): statements that name kg.records and that sqlglot does not parse, with the reason they need no reading
 UNPARSED: dict[tuple[str, str], str] = {}
@@ -513,7 +518,23 @@ def trash_statements() -> list[str]:
     return [t.PAGE, t.COUNT]
 
 
-RENDERED = {LISTING: listing_statements, HIERARCHY: hierarchy_statements, COUNTS: counts_statements, TRASH: trash_statements}
+KB_ROOT = "python/app/services/graph_db/postgres/kg/kb_root.py"
+
+
+def kb_root_statements() -> list[str]:
+    """A knowledge base's root over the typed graph's candidates: composed once, at import, from the module's seek builders."""
+    k = importlib.import_module("app.services.graph_db.postgres.kg.kb_root")
+    return [k.FOLDERS, k.RECORDS]
+
+
+def kb_folder_statements() -> list[str]:
+    """A knowledge-base folder over the typed graph's children: composed once, at import, from the module's seek builders."""
+    k = importlib.import_module("app.services.graph_db.postgres.kg.kb_folder")
+    return [k.FOLDER, k.FOLDERS, k.RECORDS_PAGE]
+
+
+RENDERED = {LISTING: listing_statements, HIERARCHY: hierarchy_statements, COUNTS: counts_statements, TRASH: trash_statements, KB_ROOT: kb_root_statements,
+            KB_FOLDER: kb_folder_statements}
 
 
 def sources() -> dict[str, tuple[list[str], list[str]]]:
@@ -678,8 +699,9 @@ def test_a_module_s_constants_fill_its_f_strings_and_a_computed_statement_is_nam
 
 
 def test_a_run_of_comments_is_scanned_in_linear_time() -> None:
-    import time
-    t0 = time.perf_counter()
-    assert not _starts_statement("/*" + "*//*" * 5000) and not reads(["/*" + "*//*" * 5000])
-    assert _starts_statement("/* a */ /* b */ SELECT 1") and not _starts_statement("/* never closed SELECT 1")
-    assert time.perf_counter() - t0 < 1.0
+    from tests.support.cpu_budget import thread_cpu
+
+    with thread_cpu() as cpu:
+        assert not _starts_statement("/*" + "*//*" * 5000) and not reads(["/*" + "*//*" * 5000])
+        assert _starts_statement("/* a */ /* b */ SELECT 1") and not _starts_statement("/* never closed SELECT 1")
+    assert cpu.seconds < 1.0

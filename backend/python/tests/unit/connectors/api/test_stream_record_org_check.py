@@ -16,6 +16,7 @@ from fastapi import HTTPException
 import app.edition_config  # noqa: F401  (binds the edition seams before the router loads)
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.api import router as router_mod
+from tests.support.record_access import InMemoryRecordAccess
 
 SENTINEL = object()
 RECORD_ID = "rec-1"
@@ -40,7 +41,9 @@ def _graph(record: object, known_orgs: tuple[Any, ...] = ("org-1", "org-2")) -> 
     graph = MagicMock()
     graph.get_record_by_id = AsyncMock(return_value=record)
     graph.get_document = AsyncMock(side_effect=get_document)
-    graph.check_record_access_with_details = AsyncMock(return_value={"id": RECORD_ID})
+    # u1 of org-1 reads the record; these tests are about the org check that runs before access.
+    graph.access = InMemoryRecordAccess().readable("u1", "org-1", RECORD_ID)
+    graph.access.serve(graph)
     return graph
 
 
@@ -88,7 +91,7 @@ async def test_caller_without_org_never_gets_content(caller_org: object, record_
     status, _ = await _stream(user, graph)
 
     assert status == 404
-    graph.check_record_access_with_details.assert_not_awaited()
+    assert graph.access.asked_about == []
 
 
 @pytest.mark.parametrize("record_org", ["ORG-1", "org-1 ", " org-1", "org-10", "org-"])
@@ -99,7 +102,7 @@ async def test_near_miss_org_ids_do_not_match(record_org: str) -> None:
     status, detail = await _stream({"userId": "u1", "orgId": "org-1", "role": "member"}, graph)
 
     assert (status, detail) == (404, "Record not found")
-    graph.check_record_access_with_details.assert_not_awaited()
+    assert graph.access.asked_about == []
 
 
 @pytest.mark.parametrize(
@@ -127,4 +130,4 @@ async def test_internal_content_route_org_matrix(claims: dict, record_org: objec
     if expected == 200:
         assert out["is_admin"] is False and out["org_id"] == "org-1"
     else:
-        graph.check_record_access_with_details.assert_not_awaited()
+        assert graph.access.asked_about == []

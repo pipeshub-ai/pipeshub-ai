@@ -1,0 +1,3 @@
+codex-rust-v0.160.0.cargo-tree.txt: `cargo tree -p codex-app-server -e normal,build --target x86_64-unknown-linux-musl --locked --prefix none --format "{p}|{l}"` at rust-v0.160.0 (R5 §10.2; copied from research/engines/codex-probes/ctree_appserver.txt).
+opencode-mini.*: a small bun.lock with workspace links, nested resolution and an unreachable GPL package.
+goose-v1.57.0.cargo-lock-licences.txt: every registry crate in Goose's `Cargo.lock` at tag v1.57.0 with its crates.io licence, in the cargo tree format above; recorded by `licence_scan.py acp-goose 1.57.0 --network` on 2026-11-03 (no cargo on the host, so Cargo.lock + crates.io: over-approximates the build).

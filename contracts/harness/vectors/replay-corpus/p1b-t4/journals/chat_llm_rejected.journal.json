@@ -1,0 +1,338 @@
+{
+ "scenario": "chat_llm_rejected",
+ "query": "What is the refund policy?",
+ "runId": "run-golden",
+ "sessionId": "ses-1",
+ "events": [
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 1,
+   "type": "run.admitted",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "runKind": "interactive",
+    "principalRef": "p_user"
+   },
+   "runId": "run-golden"
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 2,
+   "type": "run.claimed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "attempt": 1,
+    "fence": 1,
+    "leaseMs": 30000
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 3,
+   "type": "run.spec_pinned",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "specDigest": "sha256:1a010c1296b40c546701e2cbd536690f222ab03c3685b6b299921f9e95eb75aa",
+    "spec": {
+     "schemaVersion": 2,
+     "harnessMajor": 2,
+     "foldVersion": 1,
+     "runKind": "interactive",
+     "principalRef": "p_user-1",
+     "model": {
+      "policy": [
+       {
+        "provider": "openai",
+        "model": "gpt-x"
+       }
+      ],
+      "promptVersion": "pipeshub-agent-2026-09"
+     },
+     "grants": {
+      "tools": [],
+      "sandboxProfile": "none",
+      "egress": "none"
+     },
+     "budgets": {
+      "maxTurns": 15,
+      "maxTokens": 1000000,
+      "maxCostUsd": 5.0,
+      "activeTimeS": 3600,
+      "calendarDeadline": "2027-01-01T00:00:00Z",
+      "maxChildren": 0
+     },
+     "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "extensions": {
+      "x.pipeshub": {
+       "model": {
+        "modelKey": "model-1",
+        "modelName": "gpt-x"
+       },
+       "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+       },
+       "mcp": [],
+       "skills": [],
+       "mounts": [],
+       "via": "session",
+       "chat": {
+        "mode": "internal_search",
+        "internalSearch": true
+       }
+      }
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 4,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "capabilities.observed": {}
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 5,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "pre_run.goal": {
+      "description": "What is the refund policy?",
+      "requirements": [],
+      "successCriteria": [],
+      "constraints": [
+       "<original_query>What is the refund policy?</original_query>",
+       "Relevant internal knowledge base context retrieved for this query (cite using the Citation IDs shown, e.g. [source](ref1)):\nNote: your coverage of these records is incomplete (as low as 0%) — see the candidate list at the end before answering anything that needs more than the specific passages shown above.\n\n<record>\n\nRecord: Refund policy.md\n\nRecord blocks (sorted):\n[0|ref1] Customers may request a refund within 30 days of purchase.\n\n\n[1|ref2] Refunds are paid back to the original payment method.\n\n\n</record>\n\nCoverage is incomplete (as low as 0%) for these records:\n1. Record ID: rec-refund | Refund policy.md | you have 2 block(s); document length unknown | Topics: —\n\nDrop any record above that isn't relevant to the question, then call `knowledgegraph__fetch_record` ONCE with every record_id that is left and answer from what it returns — unless the answer needs only a single specific fact already visible in the blocks above."
+      ],
+      "gaps": [],
+      "mode": "quick",
+      "loopKind": "react",
+      "composeDomainAgents": false,
+      "wholeDocument": false,
+      "clarifyingQuestions": []
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 6,
+   "type": "x.pipeshub.goal.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "description": "What is the refund policy?"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 7,
+   "type": "x.pipeshub.citations.recorded",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "refs": [
+     {
+      "url": "https://pipeshub.test/record/rec-refund/preview#blockIndex=0",
+      "ref": "ref1"
+     },
+     {
+      "url": "https://pipeshub.test/record/rec-refund/preview#blockIndex=1",
+      "ref": "ref2"
+     }
+    ],
+    "records": {
+     "vr-refund": {
+      "virtual_record_id": "vr-refund",
+      "id": "rec-refund",
+      "_key": "rec-refund",
+      "record_name": "Refund policy.md",
+      "frontend_url": "https://pipeshub.test",
+      "context_metadata": "Record: Refund policy.md",
+      "block_containers": {
+       "blocks": [],
+       "block_groups": []
+      },
+      "origin": "UPLOAD",
+      "connector_name": "KNOWLEDGE_BASE",
+      "mime_type": "text/plain",
+      "record_type": "FILE",
+      "version": 1
+     }
+    },
+    "finalResults": [
+     {
+      "virtual_record_id": "vr-refund",
+      "block_index": 0,
+      "content": "Customers may request a refund within 30 days of purchase.",
+      "block_type": "text",
+      "metadata": {
+       "virtualRecordId": "vr-refund",
+       "recordId": "rec-refund",
+       "recordName": "Refund policy.md",
+       "orgId": "org-golden",
+       "mimeType": "text/markdown",
+       "origin": "UPLOAD",
+       "connector": "KB",
+       "recordType": "FILE",
+       "blockIndex": 0
+      },
+      "score": 0.9,
+      "block_web_url": "https://pipeshub.test/record/rec-refund/preview#blockIndex=0",
+      "citation_ref": "ref1"
+     },
+     {
+      "virtual_record_id": "vr-refund",
+      "block_index": 1,
+      "content": "Refunds are paid back to the original payment method.",
+      "block_type": "text",
+      "metadata": {
+       "virtualRecordId": "vr-refund",
+       "recordId": "rec-refund",
+       "recordName": "Refund policy.md",
+       "orgId": "org-golden",
+       "mimeType": "text/markdown",
+       "origin": "UPLOAD",
+       "connector": "KB",
+       "recordType": "FILE",
+       "blockIndex": 1
+      },
+      "score": 0.8,
+      "block_web_url": "https://pipeshub.test/record/rec-refund/preview#blockIndex=1",
+      "citation_ref": "ref2"
+     }
+    ],
+    "toolRecords": [
+     {
+      "virtual_record_id": "vr-refund",
+      "id": "rec-refund",
+      "_key": "rec-refund",
+      "record_name": "Refund policy.md",
+      "frontend_url": "https://pipeshub.test",
+      "context_metadata": "Record: Refund policy.md",
+      "block_containers": {
+       "blocks": [],
+       "block_groups": []
+      },
+      "origin": "UPLOAD",
+      "connector_name": "KNOWLEDGE_BASE",
+      "mime_type": "text/plain",
+      "record_type": "FILE",
+      "version": 1
+     }
+    ]
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 8,
+   "type": "x.pipeshub.answer.finalized",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "outcome": "error",
+    "answer": "The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models.",
+    "partTexts": [
+     "The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models."
+    ],
+    "citations": [],
+    "confidence": "Low",
+    "answerMatchType": "Error",
+    "errorCode": "auth_error"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 9,
+   "type": "run.failed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "errorType": "auth_error"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  }
+ ],
+ "live": []
+}

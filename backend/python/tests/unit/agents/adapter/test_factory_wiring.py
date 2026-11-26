@@ -32,6 +32,7 @@ from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
     PARENT_RESULTS_INPUT_PATH,
 )
 from app.agents.agent_loop.factory import PipesHubAgentFactory
+from app.agents.agent_loop.lazy_tools_wiring import LAZY_ONLY_TOOL_NAMES
 from app.agents.agent_loop.loops.plan_execute import (
     PLANNING_TOOL_NAMES,
     PlanCritiqueExecuteLoop,
@@ -51,6 +52,13 @@ def _skills_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     MagicMock graph_provider and blow up — skills wiring has its own
     dedicated tests, so pin it off here."""
     monkeypatch.setenv("PIPESHUB_ENABLE_SKILLS", "false")
+
+
+@pytest.fixture(autouse=True)
+def _eager_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The grant comparisons below assert eager disclosure. Whether the lazy decider applies also reads
+    process-wide registry state that other tests in the same xdist worker leave behind, so pin it off."""
+    monkeypatch.setenv("PIPESHUB_ENABLE_LAZY_TOOLS", "false")
 
 
 @pytest.fixture(autouse=True)
@@ -187,14 +195,14 @@ class TestCreate:
         agent, runtime, _goal, _clarifying = await factory.create(context, context.llm, "quick", query="hello")
 
         assert isinstance(agent.spec.loop, ReActLoop)
-        # `list_toolsets`/`fetch_tools` are registered onto the shared
+        # `list_toolsets`/`fetch_tools`/`call_tool` are registered onto the shared
         # registry unconditionally (a no-op grant candidate — see
         # `register_lazy_tool_meta_tools`'s docstring) but pruned from the
         # eager-mode grant itself, since eager disclosure already binds
         # every schema and they have nothing to reveal. `search_tools`
         # stays in both: it does real work (auth-aware global discovery)
         # regardless of disclosure mode.
-        assert set(agent.spec.tool_names) == set(runtime.tool_registry.names()) - {"list_toolsets", "fetch_tools"}
+        assert set(agent.spec.tool_names) == set(runtime.tool_registry.names()) - set(LAZY_ONLY_TOOL_NAMES)
 
     async def test_quick_mode_never_composes_domain_agents(self) -> None:
         context = make_context(llm=FakeChatModel())
@@ -301,7 +309,7 @@ class TestCreate:
 
         # See the `quick`-mode counterpart above for why `list_toolsets`/
         # `fetch_tools` are excluded from this comparison.
-        assert set(agent.spec.tool_names) == set(runtime.tool_registry.names()) - {"list_toolsets", "fetch_tools"}
+        assert set(agent.spec.tool_names) == set(runtime.tool_registry.names()) - set(LAZY_ONLY_TOOL_NAMES)
 
     async def test_react_mode_composes_domain_agents_by_default(self) -> None:
         """React runs get the composed top level: sandbox tools are claimed
@@ -349,7 +357,7 @@ class TestCreate:
 
         # See `test_quick_mode_uses_flat_react_loop` for why `list_toolsets`/
         # `fetch_tools` are excluded from this comparison.
-        assert set(agent.spec.tool_names) == set(runtime.tool_registry.names()) - {"list_toolsets", "fetch_tools"}
+        assert set(agent.spec.tool_names) == set(runtime.tool_registry.names()) - set(LAZY_ONLY_TOOL_NAMES)
 
     async def test_deep_mode_top_level_is_never_composed(self) -> None:
         """`OrchestratorLoop`'s OWN `spec.tool_names` keeps its four

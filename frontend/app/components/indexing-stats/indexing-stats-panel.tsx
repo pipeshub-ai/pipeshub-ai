@@ -313,7 +313,7 @@ export function IndexingStatsPanel({
         {showStatsShimmer ? (
           <OverviewRecordTypesShimmer />
         ) : byRecordType.length === 0 ? (
-          <Text size="2" style={{ color: 'var(--gray-9)' }}>
+          <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.connectors.overview.noRecordTypes')}
           </Text>
         ) : (

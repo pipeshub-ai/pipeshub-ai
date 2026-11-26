@@ -17,6 +17,8 @@ import uuid
 
 import pytest
 
+from tests.support import it_backends
+
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 ORG = "org-it"
@@ -50,7 +52,7 @@ async def neo4j_provider():
     from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
-    uri = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
+    uri = it_backends.endpoint("NEO4J_IT_URI")
     password = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
     logger = _log()
     client = Neo4jClient(
@@ -75,7 +77,7 @@ async def arango_provider():
     from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
     from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
-    url = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
+    url = it_backends.endpoint("ARANGO_IT_URL")
     password = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
     db = "accessible_record_relations_it"
     logger = _log()

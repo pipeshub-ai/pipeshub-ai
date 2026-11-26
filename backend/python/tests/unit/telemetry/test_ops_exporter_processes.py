@@ -4,6 +4,7 @@ Needs no service; every port is asked of the kernel (`tests/support/free_port.py
 """
 from __future__ import annotations
 
+import gc
 import json
 import os
 import signal
@@ -117,6 +118,7 @@ def test_kill_freshness_and_carry(tmp_path: Path, procs: list) -> None:
     holder.wait()
     t0 = time.time()
     got = _eventually(port, BRAKES, 101, timeout=30)
+    # wall-clock-ok: the helper's own 30 s timeout; a takeover takes a few seconds
     assert time.time() - t0 < 30
     assert got[BRAKES] == 101  # exactly the carry and the live counters: no loss, no double count
 
@@ -167,6 +169,7 @@ def test_scrape_latency_with_64_snapshot_files(tmp_path: Path) -> None:
             body = _scrape(exporter._port)
             times.append(time.perf_counter() - t)
         assert body['pipeshub_governor_pool_in_use{pool="heavy_parse",service="indexing"}'] == 64
+        # wall-clock-ok: upstream's bound: a scrape reads a carried snapshot (ms); a live collection takes seconds
         assert sorted(times)[len(times) // 2] <= 0.05
     finally:
         exporter._server.shutdown()
@@ -360,12 +363,17 @@ def test_a_scrape_flood_over_64_snapshot_files_does_not_stall_the_event_loop(tmp
     assert exporter.holds_port
     def measure() -> list[float]:
         asyncio.run(lag(2.0))  # let the exporter settle after its first round
+        # A pytest-xdist worker late in a full run holds ~10M objects, and a full collection of them stops every thread
+        # for 3-6 s, whichever test is running: frozen, the passes in the window scan only what the exporter allocates.
+        gc.collect()
+        gc.freeze()
         hammer = subprocess.Popen([sys.executable, "-c", HAMMER, str(port), "6", "16"])
         try:
             time.sleep(0.3)
             return asyncio.run(lag(5.0))
         finally:
             hammer.wait(timeout=30)
+            gc.unfreeze()
 
     try:
         problems = _attempt_flood(measure)

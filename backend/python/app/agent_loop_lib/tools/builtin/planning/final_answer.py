@@ -25,11 +25,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agent_loop_lib.core.types import Artifact, Confidence, ToolCall
+from app.agent_loop_lib import composition
+from app.agent_loop_lib.core.types import Confidence, ToolCall
 from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
-from app.agent_loop_lib.tools.base import ParameterType, Tag, Tool, ToolOutput, ToolParameter
-from app.agent_loop_lib.tools.builtin.planning.task_complete import TaskCompletionOutcome
-from app.agent_loop_lib.tools.tags import TAG_LIFECYCLE_TERMINAL
+from app.agent_loop_lib.tools.base import (
+    ParameterType,
+    Tag,
+    Tool,
+    ToolOutput,
+    ToolParameter,
+)
+from app.agent_loop_lib.tools.builtin.planning.task_complete import (
+    TaskCompletionOutcome,
+)
+from app.agent_loop_lib.tools.tags import TAG_EFFECT_READ, TAG_LIFECYCLE_TERMINAL
 
 
 def _answer_markdown_description() -> str:
@@ -80,8 +89,6 @@ def _answer_markdown_description() -> str:
 
 def _build_parameters() -> list[ToolParameter]:
     """Build the parameter list, optionally including the confidence field."""
-    from app.agents.agent_loop.confidence import confidence_enabled
-
     params: list[ToolParameter] = [
         ToolParameter(
             name="answer_markdown",
@@ -113,8 +120,7 @@ def _build_parameters() -> list[ToolParameter]:
         ),
     ]
 
-    if confidence_enabled():
-        from app.agents.agent_loop.confidence import CONFIDENCE_LEVELS, rubric_text
+    if composition.confidence_enabled():
         params += [
             ToolParameter(
                 name="confidence",
@@ -122,11 +128,11 @@ def _build_parameters() -> list[ToolParameter]:
                 description=(
                     "Your confidence that answer_markdown fully and correctly addresses the "
                     "user's request. Required when the confidence feature is enabled.\n\n"
-                    + rubric_text()
+                    + composition.confidence_rubric()
                 ),
                 required=False,
                 default=None,
-                enum=list(CONFIDENCE_LEVELS),
+                enum=list(composition.confidence_levels()),
             ),
             ToolParameter(
                 name="confidence_reason",
@@ -174,7 +180,8 @@ class FinalAnswerTool(Tool):
 
     @property
     def tags(self) -> list[Tag]:
-        return [TAG_LIFECYCLE_TERMINAL]
+        # Returns its own arguments: nothing outside the run changes.
+        return [TAG_LIFECYCLE_TERMINAL, TAG_EFFECT_READ]
 
     @property
     def parameters(self) -> list[ToolParameter]:
@@ -219,8 +226,7 @@ class FinalAnswerTool(Tool):
         confidence: Confidence | None = None
         raw_confidence = c.get("confidence") if isinstance(c, dict) else None
         if raw_confidence:
-            from app.agents.agent_loop.confidence import normalize as _normalize_confidence
-            normalised = _normalize_confidence(str(raw_confidence))
+            normalised = composition.normalize_confidence(str(raw_confidence))
             if normalised is not None:
                 key = normalised.lower().replace(" ", "_")
                 try:
@@ -251,5 +257,4 @@ def final_answer_enabled() -> bool:
     Set to 'true' only for frontier-model deployments that benefit from
     fully structured terminal output.
     """
-    from app.agents.agent_loop.env_utils import env_bool
-    return env_bool("PIPESHUB_ENABLE_FINAL_ANSWER", False)
+    return composition.final_answer_flag()

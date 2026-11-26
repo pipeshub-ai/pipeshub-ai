@@ -7,20 +7,25 @@ vi.mock('@/lib/api/axios-instance', () => ({
   apiClient: { get: vi.fn() },
 }));
 
+import { apiClient } from '@/lib/api/axios-instance';
 import {
   useFeatureFlagsStore,
+  selectAgentHarnessEnabled,
+  selectAgentHarnessResumeEnabled,
+  selectAgentHarnessOn,
   selectFeatureFlagsLoaded,
   selectMcpEnabled,
   selectActionsEnabled,
   selectVectorStoreRebuildEnabled,
   selectSkillsEnabled,
   selectUserContextEnabled,
+  selectEngineRunsEnabled,
   selectSoftDeleteEnabled,
 } from '../feature-flags-store';
 
 describe('feature-flags-store selectors', () => {
   beforeEach(() => {
-    useFeatureFlagsStore.setState({ flags: null, loading: false });
+    useFeatureFlagsStore.setState({ flags: null, agentHarness: null, harnessReconcile: false, engineRuns: false, loading: false });
   });
 
   describe('selectFeatureFlagsLoaded', () => {
@@ -130,5 +135,64 @@ describe('feature-flags-store selectors', () => {
       useFeatureFlagsStore.setState({ flags: { ENABLE_USER_CONTEXT: false } });
       expect(selectUserContextEnabled(useFeatureFlagsStore.getState())).toBe(false);
     });
+  });
+
+  describe('agent harness (server rollout decision)', () => {
+    it('is off until the server has answered', () => {
+      expect(selectAgentHarnessEnabled(useFeatureFlagsStore.getState())).toBe(false);
+      expect(selectAgentHarnessResumeEnabled(useFeatureFlagsStore.getState())).toBe(false);
+    });
+
+    it('never reads the raw Labs flag', () => {
+      useFeatureFlagsStore.setState({ flags: { ENABLE_AGENT_HARNESS: true } });
+      expect(selectAgentHarnessEnabled(useFeatureFlagsStore.getState())).toBe(false);
+    });
+
+    it('stores the decision from the effective flags endpoint', async () => {
+      vi.mocked(apiClient.get).mockResolvedValueOnce({
+        data: {
+          featureFlags: { ENABLE_AGENT_HARNESS: false },
+          agentHarness: {
+            useHarness: false,
+            harnessMajor: 1,
+            reason: 'kill_switch',
+            resumeInFlightRuns: true,
+            harnessOn: true,
+          },
+        },
+      });
+
+      await useFeatureFlagsStore.getState().fetchFlags();
+
+      const state = useFeatureFlagsStore.getState();
+      expect(state.agentHarness).toEqual({
+        useHarness: false,
+        harnessMajor: 1,
+        reason: 'kill_switch',
+        resumeInFlightRuns: true,
+        harnessOn: true,
+      });
+      // Kill switch: no new durable turns, but in-flight runs are still reattached and the harness stays on for the org.
+      expect(selectAgentHarnessEnabled(state)).toBe(false);
+      expect(selectAgentHarnessResumeEnabled(state)).toBe(true);
+      expect(selectAgentHarnessOn(state)).toBe(true);
+    });
+  });
+
+  // UX3 SE-4: whether a worker runs engine runs, which personal AI accounts serve.
+  describe('engineRuns', () => {
+    it('is off until the server has answered', () => {
+      expect(selectEngineRunsEnabled(useFeatureFlagsStore.getState())).toBe(false);
+    });
+
+    for (const [sent, expected] of [[true, true], [false, false], ['true', false], [undefined, false]] as const) {
+      it(`reads ${JSON.stringify(sent)} as ${String(expected)}`, async () => {
+        vi.mocked(apiClient.get).mockResolvedValueOnce({
+          data: { featureFlags: {}, agentHarness: null, ...(sent === undefined ? {} : { engineRuns: sent }) },
+        });
+        await useFeatureFlagsStore.getState().fetchFlags();
+        expect(selectEngineRunsEnabled(useFeatureFlagsStore.getState())).toBe(expected);
+      });
+    }
   });
 });

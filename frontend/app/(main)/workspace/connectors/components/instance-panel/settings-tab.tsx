@@ -193,7 +193,7 @@ export function SettingsTab({
               </Text>
               <ReadOnlyField value={syncStrategy} />
             </Flex>
-            <Text size="1" weight="medium" style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" weight="medium" style={{ color: 'var(--gray-11)' }}>
               <Trans
                 i18nKey="workspace.connectors.settingsTab.syncStrategySettingsHint"
                 values={{
@@ -215,7 +215,7 @@ export function SettingsTab({
                 </Text>
                 <ReadOnlyField value={syncInterval} />
               </Flex>
-              <Text size="1" weight="medium" style={{ color: 'var(--gray-10)' }}>
+              <Text size="1" weight="medium" style={{ color: 'var(--gray-11)' }}>
                 {t('workspace.connectors.configTab.syncIntervalHelper', { name: instance.name })}
               </Text>
             </Flex>
@@ -288,7 +288,7 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
         size="1"
         weight="medium"
         style={{
-          color: 'var(--gray-10)',
+          color: 'var(--gray-11)',
           width: isMobile ? 'auto' : 164,
           flexShrink: 0,
         }}

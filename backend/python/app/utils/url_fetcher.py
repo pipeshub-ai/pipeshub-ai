@@ -19,6 +19,7 @@ import random
 import re
 import socket
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Literal, override
@@ -73,6 +74,10 @@ class FetchError(Exception):
 
 class UnresolvableHostError(FetchError):
     """The hostname has no addresses here — as opposed to addresses that are not allowed."""
+
+
+# The harness's name for the same error (MCP hub, MCP client and OAuth discovery catch it).
+UnresolvedHostError = UnresolvableHostError
 
 
 # Hostnames that must never be fetched (SSRF / metadata endpoints).
@@ -224,7 +229,10 @@ def _hostname_is_blocked(hostname: str, *, allow_private: bool = False) -> bool:
 
 
 def _check_static(
-    url: str, *, block_non_global: bool, allow_private: bool,
+    url: str,
+    *,
+    refuses_address: Callable[[IPAddress], bool],
+    refuses_hostname: Callable[[str], bool],
 ) -> tuple[str, str, int, IPAddress | None]:
     """Everything the policy can decide without DNS: scheme, hostname blocklist, port
     and a literal IP. Returns ``(scheme, hostname, port, literal_ip_or_None)``."""
@@ -241,18 +249,25 @@ def _check_static(
     except ValueError as e:
         raise FetchError("URL has an invalid port") from e
 
-    if _hostname_is_blocked(hostname, allow_private=allow_private):
+    if refuses_hostname(hostname):
         raise FetchError(f"Blocked unsafe URL hostname: {hostname}")
 
     try:
         literal_ip = ipaddress.ip_address(hostname)
     except ValueError:
         literal_ip = None
-    if literal_ip is not None and _ip_is_blocked(
-        literal_ip, block_non_global=block_non_global, allow_private=allow_private,
-    ):
+    if literal_ip is not None and refuses_address(literal_ip):
         raise FetchError(f"Blocked unsafe URL address: {literal_ip}")
     return parsed.scheme, hostname, port, literal_ip
+
+
+def _public_rule(
+    *, block_non_global: bool, allow_private: bool,
+) -> dict[str, Callable[..., bool]]:
+    return {
+        "refuses_address": partial(_ip_is_blocked, block_non_global=block_non_global, allow_private=allow_private),
+        "refuses_hostname": partial(_hostname_is_blocked, allow_private=allow_private),
+    }
 
 
 def check_http_url_without_resolving(
@@ -264,7 +279,7 @@ def check_http_url_without_resolving(
     Raises:
         FetchError: if the URL's scheme/hostname/port/literal address is disallowed.
     """
-    _check_static(url, block_non_global=block_non_global, allow_private=allow_private)
+    _check_static(url, **_public_rule(block_non_global=block_non_global, allow_private=allow_private))
 
 
 def resolve_public_http_target(
@@ -280,8 +295,25 @@ def resolve_public_http_target(
     Raises:
         FetchError: if the URL's scheme/hostname/port/resolved address is disallowed.
     """
+    return resolve_http_target(url, **_public_rule(block_non_global=block_non_global, allow_private=allow_private))
+
+
+def resolve_http_target(
+    url: str,
+    *,
+    refuses_address: Callable[[IPAddress], bool],
+    refuses_hostname: Callable[[str], bool],
+) -> PublicTarget:
+    """Resolve ``url`` once and reject it when its host name, or any address the name resolves to, is one the
+    caller's rule refuses. The answer names the addresses that were checked, for a caller that then connects
+    only to them (so a later DNS answer cannot move the connection).
+
+    Raises:
+        FetchError: a scheme other than http(s), no host, a bad port, an unresolvable name, or a refused
+            host name or address.
+    """
     scheme, hostname, port, literal_ip = _check_static(
-        url, block_non_global=block_non_global, allow_private=allow_private,
+        url, refuses_address=refuses_address, refuses_hostname=refuses_hostname,
     )
     if literal_ip is not None:
         return PublicTarget(scheme, hostname, port, (literal_ip,))
@@ -297,7 +329,7 @@ def resolve_public_http_target(
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
-        if _ip_is_blocked(ip, block_non_global=block_non_global, allow_private=allow_private):
+        if refuses_address(ip):
             raise FetchError(f"Blocked unsafe URL: hostname {hostname!r} resolves to {ip}")
         if ip not in addresses:
             addresses.append(ip)

@@ -125,6 +125,9 @@ _MID_CHAR_CEILINGS: dict[str, int] = {
     "lazy_with_pinned_and_codegraph": 15_700,
     "kb_with_calculator":   14_550,
     "lazy_with_calculator": 16_700,
+    # R36LIVE-FU-2: lazy_with_pinned's knowledge plus two attached MCP servers,
+    # named in Finding Information and listed as toolsets. Measured 16,086.
+    "lazy_with_attached_server": 16_900,
 }
 
 # ---------------------------------------------------------------------------
@@ -172,6 +175,8 @@ _FRONTIER_CHAR_CEILINGS: dict[str, int] = {
     "lazy_with_pinned_and_codegraph": 12_850,
     "kb_with_calculator":   11_700,
     "lazy_with_calculator": 13_850,
+    # R36LIVE-FU-2: measured 12,769 (lazy_with_pinned 12,551).
+    "lazy_with_attached_server": 13_400,
 }
 
 

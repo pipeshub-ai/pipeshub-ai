@@ -92,8 +92,8 @@ describe('StorageController.getStorageConfig: credentials come from the server, 
     await controller.getStorageConfig(userRequest(), kvs, DEFAULT_CONFIG)
 
     expect(calls).to.have.lengthOf(1)
-    expect(calls[0].uri).to.equal('http://cm:3000/api/v1/configurationManager/internal/storageConfig')
-    const token = (calls[0].authorization ?? '').replace(/^Bearer /, '')
+    expect(calls[0]!.uri).to.equal('http://cm:3000/api/v1/configurationManager/internal/storageConfig')
+    const token = (calls[0]!.authorization ?? '').replace(/^Bearer /, '')
     expect(token).to.not.equal('user-jwt')
     const payload = jwt.verify(token, SCOPED_SECRET) as jwt.JwtPayload
     expect(payload.orgId).to.equal(ORG_ID)

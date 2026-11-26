@@ -21,6 +21,14 @@ services:
   etcd: !reset null
   zookeeper: !reset null
   kafka-1: !reset null
+  # Part of their stores (SEC-D-06): kafka-init writes Kafka's SCRAM login into ZooKeeper, etcd-tls makes etcd's certificates.
+  kafka-init: !reset null
+  etcd-tls: !reset null
+  # The sandbox plane's broker and egress proxy read their component documents with Redis or etcd users of their own, and this file
+  # removes both stores: on PostgreSQL alone code runs use SANDBOX_MODE=docker (the default), and the `sandbox-broker` profile has
+  # nothing to start.
+  sandbox-broker: !reset null
+  egress-proxy: !reset null
 
   postgres:
     profiles: !reset []
@@ -37,6 +45,10 @@ services:
       context: ../..
       dockerfile: backend/db/Dockerfile
     command: ["python", "-m", "db.maintain", "placement", "--watch"]
+    # The migration image runs as uid 1000 and needs no capability, as pipeshub-migrate (the base file's baseline).
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     environment:
       - PG_MIGRATE_URL=postgresql+psycopg://pipeshub_migrate:${PG_MIGRATE_PASSWORD:?PG_MIGRATE_PASSWORD is empty or unset in .env}@postgres:5432/pipeshub
       - PG_JOBS_URL=postgresql://pipeshub_jobs:${PG_JOBS_PASSWORD:?PG_JOBS_PASSWORD is empty or unset in .env}@postgres:5432/pipeshub
@@ -48,6 +60,7 @@ services:
       resources:
         limits:
           memory: 256M
+          pids: 512
     networks:
       - pipeshub
 
@@ -59,6 +72,9 @@ services:
       context: ../..
       dockerfile: backend/db/Dockerfile
     command: ["python", "-m", "db.maintain", "fold", "--watch"]
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     environment:
       - PG_JOBS_URL=postgresql://pipeshub_jobs:${PG_JOBS_PASSWORD:?PG_JOBS_PASSWORD is empty or unset in .env}@postgres:5432/pipeshub
     depends_on:
@@ -69,6 +85,7 @@ services:
       resources:
         limits:
           memory: 256M
+          pids: 512
     networks:
       - pipeshub
 

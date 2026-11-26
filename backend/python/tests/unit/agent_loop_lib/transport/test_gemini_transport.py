@@ -7,6 +7,7 @@ the mapping rather than the transport plumbing.
 
 from __future__ import annotations
 
+import base64
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -27,11 +28,25 @@ from app.agent_loop_lib.core.streaming import (
     ToolCallDeltaEvent,
 )
 from app.agent_loop_lib.core.tool_schema import ToolSchema
-from app.agent_loop_lib.transport.gemini import GeminiTransport, sanitize_schema
+from app.agent_loop_lib.transport.gemini import (
+    GeminiTransport,
+    sanitize_schema,
+    signature_block,
+)
+from harness_core.models.provider_state import GEMINI_GENERATE_CONTENT, with_state
 
 
 def _transport(**kwargs) -> GeminiTransport:
     return GeminiTransport(api_key="k", model="gemini-3-flash-preview", **kwargs)
+
+
+def _signed(message: AssistantMessage, signatures: dict[str, bytes]) -> AssistantMessage:
+    """``message`` as the transport returns it after Gemini signed its calls."""
+    blocks = [
+        {"callId": call_id, "thoughtSignature": base64.b64encode(sig).decode("ascii")}
+        for call_id, sig in signatures.items()
+    ]
+    return with_state(message, GEMINI_GENERATE_CONTENT, blocks)
 
 
 def _part(text=None, function_call=None, thought=False):
@@ -134,12 +149,11 @@ class TestMessageMapping:
 
     def test_assistant_tool_calls_round_trip_as_model_parts(self) -> None:
         t = _transport()
-        t._thought_signatures["c1"] = b"sig"
         contents = t._format_contents([
-            AssistantMessage(
+            _signed(AssistantMessage(
                 content="thinking",
                 tool_calls=[ToolCall(id="c1", name="search", arguments={"q": "x"})],
-            ),
+            ), {"c1": b"sig"}),
         ])
         assert contents[0].role == "model"
         kinds = [p.function_call is not None for p in contents[0].parts]
@@ -294,13 +308,12 @@ class TestToolResultCorrelation:
 
     def test_response_name_comes_from_the_matching_call(self) -> None:
         t = _transport()
-        t._thought_signatures["call_1"] = b"sig"
         contents = t._format_contents([
             UserMessage(content="find x"),
-            AssistantMessage(
+            _signed(AssistantMessage(
                 tool_calls=[ToolCall(id="call_1", name="knowledgegraph__search",
                                      arguments={"q": "x"})],
-            ),
+            ), {"call_1": b"sig"}),
             ToolMessage(content="results", tool_call_id="call_1"),
         ])
         response_part = contents[-1].parts[0].function_response
@@ -319,8 +332,8 @@ class TestThoughtSignature:
     """Gemini 3 rejects a replayed function_call whose thought_signature is
     missing: "Function call is missing a thought_signature in functionCall
     parts. This is required for tools to work correctly." It is opaque bytes
-    with nowhere to live on our provider-neutral ToolCall, so the transport
-    keeps it and re-attaches it when history is rebuilt.
+    with nowhere to live on our provider-neutral ToolCall, so it travels on the
+    message's provider state (H4 GS) and is re-attached when history is rebuilt.
     """
 
     @pytest.mark.asyncio
@@ -330,17 +343,17 @@ class TestThoughtSignature:
         part.thought_signature = b"sig-bytes"
         _wire_stream(t, [_chunk([part], finish="STOP")])
 
-        [e async for e in t.stream(messages=[UserMessage(content="hi")])]
+        events = [e async for e in t.stream(messages=[UserMessage(content="hi")])]
 
-        assert t._thought_signatures["call_9"] == b"sig-bytes"
+        message = events[-1].response.message
+        assert t._format_contents([message])[0].parts[0].thought_signature == b"sig-bytes"
 
     def test_signature_is_replayed_onto_history(self) -> None:
         t = _transport()
-        t._thought_signatures["call_9"] = b"sig-bytes"
         contents = t._format_contents([
-            AssistantMessage(
+            _signed(AssistantMessage(
                 tool_calls=[ToolCall(id="call_9", name="lookup", arguments={"q": "x"})],
-            ),
+            ), {"call_9": b"sig-bytes"}),
         ])
         assert contents[0].parts[0].thought_signature == b"sig-bytes"
 
@@ -391,11 +404,10 @@ class TestUnsignedHistoryReplay:
 
     def test_signed_call_still_uses_the_function_call_path(self) -> None:
         t = _transport()
-        t._thought_signatures["fresh"] = b"sig"
         contents = t._format_contents([
-            AssistantMessage(
+            _signed(AssistantMessage(
                 tool_calls=[ToolCall(id="fresh", name="lookup", arguments={})],
-            ),
+            ), {"fresh": b"sig"}),
             ToolMessage(content="r", tool_call_id="fresh"),
         ])
         assert contents[0].parts[0].function_call is not None
@@ -411,17 +423,206 @@ class TestCallIdUniqueness:
     async def test_ids_do_not_collide_across_turns(self) -> None:
         t = _transport()
         seen = []
-        for _ in range(2):
+        messages = []
+        for turn in range(2):
             part = _part(function_call=_call(name="lookup", cid=None))
-            part.thought_signature = b"sig"
+            part.thought_signature = f"sig-{turn}".encode()
             _wire_stream(t, [_chunk([part], finish="STOP")])
             events = [e async for e in t.stream(messages=[UserMessage(content="hi")])]
             seen.append(next(
                 e for e in events if isinstance(e, ToolCallDeltaEvent)
             ).id)
+            messages.append(events[-1].response.message)
 
         assert seen[0] != seen[1], "a second turn must not reuse the first id"
-        assert len(t._thought_signatures) == 2, "neither signature may be lost"
+        replayed = t._format_contents(messages)
+        assert [c.parts[0].thought_signature for c in replayed] == [b"sig-0", b"sig-1"], (
+            "neither signature may be lost"
+        )
+
+
+def _wire_complete(transport: GeminiTransport, response: object) -> None:
+    async def _create(**kwargs: object) -> object:
+        transport._last_kwargs = kwargs
+        return response
+
+    transport._client = MagicMock()
+    transport._client.aio.models.generate_content = _create
+
+
+def _signed_part(call_id: str, signature: bytes | None, name: str = "lookup") -> SimpleNamespace:
+    part = _part(function_call=_call(name=name, cid=call_id))
+    part.thought_signature = signature
+    return part
+
+
+_COUNTERS = frozenset({
+    "total_input_tokens", "total_output_tokens", "total_llm_calls",
+    "total_cache_read_tokens", "total_cache_write_tokens", "_client", "_last_kwargs",
+})
+
+
+def _instance_state(t: GeminiTransport) -> dict[str, object]:
+    return {k: repr(v) for k, v in vars(t).items() if k not in _COUNTERS}
+
+
+class TestSignaturesTravelWithTheMessage:
+    """H4 GS: the transport is cached per org configuration and shared by every
+    run (the model gateway), so a signature kept on it outlived its run, was
+    never erased with it, and grew without bound. It lives on the message's
+    provider state instead, which the durable kernel journals with the response
+    (``rawRef``) and session erasure erases."""
+
+    @pytest.mark.asyncio
+    async def test_gs1_complete_puts_the_signature_on_the_message(self) -> None:
+        t = _transport()
+        _wire_complete(t, _chunk([_signed_part("c1", b"\x00sig"), _signed_part("c2", None)], finish="STOP"))
+        response = await t.complete(messages=[UserMessage(content="hi")])
+        state = response.message.provider_state
+        assert state is not None and state.wire == GEMINI_GENERATE_CONTENT
+        # Gemini issued both ids, so both ride the message for replay (main #5413's id pairing, kept off the
+        # transport); only the first is signed.
+        assert state.blocks == [
+            {"callId": "c1", "thoughtSignature": base64.b64encode(b"\x00sig").decode(), "providerId": True},
+            {"callId": "c2", "providerId": True},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_gs1_no_signature_no_state(self) -> None:
+        # AI Studio: no id on the call and no signature, so nothing rides the message.
+        t = _transport()
+        _wire_complete(t, _chunk([_signed_part(None, None)], finish="STOP"))
+        response = await t.complete(messages=[UserMessage(content="hi")])
+        assert response.message.provider_state is None
+        assert "provider_state" not in response.message.model_dump_json()
+
+    @pytest.mark.asyncio
+    async def test_gs2_stream_puts_the_signature_on_the_final_message(self) -> None:
+        t = _transport()
+        _wire_stream(t, [_chunk([_signed_part("c1", b"s1")]), _chunk([_signed_part("c2", b"s2")], finish="STOP")])
+        events = [e async for e in t.stream(messages=[UserMessage(content="hi")])]
+        complete = events[-1]
+        assert isinstance(complete, StreamCompleteEvent)
+        assert complete.response.message.provider_state.blocks == [
+            {"callId": "c1", "thoughtSignature": base64.b64encode(b"s1").decode(), "providerId": True},
+            {"callId": "c2", "thoughtSignature": base64.b64encode(b"s2").decode(), "providerId": True},
+        ]
+
+    def test_gs3_a_signed_and_an_unsigned_call_in_one_message(self) -> None:
+        t = _transport()
+        message = _signed(AssistantMessage(tool_calls=[
+            ToolCall(id="signed", name="lookup", arguments={}),
+            ToolCall(id="unsigned", name="other", arguments={}),
+        ]), {"signed": b"sig"})
+        contents = t._format_contents([
+            message,
+            ToolMessage(content="r1", tool_call_id="signed"),
+            ToolMessage(content="r2", tool_call_id="unsigned"),
+        ])
+        first, second = contents[0].parts
+        assert first.function_call is not None and first.thought_signature == b"sig"
+        # Gemini signs only the first call of a parallel set, so it vouches for its unsigned sibling (main).
+        assert second.function_call is not None and second.function_call.name == "other"
+        assert contents[1].parts[0].function_response is not None
+        assert contents[2].parts[0].function_response is not None
+
+    def test_gs3_an_unsigned_first_call_flattens_the_turn(self) -> None:
+        t = _transport()
+        message = _signed(AssistantMessage(tool_calls=[
+            ToolCall(id="unsigned", name="other", arguments={}),
+            ToolCall(id="signed", name="lookup", arguments={}),
+        ]), {"signed": b"sig"})
+        contents = t._format_contents([
+            message,
+            ToolMessage(content="r1", tool_call_id="unsigned"),
+            ToolMessage(content="r2", tool_call_id="signed"),
+        ])
+        first, second = contents[0].parts
+        assert first.function_call is None and "other" in first.text
+        assert second.function_call is not None and second.thought_signature == b"sig"
+        assert contents[1].parts[0].function_response is None and "r1" in contents[1].parts[0].text
+
+    def test_gs5_only_ids_gemini_issued_are_echoed(self) -> None:
+        t = _transport()
+        issued = with_state(
+            AssistantMessage(tool_calls=[
+                ToolCall(id="g1", name="lookup", arguments={}), ToolCall(id="call_0123456789abcdef", name="x", arguments={}),
+            ]),
+            GEMINI_GENERATE_CONTENT,
+            [*signature_block("g1", b"sig", provided=True), *signature_block("call_0123456789abcdef", b"s2")],
+        )
+        contents = t._format_contents([
+            issued,
+            ToolMessage(content="r1", tool_call_id="g1"),
+            ToolMessage(content="r2", tool_call_id="call_0123456789abcdef"),
+        ])
+        first, second = contents[0].parts
+        assert first.function_call.id == "g1" and second.function_call.id is None
+        assert contents[1].parts[0].function_response.id == "g1"
+        assert contents[2].parts[0].function_response.id is None
+
+    def test_gs4_another_wire_or_another_call_is_ignored(self) -> None:
+        t = _transport()
+        block = [{"callId": "c1", "thoughtSignature": base64.b64encode(b"sig").decode()}]
+        foreign = with_state(
+            AssistantMessage(tool_calls=[ToolCall(id="c1", name="lookup", arguments={})]),
+            "anthropic_messages", block,
+        )
+        other_call = _signed(
+            AssistantMessage(tool_calls=[ToolCall(id="c2", name="lookup", arguments={})]), {"c1": b"sig"},
+        )
+        for message in (foreign, other_call):
+            part = t._format_contents([message])[0].parts[0]
+            assert part.function_call is None and part.thought_signature is None
+
+    @pytest.mark.asyncio
+    async def test_gs5_another_instance_replays_the_signature(self) -> None:
+        first = _transport()
+        _wire_complete(first, _chunk([_signed_part("c1", b"sig")], finish="STOP"))
+        message = (await first.complete(messages=[UserMessage(content="hi")])).message
+        part = _transport()._format_contents([message])[0].parts[0]
+        assert part.function_call is not None and part.thought_signature == b"sig"
+
+    @pytest.mark.asyncio
+    async def test_gs6_one_shared_transport_never_lends_a_signature_to_another_run(self) -> None:
+        shared = _transport()
+        _wire_complete(shared, _chunk([_signed_part("call_same", b"run-a")], finish="STOP"))
+        run_a = (await shared.complete(messages=[UserMessage(content="a")])).message
+        run_b = AssistantMessage(tool_calls=[ToolCall(id="call_same", name="lookup", arguments={})])
+        b_part = shared._format_contents([run_b])[0].parts[0]
+        assert b_part.function_call is None and b_part.thought_signature is None
+        assert shared._format_contents([run_a])[0].parts[0].thought_signature == b"run-a"
+
+    @pytest.mark.asyncio
+    async def test_gs7_the_transport_holds_nothing_of_its_calls(self) -> None:
+        t = _transport()
+        _wire_complete(t, None)
+        before = _instance_state(t)
+        for i in range(20):
+            _wire_complete(t, _chunk([_signed_part(f"c{i}", b"sig")], finish="STOP"))
+            await t.complete(messages=[UserMessage(content="hi")])
+            _wire_stream(t, [_chunk([_signed_part(f"s{i}", b"sig")], finish="STOP")])
+            [e async for e in t.stream(messages=[UserMessage(content="hi")])]
+        assert _instance_state(t) == before
+
+    @pytest.mark.asyncio
+    async def test_gs8_the_journaled_message_carries_the_signature_back(self) -> None:
+        from harness_core.kernel.durable.adapters import TransportModelPort
+
+        t = _transport()
+        _wire_complete(t, _chunk([_signed_part("c1", b"sig")], finish="STOP"))
+        message = (await t.complete(messages=[UserMessage(content="hi")])).message
+        port = TransportModelPort(MagicMock(), provider="gemini", transport="direct")
+        restored = port.restore(port.raw_state(message), provider="gemini", transport="direct")
+        assert restored is not None
+        assert _transport()._format_contents([restored])[0].parts[0].thought_signature == b"sig"
+
+    @pytest.mark.asyncio
+    async def test_gs9_captured_without_the_provider_state_flag(self) -> None:
+        assert _transport().keep_provider_state() is True
+        fresh = _transport()
+        _wire_complete(fresh, _chunk([_signed_part("c1", b"sig")], finish="STOP"))
+        assert (await fresh.complete(messages=[UserMessage(content="hi")])).message.provider_state is not None
 
 
 class TestStructuredOutput:

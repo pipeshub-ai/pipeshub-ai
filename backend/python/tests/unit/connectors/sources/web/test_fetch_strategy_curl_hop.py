@@ -137,10 +137,9 @@ def test_a_page_past_the_limit_without_a_declared_size_is_too_large_and_its_body
 
 def test_a_page_declaring_a_size_past_the_limit_is_refused_at_its_headers(trickle: tuple[int, list[str]]) -> None:
     port, _ = trickle
-    started = time.monotonic()
+    # Reading the trickle reaches 100 kB only after 50 s, so a hop that read it would raise at its 5 s timeout.
     hop = _hop(port, "/page", max_bytes=100_000)
     assert (hop.status, hop.too_large, hop.body) == (200, True, b"")
-    assert time.monotonic() - started < 2, "the body was read instead of refused at the headers"
 
 
 def test_a_redirect_declaring_a_large_body_is_still_handed_back(trickle: tuple[int, list[str]]) -> None:

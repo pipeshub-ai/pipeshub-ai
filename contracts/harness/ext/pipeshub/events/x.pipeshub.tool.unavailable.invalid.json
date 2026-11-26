@@ -1,0 +1,138 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "turn.aborted",
+      "data": {
+        "callId": "call_1",
+        "hits": [
+          {
+            "tool": "crm__close_deal",
+            "toolset": "crm",
+            "reason": "not_attached",
+            "message": "Close a CRM deal."
+          }
+        ]
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes x.pipeshub.tool.unavailable",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.tool.unavailable",
+      "data": {
+        "callId": "call_1",
+        "hits": [
+          {
+            "tool": "crm__close_deal",
+            "toolset": "crm",
+            "reason": "not_attached",
+            "message": "Close a CRM deal."
+          }
+        ]
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.tool.unavailable",
+      "data": {
+        "callId": "call_1",
+        "hits": [
+          {
+            "tool": "crm__close_deal",
+            "toolset": "crm",
+            "reason": "not_attached",
+            "message": "Close a CRM deal."
+          }
+        ],
+        "unexpected": true
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "an event names at least one tool",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.tool.unavailable",
+      "data": {
+        "callId": "call_1",
+        "hits": []
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "a hit says why the tool is unavailable",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.tool.unavailable",
+      "data": {
+        "callId": "call_1",
+        "hits": [
+          {
+            "tool": "crm__close_deal",
+            "toolset": "crm",
+            "message": "Close a CRM deal."
+          }
+        ]
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  }
+]

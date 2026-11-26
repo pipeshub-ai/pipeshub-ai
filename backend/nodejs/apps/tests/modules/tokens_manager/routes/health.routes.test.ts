@@ -1,8 +1,19 @@
 import 'reflect-metadata'
+import { JOURNAL_DETAIL, recordJournalCapability } from '../../../../src/modules/agent-harness/config'
+import { envGuard } from '../../../helpers/env-guard'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { ConfigService } from '../../../../src/modules/tokens_manager/services/cm.service'
-import { createHealthRouter } from '../../../../src/modules/tokens_manager/routes/health.routes'
+import {
+  createHealthRouter,
+  healthAudience,
+  publicHealth,
+  publicServicesHealth,
+} from '../../../../src/modules/tokens_manager/routes/health.routes'
+import {
+  addServiceHealthCheck,
+  clearServiceHealthChecks,
+} from '../../../../src/modules/agent-harness/ops/service-health-checks'
 import * as buildInfoUtils from '../../../../src/libs/utils/build-info.utils'
 
 const NODE_BUILD = { version: '0.9.1', commitId: 'a'.repeat(40) }
@@ -99,10 +110,12 @@ describe('tokens_manager/routes/health.routes', () => {
     return layer.route.stack[layer.route.stack.length - 1].handle
   }
 
-  function mockRes() {
+  // The handlers' own cases read the admin's report; the public answer has its own block (R41OPS-FU-8).
+  function mockRes(detail = true) {
     const res: any = {
       status: sinon.stub().returnsThis(),
       json: sinon.stub().returnsThis(),
+      locals: { healthDetail: detail },
     }
     return res
   }
@@ -165,6 +178,32 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.services.mongodb).to.equal('healthy')
       expect(jsonArg.services.KVStoreservice).to.equal('healthy')
       expect(jsonArg.timestamp).to.be.a('string')
+    })
+
+    it('OPS1-2-5: reports the agent harness unavailable with its reason, and stays healthy', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+      recordJournalCapability({ durable: false, reason: 'preparation_failed' })
+      const flags = envGuard()
+      flags.snapshot()
+      try {
+        process.env.REPLICA_SET_AVAILABLE = 'true'
+        process.env.AGENT_HARNESS_RELAY_ENABLED = 'true'
+        process.env.AGENT_HARNESS_WORKER_ENABLED = 'true'
+        await handler({}, res, sinon.stub())
+      } finally {
+        flags.restore()
+        recordJournalCapability(null)
+      }
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.agentHarness).to.deep.equal({
+        status: 'unavailable',
+        reason: 'preparation_failed',
+        detail: JOURNAL_DETAIL.preparation_failed,
+      })
+      expect(jsonArg.status).to.equal('healthy')
     })
 
     describe('local blob storage with several app replicas', () => {
@@ -1293,6 +1332,48 @@ describe('tokens_manager/routes/health.routes', () => {
 
     beforeEach(() => {
       axiosModule = require('axios')
+      clearServiceHealthChecks()
+    })
+
+    afterEach(() => {
+      clearServiceHealthChecks()
+    })
+
+    it('reports no added check by default, and the answer carries no details', async () => {
+      sinon.stub(axiosModule, 'get').callsFake(() => Promise.resolve({ status: 200, data: { status: 'healthy' } }))
+      const handler = findHandler('/services', 'get')
+      const res = mockRes()
+      await handler({}, res, sinon.stub())
+      const answer = res.json.firstCall.args[0]
+      expect(answer.status).to.equal('healthy')
+      expect(Object.keys(answer.services).sort()).to.deep.equal(['connector', 'docling', 'embedding', 'indexing', 'query'])
+      expect(answer.details).to.equal(undefined)
+    })
+
+    it('an added check is reported under its name; a critical one that is not ok makes the answer unhealthy', async () => {
+      sinon.stub(axiosModule, 'get').callsFake(() => Promise.resolve({ status: 200, data: { status: 'healthy' } }))
+      const handler = findHandler('/services', 'get')
+      let status: 'ok' | 'degraded' = 'degraded'
+      addServiceHealthCheck({
+        name: 'publishedSettings',
+        critical: true,
+        view: () => (status === 'ok' ? { status } : { status, detail: 'still publishing' }),
+      })
+      addServiceHealthCheck({ name: 'optional', critical: false, view: () => ({ status: 'degraded' }) })
+      const pendingRes = mockRes()
+      await handler({}, pendingRes, sinon.stub())
+      const pending = pendingRes.json.firstCall.args[0]
+      expect(pending.status).to.equal('unhealthy')
+      expect(pending.services.publishedSettings).to.equal('unhealthy')
+      expect(pending.services.optional).to.equal('unhealthy')
+      expect(pending.details).to.deep.equal({ publishedSettings: 'still publishing' })
+      status = 'ok'
+      const res = mockRes()
+      await handler({}, res, sinon.stub())
+      const ready = res.json.firstCall.args[0]
+      expect(ready.status).to.equal('healthy')
+      expect(ready.services.publishedSettings).to.equal('healthy')
+      expect(ready.details).to.equal(undefined)
     })
 
     it('should have a handler for /services', () => {
@@ -1495,7 +1576,7 @@ describe('tokens_manager/routes/health.routes', () => {
       router = createHealthRouter(container, cmContainer)
       const handler = router.stack.find(
         (l: any) => l.route && l.route.path === '/services' && l.route.methods.get,
-      )?.route.stack[0].handle
+      )?.route.stack.at(-1).handle
 
       const axiosStub = sinon.stub(axiosModule, 'get').resolves({
         status: 200,
@@ -1521,7 +1602,7 @@ describe('tokens_manager/routes/health.routes', () => {
       router = createHealthRouter(container, cmContainer)
       const handler = router.stack.find(
         (l: any) => l.route && l.route.path === '/services' && l.route.methods.get,
-      )?.route.stack[0].handle
+      )?.route.stack.at(-1).handle
 
       const axiosStub = sinon.stub(axiosModule, 'get').resolves({
         status: 200,
@@ -1546,7 +1627,7 @@ describe('tokens_manager/routes/health.routes', () => {
       router = createHealthRouter(container, cmContainer)
       const handler = router.stack.find(
         (l: any) => l.route && l.route.path === '/services' && l.route.methods.get,
-      )?.route.stack[0].handle
+      )?.route.stack.at(-1).handle
 
       const axiosStub = sinon.stub(axiosModule, 'get').resolves({
         status: 200,
@@ -1572,7 +1653,7 @@ describe('tokens_manager/routes/health.routes', () => {
       router = createHealthRouter(container, cmContainer)
       const handler = router.stack.find(
         (l: any) => l.route && l.route.path === '/services' && l.route.methods.get,
-      )?.route.stack[0].handle
+      )?.route.stack.at(-1).handle
 
       const axiosStub = sinon.stub(axiosModule, 'get').resolves({
         status: 200,
@@ -1935,6 +2016,109 @@ describe('tokens_manager/routes/health.routes', () => {
       await handler({ headers: {} }, res, sinon.stub())
 
       expect(res.status.calledWith(502)).to.be.true
+    })
+  })
+
+  // R41OPS-FU-8: an unauthenticated caller learns whether the app is healthy and the harness ready, nothing more.
+  describe('the public answer (R41OPS-FU-8)', () => {
+    function routeStack(path: string) {
+      const layer = router.stack.find((l: any) => l.route && l.route.path === path && l.route.methods.get)
+      return layer.route.stack.map((l: any) => l.handle)
+    }
+
+    async function call(path: string, req: any) {
+      const res = mockRes(false)
+      res.locals = {}
+      const [audience, handler] = routeStack(path)
+      await new Promise<void>((resolve) => audience(req, res, () => resolve()))
+      await handler(req, res, sinon.stub())
+      return res.json.firstCall.args[0]
+    }
+
+    beforeEach(() => {
+      sinon.stub(require('axios'), 'get').resolves({ status: 200, data: { status: 'healthy' } })
+    })
+
+    it('GET / without a token answers status and the harness readiness only', async () => {
+      const body = await call('/', { headers: {} })
+      expect(Object.keys(body).sort()).to.deep.equal(['agentHarness', 'status'])
+      expect(body.status).to.equal('healthy')
+      expect(body).to.not.have.any.keys('services', 'serviceNames', 'deployment', 'build', 'warnings', 'timestamp')
+      expect(JSON.stringify(body)).to.not.match(/neo4j|arango|qdrant|kafka|redis|etcd|mongo|0\.9\.1/i)
+    })
+
+    it('keeps the capability state a lane waits on, and drops the harness detail', () => {
+      const full: any = {
+        status: 'healthy',
+        agentHarness: { status: 'available', capabilities: 'settling' },
+      }
+      expect(publicHealth(full)).to.deep.equal({
+        status: 'healthy',
+        agentHarness: { status: 'available', capabilities: 'settling' },
+      })
+      const down: any = {
+        status: 'unhealthy',
+        agentHarness: { status: 'unavailable', reason: 'preparation_failed', detail: JOURNAL_DETAIL.preparation_failed },
+      }
+      expect(publicHealth(down)).to.deep.equal({ status: 'unhealthy', agentHarness: { status: 'unavailable' } })
+    })
+
+    it('GET /services without a token keeps the product services an installer reads, not the added checks', async () => {
+      addServiceHealthCheck({ name: 'sandboxBroker', critical: false, view: () => ({ status: 'ok', detail: 'broker at 10.0.0.5' }) } as any)
+      try {
+        const body = await call('/services', { headers: {} })
+        expect(Object.keys(body).sort()).to.deep.equal(['services', 'status'])
+        expect(Object.keys(body.services).sort()).to.deep.equal(['connector', 'docling', 'embedding', 'indexing', 'query'])
+        expect(body.services.query).to.equal('healthy')
+        expect(JSON.stringify(body)).to.not.include('10.0.0.5')
+      } finally {
+        clearServiceHealthChecks()
+      }
+    })
+
+    it('an org admin token gets the full report on both routes', async () => {
+      mockAuthMiddleware.authenticate = sinon.stub().callsFake((req: any, _res: any, next: any) => {
+        req.user = { userId: 'u1', orgId: 'o1' }
+        next()
+      })
+      const audience = healthAudience(mockAuthMiddleware, async () => true)
+      const req: any = { headers: { authorization: 'Bearer admin' } }
+      const res: any = { locals: {} }
+      await new Promise<void>((resolve) => { void audience(req, res, () => resolve()) })
+      expect(res.locals.healthDetail).to.equal(true)
+    })
+
+    for (const [label, authenticate, admin] of [
+      ['a member', (req: any, _res: any, next: any) => { req.user = { userId: 'u2', orgId: 'o1' }; next() }, false],
+      ['a token that does not verify', (_req: any, _res: any, next: any) => next(new Error('invalid signature')), true],
+      ['an OAuth token without config:read', (req: any, _res: any, next: any) => { req.user = { userId: 'u1', orgId: 'o1', isOAuth: true, oauthScopes: ['chat:read'] }; next() }, true],
+    ] as const) {
+      it(`${label} gets the public answer, not an error`, async () => {
+        const audience = healthAudience({ authenticate: authenticate } as any, async () => admin)
+        const req: any = { headers: { authorization: 'Bearer x' } }
+        const res: any = { locals: {} }
+        let error: unknown
+        await new Promise<void>((resolve) => { void audience(req, res, (e?: unknown) => { error = e; resolve() }) })
+        expect(error).to.equal(undefined)
+        expect(res.locals.healthDetail).to.equal(false)
+      })
+    }
+
+    it('R51-COMPAT: on the compatibility profile every caller gets the full report, as before ADR-WEB-01 D8', async () => {
+      const authenticate = (_req: any, _res: any, next: any) => next(new Error('must not be asked'))
+      const audience = healthAudience({ authenticate } as any, async () => false, {})
+      for (const headers of [{}, { authorization: 'Bearer member' }]) {
+        const req: any = { headers }
+        const res: any = { locals: {} }
+        await new Promise<void>((resolve) => { void audience(req, res, () => resolve()) })
+        expect(res.locals.healthDetail).to.equal(true)
+      }
+    })
+
+    it('publicServicesHealth never passes an unknown service name or a detail through', () => {
+      expect(
+        publicServicesHealth({ status: 'healthy', services: { query: 'healthy', harnessJournal: 'healthy' } }),
+      ).to.deep.equal({ status: 'healthy', services: { query: 'healthy' } })
     })
   })
 })

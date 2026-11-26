@@ -16,7 +16,7 @@ import pytest
 from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import SkillCandidate
 from app.agent_loop_lib.modules.providers.skills.manager import SkillManager
-from app.agents.agent_loop.skills.graph_store import GraphSkillStore
+from app.agents.agent_loop.skills.graph_store import GraphSkillStore, SkillVisibility
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -37,7 +37,7 @@ async def orgs(pg_db, org_ctx, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator
 def _manager_for(provider, org_id: str, user_id: str) -> SkillManager:
     """The route's manager for one org: only the attributes the candidate methods read when a store is bound."""
     mgr = SkillManager.__new__(SkillManager)
-    mgr._candidate_store = GraphSkillStore(provider, org_id, user_id, visibility_scope=user_id)
+    mgr._candidate_store = GraphSkillStore(provider, org_id, user_id, visibility=SkillVisibility.of([user_id]))
     return mgr
 
 

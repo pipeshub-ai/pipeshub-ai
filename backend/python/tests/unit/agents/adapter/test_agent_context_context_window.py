@@ -112,10 +112,9 @@ class TestFactory:
     async def test_the_root_agent_is_sized_by_the_configured_window(self) -> None:
         context = make_context(llm=FakeChatModel(), configured_context_window=400_000)
 
-        with patch("app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory", return_value=None):
-            agent, _runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
-                context, context.llm, "quick", query="hello", model_name="claude-opus-5-5",
-            )
+        agent, _runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
+            context, context.llm, "quick", query="hello", model_name="claude-opus-5-5",
+        )
 
         assert agent.spec.model.model == "claude-opus-5-5"
         assert agent.spec.model.context_window == 400_000
@@ -134,9 +133,8 @@ class TestFactory:
     async def test_without_one_the_root_agent_uses_the_table(self) -> None:
         context = make_context(llm=FakeChatModel())
 
-        with patch("app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory", return_value=None):
-            agent, _runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
-                context, context.llm, "quick", query="hello", model_name="claude-opus-5-5",
-            )
+        agent, _runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
+            context, context.llm, "quick", query="hello", model_name="claude-opus-5-5",
+        )
 
         assert agent.spec.model.context_window is None

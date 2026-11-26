@@ -1,0 +1,23 @@
+{
+ "content": [
+  {
+   "thinking": "t",
+   "type": "thinking"
+  },
+  {
+   "text": "x",
+   "type": "text"
+  }
+ ],
+ "role": "assistant",
+ "tool_calls": [
+  {
+   "arguments": {
+    "q": 1
+   },
+   "id": "c1",
+   "name": "lookup"
+  }
+ ],
+ "truncated": false
+}

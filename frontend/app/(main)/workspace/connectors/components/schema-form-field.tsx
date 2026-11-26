@@ -277,7 +277,7 @@ export function SchemaFormField({
 
       {/* Description below the field (when not using FormField wrapper for checkbox/boolean) */}
       {field.description && (fieldType === 'CHECKBOX' || fieldType === 'BOOLEAN') && (
-        <Text id={helpId} size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text id={helpId} size="1" style={{ color: 'var(--gray-11)' }}>
           {field.description}
         </Text>
       )}
@@ -353,7 +353,7 @@ function FieldExamples({
       }}
     >
       <Flex align="center" gap="1" style={{ marginBottom: 6 }}>
-        <MaterialIcon name="info" size={14} color="var(--gray-10)" />
+        <MaterialIcon name="info" size={14} color="var(--gray-11)" />
         <Text size="1" weight="medium" style={{ color: 'var(--gray-11)' }}>
           {examples.length > 1 ? 'Examples' : 'Example'}
         </Text>
@@ -1376,7 +1376,7 @@ function FileInput({
           {field.displayName}
         </Text>
         {isOptional && !labelEndsWithOptional(field.displayName, t('form.optional')) && (
-          <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
             {t('form.optional')}
           </Text>
         )}
@@ -1448,30 +1448,30 @@ function FileInput({
           <MaterialIcon
             name="upload_file"
             size={20}
-            color={displayError ? 'var(--red-a10)' : 'var(--gray-10)'}
+            color={displayError ? 'var(--red-a11)' : 'var(--gray-11)'}
           />
-          <Text size="2" style={{ color: displayError ? 'var(--red-a10)' : 'var(--gray-11)' }}>
+          <Text size="2" style={{ color: displayError ? 'var(--red-a11)' : 'var(--gray-11)' }}>
             {'placeholder' in field && field.placeholder ? field.placeholder : 'Click to upload file'}
           </Text>
           {acceptedTypes && acceptedTypes.length > 0 && (
-            <Text size="1" style={{ color: 'var(--gray-9)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {acceptedTypes.join(', ')}
             </Text>
           )}
-          <Text size="1" style={{ color: 'var(--gray-9)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
             Max {MAX_CONNECTOR_FILE_BYTES / 1024} KB
           </Text>
         </Flex>
       )}
 
       {displayError && (
-        <Text id={errorId} role="alert" size="1" style={{ color: 'var(--red-a10)' }}>
+        <Text id={errorId} role="alert" size="1" style={{ color: 'var(--red-a11)' }}>
           {displayError}
         </Text>
       )}
 
       {field.description && (
-        <Text id={helpId} size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text id={helpId} size="1" style={{ color: 'var(--gray-11)' }}>
           {field.description}
         </Text>
       )}

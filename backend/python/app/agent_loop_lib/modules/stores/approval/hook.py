@@ -92,8 +92,18 @@ class ApprovalHook:
             )
             return decision
 
-        # No HIL store → auto-approve as fallback
-        return await self._record(call.name, session_id, risk, policy, True)
+        # A policy that requires human approval cannot become permission merely
+        # because this runtime has no interaction adapter. Web workers and
+        # background workers must fail closed until a durable HIL store is
+        # configured; otherwise deployment wiring silently changes security.
+        return await self._record(
+            call.name,
+            session_id,
+            risk,
+            policy,
+            False,
+            reason="human approval is unavailable",
+        )
 
     async def _record(
         self,

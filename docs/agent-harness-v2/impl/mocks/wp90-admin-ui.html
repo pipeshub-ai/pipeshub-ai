@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot accounts, who messages are from, and the agent check (WP-90)</title>
+<style>
+:root {
+  --bg: #fbfbfa; --surface: #ffffff; --surface-2: #f3f4f1; --border: #dfe2dc; --text: #1d211c; --muted: #646b62;
+  --accent: #0f7a5c; --accent-ink: #ffffff; --accent-soft: #e2f3ec; --warn: #9a5b00; --warn-soft: #fdf1dc;
+  --danger: #b4231f; --bad-soft: #fde8e8; --focus: #2b6cd8; --code-bg: #eef0ec;
+  --shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141614; --surface: #1c1f1c; --surface-2: #232723; --border: #343a33; --text: #e8ebe6; --muted: #a2aa9f;
+    --accent: #3fbf93; --accent-ink: #0b1a14; --accent-soft: #173229; --warn: #f0b555; --warn-soft: #34290f;
+    --danger: #f06b66; --bad-soft: #3a1b1b; --focus: #7aa7ff; --code-bg: #2a2f29; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141614; --surface: #1c1f1c; --surface-2: #232723; --border: #343a33; --text: #e8ebe6; --muted: #a2aa9f;
+  --accent: #3fbf93; --accent-ink: #0b1a14; --accent-soft: #173229; --warn: #f0b555; --warn-soft: #34290f;
+  --danger: #f06b66; --bad-soft: #3a1b1b; --focus: #7aa7ff; --code-bg: #2a2f29; --shadow: none;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header.top { padding: 16px; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+header.top h1 { font-size: 17px; margin: 0; flex: 1 1 240px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tabs button { font: inherit; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 6px 12px; min-height: 36px; cursor: pointer; }
+.tabs button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+main { padding: 16px; max-width: 1280px; margin: 0 auto; }
+.intro { color: var(--muted); max-width: 820px; margin: 0 0 14px; }
+.cols { display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 16px; align-items: start; }
+@media (max-width: 980px) { .cols { grid-template-columns: 1fr; } }
+.frame { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; position: relative; }
+.frame > .cap { padding: 8px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.frame.phone { max-width: 390px; width: 100%; margin: 0 auto; }
+.page { padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+.phone .page { padding: 14px; }
+.crumb { font-size: 12px; color: var(--muted); margin: 0; }
+.page h2 { font-size: 18px; margin: 0; }
+.page .sub { color: var(--muted); margin: 0; font-size: 13px; max-width: 70ch; }
+.section { border: 1px solid var(--border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px; background: var(--surface-2); }
+.section > .head h3 { font-size: 15px; margin: 0; }
+.section > .head p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+.sub-h { font-weight: 600; font-size: 13px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: flex-start; border-top: 1px solid var(--border); padding-top: 10px; }
+.row .txt { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.row .name { font-weight: 600; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.row .what, .row .who { font-size: 12px; color: var(--muted); margin: 0; }
+.chip { font-size: 11px; border-radius: 999px; padding: 2px 8px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; font-weight: 500; }
+.chip.ok { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.chip.bad { background: var(--bad-soft); color: var(--danger); border-color: transparent; }
+.chip.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn { font: inherit; border-radius: 8px; padding: 8px 12px; min-height: 44px; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.danger { color: var(--danger); }
+.btn.warn { color: var(--warn); }
+.btn.solid-warn { background: var(--warn); color: #fff; border-color: var(--warn); }
+.btn.solid-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--muted); min-height: 32px; padding: 4px 8px; }
+.btn[disabled] { opacity: .55; cursor: not-allowed; }
+.empty { color: var(--muted); font-size: 13px; margin: 0; }
+.search { display: flex; gap: 8px; flex-wrap: wrap; }
+.search input { font: inherit; flex: 1 1 200px; min-height: 40px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--surface); color: var(--text); }
+.overlay { position: absolute; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: flex-start; justify-content: center; padding: 40px 12px; }
+.dialog { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px; width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 12px; box-shadow: var(--shadow); }
+.dialog h4 { margin: 0; font-size: 16px; }
+.dialog p { margin: 0; font-size: 13px; }
+.radios { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.radios label { display: flex; align-items: center; gap: 6px; min-height: 44px; }
+textarea { font: inherit; width: 100%; min-height: 64px; border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: var(--surface); color: var(--text); }
+.hint { font-size: 12px; color: var(--muted); }
+.toast { position: absolute; right: 12px; bottom: 12px; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; padding: 10px 12px; box-shadow: var(--shadow); max-width: 300px; font-size: 13px; }
+.toast b { display: block; }
+.chat { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.bubble { max-width: 85%; border-radius: 12px; padding: 10px 12px; }
+.bubble.me { align-self: flex-end; background: var(--accent-soft); }
+.bubble.bot { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--border); }
+.bubble.err { border-left: 4px solid var(--warn); }
+.bubble .meta { font-size: 12px; color: var(--muted); margin-top: 6px; display: flex; gap: 6px; align-items: center; }
+.notice { font-size: 12px; color: var(--warn); margin: 0 0 6px; }
+.legend { margin-top: 18px; color: var(--muted); font-size: 12px; max-width: 900px; }
+.select { font: inherit; min-height: 40px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--surface); color: var(--text); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { font: inherit; border: 0; background: var(--surface); color: var(--text); padding: 6px 10px; min-height: 40px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.preview { border: 1px dashed var(--border); border-radius: 8px; padding: 10px; background: var(--surface); font-size: 13px; }
+.preview em { color: var(--muted); }
+.kv { display: grid; grid-template-columns: minmax(120px, 200px) 1fr; gap: 6px 12px; font-size: 13px; }
+.phone .kv { grid-template-columns: 1fr; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; }
+</style>
+<body>
+<header class="top">
+  <h1>Workspace settings › AI Access › Who agent messages are from, Bot accounts · Agent builder › Check what a chat gets (WP-90 mock)</h1>
+  <div class="tabs" role="group" aria-label="State">
+    <button type="button" data-s="nobot" aria-pressed="true">No bot account yet</button>
+    <button type="button" data-s="bots" aria-pressed="false">Bot accounts</button>
+    <button type="button" data-s="botchoice" aria-pressed="false">Send as the bot</button>
+    <button type="button" data-s="check" aria-pressed="false">Agent: check what a chat gets</button>
+    <button type="button" data-s="checkstale" aria-pressed="false">Agent: unsaved changes</button>
+    <button type="button" data-s="checkoff" aria-pressed="false">Agent: check not available</button>
+    <button type="button" data-theme-toggle aria-pressed="false">Dark</button>
+  </div>
+</header>
+<main>
+  <p class="intro">ADR-OWD-18 (bot accounts, per-action wording) and C4.09 (the dry run). The "Who agent messages are from" card stays where WP-23 put it, on AI Access. A bot account is a service-account agent's own connection to an app: admins already connect those in the agent builder, so no new sign-in flow is added. "From a bot account" is offered only once one app has a connected bot account. The agent check calls explain for the saved agent as the person looking; nothing runs and nothing is sent. Left: desktop (1280 px). Right: phone (390 px).</p>
+  <div class="cols">
+    <section class="frame" aria-label="Desktop"><div class="cap">Desktop · 1280 px</div><div class="slot"></div></section>
+    <section class="frame phone" aria-label="Phone"><div class="cap">Phone · 390 px</div><div class="slot"></div></section>
+  </div>
+  <p class="legend">Never shown: instance, agent, binding or installation ids, digests, raw JSON, dimension names, the env variable's name. Every saved change goes through the policy section route with If-Match and is audited (config.changed); a stale save shows the existing "Someone changed this setting" notice. Each action type's note is fixed product text in every locale; a bot message names the person it was sent for, and a bot commit carries Co-authored-by the person.</p>
+</main>
+<script>
+const ACTIONS = [
+  ['Emails', 'Gmail, Outlook', 'Sent via PipesHub agent Sales assistant', 'Sent by PipesHub agent Sales assistant for Alex Kim'],
+  ['Chat messages', 'Slack, Teams', 'Sent via PipesHub agent Sales assistant', 'Sent by PipesHub agent Sales assistant for Alex Kim'],
+  ['Tickets and comments', 'Jira, Linear, Zendesk', 'Written via PipesHub agent Sales assistant', 'Written by PipesHub agent Sales assistant for Alex Kim'],
+  ['Pages and documents', 'Confluence, Notion, SharePoint', 'Written via PipesHub agent Sales assistant', 'Written by PipesHub agent Sales assistant for Alex Kim'],
+  ['Calendar events', 'Google Calendar, Outlook', 'Created via PipesHub agent Sales assistant', 'Created by PipesHub agent Sales assistant for Alex Kim'],
+  ['Commits', 'GitHub', 'Committed via PipesHub agent Sales assistant', 'Committed by PipesHub agent Sales assistant for Alex Kim'],
+];
+function whoCard(s) {
+  const anyBot = s !== 'nobot';
+  const rows = ACTIONS.map(([name, ex, , ], i) => {
+    const bot = s === 'botchoice' && i === 1;
+    const choice = anyBot
+      ? `<div class="seg" role="group" aria-label="${name}"><button aria-pressed="${!bot}">People's own accounts</button><button aria-pressed="${bot}">A bot account</button></div>`
+      : '<span class="chip ok">From the person\'s own account</span>';
+    const note = bot ? '<p class="what">Sent from the bot account on Slack. Teams has no bot account, so agents don\'t send chat messages there until one is connected.</p>' : '';
+    return `<div class="row"><div class="txt"><div class="name">${name}</div><p class="what">${ex}</p>${note}</div>${choice}</div>`;
+  }).join('');
+  const preview = ACTIONS.map(([name, , user, botLine], i) => {
+    const bot = s === 'botchoice' && i === 1;
+    return `<div class="row"><div class="txt"><div class="name">${name}</div><p class="what"><em>${bot ? botLine : user}</em> · View the session</p></div></div>`;
+  }).join('');
+  return `<div class="section"><div class="head"><h3>Who agent messages are from</h3><p>Agents send from each person's own account and add a short note that a PipesHub agent sent it, with a link to the conversation.${anyBot ? ' You can send some kinds from a bot account instead.' : ''}</p></div>${rows}
+    <div class="sub-h">What each note says</div><div class="preview">${preview}</div>
+    ${s === 'botchoice' ? '<div class="toast"><b>Saved</b>Chat messages are now sent from the bot account.</div>' : ''}</div>`;
+}
+function botsCard(s) {
+  if (s === 'nobot') {
+    return `<div class="section"><div class="head"><h3>Bot accounts</h3><p>A bot account sends agent messages from one shared account instead of each person's. It is a service-account agent's own connection to an app: connect the app in that agent's settings, then turn it on here.</p></div>
+      <div class="row"><div class="txt"><div class="name">Bot</div><p class="what">Choose a service-account agent.</p></div><select class="select" aria-label="Bot"><option>None</option><option>Ops bot</option><option>Support bot</option></select></div>
+      <p class="empty">No app has a bot account yet.</p></div>`;
+  }
+  const apps = [
+    ['Slack', 'Connected as Ops bot', true, s === 'botchoice' || s === 'bots'],
+    ['Jira', 'Connected as Ops bot', true, false],
+    ['Microsoft Teams', 'Not connected. <a href="#">Connect Teams in Ops bot\'s settings</a>', false, false],
+    ['Gmail', 'Not connected. <a href="#">Connect Gmail in Ops bot\'s settings</a>', false, false],
+  ];
+  const rows = apps.map(([app, status, connected, on]) =>
+    `<div class="row"><div class="txt"><div class="name">${app} ${connected ? '<span class="chip ok">Connected</span>' : '<span class="chip warn">Not connected</span>'}</div><p class="what">${status}</p></div>
+     <label style="display:flex;gap:8px;align-items:center;min-height:44px"><input type="checkbox" ${on ? 'checked' : ''} ${connected ? '' : 'disabled'}> Use as the bot on ${app}</label></div>`).join('');
+  return `<div class="section"><div class="head"><h3>Bot accounts</h3><p>A bot account sends agent messages from one shared account instead of each person's. It is a service-account agent's own connection to an app: connect the app in that agent's settings, then turn it on here.</p></div>
+    <div class="row"><div class="txt"><div class="name">Bot</div><p class="what">Ops bot (service account)</p></div><select class="select" aria-label="Bot"><option>Ops bot</option><option>Support bot</option><option>None</option></select></div>
+    ${rows}
+    <p class="hint">People can post where the bot account can, even in places they can't reach themselves. Approvals and data rules still apply to every message.</p>
+    <div class="btns" style="justify-content:flex-end"><button class="btn primary">Save</button></div></div>`;
+}
+function settings(s) {
+  return `<div class="page"><p class="crumb">Workspace settings › AI Access</p><h2>AI Access</h2>${whoCard(s)}${botsCard(s)}</div>`;
+}
+function check(s) {
+  const head = `<div class="page"><p class="crumb">Agents › Sales assistant › Edit</p><h2>Check what a chat gets</h2><p class="sub">See what a chat with this agent would get if you started one now: the model, the tools you can use and their limits. Nothing runs and nothing is sent.</p>`;
+  if (s === 'checkoff') {
+    return head + `<div class="section"><p class="empty">This check isn't available on this server.</p></div></div>`;
+  }
+  const stale = s === 'checkstale' ? '<p class="notice">You have unsaved changes. The check uses the saved agent: save first to include them.</p>' : '';
+  return head + `<div class="section">${stale}<div class="sub-h">For you <button class="btn">Check now</button></div><p class="hint">Checked just now</p>
+    <dl class="kv">
+      <dt>Runs on</dt><dd>PipesHub agent runs</dd>
+      <dt>Model</dt><dd>gpt-5.1 (Azure OpenAI)</dd>
+      <dt>Coding engine</dt><dd>Claude Code</dd>
+      <dt>Limits per message</dt><dd>Up to 40 steps · up to $2.00 · up to 30 minutes</dd>
+      <dt>Who messages are from</dt><dd>Chat messages from the bot account; everything else from your own account, with a note</dd>
+    </dl>
+    <div class="sub-h">Tools it can use (3)</div>
+    <div class="row"><div class="txt"><div class="name">Slack <span class="chip ok">Ready</span></div><p class="what">12 tools</p></div></div>
+    <div class="row"><div class="txt"><div class="name">Jira <span class="chip ok">Ready</span></div><p class="what">9 tools</p></div></div>
+    <div class="row"><div class="txt"><div class="name">Web search <span class="chip ok">Ready</span></div><p class="what">1 tool</p></div></div>
+    <div class="sub-h">Not available (2)</div>
+    <div class="row"><div class="txt"><div class="name">Gmail <span class="chip warn">Not connected</span></div><p class="what">Connect Gmail under Your actions to use it.</p></div></div>
+    <div class="row"><div class="txt"><div class="name">Salesforce <span class="chip bad">Not allowed</span></div><p class="what">Your organization's settings don't allow it.</p></div></div>
+  </div></div>`;
+}
+function render(s) {
+  const html = s.startsWith('check') ? check(s) : settings(s);
+  document.querySelectorAll('.slot').forEach((slot) => { slot.innerHTML = html; });
+}
+document.querySelectorAll('[data-s]').forEach((b) => b.addEventListener('click', () => {
+  document.querySelectorAll('[data-s]').forEach((o) => o.setAttribute('aria-pressed', String(o === b)));
+  render(b.dataset.s);
+}));
+document.querySelector('[data-theme-toggle]').addEventListener('click', (e) => {
+  const dark = document.documentElement.dataset.theme !== 'dark';
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  e.currentTarget.setAttribute('aria-pressed', String(dark));
+});
+render('nobot');
+</script>
+</body>
+</html>
