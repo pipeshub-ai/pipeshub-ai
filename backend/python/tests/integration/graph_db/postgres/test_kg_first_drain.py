@@ -217,6 +217,7 @@ def test_the_plan_gate_judges_rows_per_probe_as_explain_reports_them() -> None:
     assert _not_seeks({"Plan": {**probe, "Actual Rows": 1}}) == []
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_walk_below_a_large_change_reads_by_keys_with_no_statistics_and_analysed(pg_provider, pg_db, no_stats) -> None:
     """EXPLAIN gate for the reads of a large change's walk (stamp.affected's kg children, and a subtree job's pages and rows, restamp._walk) on the world above with its folders
     marked by a job: with kg's statistics cleared and then analysed, each reads kg.records and kg.links only by its key's index, bounded by the org and the key, a folder's rows at
