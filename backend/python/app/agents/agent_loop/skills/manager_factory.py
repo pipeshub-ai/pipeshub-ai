@@ -38,6 +38,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
+from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import SkillSource
 from app.agent_loop_lib.modules.providers.skills.evaluator import RubricSkillEvaluator
 from app.agent_loop_lib.modules.providers.skills.extractor import LLMSkillExtractor
@@ -264,7 +265,11 @@ async def sync_builtin_skills(
 @functools.cache
 def _reserved_skill_names() -> frozenset[str]:
     """Names of the builtin packs: only the seeder may create a skill under one. Read from the pack
-    directories, not the loaded packs, so a pack that fails to load or validate still keeps its name."""
+    directories, not the loaded packs, so a pack that fails to load or validate still keeps its name. With no pack
+    directory at all the names are unknown, so creating a skill is refused (an error is not cached, so a later call
+    reads the directory again)."""
+    if not os.path.isdir(_BUILTIN_PACKS_ROOT):
+        raise RegistryError("The built-in skill packs are unavailable, so no skill can be created yet")
     return frozenset(os.path.basename(path) for path, _category, _sub in iter_skill_dirs(_BUILTIN_PACKS_ROOT))
 
 
