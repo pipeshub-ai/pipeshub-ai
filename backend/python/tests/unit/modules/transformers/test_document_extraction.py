@@ -652,6 +652,51 @@ class TestExtractMetadata:
         assert sent[-1]["text"] == "Some content"
 
     @pytest.mark.asyncio
+    async def test_reply_without_tool_call_takes_the_summary_fallback(self) -> None:
+        """A Bedrock model that answers without the tool gives no structured answer; the record gets the summary."""
+        from unittest.mock import AsyncMock
+
+        from langchain_aws import ChatBedrockConverse
+
+        from app.modules.transformers.document_extraction import (
+            DocumentClassification,
+            SubCategories,
+        )
+
+        ext = _build_extractor()
+        fallback_result = DocumentClassification(
+            departments=[],
+            category="",
+            subcategories=SubCategories(level1="", level2="", level3=""),
+            languages=[],
+            topics=[],
+            summary="Fallback summary text",
+        )
+        fake_llm = MagicMock(spec=ChatBedrockConverse)
+        structured = MagicMock()
+        structured.ainvoke = AsyncMock(return_value=None)
+        fake_llm.with_structured_output = MagicMock(return_value=structured)
+        fake_config = {"isMultimodal": False, "contextLength": 128000}
+
+        with patch(
+            "app.modules.transformers.document_extraction.get_llm_for_role",
+            return_value=(fake_llm, fake_config),
+        ), patch.object(
+            ext, "graph_provider"
+        ) as mock_graph, patch.object(
+            ext, "_fallback_summary", new_callable=AsyncMock, return_value=fallback_result
+        ) as mock_fallback:
+            mock_graph.get_departments = AsyncMock(return_value=[])
+
+            result = await ext.extract_metadata(
+                [_make_text_block("Some content")], "org-1", allow_remote_image_uri=True,
+            )
+
+        assert result is not None
+        assert result.summary == "Fallback summary text"
+        mock_fallback.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_extract_metadata_empty_content_returns_none(self) -> None:
         """When no blocks produce content, returns None."""
         from unittest.mock import AsyncMock
