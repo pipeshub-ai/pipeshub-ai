@@ -1,6 +1,11 @@
 import { Request, Response } from 'express';
 
 import { AppConfig } from '../../tokens_manager/config/config';
+import { Logger } from '../../../libs/services/logger.service';
+import { markRequestError } from '../../../libs/middlewares/access-log.middleware';
+import { classifyError } from '../../../libs/utils/error-class';
+import { safeCode } from '../../enterprise_search/utils/chat-stream-run';
+import { networkCode } from '../../../libs/http/upstream-call';
 import {
   ChatModel,
   chatModelsFrom,
@@ -35,6 +40,8 @@ import {
 
 type Handler = (req: Request, res: Response) => Promise<void>;
 
+const logger = Logger.getInstance({ service: 'OpenAICompat' });
+
 const KEEPALIVE_MS = 10_000;
 
 export interface OpenAICompatDeps {
@@ -58,7 +65,54 @@ export function sendError(
   res.status(status).json(openAIError(message, code, type, param));
 }
 
+// A connection our API dropped after it started answering (undici's `terminated`), as opposed to one it never took.
+const DISCONNECT_CODES = new Set(['UND_ERR_SOCKET', 'ECONNRESET', 'EPIPE']);
+
+/**
+ * These routes answer their own failures in the OpenAI shape, so the error middleware never sees them. This says on the
+ * request's lines why it failed: the access line's class, our own bug once at ERROR with its stack, and every other
+ * failure no HTTP answer stands behind once at WARNING, whatever its status: an empty upload result, a 204 with no body, a
+ * stream with no answer, a RUN_ERROR frame, and our API unreachable, slow or dropping the connection midway. An answered failure of our
+ * own API was logged by that request, which shares this request's id; a client that went away is `cancelled`, no line.
+ */
+export function noteRunFailure(res: Response, error: unknown): void {
+  const errorClass =
+    error instanceof ChatRunError
+      ? classifyError(error.status)
+      : classifyError(error);
+  markRequestError(res, errorClass);
+  if (errorClass === 'internal' && !(error instanceof ChatRunError)) {
+    logger.error('openai_compat.request.failed', {
+      error_class: errorClass,
+      error_type: error instanceof Error ? error.name : typeof error,
+      outcome: 'failure',
+      error,
+    });
+  } else if (!(error instanceof ChatRunError)) {
+    if (errorClass === 'cancelled') return;
+    // Codes only, never the message: the class, and the connection's own code (`UND_ERR_SOCKET`, `ECONNREFUSED`).
+    const network = networkCode(error);
+    logger.warn('openai_compat.request.failed', {
+      error_class: errorClass,
+      code:
+        network && DISCONNECT_CODES.has(network)
+          ? 'upstream_disconnected'
+          : errorClass,
+      network_code: network,
+      outcome: 'failure',
+    });
+  } else if (!error.fromAnswer) {
+    // A snake_case code only: the message, and a code in free text, can carry the AI service's words.
+    logger.warn('openai_compat.request.failed', {
+      error_class: errorClass,
+      code: safeCode(error.code),
+      outcome: 'failure',
+    });
+  }
+}
+
 export function sendRunError(res: Response, error: unknown): void {
+  noteRunFailure(res, error);
   if (error instanceof ChatRunError) {
     const param =
       error.code === 'model_not_found'
@@ -322,6 +376,7 @@ export const createChatCompletion =
       if (!res.headersSent) {
         sendRunError(res, error);
       } else if (!res.writableEnded) {
+        noteRunFailure(res, error);
         const { code, message } = runErrorParts(error);
         writeData(res, openAIError(message, code, 'server_error'));
         res.end();
@@ -445,6 +500,7 @@ export const createResponse =
       if (!res.headersSent) {
         sendRunError(res, error);
       } else if (!res.writableEnded) {
+        noteRunFailure(res, error);
         emit({
           type: 'response.failed',
           response: responseObject(responseId, model, createdAt, 'failed', [], {

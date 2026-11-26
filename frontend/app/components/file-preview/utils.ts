@@ -3,6 +3,7 @@
 import type { FileType, FilePreviewSource, TabConfig, PaginationVisibility } from './types';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
+import type { ProcessedError } from '@/lib/api/api-error';
 
 /**
  * Resolve the authoritative file extension to feed the preview header icon.
@@ -16,7 +17,10 @@ import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
 export function resolvePreviewIconExtension(
   recordDetails?: RecordDetailsResponse | null,
   mimeType?: string | null,
+  /** The original file's type when the preview shows a conversion of it (a PPTX rendered as PDF). */
+  sourceType?: string | null,
 ): string | undefined {
+  if (sourceType) mimeType = sourceType;
   const fromRecord =
     recordDetails?.record?.fileRecord?.extension ||
     // some record shapes expose extension at the top level
@@ -179,9 +183,10 @@ export function getRendererType(mimeType: string, fileName: string): string {
     if (isOoxmlWordMime(mimeType)) return 'docx';
     // Citations / records sometimes use a bare extension token instead of a MIME string
     if (isBareWordOoxmlToken(mimeType)) return 'docx';
-    // PowerPoint -> PDF (backend converts)
-    if (mimeType === 'application/vnd.ms-powerpoint') return 'pdf';
-    if (mimeType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation') return 'pdf';
+    // PowerPoint: only its server-side PDF conversion renders, and that arrives typed application/pdf
+    // (resolvePreviewMimeAfterStream); the original file gets the download panel, not a PDF viewer.
+    if (mimeType === 'application/vnd.ms-powerpoint') return 'document';
+    if (mimeType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation') return 'document';
     if (mimeType.startsWith('text/')) return 'text';
   }
 
@@ -226,8 +231,8 @@ export function getRendererType(mimeType: string, fileName: string): string {
   if (['docx', 'docm', 'dotx'].includes(ext)) return 'docx';
   if (ext === 'doc') return 'document'; // Legacy binary unless stream was converted to PDF (see resolvePreviewMimeAfterStream)
 
-  // PowerPoint -> PDF (backend converts)
-  if (['.ppt', '.pptx'].includes(`.${ext}`)) return 'pdf';
+  // PowerPoint the server did not convert (see the MIME branch above)
+  if (['.ppt', '.pptx'].includes(`.${ext}`)) return 'document';
 
   return 'unknown';
 }
@@ -320,6 +325,80 @@ export function resolvePreviewMimeAfterStream(
   }
   if (!base && blob.type) return blob.type;
   return base || blob.type || '';
+}
+
+/** Reason codes the connector service answers a failed server-side PDF conversion with. */
+const PDF_CONVERSION_FAILURES: ReadonlySet<string> = new Set([
+  'converter_unavailable',
+  'conversion_failed',
+  'conversion_timed_out',
+]);
+
+/** Whether a rejected stream request failed because the server could not convert the file to PDF. */
+export function isPdfConversionFailure(error: unknown): boolean {
+  const reasonCode = (
+    error as { originalError?: { response?: { data?: { error?: { reasonCode?: unknown } } } } } | null
+  )?.originalError?.response?.data?.error?.reasonCode;
+  return typeof reasonCode === 'string' && PDF_CONVERSION_FAILURES.has(reasonCode);
+}
+
+type PreviewStreamOptions = {
+  convertTo?: string;
+  version?: number;
+  suppressErrorToast?: boolean | ((error: ProcessedError) => boolean);
+};
+
+/**
+ * Streams a record for the preview panel. Presentations and legacy .doc are asked for as a PDF;
+ * when the server cannot convert them (no converter installed, or the conversion failed), the
+ * original file is streamed instead, so the panel offers its download rather than a broken render.
+ * `asPdf` says whether the blob is the conversion.
+ */
+export async function streamRecordForPreview(
+  stream: (options?: PreviewStreamOptions) => Promise<Blob>,
+  mimeType: string | undefined,
+  fileName: string,
+  options?: Omit<PreviewStreamOptions, 'convertTo'>,
+): Promise<{ blob: Blob; asPdf: boolean }> {
+  if (isPresentationFile(mimeType, fileName) || isLegacyWordDocFile(mimeType, fileName)) {
+    const callerSuppress = options?.suppressErrorToast;
+    try {
+      const blob = await stream({
+        ...options,
+        convertTo: 'application/pdf',
+        // The panel shows the download state itself; a toast on top would repeat it.
+        suppressErrorToast: (error) =>
+          isPdfConversionFailure(error) ||
+          (typeof callerSuppress === 'function' ? callerSuppress(error) : !!callerSuppress),
+      });
+      return { blob, asPdf: true };
+    } catch (error) {
+      if (!isPdfConversionFailure(error)) throw error;
+    }
+  }
+  return { blob: await stream(options), asPdf: false };
+}
+
+/**
+ * {@link streamRecordForPreview} for callers that open a record through the record-content cache:
+ * `acquire` opens one variant (null when the open was superseded). A presentation or legacy .doc
+ * opens as a PDF, and as the original when the server cannot convert it.
+ */
+export async function acquireRecordForPreview<L>(
+  acquire: (variant: 'pdf' | 'original') => Promise<L | null>,
+  mimeType: string | undefined,
+  fileName: string,
+): Promise<{ lease: L; asPdf: boolean } | null> {
+  if (isPresentationFile(mimeType, fileName) || isLegacyWordDocFile(mimeType, fileName)) {
+    try {
+      const lease = await acquire('pdf');
+      return lease ? { lease, asPdf: true } : null;
+    } catch (error) {
+      if (!isPdfConversionFailure(error)) throw error;
+    }
+  }
+  const lease = await acquire('original');
+  return lease ? { lease, asPdf: false } : null;
 }
 
 /**

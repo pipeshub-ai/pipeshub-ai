@@ -145,7 +145,7 @@ describe('only a service account may use the reserved email domain', () => {
      * out there. Refusing every later write to them would be worse than the
      * hole it closes: `deleteUser` pulls group memberships, revokes OAuth apps
      * and knowledge-base permissions, removes project access and unsets the
-     * password *before* saving `isDeleted`, so a throw at that save leaves the
+     * password *before* marking it removed, so a throw at that write leaves the
      * account stripped of everything and still active. Deleting is also the
      * documented repair for a bad invite, and an administrator cannot change
      * the address first because that is owner-only.

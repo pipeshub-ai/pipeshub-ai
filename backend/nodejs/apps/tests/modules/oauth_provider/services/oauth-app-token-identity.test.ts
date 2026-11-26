@@ -20,7 +20,7 @@ function makeService() {
     { getAllowedScopeNamesForRole: sinon.stub().returns([]) } as any,
     tokens as any,
   );
-  return { service, tokens };
+  return { service, tokens, logger };
 }
 
 function stubUser(doc: Record<string, unknown> | null) {
@@ -58,11 +58,17 @@ describe('pointing an OAuth app at a service account', () => {
 
   it('points the app at a service account', async () => {
     stubUser({ isDisabled: false });
+    const { service, logger } = makeService();
 
-    await makeService().service.setTokenIdentity(appId, orgId, userId, serviceAccountId);
+    await service.setTokenIdentity(appId, orgId, userId, serviceAccountId);
 
     expect(app.tokenIdentityUserId.toString()).to.equal(serviceAccountId);
     expect(app.save.calledOnce).to.equal(true);
+    expect(logger.info.args).to.deep.equal([
+      ['OAuth app token identity changed', {
+        app_id: appId, org_id: orgId, user_id: userId, service_account_id: serviceAccountId,
+      }],
+    ]);
   });
 
   it('leaves createdBy alone, so the app stays manageable', async () => {

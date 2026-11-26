@@ -92,8 +92,12 @@ async def _clean() -> AsyncIterator[None]:
     m._retention_cursor = None
 
 
-async def test_one_recovery_tick_of_retention_fits_the_interval_when_storage_is_slow() -> None:
+async def test_one_recovery_tick_of_retention_fits_the_interval_when_storage_is_slow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Storage answering each listing in 1 s (slow, not down): the tick is still bounded in time."""
+    # Scaled down from the shipped 20 s; unbounded, the tick's four pages take 4 x 200 / 8 x 1 s = 100 s.
+    monkeypatch.setenv("REVISION_RETENTION_TICK_BUDGET_SECONDS", "2")
     runner, origin = await _storage(1.0)
     container = MagicMock()
     container.blob_storage = MagicMock(return_value=_blob(origin))
@@ -106,6 +110,7 @@ async def test_one_recovery_tick_of_retention_fits_the_interval_when_storage_is_
     finally:
         await runner.cleanup()
 
+    # wall-clock-ok: real HTTP; the 2 s budget plus one listing is ~3 s, and an unbounded tick is 100 s
     assert took < RECOVERY_INTERVAL_S, f"one retention tick took {took:.1f}s"
 
 

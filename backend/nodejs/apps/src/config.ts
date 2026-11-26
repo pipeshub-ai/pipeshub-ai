@@ -30,6 +30,12 @@ export { createOrgAuthConfigRouter } from './modules/auth/routes/orgAuthConfig.r
 export { MailServiceContainer } from './modules/mail/container/mailService.container';
 export { createMailServiceRouter } from './modules/mail/routes/mail.routes';
 
+// --- Contact support and Send feedback (emailed to SUPPORT_EMAIL; nothing stored) ---
+export {
+  createSupportRouter,
+  createFeedbackRouter,
+} from './modules/support/support.routes';
+
 // --- Enterprise search ---
 export { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 export {
@@ -91,5 +97,18 @@ export { dynamicClientOwnerOrg as dynamicClientOrg } from './modules/oauth_provi
 export { OAuthAppsContainer } from './modules/oauth_apps/container/oauth_apps.container';
 export { createOAuthAppsRouter } from './modules/oauth_apps/routes/oauth_apps.routes';
 
+// --- Platform alerts ---
+export { resolvePlatformAdminRecipients } from './modules/notification/utils/platform-admin-recipients';
+export type { PlatformRecipientOrg } from './modules/notification/utils/platform-admin-recipients';
+
 // --- Edition boot hooks ---
 export { noopEditionBoot as editionBoot } from './libs/edition/edition-boot';
+
+// --- Agent harness extension point: binders, admin and internal routes, index migrations (this build: none) ---
+export { noopHarnessEdition as harnessEdition } from './modules/agent-harness/edition';
+
+// --- Organization lifecycle extension points: how an organization is deleted and how sign-in treats one that is not live (this build: deleted at once) ---
+export {
+  noOrgLifecycleHook as orgLifecycleHook,
+  defaultScopedTokenGuard as scopedTokenGuard,
+} from './libs/org-lifecycle';

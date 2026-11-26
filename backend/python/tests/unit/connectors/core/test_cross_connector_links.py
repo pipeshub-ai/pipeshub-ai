@@ -29,6 +29,7 @@ from app.models.entities import (
     PullRequestRecord,
     RecordType,
     RelatedExternalRecord,
+    TicketRecord,
 )
 
 PR = "https://github.com/acme/api/pull/3081"
@@ -404,6 +405,45 @@ class TestAReindexKeepsTheMessagesEdges:
         await proc._process_record(message, [], tx)
 
         tx.delete_edges_by_relationship_types.assert_not_awaited()
+
+
+class TestATicketSavedWithoutReadingItsLinks:
+    """A Jira issue stored closed after its build failed is written as scanned, without its links:
+    None says they were not read, so its link edges stay; [] says it has none, so they go."""
+
+    @staticmethod
+    def _ticket(related: list[RelatedExternalRecord] | None) -> TicketRecord:
+        rec = TicketRecord(
+            org_id="org-1",
+            record_name="PA-1718",
+            record_type=RecordType.TICKET,
+            external_record_id="1718",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.JIRA,
+            connector_id="jira-conn",
+            mime_type=MimeTypes.BLOCKS.value,
+            weburl=JIRA,
+            related_external_records=related,
+        )
+        rec.id = "ticket-1"
+        return rec
+
+    @pytest.mark.asyncio
+    async def test_links_not_read_keep_their_edges(self) -> None:
+        tx = _tx_store()
+
+        await _processor()._process_record(self._ticket(None), [], tx)
+
+        tx.delete_edges_by_relationship_types.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_links_still_removes_its_edges(self) -> None:
+        tx = _tx_store()
+
+        await _processor()._process_record(self._ticket([]), [], tx)
+
+        tx.delete_edges_by_relationship_types.assert_awaited()
 
 
 class TestAnEmptyAppListIsNotTrusted:

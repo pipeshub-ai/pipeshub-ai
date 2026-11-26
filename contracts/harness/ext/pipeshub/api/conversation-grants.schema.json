@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/conversation-grants.schema.json",
+  "title": "ConversationGrants",
+  "description": "`GET /api/v1/conversations/{sessionId}/grants` and the agent's (ADR-GRANT-01 D8, UI-B1 G5): what \"Allow for this chat\" allows in the conversation now, and the calls a person declined for their runs in it (ADR-GRANT-01 D9), for its owner: each grant's tool, destination, the data it was given with, who allowed it and when. A grant the owner revoked is gone; one allowed again after holds again.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "grants"
+  ],
+  "properties": {
+    "grants": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "$ref": "#/$defs/ConversationGrant"
+      }
+    }
+  },
+  "$defs": {
+    "ConversationGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grantId",
+        "toolId",
+        "tool",
+        "destination",
+        "sensitivity",
+        "grantedBy",
+        "grantedByName",
+        "grantedAt"
+      ],
+      "properties": {
+        "grantId": {
+          "type": "string",
+          "pattern": "^cg_[0-9a-f]{40}$",
+          "description": "The grant's id in this conversation (its tool and destination, digested); never the destination's key."
+        },
+        "toolId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "tool": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "app",
+            "name"
+          ],
+          "properties": {
+            "app": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        },
+        "destination": {
+          "description": "Where it may send, as the ask named it to the person (`#sales`, `onyx.app`); null when no ask in reach names it.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sensitivity": {
+          "description": "The data it was allowed with: it answers asks with the same or less sensitive data (ADR-GRANT-01 D4).",
+          "enum": [
+            "public",
+            "private",
+            "unknown"
+          ]
+        },
+        "grantedBy": {
+          "description": "The user id of who allowed it; null for a grant from before grants named who gave them.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "grantedByName": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "grantedAt": {
+          "$ref": "../../../core/common.schema.json#/$defs/Timestamp"
+        },
+        "decision": {
+          "description": "allowed: an \"Allow for this chat\"; declined: a person declined the call, so their runs in the conversation are told so instead of asking (ADR-GRANT-01 D9). Removing either asks again next time. Absent from an older Node: allowed.",
+          "enum": [
+            "allowed",
+            "declined"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "grants": [
+        {
+          "grantId": "cg_0000000000000000000000000000000000000000",
+          "toolId": "web@searxng/fetch_url",
+          "tool": {
+            "app": "web",
+            "name": "fetch_url"
+          },
+          "destination": "onyx.app",
+          "sensitivity": "private",
+          "grantedBy": "5f1d7c2e9b1a4c3d2e1f0a9b",
+          "grantedByName": "Ada Lovelace",
+          "grantedAt": "2026-11-07T12:32:30.000Z"
+        }
+      ]
+    },
+    {
+      "grants": []
+    }
+  ]
+}

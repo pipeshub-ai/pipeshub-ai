@@ -191,8 +191,9 @@ _COLL_NAME = {3: "records", 2: "recordGroups"}
 
 async def trail(tx: Tx, org: str, node_id: str) -> list[tuple[int, str]]:
     """The knowledge hub's trail from a node up, as (collection code, id): each step's parent chosen as the walk chooses it (``HubMixin._hub_trail``: a record's record parent,
-    else the group it belongs to, else the App it belongs to; a group's group, else its App). Raises Fallback where the walk would choose among several (it takes the lowest
-    id; kg keeps its own order), at a row of another connector or with no path (a cycle among them), and where an edge the walk follows up leads to a node kg does not hold."""
+    else the group it belongs to, else the App it belongs to; a group's group, else its App). Raises Fallback where the walk would choose among several (a record's own
+    group, then one with a hierarchy edge to it, then the lowest id; kg keeps its own order), at a row of another connector or with no path (a cycle among them), and where
+    an edge the walk follows up leads to a node kg does not hold."""
     start = None
     for coll in (3, 2, 1):                              # the walk's order when an id names nodes of more than one collection
         if (start := await tx.fetchrow(NODE, org, coll, node_id)) is not None:

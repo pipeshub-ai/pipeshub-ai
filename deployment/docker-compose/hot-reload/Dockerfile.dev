@@ -8,7 +8,9 @@ ARG PYTHON_DEPS_BASE=build-base
 # -----------------------------------------------------------------------------
 # Stage 1: Build Base - Contains all build tools (NOT in final image)
 # -----------------------------------------------------------------------------
-FROM python:3.12-slim AS build-base
+FROM node:24-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS node-runtime
+
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS build-base
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,56 +32,62 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust with minimal profile (only needed for building certain pip packages)
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+# A pinned rustup-init, checked against its published sha256, installs a pinned toolchain (SEC-D-11).
+ARG RUSTUP_VERSION=1.29.3
+ARG RUST_TOOLCHAIN=1.99.0
+RUN set -eu; \
+    case "$(uname -m)" in \
+      x86_64) triple=x86_64-unknown-linux-gnu; sum=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55 ;; \
+      aarch64) triple=aarch64-unknown-linux-gnu; sum=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282 ;; \
+      *) echo "no pinned rustup-init for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${triple}/rustup-init"; \
+    echo "${sum}  /tmp/rustup-init" | sha256sum -c -; \
+    chmod +x /tmp/rustup-init; \
+    /tmp/rustup-init -y --profile minimal --default-toolchain "${RUST_TOOLCHAIN}"; \
+    rm /tmp/rustup-init
 ENV PATH="/root/.cargo/bin:${PATH}"
-
-# Install uv for faster pip operations
-RUN pip install --no-cache-dir uv
 
 # -----------------------------------------------------------------------------
 # Stage 2: Python Dependencies Build
-# When PYTHON_DEPS_BASE is a pre-built image, uv skips already-satisfied
-# packages and only installs the delta introduced by pyproject.toml changes.
+# When PYTHON_DEPS_BASE is a pre-built image, pip skips packages already at their
+# locked version and only installs the delta the hashed lock (SEC-SC-07) adds.
 # ML model downloads below are no-ops when the models are already present.
 # -----------------------------------------------------------------------------
 FROM ${PYTHON_DEPS_BASE} AS python-deps
 WORKDIR /app/python
 
 COPY ./backend/python/pyproject.toml ./
+COPY ./backend/python/requirements/ ./requirements/
 
-# Install Python dependencies + watchdog for hot reload (watchmedo command)
-# A base image published before the fork was excluded still carries unclecode-litellm. Removing it
-# deletes litellm/ files the real package also owns, so litellm is reinstalled right after.
-RUN uv pip uninstall --system unclecode-litellm && \
-    uv pip install --system --reinstall-package litellm -e . && \
-    uv pip install --system watchdog && \
+# Install Python dependencies + watchdog for hot reload (watchmedo command), both from hashed locks.
+# A base image published before the fork was excluded still carries unclecode-litellm, which installs into the
+# same litellm/ directory as the real package. Both leave together so the locked litellm is installed whole.
+ENV PIP_ROOT_USER_ACTION=ignore
+RUN if python3 -m pip show -q unclecode-litellm 2>/dev/null; then \
+      python3 -m pip uninstall -y --disable-pip-version-check unclecode-litellm litellm; \
+    fi && \
+    sh requirements/install.sh runtime --project . --editable && \
+    sh requirements/install.sh tools && \
     # Download ML models (no-op when already present in the base image)
     python -c "import nltk; nltk.download('punkt', quiet=True)" && \
     # Clean up caches to save space
-    rm -rf /root/.cache/pip /root/.cache/uv /tmp/*
+    rm -rf /root/.cache/pip /tmp/*
 
 # -----------------------------------------------------------------------------
 # Stage 3: Node.js Backend (DEV - keep devDependencies for nodemon + ts-node)
 # -----------------------------------------------------------------------------
-FROM node:24-slim AS nodejs-backend
+FROM node:24-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS nodejs-backend
 WORKDIR /app/backend
 
 COPY backend/nodejs/apps/package*.json ./
 COPY backend/nodejs/apps/tsconfig.json ./
 
 # Install ALL dependencies including devDependencies (nodemon, ts-node, typescript)
-RUN set -e; \
-    ARCH=$(uname -m); \
-    echo "Building for architecture: $ARCH"; \
-    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
-        echo "Detected ARM architecture"; \
-        npm install && \
-        npm uninstall jpeg-recompress-bin mozjpeg imagemin-mozjpeg 2>/dev/null || true && \
-        npm install sharp --save || true; \
-    else \
-        echo "Detected x86 architecture"; \
-        npm install; \
-    fi
+# No install scripts on any architecture: the lock ships every native part prebuilt (sharp, msgpackr-extract),
+# and what the scripts would add is telemetry (@scarf/scarf), a bun binary nothing runs, or a version notice
+# (contracts/supply-chain/install-scripts.json). An allowlisted `npm rebuild` would run here if one were needed.
+RUN npm ci --ignore-scripts
 
 COPY backend/nodejs/apps/src ./src
 # DEV: no npm run build — runtime uses "npm run dev" (nodemon) for hot reload
@@ -88,13 +96,14 @@ COPY backend/nodejs/apps/src ./src
 # Stage 4: Frontend (DEV - source + deps; compose runs Next.js dev server)
 # Memory optimization: NODE_OPTIONS for heap limit set via docker-compose env
 # -----------------------------------------------------------------------------
-FROM node:24-slim AS frontend-dev
+FROM node:24-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS frontend-dev
 WORKDIR /app/frontend
 
 COPY frontend/package*.json ./
 
+# No install scripts, as the frontend-build stage of the shipped Dockerfile (C644-FU-1).
 RUN npm config set legacy-peer-deps true && \
-    npm install && \
+    npm ci --ignore-scripts && \
     npm cache clean --force
 
 COPY frontend/ ./
@@ -102,7 +111,7 @@ COPY frontend/ ./
 # -----------------------------------------------------------------------------
 # Stage 5: Runtime Base - Minimal runtime dependencies only
 # -----------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime-base
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS runtime-base
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -126,11 +135,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Install Node.js runtime
-RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+# Node.js comes from the digest-pinned official image, not a remote setup script piped to a shell (SEC-D-11).
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
+    node --version
 
 # -----------------------------------------------------------------------------
 # Stage 6: Final Dev Runtime Image
@@ -157,6 +167,7 @@ RUN mkdir -p ./backend/dist/public
 
 # Copy Python application code (will be overridden by bind-mount in docker-compose)
 COPY backend/python/app/ /app/python/app/
+COPY backend/python/harness_core/ /app/python/harness_core/
 
 EXPOSE 3000 3001 8000 8002 8088 8091 8081
 

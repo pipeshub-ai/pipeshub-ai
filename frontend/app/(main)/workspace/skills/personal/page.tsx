@@ -15,6 +15,8 @@ import {
   SkillImportDialog,
   SkillCandidatesPanel,
 } from './components';
+import { useSkillsPageAction } from '@/config';
+import { ShadowedCommandsNotice } from './components/skill-command-tab';
 
 // ========================================
 // Page
@@ -38,7 +40,6 @@ export default function PersonalSkillsPage() {
     openImportDialog,
     openCandidatesPanel,
   } = useSkillsStore();
-
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -70,6 +71,8 @@ export default function PersonalSkillsPage() {
     fetchData();
   }, [ready, fetchData]);
 
+  const extraAction = useSkillsPageAction({ onClosed: () => void fetchData() });
+
   const handleRefresh = useCallback(() => {
     fetchData();
     toast.success(t('workspace.skills.refreshed'));
@@ -100,6 +103,7 @@ export default function PersonalSkillsPage() {
 
   return (
     <ServiceGate services={['query']}>
+      <ShadowedCommandsNotice skills={skills} />
       <SkillPageLayout
         skills={skills}
         isLoading={isLoading}
@@ -108,6 +112,7 @@ export default function PersonalSkillsPage() {
         onCreateSkill={openCreateEditor}
         onImportSkill={openImportDialog}
         onOpenCandidates={openCandidatesPanel}
+        extraAction={extraAction}
         onRefresh={handleRefresh}
         onManage={openEditEditor}
         onToggleAvailability={handleToggleAvailability}
@@ -115,6 +120,7 @@ export default function PersonalSkillsPage() {
       <SkillEditorPanel />
       <SkillImportDialog />
       <SkillCandidatesPanel />
+      {extraAction?.panel}
     </ServiceGate>
   );
 }

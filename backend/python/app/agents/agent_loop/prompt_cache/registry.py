@@ -17,6 +17,7 @@ from app.agent_loop_lib.transport.prompt_cache import (
     CacheScope,
     PromptCacheSettings,
     anthropic_top_level_allowed,
+    cache_params_allowed,
     openai_cache_plan,
 )
 from app.agents.agent_loop.prompt_cache.strategies import (
@@ -86,7 +87,7 @@ def cache_strategy_for(
     scope: CacheScope,
 ) -> CacheStrategy:
     target = cache_target(chat_model, model_name)
-    if not settings.enabled:
+    if not settings.enabled or not cache_params_allowed(target.model, target.base_url):
         return NoCacheStrategy()
     refused = REJECTED_CACHE_PARAMS.refused(target.model, target.base_url)
     build = _BUILDERS.get(target.family)

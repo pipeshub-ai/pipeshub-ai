@@ -1,0 +1,24 @@
+[
+  {
+    "description": "a feed without counts",
+    "instance": {
+      "items": []
+    }
+  },
+  {
+    "description": "a partial source that does not exist",
+    "instance": {
+      "items": [],
+      "counts": {
+        "unread": 0,
+        "waiting": 0,
+        "badge": 0,
+        "paused": false,
+        "pausedUntil": null
+      },
+      "partial": [
+        "email"
+      ]
+    }
+  }
+]

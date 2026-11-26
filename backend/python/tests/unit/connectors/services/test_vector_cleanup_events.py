@@ -16,6 +16,7 @@ from app.connectors.services.vector_cleanup_events import (
     MAX_VIRTUAL_RECORD_IDS_PER_EVENT,
     build_connector_cleanup_events,
     build_connector_vector_cleanup_events,
+    build_gone_connector_cleanup_events,
 )
 from app.services.graph_db.vector_membership_queries import can_use_membership_cleanup
 
@@ -232,3 +233,23 @@ class TestManyRecordGroups:
             record_group_ids=self.GROUPS[:MAX_RECORD_GROUP_IDS_PER_EVENT],
         )
         assert all(len(e["payload"]["recordGroupIds"]) == MAX_RECORD_GROUP_IDS_PER_EVENT for e in events)
+
+
+class TestGoneConnector:
+    """A delete whose answer was lost: everything it publishes is known without the answer."""
+
+    def test_publishes_the_connector_scoped_events_with_the_groups_left_to_the_store(self) -> None:
+        events = build_gone_connector_cleanup_events(org_id="o", connector_id="c", connector_name="KB")
+        assert [(e["eventType"], e["payload"]) for e in events] == [
+            ("deleteConnectorEmbeddings", {"orgId": "o", "connectorId": "c", "connectorName": "KB", "recordGroupIds": []}),
+            ("deleteConnectorEntities", {"orgId": "o", "connectorId": "c", "connectorName": "KB", "recordGroupIds": None}),
+        ]
+
+    def test_the_embeddings_event_is_the_one_a_confirmed_kb_delete_sends(self) -> None:
+        # A KB has no record groups, so the confirmed answer carries an empty list.
+        confirmed = build_connector_cleanup_events(
+            org_id="o", connector_id="c", vector_membership_backfilled=True, connector_name="KB", record_group_ids=[],
+        )
+        gone = build_gone_connector_cleanup_events(org_id="o", connector_id="c", connector_name="KB")
+        assert gone[0]["payload"] == confirmed[0]["payload"]
+        assert gone[0]["eventType"] == confirmed[0]["eventType"]

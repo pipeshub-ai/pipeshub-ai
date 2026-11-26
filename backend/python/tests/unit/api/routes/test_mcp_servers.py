@@ -44,6 +44,7 @@ from app.api.routes.mcp_servers import (
     handle_oauth_callback,
     remove_credentials,
 )
+from tests.support.bound_org import bind_test_org
 
 
 def _mock_request(user=None, headers=None, app_state=None) -> MagicMock:
@@ -351,6 +352,57 @@ class TestBuildInstanceRecord:
         assert record["isCustom"] is True
         assert record["args"] == ["-y", "my-mcp"]
         assert record["requiredEnv"] == ["MY_API_KEY"]
+
+
+class TestTheHostsACustomStdioServerReaches:
+    """Without per-server runner settings, a custom STDIO server's runner reaches what its setup lists."""
+
+    @staticmethod
+    def _payload(hosts: list[str], **changes: object) -> MCPServerInstanceConfig:
+        fields: dict[str, object] = {
+            "name": "Internal",
+            "transport": MCPTransport.STDIO,
+            "auth_mode": MCPAuthMode.API_TOKEN,
+            "command": "/opt/mcp/server",
+            "egress_hosts": hosts,
+            **changes,
+        }
+        return MCPServerInstanceConfig(**fields)
+
+    @staticmethod
+    def _registry() -> MagicMock:
+        registry = MagicMock()
+        registry.get_template.return_value = None
+        return registry
+
+    def test_its_setup_lists_them_and_the_record_keeps_them(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", "true")
+        monkeypatch.setenv("MCP_STDIO_ALLOWED_COMMANDS", "/opt/mcp/server")
+        payload = self._payload([" api.internal.test ", "api.other.test:8080"])
+        _validate_instance_config(payload, self._registry())
+        record = _build_instance_record(payload, "inst-h", "org-1", "user-1", self._registry())
+        assert record["declaredEgressHosts"] == ["api.internal.test", "api.other.test:8080"]
+
+    def test_a_bad_entry_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", "true")
+        with pytest.raises(HTTPException) as refused:
+            _validate_instance_config(self._payload(["api.internal.test:http"]), self._registry())
+        assert refused.value.status_code == 400
+
+    def test_no_other_server_lists_hosts(self) -> None:
+        remote = self._payload(["api.internal.test"], transport=MCPTransport.SSE, command=None, url="https://x.test/sse")
+        with pytest.raises(HTTPException) as refused:
+            _validate_instance_config(remote, self._registry())
+        assert refused.value.status_code == 400
+
+    def test_another_host_is_a_new_target_so_credentials_go(self) -> None:
+        from app.api.routes.mcp_servers import _connection_target_changed
+
+        existing = _build_instance_record(self._payload(["api.a.test"]), "inst-h", "org-1", "u", self._registry())
+        same = _build_instance_record(self._payload(["api.a.test"]), "inst-h", "org-1", "u", self._registry())
+        wider = _build_instance_record(self._payload(["api.a.test", "api.b.test"]), "inst-h", "org-1", "u", self._registry())
+        assert not _connection_target_changed(existing, same)
+        assert _connection_target_changed(existing, wider)
 
 
 # ---------------------------------------------------------------------------
@@ -2045,3 +2097,9 @@ class TestTokenExchangeFailureMessage:
 
         message = _token_exchange_failure_message(code, registered_client=False)
         assert message == "Failed to exchange the authorization code for tokens. Please try connecting again."
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("o1")

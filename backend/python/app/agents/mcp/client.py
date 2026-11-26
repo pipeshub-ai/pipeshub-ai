@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Any, Optional
+from typing import IO, TYPE_CHECKING, Any, Optional
 from urllib.parse import urlsplit
 
 import anyio
@@ -34,6 +34,7 @@ from app.agents.mcp import wire
 from app.agents.mcp.errors import (
     MCPConnectionError,
     MCPConnectionLostError,
+    MCPConnectTimeoutError,
     MCPHttpStatusError,
     MCPLaunchRefusedError,
     MCPRequestLostError,
@@ -56,10 +57,17 @@ from app.agents.mcp.url_guard import (
     guarded_mcp_http_client_factory,
     private_network_allowed,
 )
+from app.harness.mcp_runner.settings import runners_enabled
+from app.harness.mcp_runner.transport import RunnerClientTransport, wrapped_refusal
 from app.utils.env_utils import env_int
 from app.utils.error_class import innermost_type
 from app.utils.logging_fields import log_event
 from app.utils.url_redaction import redact_url, redact_urls_in_text
+from harness_core.deadline import bounded_read
+from harness_core.effects.ambiguity import note_ambiguous_send
+from harness_core.mcp_hub.errors import MCPHubRefused
+from harness_core.refusals import HarnessRefusal
+from harness_core.sandbox.mcp_runner.errors import MCPRunnerRefused
 from mcp import Client
 from mcp.client.sse import sse_client
 from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -74,6 +82,11 @@ from mcp.types import (
     Implementation,
     ToolListChangedNotification,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from app.harness.mcp_runner.transport import RunnerTarget
 
 logger = logging.getLogger(__name__)
 
@@ -197,10 +210,22 @@ def build_transport(
     env: Optional[dict[str, str]] = None,
     headers: Optional[dict[str, str]] = None,
     stderr_log_file: Optional[Path] = None,
+    *,
+    runner: "RunnerTarget | None" = None,
 ) -> _Transport:
     """The SDK transport for `config`, given resolved env/headers. Every HTTP request goes
-    through the URL guard; a local server gets the host's network settings and its own env."""
+    through the URL guard; a local server gets the host's network settings and its own env.
+
+    `runner` (STDIO only, P5.10): the server runs in that MCP runner, not as a child of this process.
+    With `MCP_STDIO_RUNNERS` on, a STDIO instance without one is refused, never spawned here."""
     if config.transport == MCPTransport.STDIO:
+        if runner is not None:
+            # The runner's spec already went through `resolve_stdio_launch` (`runner_spec_for`).
+            return _Transport(RunnerClientTransport(runner))
+        if runners_enabled():
+            raise MCPLaunchRefusedError(
+                f"MCP instance {config.id} is STDIO: it runs only in an MCP runner (MCP_STDIO_RUNNERS is on)"
+            )
         try:
             command, args = resolve_stdio_launch(config)
         except StdioPolicyError as e:
@@ -299,6 +324,12 @@ def _keep_results_that_miss_their_schema(client: Client) -> None:
     and on a mismatch (or a failed listing it makes to check) raises, throwing the result away;
     the model then usually runs the tool again. Keep the result and log the mismatch instead.
 
+    On a session that has not listed the tool, the SDK lists the server first to learn its
+    schema. Its tools came from the run's pin or the stored catalog (D-LAZY-5), so that hidden
+    listing is a round trip the run never made a decision on, made only to log a mismatch
+    (R31JOURNEY-FU-9: a job's first call on a new pooled session listed its parent's server
+    again). Such a result is kept unchecked instead.
+
     `validate_tool_result` is looked up on the session, so replacing it there is enough; a test
     pins it to the installed SDK. If a release drops it, validation simply stays strict."""
     session = client.session
@@ -308,6 +339,9 @@ def _keep_results_that_miss_their_schema(client: Client) -> None:
         return
 
     async def _validate_leniently(name: str, result: Any) -> None:  # noqa: ANN401
+        known = getattr(session, "_tool_output_schemas", None)
+        if isinstance(known, dict) and name not in known:
+            return
         try:
             await validate(name, result)
         except Exception as e:
@@ -540,6 +574,16 @@ class _SessionRunner:
             await asyncio.wait(pending, timeout=_CLOSE_TIMEOUT_SECONDS)
 
 
+def typed_refusal(exc: BaseException) -> HarnessRefusal | None:
+    """An MCP runner's (P5.10) or the hub's (P2.8) typed refusal behind an error the MCP client wrapped."""
+    refused = wrapped_refusal(exc)
+    return refused if isinstance(refused, MCPRunnerRefused | MCPHubRefused) else None
+
+
+# The server's own answer, or a refusal before anything was sent: the call's outcome is known.
+_DEFINITE_FAILURES = (MCPError, MCPRequestNotSentError, MCPUrlBlockedError, MCPLaunchRefusedError)
+
+
 class MCPListingTimeoutError(TimeoutError):
     """The server didn't list its tools in time: the listing's own deadline, not a call's."""
 
@@ -599,10 +643,17 @@ class MCPClientManager:
         config: MCPServerConfig,
         env: Optional[dict[str, str]] = None,
         headers: Optional[dict[str, str]] = None,
+        runner: "RunnerTarget | None" = None,
+        message_handler: "Callable[[Any], Awaitable[None]] | None" = None,
+        connect_timeout_seconds: Optional[float] = None,
     ) -> None:
         self.config = config
         self.env = env or {}
         self.headers = headers or {}
+        # P5.10: a STDIO server in an MCP runner; P2.8: the hub hears the server's notifications too.
+        self.runner = runner
+        self.message_handler = message_handler
+        self.connect_timeout_seconds = connect_timeout_seconds or connect_timeout(config)
         self._session: Optional[_Session] = None
         self._instructions: Optional[str] = None
         # The server said, during this manager's session, that its tools changed.
@@ -612,6 +663,13 @@ class MCPClientManager:
         """Runs in the SDK's read loop: only notes what it needs. It also gets transport errors."""
         if isinstance(message, ToolListChangedNotification):
             self.tools_changed = True
+        if self.message_handler is not None:
+            await self.message_handler(message)
+
+    @property
+    def session_client(self) -> Optional[Client]:
+        """The client `open()` connected, or None."""
+        return self._session.client if self._session is not None else None
 
     async def _check_url(self) -> None:
         """Fail with a readable error before anything is sent. The transport's guard still
@@ -634,10 +692,13 @@ class MCPClientManager:
 
     async def _start_session_in(self, mode: str) -> _Session:
         started = time.perf_counter()
-        stderr_path = _new_stderr_capture_path(self.config)
+        # A server in a runner has no stderr here to capture.
+        stderr_path = _new_stderr_capture_path(self.config) if self.runner is None else None
         transport: Optional[_Transport] = None
         try:
-            transport = build_transport(self.config, env=self.env, headers=self.headers, stderr_log_file=stderr_path)
+            transport = build_transport(
+                self.config, env=self.env, headers=self.headers, stderr_log_file=stderr_path, runner=self.runner,
+            )
             # The SDK's response cache stays off: tool lists are cached across sessions elsewhere.
             client = Client(
                 transport.streams, mode=mode, read_timeout_seconds=call_timeout(self.config), cache=None,
@@ -649,7 +710,7 @@ class MCPClientManager:
             _cleanup_stderr_capture_path(stderr_path)
             raise
         runner = _SessionRunner(
-            client, transport, connect_seconds=connect_timeout(self.config), name=f"mcp-session-{self.config.id}",
+            client, transport, connect_seconds=self.connect_timeout_seconds, name=f"mcp-session-{self.config.id}",
         )
         try:
             await runner.start()
@@ -660,6 +721,9 @@ class MCPClientManager:
             stderr_tail = _read_stderr_tail(stderr_path)
             await runner.stop()
             _cleanup_stderr_capture_path(stderr_path)
+            if (refused := typed_refusal(e)) is not None:
+                # The runner or the hub logged its typed refusal once; callers branch on its reason code.
+                raise refused from e
             error = self._connect_error(e, runner.connect_record, stderr_tail)
             # A connection error raised inside the SDK keeps its own cause. Set before the line,
             # which classifies the whole chain; the raise sets the same.
@@ -689,7 +753,7 @@ class MCPClientManager:
             error = leaf
         elif isinstance(leaf, TimeoutError):
             # Before the record: a version probe the server refused leaves an error status there.
-            error = MCPConnectionError(f"Timed out connecting to the MCP server after {connect_timeout(self.config):g}s")
+            error = MCPConnectTimeoutError(f"Timed out connecting to the MCP server after {self.connect_timeout_seconds:g}s")
         elif (from_wire := _wire_failure(record, what="the handshake")) is not None:
             error = from_wire
             if isinstance(from_wire, MCPHttpStatusError):
@@ -742,7 +806,7 @@ class MCPClientManager:
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:  # noqa: ANN401
         """Returns the protocol `CallToolResult`."""
         async with self._one_shot() as session:
-            return await self._call(session, tool_name, arguments)
+            return await self._bounded_call(session, tool_name, arguments)
 
     @property
     def server_instructions(self) -> Optional[str]:
@@ -787,7 +851,7 @@ class MCPClientManager:
         Raises MCPConnectionError if no session is open."""
         # Failures are logged once, by the tool executor. Not the server's stderr: it can echo
         # earlier calls' arguments and its environment.
-        return await self._call(self._live_session(), tool_name, arguments, on_progress)
+        return await self._bounded_call(self._live_session(), tool_name, arguments, on_progress)
 
     def _live_session(self) -> _Session:
         session = self._session
@@ -837,6 +901,21 @@ class MCPClientManager:
                 if session.runner.running:
                     raise
                 raise self._closed_under(session) from e
+
+    async def _bounded_call(
+        self, session: _Session, tool_name: str, arguments: dict[str, Any], on_progress: Optional[ProgressFnT] = None,
+    ) -> Any:  # noqa: ANN401
+        try:
+            # On a run's tool call, also within the call's remaining time (ERR-UX).
+            return await bounded_read("mcp", self._call(session, tool_name, arguments, on_progress))
+        except Exception as e:
+            if (refused := typed_refusal(e)) is not None:
+                raise refused from e
+            # Any other failure came after tools/call was sent. Marking a read too is harmless: only a write's
+            # call reads the mark.
+            if not isinstance(e, _DEFINITE_FAILURES):
+                note_ambiguous_send(type(e).__name__)
+            raise
 
     async def _call(
         self, session: _Session, tool_name: str, arguments: dict[str, Any], on_progress: Optional[ProgressFnT] = None,

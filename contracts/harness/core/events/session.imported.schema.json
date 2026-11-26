@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/session.imported.schema.json",
+  "title": "SessionImportedEvent",
+  "description": "Legacy conversation history imported into the journal (P1b T3): the history Node sends the model before a durable run, placed where the run starts. Node writes it when the conversation has turns no earlier import or durable run accounts for.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "session.imported"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/SessionImportedData"
+    }
+  },
+  "$defs": {
+    "SessionImportedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "upToMessageSeq",
+        "transcriptDigest"
+      ],
+      "properties": {
+        "upToMessageSeq": {
+          "$ref": "../common.schema.json#/$defs/UInt",
+          "description": "The conversation's last message seq this import accounts for."
+        },
+        "transcriptDigest": {
+          "$ref": "../common.schema.json#/$defs/Digest",
+          "description": "SHA-256 of the imported transcript's bytes (transcriptRef.hash)."
+        },
+        "transcriptRef": {
+          "$ref": "../common.schema.json#/$defs/ContentRef",
+          "description": "The imported history: canonical JSON of the legacy previousConversations entries, in order."
+        },
+        "messages": {
+          "$ref": "../common.schema.json#/$defs/UInt",
+          "description": "How many history entries the transcript holds."
+        },
+        "replacesHistory": {
+          "type": "boolean",
+          "description": "The transcript is the whole conversation up to upToMessageSeq: the model sees none of the session's history before this event (the conversation changed underneath the journal)."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "session.imported",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "upToMessageSeq": 42,
+        "transcriptDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "transcriptRef": {
+          "ref": "inline:W10=",
+          "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 2
+        },
+        "messages": 0
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 31,
+      "runId": "run_1",
+      "type": "session.imported",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "upToMessageSeq": 57,
+        "transcriptDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "transcriptRef": {
+          "ref": "sealed:run_2/mongo:1",
+          "hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "size": 300000
+        },
+        "messages": 12,
+        "replacesHistory": true
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "session.imported",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "upToMessageSeq": 42,
+        "transcriptDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  ]
+}

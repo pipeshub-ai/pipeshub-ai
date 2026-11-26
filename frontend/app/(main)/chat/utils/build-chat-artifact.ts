@@ -1,3 +1,4 @@
+import { effectiveMimeType } from '@/lib/utils/file-icon-utils';
 import type { ChatArtifact } from '../types';
 
 /** Fallback mime→artifact-type mapping, used when a producer doesn't supply
@@ -41,6 +42,8 @@ export interface ChatArtifactInput {
   version?: number;
   derivedFromCodeArtifactId?: string;
   visibility?: 'VISIBLE' | 'STAGING';
+  /** The viewer of a shared conversation may not open it: every other field is ignored. */
+  unavailable?: boolean;
 }
 
 /** Single place that turns a partial artifact description into the
@@ -50,17 +53,32 @@ export interface ChatArtifactInput {
  * which previously each hand-built this object with subtly different
  * defaulting rules. */
 export function buildChatArtifact(input: ChatArtifactInput): ChatArtifact {
-  const mimeType = input.mimeType?.trim() || 'application/octet-stream';
+  if (input.unavailable) return unavailableArtifact(input.id);
+  const mimeType = effectiveMimeType(input.fileName, input.mimeType);
+  const declared = input.artifactType && input.artifactType !== 'OTHER' ? input.artifactType : '';
   return {
     id: input.id || `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     fileName: input.fileName,
     mimeType,
     sizeBytes: input.sizeBytes ?? 0,
     downloadUrl: input.downloadUrl ?? '',
-    artifactType: input.artifactType || artifactTypeFromMime(mimeType),
+    artifactType: declared || artifactTypeFromMime(mimeType),
     recordId: input.recordId || undefined,
     version: input.version,
     derivedFromCodeArtifactId: input.derivedFromCodeArtifactId,
     visibility: input.visibility,
+  };
+}
+
+/** The placeholder of a file the viewer may not open: no name, type, link or record. */
+export function unavailableArtifact(id?: string): ChatArtifact {
+  return {
+    id: id || `artifact-unavailable-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    fileName: '',
+    mimeType: 'application/octet-stream',
+    sizeBytes: 0,
+    downloadUrl: '',
+    artifactType: '',
+    unavailable: true,
   };
 }

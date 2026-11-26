@@ -1,6 +1,6 @@
 import React from 'react';
 import { AxiosError, AxiosHeaders, type InternalAxiosRequestConfig } from 'axios';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import { processError, type ProcessedError } from '@/lib/api/api-error';
 import type { AvailableLlmModel } from '@/chat/types';
@@ -171,4 +171,11 @@ export function startDraggingPaletteItem(label: string | RegExp) {
   const labelEl = screen.getAllByText(label)[0];
   const row = (labelEl.closest('[draggable]') ?? labelEl.parentElement) as HTMLElement;
   fireEvent.dragStart(row, { dataTransfer: createDataTransfer() });
+}
+
+/** OWD-14: "Publish" in the header, then the dialog's "Publish" (with no note), as an editor publishes edits. */
+export async function publishEdits() {
+  fireEvent.click(screen.getByRole('button', { name: /publish$/i }));
+  const dialog = await screen.findByRole('alertdialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: /^publish$/i }));
 }

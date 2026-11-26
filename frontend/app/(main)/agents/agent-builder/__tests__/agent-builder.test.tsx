@@ -15,6 +15,7 @@ import {
   installBrowserShims,
   knowledgeBase,
   model,
+  publishEdits,
   renderInTheme,
   startDraggingPaletteItem,
   toolset,
@@ -32,7 +33,8 @@ vi.mock('next/navigation', () => ({
 }));
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
-vi.mock('@/config', () => ({
+vi.mock('@/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config')>()),
   useUserPermission: (key: string) => !permissions.denied.has(key),
   PermissionLockIcon: () => <span>Locked</span>,
   InheritedConfigNotice: () => null,
@@ -52,8 +54,8 @@ const agentsApi = vi.hoisted(() => ({
   createAgent: vi.fn(),
   updateAgent: vi.fn(),
   deleteAgent: vi.fn(),
-  getAllKnowledgeBasesForBuilder: vi.fn(),
-  getAllKnowledgeHubAppNodes: vi.fn(),
+  knowledgeBasePage: vi.fn(),
+  knowledgeHubAppPage: vi.fn(),
 }));
 vi.mock('../../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api')>()),
@@ -67,8 +69,8 @@ vi.mock('@/chat/utils/fetch-models-for-context', () => ({
 }));
 
 const toolsetsApi = vi.hoisted(() => ({
-  getAllMyToolsets: vi.fn(),
-  getAllAgentToolsets: vi.fn(),
+  getMyToolsets: vi.fn(),
+  getAgentToolsets: vi.fn(),
   getToolsetRegistrySchema: vi.fn(),
   findAgentToolsetByInstanceId: vi.fn(),
   authenticateAgentToolset: vi.fn(),
@@ -99,13 +101,19 @@ const getUsersByIds = vi.hoisted(() => vi.fn());
 vi.mock('@/app/(main)/workspace/users/api', () => ({ UsersApi: { getUsersByIds } }));
 vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => null }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+const modelAccess = vi.hoisted(() => ({ access: vi.fn(), codingEngine: vi.fn() }));
+vi.mock('@/app/(main)/workspace/ai-accounts/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/app/(main)/workspace/ai-accounts/api')>()),
+  ModelAccountsApi: modelAccess,
+}));
 
 import { AgentBuilder } from '../agent-builder';
 
 function lastSavedPayload(fn: ReturnType<typeof vi.fn>): AgentFormPayload {
   const call = fn.mock.calls[fn.mock.calls.length - 1];
   if (!call) throw new Error('Nothing was saved');
-  return call[call.length - 1] as AgentFormPayload;
+  // updateAgent(key, payload, options) or createAgent(payload).
+  return (typeof call[0] === 'string' ? call[1] : call[0]) as AgentFormPayload;
 }
 
 async function renderNewAgent() {
@@ -125,7 +133,7 @@ function nameField() {
   return screen.getByPlaceholderText('e.g. Support bot') as HTMLInputElement;
 }
 
-function saveButton(name: RegExp = /create agent|save changes/i) {
+function saveButton(name: RegExp = /create agent|publish$/i) {
   return screen.getByRole('button', { name });
 }
 
@@ -137,10 +145,15 @@ beforeEach(() => {
   installBrowserShims();
   clearSessionCache();
   permissions.denied.clear();
-  useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false, ENABLE_SKILLS: false } });
+  // The agent harness on for the org (ADR-OPS-08): agents have versions there. No new turn is admitted (kill switch),
+  // which does not change what the builder offers.
+  useFeatureFlagsStore.setState({
+    flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false, ENABLE_SKILLS: false },
+    agentHarness: { useHarness: false, reason: 'kill_switch', harnessMajor: 2, resumeInFlightRuns: true, harnessOn: true },
+  } as never);
   useToastStore.setState({ toasts: [] });
-  agentsApi.getAllKnowledgeBasesForBuilder.mockResolvedValue({ knowledgeBases: [knowledgeBase()] });
-  agentsApi.getAllKnowledgeHubAppNodes.mockResolvedValue([]);
+  agentsApi.knowledgeBasePage.mockResolvedValue({ items: [knowledgeBase()], next: null });
+  agentsApi.knowledgeHubAppPage.mockResolvedValue({ items: [], next: null });
   const savedAgent = (key: string, payload: AgentFormPayload) =>
     agentDetail({
       _key: key,
@@ -154,9 +167,28 @@ beforeEach(() => {
   agentsApi.updateAgent.mockImplementation(async (key: string, payload: AgentFormPayload) => savedAgent(key, payload));
   agentsApi.deleteAgent.mockResolvedValue(undefined);
   fetchOrgModels.mockResolvedValue([model()]);
-  toolsetsApi.getAllMyToolsets.mockResolvedValue({ toolsets: [toolset()] });
-  toolsetsApi.getAllAgentToolsets.mockResolvedValue([]);
+  toolsetsApi.getMyToolsets.mockResolvedValue({ toolsets: [toolset()] });
+  toolsetsApi.getAgentToolsets.mockResolvedValue({ toolsets: [] });
   getUsersByIds.mockResolvedValue([{ userId: OWNER_USER_ID, name: 'Priya Owner', email: 'priya@example.com' }]);
+  const row = (id: string, accountKind: string) => ({
+    id, provider: 'openai', accountKind, route: 'gateway', engines: null, status: 'allowed',
+    consumer: false, source: '', built: true, outcome: 'allowed',
+  });
+  modelAccess.access.mockResolvedValue({
+    version: 'v',
+    offering: 'managed',
+    policy: { disabledRules: [], consumerPlans: false },
+    rules: [row('openai-api-key-org', 'org_api_key'), row('openai-api-key-user', 'user_api_key')],
+  });
+  modelAccess.codingEngine.mockResolvedValue({
+    engines: [
+      { kind: 'opencode', available: true, reason: null },
+      { kind: 'codex', available: true, reason: null },
+      { kind: 'claude_code', available: false, reason: 'offering_not_permitted' },
+    ],
+    orgDefault: null,
+    choice: 'org_default',
+  });
 });
 
 afterEach(() => {
@@ -183,8 +215,11 @@ async function openAgentMenu() {
   return screen.findByRole('menuitem', { name: /delete agent/i });
 }
 
+/** A palette section's header is one button named by its title, saying whether it is open (QAFINAL-FU-AXE). */
 function openSection(title: string) {
-  fireEvent.click(screen.getByText(title, { selector: 'span, p, div' }).closest('[role="button"]') as HTMLElement);
+  const header = screen.getByRole('button', { name: title, expanded: false });
+  fireEvent.click(header);
+  expect(header.getAttribute('aria-expanded')).toBe('true');
 }
 
 async function editAgentPrompts(fields: { instructions?: string; systemPrompt?: string }) {
@@ -282,7 +317,7 @@ describe('building a new agent', () => {
   });
 
   it('refuses a toolset that is not signed in yet and says why', async () => {
-    toolsetsApi.getAllMyToolsets.mockResolvedValue({ toolsets: [toolset({ isAuthenticated: false })] });
+    toolsetsApi.getMyToolsets.mockResolvedValue({ toolsets: [toolset({ isAuthenticated: false })] });
     await renderNewAgent();
 
     startDraggingPaletteItem('Team Jira');
@@ -311,8 +346,8 @@ describe('building a new agent', () => {
   });
 
   it('shows plain empty states when nothing is connected yet', async () => {
-    agentsApi.getAllKnowledgeBasesForBuilder.mockResolvedValue({ knowledgeBases: [] });
-    toolsetsApi.getAllMyToolsets.mockResolvedValue({ toolsets: [] });
+    agentsApi.knowledgeBasePage.mockResolvedValue({ items: [], next: null });
+    toolsetsApi.getMyToolsets.mockResolvedValue({ toolsets: [] });
     await renderNewAgent();
 
     expect(await screen.findByText('No connectors configured')).toBeTruthy();
@@ -400,19 +435,19 @@ describe('service agents', () => {
   });
 
   it("opens the agent's own credentials for a toolset on a service agent", async () => {
-    toolsetsApi.getAllAgentToolsets.mockResolvedValue([toolset({ isAuthenticated: false })]);
+    toolsetsApi.getAgentToolsets.mockResolvedValue({ toolsets: [toolset({ isAuthenticated: false })] });
     toolsetsApi.getToolsetRegistrySchema.mockResolvedValue({ toolset: { config: { auth: { schemas: {} } } } });
     await renderExistingAgent({ isServiceAccount: true, shareWithOrg: true });
 
     expect(screen.getByText('Service agent')).toBeTruthy();
-    const shareSwitch = screen.getByRole('switch');
+    const shareSwitch = screen.getByRole('switch', { name: /share with everyone/i });
     expect(shareSwitch.getAttribute('aria-checked')).toBe('true');
     expect(shareSwitch).toHaveProperty('disabled', true);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Set agent credentials for this toolset' }));
 
     expect(await screen.findByRole('dialog', { name: /agent toolset credentials/i })).toBeTruthy();
-    expect(toolsetsApi.getAllAgentToolsets).toHaveBeenCalledWith('agent-1', expect.anything());
+    expect(toolsetsApi.getAgentToolsets).toHaveBeenCalledWith('agent-1', expect.anything());
   });
 });
 
@@ -421,10 +456,10 @@ describe('knowledge a service agent is offered', () => {
     ({ id, name, connector: 'DRIVE', sharingStatus }) as unknown as KnowledgeHubAppNode;
 
   beforeEach(() => {
-    agentsApi.getAllKnowledgeHubAppNodes.mockResolvedValue([
-      appNode('drive-mine', 'My Drive', 'personal'),
-      appNode('drive-team', 'Team Drive', 'team'),
-    ]);
+    agentsApi.knowledgeHubAppPage.mockResolvedValue({
+      items: [appNode('drive-mine', 'My Drive', 'personal'), appNode('drive-team', 'Team Drive', 'team')],
+      next: null,
+    });
   });
 
   it('offers no personal connector, and no collection while the agent is not bound', async () => {
@@ -459,7 +494,9 @@ describe('editing an agent', () => {
     expect(within(alert).getByText("Couldn't load this agent")).toBeTruthy();
     // The panel says it once; the global error toast stays quiet.
     expect(agentsApi.getAgent).toHaveBeenCalledWith('agent-1', { quiet: true });
-    expect(saveButton(/save changes/i)).toHaveProperty('disabled', true);
+    // An edit saves as a draft or publishes (OWD-14); neither is offered over an agent that is not loaded.
+    expect(saveButton(/save draft/i)).toHaveProperty('disabled', true);
+    expect(saveButton(/publish$/i)).toHaveProperty('disabled', true);
     expect(screen.queryByRole('button', { name: /create agent/i })).toBeNull();
     fireEvent.click(within(alert).getByRole('button', { name: 'Back to chat' }));
     expect(router.push).toHaveBeenCalledWith('/chat');
@@ -482,7 +519,9 @@ describe('editing an agent', () => {
     renderInTheme(<AgentBuilder agentKey="agent-1" />);
 
     expect(await screen.findByRole('status', { name: 'Loading agent…' })).toBeTruthy();
-    expect(saveButton(/save changes/i)).toHaveProperty('disabled', true);
+    // An edit saves as a draft or publishes (OWD-14); neither is offered over an agent that is not loaded.
+    expect(saveButton(/save draft/i)).toHaveProperty('disabled', true);
+    expect(saveButton(/publish$/i)).toHaveProperty('disabled', true);
     expect(screen.queryByRole('button', { name: /create agent/i })).toBeNull();
     expect(nameField()).toHaveProperty('disabled', true);
   });
@@ -508,7 +547,7 @@ describe('editing an agent', () => {
     });
 
     fireEvent.change(nameField(), { target: { value: 'Ops bot v2' } });
-    fireEvent.click(saveButton(/save changes/i));
+    await publishEdits();
 
     await waitFor(() => expect(agentsApi.updateAgent).toHaveBeenCalledTimes(1));
     const payload = lastSavedPayload(agentsApi.updateAgent);
@@ -518,12 +557,12 @@ describe('editing an agent', () => {
 
   it('only allows saving once something has changed, then confirms the update', async () => {
     const agent = await renderExistingAgent();
-    expect(saveButton(/save changes/i)).toHaveProperty('disabled', true);
+    expect(saveButton(/publish$/i)).toHaveProperty('disabled', true);
 
     fireEvent.change(nameField(), { target: { value: 'Sales helper v2' } });
     await editAgentPrompts({ instructions: 'Always cite the playbook page.' });
-    expect(saveButton(/save changes/i)).toHaveProperty('disabled', false);
-    fireEvent.click(saveButton(/save changes/i));
+    expect(saveButton(/publish$/i)).toHaveProperty('disabled', false);
+    await publishEdits();
 
     await waitFor(() => expect(agentsApi.updateAgent).toHaveBeenCalledTimes(1));
     expect(agentsApi.updateAgent.mock.calls[0][0]).toBe(agent._key);
@@ -532,12 +571,12 @@ describe('editing an agent', () => {
       instructions: 'Always cite the playbook page.',
       systemPrompt: 'You are a helpful sales assistant.',
     });
-    const done = await screen.findByRole('dialog', { name: 'Agent updated' });
-    expect(within(done).getByText('Your changes have been saved.')).toBeTruthy();
+    const done = await screen.findByRole('dialog', { name: 'Published' });
+    expect(within(done).getByText('Chats with this agent use it from now on.')).toBeTruthy();
     fireEvent.click(within(done).getByRole('button', { name: 'Open in chat' }));
     expect(router.push).toHaveBeenCalledWith('/chat/?agentId=agent-1');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(saveButton(/save changes/i)).toHaveProperty('disabled', true);
+    expect(saveButton(/publish$/i)).toHaveProperty('disabled', true);
   });
 
   it("shows the server's reason when saving changes fails", async () => {
@@ -547,10 +586,10 @@ describe('editing an agent', () => {
     await renderExistingAgent();
 
     fireEvent.change(nameField(), { target: { value: 'Renamed' } });
-    fireEvent.click(saveButton(/save changes/i));
+    await publishEdits();
 
     expect(await screen.findByText('Only the owner and editors can change this agent.')).toBeTruthy();
-    expect(screen.queryByRole('dialog', { name: 'Agent updated' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Published' })).toBeNull();
   });
 
 
@@ -590,13 +629,13 @@ describe('editing an agent', () => {
     });
 
     expect(await screen.findByText(/old_search \(Team Jira\)/)).toBeTruthy();
-    expect(saveButton(/save changes/i)).toHaveProperty('disabled', true);
+    expect(saveButton(/publish$/i)).toHaveProperty('disabled', true);
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove deprecated tools' }));
 
     await waitFor(() => expect(screen.queryByText(/old_search \(Team Jira\)/)).toBeNull());
-    expect(saveButton(/save changes/i)).toHaveProperty('disabled', false);
-    fireEvent.click(saveButton(/save changes/i));
+    expect(saveButton(/publish$/i)).toHaveProperty('disabled', false);
+    await publishEdits();
     await waitFor(() => expect(agentsApi.updateAgent).toHaveBeenCalledTimes(1));
     expect(lastSavedPayload(agentsApi.updateAgent).toolsets).toEqual([
       expect.objectContaining({ tools: [expect.objectContaining({ name: 'create_issue' })] }),
@@ -633,7 +672,7 @@ describe("an agent's MCP servers", () => {
     await renderExistingAgent({ mcpServers: [attached] });
 
     await waitFor(() => expect(canvasNode('Github')).toBeTruthy());
-    expect(saveButton(/save changes/i)).toHaveProperty('disabled', true);
+    expect(saveButton(/publish$/i)).toHaveProperty('disabled', true);
   });
 
   it('a server missing from the live list is marked on its node', async () => {
@@ -657,8 +696,8 @@ describe('sharing and permissions', () => {
   it('shares the agent with everyone when the owner turns the switch on', async () => {
     await renderExistingAgent();
 
-    fireEvent.click(screen.getByRole('switch'));
-    fireEvent.click(saveButton(/save changes/i));
+    fireEvent.click(screen.getByRole('switch', { name: /share with everyone/i }));
+    await publishEdits();
 
     await waitFor(() => expect(agentsApi.updateAgent).toHaveBeenCalledTimes(1));
     expect(lastSavedPayload(agentsApi.updateAgent).shareWithOrg).toBe(true);
@@ -668,7 +707,7 @@ describe('sharing and permissions', () => {
     permissions.denied.add('shareAgent');
     await renderExistingAgent();
 
-    expect(screen.getByRole('switch')).toHaveProperty('disabled', true);
+    expect(screen.getByRole('switch', { name: /share with everyone/i })).toHaveProperty('disabled', true);
   });
 
   it('shows a non-owner a read-only builder with no way to save or delete', async () => {
@@ -678,9 +717,19 @@ describe('sharing and permissions', () => {
       screen.getByText(/View-only: you can’t change this agent’s configuration/),
     ).toBeTruthy();
     expect(nameField()).toHaveProperty('disabled', true);
-    expect(saveButton(/save changes/i)).toHaveProperty('disabled', true);
-    expect(screen.getByRole('switch')).toHaveProperty('disabled', true);
-    expect(screen.queryByRole('button', { name: 'Agent menu' })).toBeNull();
+    expect(saveButton(/publish$/i)).toHaveProperty('disabled', true);
+    expect(screen.getByRole('switch', { name: /share with everyone/i })).toHaveProperty('disabled', true);
+    // C4.08: anyone who can open the agent may export it, so the menu holds Export only.
+    const trigger = screen.getByRole('button', { name: 'Agent menu' });
+    await act(async () => {
+      trigger.focus();
+      trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(await screen.findByRole('menuitem', { name: /export configuration/i })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: /delete agent/i })).toBeNull();
+    await act(async () => {
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+    });
     expect(screen.queryByRole('button', { name: /service agent/i })).toBeNull();
     expect(canvas().queryByRole('button', { name: 'Edit prompts' })).toBeNull();
 
@@ -758,7 +807,7 @@ describe('deleting an agent', () => {
 
 describe('toolset credential setup from the palette', () => {
   it('lets the person sign in to a toolset that is set up but not authenticated', async () => {
-    toolsetsApi.getAllMyToolsets.mockResolvedValue({ toolsets: [toolset({ isAuthenticated: false })] });
+    toolsetsApi.getMyToolsets.mockResolvedValue({ toolsets: [toolset({ isAuthenticated: false })] });
     toolsetsApi.getToolsetRegistrySchema.mockResolvedValue({ toolset: { config: { auth: { schemas: {} } } } });
     await renderNewAgent();
 
@@ -769,12 +818,157 @@ describe('toolset credential setup from the palette', () => {
   });
 
   it('still lets a view-only person connect a toolset with their own sign-in', async () => {
-    toolsetsApi.getAllMyToolsets.mockResolvedValue({ toolsets: [toolset({ isAuthenticated: false })] });
+    toolsetsApi.getMyToolsets.mockResolvedValue({ toolsets: [toolset({ isAuthenticated: false })] });
     toolsetsApi.getToolsetRegistrySchema.mockResolvedValue({ toolset: { config: { auth: { schemas: {} } } } });
     await renderExistingAgent({ can_edit: false, can_delete: false, user_role: 'VIEWER', shareWithOrg: true });
 
     fireEvent.click(screen.getByRole('button', { name: 'Authenticate this toolset' }));
 
     expect(await screen.findByRole('dialog', { name: /configure toolset/i })).toBeTruthy();
+  });
+});
+
+async function engineSelect() {
+  return (await canvas().findByRole('combobox', { name: 'Coding engine' })) as HTMLSelectElement;
+}
+
+async function saveAgent() {
+  await publishEdits();
+  await waitFor(() => expect(agentsApi.updateAgent).toHaveBeenCalledTimes(1));
+  return lastSavedPayload(agentsApi.updateAgent);
+}
+
+describe('an agent that runs on an engine (U2)', () => {
+  it('AG-5: a loop agent shows no account choice and its saved payload carries no engineProfile', async () => {
+    await renderExistingAgent();
+    await engineSelect();
+    expect(canvas().queryByRole('button', { name: 'Engine settings' })).toBeNull();
+    expect(modelAccess.access).not.toHaveBeenCalled();
+
+    fireEvent.change(nameField(), { target: { value: 'Sales helper v2' } });
+    expect(await saveAgent()).not.toHaveProperty('engineProfile');
+  });
+
+  it('AG-4/AG-5: an engine agent chooses its account kind; the save carries it with the other dimensions', async () => {
+    await renderExistingAgent({ engineProfile: { mode: 'plan' } });
+    fireEvent.click(canvas().getByRole('button', { name: 'Engine settings' }));
+    const group = await canvas().findByRole('radiogroup', { name: 'AI account' });
+    fireEvent.click(within(group).getByRole('radio', { name: 'Personal key' }));
+    expect((within(group).getByRole('radio', { name: 'Organization cloud account' }) as HTMLButtonElement).disabled).toBe(true);
+
+    expect(saveButton(/publish$/i)).toHaveProperty('disabled', false);
+    expect((await saveAgent()).engineProfile).toEqual({ mode: 'plan', accountKinds: ['user_api_key'] });
+  });
+});
+
+describe('how the agent runs, together on its card (UX-07)', () => {
+  it('UX-07 RT-0: Model and Coding engine sit in the "How it runs" group, before the safety checks and knowledge', async () => {
+    await renderExistingAgent();
+    await engineSelect();
+    const group = canvas().getByRole('group', { name: 'How it runs' });
+    const titles = Array.from(group.querySelectorAll('span')).map((el) => el.textContent);
+    expect(titles.indexOf('Model')).toBeGreaterThanOrEqual(0);
+    expect(titles.indexOf('Coding engine')).toBeGreaterThan(titles.indexOf('Model'));
+    expect(within(group).queryByText('Knowledge')).toBeNull();
+    expect(within(group).queryByText('Sub-agent models')).toBeNull();
+  });
+});
+
+describe('the coding engine on the agent card (ENGPICK2)', () => {
+  it('EB-0: the row sits directly under Model, and is no longer in the prompts dialog', async () => {
+    await renderExistingAgent();
+    await engineSelect();
+    const titles = Array.from(document.querySelectorAll('.flow-node-card'))
+      .flatMap((card) => Array.from(card.querySelectorAll('span')))
+      .map((el) => el.textContent);
+    const model = titles.indexOf('Model');
+    expect(model).toBeGreaterThanOrEqual(0);
+    expect(titles.slice(model + 1)).toContain('Coding engine');
+    expect(titles.slice(model + 1).find((text) => text === 'Coding engine' || text === 'Sub-agent models')).toBe('Coding engine');
+
+    fireEvent.click(canvas().getByRole('button', { name: 'Edit prompts' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Configure agent prompts' });
+    expect(within(dialog).queryByRole('combobox', { name: 'Coding engine' })).toBeNull();
+    expect(within(dialog).queryByText('Engine settings')).toBeNull();
+  });
+
+  it('EB-1: lists none and the allowed engines; one the org cannot use is disabled with its reason; a loading status first', async () => {
+    let release!: () => void;
+    modelAccess.codingEngine.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({ engines: [{ kind: 'codex', available: true, reason: null }, { kind: 'claude_code', available: false, reason: 'offering_not_permitted' }], orgDefault: null, choice: 'org_default' });
+        }),
+    );
+    await renderExistingAgent();
+    expect(canvas().getByRole('status').textContent).toContain('Loading');
+    await act(async () => release());
+    const select = await engineSelect();
+    expect(select.value).toBe('none');
+    const options = within(select).getAllByRole('option') as HTMLOptionElement[];
+    expect(options.map((o) => [o.textContent, o.disabled])).toEqual([
+      ['None – built-in agent loop', false],
+      ['Codex', false],
+      ["Claude Code – Not available in this kind of installation with your organization's models", true],
+    ]);
+    const helper = canvas().getByText('Used when a task needs code, files or many steps of work; other questions are answered directly.');
+    expect(select.getAttribute('aria-describedby')).toBe(helper.id);
+    expect(canvas().queryByRole('button', { name: 'Engine settings' })).toBeNull();
+  });
+
+  it('EB-2: picking an engine makes a loop agent an engine agent; its settings open under it and the save carries it', async () => {
+    await renderExistingAgent();
+    fireEvent.change(await engineSelect(), { target: { value: 'codex' } });
+    const disclosure = await canvas().findByRole('button', { name: 'Engine settings' });
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    expect(canvas().queryByRole('radiogroup', { name: 'AI account' })).toBeNull();
+    fireEvent.click(disclosure);
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+    expect(await canvas().findByRole('radiogroup', { name: 'AI account' })).toBeTruthy();
+    expect((await saveAgent()).engineProfile).toEqual({ engines: ['codex'] });
+  });
+
+  it('EB-3: None turns an engine agent back into a loop agent: the save sends engineProfile null', async () => {
+    await renderExistingAgent({ engineProfile: { engines: ['opencode'], mode: 'plan' } });
+    const select = await engineSelect();
+    expect(select.value).toBe('opencode');
+    fireEvent.change(select, { target: { value: 'none' } });
+    await waitFor(() => expect(canvas().queryByRole('button', { name: 'Engine settings' })).toBeNull());
+    expect((await saveAgent()).engineProfile).toBeNull();
+  });
+
+  it('EB-4: a save the server refuses shows its typed reason in the builder’s error slot', async () => {
+    agentsApi.updateAgent.mockRejectedValue(
+      apiFailure(403, { message: 'This offering may not use this account and route' }),
+    );
+    await renderExistingAgent();
+    fireEvent.change(await engineSelect(), { target: { value: 'codex' } });
+    await publishEdits();
+    expect(await screen.findByText('This offering may not use this account and route')).toBeTruthy();
+  });
+
+  it('EB-5: when the engines cannot be loaded the card says so and offers to try again', async () => {
+    modelAccess.codingEngine.mockRejectedValueOnce(new Error('down'));
+    await renderExistingAgent();
+    expect(await canvas().findByText("The coding engines can't be loaded right now.")).toBeTruthy();
+    fireEvent.click(canvas().getByRole('button', { name: 'Try again' }));
+    expect(await engineSelect()).toBeTruthy();
+  });
+
+  it('EB-6: a viewer sees the engine as text, with no select, and None reads "None – built-in loop"', async () => {
+    await renderExistingAgent({ can_edit: false, can_delete: false, user_role: 'VIEWER', shareWithOrg: true });
+    expect(canvas().getByText('Coding engine')).toBeTruthy();
+    expect(canvas().getByText('None – built-in loop')).toBeTruthy();
+    expect(canvas().queryByRole('combobox', { name: 'Coding engine' })).toBeNull();
+    expect(modelAccess.codingEngine).not.toHaveBeenCalled();
+  });
+
+  it('EB-7: a viewer of an engine agent sees its engine and can open its settings without editing them', async () => {
+    await renderExistingAgent({ can_edit: false, can_delete: false, user_role: 'VIEWER', shareWithOrg: true, engineProfile: { engines: ['codex'] } });
+    expect(canvas().getByText('Codex')).toBeTruthy();
+    fireEvent.click(canvas().getByRole('button', { name: 'Engine settings' }));
+    const group = await canvas().findByRole('radiogroup', { name: 'AI account' });
+    for (const radio of within(group).getAllByRole('radio')) expect((radio as HTMLButtonElement).disabled).toBe(true);
   });
 });

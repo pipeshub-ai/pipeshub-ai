@@ -207,7 +207,7 @@ export function CustomSyncFieldsSection({
             <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
               {t('workspace.connectors.configTab.additionalSettings')}
             </Text>
-            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {t('workspace.connectors.configTab.additionalSettingsDescription')}
             </Text>
           </Flex>

@@ -14,6 +14,7 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
+from app.services.graph_db.interface.graph_db_provider import KH_SKIP_READS
 
 from .test_kh_search import (
     ORG,
@@ -223,3 +224,25 @@ def test_a_skip_whose_read_finds_no_row_in_its_budget_hands_back_where_it_got_to
         return _page([row("a", "a")], None) if token is None else _page([], "c9")
     got = asyncio.run(KnowledgeHubService._walk_pages(_svc(), fetch, None, 5, 1))      # type: ignore[arg-type]
     assert got.rows == [] and got.scan_cursor == "c9" and seen == [None, "end"]
+
+
+def test_the_reads_before_a_numbered_page_share_one_request_scoped_slot_and_the_page_is_read_without_it() -> None:
+    """A backend may decide its listing once for the reads before a page (``KH_SKIP_READS``); the page itself, and every other request, sees none."""
+    listing = [row(f"r{i:03d}", f"r{i:03d}") for i in range(10)]
+    slots: list[object] = []
+
+    async def fetch(token: str | None, rows: int) -> SearchPage:
+        slots.append(KH_SKIP_READS.get())
+        start = int(token or 0)
+        got = listing[start:start + rows]
+        return SearchPage(rows=got, total=len(listing), counts_by_type={}, start_index=start + 1, end_index=start + len(got),
+                          next_cursor=str(start + len(got)), prev_cursor=None)
+
+    async def two_requests() -> None:
+        await asyncio.gather(KnowledgeHubService._walk_pages(_svc(0), fetch, None, 4, 2),      # type: ignore[arg-type]
+                             KnowledgeHubService._walk_pages(_svc(0), fetch, None, 4, 2))      # type: ignore[arg-type]
+    asyncio.run(two_requests())
+    assert KH_SKIP_READS.get() is None
+    skips = [s for s in slots if s is not None]
+    assert len(skips) == 6 and slots.count(None) == 2      # three reads before each page, then the page
+    assert len({id(s) for s in skips}) == 2      # one slot per request

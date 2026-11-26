@@ -841,25 +841,11 @@ class TestRemovedCreateRecordsRoutes:
         assert resp.status_code == 405
 
 
-class TestListKbRecords:
-    def test_success(self):
+class TestRemovedListRecordsRoute:
+    def test_get_kb_records_is_not_routed(self):
         app, kb_svc, _ = _make_app()
-        kb_svc.list_kb_records = AsyncMock(return_value={
-            "records": [],
-            "pagination": {
-                "page": 1, "limit": 20, "totalCount": 0, "totalPages": 0,
-            },
-            "filters": {
-                "applied": {},
-                "available": {
-                    "recordTypes": [], "origins": [], "connectors": [],
-                    "indexingStatus": [], "permissions": [],
-                },
-            },
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/records")
-        assert resp.status_code == 200
+        resp = TestClient(app).get("/api/v1/kb/kb1/records")
+        assert resp.status_code == 405
 
 
 class TestGetKbChildren:
@@ -1802,27 +1788,6 @@ class TestUploadRecordsToFolderFullCoverage:
         client = TestClient(app)
         resp = client.post("/api/v1/kb/kb1/folder/f1/upload", json=self._files_body())
         assert resp.status_code == 500
-
-
-class TestListKbRecordsFullCoverage:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.list_kb_records = AsyncMock(return_value={
-            "records": [],
-            "pagination": {
-                "page": 1, "limit": 20, "totalCount": 0, "totalPages": 0,
-            },
-            "filters": {
-                "applied": {},
-                "available": {
-                    "recordTypes": [], "origins": [], "connectors": [],
-                    "indexingStatus": [], "permissions": [],
-                },
-            },
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/records")
-        assert resp.status_code == 200
 
 
 class TestGetKbChildrenFullCoverage:

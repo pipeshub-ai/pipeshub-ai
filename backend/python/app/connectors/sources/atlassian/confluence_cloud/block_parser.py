@@ -2627,6 +2627,49 @@ class ConfluenceBlockParser:
                     nested_group = block_groups[group_index]
                     nested_group.parent_index = group.index
 
+    @staticmethod
+    def rebuild_group_children(
+        blocks: list[Block],
+        block_groups: list[BlockGroup],
+    ) -> None:
+        """Set each group's children from the parent_index of its blocks and groups.
+
+        Post-processing moves blocks under new groups (list items under a list inside a
+        panel, expand or comment), so children set while parsing can still name blocks
+        that now belong to another group, and miss the new groups. A table lists only its
+        rows, so an image parsed inside a cell moves to the nearest group that is not a
+        table; the row's cell still records it. (Text in a cell is part of the row's own
+        text, so it stays where it is.)
+        """
+        for b in blocks:
+            if b.type != BlockType.IMAGE:
+                continue
+            for _ in range(len(block_groups)):  # bounded: a parent chain can't be longer than the groups
+                parent = b.parent_index
+                if parent is None or not 0 <= parent < len(block_groups) or block_groups[parent].type != GroupType.TABLE:
+                    break
+                b.parent_index = block_groups[parent].parent_index
+
+        group_children: dict[int, list[int]] = {}
+        block_children: dict[int, list[int]] = {}
+        for bg in block_groups:
+            if bg.parent_index is not None:
+                group_children.setdefault(bg.parent_index, []).append(bg.index)
+        for b in blocks:
+            if b.parent_index is not None:
+                block_children.setdefault(b.parent_index, []).append(b.index)
+
+        for bg in block_groups:
+            child_blocks = sorted(block_children.get(bg.index, []))
+            if bg.type == GroupType.TABLE:  # rows only; other cell content is part of a row's text
+                child_blocks = [i for i in child_blocks if blocks[i].type == BlockType.TABLE_ROW]
+            child_groups = sorted(group_children.get(bg.index, []))
+            if child_blocks or child_groups:
+                bg.children = BlockGroupChildren.from_indices(
+                    block_indices=child_blocks,
+                    block_group_indices=child_groups,
+                )
+
     def post_process_blocks(
         self,
         blocks: list[Block],
@@ -2764,8 +2807,8 @@ class ConfluenceBlockParser:
             while len(open_lists) > keep:
                 _, style, parent_index, items, nested = open_lists.pop()
                 group_index = self._create_list_group(blocks, block_groups, items, style, nested)
-                # A top-level list is not added to its parent's groups: the parent (panel, expand,
-                # comment) already lists the items as its own blocks, and both would repeat them.
+                # A top-level list is not added to its parent's groups here; the connector's
+                # rebuild_group_children moves the items under it and adds it to the parent.
                 if open_lists:
                     open_lists[-1][4].append(group_index)
 

@@ -110,7 +110,7 @@ export function ShareableRow({
               <Text
                 size="1"
                 style={{
-                  color: 'var(--slate-9)',
+                  color: 'var(--slate-11)',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
@@ -174,7 +174,7 @@ export function ShareableRow({
       )}
 
       {isOwner && !showRoleDropdown && (
-        <Text size="2" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
+        <Text size="2" style={{ color: 'var(--slate-11)', flexShrink: 0 }}>
           {t('recordView.permissionOwner')}
         </Text>
       )}
@@ -183,7 +183,7 @@ export function ShareableRow({
         <Text
           size="2"
           style={{
-            color: 'var(--accent-9)',
+            color: 'var(--accent-11)',
             cursor: 'pointer',
             flexShrink: 0,
           }}

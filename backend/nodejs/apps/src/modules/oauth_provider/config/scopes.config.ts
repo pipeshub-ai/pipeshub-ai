@@ -344,7 +344,12 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
   },
 };
 
-/** Scopes non–org-admin users cannot register on OAuth apps (org admins get all scopes). */
+/**
+ * Scopes non–org-admin users cannot register on OAuth apps (org admins get all scopes).
+ * `code:write` is not one: a pushed repository is indexed only into the pusher's own
+ * personal connector, and the device login app every user signs in with is cut to the
+ * scopes a member may hold.
+ */
 export const AdminOnlyScopes = new Set<string>([
   'org:write',
   'org:admin',
@@ -371,6 +376,9 @@ export const DefaultMcpScopes = [
   'kb:upload',
   'team:read',
   'user:read',
+  // No /mcp tool needs it, so discovery leaves it out (McpToolScopes). It
+  // stays in the cap so a client registered with it, and the tokens it holds,
+  // keep working.
   'usergroup:read',
   'config:read',
   'agent:read',
@@ -419,7 +427,9 @@ export const AgentMcpScopes = [
  * both in Node and in the Python service it forwards to, plus `offline_access`
  * so MCP clients get a refresh token. Clients such as Claude Code request
  * every scope in `scopes_supported`, so discovery advertises only these.
- * MCP_SCOPES stays the cap on what any token may hold.
+ * MCP_SCOPES stays the cap on personal access tokens, service tokens, dynamically
+ * registered clients and the device login app. An app registered in Developer
+ * settings is capped by its creator's role instead (`AdminOnlyScopes`).
  */
 export const McpToolScopes = [
   'offline_access',
@@ -438,7 +448,6 @@ export const McpToolScopes = [
   'config:read',
   'user:read',
   'team:read',
-  'usergroup:read',
   'code:read',
 ] as const;
 

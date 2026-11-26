@@ -205,4 +205,29 @@ export class MongoNotificationRepository implements NotificationRepository {
     ).lean();
     return doc ? rowOf(doc) : null;
   }
+
+  async eraseForConversation(
+    orgId: string,
+    conversationId: string,
+  ): Promise<number> {
+    if (!mongoose.Types.ObjectId.isValid(orgId)) return 0;
+    const deleted = await Notifications.deleteMany(
+      { orgId: oid(orgId), 'payload.conversationId': conversationId },
+      { writeConcern: { w: 'majority' } },
+    );
+    return deleted.deletedCount;
+  }
+
+  async eraseForOrg(orgId: string, limit: number): Promise<number> {
+    if (!mongoose.Types.ObjectId.isValid(orgId) || limit <= 0) return 0;
+    const batch = await Notifications.find({ orgId: oid(orgId) }, { _id: 1 })
+      .limit(limit)
+      .lean<Array<{ _id: mongoose.Types.ObjectId }>>();
+    if (batch.length === 0) return 0;
+    const deleted = await Notifications.deleteMany(
+      { _id: { $in: batch.map((row) => row._id) }, orgId: oid(orgId) },
+      { writeConcern: { w: 'majority' } },
+    );
+    return deleted.deletedCount;
+  }
 }

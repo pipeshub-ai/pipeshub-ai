@@ -13,6 +13,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
+from app.services.rate_budget import RatePriority, rate_priority
+
 if TYPE_CHECKING:
     from collections.abc import Generator
 
@@ -23,7 +25,9 @@ _for_indexing: ContextVar[bool] = ContextVar("stream_for_indexing", default=Fals
 def streaming_for_indexing() -> Generator[None, None, None]:
     token = _for_indexing.set(True)
     try:
-        yield
+        # Indexing's fetches are the sync's second half: they yield to a person's agent calls the same way (G-31).
+        with rate_priority(RatePriority.SYNC):
+            yield
     finally:
         _for_indexing.reset(token)
 

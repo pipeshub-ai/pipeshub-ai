@@ -4,7 +4,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import express from 'express';
 import http from 'http';
-import net, { AddressInfo } from 'net';
+import { AddressInfo } from 'net';
 import { Container } from 'inversify';
 import { Application } from '../src/app';
 import { createMockLogger, MockLogger } from './helpers/mock-logger';
@@ -58,12 +58,14 @@ import * as cmRoutes from '../src/modules/configuration_manager/routes/cm_routes
 import * as openaiModelsRoutes from '../src/modules/configuration_manager/routes/openai_models.routes';
 import * as openaiCompatRoutes from '../src/modules/openai_compat/routes/openai_compat.routes';
 import * as mailRoutes from '../src/modules/mail/routes/mail.routes';
+import * as supportRoutes from '../src/modules/support/support.routes';
 import * as crawlingRoutes from '../src/modules/crawling_manager/routes/cm_routes';
 import * as oauthProviderRoutes from '../src/modules/oauth_provider/routes/oauth.provider.routes';
 import * as agentRegistrationRoutes from '../src/modules/oauth_provider/routes/agent-registration.routes';
 import * as oauthClientsRoutes from '../src/modules/oauth_provider/routes/oauth.clients.routes';
 import * as patRoutes from '../src/modules/oauth_provider/routes/pat.routes';
 import * as mcpRoutes from '../src/modules/mcp/routes/mcp.routes';
+import * as agentActivityRoutes from '../src/modules/agent_activity/agent-activity.routes';
 import {
   MCP_BODY_TOO_LARGE_MESSAGE,
   MCP_JSON_BODY_LIMIT_BYTES,
@@ -74,10 +76,20 @@ import * as toolsetsRoutes from '../src/modules/toolsets/routes/toolsets_routes'
 import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes';
 import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
 import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
+import * as agentHarnessRoutes from '../src/modules/agent-harness/transport/internal-routes';
+import * as agentHarnessSessionRoutes from '../src/modules/agent-harness/transport/session-routes';
+import * as agentHarnessAdminRoutes from '../src/modules/agent-harness/transport/admin-routes';
+import * as agentHarnessRunListRoutes from '../src/modules/agent-harness/transport/run-list-routes';
+import * as modelAccountRoutes from '../src/modules/agent-harness/transport/model-account-routes';
+import * as engineSignInRoutes from '../src/modules/agent-harness/transport/engine-signin-routes';
+import * as scheduleRoutes from '../src/modules/agent-harness/transport/schedule-routes';
+import * as publicationRoutes from '../src/modules/agent-harness/transport/publication-routes';
+import * as agentConfigRoutes from '../src/modules/agent-harness/transport/agent-config-routes';
+import * as memoryRoutes from '../src/modules/agent-harness/transport/memory-routes';
+import * as inboxRoutes from '../src/modules/agent-harness/transport/inbox-routes';
 import * as delegationRoutes from '../src/modules/oauth_provider/routes/delegation.routes';
 import * as localReposRoutes from '../src/modules/local_repos/routes/local_repos.routes';
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
-import { MailSenderService } from '../src/modules/mail/services/mail.sender.service';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
 
 // ---------------------------------------------------------------------------
@@ -116,7 +128,12 @@ function createMockAppConfig(): appConfigModule.AppConfig {
     redis: { host: 'localhost', port: 6379 },
     mongo: { uri: 'mongodb://localhost:27017', db: 'test' },
     qdrant: { host: 'localhost', port: 6333, apiKey: '', grpcPort: 6334 },
-    arango: { url: 'http://localhost:8529', db: 'test', username: 'root', password: '' },
+    arango: {
+      url: 'http://localhost:8529',
+      db: 'test',
+      username: 'root',
+      password: '',
+    },
     etcd: { host: 'http://localhost', port: 2379, dialTimeout: 2000 },
     smtp: null,
     storage: { storageType: 'local', endpoint: '' },
@@ -174,13 +191,19 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(userRoutes, 'createUserRouter').returns(dummyRouter);
   sandbox.stub(userGroupRoutes, 'createUserGroupRouter').returns(dummyRouter);
   sandbox.stub(orgRoutes, 'createOrgRouter').returns(dummyRouter);
-  sandbox.stub(userAccountRoutes, 'createUserAccountRouter').returns(dummyRouter);
-  sandbox.stub(orgAuthConfigRoutes, 'createOrgAuthConfigRouter').returns(dummyRouter);
+  sandbox
+    .stub(userAccountRoutes, 'createUserAccountRouter')
+    .returns(dummyRouter);
+  sandbox
+    .stub(orgAuthConfigRoutes, 'createOrgAuthConfigRouter')
+    .returns(dummyRouter);
   sandbox.stub(storageRoutes, 'createStorageRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createSemanticSearchRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createRetrieveRouter').returns(dummyRouter);
-  sandbox.stub(esRoutes, 'createAgentConversationalRouter').returns(dummyRouter);
+  sandbox
+    .stub(esRoutes, 'createAgentConversationalRouter')
+    .returns(dummyRouter);
   sandbox.stub(esRoutes, 'createChatSpeechRouter').returns(dummyRouter);
   sandbox.stub(codeGraphRoutes, 'createCodeGraphRouter').returns(dummyRouter);
   sandbox.stub(graphViewRoutes, 'createGraphViewRouter').returns(dummyRouter);
@@ -193,13 +216,24 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(openaiModelsRoutes, 'createOpenAIModelsRouter').returns(dummyRouter);
   sandbox.stub(openaiCompatRoutes, 'createOpenAICompatRouter').returns(dummyRouter);
   sandbox.stub(mailRoutes, 'createMailServiceRouter').returns(dummyRouter);
+  sandbox.stub(supportRoutes, 'createSupportRouter').returns(dummyRouter);
+  sandbox.stub(supportRoutes, 'createFeedbackRouter').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'default').returns(dummyRouter);
-  sandbox.stub(crawlingRoutes, 'createCrawlingManagerRouter').returns(dummyRouter);
-  sandbox.stub(oauthProviderRoutes, 'createOAuthProviderRouter').returns(dummyRouter);
-  sandbox.stub(agentRegistrationRoutes, 'createAgentRegistrationRouter').returns(dummyRouter);
-  sandbox.stub(oauthClientsRoutes, 'createOAuthClientsRouter').returns(dummyRouter);
+  sandbox
+    .stub(crawlingRoutes, 'createCrawlingManagerRouter')
+    .returns(dummyRouter);
+  sandbox
+    .stub(oauthProviderRoutes, 'createOAuthProviderRouter')
+    .returns(dummyRouter);
+  sandbox
+    .stub(agentRegistrationRoutes, 'createAgentRegistrationRouter')
+    .returns(dummyRouter);
+  sandbox
+    .stub(oauthClientsRoutes, 'createOAuthClientsRouter')
+    .returns(dummyRouter);
   sandbox.stub(patRoutes, 'createPatRouter').returns(dummyRouter);
   sandbox.stub(mcpRoutes, 'createMCPRouter').returns(dummyRouter);
+  sandbox.stub(agentActivityRoutes, 'createAgentActivityRouter').returns(dummyRouter);
   sandbox.stub(oidcRoutes, 'createOIDCDiscoveryRouter').returns(dummyRouter);
   sandbox.stub(oidcRoutes, 'createAuthMdRouter').returns(dummyRouter);
   sandbox.stub(apiDocsRoutes, 'createApiDocsRouter').returns(dummyRouter);
@@ -207,6 +241,33 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);
   sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
   sandbox.stub(serviceTokenRoutes, 'createServiceTokenRouter').returns(dummyRouter);
+  sandbox
+    .stub(agentHarnessRoutes, 'createAgentHarnessInternalRouter')
+    .returns(dummyRouter);
+  sandbox
+    .stub(agentHarnessSessionRoutes, 'createAgentHarnessSessionRouter')
+    .returns(dummyRouter);
+  sandbox
+    .stub(agentHarnessSessionRoutes, 'createChatHarnessSessionRouter')
+    .returns(dummyRouter);
+  sandbox
+    .stub(agentHarnessAdminRoutes, 'createAgentHarnessAdminRouter')
+    .returns(dummyRouter);
+  sandbox
+    .stub(agentHarnessRunListRoutes, 'createAgentHarnessRunsRouter')
+    .returns(dummyRouter);
+  sandbox
+    .stub(modelAccountRoutes, 'createModelAccountRouter')
+    .returns(dummyRouter);
+  sandbox
+    .stub(engineSignInRoutes, 'createEngineSignInRouter')
+    .returns(dummyRouter);
+  sandbox.stub(scheduleRoutes, 'createScheduleRouter').returns(dummyRouter);
+  sandbox.stub(scheduleRoutes, 'createTriggerRouter').returns(dummyRouter);
+  sandbox.stub(publicationRoutes, 'createPublicationRouter').returns(dummyRouter);
+  sandbox.stub(agentConfigRoutes, 'createAgentConfigRouter').returns(dummyRouter);
+  sandbox.stub(memoryRoutes, 'createMemoryRouter').returns(dummyRouter);
+  sandbox.stub(inboxRoutes, 'createInboxRouter').returns(dummyRouter);
   sandbox.stub(delegationRoutes, 'createDelegationRouter').returns(dummyRouter);
   sandbox.stub(localReposRoutes, 'createLocalReposRouter').returns(dummyRouter);
 }
@@ -215,6 +276,23 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
  * Sets up stubs for all container initializations so Application.initialize()
  * can run without real databases/services.
  */
+function stubListeners(sandbox: sinon.SinonSandbox, app: Application) {
+  const server = (app as any).server as http.Server;
+  sandbox
+    .stub(server, 'listen')
+    .callsFake((_port: number, callback: () => void) => {
+      callback();
+      return server;
+    });
+  const internal = (app as any).internalServer as http.Server;
+  sandbox
+    .stub(internal, 'listen')
+    .callsFake((_port: number, _host: string, callback: () => void) => {
+      callback();
+      return internal;
+    });
+}
+
 function stubAllContainers(sandbox: sinon.SinonSandbox) {
   // Stub route factories so configureRoutes() doesn't blow up
   stubAllRouteFactories(sandbox);
@@ -280,27 +358,27 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
     initialize: sandbox.stub(),
     shutdown: sandbox.stub(),
   };
-  containers['notification']
+  containers['notification']!
     .bind<any>(NotificationService)
     .toConstantValue(mockNotificationService);
 
   // OAuthTokenService mock — needed for addOAuthServicesToAuthMiddleware
   const mockOAuthTokenService = { validateToken: sandbox.stub() };
-  containers['oauth']
+  containers['oauth']!
     .bind<any>('OAuthTokenService')
     .toConstantValue(mockOAuthTokenService);
 
   // CrawlingSchedulerService mock — needed for configureRoutes() and
   // runMigration() which both pull the singleton from the container.
-  const { CrawlingSchedulerService } = require(
-    '../src/modules/crawling_manager/services/crawling_service',
-  );
+  const {
+    CrawlingSchedulerService,
+  } = require('../src/modules/crawling_manager/services/crawling_service');
   const mockCrawlingScheduler = {
     scheduleJob: sandbox.stub().resolves({ id: 'mock-job' }),
     removeJob: sandbox.stub().resolves(),
     getJobStatus: sandbox.stub().resolves(null),
   };
-  containers['crawling']
+  containers['crawling']!
     .bind<any>(CrawlingSchedulerService)
     .toConstantValue(mockCrawlingScheduler);
 
@@ -380,7 +458,9 @@ describe('Application', () => {
       mockCmConfig = createMockCmConfig();
 
       sandbox.stub(appConfigModule, 'loadAppConfig').resolves(mockAppConfig);
-      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(mockCmConfig);
+      sandbox
+        .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+        .returns(mockCmConfig);
       sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
     });
 
@@ -404,30 +484,51 @@ describe('Application', () => {
 
     it('should initialize all containers and configure the app', async () => {
       const app = new Application();
-      const { containers, mockNotificationService } = stubAllContainers(sandbox);
+      const { containers, mockNotificationService } =
+        stubAllContainers(sandbox);
 
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
       await app.initialize();
 
       // All containers should have been initialized
-      expect((TokenManagerContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
-      expect((ConfigurationManagerContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
-      expect((StorageContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
-      expect((UserManagerContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
-      expect((AuthServiceContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
-      expect((EnterpriseSearchAgentContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
-      expect((KnowledgeBaseContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
-      expect((MailServiceContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
-      expect((NotificationContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
-      expect((CrawlingManagerContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
-      expect((OAuthProviderContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
-      expect((ToolsetsContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
-      expect((ApiDocsContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
+      expect((TokenManagerContainer.initialize as sinon.SinonStub).calledOnce)
+        .to.be.true;
+      expect(
+        (ConfigurationManagerContainer.initialize as sinon.SinonStub)
+          .calledOnce,
+      ).to.be.true;
+      expect((StorageContainer.initialize as sinon.SinonStub).calledOnce).to.be
+        .true;
+      expect((UserManagerContainer.initialize as sinon.SinonStub).calledOnce).to
+        .be.true;
+      expect((AuthServiceContainer.initialize as sinon.SinonStub).calledOnce).to
+        .be.true;
+      expect(
+        (EnterpriseSearchAgentContainer.initialize as sinon.SinonStub)
+          .calledOnce,
+      ).to.be.true;
+      expect((KnowledgeBaseContainer.initialize as sinon.SinonStub).calledOnce)
+        .to.be.true;
+      expect((MailServiceContainer.initialize as sinon.SinonStub).calledOnce).to
+        .be.true;
+      expect((NotificationContainer.initialize as sinon.SinonStub).calledOnce)
+        .to.be.true;
+      expect(
+        (CrawlingManagerContainer.initialize as sinon.SinonStub).calledOnce,
+      ).to.be.true;
+      expect((OAuthProviderContainer.initialize as sinon.SinonStub).calledOnce)
+        .to.be.true;
+      expect((ToolsetsContainer.initialize as sinon.SinonStub).calledOnce).to.be
+        .true;
+      expect((ApiDocsContainer.initialize as sinon.SinonStub).calledOnce).to.be
+        .true;
 
       // NotificationService.initialize should have been called with the http server
       expect(mockNotificationService.initialize.calledOnce).to.be.true;
-      expect(mockNotificationService.initialize.firstCall.args[0]).to.be.instanceOf(http.Server);
+      expect(
+        mockNotificationService.initialize.firstCall.args[0],
+      ).to.be.instanceOf(http.Server);
     });
 
     it('should call ensureMessageTopicsExist during initialization', async () => {
@@ -437,7 +538,8 @@ describe('Application', () => {
 
       await app.initialize();
 
-      const stub = messageBrokerModule.ensureMessageTopicsExist as sinon.SinonStub;
+      const stub =
+        messageBrokerModule.ensureMessageTopicsExist as sinon.SinonStub;
       expect(stub.calledOnce).to.be.true;
     });
 
@@ -493,18 +595,51 @@ describe('Application', () => {
       await app.initialize();
 
       // All containers still initialized
-      expect((TokenManagerContainer.initialize as sinon.SinonStub).calledOnce).to.be.true;
+      expect((TokenManagerContainer.initialize as sinon.SinonStub).calledOnce)
+        .to.be.true;
     });
 
     it('should register OAuthTokenService into auth middleware', async () => {
       const app = new Application();
       const { mockOAuthTokenService } = stubAllContainers(sandbox);
-      const registerStub = sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+      const registerStub = sandbox.stub(
+        oauthProviderModule,
+        'registerOAuthTokenService',
+      );
 
       await app.initialize();
 
       expect(registerStub.calledOnce).to.be.true;
       expect(registerStub.firstCall.args[0]).to.equal(mockOAuthTokenService);
+    });
+
+    it('RS-11: the internal routes listen on their own host and port, never the public one', async () => {
+      const saved = {
+        port: process.env.AGENT_HARNESS_INTERNAL_PORT,
+        host: process.env.AGENT_HARNESS_INTERNAL_HOST,
+      };
+      process.env.AGENT_HARNESS_INTERNAL_PORT = '3999';
+      process.env.AGENT_HARNESS_INTERNAL_HOST = '127.0.0.1';
+      try {
+        const app = new Application();
+        stubAllContainers(sandbox);
+        sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+        await app.initialize();
+        stubListeners(sandbox, app);
+        await app.start();
+        const internal = (app as any).internalServer as http.Server;
+        const listen = internal.listen as unknown as sinon.SinonStub;
+        expect(listen.firstCall.args.slice(0, 2)).to.deep.equal([3999, '127.0.0.1']);
+        expect(internal).to.not.equal((app as any).server);
+      } finally {
+        for (const [name, value] of [
+          ['AGENT_HARNESS_INTERNAL_PORT', saved.port],
+          ['AGENT_HARNESS_INTERNAL_HOST', saved.host],
+        ] as const) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
+      }
     });
 
     it('should start telemetry and the org metrics refresh loop', async () => {
@@ -519,7 +654,8 @@ describe('Application', () => {
         'startTelemetry should be called once during initialize',
       ).to.be.true;
       expect(
-        (metricsRefreshModule.startOrgMetricsRefresh as sinon.SinonStub).calledOnce,
+        (metricsRefreshModule.startOrgMetricsRefresh as sinon.SinonStub)
+          .calledOnce,
         'startOrgMetricsRefresh should be called once during initialize',
       ).to.be.true;
     });
@@ -552,7 +688,7 @@ describe('Application', () => {
 
       await app.initialize();
 
-      expect(containers['cm'].isBound(MigrationService)).to.be.true;
+      expect(containers['cm']!.isBound(MigrationService)).to.be.true;
     });
 
     it('should throw and log error if a container initialization fails', async () => {
@@ -580,7 +716,8 @@ describe('Application', () => {
       expect(tmStub.firstCall.args[0]).to.deep.equal(mockCmConfig);
 
       // ConfigurationManagerContainer.initialize gets cmConfig + appConfig
-      const cmStub = ConfigurationManagerContainer.initialize as sinon.SinonStub;
+      const cmStub =
+        ConfigurationManagerContainer.initialize as sinon.SinonStub;
       expect(cmStub.firstCall.args[0]).to.deep.equal(mockCmConfig);
       expect(cmStub.firstCall.args[1]).to.deep.equal(mockAppConfig);
     });
@@ -590,9 +727,9 @@ describe('Application', () => {
       stubAllContainers(sandbox);
 
       // Stub registerOAuthTokenService to throw
-      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService').throws(
-        new Error('Registration failed'),
-      );
+      sandbox
+        .stub(oauthProviderModule, 'registerOAuthTokenService')
+        .throws(new Error('Registration failed'));
 
       // The app overrides this with a try/catch in addOAuthServicesToAuthMiddleware
       // so it should NOT throw
@@ -610,7 +747,9 @@ describe('Application', () => {
     beforeEach(async () => {
       mockAppConfig = createMockAppConfig();
       sandbox.stub(appConfigModule, 'loadAppConfig').resolves(mockAppConfig);
-      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
+      sandbox
+        .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+        .returns(createMockCmConfig());
       sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
@@ -644,81 +783,35 @@ describe('Application', () => {
       expect(layerNames).to.include('corsMiddleware');
     });
 
-    it('should NOT include helmet when STRICT_MODE is not true', async () => {
-      const expressApp = (app as any).app as express.Express;
-      const layerNames = (expressApp as any)._router.stack
-        .map((layer: any) => layer.name)
-        .filter(Boolean);
-      // helmet adds multiple middleware layers with various names
-      expect(layerNames).to.not.include('helmet');
-    });
-
-    it('should include helmet when STRICT_MODE=true', async () => {
-      // Re-initialize with STRICT_MODE — route factories are already stubbed
-      // by the beforeEach's stubAllContainers call, so only stub containers here
-      const original = process.env.STRICT_MODE;
-      process.env.STRICT_MODE = 'true';
-      try {
-        const strictApp = new Application();
-        // Container stubs are already in place from the beforeEach, just re-use them
-        // (they resolve to the same mock containers on each call)
-        await strictApp.initialize();
-
-        const expressApp = (strictApp as any).app as express.Express;
-        const layerNames = (expressApp as any)._router.stack
-          .map((layer: any) => layer.name)
-          .filter(Boolean);
-        // helmet registers multiple middleware — at least one should be present
-        const hasHelmetMiddleware = layerNames.some(
-          (name: string) =>
-            name.includes('helmet') ||
-            name === 'crossOriginOpenerPolicy' ||
-            name === 'contentSecurityPolicy',
-        );
-        expect(hasHelmetMiddleware).to.be.true;
-      } finally {
-        restoreEnv('STRICT_MODE', original);
-      }
-    });
-
-    // Forms rendered from model output must not post off-origin.
-    it("should send a CSP with form-action 'self' when STRICT_MODE=true", async () => {
-      const original = process.env.STRICT_MODE;
-      process.env.STRICT_MODE = 'true';
-      try {
-        const strictApp = new Application();
-        await strictApp.initialize();
-
-        interface MiddlewareLayer {
-          name: string;
-          handle: (req: { headers: Record<string, string> }, res: HeaderSink, next: (err?: unknown) => void) => void;
+    // SEC-D-07: the headers are on whatever STRICT_MODE says; an old .env's STRICT_MODE=false relaxes nothing.
+    for (const strictMode of [undefined, 'false', 'true']) {
+      it(`sends the security headers and no X-Powered-By with STRICT_MODE=${strictMode}`, async () => {
+        const original = process.env.STRICT_MODE;
+        if (strictMode === undefined) delete process.env.STRICT_MODE;
+        else process.env.STRICT_MODE = strictMode;
+        try {
+          const headerApp = new Application();
+          await headerApp.initialize();
+          const expressApp = (headerApp as unknown as { app: express.Express }).app;
+          const server = expressApp.listen(0);
+          try {
+            const { port } = server.address() as import('net').AddressInfo;
+            for (const page of ['/', '/chat/', '/no-such-page', '/_next/static/missing.js']) {
+              const h = (await fetch(`http://127.0.0.1:${port}${page}`)).headers;
+              expect(h.get('x-powered-by'), page).to.equal(null);
+              expect(h.get('x-frame-options'), page).to.equal('DENY');
+              expect(h.get('x-content-type-options'), page).to.equal('nosniff');
+              // Without a built UI these end in Express's own error page, which sets its own CSP; X-Frame-Options still holds.
+              expect(h.get('content-security-policy'), page).to.be.a('string');
+            }
+          } finally {
+            server.close();
+          }
+        } finally {
+          restoreEnv('STRICT_MODE', original);
         }
-        interface HeaderSink {
-          setHeader: (name: string, value: string) => void;
-          removeHeader: (name: string) => void;
-          getHeader: (name: string) => string | undefined;
-        }
-        const expressApp = (strictApp as unknown as { app: { _router: { stack: MiddlewareLayer[] } } }).app;
-        const helmetLayer = expressApp._router.stack.find((layer) => layer.name === 'helmetMiddleware');
-        expect(helmetLayer, 'helmet middleware layer').to.exist;
-
-        const headers: Record<string, string> = {};
-        const res: HeaderSink = {
-          setHeader: (name, value) => { headers[name.toLowerCase()] = value; },
-          removeHeader: () => {},
-          getHeader: (name) => headers[name.toLowerCase()],
-        };
-        await new Promise<void>((resolve, reject) =>
-          helmetLayer!.handle({ headers: {} }, res, (err?: unknown) => (err ? reject(err) : resolve())),
-        );
-
-        const csp = headers['content-security-policy'];
-        expect(csp).to.be.a('string');
-        expect(csp).to.include("form-action 'self'");
-      } finally {
-        restoreEnv('STRICT_MODE', original);
-      }
-    });
+      });
+    }
 
     it('runs the operator-key guard after the global rate limiter, so rejected requests still count', async () => {
       const globalRateLimiter: express.RequestHandler = (_req, _res, next) => next();
@@ -924,8 +1017,12 @@ describe('Application', () => {
     let expressApp: express.Express;
 
     beforeEach(async () => {
-      sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
-      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
+      sandbox
+        .stub(appConfigModule, 'loadAppConfig')
+        .resolves(createMockAppConfig());
+      sandbox
+        .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+        .returns(createMockCmConfig());
       sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
@@ -946,6 +1043,9 @@ describe('Application', () => {
       '/api/v1/document',
       '/api/v1/conversations',
       '/api/v1/agents',
+      '/api/v1/agents',
+      '/api/v1/agent-harness/internal',
+      '/api/v1/agent-harness/admin',
       '/api/v1/search',
       '/api/v1/connectors',
       '/api/v1/oauth',
@@ -1063,8 +1163,7 @@ describe('Application', () => {
         (...args: any[]) => {
           args[args.length - 1]();
           return server;
-        },
-      );
+        });
 
       await app.start();
 
@@ -1084,8 +1183,7 @@ describe('Application', () => {
           (...args: any[]) => {
             args[args.length - 1]();
             return server;
-          },
-        );
+          });
 
         await app.start();
         expect(listenStub.firstCall.args[0]).to.equal(5555);
@@ -1183,23 +1281,87 @@ describe('Application', () => {
       // Set up a mock notification container with NotificationService
       const mockNotifService = { shutdown: sandbox.stub() };
       const notifContainer = new Container();
-      notifContainer.bind<any>(NotificationService).toConstantValue(mockNotifService);
+      notifContainer
+        .bind<any>(NotificationService)
+        .toConstantValue(mockNotifService);
       (app as any).notificationContainer = notifContainer;
 
       await app.stop();
 
-      expect((NotificationContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
-      expect((StorageContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
-      expect((UserManagerContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
-      expect((AuthServiceContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
-      expect((EnterpriseSearchAgentContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
-      expect((TokenManagerContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
-      expect((KnowledgeBaseContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
-      expect((ConfigurationManagerContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
-      expect((MailServiceContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
-      expect((CrawlingManagerContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
-      expect((ApiDocsContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
-      expect((OAuthProviderContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
+      expect((NotificationContainer.dispose as sinon.SinonStub).calledOnce).to
+        .be.true;
+      expect((StorageContainer.dispose as sinon.SinonStub).calledOnce).to.be
+        .true;
+      expect((UserManagerContainer.dispose as sinon.SinonStub).calledOnce).to.be
+        .true;
+      expect((AuthServiceContainer.dispose as sinon.SinonStub).calledOnce).to.be
+        .true;
+      expect(
+        (EnterpriseSearchAgentContainer.dispose as sinon.SinonStub).calledOnce,
+      ).to.be.true;
+      expect((TokenManagerContainer.dispose as sinon.SinonStub).calledOnce).to
+        .be.true;
+      expect((KnowledgeBaseContainer.dispose as sinon.SinonStub).calledOnce).to
+        .be.true;
+      expect(
+        (ConfigurationManagerContainer.dispose as sinon.SinonStub).calledOnce,
+      ).to.be.true;
+      expect((MailServiceContainer.dispose as sinon.SinonStub).calledOnce).to.be
+        .true;
+      expect((CrawlingManagerContainer.dispose as sinon.SinonStub).calledOnce)
+        .to.be.true;
+      expect((ApiDocsContainer.dispose as sinon.SinonStub).calledOnce).to.be
+        .true;
+      expect((OAuthProviderContainer.dispose as sinon.SinonStub).calledOnce).to
+        .be.true;
+    });
+
+    it('OPS2-3: stops once when called again and again, concurrently or after', async () => {
+      await Promise.all([app.stop(), app.stop(), app.stop()]);
+      await app.stop();
+      expect((NotificationContainer.dispose as sinon.SinonStub).callCount).to.equal(1);
+      expect((OAuthProviderContainer.dispose as sinon.SinonStub).callCount).to.equal(1);
+      expect(
+        mockLogger.info
+          .getCalls()
+          .filter((c: sinon.SinonSpyCall) => c.args[0] === 'Shutting down application...'),
+      ).to.have.length(1);
+    });
+
+    it('OPS1-1-9: gives up leadership, then answers what it accepted, and only then closes the stores', async () => {
+      const order: string[] = [];
+      sandbox
+        .stub(EnterpriseSearchAgentContainer, 'quiesce')
+        .callsFake(async () => void order.push('leadership released'));
+      (app as any).drains.splice(0, Infinity, {
+        drain: async () => void order.push('requests answered'),
+      });
+      for (const container of [
+        NotificationContainer,
+        EnterpriseSearchAgentContainer,
+        TokenManagerContainer,
+      ]) {
+        (container.dispose as sinon.SinonStub).callsFake(
+          async () => void order.push('stores closed'),
+        );
+      }
+      (app as any).notificationContainer = new Container();
+
+      await app.stop();
+
+      expect(order).to.deep.equal([
+        'leadership released',
+        'requests answered',
+        'stores closed',
+        'stores closed',
+        'stores closed',
+      ]);
+    });
+
+    it('OPS1-1-9: both listeners are drained', () => {
+      expect((app as any).drains).to.have.length(1);
+      (app as any).keepAlive(http.createServer());
+      expect((app as any).drains).to.have.length(2);
     });
 
     it('still disposes every container when the edition fails to stop', async () => {
@@ -1215,7 +1377,9 @@ describe('Application', () => {
     it('should call NotificationService.shutdown()', async () => {
       const mockNotifService = { shutdown: sandbox.stub() };
       const notifContainer = new Container();
-      notifContainer.bind<any>(NotificationService).toConstantValue(mockNotifService);
+      notifContainer
+        .bind<any>(NotificationService)
+        .toConstantValue(mockNotifService);
       (app as any).notificationContainer = notifContainer;
 
       await app.stop();
@@ -1232,79 +1396,17 @@ describe('Application', () => {
       await app.stop();
     });
 
-    it('should finish in-flight requests before disposing containers', async () => {
-      (app as any).notificationContainer = new Container();
-      const order: string[] = [];
-      const mailContainer = new Container();
-      mailContainer.bind<any>(MailSenderService).toConstantValue({ close: () => { order.push('mail sender closed'); } });
-      (app as any).mailServiceContainer = mailContainer;
-      (TokenManagerContainer.dispose as sinon.SinonStub).callsFake(async () => { order.push('dispose'); });
-      let handlerStarted!: () => void;
-      const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
-      const server = http.createServer((_req, res) => {
-        handlerStarted();
-        res.on('finish', () => { order.push('response'); });
-        setTimeout(() => { res.end('ok'); }, 50);
-      });
-      (app as any).server = server;
-      await new Promise<void>((resolve) => server.listen(0, resolve));
-      const { port } = server.address() as AddressInfo;
-      const inFlight = new Promise<string>((resolve, reject) => {
-        http.get(`http://127.0.0.1:${port}/`, (res) => {
-          let body = '';
-          res.on('data', (c) => { body += c; });
-          res.on('end', () => resolve(body));
-        }).on('error', reject);
-      });
-      await requestReceived;
-
-      await app.stop();
-
-      expect(await inFlight).to.equal('ok');
-      expect(order).to.deep.equal(['response', 'mail sender closed', 'dispose']);
-      expect(server.listening).to.be.false;
-    });
-
-    it('should not let an idle keep-alive socket hold the drain open', async () => {
-      (app as any).notificationContainer = new Container();
-      let respondedAt = 0;
-      let handlerStarted!: () => void;
-      const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
-      const server = http.createServer((_req, res) => {
-        handlerStarted();
-        setTimeout(() => { respondedAt = Date.now(); res.end('ok'); }, 50);
-      });
-      server.keepAliveTimeout = 65_000;
-      (app as any).server = server;
-      await new Promise<void>((resolve) => server.listen(0, resolve));
-      const { port } = server.address() as AddressInfo;
-      // A raw socket, because nock (loaded by other specs) rewrites http.get
-      // requests to Connection: close and would hide the keep-alive case.
-      const socket = net.connect(port, '127.0.0.1');
-      let received = '';
-      socket.on('data', (c) => { received += c; });
-      const socketClosed = new Promise<void>((resolve) => socket.on('close', () => resolve()));
-      socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n');
-      await requestReceived;
-
-      try {
-        await Promise.all([app.stop(), socketClosed]);
-      } finally {
-        socket.destroy();
-      }
-
-      expect(received).to.match(/^HTTP\/1\.1 200[\s\S]*Connection: keep-alive[\s\S]*\r\n\r\nok$/);
-      expect(Date.now() - respondedAt).to.be.below(1000);
-      expect(server.listening).to.be.false;
-    });
-
     it('should throw if a container dispose fails', async () => {
       const mockNotifService = { shutdown: sandbox.stub() };
       const notifContainer = new Container();
-      notifContainer.bind<any>(NotificationService).toConstantValue(mockNotifService);
+      notifContainer
+        .bind<any>(NotificationService)
+        .toConstantValue(mockNotifService);
       (app as any).notificationContainer = notifContainer;
 
-      (StorageContainer.dispose as sinon.SinonStub).rejects(new Error('Redis disconnect error'));
+      (StorageContainer.dispose as sinon.SinonStub).rejects(
+        new Error('Redis disconnect error'),
+      );
 
       try {
         await app.stop();
@@ -1355,18 +1457,14 @@ describe('Application', () => {
       migrationService: { runMigration: sinon.SinonStub },
     ) => {
       const cmContainer = new Container();
-      cmContainer
-        .bind<any>(MigrationService)
-        .toConstantValue(migrationService);
+      cmContainer.bind<any>(MigrationService).toConstantValue(migrationService);
       (app as any).configurationManagerContainer = cmContainer;
 
       const crawlingContainer = new Container();
-      const { CrawlingSchedulerService } = require(
-        '../src/modules/crawling_manager/services/crawling_service',
-      );
-      crawlingContainer
-        .bind<any>(CrawlingSchedulerService)
-        .toConstantValue({});
+      const {
+        CrawlingSchedulerService,
+      } = require('../src/modules/crawling_manager/services/crawling_service');
+      crawlingContainer.bind<any>(CrawlingSchedulerService).toConstantValue({});
       (app as any).crawlingManagerContainer = crawlingContainer;
 
       sandbox
@@ -1414,9 +1512,14 @@ describe('Application', () => {
       const app = new Application();
       const cmConfig = createMockCmConfig();
       cmConfig.storeType = StoreType.Etcd3;
-      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(cmConfig);
+      sandbox
+        .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+        .returns(cmConfig);
 
-      const migrationStub = sandbox.stub(kvMigrationModule, 'checkAndMigrateIfNeeded');
+      const migrationStub = sandbox.stub(
+        kvMigrationModule,
+        'checkAndMigrateIfNeeded',
+      );
 
       await app.preInitMigration();
 
@@ -1427,12 +1530,17 @@ describe('Application', () => {
       const app = new Application();
       const cmConfig = createMockCmConfig();
       cmConfig.storeType = StoreType.Redis;
-      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(cmConfig);
+      sandbox
+        .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+        .returns(cmConfig);
 
       const originalEtcdUrl = process.env.ETCD_URL;
       delete process.env.ETCD_URL;
 
-      const migrationStub = sandbox.stub(kvMigrationModule, 'checkAndMigrateIfNeeded');
+      const migrationStub = sandbox.stub(
+        kvMigrationModule,
+        'checkAndMigrateIfNeeded',
+      );
 
       try {
         await app.preInitMigration();
@@ -1446,17 +1554,21 @@ describe('Application', () => {
       const app = new Application();
       const cmConfig = createMockCmConfig();
       cmConfig.storeType = StoreType.Redis;
-      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(cmConfig);
+      sandbox
+        .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+        .returns(cmConfig);
 
       const originalEtcdUrl = process.env.ETCD_URL;
       process.env.ETCD_URL = 'http://localhost:2379';
 
-      const migrationStub = sandbox.stub(kvMigrationModule, 'checkAndMigrateIfNeeded').resolves({
-        success: true,
-        migratedKeys: ['key1', 'key2'],
-        failedKeys: [],
-        skippedKeys: [],
-      });
+      const migrationStub = sandbox
+        .stub(kvMigrationModule, 'checkAndMigrateIfNeeded')
+        .resolves({
+          success: true,
+          migratedKeys: ['key1', 'key2'],
+          failedKeys: [],
+          skippedKeys: [],
+        });
 
       try {
         await app.preInitMigration();
@@ -1470,7 +1582,9 @@ describe('Application', () => {
       const app = new Application();
       const cmConfig = createMockCmConfig();
       cmConfig.storeType = StoreType.Redis;
-      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(cmConfig);
+      sandbox
+        .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+        .returns(cmConfig);
 
       const originalEtcdUrl = process.env.ETCD_URL;
       process.env.ETCD_URL = 'http://localhost:2379';
@@ -1489,7 +1603,9 @@ describe('Application', () => {
       const app = new Application();
       const cmConfig = createMockCmConfig();
       cmConfig.storeType = StoreType.Redis;
-      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(cmConfig);
+      sandbox
+        .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+        .returns(cmConfig);
 
       const originalEtcdUrl = process.env.ETCD_URL;
       process.env.ETCD_URL = 'http://localhost:2379';
@@ -1523,9 +1639,15 @@ describe('Application', () => {
       process.env.SLACK_BOT_PORT = '4040';
 
       try {
-        sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
-        sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-        sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
+        sandbox
+          .stub(appConfigModule, 'loadAppConfig')
+          .resolves(createMockAppConfig());
+        sandbox
+          .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+          .returns(createMockCmConfig());
+        sandbox
+          .stub(messageBrokerModule, 'ensureMessageTopicsExist')
+          .resolves();
         sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
         const app = new Application();
@@ -1535,8 +1657,8 @@ describe('Application', () => {
         // The proxy is registered — we can verify via the router stack
         const expressApp = (app as any).app as express.Express;
         const stack = (expressApp as any)._router?.stack || [];
-        const slackLayer = stack.find((layer: any) =>
-          layer.regexp && layer.regexp.test('/slack/events'),
+        const slackLayer = stack.find(
+          (layer: any) => layer.regexp && layer.regexp.test('/slack/events'),
         );
         expect(slackLayer).to.exist;
       } finally {
@@ -1549,9 +1671,15 @@ describe('Application', () => {
       delete process.env.SLACK_BOT_PORT;
 
       try {
-        sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
-        sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-        sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
+        sandbox
+          .stub(appConfigModule, 'loadAppConfig')
+          .resolves(createMockAppConfig());
+        sandbox
+          .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+          .returns(createMockCmConfig());
+        sandbox
+          .stub(messageBrokerModule, 'ensureMessageTopicsExist')
+          .resolves();
         sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
         const app = new Application();
@@ -1561,8 +1689,8 @@ describe('Application', () => {
         // Proxy should still be registered with default port
         const expressApp = (app as any).app as express.Express;
         const stack = (expressApp as any)._router?.stack || [];
-        const slackLayer = stack.find((layer: any) =>
-          layer.regexp && layer.regexp.test('/slack/events'),
+        const slackLayer = stack.find(
+          (layer: any) => layer.regexp && layer.regexp.test('/slack/events'),
         );
         expect(slackLayer).to.exist;
       } finally {
@@ -1581,10 +1709,15 @@ describe('Application', () => {
 
       const mockOAuthTokenService = { validateToken: sandbox.stub() };
       const oauthContainer = new Container();
-      oauthContainer.bind<any>('OAuthTokenService').toConstantValue(mockOAuthTokenService);
+      oauthContainer
+        .bind<any>('OAuthTokenService')
+        .toConstantValue(mockOAuthTokenService);
       (app as any).oauthProviderContainer = oauthContainer;
 
-      const registerStub = sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+      const registerStub = sandbox.stub(
+        oauthProviderModule,
+        'registerOAuthTokenService',
+      );
 
       await app.addOAuthServicesToAuthMiddleware();
 
@@ -1613,8 +1746,12 @@ describe('Application', () => {
   // =========================================================================
   describe('setupApiDocs()', () => {
     it('should mount API docs at /api/v1/docs after initialization', async () => {
-      sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
-      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
+      sandbox
+        .stub(appConfigModule, 'loadAppConfig')
+        .resolves(createMockAppConfig());
+      sandbox
+        .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+        .returns(createMockCmConfig());
       sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
@@ -1624,8 +1761,8 @@ describe('Application', () => {
 
       const expressApp = (app as any).app as express.Express;
       const stack = (expressApp as any)._router?.stack || [];
-      const docsLayer = stack.find((layer: any) =>
-        layer.regexp && layer.regexp.test('/api/v1/docs'),
+      const docsLayer = stack.find(
+        (layer: any) => layer.regexp && layer.regexp.test('/api/v1/docs'),
       );
       expect(docsLayer).to.exist;
     });
@@ -1637,12 +1774,19 @@ describe('Application', () => {
   describe('CORS configuration', () => {
     it('should use ALLOWED_ORIGINS from environment', async () => {
       const original = process.env.ALLOWED_ORIGINS;
-      process.env.ALLOWED_ORIGINS = 'https://example.com,https://app.example.com';
+      process.env.ALLOWED_ORIGINS =
+        'https://example.com,https://app.example.com';
 
       try {
-        sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
-        sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-        sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
+        sandbox
+          .stub(appConfigModule, 'loadAppConfig')
+          .resolves(createMockAppConfig());
+        sandbox
+          .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+          .returns(createMockCmConfig());
+        sandbox
+          .stub(messageBrokerModule, 'ensureMessageTopicsExist')
+          .resolves();
         sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
         const app = new Application();
@@ -1664,9 +1808,15 @@ describe('Application', () => {
       delete process.env.ALLOWED_ORIGINS;
 
       try {
-        sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
-        sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
-        sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
+        sandbox
+          .stub(appConfigModule, 'loadAppConfig')
+          .resolves(createMockAppConfig());
+        sandbox
+          .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+          .returns(createMockCmConfig());
+        sandbox
+          .stub(messageBrokerModule, 'ensureMessageTopicsExist')
+          .resolves();
         sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
         const app = new Application();
@@ -1689,8 +1839,12 @@ describe('Application', () => {
   // =========================================================================
   describe('error handling middleware', () => {
     it('should register error handler as the last middleware before static/SPA', async () => {
-      sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
-      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
+      sandbox
+        .stub(appConfigModule, 'loadAppConfig')
+        .resolves(createMockAppConfig());
+      sandbox
+        .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+        .returns(createMockCmConfig());
       sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
@@ -1717,8 +1871,12 @@ describe('Application', () => {
     it('should initialize containers before configuring middleware and routes', async () => {
       const callOrder: string[] = [];
 
-      sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
-      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
+      sandbox
+        .stub(appConfigModule, 'loadAppConfig')
+        .resolves(createMockAppConfig());
+      sandbox
+        .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+        .returns(createMockCmConfig());
       sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
@@ -1726,10 +1884,12 @@ describe('Application', () => {
       const { containers } = stubAllContainers(sandbox);
 
       // Track TokenManagerContainer init to verify order
-      (TokenManagerContainer.initialize as sinon.SinonStub).callsFake(async () => {
-        callOrder.push('tokenManagerInit');
-        return containers['token'];
-      });
+      (TokenManagerContainer.initialize as sinon.SinonStub).callsFake(
+        async () => {
+          callOrder.push('tokenManagerInit');
+          return containers['token'];
+        },
+      );
 
       await app.initialize();
 
@@ -1737,8 +1897,12 @@ describe('Application', () => {
     });
 
     it('should set up Slack proxy before body-parsing middleware', async () => {
-      sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
-      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
+      sandbox
+        .stub(appConfigModule, 'loadAppConfig')
+        .resolves(createMockAppConfig());
+      sandbox
+        .stub(cmConfigModule, 'loadConfigurationManagerConfig')
+        .returns(createMockCmConfig());
       sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
       sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
 
@@ -1751,8 +1915,8 @@ describe('Application', () => {
       const layerNames = stack.map((l: any) => l.name || 'anonymous');
 
       // Slack proxy should appear before jsonParser
-      const slackIdx = stack.findIndex((l: any) =>
-        l.regexp && l.regexp.test('/slack/events'),
+      const slackIdx = stack.findIndex(
+        (l: any) => l.regexp && l.regexp.test('/slack/events'),
       );
       const jsonIdx = layerNames.indexOf('jsonParser');
 

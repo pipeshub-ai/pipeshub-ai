@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
@@ -21,6 +22,7 @@ from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from tests.support.log_capture import assert_text_free
 from tests.support.provider_errors import SENTINELS, openai_error, with_cause
+from tests.support.record_access import InMemoryRecordAccess
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -53,16 +55,36 @@ def env(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
 _WINDOW = (1_772_323_200_000, 1_772_409_600_000)
 
 
-def _graph(rows: list[dict[str, Any]], readable: set[str] | None = None) -> AsyncMock:
-    """``rows``: hits ``{recordId, recordType, sortTs}``; every hit is readable unless ``readable`` says."""
+@dataclass
+class _Readable(InMemoryRecordAccess):
+    """The shared fake, keeping each batch of ids it was asked to filter (what a test asserts of the walk)."""
+
+    batches: list[list[str]] = field(default_factory=list[list[str]])
+
+    async def filter_accessible_record_ids(
+        self, record_ids: list[str], user_id: str, org_id: str, *, transaction: str | None = None,
+    ) -> set[str]:
+        self.batches.append(list(record_ids))
+        return await super().filter_accessible_record_ids(record_ids, user_id, org_id, transaction=transaction)
+
+
+def _graph(
+    rows: list[dict[str, Any]], readable: set[str] | None = None, *, seed: Sequence[str] = (),
+) -> AsyncMock:
+    """``rows``: hits ``{recordId, recordType, sortTs}``; every hit (and each id in ``seed``, for a test that
+    swaps the hits) is a record u1 reads unless ``readable`` says. ``graph.access`` is the shared fake."""
     graph = AsyncMock()
     graph.get_records_for_named_entities = AsyncMock(return_value={
         "hits": [{"virtualRecordId": f"v-{r['recordId']}", "connectorId": APP, **r} for r in rows],
         "truncated": False,
     })
-    graph.filter_accessible_record_ids = AsyncMock(
-        side_effect=lambda ids, *_: set(ids) if readable is None else set(ids) & readable,
-    )
+    access = _Readable().user("u1", "org")
+    for record_id in [*(r["recordId"] for r in rows), *seed]:
+        access.record(record_id, "org", connectorId=APP)
+        if readable is None or record_id in readable:
+            access.grant(record_id, user="u1")
+    access.serve(graph)
+    graph.access = access
     graph.get_records_by_record_ids = AsyncMock(side_effect=lambda ids, *_: [
         {"_key": i, "recordName": f"doc-{i}", "recordType": "FILE", "connectorId": APP} for i in ids
     ])
@@ -137,8 +159,8 @@ async def test_the_cursor_is_a_position_and_later_pages_check_only_their_own_win
 
     assert ok and _listed(body) == [f"r{i:03}" for i in range(2400, 2440, 2)]
     assert _cursor(body) == "7562:r2438"
-    checked = graph.filter_accessible_record_ids.await_args_list[0].args[0]
-    assert checked[0] == "r2400" and len(graph.filter_accessible_record_ids.await_args_list) == 1
+    checked = graph.access.batches[0]
+    assert checked[0] == "r2400" and len(graph.access.batches) == 1
 
 
 async def test_unreadable_records_are_never_named(env: AsyncMock) -> None:
@@ -154,7 +176,7 @@ async def test_record_types_are_kept_before_any_permission_check(env: AsyncMock)
     graph = _graph([*_rows(2, "MAIL"), {"recordId": "f1", "recordType": "FILE", "sortTs": 1}])
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"], record_types=["file"])
     assert ok and _listed(body) == ["f1"]
-    assert graph.filter_accessible_record_ids.await_args.args[0] == ["f1"]
+    assert graph.access.batches[-1] == ["f1"]
     assert 'record_types=["FILE"]' in body
 
 
@@ -210,7 +232,7 @@ async def test_an_unknown_kind_points_to_record_types(env: AsyncMock) -> None:
 
 
 async def test_a_too_broad_filter_counted_over_readable_records_lists_up_to_the_scan_limit(env: AsyncMock) -> None:
-    graph = _graph([])
+    graph = _graph([], seed=["r1"])
     graph.get_records_for_named_entities = AsyncMock(side_effect=[
         {"hits": [], "truncated": True},
         {"hits": [], "truncated": True},
@@ -298,7 +320,7 @@ async def test_a_page_stops_at_the_scan_budget_past_its_first_readable_record(
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"])
 
     assert ok and _listed(body) == ["r050"] and "More records may match: " in body
-    assert _cursor(body) == "9931:r069" and graph.filter_accessible_record_ids.await_count == 7
+    assert _cursor(body) == "9931:r069" and len(graph.access.batches) == 7
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"], cursor=_cursor(body))
     assert (ok, body) == (True, values.NO_FURTHER_RECORDS_MSG)
 
@@ -320,7 +342,7 @@ async def test_an_unknown_record_type_lists_the_valid_ones(env: AsyncMock) -> No
 
 async def test_source_ids_keep_one_source_and_are_repeated_in_the_continue_call(env: AsyncMock) -> None:
     env.return_value = _context(app_level_app_ids=frozenset({APP, "kb-other"}))
-    graph = _graph([])
+    graph = _graph([], seed=[*(f"r{i:03}" for i in range(25)), "other"])
     graph.get_records_for_named_entities = AsyncMock(return_value={"hits": [
         *({"recordId": f"r{i:03}", "virtualRecordId": "v", "connectorId": APP, "sortTs": 100 - i} for i in range(25)),
         {"recordId": "other", "virtualRecordId": "v", "connectorId": "kb-other", "sortTs": 999},
@@ -334,7 +356,7 @@ async def test_a_source_outside_the_conversation_says_so(env: AsyncMock) -> None
     graph = _graph(_rows(3))
     ok, body = await values.execute_find_records_by_value(_state(graph), kinds=["date"], source_ids=["kb-hidden"])
     assert (ok, body) == (True, values.NO_SOURCE_MSG)
-    graph.filter_accessible_record_ids.assert_not_called()
+    assert graph.access.batches == []
 
 
 async def test_percent_bounds_written_as_whole_numbers_get_a_hint(env: AsyncMock) -> None:
