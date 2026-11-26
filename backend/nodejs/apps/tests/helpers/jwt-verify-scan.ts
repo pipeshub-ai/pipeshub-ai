@@ -319,3 +319,39 @@ export function unlistedLibraryMentions(
   }
   return found;
 }
+
+/**
+ * The names a source file exports: exported declarations, export lists (`export { a }`,
+ * `export { a as b }`) and named re-exports (`export { a } from './x'`), by exported name.
+ */
+export function exportedNames(source: string): string[] {
+  const file = ts.createSourceFile(
+    'x.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const names: string[] = [];
+  for (const st of file.statements) {
+    if (ts.isExportDeclaration(st)) {
+      if (st.exportClause && ts.isNamedExports(st.exportClause)) {
+        for (const el of st.exportClause.elements) names.push(el.name.text);
+      }
+    } else if (
+      ts.canHaveModifiers(st) &&
+      ts.getModifiers(st)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+    ) {
+      if (ts.isVariableStatement(st)) {
+        for (const d of st.declarationList.declarations) {
+          if (ts.isIdentifier(d.name)) names.push(d.name.text);
+        }
+      } else if (
+        (ts.isFunctionDeclaration(st) || ts.isClassDeclaration(st)) &&
+        st.name
+      ) {
+        names.push(st.name.text);
+      }
+    }
+  }
+  return names;
+}
