@@ -415,7 +415,6 @@ class KhListingMixin(PgBase):
             if not levels[-1]:
                 break
         async def read_unplaced(tx: Tx) -> list[Any]:
-            await tx.fetchval(kgl.NO_JIT)
             return await tx.fetch(kgl.UNPLACED, org, groups, app_id, SCOPE_MAX + 1)
         unplaced = await self._kq(lambda tx: kg_read.in_savepoint(tx, read_unplaced), transaction)
         if len(seen) + len(unplaced) > SCOPE_MAX:

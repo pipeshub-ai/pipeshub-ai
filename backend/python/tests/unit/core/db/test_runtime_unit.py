@@ -93,6 +93,12 @@ def test_write_prologue_references_the_fence_output_in_the_outer_select() -> Non
     assert "fence" not in uow.PROLOGUE_READ
 
 
+def test_every_prologue_turns_jit_off_for_its_unit() -> None:
+    from app.core.db import uow
+
+    assert all("set_config('jit', 'off', true)" in p for p in (uow.PROLOGUE_READ, uow.PROLOGUE_WRITE))
+
+
 def test_request_id_is_sanitised() -> None:
     assert safe_request_id("req-123:abc") == "req-123:abc"
     evil = "x'); DROP TABLE t; --" + "A" * 5000

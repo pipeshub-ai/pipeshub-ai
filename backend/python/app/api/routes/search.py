@@ -483,6 +483,17 @@ def _timed_out_response(seconds: float) -> dict[str, Any]:
     }
 
 
+# Fixed, matching EMBEDDING_RATE_LIMITED_MESSAGE: the provider's own wait tells how busy the provider account is.
+_RATE_LIMITED_RETRY_AFTER_SECONDS = 60
+
+
+def _failed_search_headers(results: dict[str, Any]) -> dict[str, str] | None:
+    """Retry-After for a search the embedding provider refused as rate limited, else None."""
+    if results.get("status") != Status.EMBEDDING_RATE_LIMITED.value:
+        return None
+    return {"Retry-After": str(_RATE_LIMITED_RETRY_AFTER_SECONDS)}
+
+
 # A date-bounded search that found nothing in its dates answers 404 (no
 # accessible records); with matches from outside them it answers 200.
 _NOTHING_IN_DATES_STATUS = 404
@@ -707,7 +718,9 @@ async def search(
                     "search_type": "timeline" if timeline else "search",
                 })
 
-                return JSONResponse(status_code=custom_status_code, content=results)
+                return JSONResponse(
+                    status_code=custom_status_code, content=results, headers=_failed_search_headers(results),
+                )
 
     except HTTPException:
         raise
@@ -1066,7 +1079,10 @@ async def retrieve(
                             "incomplete": bool(results.get("searchIncomplete")),
                             "message": message,
                         })
-                    return JSONResponse(status_code=status_code, content={"message": results.get("message")})
+                    return JSONResponse(
+                        status_code=status_code, content={"message": results.get("message")},
+                        headers=_failed_search_headers(results),
+                    )
                 return JSONResponse(status_code=200, content={
                     "chunks": _retrieve_chunks(results, body.maxChunksPerRecord)[: body.limit],
                     "incomplete": bool(results.get("searchIncomplete")),

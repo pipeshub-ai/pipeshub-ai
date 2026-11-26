@@ -1,4 +1,4 @@
-import { metricsBackend } from '../../../../libs/services/telemetry/metrics-backend';
+import { metricsBackend } from '../../../../libs/services/telemetry/telemetry-impl';
 
 /**
  * SEC-D-13 (ADR-OPS-03): the machine credentials, attempt tokens and gateway tokens the harness refused. The same
