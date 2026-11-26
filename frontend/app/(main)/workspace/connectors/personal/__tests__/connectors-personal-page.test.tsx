@@ -261,4 +261,3 @@ describe('Personal connectors page: turning sync off on a Local FS connector the
     expect(toasts().map((t) => t.variant)).not.toContain('error');
   });
 });
-
