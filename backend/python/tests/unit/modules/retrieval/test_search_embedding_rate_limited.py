@@ -10,12 +10,19 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.agents.chat_modes import prefetch
-from app.api.routes.search import _failed_search_headers
+from app.api.routes.search import (
+    RetrieveQuery,
+    SearchQuery,
+    _failed_search_headers,
+    retrieve,
+    search,
+)
+from app.core.org_context import OrgContext, bind
 from app.exceptions.fastapi_responses import Status
 from app.modules.retrieval import retrieval_service as retrieval
 from app.utils.aimodels import get_embedding_model
@@ -132,6 +139,74 @@ async def test_the_wait_is_fixed_whatever_the_provider_says(provider: _Provider,
 @pytest.mark.parametrize("status", [s for s in Status if s is not Status.EMBEDDING_RATE_LIMITED])
 def test_no_other_failed_search_names_a_wait(status: Status) -> None:
     assert _failed_search_headers({"status": status.value, "retryAfter": 12}) is None
+
+
+def _route_request() -> MagicMock:
+    request = MagicMock()
+    request.state.user = {"userId": "user1", "orgId": "org1", "email": "dev@example.com"}
+    request.app.container.logger.return_value = MagicMock()
+    return request
+
+
+def _retrieval_answering(results: dict[str, Any]) -> MagicMock:
+    retrieval = MagicMock()
+    retrieval.search_with_filters = AsyncMock(return_value=dict(results))
+    return retrieval
+
+
+async def test_the_search_route_sends_the_wait_with_its_503(provider: _Provider) -> None:
+    provider.headers = {"Retry-After": "3600", "X-Request-Id": "gateway-key-team-7"}
+    limited = await _search(provider)
+
+    response = await search(
+        request=_route_request(), body=SearchQuery(query="q", rewriteQuery=False),
+        retrieval_service=_retrieval_answering(limited), graph_provider=MagicMock(),
+    )
+
+    assert response.status_code == 503
+    assert response.headers.get("retry-after") == "60"
+    assert response.headers.get("x-request-id") is None
+    assert json.loads(response.body)["message"] == retrieval.EMBEDDING_RATE_LIMITED_MESSAGE
+    assert b"gateway-key" not in response.body
+
+
+async def test_the_retrieve_route_sends_the_wait_and_only_the_message(provider: _Provider) -> None:
+    limited = await _search(provider)
+
+    with patch("app.api.routes.search.setup_query_transformation"), bind(
+        OrgContext("org1", "user1", "user", "jwt", "req-1"),
+    ):
+        response = await retrieve(
+            request=_route_request(), body=RetrieveQuery(query="q"),
+            retrieval_service=_retrieval_answering(limited), graph_provider=MagicMock(),
+        )
+
+    assert response.status_code == 503
+    assert response.headers.get("retry-after") == "60"
+    assert json.loads(response.body) == {"message": retrieval.EMBEDDING_RATE_LIMITED_MESSAGE}
+
+
+async def test_another_503_from_the_routes_names_no_wait() -> None:
+    unavailable = {
+        "searchResults": [], "records": [], "status": Status.SEARCH_INDEX_UNAVAILABLE.value, "status_code": 503,
+        "message": "The search index could not be reached.",
+    }
+
+    searched = await search(
+        request=_route_request(), body=SearchQuery(query="q", rewriteQuery=False),
+        retrieval_service=_retrieval_answering(unavailable), graph_provider=MagicMock(),
+    )
+    with patch("app.api.routes.search.setup_query_transformation"), bind(
+        OrgContext("org1", "user1", "user", "jwt", "req-1"),
+    ):
+        retrieved = await retrieve(
+            request=_route_request(), body=RetrieveQuery(query="q"),
+            retrieval_service=_retrieval_answering(unavailable), graph_provider=MagicMock(),
+        )
+
+    assert (searched.status_code, retrieved.status_code) == (503, 503)
+    assert searched.headers.get("retry-after") is None
+    assert retrieved.headers.get("retry-after") is None
 
 
 async def test_a_limit_that_lifts_during_the_retries_is_not_an_error(provider: _Provider) -> None:

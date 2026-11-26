@@ -547,7 +547,7 @@ _SELECTION_REQUEST_KEYS = frozenset(
 )
 
 class QueryEmbeddingRateLimitedError(Exception):
-    """The embedding provider still answered 429 to the query after the retries."""
+    """The embedding provider refused the query with a rate limit (429), after any retries."""
 
     def __init__(self) -> None:
         super().__init__("the embedding provider is rate limiting queries")
