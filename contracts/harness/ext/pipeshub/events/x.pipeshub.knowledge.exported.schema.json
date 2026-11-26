@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.knowledge.exported.schema.json",
+  "title": "PipeshubKnowledgeExportedEvent",
+  "description": "A knowledge export (G-35, GA-19), journaled with the call that started it (`started`: the records it may write) and with the status call that first reported its end (`finished`: what it wrote, and `records` giving back what it did not use). `records` is what the event adds to the run's exported records, so their sum is what the run exported; the audit chain records the event. Ids, counts and a digest of the export's arguments only, never a record. Written only to a journal whose claim names knowledge_exports. Not presented; folds ignore it.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.knowledge.exported"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubKnowledgeExportedData"
+    }
+  },
+  "$defs": {
+    "PipeshubKnowledgeExportedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskId",
+        "phase",
+        "records",
+        "requested",
+        "argsDigest"
+      ],
+      "properties": {
+        "taskId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "phase": {
+          "enum": [
+            "started",
+            "finished"
+          ]
+        },
+        "records": {
+          "description": "What the event adds to the export counters: the reserve at `started`, minus what was not written (zero or less) at `finished`.",
+          "type": "integer",
+          "minimum": -100000,
+          "maximum": 100000
+        },
+        "requested": {
+          "description": "The records the export was allowed to write (its limit after any cap the run is under).",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "exported": {
+          "description": "The records the export wrote (finished only).",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "outcome": {
+          "description": "How it ended (finished only): completed (every matching record), limited (it stopped at its limit with more left), failed (the knowledge service or the file write failed), cancelled (its attempt ended first).",
+          "enum": [
+            "completed",
+            "limited",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "argsDigest": {
+          "$ref": "../../../core/common.schema.json#/$defs/Digest"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.knowledge.exported",
+      "data": {
+        "taskId": "exp_1",
+        "phase": "started",
+        "records": 10000,
+        "requested": 10000,
+        "argsDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 12,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.knowledge.exported",
+      "data": {
+        "taskId": "exp_1",
+        "phase": "finished",
+        "records": -120,
+        "requested": 10000,
+        "exported": 9880,
+        "outcome": "completed",
+        "argsDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  ]
+}

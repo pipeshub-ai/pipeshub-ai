@@ -185,7 +185,7 @@ class World:
 
 @pytest.fixture
 def world(monkeypatch: pytest.MonkeyPatch) -> World:
-    monkeypatch.setenv("SECRET_KEY", "test-secret")
+    monkeypatch.setenv("SECRET_KEY", "9caf06bb4436cdbfa20af9121a626bc1093c4f54b31c0fa937957856135345b6")
     return World()
 
 

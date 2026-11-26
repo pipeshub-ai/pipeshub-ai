@@ -15,8 +15,8 @@ import pytest
 
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingTooLarge
 from app.services.graph_db.postgres import kh_browse, kh_listing
+from app.services.graph_db.postgres.kg import grant_marks, net
 from app.services.graph_db.postgres.kg import listing as kgl
-from app.services.graph_db.postgres.kg import net
 from tests.support import plan_gate
 
 from .pg_support import new_org
@@ -507,7 +507,7 @@ async def test_a_node_counts_only_live_linked_children_against_its_bound_and_lis
 
 
 # the statements checked for the plan of their values only (the page's snapshot plans each for its values): the windows of a wide node and its total
-CUSTOM_ONLY = ("wide ", "children ", "undecided ", "count ")
+CUSTOM_ONLY = ("wide ", "children ", "undecided ", "count ", "once ")
 
 
 # an index condition that names the node (or nodes) the statement asks about: a parent, a key, a child, an id (not merely the org, a kind or a class); ``>=`` is a seek's
@@ -597,12 +597,19 @@ async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_orga
                 statements += [(f"children {at}", kgl.children_sql(where, links), ch.values), (f"children_held {at}", kgl.children_held_sql(where, links), held.values),
                                (f"undecided {at}", kgl.browse_undecided_sql(where, und.add([3]), und.add(app_sk), und_links), und.values),
                                (f"count {at}", kgl.browse_count_sql(where, cnt.add([1]), cnt.add([2]), cnt.add(["x"]), cnt.add([3]), cnt.add(app_sk), cnt_links), cnt.values)]
+                for boundary in (None, {"nullRank": 0, "sortKey": "child 0100", "id": "c0100"}):
+                    one, _, one_links = params(204)
+                    branches = kgl.after("name", "ASC", "next", boundary, one) if boundary else None
+                    sql = kgl.browse_once_sql("name", "ASC", "next", where, branches, one_links, (one.add([3]), one.add(app_sk), one.add(201)),
+                                              (one.add([1]), one.add([2]), one.add(["x"]), one.add([3]), one.add(app_sk), one.add(10_001)))
+                    statements.append((f"once {at} {'after' if boundary else 'first'}", sql, one.values))
         q = kgl.Params([org, [sk, g1], hide])
         admit = kgl.class_admit("c", q, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()})
         arrows = kgl.arrows_sql(admit, kgl.undecided_child(q, [3], app_sk))      # as the listing asks it
         statements += [("children_of", kgl.children_of_sql(""), [org, [sk, g1], 200, hide]), ("children_of_bounded", kgl.children_of_sql(total=True), [org, [sk, g1], 1000, hide, 5000]),
                        ("held", kgl.HELD, [org, [g1], ["c0001", "fold"]]), ("chain_granted", kgl.CHAIN_GRANTED, [org, ["c0001", "fold"], "app1"]),
                        ("chain_rows", kgl.CHAIN_ROWS, [org, ["c0001", "fold"]]), ("chain_by_sk", kgl.CHAIN_BY_SK, [org, [sk, g1]]), ("app_key", kgl.APP_KEY, [org, "app1"]),
+                       ("root_chain", grant_marks.ROOT_CHAIN, [org, [sk, *hide], app_sk]), ("keys_of", kgl.KEYS_OF, [org, [sk, *hide]]),
                        ("arrows", arrows, q.values), ("linked_children", kgl.LINKED_CHILDREN, [org, g1, 5001, hide]),
                        ("start", kgl.BROWSE_START, [org, "fold"]), ("start_connector", kh_browse.START_CONNECTOR, [org, "fold"]), ("up", kgl.BROWSE_UP, [org, [sk]]),
                        ("state", kgl.STATE, [org, "app1"]), ("hiders", kgl.HAS_HIDER, [org, app_sk]), ("hidden", kgl.HIDDEN, [org, app_sk]), ("classes", kgl.CLASSES, [org, app_sk, 50_001]),
@@ -1251,3 +1258,43 @@ async def test_a_sidebar_page_reads_each_records_children_once_and_within_the_re
     listed = [r["id"] for r in page["rows"]]
     assert listed and listed == recs[:len(listed)] and all(r["hasChildren"] for r in page["rows"]) and page["hasMore"], listed
     assert max(reads.values()) <= 200 and sum(reads.values()) <= 1000 + 200, reads
+
+
+async def test_a_wide_folder_with_more_undecided_children_than_the_classes_count_keeps_the_bounded_paths(pg_db, monkeypatch) -> None:
+    """A folder too wide to hold whose undecided children (here: copied without their stamp, as mid-sync) are more than the classes count: its page and total are the walk's
+    (the total of a sample, capped), and the one read of the children stops at the undecided ones the limit takes: no count and no window of the whole folder."""
+    monkeypatch.setattr(kh_browse, "BROWSE_MEMORY_MAX", 5)
+    monkeypatch.setattr(kh_browse, "UNDECIDED_MAX", 3)
+    p, org = prov(pg_db), new_org()
+    kids = [f"c{i:04d}" for i in range(30)]
+    await seed_folder(p, pg_db, org, 30, readable_kids=kids)
+    await _admin("UPDATE kg.records SET path = NULL WHERE org_id = $1 AND id = ANY($2::text[])", org, kids[:20])      # 20 undecided: the fourth is within any 14 read
+
+    def shown(page: dict) -> tuple:
+        return [(r["id"], r["hasChildren"]) for r in page["rows"]], page.get("total"), page.get("totalCapped"), page.get("nRecord"), page.get("nFolder")
+    got = shown(await browse(p, org, "fold", ["fold", *kids], start_type="record", limit=4))
+    monkeypatch.setenv("PG_KG_READ", "0")
+    assert shown(await browse(p, org, "fold", ["fold", *kids], start_type="record", limit=4)) == got
+    monkeypatch.delenv("PG_KG_READ")
+    assert got[1] is not None and len(got[0]) == 4
+
+    from asyncpg import connect
+    con = await connect(os.environ["PG_ADMIN_URL"])
+    try:
+        sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 3 AND id = 'fold'", org)
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        base, where = kh_listing.where_of(org, app_sk, {}, {}, [], browse=True)
+        base.values[1], base.values[2] = sk, 20
+        sql = kgl.browse_once_sql("name", "ASC", "next", where, None, None, (base.add([]), base.add(app_sk), base.add(4)),
+                                  (base.add([]), base.add([]), base.add([]), base.add([]), base.add(app_sk), base.add(10_001)))
+        await con.execute("SELECT set_config('app.org_id', $1, false)", org)
+        plan = json.loads(await con.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *base.values))
+        assert len((await con.fetch(sql, *base.values))[0]["undecided"]) == 4
+    finally:
+        await con.close()
+    # the children the CTE's own read produced (its body: what was read of the folder, before any scan of it filters), and every scan of it with the rows its filter removed:
+    # all stop by the fourth undecided child (at most 14 read, whatever the order), not at the folder's 30
+    body = [n for n in _nodes(plan) if n.get("Subplan Name") == "CTE r"]
+    assert len(body) == 1 and body[0].get("Actual Rows", 0) * max(1, body[0].get("Actual Loops", 1)) <= 14, body
+    read = [n for n in _nodes(plan) if n.get("Node Type") == "CTE Scan"]
+    assert read and max((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0)) * max(1, n.get("Actual Loops", 1)) for n in read) <= 14, read

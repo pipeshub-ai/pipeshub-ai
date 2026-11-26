@@ -863,6 +863,7 @@ KG_LOOKUPS = {
     "person_by_source_key": ("(%s)", ("c1:u1",)),
     "principals_by_email": ("(%s::text[], %s::text[])", (["users", "groups", "person"], ["ann@x.com"])),
     "people_by_name": ("(%s, %s)", ("ann", 10)),
+    "records_by_name": ("(%s, %s, %s)", ("c1", "%zed%", 10)),
 }
 
 
@@ -882,7 +883,10 @@ BAD_KG = [
     ("person_by_source_key", "(%s)", a) for a in ((None,), ("",), ("k" * 401,))] + [
     ("principals_by_email", "(%s::text[], %s::text[])", a) for a in ((None, ["a"]), (["users"], None), ([None], ["a"]), (["other"], ["a"]), (["users"] * 4, ["a"]), (["users"], [None]),
                                                                   (["users"], [""]), (["users"], ["e" * 1001]), (["users"], ["e"] * 1001))] + [
-    ("people_by_name", "(%s, %s)", a) for a in ((None, 10), ("", 10), ("n" * 401, 10), ("n", 0), ("n", 1001), ("n", None))]
+    ("people_by_name", "(%s, %s)", a) for a in ((None, 10), ("", 10), ("n" * 401, 10), ("n", 0), ("n", 1001), ("n", None))] + [
+    ("records_by_name", "(%s, %s, %s)", a) for a in ((None, "%abc%", 1), ("", "%abc%", 1), ("c" * 201, "%abc%", 1), ("c", None, 1), ("c", "%ab%", 1), ("c", "%a%b%c%", 1),
+                                                     ("c", "%Abc%", 1), ("c", "%item%", 1), ("c", "%kel%", 1), ("c", "%a_c%", 1), ("c", "%a\\%", 1), ("c", "abc%", 1), ("c", "%abc", 1),
+                                                     ("c", "%%abc%", 1), ("c", "%" + "a" * 2000 + "%", 1), ("c", "%abc%", 0), ("c", "%abc%", 100001), ("c", "%abc%", None))]
 
 
 @pytest.mark.parametrize(("fn", "marks", "args"), BAD_KG, ids=[f"{f}-{i}" for i, (f, _, _) in enumerate(BAD_KG)])
@@ -1578,7 +1582,7 @@ def test_the_address_and_site_lookups_read_their_keys_where_the_plain_statements
 
 # ---- indexes built and dropped outside the upgrade's transaction (db.migrate's online step) ------------------------------------------------
 ONLINE = ("nodes_record_ticket_url", "nodes_record_pending_vrid", "nodes_record_weburl", "nodes_record_ticket_site", "nodes_block_record_seek",
-          "nodes_block_name_seek", "nodes_codefile_path_seek", "nodes_record_refresh_intent")
+          "nodes_block_name_seek", "nodes_codefile_path_seek", "nodes_record_refresh_intent", "nodes_record_name_trgm")
 RETIRED = ("nodes_block_record", "nodes_block_name")
 _DDL = re.compile(r"^(CREATE (UNIQUE )?INDEX|DROP INDEX|ALTER INDEX|REINDEX)\b", re.I)
 
@@ -1615,7 +1619,7 @@ def _left_of(c, indexes) -> list[str]:
 
 
 def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_drops_none(db, monkeypatch, capsys):
-    """From graph_0013 on a populated graph: every index of graph_0014..0020 is built before the upgrade's transaction, concurrently on the leaf
+    """From graph_0013 on a populated graph: every index of graph_0014..0022 is built before the upgrade's transaction, concurrently on the leaf
     that holds rows; the indexes graph_0020 retires go after the commit; the transaction itself runs no index statement at all (one there would
     keep the writers, or for a drop every reader, of graph.nodes waiting until the commit)."""
     from sqlalchemy import Engine, event
@@ -1654,7 +1658,7 @@ def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_dro
     with connect(cluster, name) as c:
         assert all(_whole_and_valid(c, i) for i in ONLINE)
         assert not any(_exists(c, i) for i in RETIRED) and _whole_and_valid(c, "nodes_codefile_path")
-        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (21, 0)
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (23, 0)
 
 
 def test_an_online_build_a_stopped_run_left_invalid_is_rebuilt(db):
@@ -1746,7 +1750,7 @@ def test_an_upgrade_that_raised_keeps_its_indexes_unless_it_did_not_commit(db, m
     assert ("committed although it raised" if outcome == "committed" else "could not tell whether the upgrade committed") in out, out
     with connect(cluster, name) as c:
         assert all(_whole_and_valid(c, i) for i in ONLINE)
-        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == (21 if outcome == "committed" else 13)
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == (23 if outcome == "committed" else 13)
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout + r.stderr
     with connect(cluster, name) as c:
@@ -1778,7 +1782,7 @@ def test_a_retired_index_goes_after_the_commit_and_a_drop_that_had_to_wait_is_do
         assert f"WARNING index graph.{index} was not dropped" in r.stdout, r.stdout
     with connect(cluster, name) as c:
         assert all(_exists(c, i) for i in RETIRED)
-        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (21, 0)
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (23, 0)
     r = run_doctor(url)                                                 # the health check accepts them as the migrate run did
     assert r.returncode == 0 and "doctor: healthy" in r.stdout, r.stdout
     r = run_migrate(url)
@@ -2039,3 +2043,62 @@ def test_an_online_index_on_an_unqualified_table_is_named_in_public(db):
     assert started == ["public.rt_k1"]
     with connect(cluster, name) as c:
         assert c.execute("SELECT count(*) FROM pg_statistic WHERE starelid = 'public.rt_1'::regclass").fetchone()[0] == 1
+
+
+# ---- the knowledge hub's name search (graph_0022) ----------------------------------------------------------------------------------------
+BY_NAME = "SELECT coll, node_id FROM graph.records_by_name(%s, %s, %s)"
+# the same condition as a plain statement of the service, under its row policy
+PLAIN_BY_NAME = ("SELECT n.coll, n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll IN ('records', 'recordGroups') AND n.doc->>'connectorId' = %s "
+                 "AND (coalesce(n.doc->>'name', '') || ' ' || coalesce(n.doc->>'recordName', '') || ' ' || coalesce(n.doc->>'groupName', '')) ILIKE %s")
+NAMED_NODES = {   # id -> (coll, connector, document): names in every field a listing reads a name from, in every case, and nodes the search never answers
+    "r1": ("records", "c1", {"recordName": "Printer-Jam.pdf"}), "r2": ("records", "c1", {"name": "printer jam notes", "recordName": "other"}),
+    "r3": ("records", "c1", {"recordName": "PRINTER_JAM_TRAY.2"}), "g1": ("recordGroups", "c1", {"groupName": "Printer Jams"}),
+    "r4": ("records", "c1", {"recordName": "jam printer"}), "r5": ("records", "c2", {"recordName": "printer jam elsewhere"}),
+    "r6": ("records", "c1", {"name": 12345, "recordName": "item"}), "r7": ("records", "c1", {}), "f1": ("files", "c1", {"recordName": "printer jam file"}),
+    "r8": ("records", "c1", {"recordName": "Café crème 2026"}), "r9": ("records", "c1", {"recordName": "x" * 3000 + " printer jam"}),
+}
+PATTERNS = ["%pr%nter%jam%", "%jam%pr%nter%", "%jam%", "%123%", "%caf%cr%2026%", "%zzz%", "%nter%", "%jams%"]      # as name_pattern spells them (no i or k)
+
+
+def _seed_names(c):
+    for org in (A, B):
+        as_role(c, "pipeshub_connectors", org)
+        for nid, (coll, conn, doc) in NAMED_NODES.items():
+            if not (org == B and nid == "r2"):                                       # "printer jam notes" is A's alone
+                c.execute(NODE, (org, coll, nid, json.dumps({"orgId": org, "connectorId": conn, **doc})))
+
+
+def test_the_name_search_answers_what_the_plain_statement_answered_for_the_org_alone(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_names(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_query", org)
+            for conn in ("c1", "c2", "c3"):
+                for pattern in PATTERNS:
+                    assert sorted(_ids(c, BY_NAME, conn, pattern, 1000)) == sorted(_ids(c, PLAIN_BY_NAME, conn, pattern)), (org, conn, pattern)
+        as_role(c, "pipeshub_query", A)
+        assert sorted(_ids(c, BY_NAME, "c1", "%pr%nter%jam%", 1000)) == [("recordGroups", "g1"), ("records", "r1"), ("records", "r2"), ("records", "r3"), ("records", "r9")]
+        assert _ids(c, BY_NAME, "c1", "%123%", 1000) == [("records", "r6")] and len(_ids(c, BY_NAME, "c1", "%nter%", 2)) == 2
+        as_role(c, "pipeshub_query", B)
+        assert ("records", "r2") not in _ids(c, BY_NAME, "c1", "%pr%nter%jam%", 1000)
+
+
+def test_the_name_search_reads_by_the_trigram_index_where_the_plain_statement_cannot(rdb):
+    """20,000 records in each of two connectors of the org (and 20,000 in another org): the function reaches nodes_record_name_trgm (no sequential scan) on the first
+    and the seventh call; the service's own statement of the same condition reaches the org's leaf only (the ILIKE is not leakproof)."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'connectorId', 'c' || (i %% 2), "
+                      "'recordName', 'item ' || i || ' handle') FROM generate_series(1, 40000) i", (org, org))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        plans = vetted_harness.plans_auto_explain(c, "pipeshub_query", A, "SELECT node_id FROM graph.records_by_name(%s, %s, %s)", ("c1", "%tem%12345%", 10001))
+        for i in (0, 6):
+            assert _uses(plans[i], "nodes_record_name_trgm") and "Seq Scan on" not in plans[i], (i, plans[i])
+        plain = vetted_harness.plans_auto_explain(c, "pipeshub_query", A, PLAIN_BY_NAME.replace("%s", "'c1'", 1).replace("%s", "'%%tem%%12345%%'"))
+        assert not any(_uses(p, "nodes_record_name_trgm") for p in plain), plain[0]
+        as_role(c, "pipeshub_query", A)
+        assert _ids(c, BY_NAME, "c1", "%tem%12345%", 10001) == [("records", "r12345")]

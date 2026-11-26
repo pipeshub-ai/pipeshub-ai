@@ -91,6 +91,42 @@ class TestBaseConnectorAccessors:
         assert c.get_connector_id() == "conn-1"
 
 
+class TestLoadCreatorEmail:
+    """A caller that must not read a failed lookup as a creator who is gone asks for it raised."""
+
+    def _make_connector(self, lookup: AsyncMock) -> ConcreteConnector:
+        tx = MagicMock()
+        tx.get_user_by_user_id = lookup
+        tx.__aenter__ = AsyncMock(return_value=tx)
+        tx.__aexit__ = AsyncMock(return_value=None)
+        store = MagicMock()
+        store.transaction.return_value = tx
+        return ConcreteConnector(
+            app=MagicMock(), logger=MagicMock(), data_entities_processor=MagicMock(),
+            data_store_provider=store, config_service=MagicMock(), connector_id="conn-1",
+            scope="personal", created_by="user-1",
+        )
+
+    async def test_a_failed_lookup_is_raised_when_asked(self) -> None:
+        lookup = AsyncMock(side_effect=RuntimeError("store down"))
+        c = self._make_connector(lookup)
+        with pytest.raises(RuntimeError):
+            await c._load_creator_email(raise_on_error=True)
+        lookup.assert_awaited_once_with("user-1", raise_on_error=True)
+        assert c.creator_email is None
+
+    async def test_a_failed_lookup_is_logged_by_default(self) -> None:
+        c = self._make_connector(AsyncMock(side_effect=RuntimeError("store down")))
+        await c._load_creator_email()
+        assert c.creator_email is None
+        c.logger.warning.assert_called_once()
+
+    async def test_the_creator_email_is_cached(self) -> None:
+        c = self._make_connector(AsyncMock(return_value={"email": "owner@example.com"}))
+        await c._load_creator_email(raise_on_error=True)
+        assert c.creator_email == "owner@example.com"
+
+
 class TestBaseConnectorDisplayName:
     """display_name feeds user-facing error messages that tell the user to go
     to Connector Settings, so it must match the name shown there."""

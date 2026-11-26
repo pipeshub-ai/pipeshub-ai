@@ -1672,11 +1672,11 @@ describe('Connector Routes - handler coverage', () => {
 
       const url: string = exec.firstCall.args[0]
       const identifierParams = url
-        .split('?')[1]
+        .split('?')[1]!
         .split('&')
         .filter((p: string) => p.startsWith('identifiers='))
       expect(identifierParams).to.have.lengthOf(1)
-      expect(decodeURIComponent(identifierParams[0].slice('identifiers='.length))).to.equal(target)
+      expect(decodeURIComponent(identifierParams[0]!.slice('identifiers='.length))).to.equal(target)
     })
 
     it('normalizes a single identifier string to an array', async () => {

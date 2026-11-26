@@ -1,0 +1,37 @@
+# Data analysis cases the parity and replay tests drive: the reference program is the answer key on the
+# committed data files (``wave1/fixtures/data``).
+cases:
+  - id: da-02-top-region
+    inputs: [sales_2025.csv]
+    task: From the attached sales_2025.csv, which region had the highest 2025 revenue, and how much revenue did it bring in?
+    numbers:
+      - {name: top_region_revenue, value: 572880, abs_tol: 0.5}
+    facts: [West]
+    reference:
+      code: |
+        import pandas as pd
+        df = pd.read_csv("input/artifacts/sales_2025.csv")
+        by = df.groupby("region")["revenue"].sum()
+        print(f"FACT top_region={by.idxmax()}")
+        print(f"ANSWER top_region_revenue={by.max()}")
+
+  - id: da-05-revenue-by-product-file
+    inputs: [sales_2025.csv]
+    task: From the attached sales_2025.csv, build a spreadsheet revenue_by_product.xlsx with columns product and revenue (one row per product) and a final Total row. Also tell me how many units of Arm-200 were sold in the first half of 2025.
+    numbers:
+      - {name: arm200_h1_units, value: 182, abs_tol: 0}
+    file:
+      kind: xlsx
+      columns: [product, revenue]
+      min_rows: 4
+      total: {column: revenue}
+    reference:
+      code: |
+        import os
+        import pandas as pd
+        df = pd.read_csv("input/artifacts/sales_2025.csv", parse_dates=["date"])
+        h1 = df[(df["product"] == "Arm-200") & (df.date.dt.month <= 6)]
+        print(f"ANSWER arm200_h1_units={h1.units.sum()}")
+        by = df.groupby("product", as_index=False)["revenue"].sum()
+        by.loc[len(by)] = ["Total", by.revenue.sum()]
+        by.to_excel(os.path.join(os.environ["OUTPUT_DIR"], "revenue_by_product.xlsx"), index=False)

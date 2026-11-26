@@ -17,6 +17,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.utils.chat_helpers import CitationRefMapper
 from app.utils.execute_query import agent_knowledge_has_sql_connector
 from app.utils.fetch_slack_thread import agent_knowledge_has_slack_connector
+from harness_core.effects.flow import FlowRule
 
 # Default persona when the UI does not supply systemPrompt (keep in sync with API defaults).
 DEFAULT_AGENT_SYSTEM_PROMPT = "You are an enterprise questions answering expert"
@@ -102,6 +103,7 @@ class ChatState(TypedDict):
     project_tools_selected: bool  # A project chat whose tools are the ones enabled on the project
     timezone: str | None  # User's timezone (e.g., "America/New_York")
     current_time: str | None  # Current time in user's timezone (ISO 8601)
+    locale: str | None  # G-52: the person's locale (BCP 47), which sets the answer's language
     apps: list[str] | None  # List of app IDs to search in (extracted from knowledge array)
     kb: list[str] | None  # List of KB app IDs to search in (extracted from knowledge array)
     agent_knowledge: list[dict[str, Any]] | None
@@ -182,6 +184,16 @@ class ChatState(TypedDict):
     # retrieval still uses the agent creator's userId in state (set in agent routes) for
     # graph ACL; user_info may still carry the real caller's name/email for LLM context.
     is_service_account: bool
+    # Whose stored connections the tools use (`{instanceId}/{owner}`): the user, or the
+    # service-account agent (SS2: a handle is never issued for anyone else's).
+    credential_owner: str | None
+    # The Agent Builder agent the turn runs as (its id); None for plain chat and Universal Agent Mode. Today's loop
+    # reads that agent's approval rules with it (FG2).
+    agent_key: str | None
+    # The conversation history's confidentiality label as Node joined it (FG2); None: unknown.
+    history_label: dict[str, Any] | None
+    # The turn's flow rules as Node resolved them (CPD-10, ``X-PipesHub-Resolved``); None: read per request.
+    resolved_flow_rules: tuple[FlowRule, ...] | None
 
     # Placeholder agent flag: when True, knowledge retrieval uses all configured connectors/KBs
     is_placeholder_agent: bool
@@ -234,7 +246,6 @@ class ChatState(TypedDict):
     has_ui_client: bool  # True when the client can show and answer a question card; gates UI-only tools like ask_user_question
     # Per-tool approvals (`app/agents/agent_loop/tool_approvals.py`).
     client_name: str | None
-    agent_key: str | None
     is_assistant_chat: bool
     chat_streaming: bool
     tool_approval: dict[str, Any] | None
@@ -557,6 +568,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     project_tools_selected = bool(chat_query.get("projectToolsSelected"))
     timezone = chat_query.get("timezone")
     current_time = chat_query.get("currentTime")
+    locale = chat_query.get("locale")
     output_file_path = chat_query.get("outputFilePath")
 
     # Get toolsets and knowledge from the new graph-based format
@@ -634,6 +646,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "user_email": user_info.get("userEmail", ""),
         "send_user_info": user_info.get("sendUserInfo", True),
         "conversation_id": chat_query.get("conversationId"),
+        "harness_run_id": chat_query.get("harnessRunId"),
+        "harness_checkpoint_store": chat_query.get("harnessCheckpointStore"),
+        "virtual_filesystem": chat_query.get("harnessVirtualFileSystem"),
         "llm": llm,
         "logger": logger,
         "retrieval_service": retrieval_service,
@@ -652,6 +667,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "project_tools_selected": project_tools_selected,
         "timezone": timezone,
         "current_time": current_time,
+        "locale": locale,
         "apps": apps,  # Extracted from knowledge connector IDs
         "kb": kb,
         "agent_knowledge": agent_knowledge,
@@ -714,6 +730,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
 
         # Service account flag
         "is_service_account": bool(chat_query.get("is_service_account", False)),
+        "credential_owner": chat_query.get("credentialOwner"),
+        "history_label": chat_query.get("historyLabel"),
+        "resolved_flow_rules": chat_query.get("resolvedFlowRules"),
         "is_placeholder_agent": bool(
             chat_query.get("isPlaceholderAgent", False)
         ),

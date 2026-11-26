@@ -87,3 +87,6 @@ export const useCommandStore = create<CommandState>((set, get) => ({
     return false;
   },
 }));
+
+/** Puts `{ text }` in the chat composer and focuses it; never sends (UX5 FU-6). */
+export const FILL_COMPOSER_COMMAND = 'fillComposer';

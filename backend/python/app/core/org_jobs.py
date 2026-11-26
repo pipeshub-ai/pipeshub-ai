@@ -14,18 +14,21 @@ if TYPE_CHECKING:
 
 async def for_each_org(
     graph_provider: IGraphDBProvider, job: str, work: Callable[[str], Awaitable[None]], logger: logging.Logger, *, active: bool = False,
-    raise_on_error: bool = False,
+    raise_on_error: bool = False, external: bool = False,
 ) -> list[str]:
-    """``await work(org_id)`` for every internal org (only the active ones when ``active``), each under ``for_org(org_id, job=job)``.
+    """``await work(org_id)`` for every internal org (only the active ones when ``active``; the external ones too when ``external``), each under ``for_org(org_id, job=job)``.
 
     A failed org list propagates: the caller decides what that means. Arango and Neo4j log a failed list and answer no orgs unless
     ``raise_on_error``, which a one-time job must pass so that it does not take the failure as done. One org's failure is one WARNING,
     and the later orgs still run. Returns the ids of the orgs whose work raised, so a one-time job can stay pending until every org ran.
     """
     with system(job):
-        orgs = await graph_provider.get_all_orgs(active=active, **({"raise_on_error": True} if raise_on_error else {}))
+        options = {"raise_on_error": True} if raise_on_error else {}
+        orgs = list(await graph_provider.get_all_orgs(active=active, **options) or [])
+        if external:
+            orgs += await graph_provider.get_all_orgs(active=active, is_external=True, **options) or []
     failed: list[str] = []
-    for org in orgs or []:
+    for org in orgs:
         org_id = org.get("_key") or org.get("id")
         if not org_id:
             continue

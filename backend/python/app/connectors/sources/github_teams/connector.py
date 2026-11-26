@@ -76,6 +76,7 @@ from app.connectors.sources.github_teams.common.utils import (
     updated_since_filter_field,
 )
 from app.models.entities import Record
+from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.github.github import GitHubClient
 from app.sources.external.github.github_async import GitHubAsyncDataSource
 
@@ -95,6 +96,10 @@ from .users import UsersSync
 
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
+_SIGN_IN_REFUSED = (
+    "GitHub refused this connector's sign-in and it could not be refreshed. "
+    "Reconnect it, or replace its token, in the connector's settings."
+)
 
 
 @(
@@ -419,6 +424,7 @@ class GitHubTeamsConnector(BaseConnector):
 
     async def run_sync(self) -> None:
         """Run a full GitHub sync (users -> repos -> issues/PRs/code)."""
+        self.runtime.sign_in_refused = False
         try:
             # Again here, raising: init only logs a failed withdrawal, so its error stays the one GitHub caused.
             await self.data_entities_processor.withdraw_team_app_edge(self.connector_id)
@@ -442,7 +448,26 @@ class GitHubTeamsConnector(BaseConnector):
                 )
         except Exception as e:
             self.logger.error("Error in GitHub Teams sync: %s", e, exc_info=True)
+            await self._stop_if_sign_in_refused(e)
             raise
+
+    async def _stop_if_sign_in_refused(self, error: Exception) -> None:
+        """Raise the reconnect error, after telling the owner, when GitHub refused this run's sign-in."""
+        if self.runtime.sign_in_refused is True:
+            await self._tell_to_reconnect()
+            raise ConnectorInitError(_SIGN_IN_REFUSED) from error
+
+    async def _tell_to_reconnect(self) -> None:
+        self.logger.error("GitHub sync stopped: GitHub refused the sign-in and it could not be refreshed")
+        try:
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"{self.display_name}: needs to be reconnected",
+                message=_SIGN_IN_REFUSED,
+            )
+        except Exception as e:
+            self.logger.warning("The reconnect notice was not sent: %s", type(e).__name__)
 
     def full_sync_coverage(self) -> FullSyncCoverage:
         """An issue or pull request last updated before the "updated since" window is not

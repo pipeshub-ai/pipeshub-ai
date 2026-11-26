@@ -52,7 +52,8 @@ def _matches(value: object, types: set[str]) -> bool:
 
 
 # --- a tiny generator for the anchored patterns the schemas use -------------------------------
-_ATOM = re.compile(r"(\[[^\]]+\]|[A-Za-z0-9_])(?:\{(\d+)(?:,(\d+))?\})?")
+# A class, an escaped character, or any literal that is not a metacharacter (``sha256:`` in a digest pattern).
+_ATOM = re.compile(r"(\[[^\]]+\]|\\.|[^\\\[\](){}.*+?^$|])(?:\{(\d+)(?:,(\d+))?\})?")
 
 
 def _expand_class(body: str) -> list[str]:
@@ -76,7 +77,7 @@ def from_pattern(pattern: str, rng: random.Random) -> str:
         if not m:
             raise Ungeneratable(f"pattern {pattern!r}")
         atom, lo, hi = m.groups()
-        pool = _expand_class(atom[1:-1]) if atom.startswith("[") else [atom]
+        pool = _expand_class(atom[1:-1]) if atom.startswith("[") else [atom.removeprefix("\\")]
         count = 1 if lo is None else rng.randint(int(lo), min(int(hi or lo), int(lo) + 8))
         out += rng.choices(pool, k=count)
         pos = m.end()

@@ -12,6 +12,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -25,7 +26,7 @@ _MAX_CHILDREN = 100
 
 
 # Register Notion toolset
-@ToolsetBuilder("Notion")\
+@ToolsetBuilder("Notion", provider=ToolProvider.CONNECTOR)\
     .in_group("Productivity")\
     .with_description("Notion integration for pages, databases, and workspace management")\
     .with_category(ToolsetCategory.APP)\
@@ -168,7 +169,7 @@ class Notion:
             ToolParameter(name="parent_is_database", type=ParameterType.BOOLEAN, description="Set to True if parent_id refers to a database (or one of its data sources); the page becomes a row of its first data source", required=False, default=False),
             ToolParameter(name="title_property", type=ParameterType.STRING, description="The property name for the title in database pages (found from the database when omitted)", required=False, default="title"),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def create_page(
         self,
@@ -243,7 +244,7 @@ class Notion:
         parameters=[
             ToolParameter(name="page_id", type=ParameterType.STRING, description="The ID of the page to retrieve"),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_page(self, page_id: str) -> Tuple[bool, str]:
         """Get a page from Notion.
@@ -270,7 +271,7 @@ class Notion:
             ToolParameter(name="page_id", type=ParameterType.STRING, description="The ID of the page to update"),
             ToolParameter(name="title", type=ParameterType.STRING, description="The new title of the page", required=False),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="update")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="update"), Tag(key="effect", value="write")],
     )
     async def update_page(
         self,
@@ -331,7 +332,7 @@ class Notion:
         parameters=[
             ToolParameter(name="page_id", type=ParameterType.STRING, description="The ID of the page to delete"),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_page(self, page_id: str) -> Tuple[bool, str]:
         """Delete (archive) a page from Notion.
@@ -367,7 +368,7 @@ class Notion:
             ToolParameter(name="start_cursor", type=ParameterType.STRING, description="Pagination cursor for getting next page of results", required=False),
             ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Number of results to return (max 100, default 100)", required=False),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def search(
         self,
@@ -420,7 +421,7 @@ class Notion:
             ToolParameter(name="start_cursor", type=ParameterType.STRING, description="Pagination cursor", required=False),
             ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Number of users to return (max 100)", required=False),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_users(
         self,
@@ -453,7 +454,7 @@ class Notion:
         parameters=[
             ToolParameter(name="user_id", type=ParameterType.STRING, description="The user ID to retrieve"),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def retrieve_user(self, user_id: str) -> Tuple[bool, str]:
         """Retrieve a Notion user by ID.
@@ -487,7 +488,7 @@ class Notion:
             ToolParameter(name="title", type=ParameterType.STRING, description="The title/name of the database to create"),
             ToolParameter(name="properties", type=ParameterType.OBJECT, description="Database properties schema defining columns"),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def create_database(
         self,
@@ -538,7 +539,7 @@ class Notion:
             ToolParameter(name="start_cursor", type=ParameterType.STRING, description="Pagination cursor", required=False),
             ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Number of results (max 100)", required=False),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def query_database(
         self,
@@ -591,7 +592,7 @@ class Notion:
         parameters=[
             ToolParameter(name="database_id", type=ParameterType.STRING, description="The ID of the database to retrieve"),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_database(self, database_id: str) -> Tuple[bool, str]:
         """Get a Notion database by ID.
@@ -632,7 +633,7 @@ class Notion:
             ToolParameter(name="page_id", type=ParameterType.STRING, description="The ID of the page (or block) to read"),
             ToolParameter(name="max_blocks", type=ParameterType.INTEGER, description="Most blocks to return (default 500)", required=False),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_page_content(self, page_id: str, max_blocks: int | None = 500) -> tuple[bool, str]:
         """Read a page's blocks as plain text, following the block-children cursor.

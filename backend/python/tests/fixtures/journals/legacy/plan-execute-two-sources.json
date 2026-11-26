@@ -1,0 +1,484 @@
+{
+  "format": "pipeshub.harness.recording/v1",
+  "manifest": {
+    "scenario": "plan-execute-two-sources",
+    "source": "legacy",
+    "harness": "legacy-agent-loop",
+    "model": "scripted-model",
+    "scrub_version": "1"
+  },
+  "inputs": {
+    "route": "agent",
+    "chat_mode": "planExecute",
+    "query": "Is the login outage fixed, and what did the team say about it in #eng?",
+    "fixtures": {
+      "knowledge": [],
+      "tickets": [
+        {
+          "key": "PROJ-42",
+          "summary": "Login returns 500",
+          "status": "Resolved",
+          "owner": "Priya",
+          "description": ""
+        }
+      ],
+      "slack": {
+        "eng": [
+          {
+            "user": "priya",
+            "text": "Rolled back the auth deploy; login is healthy again."
+          }
+        ]
+      },
+      "emails": [],
+      "files": [],
+      "web": {}
+    }
+  },
+  "steps": [
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 2,
+        "last_user": "user query : Is the login outage fixed, and what did the team say about it in #eng?",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [
+          "task_complete"
+        ],
+        "digest": "8527a698f9084fda"
+      },
+      "response": {
+        "text": "Check PROJ-42's status and summarise the #eng discussion about the login outage.",
+        "reasoning": "",
+        "tool_calls": [],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "end_turn"
+      },
+      "error": null
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 3,
+        "last_user": "Phase 1 -- PLAN: decompose this goal into an ordered list of steps YOU will execute yourself (this mode does not delegate to other agents) by calling create_plan with a structured `steps` array. Each step must have:\n- `id`: short stable identifier\n- `description`: what this step accomplishes and how (which of your tools, if any, it needs)\n- `domain`: a short descriptive label for the kind of work ",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [
+          "create_plan",
+          "critique_plan",
+          "drive__read_file",
+          "drive__share_file",
+          "gmail__read_email",
+          "gmail__search_emails",
+          "gmail__send_email",
+          "internaltools__ask_user_question",
+          "jira__add_comment",
+          "jira__create_issue",
+          "jira__get_issue",
+          "jira__search_issues",
+          "knowledge__read_document",
+          "knowledge__search",
+          "knowledgegraph__fetch_record",
+          "replan",
+          "retrieve_artifact_content",
+          "search_tools",
+          "slack__read_channel",
+          "slack__send_message",
+          "verify_result",
+          "web__fetch_url"
+        ],
+        "digest": "2b8f0c7e13a23f11"
+      },
+      "response": {
+        "text": "",
+        "reasoning": "",
+        "tool_calls": [
+          {
+            "id": "plan-1",
+            "name": "create_plan",
+            "args": {
+              "steps": [
+                {
+                  "id": "ticket",
+                  "description": "Read PROJ-42",
+                  "domain": "jira"
+                },
+                {
+                  "id": "chat",
+                  "description": "Read #eng for the outage discussion",
+                  "domain": "slack"
+                }
+              ]
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "tool_use"
+      },
+      "error": null
+    },
+    {
+      "kind": "tool",
+      "call_id": "plan-1",
+      "name": "create_plan",
+      "args": {
+        "steps": [
+          {
+            "id": "ticket",
+            "description": "Read PROJ-42",
+            "domain": "jira"
+          },
+          {
+            "id": "chat",
+            "description": "Read #eng for the outage discussion",
+            "domain": "slack"
+          }
+        ]
+      },
+      "status": "succeeded",
+      "result": {
+        "plan": "1. **ticket** — Read PROJ-42\n2. **chat** — Read #eng for the outage discussion",
+        "confidence": "medium"
+      },
+      "error": null,
+      "sources": []
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 5,
+        "last_user": "Phase 1 -- PLAN: decompose this goal into an ordered list of steps YOU will execute yourself (this mode does not delegate to other agents) by calling create_plan with a structured `steps` array. Each step must have:\n- `id`: short stable identifier\n- `description`: what this step accomplishes and how (which of your tools, if any, it needs)\n- `domain`: a short descriptive label for the kind of work ",
+        "last_tool": "create_plan",
+        "last_tool_status": "succeeded",
+        "tools": [
+          "create_plan",
+          "critique_plan",
+          "drive__read_file",
+          "drive__share_file",
+          "gmail__read_email",
+          "gmail__search_emails",
+          "gmail__send_email",
+          "internaltools__ask_user_question",
+          "jira__add_comment",
+          "jira__create_issue",
+          "jira__get_issue",
+          "jira__search_issues",
+          "knowledge__read_document",
+          "knowledge__search",
+          "knowledgegraph__fetch_record",
+          "replan",
+          "retrieve_artifact_content",
+          "search_tools",
+          "slack__read_channel",
+          "slack__send_message",
+          "verify_result",
+          "web__fetch_url"
+        ],
+        "digest": "fdcd2d2fc567e5d1"
+      },
+      "response": {
+        "text": "",
+        "reasoning": "",
+        "tool_calls": [
+          {
+            "id": "critique-1",
+            "name": "critique_plan",
+            "args": {}
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "tool_use"
+      },
+      "error": null
+    },
+    {
+      "kind": "tool",
+      "call_id": "critique-1",
+      "name": "critique_plan",
+      "args": {},
+      "status": "succeeded",
+      "result": {
+        "passed": true,
+        "confidence": "high",
+        "issues": [],
+        "summary": "plan is sound"
+      },
+      "error": null,
+      "sources": []
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 1,
+        "last_user": "Evaluate the following execution plan for the goal: \"Check PROJ-42's status and summarise the #eng discussion about the login outage.\"\n\nPlan:\n  (none)\n\nAssess feasibility, completeness, and correctness. For a MULTI-STEP plan, specifically check for scope OVERLAP (two steps that would redundantly fetch or analyze the same data — wasteful and produces conflicting/duplicate output) and scope GAPS (an",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [],
+        "digest": "dd70218bf05d408a"
+      },
+      "response": {
+        "text": "{\"passed\": true, \"confidence\": \"high\", \"summary\": \"plan is sound\", \"issues\": []}",
+        "reasoning": "",
+        "tool_calls": [],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "end_turn"
+      },
+      "error": null
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 8,
+        "last_user": "Phase 2 -- EXECUTE: the plan is approved. Execute it step by step using your available tools. Before replying with your final answer, call verify_result with your candidate output. If verify_result fails, revise your approach (call replan first if the plan itself needs to change) and call verify_result again.",
+        "last_tool": "critique_plan",
+        "last_tool_status": "succeeded",
+        "tools": [
+          "create_plan",
+          "critique_plan",
+          "drive__read_file",
+          "drive__share_file",
+          "gmail__read_email",
+          "gmail__search_emails",
+          "gmail__send_email",
+          "internaltools__ask_user_question",
+          "jira__add_comment",
+          "jira__create_issue",
+          "jira__get_issue",
+          "jira__search_issues",
+          "knowledge__read_document",
+          "knowledge__search",
+          "knowledgegraph__fetch_record",
+          "replan",
+          "retrieve_artifact_content",
+          "search_tools",
+          "slack__read_channel",
+          "slack__send_message",
+          "verify_result",
+          "web__fetch_url"
+        ],
+        "digest": "8058a3adbf7590ed"
+      },
+      "response": {
+        "text": "",
+        "reasoning": "",
+        "tool_calls": [
+          {
+            "id": "call-1",
+            "name": "jira__get_issue",
+            "args": {
+              "issue_key": "PROJ-42"
+            }
+          },
+          {
+            "id": "call-2",
+            "name": "slack__read_channel",
+            "args": {
+              "channel": "#eng"
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "tool_use"
+      },
+      "error": null
+    },
+    {
+      "kind": "tool",
+      "call_id": "call-1",
+      "name": "jira__get_issue",
+      "args": {
+        "issue_key": "PROJ-42"
+      },
+      "status": "succeeded",
+      "result": "{\"key\": \"PROJ-42\", \"summary\": \"Login returns 500\", \"status\": \"Resolved\", \"owner\": \"Priya\", \"description\": \"\"}",
+      "error": null,
+      "sources": []
+    },
+    {
+      "kind": "tool",
+      "call_id": "call-2",
+      "name": "slack__read_channel",
+      "args": {
+        "channel": "#eng"
+      },
+      "status": "succeeded",
+      "result": "{\"channel\": \"#eng\", \"messages\": [{\"user\": \"priya\", \"text\": \"Rolled back the auth deploy; login is healthy again.\"}]}",
+      "error": null,
+      "sources": []
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 11,
+        "last_user": "Phase 2 -- EXECUTE: the plan is approved. Execute it step by step using your available tools. Before replying with your final answer, call verify_result with your candidate output. If verify_result fails, revise your approach (call replan first if the plan itself needs to change) and call verify_result again.",
+        "last_tool": "slack__read_channel",
+        "last_tool_status": "succeeded",
+        "tools": [
+          "create_plan",
+          "critique_plan",
+          "drive__read_file",
+          "drive__share_file",
+          "gmail__read_email",
+          "gmail__search_emails",
+          "gmail__send_email",
+          "internaltools__ask_user_question",
+          "jira__add_comment",
+          "jira__create_issue",
+          "jira__get_issue",
+          "jira__search_issues",
+          "knowledge__read_document",
+          "knowledge__search",
+          "knowledgegraph__fetch_record",
+          "replan",
+          "retrieve_artifact_content",
+          "search_tools",
+          "slack__read_channel",
+          "slack__send_message",
+          "verify_result",
+          "web__fetch_url"
+        ],
+        "digest": "614b4fbd1ec32f9d"
+      },
+      "response": {
+        "text": "",
+        "reasoning": "",
+        "tool_calls": [
+          {
+            "id": "verify-1",
+            "name": "verify_result",
+            "args": {
+              "result": "PROJ-42 is Resolved; Priya rolled back the auth deploy."
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "tool_use"
+      },
+      "error": null
+    },
+    {
+      "kind": "tool",
+      "call_id": "verify-1",
+      "name": "verify_result",
+      "args": {
+        "result": "PROJ-42 is Resolved; Priya rolled back the auth deploy."
+      },
+      "status": "succeeded",
+      "result": {
+        "passed": true,
+        "confidence": "high",
+        "issues": [],
+        "summary": "answers both parts"
+      },
+      "error": null,
+      "sources": []
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 1,
+        "last_user": "Evaluate whether the agent result meets the goal.\n\nGoal: \"Check PROJ-42's status and summarise the #eng discussion about the login outage.\"\nSuccess criteria:\n  (none specified)\n\nAgent output: \nSuccess flag: True\nError: none\n\nAssess whether the result genuinely satisfies the goal and criteria.",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [],
+        "digest": "82023527a505d8a8"
+      },
+      "response": {
+        "text": "{\"passed\": true, \"confidence\": \"high\", \"summary\": \"answers both parts\", \"issues\": []}",
+        "reasoning": "",
+        "tool_calls": [],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "end_turn"
+      },
+      "error": null
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 13,
+        "last_user": "Phase 2 -- EXECUTE: the plan is approved. Execute it step by step using your available tools. Before replying with your final answer, call verify_result with your candidate output. If verify_result fails, revise your approach (call replan first if the plan itself needs to change) and call verify_result again.",
+        "last_tool": "verify_result",
+        "last_tool_status": "succeeded",
+        "tools": [
+          "create_plan",
+          "critique_plan",
+          "drive__read_file",
+          "drive__share_file",
+          "gmail__read_email",
+          "gmail__search_emails",
+          "gmail__send_email",
+          "internaltools__ask_user_question",
+          "jira__add_comment",
+          "jira__create_issue",
+          "jira__get_issue",
+          "jira__search_issues",
+          "knowledge__read_document",
+          "knowledge__search",
+          "knowledgegraph__fetch_record",
+          "replan",
+          "retrieve_artifact_content",
+          "search_tools",
+          "slack__read_channel",
+          "slack__send_message",
+          "verify_result",
+          "web__fetch_url"
+        ],
+        "digest": "f63afe2e664ccd69"
+      },
+      "response": {
+        "text": "Yes. PROJ-42 is Resolved, and in #eng Priya said she rolled back the auth deploy and login is healthy again.",
+        "reasoning": "",
+        "tool_calls": [],
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "end_turn"
+      },
+      "error": null
+    }
+  ],
+  "effects": [],
+  "final": {
+    "answer": "Yes. PROJ-42 is Resolved, and in #eng Priya said she rolled back the auth deploy and login is healthy again.",
+    "status": "completed"
+  }
+}

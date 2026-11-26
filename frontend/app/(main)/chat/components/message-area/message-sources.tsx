@@ -48,7 +48,7 @@ export function MessageSources({ sources }: MessageSourcesProps) {
                   {source.title}
                 </Text>
                 {source.category && (
-                  <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                  <Text size="1" style={{ color: 'var(--slate-11)' }}>
                     • {source.category}
                   </Text>
                 )}

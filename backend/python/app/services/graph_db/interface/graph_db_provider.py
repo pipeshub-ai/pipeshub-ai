@@ -51,6 +51,8 @@ KH_SKIP_READS: ContextVar[dict[str, Any] | None] = ContextVar("kh_skip_reads", d
 
 # Set once `stamp_kh_listing_state` has covered every node written before.
 KH_LISTING_STATE_FLAG = "/migrations/kh_listing_state_v1"
+# Set once `stamp_kh_children_order` has covered every hierarchy edge written before.
+KH_CHILDREN_ORDER_FLAG = "/migrations/kh_children_order_v1"
 
 # The record fields a page of `list_unsupported_page` carries besides `_key`.
 UNSUPPORTED_PAGE_FIELDS = (
@@ -462,6 +464,10 @@ def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
             seen.add(value)
             types.append(value)
     return types
+
+
+# Bounds get_records_by_external_ids: an item indexed by more connector instances than this is rare.
+MAX_INDEXED_COPIES_PER_ITEM = 8
 
 
 @dataclass(frozen=True)
@@ -2411,6 +2417,26 @@ class IGraphDBProvider(ABC):
                 Callers act on None by creating the record or concluding it
                 was deleted, so a failure reported as None would become a
                 duplicate record or a deletion that never happened.
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_external_ids(
+        self,
+        org_id: str,
+        external_record_ids: list[str],
+        connector_names: list[str],
+    ) -> list[dict[str, str]]:
+        """The org's records, not deleted, that index one of these external
+        items through one of these connector kinds: one query for the batch.
+
+        Returns:
+            One ``{"id", "externalRecordId", "connectorName"}`` per record; an
+            item indexed by several connector instances has several.
+
+        Raises:
+            GraphQueryError: The lookup could not be read. An empty answer
+                means "no indexed copy", which callers act on.
         """
         pass
 
@@ -5577,6 +5603,20 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def list_sync_points(
+        self,
+        org_id: str,
+        collection: str,
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """One org's sync points in ``syncPointKey`` order, those after ``after_key`` (a keyset page: a point written
+        or removed meanwhile never shifts another out of the walk). For a sweep over every sync point, such as the
+        ``SECRET_KEY`` rotation's (WP87-FU-4b); a page shorter than ``limit`` is the last."""
+        pass
+
+    @abstractmethod
     async def upsert_sync_point(
         self,
         sync_point_key: str,
@@ -7326,6 +7366,15 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_user_team_roles(self, user_key: str, org_id: str) -> list[dict]:
+        """
+        Every team of ``org_id`` the user is in, with their role there (``OWNER`` administers it).
+
+        Returns ``[{"teamId": <team key>, "role": <role>}]``; raises when the graph cannot be read, so a
+        caller never takes an unreadable membership for none (the control plane's MembershipPort).
+        """
+
+    @abstractmethod
     async def get_user_teams(
         self,
         user_key: str,
@@ -7753,6 +7802,12 @@ class IGraphDBProvider(ABC):
         the listing reads it once ``KH_LISTING_STATE_FLAG`` is set."""
         raise NotImplementedError
 
+    async def stamp_kh_children_order(self, batch_size: int = 5000) -> dict:
+        """Write, on every hierarchy edge written before the write paths kept it, the child's place in its parent's name order, so a browse
+        of a very wide node reads a page of its children in order instead of every child. Returns ``{"stamped": n}``; raises if any edge is
+        left disagreeing with its child. Only Neo4j keeps this; its browse reads it once ``KH_CHILDREN_ORDER_FLAG`` is set."""
+        raise NotImplementedError
+
     # Knowledge hub scopes: the global listing read from precomputed per-connector scopes, behind the
     # ENABLE_KH_SCOPE_LISTING flag. Only Neo4j keeps them; elsewhere these do nothing and the listing always
     # runs its full query.
@@ -7805,7 +7860,7 @@ class IGraphDBProvider(ABC):
     async def kh_scope_reset_syncing(self) -> None:
         """At startup, before any sync: clear marks a crash left behind."""
 
-    async def kh_scope_restamp_stale(self) -> list:
+    async def kh_scope_restamp_stale(self, org_id: str) -> list:
         return []
 
     async def check_access(
@@ -8574,7 +8629,8 @@ class IGraphDBProvider(ABC):
         while left:
             ask, left = left[:window], left[window:]
             window = min(most, window * 8)
-            ok = await self._kh_v3_admitted([u["id"] for u in ask], org_id=org_id, access=access, transaction=transaction)
+            # A child the browse hides by navigation (``hidden``) is passed over: the check would admit it, and no browse lists it.
+            ok = await self._kh_v3_admitted([u["id"] for u in ask if not u.get("hidden")], org_id=org_id, access=access, transaction=transaction)
             fresh += [u for u in ask if u["id"] in ok]
             admitted += [u["id"] for u in ask if u["id"] in ok]
             cut = ask[-1] if left or beyond else None

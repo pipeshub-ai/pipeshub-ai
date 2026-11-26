@@ -615,7 +615,7 @@ export function FileTypeIcon({ extension, size = 16, fallbackIcon = 'insert_driv
   const IconComponent = FILE_TYPE_ICON_MAP[normalizedExt];
 
   if (!IconComponent) {
-    return <MaterialIcon name={fallbackIcon} size={size} color="var(--slate-9)" />;
+    return <MaterialIcon name={fallbackIcon} size={size} color="var(--slate-11)" />;
   }
 
   return <IconComponent size={size} />;

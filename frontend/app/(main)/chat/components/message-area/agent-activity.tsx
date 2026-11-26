@@ -10,34 +10,69 @@
  * never visually changes when the live stream hands off to the persisted
  * transcript.
  */
-import React, { useState, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
+import NextLink from 'next/link';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { PluggableList } from 'unified';
-import { Badge, Box, Flex, Table, Text } from '@radix-ui/themes';
+import { Badge, Box, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { FileIcon } from '@/app/components/ui/file-icon';
+import { jobTitle as sharedJobTitle } from '@/lib/harness-jobs/engine-worker';
+import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
-import { useCopyText } from '@/lib/hooks/use-copy-text';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { markdownUrlTransform } from '@/lib/utils/image-url-policy';
-import { TOOL_PROGRESS_STATUS, type MessagePart, type StatusMessage } from '../../types';
-import { looksLikeJson, safeLink, toolResultView, type ToolResultView } from '../../tool-result-view';
+import { TOOL_PROGRESS_STATUS, type MessagePart, type SSEPlanEvent, type SSEPlanStep, type StatusMessage } from '../../types';
 import { stripAnswerMarkers } from '../../utils/parse-download-markers';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
-import { CodeBlock, createMarkdownComponents } from './answer-content';
+import { createMarkdownComponents } from './answer-content';
+import { McpUnavailableNotices, mcpHeldTools, mcpUnusedGroups } from './mcp-unavailable-notices';
+import { jobClock } from '@/lib/harness-jobs/jobs';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
 import {
-  extractSqlQuery,
   extractToolsetLabel,
-  isMcpTool,
-  isWebTool,
+  isAskUserQuestionTool,
+  describeTool,
   isSkillTool,
+  skillReadLabel,
   toolActivityLabel as toolActivityLabelUtil,
+  toolSubject,
 } from '../../utils/tool-display';
+import { toolFailureText } from '../../harness-errors';
+import { approvalFromPart, budgetRefusalKey } from '../../durable-run-ui';
+import { useDurableSession, useFollowsDurableRun } from '../../hooks/use-run-timeline';
+import { useRunModelLabel } from '../../hooks/use-run-model-label';
+import { toRunModel } from '../../utils/run-model';
+import { ApprovalCard } from './approval-card';
+import { InteractionReceipt } from './interaction-card';
+import { connectReceipt } from './connect-card';
+import { ToolUnavailableRows, uniqueUnavailable, unavailableFromSearch } from './tool-unavailable-rows';
+import { JobCard, type JobCardVariant } from './job-card/job-card';
+import { isJobPart, useIsJobPart } from './job-card/job-parts';
+import { withEngineSteps, withoutHelpers, type ChangedFile } from '../../engine-steps';
+import { partAnchors } from '../../interactions';
+import { waitingSinceTime } from '../../interaction-wording';
+import { ToolCallDetails, toolStatus, type ToolStatus } from './tool-result';
+import { i18n } from '@/lib/i18n';
+import { StepTarget } from './tool-step';
+import { CodeTaskDiff } from './code-task-diff';
+import { handoffLabel } from '../../handoff';
+import { engineName } from '@/app/(main)/workspace/ai-accounts/access-copy';
+import { EngineRepoRow, repoActivityText } from './engine-repo-row';
+import { VirtualRows, useRowState } from '../virtual-rows';
+import { useMessageRun } from '../activity-panel/use-activity-run';
+import { useActivityPanelStore } from '../activity-panel/activity-panel-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+
+export { formatToolPayload } from './tool-result';
 
 interface AgentActivityTimelineProps {
   parts: MessagePart[];
+  /** The chat draws the turn's jobs after the steps (`TurnJobs`, BGUI-2): the root timeline leaves them out. */
+  liftJobs?: boolean;
   /** Nested rendering (inside a SubAgentGroup) shows every `text` part,
    * including the delegate's own `isFinal` answer — there's no separate
    * "answer" slot for a sub-agent's turn like there is for the root. */
@@ -55,6 +90,17 @@ interface AgentActivityTimelineProps {
   currentStatus?: StatusMessage | null;
   citationMaps?: CitationMaps;
   citationCallbacks?: CitationCallbacks;
+  /** The run's plan (UXR-B1), shown as a checklist above the steps when it has two or more. Root only. */
+  plan?: SSEPlanEvent | null;
+  /**
+   * What the reply asks of the person (UXINT-1), drawn under the row that raised it: keyed by a tool call's id or
+   * `run:<childRunId>` for a sub-agent's row. Given, the transcript's own `approval` rows are left to it.
+   */
+  anchored?: ReadonlyMap<string, React.ReactNode>;
+  /** Interactions whose row is not drawn (yet): after the last row, in order. */
+  unanchored?: React.ReactNode;
+  /** The anchors (`run:<childRunId>`, a tool call's id) with a card open: those rows wait on the person, not work. */
+  waiting?: ReadonlySet<string>;
 }
 
 /** True when the transcript contains any tool call, reasoning block, or
@@ -65,7 +111,16 @@ interface AgentActivityTimelineProps {
  * `ChatResponse`). */
 export function hasMultiStepActivity(parts: MessagePart[] | undefined): boolean {
   if (!parts) return false;
-  return parts.some((part) => part.type === 'tool_call' || part.type === 'reasoning' || part.type === 'sub_agent');
+  return parts.some(
+    (part) =>
+      part.type === 'tool_call' ||
+      part.type === 'reasoning' ||
+      part.type === 'sub_agent' ||
+      part.type === 'user_input' ||
+      part.type === 'slash_command' ||
+      part.type === 'approval' ||
+      part.type === 'engine_task',
+  );
 }
 
 /**
@@ -88,10 +143,15 @@ export function hasMultiStepActivity(parts: MessagePart[] | undefined): boolean 
  *   the same update.
  */
 function filterRootParts(parts: MessagePart[], isStreaming: boolean): MessagePart[] {
-  return parts.filter((part) => {
+  return withEngineSteps(parts, !isStreaming).filter((part) => {
+    // Parts that paint no row must not count as activity, or the caller draws a header over an empty list.
+    // The answer shows its notices above its steps, never folded away with them (`RunNotices`).
+    if (part.type === 'plan' || part.type === 'notice' || part.type === 'context_compacted') return false;
+    if (part.type === 'reasoning') return !!part.content?.trim();
     // The reply's sign-in card, drawn under the answer (`McpSignInCard`).
     if (part.type === 'mcp_sign_in') return false;
     if (part.type !== 'text') return true;
+    if (!part.content?.trim()) return false;
     if (part.isFinal) return false;
     if (isStreaming && !part.settled) return false;
     return true;
@@ -168,7 +228,8 @@ type TimelineIconSpec =
   | { kind: 'dot'; color: string }
   | { kind: 'lottie'; node: React.ReactNode };
 
-function timelineIconForStatus(status: NonNullable<MessagePart['status']>, iconName: string): TimelineIconSpec {
+
+function timelineIconForStatus(status: ToolStatus, iconName: string): TimelineIconSpec {
   return {
     kind: 'icon',
     node: (
@@ -195,12 +256,12 @@ function timelineIconForStatus(status: NonNullable<MessagePart['status']>, iconN
  * from other tool use. */
 function getTimelineIcon(item: RenderItem): TimelineIconSpec {
   if (item.kind === 'toolGroup') {
-    const allSkills = item.parts.every((p) => isSkillTool(p.toolName));
+    const allSkills = item.parts.every((p) => isSkillTool(p.toolName) || !!p.skills);
     const allSearches = !allSkills && item.parts.every((p) => isSearchLike(p.toolName));
     // The most pressing state in the group shows: a call waiting for the person, then one still
     // running, one that failed, one that was stopped.
     const statuses = item.parts.map((p) => p.status ?? 'running');
-    const status: NonNullable<MessagePart['status']> =
+    const status: ToolStatus =
       (['awaiting_approval', 'running', 'failed', 'blocked'] as const).find((s) => statuses.includes(s)) ?? 'completed';
     const iconName = allSkills ? 'auto_stories' : allSearches ? 'travel_explore' : TOOL_STATUS_ICON[status];
     return timelineIconForStatus(status, iconName);
@@ -210,13 +271,13 @@ function getTimelineIcon(item: RenderItem): TimelineIconSpec {
     case 'reasoning':
       return {
         kind: 'icon',
-        node: <MaterialIcon name="psychology" size={13} color="var(--slate-10)" />,
+        node: <MaterialIcon name="psychology" size={13} color="var(--slate-11)" />,
         bg: 'var(--slate-a3)',
         border: 'var(--slate-6)',
       };
     case 'tool_call': {
-      const status = part.status ?? 'running';
-      const iconName = isSkillTool(part.toolName)
+      const status = toolStatus(part.status, 'running');
+      const iconName = isSkillTool(part.toolName) || part.skills
         ? 'auto_stories'
         : isSearchLike(part.toolName)
           ? 'travel_explore'
@@ -224,7 +285,37 @@ function getTimelineIcon(item: RenderItem): TimelineIconSpec {
       return timelineIconForStatus(status, iconName);
     }
     case 'sub_agent':
-      return timelineIconForStatus(part.status ?? 'completed', 'smart_toy');
+      return timelineIconForStatus(toolStatus(part.status, 'completed'), 'smart_toy');
+    case 'engine_command':
+      return timelineIconForStatus(toolStatus(part.status, 'running'), part.skills ? 'auto_stories' : 'terminal');
+    case 'engine_repo':
+      return timelineIconForStatus(
+        part.status === 'failed' ? 'failed' : 'completed',
+        part.repo?.action === 'pushed' ? 'upload' : part.status === 'failed' ? 'block' : 'call_split',
+      );
+    case 'engine_file':
+      return timelineIconForStatus('completed', part.file?.change === 'deleted' ? 'delete' : part.file?.change === 'added' ? 'note_add' : 'edit_document');
+    case 'approval':
+      return {
+        kind: 'icon',
+        node: <MaterialIcon name="front_hand" size={13} color="var(--slate-11)" />,
+        bg: 'var(--slate-a3)',
+        border: 'var(--slate-6)',
+      };
+    case 'user_input':
+      return {
+        kind: 'icon',
+        node: <MaterialIcon name="person" size={13} color="var(--slate-11)" />,
+        bg: 'var(--slate-a3)',
+        border: 'var(--slate-6)',
+      };
+    case 'slash_command':
+      return {
+        kind: 'icon',
+        node: <MaterialIcon name="bolt" size={13} color="var(--accent-11)" />,
+        bg: 'var(--accent-a3)',
+        border: 'var(--accent-6)',
+      };
     default:
       // Narration (settled or live) — a plain waypoint dot rather than a
       // literal glyph, so free-flowing prose doesn't compete visually with
@@ -288,11 +379,41 @@ function TimelineRow({ icon, isLast, children }: { icon: TimelineIconSpec; isLas
   );
 }
 
-export function AgentActivityTimeline({ parts, isNested = false, isStreaming = false, currentStatus = null, citationMaps, citationCallbacks }: AgentActivityTimelineProps) {
-  const visible = useMemo(
-    () => (isNested ? parts : getVisibleRootParts(parts, isStreaming)),
-    [parts, isNested, isStreaming],
-  );
+/** The cards anchored on a row: each of its calls', in the row's order. */
+function anchoredOn(item: RenderItem, anchored: ReadonlyMap<string, React.ReactNode> | undefined): React.ReactNode[] {
+  if (!anchored) return [];
+  const parts = item.kind === 'toolGroup' ? item.parts : [item.part];
+  return parts.flatMap(partAnchors).flatMap((id) => (anchored.has(id) ? [<React.Fragment key={id}>{anchored.get(id)}</React.Fragment>] : []));
+}
+
+/** The hand-off's own call, when its code-task card is shown: the card is the task, its steps and its answer. */
+function withoutHandedOffCalls(parts: MessagePart[]): MessagePart[] {
+  const cards = parts.filter((part) => part.type === 'sub_agent' && (part.codeTaskGoal || part.codeTaskHandoff)).length;
+  if (cards === 0) return parts;
+  let hidden = 0;
+  return parts.filter((part) => {
+    if (part.type !== 'tool_call' || part.toolName !== 'code_task' || hidden >= cards) return true;
+    hidden += 1;
+    return false;
+  });
+}
+
+const timelineItemKey = (item: RenderItem): string => item.key;
+/** Collapsed, most rows are one line (a tool card's header, a short narration); measured once rendered. */
+const estimateTimelineRow = (item: RenderItem): number => (item.kind === 'part' && item.part.type === 'text' ? 72 : 44);
+const groupPartKey = (part: MessagePart, index: number): string => part.toolCallId ?? `call-${index}`;
+const estimateToolCard = (): number => 40;
+
+export function AgentActivityTimeline({ parts, liftJobs = false, isNested = false, isStreaming = false, currentStatus = null, citationMaps, citationCallbacks, plan = null, anchored, unanchored = null, waiting }: AgentActivityTimelineProps) {
+  const checklist = !isNested ? shownPlan(plan) : null;
+  const isJob = useIsJobPart();
+  const visible = useMemo(() => {
+    // The hand-off's own call goes with its job, so it is left out before the job is (one card hides one call).
+    const handedOff = withoutHandedOffCalls(isNested ? withEngineSteps(parts, !isStreaming) : getVisibleRootParts(parts, isStreaming));
+    const shown = liftJobs && !isNested ? handedOff.filter((part) => !isJob(part)) : handedOff;
+    // UXINT-1: a saved approval is drawn at its tool row by the caller, as the live card is.
+    return anchored ? shown.filter((part) => part.type !== 'approval') : shown;
+  }, [parts, isNested, isStreaming, anchored, liftJobs, isJob]);
   // Don't show status alongside live text with content (the text itself
   // signals progress), or when the last visible entry already covers the
   // status visually (a reasoning block = "Thinking", a running tool call
@@ -308,22 +429,43 @@ export function AgentActivityTimeline({ parts, isNested = false, isStreaming = f
     (lastItem.kind === 'part' && lastItem.part.type === 'tool_call' && (lastItem.part.status ?? 'running') === 'running') ||
     (lastItem.kind === 'toolGroup' && lastItem.parts.some((p) => (p.status ?? 'running') === 'running'))
   );
-  const showStatus = !isNested && isStreaming && !!currentStatus && !hasLiveTextWithContent && !lastItemCoversStatus;
-  if (items.length === 0 && !showStatus) return null;
-  const rowCount = items.length + (showStatus ? 1 : 0);
+  // While a card waits, nothing moves until the person decides: a "Delegating…" line would say otherwise.
+  const showStatus = !isNested && isStreaming && !!currentStatus && !hasLiveTextWithContent && !lastItemCoversStatus && !waiting?.size;
+  if (items.length === 0 && !showStatus && !checklist && !unanchored) return null;
+  const rowCount = items.length + (unanchored ? 1 : 0) + (showStatus ? 1 : 0);
 
   return (
     <Box style={{ marginBottom: isNested ? 'var(--space-2)' : 'var(--space-3)' }}>
+      {checklist ? <PlanChecklist plan={checklist} /> : null}
       <Flex direction="column">
-        {items.map((item, idx) => (
-          <TimelineRow key={item.key} icon={getTimelineIcon(item)} isLast={idx === rowCount - 1}>
-            {item.kind === 'toolGroup' ? (
-              <ToolCallGroup parts={item.parts} />
-            ) : (
-              <AgentActivityPart part={item.part} isStreaming={isStreaming} citationMaps={citationMaps} citationCallbacks={citationCallbacks} />
-            )}
+        <VirtualRows
+          items={items}
+          getKey={timelineItemKey}
+          estimateSize={estimateTimelineRow}
+          data-testid="agent-activity-rows"
+          renderRow={(item, idx) => (
+            <TimelineRow icon={getTimelineIcon(item)} isLast={idx === rowCount - 1}>
+              {item.kind === 'toolGroup' ? (
+                <ToolCallGroup parts={item.parts} />
+              ) : (
+                <AgentActivityPart
+                  part={item.part}
+                  isStreaming={isStreaming}
+                  citationMaps={citationMaps}
+                  citationCallbacks={citationCallbacks}
+                  waiting={waiting}
+                  {...(item.part.type === 'sub_agent' ? { asks: anchoredOn(item, anchored) } : {})}
+                />
+              )}
+              {item.kind === 'part' && item.part.type === 'sub_agent' ? null : anchoredOn(item, anchored)}
+            </TimelineRow>
+          )}
+        />
+        {unanchored ? (
+          <TimelineRow icon={getTimelineIcon({ kind: 'part', part: { type: 'approval' }, key: 'unanchored' })} isLast={rowCount === items.length + 1}>
+            {unanchored}
           </TimelineRow>
-        ))}
+        ) : null}
         {/* Status indicator as the LAST timeline entry — keeps the
             "thinking -> tool -> thinking -> ..." flow in one place instead
             of a disconnected element below the (possibly-suppressed)
@@ -338,16 +480,46 @@ export function AgentActivityTimeline({ parts, isNested = false, isStreaming = f
   );
 }
 
-function AgentActivityPart({ part, isStreaming, citationMaps, citationCallbacks }: { part: MessagePart; isStreaming?: boolean; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks }) {
+function AgentActivityPart({ part, isStreaming, citationMaps, citationCallbacks, waiting, asks }: { part: MessagePart; isStreaming?: boolean; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks; waiting?: ReadonlySet<string>; asks?: React.ReactNode[] }) {
+  const { t } = useTranslation();
   switch (part.type) {
     case 'reasoning':
       return <ThinkingBlock content={part.content ?? ''} />;
     case 'tool_call':
       // Top-level rail row — the icon lives on the rail (see
       // `getTimelineIcon`), not duplicated inline on the card itself.
-      return <ToolCallCard part={part} showIcon={false} />;
+      return <ToolCallCard part={part} showIcon={false} citationMaps={citationMaps} />;
     case 'sub_agent':
-      return <SubAgentGroup part={part} citationMaps={citationMaps} citationCallbacks={citationCallbacks} />;
+      return (
+        <SubAgentGroup
+          part={part}
+          citationMaps={citationMaps}
+          citationCallbacks={citationCallbacks}
+          waiting={!!part.runId && !!waiting?.has(`run:${part.runId}`)}
+          asks={asks}
+        />
+      );
+    case 'user_input':
+      return <SteeringMessage part={part} />;
+    case 'slash_command':
+      return (
+        <Text size="1" style={{ color: 'var(--slate-11)' }} data-testid="slash-command-step">
+          {part.commandVersion
+            ? t('agentActivity.slashCommand.ranVersion', { name: part.commandName, version: part.commandVersion })
+            : t('agentActivity.slashCommand.ran', { name: part.commandName })}
+        </Text>
+      );
+    case 'engine_command':
+      return <EngineCommandRow part={part} />;
+    case 'engine_file':
+      return part.file ? <EngineFileRow file={part.file} /> : null;
+    case 'engine_repo':
+      return part.repo ? <EngineRepoRow repo={part.repo} /> : null;
+    case 'approval': {
+      const approval = approvalFromPart(part);
+      if (approval?.kind === 'connect') return <InteractionReceipt {...connectReceipt(t, approval)} />;
+      return approval ? <ApprovalCard approval={approval} /> : null;
+    }
     case 'text': {
       // Unsettled + still streaming: this text is being written right now
       // (a multi-step response's live "candidate" turn) — render it with a
@@ -364,6 +536,371 @@ function AgentActivityPart({ part, isStreaming, citationMaps, citationCallbacks 
     default:
       return null;
   }
+}
+
+/** How much of a command's output its opened row shows before "Show the whole output". */
+const COMMAND_TAIL_LINES = 20;
+
+const OUTPUT_STYLE: React.CSSProperties = {
+  margin: 0,
+  padding: 'var(--space-2)',
+  borderRadius: 'var(--radius-2)',
+  backgroundColor: 'var(--olive-2)',
+  border: '1px solid var(--olive-5)',
+  maxHeight: '240px',
+  overflow: 'auto',
+  fontFamily: 'monospace',
+  fontSize: '12px',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
+};
+
+const LINK_BUTTON_STYLE: React.CSSProperties = {
+  appearance: 'none',
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  minHeight: 32,
+  cursor: 'pointer',
+  color: 'var(--accent-11)',
+  fontSize: 'var(--font-size-1)',
+};
+
+/** One command of an engine run: "Ran `pytest -q`", how it exited, and what it printed once opened (its last lines,
+ * then all of it on request). */
+export function EngineCommandRow({ part }: { part: MessagePart }) {
+  const { t } = useTranslation();
+  // C2.32: a long output's whole log is the activity drawer's (bounded, with Download); there is no live terminal.
+  const run = useMessageRun(part.runId, false);
+  const isMobile = useIsMobile();
+  const [open, setOpen] = useState(false);
+  const [whole, setWhole] = useState(false);
+  const output = part.content?.replace(/\n$/, '') ?? '';
+  const lines = output ? output.split('\n') : [];
+  const cut = lines.length > COMMAND_TAIL_LINES;
+  const shown = whole || !cut ? output : lines.slice(-COMMAND_TAIL_LINES).join('\n');
+  const failed = part.status === 'failed';
+  // FIX-SKILLSHOW: a skill read is its own plain step; the command it ran (often chained) is behind it.
+  const skill = part.skills ? skillReadLabel(part.skills, part.status === 'running') : null;
+  const opens = !!output || skill !== null;
+  const toggle = () => setOpen((value) => !value);
+  return (
+    <Box data-testid="engine-command" data-skill={part.skills?.join(' ')}>
+      <Flex
+        align="center"
+        gap="2"
+        role={opens ? 'button' : undefined}
+        tabIndex={opens ? 0 : undefined}
+        aria-expanded={opens ? open : undefined}
+        onClick={opens ? toggle : undefined}
+        onKeyDown={opens ? (e) => handleToggleKeyDown(e, toggle) : undefined}
+        style={{ cursor: opens ? 'pointer' : 'default', minWidth: 0, minHeight: 24 }}
+      >
+        {skill !== null ? (
+          <Text size="1" data-testid="engine-command-skill" style={{ color: 'var(--slate-11)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+            {skill}
+          </Text>
+        ) : (
+          <>
+            <Text size="1" style={{ color: 'var(--slate-11)', flexShrink: 0 }}>
+              {part.status === 'running' ? t('agentActivity.command.running') : t('agentActivity.command.ran')}
+            </Text>
+            <Text size="1" asChild style={{ fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+              <code>{part.command}</code>
+            </Text>
+          </>
+        )}
+        {failed && part.exitCode !== undefined ? (
+          <Text size="1" data-testid="engine-command-exit" style={{ color: 'var(--red-11)', flexShrink: 0 }}>
+            {t('agentActivity.command.exit', { code: part.exitCode })}
+          </Text>
+        ) : null}
+        {part.status === 'completed' ? <MaterialIcon name="check" size={13} color="var(--accent-11)" /> : null}
+        {opens ? <MaterialIcon name={open ? 'expand_less' : 'expand_more'} size={14} color="var(--slate-11)" /> : null}
+      </Flex>
+      {open && skill !== null ? (
+        <Text as="p" size="1" style={{ margin: 'var(--space-1) 0 0', color: 'var(--slate-11)', minWidth: 0, wordBreak: 'break-all' }}>
+          {t('agentActivity.command.ran')}{' '}
+          <code data-testid="engine-command-line" style={{ fontFamily: 'monospace' }}>{part.command}</code>
+        </Text>
+      ) : null}
+      {open && output ? (
+        <Box style={{ marginTop: 'var(--space-1)' }}>
+          <Box asChild style={OUTPUT_STYLE} onWheel={(e) => e.stopPropagation()}>
+            <pre data-testid="engine-command-output">{shown}</pre>
+          </Box>
+          {cut ? (
+            <button type="button" style={LINK_BUTTON_STYLE} onClick={() => setWhole((value) => !value)}>
+              {whole ? t('agentActivity.command.showTail') : t('agentActivity.command.showWhole')}
+            </button>
+          ) : null}
+          {(cut || part.truncated) && run !== null ? (
+            <button
+              type="button"
+              data-testid="engine-command-full-log"
+              style={{ ...LINK_BUTTON_STYLE, marginLeft: 'var(--space-3)' }}
+              onClick={() => useActivityPanelStore.getState().openRun(run, isMobile, 'commands')}
+            >
+              {t('agentActivity.command.fullLogInActivity')}
+            </button>
+          ) : null}
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+const FILE_VERB: Record<NonNullable<MessagePart['file']>['change'], string> = {
+  added: 'agentActivity.fileStep.added',
+  modified: 'agentActivity.fileStep.modified',
+  deleted: 'agentActivity.fileStep.deleted',
+};
+
+/** A file an engine run created, changed or deleted: one line, its diff once opened. */
+export function EngineFileRow({ file }: { file: NonNullable<MessagePart['file']> }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const toggle = () => setOpen((value) => !value);
+  return (
+    <Box data-testid="engine-file">
+      <Flex
+        align="center"
+        gap="2"
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={toggle}
+        onKeyDown={(e) => handleToggleKeyDown(e, toggle)}
+        style={{ cursor: 'pointer', minWidth: 0, minHeight: 24 }}
+      >
+        <Text size="1" style={{ color: 'var(--slate-11)', flexShrink: 0 }}>
+          {t(FILE_VERB[file.change])}
+        </Text>
+        <Text size="1" asChild style={{ fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+          <code>{file.path}</code>
+        </Text>
+        <MaterialIcon name={open ? 'expand_less' : 'expand_more'} size={14} color="var(--slate-11)" />
+      </Flex>
+      {open ? (
+        <Box style={{ marginTop: 'var(--space-1)' }}>
+          <CodeTaskDiff file={file} />
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+/** What a running child is doing now, in one line: its latest step. Null before its first. */
+export function childNow(parts: MessagePart[], t: TFunction): string | null {
+  const steps = withoutHelpers(withEngineSteps(parts, false)).filter(
+    (part) => part.type === 'engine_command' || part.type === 'engine_file' || part.type === 'engine_repo' || part.type === 'tool_call',
+  );
+  const last = steps[steps.length - 1];
+  if (!last) return null;
+  if (last.type === 'engine_command') {
+    if (last.skills) return skillReadLabel(last.skills, last.status === 'running');
+    const verb = last.status === 'running' ? t('agentActivity.command.running') : t('agentActivity.command.ran');
+    return `${verb} ${last.command ?? ''}`.trim();
+  }
+  if (last.type === 'engine_repo' && last.repo) return repoActivityText(t, last.repo);
+  if (last.type === 'engine_file' && last.file) return `${t(FILE_VERB[last.file.change])} ${last.file.path}`;
+  return toolActivityLabel(last);
+}
+
+/** A message the user sent while the run worked, shown where the run took it. */
+/** Notice codes this build words; an unknown one shows nothing. */
+const NOTICE_KEYS: Record<string, string> = {
+  mcp_unavailable: 'agentActivity.notice.mcpUnavailable',
+  // A refused code_task hand-off (CTL-6) reads as the admission refusal it used to be.
+  account_missing: 'chatStream.admission.accountMissing',
+  model_access: 'chatStream.admission.modelAccess',
+  engine_profile: 'chatStream.admission.engineProfile',
+  engine_unavailable: 'chatStream.admission.engineUnavailable',
+  // SIGNGAP: the person's own Claude account could not be carried here; the task ran on the org's account.
+  signin_unavailable: 'agentActivity.notice.signinUnavailable',
+  // CH-01: an attempt died under the task (a sandbox or server restart) and the next one carried it on.
+  resumed: 'agentActivity.notice.resumed',
+  // G-03: nothing the answer says was done was actually done.
+  dry_run: 'agentActivity.notice.dryRun',
+  // G-05: the run's checks passed when it said it was done.
+  verified: 'agentActivity.notice.verified',
+  // ADR-OPS-01 D6: an admin retired the task's engine version, so it is paused; then a compatible version took it on.
+  engine_retired: 'agentActivity.notice.engineRetired',
+  engine_continued: 'agentActivity.notice.engineContinued',
+  // G-48: an engine run waited in the queue for a free sandbox before it ran.
+  sandbox_queued: 'agentActivity.notice.sandboxQueued',
+};
+
+/** G-48: why a turn ran without code tools, one sentence per reason; an unknown reason reads as not available. */
+const CODE_TOOLS_WITHHELD_KEYS: Record<string, string> = {
+  not_available: 'agentActivity.notice.ranWithoutCodeTools.notAvailable',
+  paused_by_admin: 'agentActivity.notice.ranWithoutCodeTools.pausedByAdmin',
+  not_allowed: 'agentActivity.notice.ranWithoutCodeTools.notAllowed',
+  isolation_unavailable: 'agentActivity.notice.ranWithoutCodeTools.isolationUnavailable',
+  engine_off: 'agentActivity.notice.ranWithoutCodeTools.engineOff',
+};
+
+/** A time of day in the person's own locale and time zone ("17:20"). */
+function clockTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+/** Notices a later one makes stale: once a retired task carries on, "it is paused" is no longer true, and back. */
+const SUPERSEDES: Readonly<Record<string, string>> = {
+  engine_continued: 'agentActivity.notice.engineRetired',
+  engine_retired: 'agentActivity.notice.engineContinued',
+};
+
+/** Where a person connects an item a run went without (WS-09): the pages the resources panel links to. */
+const CONNECT_PATHS: Record<'toolset' | 'mcp', string> = {
+  toolset: '/workspace/actions',
+  mcp: '/workspace/mcp-servers/personal',
+};
+
+interface RunNotice {
+  text: string;
+  connect?: { href: string; label: string };
+}
+
+/**
+ * What the run tells the person beside its steps (CTL-5b), e.g. that their MCP tools are not available: shown on the
+ * answer, above its steps, each once; a code this build does not word shows nothing.
+ */
+export function RunNotices({ parts }: { parts: MessagePart[] | undefined }) {
+  const { t } = useTranslation();
+  const notices = new Map<string, RunNotice>();
+  for (const part of parts ?? []) {
+    if (part.type !== 'notice' || part.code === undefined) continue;
+    // MCPNOTE-1: a server named with why it was left out has its own words and action (`McpUnavailableNotices`).
+    if ((part.code === 'mcp_unavailable' && part.item) || part.code === 'mcp_tool_held') continue;
+    if (part.code === 'credential_missing' && part.item) {
+      // QA23-F1: the item the run went on without, and where the person connects it.
+      const kind = part.kind === 'mcp' ? 'mcp' : 'toolset';
+      const key = kind === 'mcp' ? 'agentActivity.notice.credentialMissingMcp' : 'agentActivity.notice.credentialMissingToolset';
+      notices.set(`${key}:${part.item}`, {
+        text: t(key, { item: part.item }),
+        connect: { href: CONNECT_PATHS[kind], label: t('agentActivity.notice.connectItem', { item: part.item }) },
+      });
+      continue;
+    }
+    if (part.code === 'time_plan' && part.writeBy && part.finishBy) {
+      // ADR-RUN-01 D4: the run's time plan in plain words; the latest one stands.
+      notices.set('agentActivity.notice.timePlan', {
+        text: t('agentActivity.notice.timePlan', {
+          writeBy: clockTime(part.writeBy),
+          finishBy: clockTime(part.finishBy),
+        }),
+      });
+      continue;
+    }
+    if (part.code === 'ran_without_code_tools') {
+      // G-48: the turn answered without code tools; the reason the engine was withheld, in plain words.
+      const key = CODE_TOOLS_WITHHELD_KEYS[part.item ?? ''] ?? CODE_TOOLS_WITHHELD_KEYS.not_available;
+      notices.set('ran_without_code_tools', { text: t(key) });
+      continue;
+    }
+    if (part.code === 'engine_switched' && part.item && part.engine) {
+      // WP-111: the chosen coding engine is off; the answer names the one that really ran, never the one that is off.
+      notices.set('engine_switched', {
+        text: t('agentActivity.notice.engineSwitched', {
+          off: engineName(part.item),
+          engine: engineName(part.engine),
+        }),
+      });
+      continue;
+    }
+    if (part.code === 'model_switched' && part.item) {
+      // G-48: the run's own model's provider was down; the alternate the agent allows answered, named.
+      notices.set('model_switched', { text: t('agentActivity.notice.modelSwitched', { model: part.item }) });
+      continue;
+    }
+    // G-05: a verification with its checks has the answer's own panel (`VerificationPanel`).
+    if ((part.code === 'verified' || part.code === 'unverified') && (part.checks?.length ?? 0) > 0) continue;
+    if (part.code === 'unverified') {
+      // G-05: the first check that failed, in the gate's own plain words.
+      const key = part.item ? 'agentActivity.notice.unverifiedBecause' : 'agentActivity.notice.unverified';
+      notices.set('unverified', { text: t(key, { reason: part.item }) });
+      continue;
+    }
+    const key = NOTICE_KEYS[part.code];
+    if (key === undefined) continue;
+    const stale = SUPERSEDES[part.code];
+    if (stale !== undefined) {
+      notices.delete(stale);
+      notices.delete(key);
+    }
+    notices.set(key, { text: t(key) });
+  }
+  const namedMcp = mcpUnusedGroups(parts).length > 0 || mcpHeldTools(parts).length > 0;
+  if (notices.size === 0 && !namedMcp) return null;
+  return (
+    <Flex direction="column" gap="1" style={{ marginBottom: 'var(--space-3)' }}>
+      {namedMcp && <McpUnavailableNotices parts={parts} />}
+      {[...notices].map(([id, notice]) => (
+        <Text key={id} as="p" size="1" role="note" data-testid="run-notice" style={{ color: 'var(--amber-11)', margin: 0 }}>
+          {notice.text}
+          {notice.connect && (
+            <>
+              {' '}
+              <NextLink href={notice.connect.href} style={{ color: 'var(--accent-11)', textDecoration: 'underline' }}>
+                {notice.connect.label}
+              </NextLink>
+            </>
+          )}
+        </Text>
+      ))}
+    </Flex>
+  );
+}
+
+export function SteeringMessage({ part, queuedNote }: { part: MessagePart; queuedNote?: string }) {
+  const { t } = useTranslation();
+  return (
+    <Box
+      data-testid={queuedNote ? 'steering-queued' : 'steering-message'}
+      className="agent-activity-enter"
+      style={{
+        backgroundColor: 'var(--slate-a2)',
+        border: '1px solid var(--slate-a4)',
+        borderRadius: 'var(--radius-3)',
+        padding: 'var(--space-2) var(--space-3)',
+      }}
+    >
+      <Text as="div" size="1" style={{ color: 'var(--slate-11)', marginBottom: 2 }}>
+        {t('chat.steering.you')}
+      </Text>
+      <Text as="div" size="2" style={{ color: 'var(--slate-12)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+        {part.content ?? ''}
+      </Text>
+      {part.attachments && part.attachments.length > 0 && (
+        <Flex gap="2" wrap="wrap" style={{ marginTop: 4 }} data-testid="steering-attachments">
+          {part.attachments.map((att) => (
+            <Flex key={att.virtualRecordId || att.recordId} align="center" gap="1" style={{ maxWidth: 200 }} title={att.recordName}>
+              <FileIcon
+                extension={getMimeTypeExtension(att.mimeType) || att.extension || undefined}
+                filename={att.recordName}
+                size={14}
+                fallbackIcon="insert_drive_file"
+              />
+              <Text size="1" style={{ color: 'var(--slate-11)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {att.recordName}
+              </Text>
+            </Flex>
+          ))}
+        </Flex>
+      )}
+      {part.consumed === false && (
+        <Text as="div" size="1" style={{ color: 'var(--slate-11)', marginTop: 4 }}>
+          {t('chat.steering.notTaken')}
+        </Text>
+      )}
+      {queuedNote ? (
+        <Text as="div" size="1" style={{ color: 'var(--slate-11)', marginTop: 4 }}>
+          {queuedNote}
+        </Text>
+      ) : null}
+    </Box>
+  );
 }
 
 // Backend appends "---\nConfidence: High" to raw LLM output then strips it
@@ -476,7 +1013,7 @@ function StatusTimelineEntry({ status }: { status: StatusMessage }) {
 /** Collapsible chain-of-thought block — collapsed by default, same
  * disclosure pattern `AskUserQuestionCard` uses for its answers list. */
 export function ThinkingBlock({ content }: { content: string }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useRowState('thinking.expanded', false);
   if (!content.trim()) return null;
 
   return (
@@ -503,13 +1040,13 @@ export function ThinkingBlock({ content }: { content: string }) {
           userSelect: 'none',
         }}
       >
-        <Text size="1" weight="medium" style={{ color: 'var(--slate-10)', flex: 1 }}>
+        <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 1 }}>
           Thinking
         </Text>
         <MaterialIcon
           name={expanded ? 'expand_less' : 'expand_more'}
           size={ICON_SIZES.PRIMARY}
-          color="var(--slate-9)"
+          color="var(--slate-11)"
         />
       </Flex>
       {expanded && (
@@ -528,7 +1065,7 @@ export function ThinkingBlock({ content }: { content: string }) {
   );
 }
 
-const TOOL_STATUS_ICON: Record<NonNullable<MessagePart['status']>, string> = {
+const TOOL_STATUS_ICON: Record<ToolStatus, string> = {
   running: 'sync',
   completed: 'check_circle',
   failed: 'warning',
@@ -537,16 +1074,19 @@ const TOOL_STATUS_ICON: Record<NonNullable<MessagePart['status']>, string> = {
 };
 
 // A failed call is red: in grey it read like a completed one.
-const TOOL_STATUS_COLOR: Record<NonNullable<MessagePart['status']>, string> = {
-  running: 'var(--blue-9)',
-  completed: 'var(--green-9)',
-  failed: 'var(--red-9)',
-  blocked: 'var(--amber-9)',
-  awaiting_approval: 'var(--amber-9)',
+const TOOL_STATUS_COLOR: Record<ToolStatus, string> = {
+  running: 'var(--blue-11)',
+  completed: 'var(--green-11)',
+  failed: 'var(--red-11)',
+  blocked: 'var(--amber-11)',
+  awaiting_approval: 'var(--amber-11)',
 };
 
 
-export function toolActivityLabel(part: Pick<MessagePart, 'toolName' | 'displayName'>): string {
+export function toolActivityLabel(part: Pick<MessagePart, 'toolName' | 'displayName' | 'step' | 'skills'>): string {
+  if (part.skills) return skillReadLabel(part.skills);
+  // A step with typed facts names its action, whatever the engine called the tool (WP-112).
+  if (part.step) return i18n.t(`toolNames.${part.step.action}.past`);
   return toolActivityLabelUtil(part.toolName, part.displayName);
 }
 
@@ -560,255 +1100,6 @@ function isSearchLike(toolName: string | undefined): boolean {
   return !!toolName && /search/i.test(toolName);
 }
 
-/** Renders a server-computed tool summary (e.g. "Retrieved 12 blocks from
- * 5 documents\n- Doc A\n- Doc B") as styled text rather than monospace —
- * summaries are prose/bullet-list, not raw JSON, so they read better with
- * the same lightweight markdown treatment `NarrationText` uses. A summary can
- * quote a tool's output (a title), so it loads no images and links only to
- * http(s), in a new tab. */
-function ToolSummaryText({ content }: { content: string }) {
-  return (
-    <Box style={{ fontSize: 'var(--font-size-1)', color: 'var(--slate-11)', lineHeight: 1.6 }}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        skipHtml
-        disallowedElements={['img']}
-        urlTransform={(url) => safeLink(url) ?? ''}
-        components={{
-          a: ({ href, children }) =>
-            href ? (
-              <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-11)' }}>
-                {children}
-              </a>
-            ) : (
-              <>{children}</>
-            ),
-          p: ({ children }) => (
-            <Text size="1" as="p" style={{ margin: '0 0 var(--space-1) 0', color: 'inherit' }}>
-              {children}
-            </Text>
-          ),
-          ul: ({ children }) => (
-            <ul style={{ paddingLeft: 'var(--space-4)', margin: 0, listStyleType: 'disc' }}>{children}</ul>
-          ),
-          li: ({ children }) => (
-            <li style={{ marginBottom: '2px', lineHeight: 1.5 }}>{children}</li>
-          ),
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-    </Box>
-  );
-}
-
-/** Pretty-prints `raw` when it is JSON. A truncated preview is no longer
- * valid JSON, so it is shown as-is. */
-export function formatToolPayload(raw: string): string {
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
-  } catch {
-    return raw;
-  }
-}
-
-function isEmptyToolArgs(raw: string | undefined): boolean {
-  const trimmed = raw?.trim();
-  return !trimmed || trimmed === '{}' || trimmed === 'null';
-}
-
-/** Monospace, scrollable view of a raw tool payload with a copy button. */
-function RawToolPayload({ raw }: { raw: string }) {
-  const { t } = useTranslation();
-  const { copied, copy } = useCopyText();
-  const text = useMemo(() => formatToolPayload(raw), [raw]);
-
-  return (
-    <Box
-      style={{
-        position: 'relative',
-        marginTop: 'var(--space-1)',
-        border: '1px solid var(--slate-5)',
-        borderRadius: 'var(--radius-2)',
-        backgroundColor: 'var(--slate-1)',
-      }}
-    >
-      <button
-        type="button"
-        onClick={() => void copy(text)}
-        aria-label={copied ? t('chatStream.copiedCode') : t('chatStream.copyCode')}
-        style={{
-          position: 'absolute',
-          top: 4,
-          right: 4,
-          display: 'inline-flex',
-          alignItems: 'center',
-          background: 'var(--slate-3)',
-          border: 'none',
-          borderRadius: 'var(--radius-1)',
-          padding: 2,
-          cursor: 'pointer',
-        }}
-      >
-        <MaterialIcon
-          name={copied ? 'check' : 'content_copy'}
-          size={13}
-          color={copied ? 'var(--accent-11)' : 'var(--slate-11)'}
-        />
-      </button>
-      <Box
-        onWheel={(e) => e.stopPropagation()}
-        style={{
-          maxHeight: 240,
-          overflow: 'auto',
-          padding: 'var(--space-2)',
-          paddingRight: 'var(--space-6)',
-          fontFamily: 'var(--font-mono, monospace)',
-          fontSize: 'var(--font-size-1)',
-          color: 'var(--slate-11)',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-        }}
-      >
-        {text}
-      </Box>
-    </Box>
-  );
-}
-
-/** A tool's table of records or one record's fields, from its full result. */
-function ToolResultViewBlock({ view }: { view: ToolResultView }) {
-  const { t } = useTranslation();
-  if (view.kind === 'fields') {
-    return (
-      <Box
-        data-testid="tool-result-fields"
-        style={{
-          marginTop: 'var(--space-1)',
-          padding: 'var(--space-2)',
-          border: '1px solid var(--slate-5)',
-          borderRadius: 'var(--radius-2)',
-          backgroundColor: 'var(--slate-1)',
-        }}
-      >
-        <Box style={{ display: 'grid', gridTemplateColumns: 'minmax(5rem, max-content) 1fr', columnGap: 'var(--space-3)', rowGap: 4 }}>
-          {view.fields.map((field, index) => (
-            <React.Fragment key={index}>
-              <Text size="1" style={{ color: 'var(--slate-10)' }}>
-                {field.label}
-              </Text>
-              <Text size="1" style={{ color: 'var(--slate-12)', overflowWrap: 'anywhere' }}>
-                {field.value}
-              </Text>
-            </React.Fragment>
-          ))}
-        </Box>
-        {view.url && (
-          <Text as="p" size="1" mt="2">
-            <a href={view.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-11)' }}>
-              {t('chat.toolCard.open')}
-            </a>
-          </Text>
-        )}
-      </Box>
-    );
-  }
-  return (
-    <Box
-      data-testid="tool-result-table"
-      onWheel={(e) => e.stopPropagation()}
-      style={{ marginTop: 'var(--space-1)', maxHeight: 320, overflow: 'auto' }}
-    >
-      <Table.Root size="1" variant="surface">
-        <Table.Header>
-          <Table.Row>
-            {view.columns.map((column, index) => (
-              <Table.ColumnHeaderCell key={index} style={{ whiteSpace: 'nowrap' }}>
-                {column}
-              </Table.ColumnHeaderCell>
-            ))}
-          </Table.Row>
-        </Table.Header>
-        <Table.Body>
-          {view.rows.map((row, rowIndex) => (
-            <Table.Row key={rowIndex}>
-              {row.cells.map((cell, index) => (
-                <Table.Cell key={index} style={{ maxWidth: 280, overflowWrap: 'anywhere' }}>
-                  {index === 0 && row.url ? (
-                    <a href={row.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-11)' }}>
-                      {cell || row.url}
-                    </a>
-                  ) : (
-                    cell
-                  )}
-                </Table.Cell>
-              ))}
-            </Table.Row>
-          ))}
-        </Table.Body>
-      </Table.Root>
-      {view.total > view.rows.length && (
-        <Text as="p" size="1" mt="1" style={{ color: 'var(--slate-10)' }}>
-          {t('chat.toolCard.showingOf', { shown: view.rows.length, total: view.total })}
-        </Text>
-      )}
-    </Box>
-  );
-}
-
-/** The raw result behind a toggle, when a view of it is shown. */
-function RawResultToggle({ raw }: { raw: string }) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-  return (
-    <Box>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((prev) => !prev)}
-        style={{
-          appearance: 'none',
-          background: 'none',
-          border: 'none',
-          padding: 0,
-          marginTop: 'var(--space-1)',
-          cursor: 'pointer',
-          color: 'var(--slate-10)',
-          fontSize: 'var(--font-size-1)',
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 2,
-        }}
-      >
-        <MaterialIcon name={open ? 'expand_less' : 'expand_more'} size={14} color="var(--slate-10)" />
-        {open ? t('chat.toolCard.hideRaw') : t('chat.toolCard.viewRaw')}
-      </button>
-      {open && <RawToolPayload raw={raw} />}
-    </Box>
-  );
-}
-
-/** A result that is prose, shown as text rather than code. */
-function PlainResultText({ text }: { text: string }) {
-  return (
-    <Box
-      data-testid="tool-result-text"
-      onWheel={(e) => e.stopPropagation()}
-      style={{
-        marginTop: 'var(--space-1)',
-        maxHeight: 240,
-        overflow: 'auto',
-        fontSize: 'var(--font-size-1)',
-        color: 'var(--slate-11)',
-        lineHeight: 1.5,
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-      }}
-    >
-      {text}
-    </Box>
-  );
-}
 
 /** One tool call: activity label, status icon, and (when expanded) the
  * server summary plus the raw args / bounded result preview — never the full
@@ -816,10 +1107,23 @@ function PlainResultText({ text }: { text: string }) {
  * timeline row (the rail node already carries the status icon — see
  * `getTimelineIcon`); nested usage inside an expanded `ToolCallGroup` has
  * no rail of its own, so it keeps its own inline icon (the default). */
-export function ToolCallCard({ part, showIcon = true }: { part: MessagePart; showIcon?: boolean }) {
-  const [expanded, setExpanded] = useState(false);
-  const status = part.status ?? 'running';
-  const toolsetLabel = extractToolsetLabel(part.toolName);
+export function ToolCallCard({
+  part,
+  showIcon = true,
+  showUnavailable = true,
+  citationMaps,
+}: {
+  part: MessagePart;
+  showIcon?: boolean;
+  /** A group shows its calls' unavailable tools once, above its folded calls. */
+  showUnavailable?: boolean;
+  /** The answer's citations, so a step names the [n] its result produced. */
+  citationMaps?: CitationMaps;
+}) {
+  const [expanded, setExpanded] = useRowState(`tool.expanded:${part.toolCallId ?? ''}`, false);
+  const unavailable = useMemo(() => unavailableFromSearch(part), [part]);
+  const status = toolStatus(part.status, 'running');
+  const toolsetLabel = extractToolsetLabel(part.toolName, part.displayName);
   const sourceInfo = extractSourcesFromSummary(part.argsSummary);
 
   return (
@@ -883,19 +1187,36 @@ export function ToolCallCard({ part, showIcon = true }: { part: MessagePart; sho
           }}
         >
           {toolActivityLabel(part)}
-          {sourceInfo && (
-            <span style={{ color: 'var(--slate-9)', fontWeight: 400 }}>
+          {part.step && <StepTarget step={part.step} citationMaps={citationMaps} />}
+          {!part.step && sourceInfo && (
+            <span style={{ color: 'var(--slate-11)', fontWeight: 400 }}>
               {' · '}{sourceInfo}
             </span>
           )}
         </Text>
+        <StepDuration ms={part.durationMs} />
         <ApprovalChip part={part} />
         <MaterialIcon
           name={expanded ? 'expand_less' : 'expand_more'}
           size={ICON_SIZES.PRIMARY}
-          color="var(--slate-9)"
+          color="var(--slate-11)"
         />
       </Flex>
+      {status === 'failed' && (
+        <Text
+          as="p"
+          size="1"
+          data-testid="tool-failure"
+          style={{ color: 'var(--red-11)', padding: '0 var(--space-3) var(--space-2)', margin: 0 }}
+        >
+          {toolFailureText(part, toolSubject(part.toolName, part.displayName))}
+        </Text>
+      )}
+      {showUnavailable && unavailable.length > 0 && (
+        <Box style={{ padding: '0 var(--space-3) var(--space-2)' }}>
+          <ToolUnavailableRows tools={unavailable} />
+        </Box>
+      )}
       {expanded && (
         <Box
           style={{
@@ -905,138 +1226,13 @@ export function ToolCallCard({ part, showIcon = true }: { part: MessagePart; sho
             gap: 'var(--space-2)',
           }}
         >
-          {isMcpTool(part.toolName) ? (
-            <McpToolDetails part={part} status={status} />
-          ) : (
-            <ToolDetails part={part} status={status} />
-          )}
+          <ToolCallDetails part={part} status={status} />
         </Box>
       )}
     </Box>
   );
 }
 
-const RESULT_LABEL_KEY: Record<NonNullable<MessagePart['status']>, string> = {
-  running: 'chat.toolCard.result',
-  completed: 'chat.toolCard.result',
-  failed: 'chat.toolCard.error',
-  blocked: 'chat.toolCard.blocked',
-  awaiting_approval: 'chat.toolCard.awaitingApproval',
-};
-
-function ResultLabel({ status }: { status: NonNullable<MessagePart['status']> }) {
-  const { t } = useTranslation();
-  return (
-    <Text size="1" weight="medium" style={{ color: status === 'failed' ? 'var(--red-11)' : 'var(--slate-9)' }}>
-      {t(RESULT_LABEL_KEY[status])}
-    </Text>
-  );
-}
-
-const TOOL_TEXT_STYLE: React.CSSProperties = {
-  fontFamily: 'var(--font-mono, monospace)',
-  fontSize: 'var(--font-size-1)',
-  color: 'var(--slate-11)',
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-word',
-};
-
-/** A built-in or toolset tool: the server's summary, or the raw text when there is none. Web tools
- * also list what they found (every search result, the page read), each linked. */
-function ToolDetails({ part, status }: { part: MessagePart; status: NonNullable<MessagePart['status']> }) {
-  const { t } = useTranslation();
-  const view = useMemo(
-    () => (status === 'completed' && isWebTool(part.toolName) ? toolResultView(part.resultView) : null),
-    [status, part.toolName, part.resultView],
-  );
-  const sqlQuery = extractSqlQuery(part.toolName, part.args);
-  return (
-    <>
-      {(part.argsSummary || part.args) && (
-        <Box>
-          <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
-            {t('chat.toolCard.arguments')}
-          </Text>
-          {part.argsSummary ? <ToolSummaryText content={part.argsSummary} /> : <Box style={TOOL_TEXT_STYLE}>{part.args}</Box>}
-        </Box>
-      )}
-      {sqlQuery && (
-        <Box>
-          <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
-            {t('chat.toolCard.query')}
-          </Text>
-          {/* No copy or download for a cut-off query: it can still run, e.g. when the cut falls in a `--` comment. */}
-          <CodeBlock
-            language="sql"
-            codeText={sqlQuery.text}
-            actions={!sqlQuery.cutOff}
-            maxHeight="260px"
-            style={{ marginBottom: 0, marginTop: 'var(--space-1)' }}
-          />
-          {sqlQuery.cutOff && (
-            <Text as="p" size="1" mt="1" style={{ color: 'var(--slate-10)' }}>
-              {t('chat.toolCard.queryCutOff')}
-            </Text>
-          )}
-        </Box>
-      )}
-      {/* A skill tool's raw `resultPreview` is a truncated SKILL.md body or bundled-file content
-          (see `LoadSkillTool`/`LoadSkillResourceTool.summarize_result`): never worth showing. */}
-      {(part.resultSummary || (part.resultPreview && !isSkillTool(part.toolName))) && (
-        <Box>
-          <ResultLabel status={status} />
-          {part.resultSummary ? (
-            <ToolSummaryText content={part.resultSummary} />
-          ) : (
-            <Box style={TOOL_TEXT_STYLE}>{part.resultPreview}</Box>
-          )}
-          {view && <ToolResultViewBlock view={view} />}
-        </Box>
-      )}
-    </>
-  );
-}
-
-/** An MCP tool: the summary plus the raw arguments, and a table or fields of what it found with
- * the raw output, since an external server's payload is all the person can check it against. */
-function McpToolDetails({ part, status }: { part: MessagePart; status: NonNullable<MessagePart['status']> }) {
-  const { t } = useTranslation();
-  const hasRawArgs = !isEmptyToolArgs(part.args);
-  const showRawResult = Boolean(part.resultPreview);
-  const rawResult = part.resultPreview ?? '';
-  const view = useMemo(() => (status === 'completed' ? toolResultView(part.resultView) : null), [status, part.resultView]);
-  const plainResult = showRawResult && !view && !looksLikeJson(rawResult);
-  // Prose whose first line is the summary needn't say it twice.
-  const summaryShown = Boolean(part.resultSummary) && !(plainResult && part.resultSummary?.trim() === rawResult.trim().split('\n')[0]?.trim());
-  return (
-    <>
-      {(part.argsSummary || hasRawArgs) && (
-        <Box>
-          <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
-            {t('chat.toolCard.arguments')}
-          </Text>
-          {part.argsSummary && <ToolSummaryText content={part.argsSummary} />}
-          {hasRawArgs && <RawToolPayload raw={part.args ?? ''} />}
-        </Box>
-      )}
-      {(part.resultSummary || showRawResult || view) && (
-        <Box>
-          <ResultLabel status={status} />
-          {summaryShown && <ToolSummaryText content={part.resultSummary ?? ''} />}
-          {view && <ToolResultViewBlock view={view} />}
-          {showRawResult &&
-            (view ? (
-              <RawResultToggle raw={rawResult} />
-            ) : plainResult ? (
-              <PlainResultText text={rawResult} />
-            ) : (
-              <RawToolPayload raw={rawResult} />
-            ))}
-        </Box>
-      )}
-    </>
-  );
-}
 
 const APPROVAL_CHIP: Record<'awaiting_approval' | NonNullable<MessagePart['approvalAnswer']>, { key: string; color: 'amber' | 'green' | 'gray' }> = {
   awaiting_approval: { key: 'chat.toolCard.needsApproval', color: 'amber' },
@@ -1060,23 +1256,26 @@ function ApprovalChip({ part }: { part: MessagePart }) {
 }
 
 /** Collapsed-by-default summary row for a burst of >= 2 consecutive tool
- * calls — e.g. "Explored 3 searches" or "Ran 2 tools". Expanding reveals the
+ * calls — e.g. "Explored 3 searches" or "Used 2 tools". Expanding reveals the
  * individual `ToolCallCard`s (which stay collapsed themselves). */
 function ToolCallGroup({ parts }: { parts: MessagePart[] }) {
-  const [expanded, setExpanded] = useState(false);
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useRowState('group.expanded', false);
   // Skill-tool check takes precedence over the search heuristic — a burst
   // of `skill_search`/`load_skill` calls reads as "Used N skills", not
   // "Explored N searches" (see `getTimelineIcon`'s icon precedence above).
   const allSkills = parts.every((part) => isSkillTool(part.toolName));
   const allSearches = !allSkills && parts.every((part) => isSearchLike(part.toolName));
+  const count = countToolCalls(parts);
   const label = allSkills
-    ? `Used ${parts.length} skills`
+    ? `Used ${count} skills`
     : allSearches
-      ? `Explored ${parts.length} searches`
-      : `Ran ${parts.length} tools`;
+      ? `Explored ${count} searches`
+      : t('agentActivity.summary.tools', { count });
 
-  const toolsetLabels = [...new Set(parts.map((p) => extractToolsetLabel(p.toolName)).filter(Boolean))] as string[];
+  const toolsetLabels = [...new Set(parts.map((p) => extractToolsetLabel(p.toolName, p.displayName)).filter(Boolean))] as string[];
   const groupToolsetLabel = toolsetLabels.length === 1 ? toolsetLabels[0] : undefined;
+  const unavailable = useMemo(() => uniqueUnavailable(parts.flatMap(unavailableFromSearch)), [parts]);
 
   return (
     <Box
@@ -1125,97 +1324,423 @@ function ToolCallGroup({ parts }: { parts: MessagePart[] }) {
         <MaterialIcon
           name={expanded ? 'expand_less' : 'expand_more'}
           size={ICON_SIZES.PRIMARY}
-          color="var(--slate-9)"
+          color="var(--slate-11)"
         />
       </Flex>
+      {/* UX-06: a tool the person can connect stays in sight while the group is folded. */}
+      {unavailable.length > 0 && (
+        <Box style={{ padding: '0 var(--space-3) var(--space-2)' }}>
+          <ToolUnavailableRows tools={unavailable} />
+        </Box>
+      )}
       {expanded && (
         <Box style={{ padding: '0 var(--space-3) var(--space-3)' }}>
-          <Flex direction="column" gap="2">
-            {parts.map((part, idx) => (
-              <ToolCallCard key={part.toolCallId ?? idx} part={part} />
-            ))}
-          </Flex>
+          <VirtualRows
+            items={parts}
+            getKey={groupPartKey}
+            estimateSize={estimateToolCard}
+            gap="var(--space-2)"
+            renderRow={(part) => <ToolCallCard part={part} showUnavailable={false} />}
+          />
         </Box>
       )}
     </Box>
   );
 }
 
-/** A sub-agent's own nested timeline — collapsed by default so the running
- * indicator on the header is the primary signal; expand to see tool calls. */
-export function SubAgentGroup({ part, citationMaps, citationCallbacks }: { part: MessagePart; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks }) {
-  const [expanded, setExpanded] = useState(false);
+/** A sub-agent's row. A durable child is a job card (CLASSIC-JOBS D2); any other sub-agent, an engine's own helper
+ * included, keeps its nested timeline, collapsed by default so its header's state is the primary signal. */
+export function SubAgentGroup({ part, citationMaps, citationCallbacks, waiting = false, asks, variant = 'card' }: { part: MessagePart; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks; waiting?: boolean; asks?: React.ReactNode[]; variant?: JobCardVariant }) {
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useRowState(`subAgent.expanded:${part.runId ?? ''}`, false);
   const nested = part.parts ?? [];
-  const status = part.status ?? 'completed';
+  const status = toolStatus(part.status, 'completed');
+  // A durable child keeps its own timeline on its own stream (U3): saved parts
+  // name the parent, and a live durable stream is Node's projection.
+  const session = useDurableSession();
+  const followsDurable = useFollowsDurableRun();
+  const durableChild = isJobPart(part, session, followsDurable);
+  const partModel = useMemo(() => toRunModel(part.model), [part.model]);
+  const modelLabel = useRunModelLabel(partModel);
+  const nowOf = useCallback((parts: MessagePart[]) => childNow(parts, t), [t]);
+  const renderSteps = useCallback(
+    (steps: MessagePart[]) => <AgentActivityTimeline parts={steps} isNested citationMaps={citationMaps} citationCallbacks={citationCallbacks} />,
+    [citationMaps, citationCallbacks],
+  );
+  // DEEPROUTE: a hand-off the run made on its own says why; the goal stays in the engine's own steps.
+  const role = part.engineHelper
+    ? part.engineHelper.task
+      ? t('agentActivity.engineHelperTask', { task: part.engineHelper.task })
+      : t('agentActivity.engineHelper')
+    : durableChild
+      ? // A job is named by what it was asked, as the Jobs page names it; a role id is not words (F10). Why it was
+        // handed off is the line before the jobs (`TurnJobs`), as the design's hand-off line is.
+        sharedJobTitle(part.codeTaskGoal || part.goal, () => t('jobCard.untitled'))
+      : part.codeTaskHandoff
+        ? handoffLabel(t, part.codeTaskHandoff)
+        : part.codeTaskGoal
+          ? t('agentActivity.codeTask', { goal: part.codeTaskGoal })
+          : (part.roleName ?? '');
+
+  if (durableChild && session !== null) {
+    return (
+      <JobCard
+        part={part}
+        session={session}
+        title={role || t('jobCard.untitled')}
+        variant={variant}
+        waiting={waiting}
+        asks={asks}
+        nowOf={nowOf}
+        renderSteps={renderSteps}
+      />
+    );
+  }
 
   return (
-    <Box
-      className="agent-activity-enter"
-      style={{
-        border: `1px solid ${status === 'running' ? 'var(--blue-a5)' : 'var(--accent-a5)'}`,
-        borderRadius: 'var(--radius-3)',
-        backgroundColor: status === 'running' ? 'var(--blue-a2)' : 'var(--accent-a2)',
-        overflow: 'hidden',
-      }}
-    >
-      <Flex
-        align="center"
-        gap="2"
-        role="button"
-        tabIndex={0}
-        aria-expanded={expanded}
-        onClick={() => setExpanded((prev) => !prev)}
-        onKeyDown={(e) => handleToggleKeyDown(e, () => setExpanded((prev) => !prev))}
+    <>
+      <Box
+        className="agent-activity-enter"
         style={{
-          padding: 'var(--space-2) var(--space-3)',
-          cursor: 'pointer',
-          userSelect: 'none',
+          border: `1px solid ${status === 'running' ? 'var(--blue-a5)' : 'var(--accent-a5)'}`,
+          borderRadius: 'var(--radius-3)',
+          backgroundColor: status === 'running' ? 'var(--blue-a2)' : 'var(--accent-a2)',
+          overflow: 'hidden',
         }}
       >
-        <Text size="1" weight="medium" style={{ color: 'var(--accent-11)', flex: 1 }}>
-          {part.roleName || 'Sub-agent'}
-        </Text>
-        <MaterialIcon
-          name={expanded ? 'expand_less' : 'expand_more'}
-          size={ICON_SIZES.PRIMARY}
-          color="var(--accent-9)"
-        />
-      </Flex>
-      {expanded && nested.length > 0 && (
-        <Box style={{ padding: '0 var(--space-3) var(--space-3)' }}>
-          <AgentActivityTimeline parts={nested} isNested citationMaps={citationMaps} citationCallbacks={citationCallbacks} />
-        </Box>
-      )}
-    </Box>
+        <Flex
+          align="center"
+          gap="2"
+          role="button"
+          tabIndex={0}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((prev) => !prev)}
+          onKeyDown={(e) => handleToggleKeyDown(e, () => setExpanded((prev) => !prev))}
+          style={{
+            padding: 'var(--space-2) var(--space-3)',
+            cursor: 'pointer',
+            userSelect: 'none',
+          }}
+        >
+          <Text size="1" weight="medium" style={{ color: 'var(--accent-11)', flex: 1, minWidth: 0 }}>
+            {role || 'Sub-agent'}
+            {modelLabel ? (
+              <Text as="span" size="1" weight="regular" color="gray" data-testid="sub-agent-model">
+                {` · ${modelLabel}`}
+              </Text>
+            ) : null}
+            {part.codeTaskHandoff && part.codeTaskGoal ? (
+              <Text
+                as="span"
+                size="1"
+                weight="regular"
+                color="gray"
+                data-testid="sub-agent-handoff-goal"
+                title={part.codeTaskGoal}
+                style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              >
+                {part.codeTaskGoal}
+              </Text>
+            ) : null}
+          </Text>
+          {part.engineHelper ? (
+            <Text size="1" color={status === 'failed' ? 'red' : 'gray'} data-testid="sub-agent-status">
+              {status === 'running'
+                ? t('durableRun.child.running')
+                : status === 'failed'
+                  ? t('durableRun.child.failed')
+                  : t('durableRun.child.completed')}
+            </Text>
+          ) : null}
+          <MaterialIcon
+            name={expanded ? 'expand_less' : 'expand_more'}
+            size={ICON_SIZES.PRIMARY}
+            color="var(--accent-11)"
+          />
+        </Flex>
+        {budgetRefusalKey(part.errorType) ? (
+          <Text as="div" size="1" color="red" style={{ padding: '0 var(--space-3) var(--space-2)' }}>
+            {t(budgetRefusalKey(part.errorType) as string)}
+          </Text>
+        ) : null}
+        {expanded ? (
+          <Box style={{ padding: '0 var(--space-3) var(--space-3)' }}>
+            {nested.length > 0 ? (
+              <AgentActivityTimeline parts={nested} isNested isStreaming={status === 'running'} citationMaps={citationMaps} citationCallbacks={citationCallbacks} />
+            ) : (
+              <Text size="1" color="gray" data-testid="sub-agent-empty">
+                {status === 'running' ? t('durableRun.child.noStepsYet') : t('durableRun.child.noSteps')}
+              </Text>
+            )}
+          </Box>
+        ) : null}
+      </Box>
+      {asks}
+    </>
   );
 }
 
-/** Human-readable summary for `CollapsibleActivitySection`'s header, e.g.
- * "Thought for a bit, used 3 tools". Counts are derived directly from the
- * transcript rather than tracked separately, so it never drifts from what's
- * actually rendered underneath. */
-export function buildActivitySummary(parts: MessagePart[]): string {
-  const toolCount = parts.filter((p) => p.type === 'tool_call').length;
-  const thinkCount = parts.filter((p) => p.type === 'reasoning').length;
-  const subAgentCount = parts.filter((p) => p.type === 'sub_agent').length;
+/** The plan a saved durable answer kept (its `plan` part, CTL-3b); null when it kept none. */
+export function planFromParts(parts: MessagePart[] | undefined): SSEPlanEvent | null {
+  const part = parts?.find((p) => p.type === 'plan' && Array.isArray(p.steps));
+  return part?.steps ? { runId: part.runId ?? '', steps: part.steps, currentTaskId: null } : null;
+}
 
-  const segments: string[] = [];
-  if (thinkCount > 0) segments.push(thinkCount === 1 ? 'Thought about this' : `Thought ${thinkCount} times`);
-  if (toolCount > 0) segments.push(`Used ${toolCount} ${toolCount === 1 ? 'tool' : 'tools'}`);
-  if (subAgentCount > 0) segments.push(`Delegated to ${subAgentCount} sub-${subAgentCount === 1 ? 'agent' : 'agents'}`);
-  return segments.length > 0 ? segments.join(' · ') : 'Worked on this';
+/** A plan worth a checklist: two or more steps (one step is just the task). */
+function shownPlan(plan: SSEPlanEvent | null | undefined): SSEPlanEvent | null {
+  return plan && plan.steps.length >= 2 ? plan : null;
+}
+
+/** How long a step or run took, as a person reads it ("3s", "2m 5s"); nothing under a second (CTL-3b). */
+export function formatDuration(ms: number | undefined, t: TFunction): string | null {
+  if (ms === undefined || !Number.isFinite(ms) || ms < 1000) return null;
+  // Past an hour, the job clock's hours and days (BGUI-11): minutes alone read "54614m 26s".
+  if (ms >= 3_600_000) return jobClock(ms, (key, vars) => t(key, vars) as string);
+  const total = Math.round(ms / 1000);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return minutes > 0
+    ? t('agentActivity.duration.minutes', { minutes, seconds })
+    : t('agentActivity.duration.seconds', { seconds });
+}
+
+function StepDuration({ ms }: { ms: number | undefined }) {
+  const { t } = useTranslation();
+  const shown = formatDuration(ms, t);
+  if (!shown) return null;
+  return (
+    <Text size="1" data-testid="step-duration" style={{ color: 'var(--slate-11)', whiteSpace: 'nowrap' }}>
+      {shown}
+    </Text>
+  );
+}
+
+/** How many tool calls these parts made, a batch counting as its N calls: the one count the steps header and a
+ * group row both show, so they never disagree (QA-FP4: "Used 1 tool" over "Ran 4 tools"). */
+export function countToolCalls(parts: readonly MessagePart[]): number {
+  return parts.filter((part) => part.type === 'tool_call').length;
+}
+
+/** How many kinds of step the summary names before it says how many more there were. */
+const NAMED_STEPS = 3;
+
+/**
+ * What a tool step is called: what the tool says it did (a built-in's action, its written display name), else the
+ * app it used and the tool ("Used Jira: Create issue"), in TOOLNAMES' words; null for a tool with neither, which the
+ * summary only counts (CTL-3b).
+ */
+function stepLabel(part: MessagePart, t: TFunction): string | null {
+  if (isAskUserQuestionTool(part.toolName)) return t('agentActivity.summary.askedYou');
+  if (!part.toolName) return null;
+  if (part.skills) return toolActivityLabel(part);
+  const tool = describeTool(part.toolName, part.displayName);
+  const written = part.displayName?.trim();
+  if (tool.key || (written && !written.includes(' · '))) return toolActivityLabel(part);
+  return tool.app ? t('agentActivity.summary.usedApp', { app: tool.app, tool: tool.name }) : null;
 }
 
 /**
- * Wraps an activity timeline in a collapsible summary. Expanded while
- * streaming so the live trace stays visible; collapsed by default for
- * historical messages. Never auto-collapses — the user toggles it.
+ * The header of a run's steps, e.g. "Completed 2 of 3 steps · Searched the knowledge base (2) · 42s" (CTL-3b).
+ * Counts come from the transcript itself, so it never drifts from what is shown underneath; a cancelled plan step
+ * is not one left to do. The time is the saved run's, or `elapsedMs` while it runs.
  */
-export function CollapsibleActivitySection({ parts, isStreaming = false, children }: { parts: MessagePart[]; isStreaming?: boolean; children: React.ReactNode }) {
-  const [collapsed, setCollapsed] = useState(!isStreaming);
-  const summary = useMemo(() => buildActivitySummary(parts), [parts]);
+export function buildActivitySummary(
+  rawParts: MessagePart[],
+  t: TFunction,
+  plan?: SSEPlanEvent | null,
+  elapsedMs?: number,
+  files: ChangedFile[] = [],
+  cost?: string | null,
+): string {
+  const nested = withEngineSteps(rawParts, true);
+  // An engine helper's steps count as the run's; the helper itself counts as work it delegated.
+  const parts = withoutHelpers(nested);
+  const labelled = new Map<string, number>();
+  for (const part of parts) {
+    if (part.type !== 'tool_call') continue;
+    const label = stepLabel(part, t);
+    if (label !== null) labelled.set(label, (labelled.get(label) ?? 0) + 1);
+  }
+  const calls = countToolCalls(parts);
+  const thinkCount = parts.filter((p) => p.type === 'reasoning').length;
+  const subAgentCount = nested.filter((p) => p.type === 'sub_agent').length;
+  const steps = shownPlan(plan)?.steps.filter((step) => step.status !== 'cancelled');
+
+  const segments: string[] = [];
+  if (steps) {
+    const done = steps.filter((step) => step.status === 'completed').length;
+    segments.push(t('agentActivity.summary.steps', { done, total: steps.length }));
+  }
+  if (thinkCount > 0) segments.push(t('agentActivity.summary.thought', { count: thinkCount }));
+  const commandCount = parts.filter((p) => p.type === 'engine_command').length;
+  if (commandCount > 0) segments.push(t('agentActivity.summary.commands', { count: commandCount }));
+  const named = [...labelled.entries()];
+  for (const [label, count] of named.slice(0, NAMED_STEPS)) {
+    segments.push(count > 1 ? t('agentActivity.summary.repeated', { label, count }) : label);
+  }
+  if (named.length > NAMED_STEPS) segments.push(t('agentActivity.summary.more', { count: named.length - NAMED_STEPS }));
+  // The total, in the rows' count (QA-FP4), whenever the names above do not already account for every call.
+  const namedCalls = named.slice(0, NAMED_STEPS).reduce((sum, [, count]) => sum + count, 0);
+  if (calls > namedCalls) segments.push(t('agentActivity.summary.tools', { count: calls }));
+  if (subAgentCount > 0) segments.push(t('agentActivity.summary.delegated', { count: subAgentCount }));
+  const approvalCount = parts.filter((p) => p.type === 'approval').length;
+  if (approvalCount > 0) segments.push(t('agentActivity.summary.approvals', { count: approvalCount }));
+  const [file] = files;
+  if (files.length === 1 && file) {
+    const verb = file.change === 'added' ? 'created' : file.change === 'deleted' ? 'deleted' : 'edited';
+    segments.push(t(`agentActivity.summary.${verb}`, { name: file.path.slice(file.path.lastIndexOf('/') + 1) }));
+  } else if (files.length > 1) segments.push(t('agentActivity.summary.files', { count: files.length }));
+  if (segments.length === 0) segments.push(t('agentActivity.summary.fallback'));
+  const took = formatDuration(elapsedMs ?? parts.find((p) => p.elapsedMs !== undefined)?.elapsedMs, t);
+  if (took) segments.push(took);
+  // C10.05: while the run works, what it has spent so far, after its time.
+  if (cost) segments.push(t('agentActivity.summary.costSoFar', { cost }));
+  return segments.join(' · ');
+}
+
+const PLAN_ICON: Record<SSEPlanStep['status'], { name: string; color: string }> = {
+  completed: { name: 'check_circle', color: 'var(--accent-11)' },
+  in_progress: { name: 'autorenew', color: 'var(--accent-11)' },
+  pending: { name: 'radio_button_unchecked', color: 'var(--slate-11)' },
+  cancelled: { name: 'do_not_disturb_on', color: 'var(--slate-11)' },
+};
+
+/** The run's plan (UXR-B1) as a checklist: each step with its state, the one in progress marked current. */
+export function PlanChecklist({ plan }: { plan: SSEPlanEvent }) {
+  const { t } = useTranslation();
+  return (
+    <Box
+      as="div"
+      style={{ marginBottom: 'var(--space-2)' }}
+    >
+      <ul aria-label={t('agentActivity.plan.label')} style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+        {plan.steps.map((step) => {
+          const icon = PLAN_ICON[step.status];
+          return (
+            <li
+              key={step.taskId}
+              aria-current={step.status === 'in_progress' ? 'step' : undefined}
+              style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: '2px 0' }}
+            >
+              <span aria-hidden="true" style={{ display: 'inline-flex' }}>
+                <MaterialIcon
+                  name={icon.name}
+                  size={14}
+                  color={icon.color}
+                  style={step.status === 'in_progress' ? { animation: 'spin 1s linear infinite' } : undefined}
+                />
+              </span>
+              <Text
+                size="1"
+                style={{
+                  color: step.status === 'pending' || step.status === 'cancelled' ? 'var(--slate-11)' : 'var(--slate-12)',
+                  textDecoration: step.status === 'cancelled' ? 'line-through' : undefined,
+                }}
+              >
+                {step.title}
+              </Text>
+              <span style={VISUALLY_HIDDEN}>{t(`agentActivity.plan.status.${step.status}`)}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </Box>
+  );
+}
+
+const VISUALLY_HIDDEN: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+};
+
+/** Whether the steps around a reader are open: what they hold may wait to load until the person opens them. */
+export const ActivitySectionOpen = React.createContext(true);
+
+/** Milliseconds since `since`, ticking each second while it is set; undefined when it is not. */
+function useLiveElapsed(since: string | undefined): number | undefined {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (since === undefined) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [since]);
+  if (since === undefined) return undefined;
+  const from = Date.parse(since);
+  return Number.isFinite(from) ? Math.max(0, now - from) : undefined;
+}
+
+/**
+ * Wraps a run's steps in a summary line, as Claude does: open while the run works, folded into the summary when
+ * it ends. A person who opened or closed it while it ran keeps their choice. `trailing` sits beside the summary
+ * (the answer's "View activity").
+ */
+export function CollapsibleActivitySection({
+  parts,
+  isStreaming = false,
+  plan = null,
+  trailing = null,
+  startedAt,
+  files,
+  waiting = 0,
+  waitingLine,
+  waitingSince,
+  paused = false,
+  defaultOpen = false,
+  cost = null,
+  children,
+}: {
+  parts: MessagePart[];
+  /** The files the run made or changed, named in the summary (CTL-4). */
+  files?: ChangedFile[];
+  isStreaming?: boolean;
+  plan?: SSEPlanEvent | null;
+  trailing?: React.ReactNode;
+  /** When the question was sent: the live summary counts the run's time from it. */
+  startedAt?: string;
+  /** Cards waiting for the person (UXINT-2): counted in the header, and the steps stay open so they show. */
+  waiting?: number;
+  /** What the one waiting step waits for, in words ("Waiting for you to reconnect GitHub", WP-64); else the count. */
+  waitingLine?: string;
+  /** When the longest-waiting card was asked (ISO, WP-97): the count says since when. */
+  waitingSince?: string;
+  /** The run is paused on them (UXINT-5): the header says so instead of a running time. */
+  paused?: boolean;
+  /** The person decided in these steps in this tab: they stay open once the run ends (UXINT-1). */
+  defaultOpen?: boolean;
+  /** C10.05: what the running run has spent so far ("$0.42"); null: nothing to show. */
+  cost?: string | null;
+  children: React.ReactNode;
+}) {
+  const { t, i18n } = useTranslation();
+  const [collapsed, setCollapsed] = useState(!isStreaming && waiting === 0 && !defaultOpen);
+  const since = waitingSince !== undefined ? waitingSinceTime(waitingSince, i18n.language) : undefined;
+  const touched = useRef(false);
+  const wasStreaming = useRef(isStreaming);
+  const liveMs = useLiveElapsed(isStreaming && !paused ? startedAt : undefined);
+
+  // A card that starts waiting opens the steps it sits in, whatever the person chose before; once they decided
+  // there, the steps stay open when the run ends, so the receipt stays where they acted (UXINT-1: no jump).
+  useEffect(() => {
+    if (waiting === 0) return;
+    setCollapsed(false);
+    touched.current = true;
+  }, [waiting]);
+  const summary = useMemo(
+    () => buildActivitySummary(parts, t, plan, liveMs, files, isStreaming ? cost : null),
+    [parts, t, plan, liveMs, files, isStreaming, cost],
+  );
+
+  useEffect(() => {
+    if (wasStreaming.current && !isStreaming && !touched.current && waiting === 0) setCollapsed(true);
+    wasStreaming.current = isStreaming;
+  }, [isStreaming]);
 
   const handleToggle = useCallback(() => {
+    touched.current = true;
     setCollapsed((prev) => !prev);
   }, []);
 
@@ -1223,28 +1748,44 @@ export function CollapsibleActivitySection({ parts, isStreaming = false, childre
     <Box style={{ marginBottom: 'var(--space-3)' }}>
       <Flex
         align="center"
-        gap="1"
-        role="button"
-        tabIndex={0}
-        aria-expanded={!collapsed}
-        onClick={handleToggle}
-        onKeyDown={(e) => handleToggleKeyDown(e, handleToggle)}
-        style={{
-          cursor: 'pointer',
-          userSelect: 'none',
-          marginBottom: collapsed ? 0 : 'var(--space-2)',
-          transition: 'margin-bottom 200ms ease-out',
-          width: 'fit-content',
-        }}
+        gap="2"
+        wrap="wrap"
+        style={{ marginBottom: collapsed ? 0 : 'var(--space-2)', transition: 'margin-bottom 200ms ease-out' }}
       >
-        <MaterialIcon
-          name={collapsed ? 'expand_more' : 'expand_less'}
-          size={ICON_SIZES.PRIMARY}
-          color="var(--slate-9)"
-        />
-        <Text size="1" style={{ color: 'var(--slate-9)' }}>
-          {summary}
-        </Text>
+        <Flex
+          align="center"
+          gap="1"
+          role="button"
+          tabIndex={0}
+          data-testid="activity-summary"
+          aria-expanded={!collapsed}
+          onClick={handleToggle}
+          onKeyDown={(e) => handleToggleKeyDown(e, handleToggle)}
+          style={{ cursor: 'pointer', userSelect: 'none', width: 'fit-content' }}
+        >
+          <MaterialIcon
+            name={collapsed ? 'expand_more' : 'expand_less'}
+            size={ICON_SIZES.PRIMARY}
+            color="var(--slate-11)"
+          />
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
+            {paused ? t('interaction.paused') : summary}
+          </Text>
+        </Flex>
+        {waiting > 0 ? (
+          <Text
+            size="1"
+            weight="medium"
+            data-testid="interaction-waiting-count"
+            style={{ color: 'var(--amber-11)', backgroundColor: 'var(--amber-a3)', borderRadius: 999, padding: '1px 8px' }}
+          >
+            {waitingLine ??
+              (since !== undefined
+                ? t('interaction.waitingCountSince', { count: waiting, time: since })
+                : t('interaction.waitingCount', { count: waiting }))}
+          </Text>
+        ) : null}
+        {trailing}
       </Flex>
       {/* 0fr/1fr grid animates to the content's intrinsic height — no fixed
           maxHeight cap that would clip long transcripts. */}
@@ -1261,7 +1802,7 @@ export function CollapsibleActivitySection({ parts, isStreaming = false, childre
           aria-hidden={collapsed || undefined}
           inert={collapsed || undefined}
         >
-          {children}
+          <ActivitySectionOpen.Provider value={!collapsed}>{children}</ActivitySectionOpen.Provider>
         </div>
       </div>
     </Box>

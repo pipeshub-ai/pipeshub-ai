@@ -8,6 +8,7 @@ import pytest
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
+from app.core import org_context
 
 SAMPLE = {"userId": "u-1", "orgId": "org-1", "appId": "app-1", "groupId": "group-1", "recordId": "record-1"}
 
@@ -69,3 +70,27 @@ async def test_no_browse_when_every_sample_is_switched_off(service) -> None:
     service._excluded_apps = AsyncMock(return_value=frozenset({"app-1"}))
     assert await service.warm_browse_plans() == 0
     service.get_nodes.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_every_read_is_made_inside_the_samples_own_org(service) -> None:
+    """The keeper has no request, so nothing else binds an org: each sample's reads are bound to that sample's org only."""
+    other = {**SAMPLE, "userId": "u-2", "orgId": "org-2", "appId": "app-2"}
+    service.graph_provider.get_knowledge_hub_warm_samples.return_value = [SAMPLE, other]
+    bound: list[tuple[str, str | None]] = []
+
+    async def excluded(_user: str, org: str) -> frozenset[str]:
+        bound.append((org, org_context.current_org_id()))
+        return frozenset({"app-1"})
+
+    async def get_nodes(*, org_id: str, **_kwargs: object) -> None:
+        bound.append((org_id, org_context.current_org_id()))
+
+    service._excluded_apps = excluded
+    service.get_nodes = AsyncMock(side_effect=get_nodes)
+
+    assert await service.warm_browse_plans() == 7
+
+    assert bound[:2] == [("org-1", "org-1"), ("org-2", "org-2")]
+    assert bound[2:] == [("org-2", "org-2")] * 7
+    assert org_context.peek() is None

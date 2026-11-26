@@ -1,5 +1,5 @@
 import type { ChatArtifact } from '../types';
-import { buildChatArtifact } from './build-chat-artifact';
+import { buildChatArtifact, unavailableArtifact } from './build-chat-artifact';
 
 export interface DownloadTask {
   fileName: string;
@@ -34,6 +34,8 @@ function parseDownloadMarkers(content: string): {
  * correctly), so this is purely additive back-compat. */
 const RECORD_PLACEHOLDER_PREFIX = 'record:';
 
+const UNAVAILABLE_MARKER = '::artifact_unavailable';
+
 /**
  * Parse `::artifact[fileName](downloadUrl){mime|documentId|recordId|artifactType|version}`
  * markers from the assistant's final answer content (the last two segments are
@@ -53,8 +55,13 @@ function parseArtifactMarkers(content: string): {
   const artifacts: ChatArtifact[] = [];
   const seen = new Set<string>();
   // Greedy on name/url, but braces are delimited; meta segments may be empty.
-  const regex = /::artifact\[([^\]]+)\]\(([^)]+)\)\{([^}]*)\}/g;
-  let text = content.replace(regex, (_, fileName, url, meta) => {
+  const regex = /::artifact\[([^\]]+)\]\(([^)]+)\)\{([^}]*)\}|::artifact_unavailable/g;
+  let text = content.replace(regex, (whole, fileName, url, meta) => {
+    // A file in a shared conversation the viewer may not open: the server left only this.
+    if (whole === UNAVAILABLE_MARKER) {
+      artifacts.push(unavailableArtifact(`artifact-unavailable-${artifacts.length}`));
+      return '';
+    }
     const [mime = '', docId = '', recordId = '', rawType = '', rawVersion = ''] =
       String(meta).split('|');
     const cleanName = String(fileName).trim() || 'artifact';

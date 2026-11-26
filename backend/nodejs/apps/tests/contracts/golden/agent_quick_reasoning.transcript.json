@@ -1,0 +1,104 @@
+{
+  "conversation": {
+    "sessionType": "agent",
+    "nextSeq": 2,
+    "userId": "oid-1",
+    "orgId": "oid-2",
+    "title": "How much paid leave do I get?",
+    "initiator": "oid-1",
+    "isShared": false,
+    "isDeleted": false,
+    "isArchived": false,
+    "lastActivityAt": "<clock>",
+    "status": "Complete",
+    "modelInfo": {
+      "chatMode": "quick"
+    },
+    "agentKey": "agent-1",
+    "conversationSource": "agent_chat",
+    "_id": "oid-3",
+    "sharedWith": [],
+    "conversationErrors": [],
+    "createdAt": "<timestamp>",
+    "updatedAt": "<timestamp>",
+    "__v": 0
+  },
+  "messages": [
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 1,
+      "messageType": "user_query",
+      "content": "How much paid leave do I get?",
+      "contentFormat": "MARKDOWN",
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [],
+      "_id": "oid-4",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "citations": [],
+      "followUpQuestions": [],
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    },
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 2,
+      "messageType": "bot_response",
+      "content": "You get 25 days of paid leave a year.",
+      "contentFormat": "MARKDOWN",
+      "citations": [],
+      "confidence": null,
+      "followUpQuestions": [],
+      "modelInfo": {
+        "chatMode": "quick"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "reasoning": [
+        {
+          "turnIndex": 0,
+          "content": "The user asks about leave. The handbook says 25 days."
+        }
+      ],
+      "parts": [
+        {
+          "type": "text",
+          "content": "You get 25 days of paid leave a year.",
+          "runId": "uuid-1",
+          "isFinal": true
+        },
+        {
+          "type": "reasoning",
+          "content": "The user asks about leave. The handbook says 25 days.",
+          "runId": "uuid-1"
+        }
+      ],
+      "_id": "oid-5",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": []
+    }
+  ]
+}

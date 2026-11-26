@@ -67,9 +67,10 @@ READS = frozenset("""
     is_trash_walk_index_ready is_write_conflict list_accessible_artifacts list_kb_permissions
     list_unsupported_page get_records_with_refresh_intent
     get_record_group_organization get_record_organizations get_record_people
-    list_trashed_records list_user_knowledge_bases opens_explicit_transaction page_record_ids_by_type query_named_entities
+    list_sync_points list_trashed_records list_user_knowledge_bases opens_explicit_transaction page_record_ids_by_type query_named_entities
     resolve_named_entity_redirects search_nodes_by_field_terms stage_state_org_for_virtual_record validate_folder_exists_in_kb validate_folder_for_upload
     validate_folder_in_kb
+    get_records_by_external_ids get_user_team_roles
 """.split())
 
 HARMLESS = frozenset("""
@@ -96,7 +97,7 @@ HARMLESS = frozenset("""
     schedule_named_entity_persist_retry schedule_named_entity_reextract schedule_named_entity_reproject set_record_properties
     stage_state_compare_and_set stage_state_create stage_state_get stage_states_delete_for_virtual_records
     stage_states_delete_unheld_revisions stage_states_for_revision stage_states_stale stage_states_unheld_revisions
-    stamp_kh_listing_state store_page_token sweep_deleted_connector_writes update_drive_sync_state update_indexing_status_for_record_ids update_kb_permission update_record_fields_for_ids
+    stamp_kh_children_order stamp_kh_listing_state store_page_token sweep_deleted_connector_writes update_drive_sync_state update_indexing_status_for_record_ids update_kb_permission update_record_fields_for_ids
     update_knowledge_base update_queued_duplicates_status update_sync_point_if update_user_sync_state upsert_authenticated_as
     upsert_person_by_email upsert_person_by_source_key upsert_sync_point
 """.split())

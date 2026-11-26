@@ -98,14 +98,24 @@ class TestCustomStdioSwitch:
         monkeypatch.delenv(CUSTOM_STDIO_ENV, raising=False)
         assert custom_stdio_allowed() is False
 
-    def test_only_true_turns_it_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(CUSTOM_STDIO_ENV, "TRUE")
+    # The deployment's one boolean parse (env_flag, CPS R2 F13): the control plane's operator layer reads the same
+    # switch, so both must agree on what a value means.
+    @pytest.mark.parametrize("value", ["TRUE", "1", "yes", "on"])
+    def test_a_true_word_turns_it_on(self, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+        monkeypatch.setenv(CUSTOM_STDIO_ENV, value)
         assert custom_stdio_allowed() is True
 
-    @pytest.mark.parametrize("value", ["1", "yes", "on", "enabled", "false"])
-    def test_anything_else_leaves_it_off(self, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    @pytest.mark.parametrize("value", ["false", "0", "no", "off", ""])
+    def test_a_false_word_or_blank_leaves_it_off(self, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
         monkeypatch.setenv(CUSTOM_STDIO_ENV, value)
         assert custom_stdio_allowed() is False
+
+    def test_any_other_value_is_refused_naming_the_switch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.utils.env_flags import InvalidEnvFlag
+
+        monkeypatch.setenv(CUSTOM_STDIO_ENV, "enabled")
+        with pytest.raises(InvalidEnvFlag, match=CUSTOM_STDIO_ENV):
+            custom_stdio_allowed()
 
 
 class TestInterpretersThroughALauncher:

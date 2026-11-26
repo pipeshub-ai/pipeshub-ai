@@ -1,7 +1,7 @@
-import { apiClient, streamSSERequest } from '@/lib/api';
+import { apiClient, streamSSERequest, type SSEEvent } from '@/lib/api';
 import { onSessionEnd } from '@/lib/api/session-cache';
 import { OrgApi, type OrgResponse } from '@/app/(main)/workspace/general/api';
-import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
+import { CHAT_STREAM_ERROR_MESSAGES, StreamError } from '@/lib/api/stream-errors';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import { PROJECT_ID_UNASSIGNED } from './project-types';
 import {
@@ -24,18 +24,58 @@ import {
   type AgentCapabilities,
   SSEArtifactEvent,
   SSEAskUserQuestionEvent,
+  SSEApprovalRequestedEvent,
+  SSEApprovalResolvedEvent,
+  SSEInteractionWaitingEvent,
+  SSEPlanEvent,
+  ApprovalDecision,
   MessagePart,
   AvailableLlmModel,
   SearchRequest,
   SearchResponse,
   streamChatModeToAgentApiChatMode,
   AttachmentRef,
+  DurableAgentRunHandle,
   type ChatKnowledgeFilters,
   CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS,
 } from './types';
 import { hasAnyFilter } from './utils/tree-selection';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
-import { createAGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
+import { createAGUIEventHandler, type AGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
+import { durableStreamLog, followDurableRun, isRootTerminalFrame } from './durable-run-stream';
+import { DurableAdmissionError } from './harness-errors';
+import { sendFailureOf, type SendFailure } from './card-send';
+import { MAX_DENY_REASON_CHARS } from './approval-preview';
+import { countedApprovals, type CountedApprovals } from './interactions';
+import type { ActivityFollowup, ActivityStepDetail, ConversationUsage, DecisionAuthority, ResolvedRunView, RunCostView, RunTimelineView, SandboxCommandRequest, SessionSandboxView, WorkspaceDiff, WorkspaceFileList, WorkspaceFileRead, WorkspaceVersions } from './types';
+import { toFollowups, toStepDetail } from './activity';
+import type {
+  AgentHarnessRun,
+  AgentRunAdmission,
+  AgentRunAdmissionInput,
+  AgentRunControlReceipt,
+} from '@/app/(main)/agents/types';
+
+/** The key a model choice is matched by across the picker's list and the model access answer. */
+export const modelChoiceKey = (modelKey: string, modelName: string): string => `${modelKey}::${modelName}`;
+
+/** G-41: the model keys the org limits to groups the person is in none of; anything malformed counts as allowed. */
+export function groupBlocked(choices: unknown): Set<string> {
+  const blocked = new Set<string>();
+  if (!Array.isArray(choices)) return blocked;
+  for (const choice of choices) {
+    if (typeof choice !== 'object' || choice === null) continue;
+    const { modelKey, groupAllowed } = choice as Record<string, unknown>;
+    if (typeof modelKey === 'string' && groupAllowed === false) blocked.add(modelKey);
+  }
+  return blocked;
+}
+
+/** The picker's unavailable models: by group (`modelKey`), and by the edition's reasons (translation key by `modelChoiceKey`). */
+export interface UnavailableModels {
+  group: Set<string>;
+  reasons: ReadonlyMap<string, string>;
+}
 
 export interface FeedbackPayload {
   isHelpful: boolean;
@@ -58,6 +98,10 @@ export interface ForkConversationResult {
 }
 
 export interface StreamMessageCallbacks {
+  /** Called after durable admission so an explicit UI stop can cancel it. */
+  onDurableRunAccepted?: (run: DurableAgentRunHandle) => void;
+  /** A chat-route turn's first frame came from today's loop, not a durable run (LAT1). */
+  onLegacyTurn?: () => void;
   onConnected?: (data: SSEConnectedEvent) => void;
   onStatus?: (data: SSEStatusEvent) => void;
   onChunk?: (data: SSEAnswerChunkEvent) => void;
@@ -66,6 +110,17 @@ export interface StreamMessageCallbacks {
   /** Backend is discarding partial output (citation verify / re-parse) — clear UI buffer */
   onRestreaming?: () => void;
   onAskUserQuestion?: (data: SSEAskUserQuestionEvent) => void;
+  /** A durable run holds a tool call for the user's approval (AG-UI protocol only). */
+  onApprovalRequested?: (data: SSEApprovalRequestedEvent) => void;
+  onApprovalResolved?: (data: SSEApprovalResolvedEvent) => void;
+  /** WP-100: one more approval counted on an ask that needs several and still waits (counts only, AG-UI only). */
+  onApprovalCounted?: (data: { interactionId: string; approvals: CountedApprovals }) => void;
+  /** WP-100 (C10.05): the run's spend as the ledger moved (`run_cost`, AG-UI only). */
+  onRunCost?: (value: unknown) => void;
+  /** How many of the run's approvals wait, and whether it is paused on them (UXINT-5, AG-UI only). */
+  onInteractionWaiting?: (data: SSEInteractionWaitingEvent) => void;
+  /** The root run's whole plan after it changed (UXR-B1, AG-UI protocol only). */
+  onPlan?: (data: SSEPlanEvent) => void;
   /**
    * The answer is settled and only persistence remains (AG-UI protocol only —
    * `AnswerFinalizer`'s `snapshot.final` STATE_SNAPSHOT, which reaches us
@@ -92,31 +147,196 @@ export interface StreamMessageCallbacks {
   signal?: AbortSignal;
 }
 
+/** The durable run a chat route took this turn to, from its first frame (LAT1); null on today's loop. */
+function durableHandle(event: SSEEvent, agentId: string | undefined): DurableAgentRunHandle | null {
+  const data = event.data as { type?: unknown; name?: unknown; value?: { conversationId?: unknown; runId?: unknown } };
+  if ((data?.type ?? event.event) !== 'CUSTOM' || data?.name !== 'conversation_created') return null;
+  const { conversationId, runId } = data.value ?? {};
+  if (typeof conversationId !== 'string' || typeof runId !== 'string') return null;
+  return { ...(agentId ? { agentId } : {}), sessionId: conversationId, runId };
+}
+
+/** A denial's reason as the decision routes take it: trimmed, only with a denial, never blank. */
+function denialReason(decision: string, reason: string | undefined): { reason?: string } {
+  const text = reason?.trim().slice(0, MAX_DENY_REASON_CHARS);
+  return decision === 'denied' && text ? { reason: text } : {};
+}
+
+/** A refusal of the turn, in the reader's language when the harness named it (UX3's texts). */
+function turnError(error: Error): Error {
+  return error instanceof StreamError && error.code?.startsWith('HTTP_AGENT_HARNESS_')
+    ? new DurableAdmissionError(error.code, error.reasonCode ?? null, error.status)
+    : error;
+}
+
 /**
- * Runs one chat SSE stream and dispatches every AG-UI frame to `callbacks`.
- * `endpoint`/`payload` stay protocol-agnostic; this is the only function
- * that adds `protocol: 'agui'` to the request.
+ * One chat turn on the existing chat route, in one request (LAT1): the server
+ * admits and streams it on the durable harness, or answers it on today's
+ * loop, on this same response. A durable turn whose connection drops before
+ * the run ends is followed with `GET …/runs/:id/stream` from the last frame,
+ * by the same handler. The body's `runId` names the turn, so the server never
+ * admits it twice.
  */
-async function runChatStream(
+async function runTurnStream(
   endpoint: string,
   payload: Record<string, unknown>,
+  agentId: string | undefined,
   callbacks: StreamMessageCallbacks,
 ): Promise<void> {
-  const body = { ...payload, protocol: 'agui' };
   const tracking: AGUIStreamTracking = { receivedComplete: false };
-  let transportFailed = false;
-  await streamSSERequest(endpoint, body, {
-    onEvent: createAGUIEventHandler(callbacks, tracking),
+  let handler: AGUIEventHandler | null = null;
+  let target: DurableAgentRunHandle | null = null;
+  let lastEventId: string | null = null;
+  let finished = false;
+  let failure: Error | null = null;
+  await streamSSERequest(endpoint, { ...payload, protocol: 'agui' }, {
+    onEvent: (event) => {
+      if (handler === null) {
+        target = durableHandle(event, agentId);
+        handler = createAGUIEventHandler(callbacks, tracking, target ? { replaceRestartedMessages: true } : {});
+        if (target) {
+          durableStreamLog.info('transport.one_request', { sessionId: target.sessionId, runId: target.runId });
+          callbacks.onDurableRunAccepted?.(target);
+        } else {
+          handler(event);
+          callbacks.onLegacyTurn?.();
+          return;
+        }
+      }
+      handler(event);
+      if (event.id) lastEventId = event.id;
+      if (isRootTerminalFrame(event)) finished = true;
+    },
     onError: (error) => {
-      transportFailed = true;
-      callbacks.onError?.(error);
+      failure = error;
     },
     signal: callbacks.signal,
   });
+  if (callbacks.signal?.aborted) return;
+  const run = target as DurableAgentRunHandle | null;
+  if (run !== null && handler !== null && !finished) {
+    await followDurableRun(run, callbacks, { handler, tracking, lastEventId });
+    return;
+  }
+  const failed = failure as Error | null;
+  if (failed !== null) {
+    callbacks.onError?.(turnError(failed));
+    return;
+  }
   // A connection that closes cleanly without a terminal frame would otherwise
   // leave the turn "streaming" forever, with Stop showing and no answer.
-  if (!tracking.receivedComplete && !tracking.receivedError && !transportFailed && !callbacks.signal?.aborted) {
+  if (!tracking.receivedComplete && !tracking.receivedError) {
     callbacks.onError?.(new Error(CHAT_STREAM_ERROR_MESSAGES.interrupted));
+  }
+}
+
+function newIdempotencyKey(): string {
+  const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+  return cryptoApi && typeof cryptoApi.randomUUID === 'function'
+    ? cryptoApi.randomUUID()
+    : `agent-run-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
+/**
+ * The durable admission body for a turn, from the request its stream would
+ * send: an agent's filters always carry both lists (none means "no knowledge
+ * scope"), a plain chat's only when set, as the legacy bodies do.
+ */
+function durableAdmissionInput(
+  request: StreamChatRequest,
+): Omit<AgentRunAdmissionInput, 'idempotencyKey'> {
+  const filters: Record<string, unknown> = request.agentId
+    ? { ...buildAgentFiltersPayload(request.filters).filters }
+    : ((buildFiltersPayload(request.filters).filters as Record<string, unknown> | undefined) ?? {});
+  return {
+    query: request.query,
+    filters,
+    ...(request.appliedFilters
+      ? { appliedFilters: request.appliedFilters as unknown as Record<string, unknown> }
+      : {}),
+    ...(request.agentStreamTools !== undefined ? { tools: request.agentStreamTools } : {}),
+    ...(request.agentCapabilities ? { agentCapabilities: request.agentCapabilities } : {}),
+    ...(request.attachments?.length ? { attachments: request.attachments } : {}),
+    modelKey: request.modelKey,
+    modelName: request.modelName,
+    modelFriendlyName: request.modelFriendlyName || request.modelName,
+    ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
+    chatMode: request.agentId ? streamChatModeToAgentApiChatMode(request.chatMode) : request.chatMode,
+    timezone: getClientTimezone(),
+    currentTime: getClientCurrentTime(),
+  };
+}
+
+/** Where a durable turn is admitted: a new session, or the session it continues. */
+function durableAdmissionUrl(agentId: string | undefined, conversationId: string | undefined | null): string {
+  const base = agentId ? `/api/v1/agents/${encodeURIComponent(agentId)}` : '/api/v1/conversations';
+  if (!conversationId) return `${base}/runs`;
+  return agentId
+    ? `${base}/conversations/${encodeURIComponent(conversationId)}/runs`
+    : `${base}/${encodeURIComponent(conversationId)}/runs`;
+}
+
+/** A durable session's routes: an agent's conversation or a built-in chat. */
+export function durableSessionBase(agentId: string | undefined, sessionId: string): string {
+  return agentId
+    ? `/api/v1/agents/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(sessionId)}`
+    : `/api/v1/conversations/${encodeURIComponent(sessionId)}`;
+}
+
+/** The harness's machine code of a refused request (`HTTP_AGENT_HARNESS_…`), if it has one. */
+function errorCode(error: unknown): string | null {
+  const original = (error as { originalError?: { response?: { data?: unknown } } } | null)?.originalError;
+  const body = original?.response?.data as { error?: { code?: unknown } } | undefined;
+  return typeof body?.error?.code === 'string' ? body.error.code : null;
+}
+
+/** What became of a message sent to a running task (steering, P1b T2). */
+export type SteerOutcome =
+  | { status: 'queued'; messageSeq: number }
+  /** Someone else's task is running (a shared conversation): the message starts as its own run after it. */
+  | { status: 'next_run'; runId: string; position: number }
+  /** The task ended meanwhile: send the message as a new turn. */
+  | { status: 'not_active' }
+  | { status: 'refused'; code: string | null };
+
+/** The HTTP status of a rejected request; undefined when no answer came (network, timeout). */
+export function statusOf(error: unknown): number | undefined {
+  const processed = error as { statusCode?: unknown; originalError?: { response?: { status?: unknown } } } | null;
+  const status = processed?.statusCode ?? processed?.originalError?.response?.status;
+  return typeof status === 'number' ? status : undefined;
+}
+
+export type { CountedApprovals };
+
+interface DecisionResponse {
+  interaction?: { interactionId: string; decision: string; approvals?: CountedApprovals };
+  interactions?: Array<{ interactionId: string; decision: string; approvals?: CountedApprovals }>;
+}
+
+/** A decision the server refused or that got no answer: its code, and whether the card retries it (CARDFAIL). */
+export interface DecisionRefusal {
+  refused: string;
+  failure?: SendFailure;
+}
+
+/**
+ * Posts a decision once. The card's send (`sendCard`) retries a transient failure; the idempotency key makes a
+ * retry replay the first decision rather than decide twice. Resolves to the refusal, or the server's answer.
+ */
+async function postDecision(
+  url: string,
+  body: Record<string, unknown>,
+  log: Record<string, unknown>,
+): Promise<DecisionRefusal | { data: DecisionResponse }> {
+  try {
+    // The card says why a decision was refused; no second, generic toast.
+    const { data } = await apiClient.post<DecisionResponse>(url, body, { suppressErrorToast: true });
+    return { data: data ?? {} };
+  } catch (error) {
+    const code = errorCode(error);
+    const failure = sendFailureOf(statusOf(error), code);
+    durableStreamLog.warn('approval.refused', { ...log, code, status: statusOf(error) ?? null, retry: failure.retry });
+    return { refused: code ?? 'HTTP_AGENT_HARNESS_DECISION_FAILED', failure };
   }
 }
 
@@ -140,6 +360,7 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     ...(conv.projectVisibility ? { projectVisibility: conv.projectVisibility } : {}),
     sharedBy: conv.sharedBy,
     agentKey: conv.agentKey,
+    ...(conv.harnessState ? { harnessState: conv.harnessState } : {}),
   };
 }
 
@@ -233,6 +454,469 @@ function buildModelPayload(model: {
 }
 
 export const ChatApi = {
+  /**
+   * Sends `request`'s message to the session's running task (steering):
+   * the server adds it to that run, which reads it at its next step. It
+   * never starts a run (`steer: true`); `idempotencyKey` makes a retry of
+   * the same send the same message.
+   */
+  async steerDurableRun(
+    request: StreamChatRequest,
+    run: DurableAgentRunHandle,
+    idempotencyKey: string = newIdempotencyKey(),
+  ): Promise<SteerOutcome> {
+    const body: AgentRunAdmissionInput = {
+      ...durableAdmissionInput(request),
+      idempotencyKey,
+      steer: true,
+    };
+    try {
+      const { data } = await apiClient.post<{ admission: AgentRunAdmission | null }>(
+        durableAdmissionUrl(run.agentId, run.sessionId),
+        body,
+        // The caller says what happened to the message; no generic error toast.
+        { suppressErrorToast: true },
+      );
+      const nextRun = data.admission?.nextRun;
+      if (nextRun !== undefined) {
+        durableStreamLog.info('steer.next_run', { sessionId: run.sessionId, runId: run.runId, position: nextRun.position });
+        return { status: 'next_run', runId: nextRun.runId, position: nextRun.position };
+      }
+      const queued = data.admission?.queued;
+      if (queued === undefined) {
+        // The rollout sent the session's turns back to the legacy stream.
+        return { status: 'refused', code: null };
+      }
+      durableStreamLog.info('steer.queued', { sessionId: run.sessionId, runId: run.runId, messageSeq: queued.messageSeq });
+      return { status: 'queued', messageSeq: queued.messageSeq };
+    } catch (error) {
+      const code = errorCode(error);
+      durableStreamLog.warn('steer.refused', { sessionId: run.sessionId, runId: run.runId, code });
+      return code === 'HTTP_AGENT_HARNESS_RUN_NOT_ACTIVE'
+        ? { status: 'not_active' }
+        : { status: 'refused', code };
+    }
+  },
+
+  /** Reattach a fresh browser projection to a run that continued server-side. */
+  async resumeDurableAgentRun(
+    agentId: string | undefined,
+    sessionId: string,
+    runId: string,
+    callbacks: StreamMessageCallbacks,
+  ): Promise<void> {
+    const target: DurableAgentRunHandle = { ...(agentId ? { agentId } : {}), sessionId, runId };
+    callbacks.onDurableRunAccepted?.(target);
+    await followDurableRun(target, callbacks);
+  },
+
+  /**
+   * Approves or denies a call a durable run holds. Resolves to the refusal's
+   * machine code (`HTTP_AGENT_HARNESS_…`) when the server refuses it, else null.
+   */
+  async decideDurableInteraction(
+    run: DurableAgentRunHandle,
+    interactionId: string,
+    decision: ApprovalDecision,
+    idempotencyKey: string,
+    scope?: 'conversation' | 'tool',
+    /** AP-05: why the person denied it; the run is told. Sent only with a denial. */
+    reason?: string,
+    /** AP-06: the arguments the person approves instead of the call's own. Sent only with an approval of this call. */
+    edits?: Record<string, unknown>,
+  ): Promise<string | null> {
+    const sent = await ChatApi.decideDurableInteractionOutcome(
+      run, interactionId, decision, idempotencyKey, scope, reason, edits,
+    );
+    return 'refused' in sent ? sent.refused : null;
+  },
+
+  /**
+   * `decideDurableInteraction`, also saying when the approval was counted on an ask that needs several approvals
+   * and still waits for the rest: the call is not approved yet.
+   */
+  async decideDurableInteractionOutcome(
+    run: DurableAgentRunHandle,
+    interactionId: string,
+    decision: ApprovalDecision,
+    idempotencyKey: string,
+    scope?: 'conversation' | 'tool',
+    reason?: string,
+    edits?: Record<string, unknown>,
+  ): Promise<DecisionRefusal | { awaiting?: CountedApprovals }> {
+    const base = durableSessionBase(run.agentId, run.sessionId);
+    const sent = await postDecision(
+      `${base}/runs/${encodeURIComponent(run.runId)}/interactions/${encodeURIComponent(interactionId)}/decision`,
+      // `tool` is main's "Don't ask again" (BUGS-B): the decision with `remember`.
+      {
+        decision,
+        idempotencyKey,
+        ...(scope === 'conversation' ? { scope } : scope === 'tool' ? { remember: true } : {}),
+        ...denialReason(decision, reason),
+        ...(edits !== undefined && decision === 'approved' && scope === undefined ? { edits } : {}),
+      },
+      { runId: run.runId, interactionId },
+    );
+    if ('refused' in sent) return sent;
+    const awaiting = countedApprovals(sent.data.interaction?.approvals);
+    return awaiting ? { awaiting } : {};
+  },
+
+  /**
+   * "Allow all N" / "Deny all" (DECIDE409): one request for the whole batch, so the run wakes once and runs every
+   * approved call. Resolves to each interaction's decision as it now stands (an earlier one stands), or the refusal.
+   */
+  async decideDurableInteractions(
+    run: DurableAgentRunHandle,
+    interactionIds: readonly string[],
+    decision: Extract<ApprovalDecision, 'approved' | 'denied'>,
+    idempotencyKey: string,
+    scope?: 'conversation',
+    reason?: string,
+  ): Promise<DecisionRefusal | { decided: Record<string, string> }> {
+    const base = durableSessionBase(run.agentId, run.sessionId);
+    const sent = await postDecision(
+      `${base}/runs/${encodeURIComponent(run.runId)}/interactions/decisions`,
+      { interactionIds, decision, idempotencyKey, ...(scope ? { scope } : {}), ...denialReason(decision, reason) },
+      { runId: run.runId, interactions: interactionIds.length },
+    );
+    if ('refused' in sent) return sent;
+    const decided: Record<string, string> = {};
+    for (const item of sent.data.interactions ?? []) decided[item.interactionId] = item.decision;
+    return { decided };
+  },
+
+  /**
+   * A durable run's (or a child's) timeline, for the session's owner (U3). Always a background read: every caller
+   * shows its own state when it fails, and a run deleted or past retention is no error for the person to dismiss.
+   */
+  async getRunTimeline(run: DurableAgentRunHandle): Promise<RunTimelineView> {
+    const { data } = await apiClient.get<RunTimelineView>(
+      `${durableSessionBase(run.agentId, run.sessionId)}/runs/${encodeURIComponent(run.runId)}/timeline`,
+      { suppressErrorToast: true },
+    );
+    return data;
+  },
+
+  /** C10.05: what a durable run has spent so far and its status, for the live cost beside its elapsed time. */
+  async getRunCost(run: DurableAgentRunHandle): Promise<RunCostView> {
+    const { data } = await apiClient.get<RunCostView>(
+      `${durableSessionBase(run.agentId, run.sessionId)}/runs/${encodeURIComponent(run.runId)}/cost`,
+      { suppressErrorToast: true },
+    );
+    return data;
+  },
+
+  /** One step's arguments and result for the Activity panel's opened step (ACTRESULTS); null when malformed. */
+  async getRunStep(run: DurableAgentRunHandle, toolCallId: string): Promise<ActivityStepDetail | null> {
+    const { data } = await apiClient.get<{ step?: unknown }>(
+      `${durableSessionBase(run.agentId, run.sessionId)}/runs/${encodeURIComponent(run.runId)}/steps/${encodeURIComponent(toolCallId)}`,
+      { suppressErrorToast: true },
+    );
+    return toStepDetail(data?.step);
+  },
+
+  /** A durable run's pin as admitted (CPD-5): model, effort, tools, approvals. `/status` reads it. */
+  async getRunResolved(run: DurableAgentRunHandle): Promise<ResolvedRunView> {
+    const { data } = await apiClient.get<ResolvedRunView>(
+      `${durableSessionBase(run.agentId, run.sessionId)}/runs/${encodeURIComponent(run.runId)}/resolved`,
+      { suppressErrorToast: true },
+    );
+    return data;
+  },
+
+  /** What the caller's own replies in this conversation spent, from the budget ledger (SLASH2 C1, `/usage`). */
+  async getConversationUsage(session: { agentId?: string; sessionId: string }): Promise<ConversationUsage> {
+    const { data } = await apiClient.get<ConversationUsage>(
+      `${durableSessionBase(session.agentId, session.sessionId)}/usage`,
+      { suppressErrorToast: true },
+    );
+    return data;
+  },
+
+  /**
+   * `/compact [focus]` (SLASH2 C2): saved on the conversation and done at the start of its next run, on any
+   * executor. Resolves to the refusal's machine code when the server refuses it (nothing to compact yet).
+   */
+  async requestCompact(
+    session: { agentId?: string; sessionId: string },
+    focus: string,
+  ): Promise<{ requestedAt: number } | { refused: string }> {
+    try {
+      const { data } = await apiClient.post<{ requestedAt: number }>(
+        `${durableSessionBase(session.agentId, session.sessionId)}/compact`,
+        focus ? { focus } : {},
+        { suppressErrorToast: true },
+      );
+      return { requestedAt: data.requestedAt };
+    } catch (error) {
+      return { refused: errorCode(error) ?? 'HTTP_AGENT_HARNESS_COMPACT_FAILED' };
+    }
+  },
+
+  /**
+   * A completed run's suggested next questions (UX5). The worker stores them
+   * after the run ended, so the server holds the request up to `waitMs` for them.
+   */
+  async getRunFollowups(run: DurableAgentRunHandle, waitMs: number, signal?: AbortSignal): Promise<ActivityFollowup[]> {
+    const { data } = await apiClient.get<unknown>(
+      `${durableSessionBase(run.agentId, run.sessionId)}/runs/${encodeURIComponent(run.runId)}/followups`,
+      { params: { waitMs }, signal, suppressErrorToast: true },
+    );
+    return toFollowups(typeof data === 'object' && data !== null ? (data as { followups?: unknown }).followups : undefined);
+  },
+
+  /** One command's full redacted log (UX5), as plain text. */
+  async getCommandLog(run: DurableAgentRunHandle, commandId: string): Promise<string> {
+    const { data } = await apiClient.get<string>(
+      `${durableSessionBase(run.agentId, run.sessionId)}/runs/${encodeURIComponent(run.runId)}/commands/${encodeURIComponent(commandId)}/log`,
+      { responseType: 'text', transformResponse: (body: unknown) => body, suppressErrorToast: true },
+    );
+    return typeof data === 'string' ? data : '';
+  },
+
+  /** What the viewer may decide on the run's approvals; on any failure, the card keeps both buttons and the server decides. */
+  async getDecisionAuthority(run: DurableAgentRunHandle): Promise<DecisionAuthority> {
+    try {
+      const { data } = await apiClient.get<DecisionAuthority>(
+        `${durableSessionBase(run.agentId, run.sessionId)}/runs/${encodeURIComponent(run.runId)}/interactions/authority`,
+      );
+      return { approve: data.approve === true, deny: data.deny === true, ...(data.edit === true ? { edit: true } : {}) };
+    } catch {
+      return { approve: true, deny: true };
+    }
+  },
+
+  async listWorkspaceVersions(
+    session: { agentId?: string; sessionId: string },
+    page: { limit?: number; before?: number } = {},
+  ): Promise<WorkspaceVersions> {
+    const { data } = await apiClient.get<WorkspaceVersions>(
+      `${durableSessionBase(session.agentId, session.sessionId)}/workspace/versions`,
+      // Owner only: a shared chat's participant gets 404 on open, which every caller treats as "no versions";
+      // the global toast showed them "Not Found: Agent run not found".
+      { params: page, suppressErrorToast: true },
+    );
+    return data;
+  },
+
+  /** The files this chat's workspace changed since it began, or in its last writing turn (SLASH2 `/diff`, `/undo`). */
+  async getWorkspaceDiff(
+    session: { agentId?: string; sessionId: string },
+    scope: 'chat' | 'turn' = 'chat',
+  ): Promise<WorkspaceDiff> {
+    const { data } = await apiClient.get<WorkspaceDiff>(
+      `${durableSessionBase(session.agentId, session.sessionId)}/workspace/diff`,
+      { params: { scope } },
+    );
+    return data;
+  },
+
+  /**
+   * `/run <command>` (SLASH3): admits a command run on the chat, with the chat's mode and model as its next message
+   * would send them. Resolves to the run, or to the refusal's code (or HTTP status) and its wait.
+   */
+  async runSandboxCommand(
+    session: { agentId?: string; sessionId: string },
+    body: SandboxCommandRequest,
+  ): Promise<{ runId: string } | { refused: string; retryAfterS?: number }> {
+    try {
+      const { data } = await apiClient.post<{ admission: { run: { runId: string } } }>(
+        `${durableSessionBase(session.agentId, session.sessionId)}/commands/run`,
+        body,
+        { suppressErrorToast: true },
+      );
+      return { runId: data.admission.run.runId };
+    } catch (error) {
+      const retry = Number(
+        (error as { originalError?: { response?: { headers?: Record<string, unknown> } } } | null)?.originalError?.response
+          ?.headers?.['retry-after'],
+      );
+      return {
+        refused: errorCode(error) ?? `HTTP_${String(statusOf(error) ?? 0)}`,
+        ...(Number.isFinite(retry) && retry > 0 ? { retryAfterS: retry } : {}),
+      };
+    }
+  },
+
+  /**
+   * `/upload` (SLASH3): the files as one workspace revision under `folder` on top of `baseRevision`. Resolves to
+   * the revision, or to the refusal's code (or HTTP status).
+   */
+  async uploadWorkspaceFiles(
+    session: { agentId?: string; sessionId: string },
+    upload: { files: File[]; folder?: string; baseRevision: number; idempotencyKey: string; replace: boolean },
+  ): Promise<{ revision: number; paths: string[]; replaced: string[] } | { refused: string }> {
+    const body = new FormData();
+    body.set('baseRevision', String(upload.baseRevision));
+    body.set('idempotencyKey', upload.idempotencyKey);
+    if (upload.folder) body.set('folder', upload.folder);
+    body.set('replace', String(upload.replace));
+    body.set('paths', JSON.stringify(upload.files.map((file) => file.webkitRelativePath || file.name)));
+    for (const file of upload.files) body.append('files', file, file.name);
+    try {
+      const { data } = await apiClient.post<{ revision: number; paths: string[]; replaced: string[] }>(
+        `${durableSessionBase(session.agentId, session.sessionId)}/workspace/files`,
+        body,
+        // The client's default application/json makes axios send the FormData as JSON (files as {}): the server
+        // refused every /upload with "Invalid upload fields". Unset, axios sends multipart with its boundary.
+        { headers: { 'Content-Type': undefined }, suppressErrorToast: true },
+      );
+      return { revision: data.revision, paths: data.paths, replaced: data.replaced };
+    } catch (error) {
+      return { refused: errorCode(error) ?? `HTTP_${String(statusOf(error) ?? 0)}` };
+    }
+  },
+
+  /** `/engine` (SLASH3): this chat's coding engine from its next message; the refusal's code when refused. */
+  async setSessionCodingEngine(
+    session: { agentId?: string; sessionId: string },
+    engine: string | null,
+  ): Promise<{ engine: string | null } | { refused: string }> {
+    try {
+      const { data } = await apiClient.put<{ engine: string | null }>(
+        `${durableSessionBase(session.agentId, session.sessionId)}/coding-engine`,
+        { engine },
+        { suppressErrorToast: true },
+      );
+      return { engine: data.engine };
+    } catch (error) {
+      return { refused: errorCode(error) ?? `HTTP_${String(statusOf(error) ?? 0)}` };
+    }
+  },
+
+  /** What runs this chat's code (SLASH3 `/sandbox`); starts nothing. */
+  async getSessionSandbox(session: { agentId?: string; sessionId: string }): Promise<SessionSandboxView> {
+    const { data } = await apiClient.get<SessionSandboxView>(
+      `${durableSessionBase(session.agentId, session.sessionId)}/sandbox`,
+      { suppressErrorToast: true },
+    );
+    return data;
+  },
+
+  /** "End now": the chat's kept sign-in sandbox ends; the next message signs in again. */
+  async endKeptSandbox(session: { agentId?: string; sessionId: string }): Promise<void> {
+    await apiClient.delete(`${durableSessionBase(session.agentId, session.sessionId)}/sandbox/kept`, {
+      suppressErrorToast: true,
+    });
+  },
+
+  /** A workspace revision's files under `prefix` (SLASH3 `/files`); the head when no revision is named. */
+  async listWorkspaceFiles(
+    session: { agentId?: string; sessionId: string },
+    prefix?: string,
+  ): Promise<WorkspaceFileList> {
+    const { data } = await apiClient.get<WorkspaceFileList>(
+      `${durableSessionBase(session.agentId, session.sessionId)}/workspace/files`,
+      { params: prefix ? { prefix } : {}, suppressErrorToast: true },
+    );
+    return data;
+  },
+
+  /**
+   * One workspace file's bytes (SLASH3 `/open`, `/download`): at most `maxBytes` for a preview, or the whole file
+   * as a download (audited). Resolves to the HTTP status when it is refused.
+   */
+  async readWorkspaceFile(
+    session: { agentId?: string; sessionId: string },
+    path: string,
+    options: { maxBytes?: number; download?: boolean },
+  ): Promise<WorkspaceFileRead | { refused: number }> {
+    try {
+      const { data, headers } = await apiClient.get<Blob>(
+        `${durableSessionBase(session.agentId, session.sessionId)}/workspace/file`,
+        {
+          params: { path, ...(options.download ? { download: '1' } : { maxBytes: options.maxBytes }) },
+          responseType: 'blob',
+          suppressErrorToast: true,
+        },
+      );
+      const header = (name: string): string => String((headers as Record<string, unknown>)[name] ?? '');
+      return {
+        blob: data,
+        contentType: header('content-type'),
+        sizeBytes: Number(header('x-workspace-file-size')) || data.size,
+        truncated: header('x-workspace-truncated') === '1',
+        revision: Number(header('x-workspace-revision')) || 0,
+      };
+    } catch (error) {
+      return { refused: statusOf(error) ?? 0 };
+    }
+  },
+
+  /** A workspace folder (all of it by default) as a zip (SLASH3 `/download`); the HTTP status when refused. */
+  async downloadWorkspaceArchive(
+    session: { agentId?: string; sessionId: string },
+    prefix?: string,
+  ): Promise<{ blob: Blob; revision: number } | { refused: number }> {
+    try {
+      const { data, headers } = await apiClient.get<Blob>(
+        `${durableSessionBase(session.agentId, session.sessionId)}/workspace/archive`,
+        { params: prefix ? { prefix } : {}, responseType: 'blob', suppressErrorToast: true },
+      );
+      return { blob: data, revision: Number((headers as Record<string, unknown>)['x-workspace-revision']) || 0 };
+    } catch (error) {
+      return { refused: statusOf(error) ?? 0 };
+    }
+  },
+
+  /**
+   * Restores `revision` as a new version on top of `baseRevision`. The key
+   * names the restore, so a retried click answers the version it wrote.
+   * Resolves to the refusal's machine code when the server refuses it.
+   */
+  async restoreWorkspaceVersion(
+    session: { agentId?: string; sessionId: string },
+    revision: number,
+    baseRevision: number,
+  ): Promise<{ revision: number } | { refused: string }> {
+    try {
+      const { data } = await apiClient.post<{ revision: number }>(
+        `${durableSessionBase(session.agentId, session.sessionId)}/workspace/versions/${revision}/restore`,
+        { baseRevision, idempotencyKey: `restore-${revision}-on-${baseRevision}` },
+      );
+      return { revision: data.revision };
+    } catch (error) {
+      return { refused: errorCode(error) ?? 'HTTP_AGENT_HARNESS_RESTORE_FAILED' };
+    }
+  },
+
+  async getDurableRun(
+    agentId: string | undefined,
+    sessionId: string,
+    runId: string,
+  ): Promise<AgentHarnessRun> {
+    const base = durableSessionBase(agentId, sessionId);
+    const { data } = await apiClient.get<{ run: AgentHarnessRun }>(
+      `${base}/runs/${encodeURIComponent(runId)}`,
+    );
+    return data.run;
+  },
+
+  /**
+   * Stop: one request, no revision read first (UX3 ST-2). The key names the
+   * run, so a repeated Stop is the same command. A run already over answers
+   * null.
+   */
+  async cancelCurrentDurableRun(
+    agentId: string | undefined,
+    sessionId: string,
+    runId: string,
+  ): Promise<AgentRunControlReceipt | null> {
+    const base = durableSessionBase(agentId, sessionId);
+    try {
+      const { data } = await apiClient.post<{ receipt: AgentRunControlReceipt }>(
+        `${base}/runs/${encodeURIComponent(runId)}/cancel`,
+        { idempotencyKey: `stop-${runId}` },
+        { suppressErrorToast: true },
+      );
+      return data.receipt;
+    } catch (error) {
+      if (statusOf(error) === 409) return null;
+      throw error;
+    }
+  },
+
   // Fetch one page of conversations for a single source (owned or shared).
   // Call once per tab if you need both lists.
   async fetchConversations(
@@ -298,6 +982,10 @@ export const ChatApi = {
         isOwner: boolean;
         accessLevel: string;
       };
+      /** Durable sessions only: the run still in flight, or `null`. */
+      activeRunId?: string | null;
+      /** The project the conversation belongs to; its turns are project-scoped (UX3 PS-2). */
+      projectId?: string | null;
     };
     messages: ConversationMessage[];
     pagination: ConversationPagination;
@@ -321,6 +1009,8 @@ export const ChatApi = {
           isOwner: boolean;
           accessLevel: string;
         };
+        activeRunId?: string | null;
+        projectId?: string | null;
       };
       filters: Record<string, unknown>;
       meta: Record<string, unknown>;
@@ -380,6 +1070,10 @@ export const ChatApi = {
         ...(request.agentCapabilities ? { agentCapabilities: request.agentCapabilities } : {}),
         ...(request.attachments?.length ? { attachments: request.attachments } : {}),
         ...(request.projectId ? { projectId: request.projectId } : {}),
+        ...(request.harness ? { harness: request.harness } : {}),
+        ...(request.codingEngine ? { codingEngine: request.codingEngine } : {}),
+        ...(request.repository ? { repository: request.repository } : {}),
+        ...(request.gates ? { gates: request.gates } : {}),
         ...(request.toolApproval ? { toolApproval: request.toolApproval } : {}),
       };
     } else {
@@ -388,7 +1082,7 @@ export const ChatApi = {
         : `/api/v1/conversations/stream`;
       // Rename `agentStreamTools` → `tools` (Node.js controller reads `req.body.tools`
       // uniformly for both agent and non-agent paths) and validate filters.
-      // `rest` already carries `runId` — spread through as-is.
+      // `rest` already carries `runId` — spread through as-is; it names the turn.
       const {
         agentStreamTools,
         filters: reqFilters,
@@ -409,13 +1103,14 @@ export const ChatApi = {
       };
     }
 
-    await runChatStream(endpoint, payload, callbacks);
+    await runTurnStream(endpoint, payload, request.agentId, callbacks);
   },
 
   /**
    * Regenerate the last bot response SSE stream.
    * Endpoint: POST /api/v1/conversations/:conversationId/message/:messageId/regenerate
-   * Response: SSE stream with the same events as streamMessage.
+   * Response: SSE stream with the same events as streamMessage, in one
+   * request: the server streams a durable regenerate or today's on it (LAT2).
    *
    * Pure transport: the caller is responsible for resolving the model and
    * mode/filters (typically from the slot being regenerated, not global UI
@@ -436,6 +1131,7 @@ export const ChatApi = {
       agentStreamTools?: string[];
       agentCapabilities?: StreamChatRequest['agentCapabilities'];
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
+      harness?: StreamChatRequest['harness'];
       runId?: string;
       /** The edited question; omitted to regenerate the stored one unchanged. */
       query?: string;
@@ -463,6 +1159,9 @@ export const ChatApi = {
     if (request.reasoningEffort) {
       body.reasoningEffort = request.reasoningEffort;
     }
+    if (request.harness) {
+      body.harness = request.harness;
+    }
     if (request.runId) {
       body.runId = request.runId;
     }
@@ -476,7 +1175,7 @@ export const ChatApi = {
       body.answers = request.answers;
     }
 
-    await runChatStream(endpoint, body, callbacks);
+    await runTurnStream(endpoint, body, undefined, callbacks);
   },
 
   /**
@@ -498,6 +1197,7 @@ export const ChatApi = {
       filters: ChatKnowledgeFilters;
       agentCapabilities?: AgentCapabilities;
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
+      harness?: StreamChatRequest['harness'];
       runId?: string;
       /** The edited question; omitted to regenerate the stored one unchanged. */
       query?: string;
@@ -525,6 +1225,9 @@ export const ChatApi = {
     if (model.reasoningEffort) {
       agentRegenBody.reasoningEffort = model.reasoningEffort;
     }
+    if (model.harness) {
+      agentRegenBody.harness = model.harness;
+    }
     if (model.runId) {
       agentRegenBody.runId = model.runId;
     }
@@ -538,7 +1241,7 @@ export const ChatApi = {
       agentRegenBody.answers = model.answers;
     }
 
-    await runChatStream(endpoint, agentRegenBody, callbacks);
+    await runTurnStream(endpoint, agentRegenBody, agentId, callbacks);
   },
 
   /**
@@ -649,6 +1352,25 @@ export const ChatApi = {
   // Archive a conversation
   async archiveConversation(conversationId: string): Promise<void> {
     await apiClient.patch(`/api/v1/conversations/${conversationId}/archive`);
+  },
+
+  /**
+   * Fork a conversation (a shared one's participant, or its owner): a copy the caller owns. One copy
+   * per `idempotencyKey`, so a retry after a lost answer opens the same one.
+   * Endpoint: POST /api/v1/conversations/:conversationId/fork
+   * (agent: POST /api/v1/agents/:agentKey/conversations/:conversationId/fork)
+   */
+  async continuePrivately(
+    conversationId: string,
+    idempotencyKey: string,
+    agentKey?: string
+  ): Promise<{ conversationId: string; replayed: boolean }> {
+    const base = agentKey ? `/api/v1/agents/${encodeURIComponent(agentKey)}/conversations` : '/api/v1/conversations';
+    const { data } = await apiClient.post<{ conversationId: string; replayed: boolean }>(
+      `${base}/${encodeURIComponent(conversationId)}/fork`,
+      { idempotencyKey }
+    );
+    return data;
   },
 
   // Restore (unarchive) a conversation
@@ -872,6 +1594,26 @@ export const ChatApi = {
       import('./store'),
     ]);
     return fetchModelsForContext(ASSISTANT_CTX);
+  },
+
+  /**
+   * The configured models the picker shows as unavailable, with why: limited to groups the person is
+   * in none of (G-41, by `modelKey`), or for a reason `reasonsOf` (the `modelUnavailableReasons`
+   * extension point) reads from the answer's choices. Empty where the harness is not served or the
+   * answer cannot be read: the turn is still refused where its model is decided.
+   */
+  async fetchUnavailableModels(
+    reasonsOf: (choices: unknown) => ReadonlyMap<string, string> = () => new Map(),
+  ): Promise<UnavailableModels> {
+    try {
+      const { data } = await apiClient.get<{ modelChoices?: unknown }>(
+        '/api/v1/agent-harness/model-accounts/access',
+        { suppressErrorToast: true },
+      );
+      return { group: groupBlocked(data?.modelChoices), reasons: reasonsOf(data?.modelChoices) };
+    } catch {
+      return { group: new Set(), reasons: new Map() };
+    }
   },
 
   // ── Deprecated: knowledge-hub/nodes approach (commented out) ──

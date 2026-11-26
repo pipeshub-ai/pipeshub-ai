@@ -20,6 +20,7 @@ from app.utils.pattern_match import (
     render_pattern_match_hint,
     split_hint_entries,
 )
+from tests.support.record_access import InMemoryRecordAccess
 
 ORG, USER, RECORD_ID, VRID = "org-1", "user-1", "rec-bob", "vrid-shared"
 
@@ -47,11 +48,9 @@ def _graph_provider(graph_record: dict) -> MagicMock:
     # The shared VRID resolves to the record this user can read.
     graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={VRID: RECORD_ID})
     graph.get_records_by_record_ids = AsyncMock(return_value=[graph_record])
-    graph.check_record_access_with_details = AsyncMock(return_value={"record": {"_key": RECORD_ID}})
-    graph.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
-    graph.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({RECORD_ID})))
     graph.get_document = AsyncMock(return_value=graph_record)
-    return graph
+    graph.access = InMemoryRecordAccess().readable(USER, ORG, RECORD_ID)
+    return graph.access.serve(graph)
 
 
 async def _merge(graph: MagicMock, **raw_fields) -> tuple[list[dict], dict]:
@@ -132,6 +131,7 @@ async def test_a_hit_named_on_one_line_fetches_by_the_id_it_shows(id_field: str)
 async def test_neo4j_shaped_hit_is_served_from_the_map_after_the_one_batch_access_check() -> None:
     graph = _graph_provider(_graph_record("id"))
     _entries, vr_map = await _merge(graph)
+    graph.access.asked_about.clear()
 
     blob_store = MagicMock()
     blob_store.config_service.get_config = AsyncMock(return_value={})
@@ -141,8 +141,8 @@ async def test_neo4j_shaped_hit_is_served_from_the_map_after_the_one_batch_acces
         )
 
     assert result["ok"] is True
-    graph.check_access.assert_awaited_once_with("user-key", ORG, node_ids={RECORD_ID})
-    graph.check_record_access_with_details.assert_not_awaited()
+    # One access check for the fetch (the map entry is checked too); its content still comes from the map.
+    assert graph.access.asked_about == [(USER, ORG, RECORD_ID)]
     # The record is not read again; only its connector's name is looked up.
     assert [c.args for c in graph.get_document.await_args_list] == [("conn-1", "apps")]
 
@@ -206,6 +206,7 @@ async def test_grep_hit_on_shared_mail_shows_the_viewers_gmail_link() -> None:
 
 async def test_grep_hits_without_a_placeholder_skip_the_user_lookup() -> None:
     graph = _graph_provider(_graph_record("id"))
+    graph.get_user_by_user_id = AsyncMock(side_effect=graph.get_user_by_user_id)
 
     await _merge(graph)
 

@@ -55,8 +55,8 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(result.report.applied.get('member listed twice kept once')).to.equal(1);
       expect(result.report.applied.get('email lower-cased')).to.equal(1);
       expect(result.report.skipped.get('activity without an organisation')).to.equal(1);
-      expect(result.inserted.userActivities['identity.user_activities']).to.equal(2);
-      expect(result.inserted.userGroups['identity.user_group_members']).to.equal(6);
+      expect(result.inserted.userActivities!['identity.user_activities']).to.equal(2);
+      expect(result.inserted.userGroups!['identity.user_group_members']).to.equal(6);
     });
 
     it('keeps the member order of a group without repeats', async () => {
@@ -108,7 +108,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     it('a column the importer would drop shows up as a difference on exactly that user', async () => {
       await stack.admin((c) => c.query('UPDATE identity.users SET mobile = NULL WHERE id = $1', [String(MEMBER_A)]));
       const m = idMappings.find((x) => x.collection === 'users')!;
-      const source = docs.users.map((d) => prepareSource(m, d, new SourceReport())!);
+      const source = docs.users!.map((d) => prepareSource(m, d, new SourceReport())!);
       const decoded = await jobsUnit((_tx, k) => readDecoded(k, m, source.map((d) => String(d._id))));
       const diffs = compareDocs(source, decoded);
       expect(diffs.map((d) => d.id)).to.deep.equal([String(MEMBER_A)]);

@@ -92,6 +92,8 @@ export function SidebarCategoryRow(props: {
   configureUseKeyIcon?: boolean;
   configureIconColor?: string;
   toolsetStatus?: ToolsetSidebarStatus;
+  /** A line under the row: why a run of this agent could not use it (CPD-11 U6). */
+  badge?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   const {
@@ -115,6 +117,7 @@ export function SidebarCategoryRow(props: {
     configureUseKeyIcon,
     configureIconColor = 'var(--slate-11)',
     toolsetStatus,
+    badge,
     children,
   } = props;
 
@@ -383,6 +386,7 @@ export function SidebarCategoryRow(props: {
           </Flex>
         </Flex>
       </Flex>
+      {badge}
       {isExpanded ? (
         <Box pl="3" pr="1" pt="1" style={{ borderLeft: '1px solid var(--olive-4)', marginLeft: 18 }}>
           {children}

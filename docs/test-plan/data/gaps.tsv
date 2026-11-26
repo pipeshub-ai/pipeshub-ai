@@ -1,0 +1,297 @@
+gap	component	title	impact	likelihood	score	level	lane	depends_on	effort	consolidated	status
+APR-G1	APR	Live policy reads: approvals and flow rule are read per attempt, so a mid-run loosening...	5	4	20	U, X	PR harness lane	CPD-6	S	CG-01	closed (CPD-6): a pinned run reads approvals and the flow rule from its pin; QA-1's cases pass on the production assemblers
+AUD-G1	AUD	No configuration change is audited (AUD-11, R2 F1): one test per admin route and Labs	5	4	20	C	PR unit	CPD-1	L	CG-04	closed (QA-4)
+IX-G1	E-ADM-PIN	Pinning live policies has no cross-process proof: approvals/flow rule/LLM config changed m	5	4	20	X	fault	CPD-6	M	CG-01	partial: CPD-6 the pin, the claim gate and the live layer's bound run across real processes on the fault stack; the worker reading the pin is proven on the in-memory journal with the production assemblers, not across processes
+MCP-G1	MCP	Pin does not bind the approved manifest digest; mid-run re-approval or drift is not tes...	5	4	20	U, X	PR harness lane	CPS	S	CG-03	closed (QA-3): MCP-26a..e re-approval while an attempt runs, MCP-26d vectors in both languages
+PIN-G1	PIN	Live policies change a run in flight: loosen approvals, repoint modelKey, change chat-m...	5	4	20	X	PR harness lane	CPD-6 (write now as xfail-strict documenting today)	L	CG-01	partial: CPD-6 loosened approvals, a loosened flow rule, a re-pointed modelKey and flipped Labs stages do not reach a pinned run (in-memory journal, loop and engine); the Mongo variant of the resume cases is not built
+FEC-G1	FEC	Harness browser specs do not run in CI	4	5	20	Es	nightly e2e (CI)	QA e2e lane in CI	M	CG-05	closed: QA-5 (`harness-e2e.yml` es-pr, `harness` project, retries 0)
+CON-G1	CON	Hand-mirrored enums and error codes already drifted (R3 M15)	4	4	16	S	PR unit	CPD-0	S	CG-07	closed: QA-7 generated enums and codes, hand copies replaced, guards in Python, Node and the frontend
+CPA-G1	CPA	OCC on the four admin documents without it	4	4	16	C	PR unit	CPD-4	S	CG-09	closed (CPD-4): CPA-11 per route, stale If-Match is 409 with the current revision
+E2E-G1	E2E	No browser e2e of durable chat in CI; harness specs run only from deployment/e2e/run.sh	4	4	16	Es	Es-PR	none	M	CG-05	closed: QA-5 (EM-01, EM-01b, EM-13 on the real stack in es-pr)
+E2E-G2	E2E	No runner applies covering-array rows and checks the oracle (0 of 165 rows automated)	4	4	16	Es	Es-nightly	E2E-G1	L	CG-06	partial: QA-6: the runner applies every row and checks the oracle; the 91 rows of the Compose stacks (ST-1, ST-3, ST-4, ST-5) run, the 80 rows of the Helm stacks are built for kind and not run (QA6-F3)
+IX-G2	E-APR-PRJ	Durable browser specs (approval card, durable run UI, engine e2e) run only on the dev-only	4	4	16	Es	e2e (new CI job)	—	L	CG-05	closed: QA-5 (approval card, run UI on es-pr; engine e2e on es-engine-nightly)
+LAB-G1	LAB	Labs save not audited (R2 F1)	4	4	16	I	PR harness lane	CPD-1	M	CG-04	closed (QA-4)
+RTE-G1	RTE	Routing vectors over mode × project × kill switch × family × Labs × client kind	4	4	16	K	PR unit	LAT1, CPD-10	L	CG-08	closed (QA-8); CPD-10's adapter joins `routingVectorSuite`
+RTE-G2	RTE	Durable chat browser specs run in CI, not only deployment/e2e/run.sh	4	4	16	Es	nightly e2e (compose)	none	L	CG-05	closed: QA-5 (`harness` project in `harness-e2e.yml`)
+SKL-G2	SKL	Engine runs get no skills in production (R2 F7)	4	4	16	X	Docker lane	CPS	M	CG-03	closed (QA-3): skills cell SK-12 in the E2E3 matrix on three engines
+APR-G2	APR	External write without consent across every path is only proven in unit tests; browser...	5	3	15	Es	nightly e2e (CI)	QA e2e lane in CI	M	CG-05	partly closed: QA-5 (loop EM-02/EM-03 with SaaS effect counts; engine DE-1..DE-6); regenerate, child, schedule, legacy rows remain
+APR-G3	APR	Card redaction drift from the token vector (R3 M10)	5	3	15	U	PR unit	none	S	CG-11	closed (QA-11)
+CPA-G2	CPA	Authorizer matrix vectors (CPA-16), including team delegation	5	3	15	K	PR unit	CPD-9, CPD-11	L	CG-16	partial: CPD-9 the Node RoleAuthorizer on the matrix (vectors/authz.json, 26 cells, team delegation included); the control-plane routes that call it with CPD-11
+CST-G1	CST	ControlPlaneTransaction contract: atomicity and audit abort	5	3	15	K/I	PR unit + PR harness lane (Mongo RS)	CPD-1	L	CG-04	closed (QA-4)
+CST-G2	CST	Per-org isolation and corrupt-document isolation for every store	5	3	15	K	PR unit	CPD-1, CPD-4	M	CG-16	partial: CPD-9 for ApprovalStore (AS-5, AS-8 on memory and Mongo); CPD-4 for PolicyStore (PS-4, PS-9 on memory, read-through and Mongo); the installation, grant and binding stores with CPD-7, CPD-8
+DEP-G2	DEP	Control-plane migrations dual-write, flip, revert	5	3	15	I, N-upg	PR harness lane + release	CPD-4	M	CG-12	partial: CPD-4 migration, dual-write and revert for the policy documents, the flip behind CONTROL_PLANE_POLICY_STORE=on; the upgrade lane (N-upg) and CPD-7/CPD-8 open; QA-12: the Python D2 migrations (credentials, agent toolsets) and the binder's import and revert converge from a crash at every write (QA12-1..3, QA12-6..9; QA12-F1, QA12-F3 fixed); the N-upg lane remains
+E2E-G3	E2E	Flow guard across paths never proven in one deployment (EM-02..EM-09, EM-15, EM-27)	5	3	15	Es	Es-nightly	E2E-G2	M	CG-06	closed (QA-6): the flow rule on the loop, an engine, today's loop, a regenerate, a sub-agent and a schedule's firing on one deployment (array rows on ST-1, ST-3, ST-5)
+E2E-G5	E2E	Control-plane journeys (EM-40, EM-41) have no runner	5	3	15	Es	Es-nightly	CPD-6, CPD-11	M	CG-16	open
+ERA-G1	ERA	Behavioural erasure census over real stores (replace C-14 source regex)	5	3	15	I	PR harness lane (itests)	none	M	CG-15	closed: QA-15 `erasure-census.mongo.itest.ts` (composed worker, Mongo RS, Redis, broker folders), `test_erasure_real_graph.py` (Neo4j, ArangoDB); C-14's source-text checks deleted
+FEC-G2	FEC	Approval card redaction drift (R3 M10)	5	3	15	U	PR unit	none	S	CG-11	closed (QA-11)
+IX-G3	E-ADM-PIN	Resolver switch (CPD-5) has no shadow-equality gate over the corpus and e2e lanes	5	3	15	X	replay + e2e	CPD-5	M	CG-12	partial: CPD-5 shadow counts 0 mismatches over the QA-8 routing corpus, the replay corpus's scenarios, the crash catalog on the fault stack and LAT1's rig; the compose e2e lanes and a canary org remain before on
+JRN-G1	JRN	Journal history checker after every I/X test	5	3	15	X	PR harness lane + nightly fault	none	M	CG-13	closed: QA-13 history checks (H1..H7) after every harness test in both languages
+NTF-G1	NTF	Narrowing propagation bound with and without the notifier	5	3	15	X/N-chaos	PR harness lane; nightly fault	CPD-6	L	CG-01	closed (CPD-6): 5 s and 30 s on an injected clock (loop and engine) and on real processes over Kafka with the broker paused
+NTF-G2	NTF	Widening never reaches a running attempt (NTF-08) and pin ⊓ live ⊑ pin property	5	3	15	X/P	PR unit + PR harness lane	CPD-6	M	CG-01	closed (CPD-6): NTF-08 on a pinned run and pin ⊓ live ⊑ pin over the whole dimension table, children included
+PIN-G4	PIN	Shadow mismatch gate before CONTROL_PLANE_PIN=on	5	3	15	X/Es	PR replay + nightly e2e	CPD-5	L	CG-12	partial: CPD-5 shadow built with pipeshub_cp_shadow_mismatch_total{dimension}, 0 on the routing corpus; the e2e lane and canary run in shadow remain
+PIN-G5	PIN	Effective-set ⊆ property and determinism	5	3	15	P	PR unit	CPD-7	M	CG-16	closed (CPD-7): vectors `contracts/control-plane/vectors/effective-set.json` in both languages, ⊆ and determinism properties (ESR-1, ESR-2, ESR-8)
+POL-G2	POL	Generic resolver property suite (POL-12..15) in both languages	5	3	15	P	PR unit (ci profile), nightly 5,000 examples	CPD-3	L	CG-16	closed: CPD-3 (policy-properties in both languages, CPD3-12..18; 200 examples on PR, HARNESS_PROPERTY_EXAMPLES / nightly profile for more)
+TGW-G1	TGW	Policy decision table with mandatory rows	5	3	15	P/K	PR unit	none	L	CG-10	closed: QA-10 `policy_table.yaml` (558 rows, three paths)
+TGW-G2	TGW	Policy and taint properties incl. Rule of Two	5	3	15	P	PR unit; nightly	none	M	CG-10	closed: QA-10 `test_policy_properties.py` (Rule of Two, grants, taint)
+TSC-G1	TSC	Full-surface canary scan (spans, LiveBus, checkpoints, sandbox FS, explain output) over...	5	3	15	X	PR harness lane	none	M	CG-14	partly closed (QA-14; explain output with CPD-5)
+WRK-G1	WRK	Run state machine with invariants	5	3	15	P	PR unit (ci profile), nightly 5,000 examples	none	L	CG-13	closed: QA-13 `RunStateMachine` (Python, DurableKernel) and the Node run model
+FEA-G1	FEA	Harness admin journeys not in CI	3	5	15	Es	nightly e2e (CI)	QA e2e lane in CI	M	CG-05	closed: QA-5 (admin approvals, AI accounts, schedules, MCP approval in es-pr)
+ADM-G2	ADM	Concurrent identical/distinct admissions	4	3	12	I	PR harness lane	none	M	CG-21	closed: QA-21 QA21-1, QA21-2, QA21-4 (forced 2-way and 50-way races on Mongo)
+APR-G5	APR	Consume-once race on Mongo	4	3	12	I	PR harness lane (itests)	none	M	CG-21	closed: QA-21 QA21-5 (50 responses, one decision, 49 answered 409)
+APR-G6	APR	Deny-monotonicity and strictest-of as properties (TEST-STRATEGY §2.3)	4	3	12	P	PR unit	none (then CPD-3 vectors)	M	CG-10	closed: QA-10 APR-07 properties
+APR-G7	APR	Reconcile hooks cover two tools; unknown effects for other writes always park; no test...	4	3	12	U	PR unit	none	S	CG-24	closed: QA-24 `test_qa24_unknown_effects_inventory.py` (all 142 reachable non-idempotent writes, crash and lost ack) and the Slack client fix (QA24-F1)
+AUD-G2	AUD	Audit failure aborts the write	4	3	12	C/K	PR unit	CPD-1	S	CG-04	closed (QA-4)
+AUD-G3	AUD	interaction.granted not chained	4	3	12	U/I	PR unit + Mongo itest	CPD-1	M	CG-04	closed (QA-4)
+BUD-G1	BUD	NodeBudgetLedger not under the full ledger contract against a live Node	4	3	12	K, X	PR harness lane	none	M	CG-19	closed: QA-19 BudgetLedgerContract on NodeBudgetLedger and BAC on AttemptBudgetAccounts, live Node
+CAT-G1	CAT	CatalogStore contract suite over every adapter	4	3	12	K/I	PR unit + PR harness lane (Mongo itest)	CPD-2	M	CG-16	open
+CAT-G2	CAT	One digest scheme, cross-language vectors and key-order property	4	3	12	K/P	PR unit	CPD-2	M	CG-16	open
+CON-G2	CON	C-2 requires only in-memory adapters	4	3	12	cohesion	PR unit	none	S	CG-19	closed: QA-19 C-2 (Python) and test_c2_node_port_contracts.py (Node)
+CPA-G3	CPA	Approvals default/agents[*] and toolsets router scope gaps	4	3	12	C	PR unit	CPS, CPD-11	S	CG-16	partial: CPS router scopes; approvals default/agents API open
+CPA-G4	CPA	Preview/explain correctness and authorization	4	3	12	C	PR unit	CPD-5, CPD-11	S	CG-16	open
+CST-G3	CST	Concurrent saves on the four admin documents without OCC	4	3	12	C	PR unit	CPD-4	S	CG-09	closed (CPD-4): CST-17, two saves from one revision give one 200 and one 409 per route
+CST-G4	CST	Migration dry-run/apply/revert/idempotence and KV-down fault	4	3	12	I/N-chaos	PR harness lane; nightly fault	CPD-4	M	CG-12	closed (CPD-4): MG-1..MG-6 in memory and on the replica set, KV down mid-run included
+DEP-G1	DEP	Upgrade smoke with in-flight durable runs, both orders	4	3	12	N-upg	release, nightly	none	M	CG-18	partial: QA-18 both orders and rollback with a run in flight on the fault stack (QA18-1..3); not on release images (upgrade_smoke.sh)
+ENG-G2	ENG	JournalEngineEventSink and PipesHubEngineAssembler not under a shared contract	4	3	12	K	PR unit	none	M	CG-19	closed: QA-19 JournalEngineEventSink, PipesHubEngineAssembler contract runs
+ENG-G3	ENG	Engine browser flows not in CI	4	3	12	Es	nightly e2e	QA e2e lane in CI	M	CG-05	closed: QA-5 (`harness-engine` project, es-engine-nightly)
+ERA-G2	ERA	Session erasure has no shared contract over in-memory and Mongo	4	3	12	K	PR unit + itests	none	M	CG-15	closed: QA-15 `support/erasure-job-store-contract.ts` JS-1..JS-5
+IX-G4	E-PRJ-JRN	No Redis-down, broker-down or Mongo-step-down scenario in the fault suite	4	3	12	X	fault	—	M	CG-17	closed: QA-17 test_degraded.py IX-DD-1..IX-DD-4
+IX-G6	E-APR-PRJ	Frontend approval-card redaction not driven by token-patterns.json	4	3	12	U	unit (FE)	—	M	CG-11	closed (QA-11)
+IX-G7	skew	Version skew proven at unit level only for worker N+1/Node N and children; gateway/worker,	4	3	12	X	fault	—	M	CG-18	closed (QA-18): worker/Node both orders on release N code (QA18-1..3), gateway token, egress proxy/broker, spec/broker, frontend/Node (QA18-4..7)
+IX-G8	E-CST-AUD	Config writes (admin routes, Labs, conversation grant) not audited; no same-transaction pr	4	3	12	I	itest	CPD-1	M	CG-04	closed (QA-4)
+IX-G9	E-NTF-PIN	Notifier and live layer bounds (NFR-23, NFR-37) untested	4	3	12	X	fault	CPD-6	M	CG-01	closed (CPD-6): test_live_layer_bound.py on the fault stack (NFR-23 with the notifier; NFR-23 and NFR-37 with Kafka paused)
+JRN-G2	JRN	Sweeper per-state deadline table, adding recovering and needs_reconciliation	4	3	12	K	PR unit + PR harness lane	none	M	CG-13	closed: QA-13 deadline table in the execution-store contract (in-memory and Mongo)
+JRN-G3	JRN	Relay over real Kafka and Redis Streams	4	3	12	I	backend matrix (nightly)	none	M	CG-19	partly closed: QA-19 outbox relay over real Redis Streams; Kafka leg open (no image on the host)
+KIT-G1	KIT	C-2 requires production adapters to run the contract	4	3	12	S	PR unit	none	L	CG-19	closed: QA-19 C-2 finds and requires every production adapter
+KIT-G2	KIT	Tests for the compose fake LLM and fake SaaS	4	3	12	U	PR unit	none	S	CG-33	open
+KNW-G1	KNW	Replace weak test: source-text caller identity in test_publication_surfaces.py:86-99 wi...	4	3	12	U	PR unit	none	S	CG-20	closed (QA-20)
+MAC-G1	MAC	accountKinds narrowing discarded (R2 F20)	4	3	12	U	PR unit	CPD-3	S	CG-02	partial: QA-2 the resolver keeps the account-kind narrowing in both languages and `ModelAccessService.decide` answers the narrowed profile (QA2-10, QA2-11); admission does not store it yet (QA2-O1, with CPD-5)
+MCP-G3	MCP	Dead server on the durable path: tools unavailable, run continues, unavailable reason i...	4	3	12	U, X	PR harness lane	none	S	CG-17	closed (ERR-UX): QA-17 IX-DD-12; reason unavailable (EU-12); black-holed server IX-DD-12-bh
+MCP-G4	MCP	Hub flags are off by default; no e2e row runs a chat with MCP_HUB=true and an approved...	4	3	12	Es	weekly e2e	none	M	CG-06	closed (MCP-E2E): the hub and the STDIO runners on a Compose stack, every MCP transport and auth kind called by the chat loop, opencode, Codex and Claude Code through the product's API with an approved manifest; weekly es-matrix with --mcp-hub
+MCP-G8	MCP	Manifest approval migrated to ApprovalWorkflow with no re-approval needed	4	3	12	U, I	PR harness lane	CPD-9	S	CG-12	partial: CPD-9 the control-plane-approvals migration carries approved manifests over as approved requests, no re-approval, revert restores (AMG-1..5 on memory and Mongo); its production source and CLI with CPD-7's legacy driver
+MEM-G1	MEM	Crash between commit and settlement on real processes	4	3	12	X	nightly fault	none	M	CG-17	open
+NTF-G3	NTF	Notifier contract over in-memory, Kafka, Redis Streams; order, dedupe, gap rule	4	3	12	K/I	PR unit; backend matrix (nightly)	CPD-6	M	CG-16	partial: CPD-6 CN-1..3 in both languages over in-memory brokers and the real consumers, Node on real Redis Streams, and one vector for the bytes; a Kafka contract run is not built (Kafka is exercised end to end on the fault stack only)
+PIN-G6	PIN	One pinner on every admission path	4	3	12	C	PR unit	CPD-5	S	CG-16	closed (CPD-5) pin-every-path.test.ts: web, regenerate, Slack, MCP, schedule and drain reach the one pinning step; a child's route is its parent's
+PIN-G7	PIN	Fail-closed and bounded-stale cache	4	3	12	U/K	PR unit	CPD-5	M	CG-16	closed (CPD-5) run-config-pinner.test.ts PIN-21, PIN-23 with an injected clock
+PRJ-G1	PRJ	Live == reloaded property over random journals	4	3	12	P	PR unit (frontend vitest + Node)	none	L	CG-29	open
+PRJ-G2	PRJ	Browser reconnect across a Node restart	4	3	12	Es	nightly e2e	QA browser lane	M	CG-05	open
+RTE-G3	RTE	One-request routing for API/PAT clients and the web UI	4	3	12	C/Es	PR unit; nightly e2e	LAT1	M	CG-08	partial: component closed (QA-8 QA8-8, every client kind); Playwright network assertion with QA-5
+SBX-G4	SBX	Quotas under parallel creates	4	3	12	I	Docker lane	none	M	CG-26	closed: QA-26 test_qa26_quota_parallel_creates.py (legacy SandboxResourceGovernor, the only per-org quota; unit, not Docker)
+SCH-G2	SCH	Scheduled runs with approvals and flow guard end to end (unattended write)	4	3	12	Es	nightly e2e	QA e2e lane in CI	M	CG-06	closed (QA-6): cron and webhook firings with a held write, decided, expired and denied by the org rule
+SKL-G4	SKL	allowed_tools advisory only	4	3	12	U	PR unit	none (decide with CPS)	S	CG-03	open: QA-3 SKL-15 holds the decided advisory behaviour on loop, durable and engine runs; enforcement needs the activation design (when active, how long, unknown entries, engines), after the PR
+SKL-G6	SKL	(target) skills as catalog items with pinned digests replace the in-place CPS fix	4	3	12	U, K	PR harness lane	CPD-7	M	CG-03	closed (CPD-7 slice 2): the durable loop loads a pinned skill only at its bundle digest; QA-3's test passes without its xfail
+TSC-G2	TSC	Revoked and missing credentials on the durable path: item unavailable, run continues, t...	4	3	12	U, X	PR harness lane	none	S	CG-23	partial: FU1 fixed QA23-F1 (the run goes on without an unconnected item; its toolset tools answer `credential_missing`; one `x.pipeshub.run.notice` `credential_missing` names it) and QA23-F3 (a revoke reaches the attempt at the next toolset call, MCP-FIX2's rule); QA23-F2 (two refresher replicas) fixed by FU1; open: no notice for an item Node's effective set takes out at admission (CPD-11's card) or on an engine run
+TSC-G3	TSC	Toolset instance list RMW race (R2 F21) has no test	4	3	12	I	PR harness lane (KV)	CPD-7 fixes; test first to show the bug	M	CG-23	partial: CPD-7 test and fix within a process (TSC-21); the cross-replica window closes when installations become the store of record; QA-23 shows the cross-replica loss (QA23-6, strict xfail QA23-F4, owner the store-of-record switch)
+TSC-G4	TSC	Node toolsets router authz (R2 F16)	4	3	12	C	PR unit	CPS	S	CG-23	partial: CPS TS-1, TS-2; dead proxy routes open; the dead proxy routes are CPD-11's
+ADM-G3	ADM	Orphan blobs from a retried admission transaction	3	4	12	I	PR harness lane	fix M8	M	CG-21	closed: QA-21 QA21-10; R3 M8 fixed (the blob is written in the admission transaction)
+CHD-G2	CHD	Wave latency notified	3	4	12	X/N-lat	PR harness lane (bound)	LAT1	M	CG-22	closed (QA-22)
+EGR-G1	EGR	Replace weak test: real DNS and wall-clock bound in test_egress_state.py:274	3	4	12	U	PR unit	none	S	CG-20	closed (QA-20)
+EGR-G2	EGR	Replace weak test: sleep-then-assert in test_server.py:219	3	4	12	U	PR unit	none	S	CG-20	closed (QA-20)
+ENG-G5	ENG	Claude Code admission blocked; its matrix cells and pinned conformance cannot run	3	4	12	I, El	Docker lane, live	user decision (pin)	M	CG-31	closed: QA-31 (2.1.294 admitted by CC1; image 3, binary 2, conformance 26, controller 2 and the E2E3 row 7 pass on fa70e336e)
+IX-G5	cross-language	Hand-mirrored run enums, error codes, mounts and frontend DTOs with no cross-language chec	3	4	12	K	unit	CPD-0 / R3 WP-11	M	CG-07	closed: QA-7 run-document enums, decisions, worker features and refusal codes generated; frontend copies typed by them
+MGW-G1	MGW	Uniform retry classification across transports	3	4	12	U	PR unit	WP-5	S	CG-19	closed: QA-19 one classifier (transports/failures.py), MGW-20 table
+POL-G3	POL	One release defaults table	3	4	12	S	PR unit	CPD-3	S	CG-16	closed: CPD-3 (policy/release.json, RELEASE_DEFAULTS; CPD3-50..54)
+SBX-G5	SBX	Replace weak test PL-3 (load flake)	3	4	12	U	PR unit	none	S	CG-20	closed (H10)
+TGW-G3	TGW	Replace weak tests: sleeps in test_endpoint_contract.py:66,105-116, wall clock in test_...	3	4	12	U	PR unit	none	S	CG-20	closed (QA-20)
+WRK-G2	WRK	Approval resume and claim latency measured	3	4	12	X/N-lat	PR harness lane (bound), weekly perf	LAT1	M	CG-22	closed (QA-22)
+WRK-G3	WRK	Replace weak tests: sleeps and wall-clock bounds in test_run_claimer.py:287,315, test_d...	3	4	12	U	PR unit	none	S	CG-20	closed (QA-20)
+ADM-G4	ADM	Transaction failpoints across the admission transaction	5	2	10	I	PR harness lane	none	M	CG-21	closed: QA-21 QA21-9 (a failure after each operation; nothing visible; the retry admits once)
+APR-G4	APR	Regenerate with a held write (R1 F2 safety half)	5	2	10	X	PR harness lane	none	M	CG-24	closed: QA-24 `test_qa24_regenerate_hold.py` (kernel and session ledger; Node admission stays IX-RTE-ADM-2)
+APR-G8	APR	Red-team injection success not gated (live drivers stopped, H7; O-5/O-6 to human pen test)	5	2	10	N-sec	live, release	none	L	CG-28	open
+ART-G1	ART	Shared viewer cannot fetch a hidden artifact by URL	5	2	10	Es/C	nightly e2e; PR unit (route)	QA browser lane	M	CG-05	open
+CTX-G1	CTX	Quoting resists delimiter injection	5	2	10	P	PR unit	none	M	CG-27	closed: QA-27 `test_quoting_property.py` (QA27-F4, QA27-F5 fixed)
+E2E-G6	E2E	Isolation runtimes (EM-42, EM-43) need dedicated runners	5	2	10	Es	Iso-gVisor, Iso-Kata	QA-25	L	CG-25	open
+E2E-G8	E2E	Cross-org replay over every harness route not automated; schemathesis fuzz not built	5	2	10	Es	Es-PR	none	M	CG-26	closed: QA-26 qa26-cross-tenant.mongo.itest.ts (544 replays over 130 routes) and qa26-route-inventory.test.ts
+EGR-G3	EGR	Confinement probes under gVisor	5	2	10	I	gVisor runner (not in the default CI)	QA isolation workflow	L	CG-25	open
+ENG-G6	ENG	Engine control credential and history from the agent shell (O-5, O-6)	5	2	10	N-sec	human pen test	pen test	L	CG-28	open
+ERA-G3	ERA	Backfill CLI on a real replica set and on an upgraded install	5	2	10	I, N-upg	nightly	none	M	CG-15	partial: QA-15 QA15-6 (CLI on the production backend, real RS, census; nightly); upgraded install (ERA-25) open
+IX-G10	E-TGW-APR	Worker killed while suspended on an approval: resume with the same invocation not proven o	5	2	10	X	fault	—	S	CG-17	open
+IX-G11	E-ERA-JRN	Erasure racing a running run; crypto-shred reach across Node instances	5	2	10	X	fault	—	S	CG-15	partial: QA-15 QA15-4 (racing run, I level); crypto-shred across instances (IX-ERA-7) open
+IX-G12	E-ENG-SBX	Isolation classes (gVisor, Kata) and K8s network confinement	5	2	10	I	isolation (new runner)	runner with runsc/KVM	L	CG-25	open
+JRN-G4	JRN	Model-based fast-check state machine + nightly differential on Mongo	5	2	10	P	PR unit; nightly	none	L	CG-13	closed: QA-13 `execution-store.model.test.ts` + nightly Mongo differential
+KNW-G2	KNW	Existence-oracle table across identifier kinds	5	2	10	U	PR unit	none	M	CG-27	closed: QA-27 `test_read_gate_matrix.py` (every identifier kind, three paths)
+KNW-G3	KNW	Graph backend ACL parity matrix	5	2	10	I	backend matrix nightly (Neo4j, ArangoDB)	none	L	CG-27	closed: QA-27 `test_knowledge_read_matrix.py` (Neo4j and ArangoDB, every surface)
+KNW-G4	KNW	Cross-user knowledge e2e on both paths	5	2	10	Es	nightly e2e	QA browser lane	M	CG-05	open
+LAB-G2	LAB	Kill switch mid-flight not a lane test	5	2	10	X	nightly fault	none	M	CG-17	open
+LEG-G3	LEG	Signed resolved header on the legacy path	5	2	10	U	PR unit	CPD-10	S	CG-08	closed (CPD-10): LEG-10a/b/c, LEG-P, CPD10-24, CPD10-26, CPD10-27 on the production routes
+MCP-G2	MCP	No cross-owner reuse test for runner sandboxes across idle TTL and recycle (MCP_RUNNER_...	5	2	10	I	Docker lane	none	M	CG-26	closed: QA-26 MR-12 in testing/sandbox/mcp_runner.py (in-memory, fake broker, Docker runc; gVisor not run here)
+NTF-G4	NTF	Fail-closed-for-writes stale live layer	5	2	10	U	PR unit	CPD-6	S	CG-01	closed (CPD-6): NTF-09 on the loop rig and at the cache and policy units
+PIN-G8	PIN	Cross-org cache isolation over two Node replicas	5	2	10	I	PR harness lane	CPD-5	M	CG-16	partial: CPD-5 PIN-24 (org-keyed entries and head per org) at component level; the two-replica itest remains
+RTE-G4	RTE	X-PipesHub-Resolved signature checks	5	2	10	C	PR unit	CPD-10	S	CG-08	closed (CPD-10): RTE-22a..d on the shared vector `resolved-turn.json` in Node and Python; CPD10-20, 21, 28, 29 through the real Node app
+SBX-G1	SBX	gVisor isolation never exercised (probes, contract)	5	2	10	I	gVisor runner (not in the default CI)	QA isolation workflow	L	CG-25	open
+TGW-G4	TGW	One recovery table over effect class × crash position	5	2	10	U/X	PR unit; nightly fault	none	M	CG-24	closed: QA-24 `test_qa24_recovery_table.py` (6 classes × 4 positions, lost ack)
+TSC-G5	TSC	Credential migration safety (copy/verify/revert, no secret in logs)	5	2	10	I	PR harness lane	CPD-8	M	CG-12	closed (CPD-8): copy, digest verify, revert with write-back, no secret in report, ledger or logs (MG-1..MG-10, CPD-8); QA-12: crash at every write, a store outage typed (QA12-F2 fixed), the owner lookup on Neo4j and ArangoDB
+WSP-G1	WSP	Writer takeover across two real workers: the old writer stops saving before the new one...	5	2	10	X	nightly fault	none	M	CG-17	open
+WSP-G3	WSP	Stateful revision machine (GC never deletes reachable data)	5	2	10	P	nightly (5,000 examples)	none	M	CG-13	closed: QA-13 `WorkspaceRevisionMachine` (no object GC exists: nothing is deleted)
+WSP-G4	WSP	Warm-pool cross-org reuse	5	2	10	I	Docker lane	none	M	CG-26	closed: QA-26 WP-11 in pool_contract.py (fake broker and Docker test_docker_warm_pool.py::test_wp11_*)
+ADM-G5	ADM	Admission SLO #4 gate	3	3	9	N-lat	weekly perf	none	M	CG-22	closed (QA-22)
+ADM-G6	ADM	Concurrent decide reads	3	3	9	U	PR unit	LAT1	S	CG-21	open
+ADM-G7	ADM	Service-identity quota	3	3	9	U/C	PR unit	product decision	S	CG-21	closed: QA-21 QA21-12 (decided: quota per person; the Slack bot hydrates each person)
+APR-G9	APR	Expiry seen by the user (approval_expired) not in a browser test	3	3	9	Es	nightly e2e	none	M	CG-05	open
+ART-G2	ART	Artifact contract over the production registry store (in-memory only today)	3	3	9	K	PR unit	none	S	CG-19	closed: already run by test_registry_store.py (found by QA-19); TaskCardPublicationLog added
+AUD-G4	AUD	Shared contract suite for the audit chain store (in-memory vs Mongo)	3	3	9	K	PR unit + PR harness lane	none	M	CG-19	closed: QA-19 audit-chain-store and audit-anchor-sink suites
+BUD-G3	BUD	Org and agent budgets (CP7)	3	3	9	U, K	PR unit	CP7	S	CG-35	open
+CAT-G3	CAT	"Cohesion ""catalog matches registries"""	3	3	9	S	PR unit (cohesion)	CPD-2	S	CG-16	open
+CON-G3	CON	TS half of codegen drift may skip in the Python job (R2 F13)	3	3	9	S	PR unit	CPD-0	S	CG-07	closed: CPD-0 PXH_REQUIRE_NODE in the contracts job; QA-7 path filter covers every guarded file
+CON-G4	CON	Frontend DTOs hand-written	3	3	9	S	PR unit	CPD-0	S	CG-07	closed: CPD-0 frontend target; QA-7 the remaining frontend copies (run status, outcome, decisions, refusal maps)
+CPA-G5	CPA	History and rollback as audited revisions	3	3	9	C	PR unit	CPD-4	S	CG-09	partial: CPD-4 store history newest first and a rollback write as a new audited revision (CPA-12); the history and rollback API is CPD-11
+CPA-G6	CPA	Facade golden responses	3	3	9	C	PR unit	CPD-4, CPD-11	S	CG-09	partial: CPD-4 the five sections read the same in off and dual, before and after an org is copied (CFG-9); route goldens with CPD-11
+CPA-G7	CPA	Admin Playwright journey in CI	3	3	9	Es	nightly e2e	CPD-11	M	CG-05	open
+CST-G5	CST	Standalone ordered-steps repair	3	3	9	I	nightly (standalone Mongo job)	CPD-1	M	CG-16	open
+CST-G6	CST	Batched read round-trip counter	3	3	9	K	PR unit	CPD-7	M	CG-16	closed (CPD-7): GS-3 counts round trips from the Mongo driver's command events
+CTX-G2	CTX	Compiler on the real stack	3	3	9	Es	nightly e2e	QA browser lane	M	CG-06	partial: QA-6 (compiler-on rows answer on the stack and journal each request's digest; no recompile from the journal)
+DEP-G5	DEP	A run claimed by a Node that is replaced before it answers waits for the sweeper's next leader: a stream stalled 24.3 s in a rolling deploy against the 15 s bound (finding CPD6-F-RU4A)	3	3	9	N-upg	release, nightly	none	M	CG-18	closed (OPS1): the store closed itself on SIGTERM under requests in flight and before the leader leases were released; a stopping Node now releases leadership, answers what it accepted, then closes its stores, and the sweeper's leader lease is 15 s. Bound `max(L, T) + I` in SLO #6; `test_recovery_bound.py` on both brokers
+DEP-G3	DEP	Helm with harness on: a durable turn on kind	3	3	9	Es	weekly `helm-chart.yml`	none	M	CG-30	open
+E2E-G4	E2E	ArangoDB, etcd, Kafka, Helm never carry a durable chat turn end to end	3	3	9	Es	Es-nightly, K8s-kind	E2E-G2	M	CG-30	open
+E2E-G9	E2E	Claude Code rows blocked on the pin decision	3	3	9	El	El-release	Claude Code pin decision	S	CG-31	partial: QA-31 (engine lane live: the 17 Claude Code array rows and EM-18 against the oracle, EM-18 live 3 of 3; browser variant with QA-6)
+FEC-G3	FEC	Transcript parity property (live = reload)	3	3	9	P	PR unit	none	M	CG-29	open
+FEC-G4	FEC	Golden replay vitest twin	3	3	9	K	PR unit	none	M	CG-29	open
+IX-G13	E-WRK-JRN	Toxiproxy and libfaketime absent: latency, partition and clock-skew cases impossible	3	3	9	X	fault	—	L	CG-17	partial: QA-17 toxiproxy in the fault stack; libfaketime open
+IX-G14	E-PRJ-JRN	Reconnect re-reads the whole journal; no test bounds it	3	3	9	I	itest	LAT1	S	CG-22	partial: PERF-B a reconnect on the Node that served the run reads only the events after its cursor (PERFB-16); a Node that never read the run still reads it once
+IX-G15	E-WRK-MGW	Mid-stream model cut and 429 storms on the durable path through real processes	3	3	9	X	fault / e2e	—	S	CG-17	partial: QA-17 IX-DD-11a..11e; a stream cut mid-answer open
+JRN-G5	JRN	Shared contract suites for journal tail, data keys, liveness, sightings	3	3	9	K	PR unit + PR harness lane	none	L	CG-19	closed: QA-19 journal-tail, data-key, liveness, sightings suites
+JRN-G6	JRN	Commit latency histogram and SLO #1/#9 measured gates	3	3	9	N-lat	weekly perf	none	M	CG-22	closed (PERF-B: SLO #1 gated without a waiver, 78 ms p99 on one session and 53–95 ms at the capacity model's N = 16 rate; sessions in step are PERFB-F1)
+LAB-G5	LAB	Stale effective flags in the browser (R1 F26)	3	3	9	U	PR unit	none	S	CG-29	open
+LEG-G2	LEG	One-request routing for legacy-only modes	3	3	9	C	PR unit	LAT1	S	CG-08	closed (QA-8 QA8-8)
+LEG-G4	LEG	Spec the graph mocks in shared worlds (R3 risk 6)	3	3	9	U	PR unit	none	S	CG-20	closed (QA-20)
+MEM-G2	MEM	Memory under the kill switch (R1 F17)	3	3	9	U, Es	PR unit	none	S	CG-29	open
+MEM-G3	MEM	MAX_MEMORY_CHARS defined three times (R2 F10) with a test on one copy	3	3	9	U	PR unit	CPD-3	S	CG-07	closed: CPD-3 (all five copies, Node domain and route, Python, the frontend memory row, read RELEASE_DEFAULTS.memory.maxChars; QA-7's C-34 list is empty; CPD3-51)
+MEM-G4	MEM	No e2e row with governed memory on	3	3	9	Es	nightly e2e	none	M	CG-06	closed (QA-6): memory rows on the loop propose and list a memory; since QA-6F an attended engine run does too (Codex, opencode, Claude Code: rows PW-099, PW-100, PW-101, T3-075), and every memory row is attended: a scheduled run is granted no write scope on any executor (QA6-F13)
+MGW-G2	MGW	NodeGatewayTokenSource under the TokenSource contract	3	3	9	K	PR unit	WP-3	M	CG-19	closed: QA-19 TokenSourceContract on NodeGatewayTokenSource, live Node
+MGW-G3	MGW	Gemini/Ollama cassette tests	3	3	9	U	PR unit	none	S	CG-19	closed: QA-19 Gemini/Ollama cassettes (MGW-21)
+OBS-G2	OBS	Control-plane health metrics	3	3	9	U	PR unit	CPD-5	S	CG-16	partial: CPD-5 pipeshub_cp_shadow_mismatch_total and cp.shadow_mismatch; cache hit/miss metrics remain
+PIN-G10	PIN	Required vs optional unavailable items	3	3	9	U	PR unit	CPD-7	S	CG-16	partial: CPD-7 resolver and vectors (ESR-4, ESR-9); the admission refusal comes with CPD-5's pinner
+PIN-G9	PIN	Pinner latency benchmark	3	3	9	N-lat	PR (assertion), weekly perf	CPD-5	M	CG-22	closed (CPD-5) pinner.bench.ts: 200 items warm p95 3.75 ms
+PRJ-G3	PRJ	LiveBus contract over in-memory and Redis; journal tail contract	3	3	9	K/I	PR unit + PR harness lane	none	M	CG-19	closed: QA-19 live-bus-contract.ts (in-memory, Redis), journal-tail-contract.ts
+PRJ-G4	PRJ	Latency of deltas and reconnect	3	3	9	N-lat	weekly perf	none	M	CG-22	closed (QA-22)
+RTE-G5	RTE	Latency profiles per mode	3	3	9	N-lat	weekly perf	none	M	CG-22	closed (QA-22)
+SBX-G6	SBX	No broker at runtime on the durable path: tools dropped, answer still delivered	3	3	9	U, X	PR harness lane	none	S	CG-17	partial: QA-17 IX-DD-8; a worker started with no broker open
+SBX-G7	SBX	Sandbox start bench profile (SLO #17) not built	3	3	9	N-lat	weekly perf	none	M	CG-22	closed (QA-22, tier 1; tier 2 is QA-25's)
+SSN-G2	SSN	No two-user browser test of collaborator turns	3	3	9	Es	nightly e2e	QA e2e lane in CI	M	CG-05	open
+TGW-G5	TGW	Contract runs for PipesHubEngineAssembler, JournalEngineEventSink	3	3	9	K	PR unit	none	M	CG-19	closed: QA-19 (as ENG-G2)
+WRK-G4	WRK	Contract suites for the 12 durable kernel ports	3	3	9	K	PR unit	none	M	CG-19	closed: QA-19 durable_ports.py, durable_turns.py (18 ports)
+ADM-G8	ADM	One decision path for schedule, child, regenerate	4	2	8	C	PR unit	CPD-5	S	CG-08	closed (CPD-5) the drain asks the RoutingDecider (next-run-readmission.test.ts ADM-25); a child takes its parent's route (run-config-pinner.test.ts)
+AUD-G5	AUD	Mixed-chain verification (AUD-15) and secret-digest only	4	2	8	U/K	PR unit	CPD-1	S	CG-04	closed (QA-4)
+BUD-G2	BUD	Ledger unreachable must refuse, not meter zero	4	2	8	U, X	nightly fault	none	S	CG-17	open
+CHD-G3	CHD	Deep mode on the real stack under SIGKILL	4	2	8	X	nightly fault	none	M	CG-17	open
+CTX-G3	CTX	Recompile-from-journal digest equality over the corpus	4	2	8	replay	PR replay	none	S	CG-13	closed: QA-13 `test_compiler_replay.py` over the golden scenarios
+DEP-G4	DEP	Real K8s with agent-sandbox	4	2	8	I	K8s lane (not in the default CI)	none	L	CG-25	open
+EGR-G4	EGR	Egress in the e2e matrix: broker_allowlist and broker_open rows with probes from the br...	4	2	8	Es	nightly e2e	none	M	CG-06	partial: QA-6 (the broker's egress level is set per row; no probe from the sandbox)
+ERA-G4	ERA	Erasure across a Node restart and broker outage	4	2	8	X	nightly fault	none	M	CG-15	partial: QA-15 QA15-5 (composition replaced mid-job, broker 503, I level); process kill with a real broker (X) open
+ERA-G6	ERA	Backfill itests run only in path-filtered lanes (R3 §4)	4	2	8	I	nightly	none	M	CG-15	closed: QA-15 `.github/workflows/harness-erasure-nightly.yml`
+FEA-G4	FEA	Capabilities area journeys	4	2	8	Es	nightly e2e	CPD-11	M	CG-16	open
+IX-G16	E-SCH-ADM	Duplicate schedule firing across two Node instances; webhook firing on both brokers	4	2	8	I	itest	—	S	CG-17	open
+IX-G17	E-LEG-KNW	Legacy vs durable knowledge parity on a real graph, and existence-oracle check on the lega	4	2	8	I	backend matrix	—	S	CG-27	closed: QA-27 test_qa27_2_*, test_qa27_3_*; the Slack context tools on every path since KN2 (QA27-F1)
+IX-G18	skew	Upgrade with durable runs in flight on real release data (upgrade_smoke has no harness ass	4	2	8	N-upg	release	—	S	CG-18	partial: QA-18 in-flight upgrade from release N code and its data, both orders and rollback (QA18-1..3), migrations with runs in flight (QA18-8); upgrade_smoke.sh on release images still has no durable run
+JRN-G7	JRN	Transient fold-read failure yields instead of failing	4	2	8	U	PR unit	none	S	CG-17	open
+KNW-G5	KNW	Viewer-scoped prefetch in shared sessions	4	2	8	U	PR unit	none	S	CG-27	closed: QA-27 `test_qa27_5_*` (integration level, backend matrix lane)
+LAB-G3	LAB	Labs CAS on etcd	4	2	8	I	nightly backend matrix	none	M	CG-30	open
+LEG-G1	LEG	Kill-switch history continuity on a real stack	4	2	8	X	nightly fault	none	M	CG-17	open
+MAC-G2	MAC	Narrowing mid-run reaches the gateway within NFR-23 (5 s / 30 s)	4	2	8	X	PR harness lane	CPD-6	M	CG-01	partial: CPD-6 the gateway's narrowing comes from the live layer under CONTROL_PLANE_PIN=on (unit and wiring cases); no stack test with a running gateway
+MCP-G5	MCP	Manifest routes: authz matrix (admin, member, other org) not in one table; Node relay a...	4	2	8	C	PR unit	CPD-11	S	CG-26	closed: QA-26 the manifest routes and their tests moved out of this repository
+MCP-G6	MCP	gVisor runner isolation floor never exercised for real	4	2	8	I	gVisor runner (not in the default CI)	none	L	CG-25	open
+MEM-G5	MEM	Memory policy pinned at admission (target): policy loosened mid-run does not widen	4	2	8	U	PR harness lane	CPD-6	S	CG-01	open
+NTF-G5	NTF	Event payload has no secrets	4	2	8	K	PR unit	CPD-6	S	CG-14	closed (QA-14)
+OBS-G1	OBS	Span content leak under a full run	4	2	8	X	PR harness lane	none	M	CG-14	closed (QA-14)
+PIN-G11	PIN	Head check inside the admission transaction	4	2	8	I	PR harness lane	CPD-5	M	CG-16	closed (CPD-5) pin-head-check.mongo.itest.ts and pin-on.test.ts PIN-22
+PIN-G12	PIN	Claim gating on resolved_config	4	2	8	U	PR unit	CPD-6	S	CG-01	closed (CPD-6): PIN-28 in the domain, both stores and the Mongo claim expression
+POL-G4	POL	approval-rules order replaces _StrictestOf with vectors unchanged	4	2	8	K	PR unit	CPD-3	S	CG-10	closed: QA-10 POL-22 (`_StrictestOf` already removed by UX2); CPD-3 runs the same tests through its resolver
+PRJ-G6	PRJ	Attempt-discard within a fence	4	2	8	U	PR unit	none	S	CG-29	open
+SBX-G2	SBX	Kata isolation and SLO #17 tier 2	4	2	8	I, N-lat	Kata/KVM runner (not in the default CI)	QA isolation workflow	L	CG-25	open
+SBX-G3	SBX	K8s agent-sandbox provider contract	4	2	8	K, I	K8s lane	none	L	CG-25	open
+SBX-G8	SBX	24 h soak: 0 orphan containers (SLO #19)	4	2	8	N-soak	weekly/release	none	L	CG-34	open
+SCH-G1	SCH	Two real Node instances firing one slot	4	2	8	X	nightly fault	none	M	CG-17	open
+SCH-G3	SCH	Firing via the one pinner	4	2	8	U	PR unit	CPD-5	S	CG-08	closed (CPD-5) a firing reaches the pinning step as surface schedule with its cost cap as the trigger layer (pin-every-path.test.ts)
+TSC-G6	TSC	Binding contract over in-memory and Mongo adapters	4	2	8	K	PR unit + itests	CPD-8	M	CG-16	closed (CPD-8): CP-SKEL's BS-1..6 on the in-memory and Mongo stores, indexes and races (BS-7..9)
+WRK-G5	WRK	Fold determinism across hash seeds	4	2	8	P	PR unit	none	M	CG-13	closed: QA-13 `test_fold_determinism.py` (four seeds, corpus + library journals)
+WSP-G2	WSP	Crash during merge	4	2	8	X	nightly fault	none	M	CG-17	open
+ADM-G9	ADM	Replace weak test: split the 4,151-line execution-store contract by concern (admit, com...	2	4	8	K	PR unit	none	S	CG-20	closed (QA-20)
+E2E-G7	E2E	No a11y or i18n pass over harness screens	2	4	8	Es	Es-nightly	none	M	CG-32	open
+ERA-G5	ERA	Replace weak test: real timers in session-retention.test.ts:298-306	2	4	8	U	PR unit	none	S	CG-20	closed (QA-20)
+FEA-G2	FEA	No accessibility lane	2	4	8	N-ux	nightly e2e	none	M	CG-32	open
+FEA-G3	FEA	i18n of codes, labels and refusals (R1 F27, F30, F31)	2	4	8	U, S	PR unit	none	S	CG-32	open
+FEC-G5	FEC	i18n of run errors, statuses, numbers, citations (R1 F22, F24, F25, F31)	2	4	8	U	PR unit	none	S	CG-32	open
+FEC-G6	FEC	Accessibility of approval arrival and artifacts panel (R1 F20, F34); no axe lane	2	4	8	U, N-ux	PR unit + nightly	none	S	CG-32	open
+JRN-G8	JRN	Replace weak test: mongo-execution-store.test.ts query-shape asserts → behaviour on the...	2	4	8	I	PR harness lane	none	M	CG-20	closed (QA-20)
+KIT-G3	KIT	Move fakes out of production packages	2	4	8	S	PR unit	WP-2	S	CG-33	open
+KIT-G4	KIT	Shared fixtures	2	4	8	S	PR unit	WP-15	S	CG-33	open
+MGW-G4	MGW	Replace weak test: wall-clock in test_sec2_refusal_reports.py:110-123	2	4	8	U	PR unit	none	S	CG-20	closed (QA-20)
+PRJ-G5	PRJ	Cursor-based reconnect without full journal re-read	2	4	8	U	PR unit	product change	S	CG-22	closed (PERF-B, PERFB-16..18)
+WRK-G6	WRK	Replace weak tests: spec'd graph mocks in assembly/world.py, durable_driver.py; one ass...	2	4	8	U	PR unit	none	S	CG-20	partial: QA-20 spec'd the graph mocks; one assembly conftest for _deployment is QA-33's
+WRK-G7	WRK	Idle worker RSS gate	2	4	8	N-lat	release checklist / nightly footprint	product change	M	CG-34	open
+APR-G10	APR	Approval-prompt rate (SLO #13) measured but not gated	3	2	6	El	release	none	M	CG-28	open
+ART-G3	ART	Provenance after workspace restore	3	2	6	U	PR unit	none	S		open
+BUD-G5	BUD	Live cost reconciliation against provider-reported usage per release	3	2	6	El	live, release	none	M	CG-34	open
+CAT-G4	CAT	Catalog route guards and member visibility	3	2	6	C	PR unit	CPD-11	S	CG-16	open
+CAT-G5	CAT	Remote import failure isolation	3	2	6	C	PR unit	CPD-2, CPD-12	S	CG-16	open
+CON-G5	CON	Upcaster rule per schema bump	3	2	6	U	PR unit	none	S	CG-07	closed: QA-7 vectors/run-spec-versions.json (goldens per version, upcasters) in both languages
+CTX-G4	CTX	Cleared-result markers read back	3	2	6	U	PR unit	none	S		open
+CTX-G5	CTX	SLO #11 as a live gate before default-on	3	2	6	El	live (release)	budget	S	CG-34	open
+EGR-G5	EGR	Proxy failover under load (restart while 20 sandboxes stream)	3	2	6	X	nightly fault	none	M	CG-17	open
+ENG-G8	ENG	Engine queued forever when no executor_engine worker: user-visible deadline	3	2	6	U, Es	PR unit	LAT1	S		open
+ENG-G9	ENG	opencode and Codex checked only --version at session start; no broker check of the candidate label (CC1 section 10)	5	2	10	U, I	PR unit, Docker lane	none	M		closed (EH1)
+FEC-G8	FEC	Reconnect latency SLO #8	3	2	6	N-lat	nightly e2e	none	M	CG-22	partial: QA-22 gates SLO #8 on the rig (`reconnect`); the browser reconnect stays EM-14 (QA-5)
+IX-G19	E-MGW-BUD	Budget reservation leak on a worker kill between reserve and settle	3	2	6	X	fault	—	S	CG-17	open
+IX-G20	E-MCP-SBX	MCP runner lifecycle (idle TTL, max age, crash) on real Docker	3	2	6	I	docker	—	S	CG-17	open
+IX-G22	cross-language	Every vector file read by both languages is not enforced	3	2	6	S	cohesion	—	S	CG-07	closed: QA-7 C-33 (test_c33_vector_readers.py)
+IX-G23	degraded	Query-service restart with the inline claimer holding a run	3	2	6	X	fault	—	S	CG-17	open
+JRN-G9	JRN	seq in AAD	3	2	6	U	PR unit	product change	S		open
+KIT-G5	KIT	PXH_REQUIRE_DOCKER switch tested	3	2	6	S	PR unit	none	S	CG-33	open
+LAB-G6	LAB	Staged rollout	3	2	6	U	PR unit	CP8	S	CG-35	open
+LEG-G5	LEG	Legacy latency A/B after CPD-10	3	2	6	N-lat	weekly perf	CPD-10	M	CG-22	partial: CPD-10 measured the query service's assembly with and without the header as interleaved arms (15 reads → 6 before the first byte; 13.4 → 6.0 ms at about 1 ms a read; +0.1 ms with a store that answers in process) and Node's cost per legacy turn; a first-token A/B on a stack with a real legacy path is not built (the fault stack's legacy handler is a stub), the absolute gate is FINAL-VERIFICATION stage 12
+MCP-G7	MCP	Concurrent lease vs idle sweep race	3	2	6	U, P	PR unit	none	S	CG-26	closed: QA-26 test_qa26_lease_vs_sweep.py (interleaving property, 20 leases vs sweep); two sweep races fixed
+MGW-G5	MGW	Settle backoff	3	2	6	U	PR unit	product change	S		open
+MGW-G6	MGW	assert as control flow	3	2	6	U	PR unit	product change	S		open
+POL-G5	POL	Dimension ↔ flag matrix cohesion	3	2	6	S	PR unit	CPD-3, CP8	S	CG-16	closed for CPD-3: C-36 (flags and dimensions); CP8 adds stage rows
+SKL-G5	SKL	ENABLE_SKILLS parity on both paths	3	2	6	U	PR unit	none	S		open
+SSN-G3	SSN	Participants without a shared contract	3	2	6	K	PR unit + itests	none	M	CG-19	closed: QA-19 session-participant-recorder suite (in-memory, Mongo)
+TGW-G7	TGW	Code-mode result size bound	3	2	6	U	PR unit	product change	S		open
+TSC-G7	TSC	Tool-identity migration only on Neo4j in its lane; ArangoDB untested	3	2	6	I	nightly backend matrix	none	M	CG-30	open
+TSC-G8	TSC	Name uniqueness as a property over random instance sets (TEST-STRATEGY §2.3)	3	2	6	P	PR unit	none	M	CG-23	closed (QA-23): hypothesis property over random instance sets, toolset and MCP names (QA23-7)
+WSP-G5	WSP	test_workspace_sync_docker.py collects 0 direct tests: confirm the parametrized body ru...	3	2	6	I	Docker lane	none	M	CG-20	closed (QA-20)
+AUD-G6	AUD	Admission via audited	2	3	6	U	PR unit	none	S	CG-04	closed (QA-4)
+CHD-G4	CHD	One phase machine	2	3	6	U	PR unit	WP-12	S		open
+ENG-G7	ENG	Replace weak test: source-text assert in test_engine_instructions.py:28	2	3	6	U	PR unit	none	S	CG-20	closed (QA-20)
+FEA-G5	FEA	Schedules UX gaps	2	3	6	U	PR unit	none	S	CG-32	open
+FEC-G7	FEC	Stream client races (R3 minor)	2	3	6	U	PR unit	none	S	CG-29	open
+IX-G21	E-ADM-JRN	Admission blob orphan on transaction retry (R3 M8)	2	3	6	I	itest	—	S	CG-21	closed: QA-21 QA21-10
+MAC-G3	MAC	Replace weak test: source-text assert test_vendor_rules.py:172	2	3	6	U	PR unit	none	S	CG-20	closed (QA-20)
+MEM-G6	MEM	Memories page paging (R1 F32)	2	3	6	U	PR unit	none	S	CG-32	open
+MGW-G7	MGW	Gateway overhead measured	2	3	6	N-lat	weekly perf	none	M	CG-22	open: needs LAT2's engine rig with the model gateway (QA-22 open item)
+OBS-G3	OBS	Opik dependency inversion	2	3	6	U	PR unit	none	S		open
+POL-G6	POL	Enum parity check	2	3	6	K	PR unit	CPS	S	CG-07	closed: QA-7 RequestedEffort (REQUESTED_EFFORTS) and narrowing parity
+PRJ-G7	PRJ	Typed projection fields	2	3	6	S	PR unit	WP-11	S	CG-07	partial: QA-7 projection reads held to the event schemas; typed projections stay WP-11
+RTE-G6	RTE	Stale cached effective flags after a kill-switch flip	2	3	6	Es	nightly e2e	none	M	CG-29	open
+SCH-G4	SCH	Schedule UI editing and paging	2	3	6	U	PR unit	none	S	CG-32	open
+SCH-G5	SCH	One cost bound	2	3	6	U	PR unit	CP7	S	CG-35	open
+TGW-G6	TGW	Stale overlay detection	2	3	6	S	PR unit	none	S		open
+CST-G7	CST	Binding secret-free schema check	5	1	5	K	PR unit	CPD-8	M	CG-14	closed (CPD-8): BS-4 on MongoBindingStore (strict schema, every token shape refused as a field and as a code)
+IX-G24	E-RTE-ADM	Python access check failure at admission must refuse (no fail-open)	5	1	5	C	unit	—	S	CG-21	closed: QA-21 QA21-11 (500, malformed, another agent, dropped connection: 503, database unchanged)
+AUD-G7	AUD	Replace weak test: delete isAuditRelevant export and its coverage-only test	1	5	5	U	PR unit	none	S	CG-20	closed (QA-20)
+MAC-G4	MAC	Remove dead-code coverage model-account-providers.test.ts	1	5	5	U	PR unit	none	S	CG-20	closed (QA-20)
+BUD-G4	BUD	Flag-off path untested	2	2	4	U	PR unit	none	S		open
+CPA-G8	CPA	Write/preview latency	2	2	4	N-lat	weekly perf	CPD-11	M	CG-22	open: CPD-11 (pending row in QA-22's gate table)
+NTF-G6	NTF	In-process live check latency	2	2	4	N-lat	weekly perf	CPD-6	M	CG-22	closed (CPD-6): NTF-12, zero source calls over 10,000 decisions on a fresh layer; the timing is reported, not gated
+ADM-G1	ADM	Next-run drain re-admission	5	4	20	K	PR unit + PR harness lane	CPS	M	CG-02	closed: CPS NR-1..NR-6
+CHD-G1	CHD	Engine child skips the agent layer	5	4	20	U	PR unit	CPS	S	CG-02	closed: CPS NO-6
+ENG-G1	ENG	Loop-parent engine children skip the agent layer (R2 F5)	5	4	20	U	PR unit	CPS	S	CG-02	closed: CPS NO-6
+PIN-G2	PIN	Pins bind approved descriptors; drift is capability_lost	5	4	20	U/X	PR unit	CPS	M	CG-03	closed: CPS PN-1..PN-12
+POL-G1	POL	Stricter-only vectors for effort, deadline, budgets, loop-parent engine child, loop models	5	4	20	U/K	PR unit	CPS	S	CG-02	closed: CPS NO-1..NO-7 (loop models vs configured models open, POL-20)
+SKL-G1	SKL	Cross-user skill leak at run time (R2 F3): no visibility property test on either path	5	4	20	U, P	PR unit	CPS	S	CG-03	closed: CPS SK-1..SK-5, SK-11
+SSN-G1	SSN	Next-run drain does not re-admit (R2 F6)	5	4	20	K	PR harness lane	CPS	M	CG-02	closed: CPS NR-1..NR-6
+PIN-G3	PIN	Next-run drain re-admission	5	3	15	K	PR unit	CPS, CPD-5	M	CG-02	closed: CPS NR-1..NR-6
+ENG-G4	ENG	reasoningEffort and deadline vs maxWallS (R2 F5, F17)	4	3	12	U	PR unit	CPS	S	CG-02	closed: CPS NO-1..NO-5 (minimal enum open, POL-G6)
+SKL-G3	SKL	Candidate approval authz (R2 F3)	4	3	12	C	PR unit	CPS	S	CG-03	closed: CPS SK-6, SK-7
+LAB-G4	LAB	Unlisted flags (R2 F13)	3	3	9	S	PR unit	CPD-0	S	CG-07	closed: CPS FL-1..FL-3
+ERA-G7	ERA	A run's caller-sent idempotency key survives on its erased tombstone (QA15-F3)	4	3	12	U, K, I	PR unit + itests	none	S	CG-15	closed: QA-15F keyed digest at the store boundary, legacy keys digested at erasure (`run-key-digest.test.ts`, contracts QA15F-2, census QA15F-3, QA15F-4)
+ERA-G8	ERA	Chat attachments are not erased with the conversation (QA15-F4)	5	3	15	K, I	PR unit + itests + graph census	none	M	CG-15	closed: QA-15F conversation step erases them through the query service (`conversation-erasure-contract.ts` CE-5..CE-7, `test_erasure_real_graph.py` QA15F-9, census QA15F-10)
+ERA-G9	ERA	A service account's chat uploads are not erased with its conversation (QA-15F open item)	4	3	12	U, I	PR unit + graph census	none	S	CG-15	closed: QA-15G uploader recorded on the record at upload, erasure proves ownership by it (`test_uploads.py` QA15G-1, QA15G-2, `test_artifact_erase_route.py` QA15G-3, `test_erasure_real_graph.py` QA15G-4, `scoped-request.test.ts` QA15G-10)
+ERA-G10	ERA	An uploader no longer in the graph: their uploads are refused at erasure (QA-15F open item)	3	2	6	U, I	PR unit + graph census	none	S	CG-15	closed: QA-15G a recorded upload is erased without the user node; an older unrecorded one stays refused and counted by design (`test_artifact_erase_route.py` QA15G-3, `test_erasure_real_graph.py` QA15G-5)
+ERA-G11	ERA	An upload named by two conversations reads as a live link to nothing after the first is erased (QA-15F open item)	3	3	9	U, K, I	PR unit + itests	none	S	CG-15	closed: QA-15G erasure marks it removed in the org's other messages; the chip reads as removed (`conversation-erasure-contract.ts` CE-8, CE-9, QA15G-7, QA15G-8, `attachment-chip.test.tsx` QA15G-9)
+ADM-G10	ADM	Sessions of one org started in step miss SLO #1 and SLO #4: org-wide documents written inside long transactions	4	3	12	N-lat	weekly perf	PERF-C	M	CG-22	partial: PERF-D cut the event-loop CPU of the requests of an in-step turn (a turn 0.82 of before in five interleaved pairs, store commands 228 → 192; in step on a loaded host the commit p50 0.63 and the ending commit's p50 0.53 of before, five pairs) and gates it (`commit-cpu`, seven `PERFC-F1` bounds). The targets that would let 16 in step fit one Node process are not reached (an admission and an ending commit cost about 20 ms of the loop each on the loaded host, a step commit 8): PERFD-F1. Before it, PERF-C removed the org-wide writes from the transactions (MongoDB's aborted transactions per committed one 7.5 → 0 in step and 11.8 → 0.05 back to back, paired A/B; admission p50 2.1 s → 0.18 s; gated at 1 on `commits-n16-burst` and `commits-n16-instep`). Sessions in step are `commits-n16-instep`, held to SLO #1 and SLO #4 unwaived; the absolute gate is taken on a quiet host at FINAL-VERIFICATION stage 12
+MCP-G9	MCP	With MCP_HUB on an MCP server on a private or loopback address is refused with no exemption (MCPE2E-F2)	5	4	20	U, Es	PR unit, weekly e2e	product decision	M		closed (MCPFIX): link-local and metadata addresses refused with the hub on and off; with the hub on loopback refused, private addresses by PIPESHUB_BLOCK_PRIVATE_ADDRESSES and MCP_PRIVATE_NETWORKS, pinned (F2-1..F2-13)
+MCP-G10	MCP	An exported MCP tool name over an engine's limit (52 or 58) refuses the whole engine run (MCPE2E-F3)	4	3	12	U, Es	PR unit, weekly e2e	product decision	M		closed (MCPFIX): the hub exports at 52 characters, every engine carries every exported name (F3-1..F3-6, NV-4); legacy names with the hub off stay unbounded
+MCP-G11	MCP	A running attempt keeps calling an uninstalled MCP server and a removed credential (MCPE2E-F4)	4	3	12	Es	weekly e2e	product decision	M		open: the MCPFIX design (through CPD-6's live layer and CPD-7's binding revocation), built once both land; MCP-E2E DR-4, DR-5 strict xfail
+MCP-G12	MCP	A run in capability_wait is failed not_started by the unclaimed-run sweep; capability_lost is never reached (MCPE2E-F6)	4	4	16	U, K, Es	PR unit + itests	none	S		closed (MCPFIX): unclaimedRuns counts from the later of the last change and notBefore, in both stores (F6-1..F6-4)
+MCP-G13	MCP	The agent builder lists and attaches MCP tools no admin approved (MCPE2E-F7)	3	4	12	C, Es	PR unit	none	S		partial: MCPFIX the listings say each tool's approval and an agent save refuses an unapproved tool (F7-1..F7-6); the builder's screen is CPD-11's
+MCP-G14	MCP	Hub rows not run: Helm, today's loop with the hub on, the default schema lifetime and tools/list_changed, useAdminAuth and service-account credentials	3	3	9	Es	weekly e2e	QA6-F3	M		open
+ENG-G10	ENG	An engine is sent its whole tool grant in every model request: about 80 k tokens at 500 tools, no lazy disclosure at the gateway (MCP-E2E LZ)	4	3	12	U, Es	PR unit, weekly e2e	product decision	M		open: measured by MCP-E2E LZ; design sketched, not built

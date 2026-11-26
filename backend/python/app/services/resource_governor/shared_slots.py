@@ -32,13 +32,14 @@ import logging
 import os
 import re
 import stat
-import tempfile
 import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+
+from app.utils.private_dirs import per_user_temp_dir
 
 try:
     import fcntl
@@ -124,6 +125,7 @@ class SharedSlots:
         self._tags: dict[int, bytes] = {}
         self._closed = False
         self.directory = directory
+        # A folder others can read or write, or a link, is refused: its name under /tmp is guessable.
         ensure_private_directory(directory)
         opened: list[int] = []
         try:
@@ -602,7 +604,7 @@ def shared_slots_directory(name: str) -> Path | None:
                 "Ignoring %s=%r: it must be an absolute path, the same for every process",
                 _STATE_DIR_ENV, override,
             )
-    primary = Path(tempfile.gettempdir()) / leaf
+    primary = Path(per_user_temp_dir(name))
     unsafe = _unsafe_ancestor(primary)
     if unsafe is None:
         return primary

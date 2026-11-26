@@ -110,7 +110,7 @@ const PasswordField = React.forwardRef<HTMLInputElement, PasswordFieldProps>(fun
           >
             <span
               className="material-icons-outlined"
-              style={{ fontSize: '16px', color: 'var(--gray-10)' }}
+              style={{ fontSize: '16px', color: 'var(--gray-11)' }}
             >
               {visible ? 'visibility_off' : 'visibility'}
             </span>
@@ -126,7 +126,7 @@ const PasswordField = React.forwardRef<HTMLInputElement, PasswordFieldProps>(fun
               {error}
             </Text>
           ) : hint ? (
-            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {hint}
             </Text>
           ) : (

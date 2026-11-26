@@ -754,6 +754,60 @@ class TestRunSync:
         processor.note_kept_records.assert_called_once_with(connector.connector_id, ["r-live", "r-deleted"])
 
     @pytest.mark.asyncio
+    async def test_keeping_a_whole_project_reads_no_comment_files(self) -> None:
+        """A comment's files are in the project's record group, so keeping the whole project already covers them."""
+        connector = _make_connector()
+        comment = MagicMock(id="r-comment", external_record_id="c1", record_type=RecordType.COMMENT)
+        processor = connector.data_entities_processor
+        processor.note_kept_record_group = AsyncMock()
+        processor.note_kept_records = MagicMock()
+        processor.get_records_in_record_group = AsyncMock(return_value=[comment])
+        processor.get_records_by_parent = AsyncMock(return_value=[])
+
+        await connector._keep_stored_records("proj-id-1")
+
+        processor.get_records_by_parent.assert_not_awaited()
+        processor.note_kept_records.assert_called_once_with(connector.connector_id, ["r-comment"])
+
+    @pytest.mark.asyncio
+    async def test_keeping_some_issues_keeps_them_their_files_and_comments_only(self) -> None:
+        connector = _make_connector()
+
+        def stored(rid: str, ext: str, kind: RecordType, parent: str | None = None) -> MagicMock:
+            return MagicMock(id=rid, external_record_id=ext, record_type=kind, parent_external_record_id=parent)
+
+        rows = [stored(f"r{n:04d}", f"x{n}", RecordType.TICKET) for n in range(1500)]
+        rows[5] = stored("r0005", "attachment_1", RecordType.FILE, "1")
+        rows[6] = stored("r0006", "2", RecordType.TICKET, "1")
+        rows[7] = stored("r0007", "attachment_3", RecordType.FILE, "3")
+        rows[1200] = stored("r1200", "1", RecordType.TICKET)
+        rows[1300] = stored("r1300", "c1", RecordType.COMMENT, "1")
+        rows[1499] = stored("r1499", "attachment_9", RecordType.FILE, "1")
+        after_keys: list[str | None] = []
+
+        async def scan(connector_id, group_id, limit, after_key=None, *, visibility=RecordVisibility.LIVE) -> list[MagicMock]:
+            after_keys.append(after_key)
+            return [r for r in rows if after_key is None or r.id > after_key][:limit]
+
+        processor = connector.data_entities_processor
+        processor.note_kept_record_group = AsyncMock()
+        processor.note_kept_records = MagicMock()
+        processor.get_records_in_record_group = scan
+        processor.get_records_by_parent = AsyncMock(return_value=[MagicMock(id="r-comment-file")])
+
+        await connector._keep_stored_records("proj", {"1"})
+
+        assert after_keys == [None, "r0999"]
+        kept = {rid for c in processor.note_kept_records.call_args_list for rid in c.args[1]}
+        assert kept == {"r0005", "r1200", "r1300", "r1499", "r-comment-file"}, (
+            "a sub-task is written when still in Jira; other issues' files are not kept"
+        )
+        processor.get_records_by_parent.assert_awaited_once_with(
+            connector.connector_id, "c1", RecordType.FILE.value, visibility=RecordVisibility.ALL,
+        )  # a soft-deleted file under a kept comment is kept with it
+        processor.note_kept_record_group.assert_awaited_once_with(connector.connector_id, "proj")
+
+    @pytest.mark.asyncio
     async def test_run_sync_error_raises(self):
         connector = _make_connector()
         connector.data_source = MagicMock()

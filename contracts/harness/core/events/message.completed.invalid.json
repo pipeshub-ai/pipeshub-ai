@@ -1,0 +1,109 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "turn.aborted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "role": "assistant",
+        "textRef": {
+          "ref": "cas/t1",
+          "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 10
+        },
+        "isFinal": true
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes message.completed",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "message.completed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "role": "assistant",
+        "textRef": {
+          "ref": "cas/t1",
+          "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 10
+        },
+        "isFinal": true
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "message.completed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "role": "assistant",
+        "textRef": {
+          "ref": "cas/t1",
+          "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 10
+        },
+        "isFinal": true,
+        "unexpected": true
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "isFinal must be boolean",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "message.completed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "role": "assistant",
+        "textRef": {
+          "ref": "cas/t1",
+          "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 10
+        },
+        "isFinal": "yes"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  }
+]

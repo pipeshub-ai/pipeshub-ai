@@ -893,41 +893,17 @@ class TestImages:
 
     def test_regex_data_uri_long_spaces_linear_time(self):
         """_MD_IMAGE_RE must match data URIs with long space runs in linear time."""
-        import statistics
-        import time
-
         from app.modules.parsers.markdown.markdown_to_blocks import _MD_IMAGE_RE
+        from tests.support.cpu_budget import thread_cpu
 
-        n_small = 1_000
-        n_large = 100_000
-        iterations = 7
+        text_large = f"![alt](data:image/png;base64,{' ' * 100_000})"
 
-        text_small = f"![alt](data:image/png;base64,{' ' * n_small})"
-        text_large = f"![alt](data:image/png;base64,{' ' * n_large})"
-
-        times_small = []
-        times_large = []
-        for _ in range(iterations):
-            start = time.perf_counter()
-            m_small = _MD_IMAGE_RE.search(text_small)
-            times_small.append(time.perf_counter() - start)
-
-            start = time.perf_counter()
+        with thread_cpu() as cpu:
             m_large = _MD_IMAGE_RE.search(text_large)
-            times_large.append(time.perf_counter() - start)
 
-        assert m_small is not None
         assert m_large is not None
-
-        t_small = statistics.median(times_small)
-        t_large = statistics.median(times_large)
-
-        # 100x input growth should yield at most ~200x time if linear (with overhead).
-        # Quadratic would be ~10000x. Use 500x as a generous bound.
-        assert t_large < t_small * 500 or t_large < 0.1, (
-            f"Regex appears super-linear: {n_small} chars took {t_small*1000:.2f}ms, "
-            f"{n_large} chars took {t_large*1000:.2f}ms (ratio {t_large/max(t_small, 1e-9):.0f}x)"
-        )
+        # Milliseconds when linear; backtracking over the 100 000 spaces is billions of steps (minutes).
+        assert cpu.seconds < 1.0, f"Regex appears super-linear: {cpu.seconds:.2f} s of CPU for 100 000 spaces"
 
 
 class TestBlockquotes:

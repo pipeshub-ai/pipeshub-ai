@@ -1,0 +1,191 @@
+name: Harness security gate
+
+# C6.42: the security suite and the canary scans, as one reusable workflow. The agent harness lane calls it on
+# every harness pull request and release-publish calls it before any tag moves, so a release passes exactly the
+# gate a change does. What each stage runs, and which skips it refuses, is scripts/security_gate.py: these jobs set
+# up a runner and call `run <stage>`, and a maintainer runs the same stages before tagging. The engine-images job builds every redistributable engine's images from its pinned release
+# and runs their real lanes and tools-layer scans; a case that skips for want of one of those images fails it.
+# The Docker lane installs gVisor and runs the gVisor stage too; Kata is not on these runners, and Claude Code's images are admin-built from a binary PipesHub may not redistribute, so its cases skip.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker-lane:
+    name: Docker security lane (real sandboxes; C-13)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      # C-13 drives Node's routes from Python; without the Node workspace it would skip.
+      - name: Set up Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Install Python dependencies
+        working-directory: backend/python
+        run: |
+          requirements/install.sh dev --project . --editable
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci --ignore-scripts
+
+      # The tests name the image `pxh-sandbox:x1` (C-13, the egress lanes) or read SANDBOX_TEST_IMAGE: one build,
+      # both names.
+      - name: Build the Compose-selected sandbox
+        env:
+          SANDBOX_DOCKER_IMAGE: pipeshubai/pipeshub-sandbox:local
+        run: |
+          docker compose --file deployment/docker-compose/docker-compose.yml --profile sandbox build sandbox-image
+          docker tag pipeshubai/pipeshub-sandbox:local pxh-sandbox:x1
+
+      # The egress and durable rigs run their proxies and stores in these; absent, those cases skip.
+      - name: Pull the rigs' helper images
+        run: docker pull python:3.12-slim && docker pull redis:7.4-bookworm
+
+      # C-13 on its own, and red on any skip: it was once skipped for a missing image and the gate read green.
+      - name: C-13 a sandbox reaches only the gateways
+        run: python3 scripts/security_gate.py run c13
+
+      # The stage sets PXH_REQUIRE_DOCKER, which turns the lane's "no daemon or no sandbox image" skips into
+      # failures, so a lane that could not run reads red, not green.
+      - name: Run the Docker lane
+        run: python3 scripts/security_gate.py run docker-lane
+
+      # The runsc half (C6.42): gVisor from the installer's pinned release, registered as the installer does, then
+      # the gVisor stage, which sets PXH_REQUIRE_GVISOR so a runner without runsc reads red.
+      - name: Install gVisor
+        run: |
+          release="$(sed -n 's/^GVISOR_RELEASE="${PIPESHUB_GVISOR_RELEASE:-\([0-9]*\)}"$/\1/p' deployment/docker-compose/install.sh)"
+          url="https://storage.googleapis.com/gvisor/releases/release/${release:?}/$(uname -m)"
+          cd "$(mktemp -d)"
+          curl -fsSLO "${url}/gvisor.tar.bz2" && curl -fsSLO "${url}/gvisor.tar.bz2.sha512"
+          sha512sum -c gvisor.tar.bz2.sha512
+          tar -xjf gvisor.tar.bz2 runsc containerd-shim-runsc-v1
+          sudo install -m 0755 runsc containerd-shim-runsc-v1 /usr/local/bin/
+          sudo /usr/local/bin/runsc install
+          sudo systemctl restart docker
+          docker info --format '{{json .Runtimes}}' | grep -q '"runsc"'
+
+      - name: Run the gVisor lane
+        run: python3 scripts/security_gate.py run gvisor
+
+      - name: Assert no sandbox containers leaked
+        if: always()
+        run: |
+          leaked="$(docker ps -aq --filter ancestor=pipeshubai/pipeshub-sandbox:local)"
+          if [ -n "$leaked" ]; then
+            docker ps -a --filter ancestor=pipeshubai/pipeshub-sandbox:local
+            exit 1
+          fi
+
+  canary:
+    name: Security suite, supply chain and QA14 canary scans (no Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      redis:
+        image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+        ports:
+          - 6379:6379
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        working-directory: backend/python
+        run: |
+          requirements/install.sh dev --project . --editable
+
+      # A release must not ship a denylisted dependency, whatever the pull-request check said when it merged.
+      - name: Supply chain
+        run: python3 scripts/security_gate.py run supply-chain
+
+      # The suite renders the chart (test_container_baseline), which needs its dependencies; they are vendored
+      # under deployment/helm/vendor, so the build reads no chart repository. The gate refuses the skip without it.
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.4
+
+      - name: Build the chart's dependencies
+        run: helm dependency build deployment/helm/pipeshub-ai
+
+      - name: Security suite
+        run: python3 scripts/security_gate.py run security
+
+      # Red on any skip: the activity scan needs its Redis and skips without one.
+      - name: Run the canary scans
+        env:
+          REDIS_IT_URL: redis://127.0.0.1:6379
+        run: python3 scripts/security_gate.py run canary
+
+  engine-images:
+    name: Engine images (real lanes and tools-layer scans)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      # The durable lanes start Node's journal server with ts-node from the API workspace.
+      - name: Set up Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Install Python dependencies
+        working-directory: backend/python
+        run: |
+          requirements/install.sh dev --project . --editable
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci --ignore-scripts
+
+      # The tool matrix builds its MCP runner image FROM the sandbox image; the engines stage names it to the tests
+      # as SANDBOX_TEST_IMAGE (scripts/security_gate.py SANDBOX_IMAGE).
+      - name: Build the Compose-selected sandbox
+        env:
+          SANDBOX_DOCKER_IMAGE: pipeshubai/pipeshub-sandbox:local
+        run: docker compose --file deployment/docker-compose/docker-compose.yml --profile sandbox build sandbox-image
+
+      # Each image from its pinned release, verified against the allowlist's digests (engine-build.sh).
+      - name: Build the engine images
+        run: python3 scripts/engines/release_images.py build
+
+      - name: Pull the lanes' helper image
+        run: docker pull python:3.12-slim
+
+      # The stage reads its own report: red when a case skipped for want of an image the build step made.
+      - name: Run the engines' real lanes and image scans
+        run: python3 scripts/security_gate.py run engines

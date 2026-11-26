@@ -1,6 +1,6 @@
 import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { enforcing, forOrg } from '../../../libs/context/orgContext';
+import { forOrg, orgContextStorage } from '../../../libs/context/orgContext';
 import { createHash } from 'node:crypto';
 import { ServiceUnavailableError } from '../../../libs/errors/http.errors';
 import {
@@ -85,22 +85,24 @@ export function isPlatformAudience(raw: unknown): boolean {
 
 /**
  * Why platform alerts cannot arrive with the current envelope settings, or
- * null. The alerts are about the whole installation and have no org to sign
- * with, so a consumer that requires a signed context rejects every one.
+ * null. With signing on, the publisher signs one copy per org under that org,
+ * which is delivered to that org's admins; with it off the one copy is
+ * unsigned, which a consumer that requires a signed context rejects.
  */
 export function platformAlertsBlockedByEnvelope(): string | null {
-  if (ctxRequired()) return 'ENVELOPE_CTX_REQUIRED is on';
-  let enforce: boolean;
-  try {
-    enforce = enforcing();
-  } catch {
-    // An invalid mode fails the app's startup elsewhere; it is not enforce.
-    enforce = false;
-  }
-  if (signEnabled() && enforce) {
-    return 'ENVELOPE_SIGN is on with ORG_CONTEXT_MODE=enforce';
-  }
+  if (ctxRequired() && !signEnabled())
+    return 'ENVELOPE_CTX_REQUIRED is on and ENVELOPE_SIGN is off';
   return null;
+}
+
+/** The remembered mark that the alert's resolved notice was delivered (to `org`'s admins, or to every org's when unsigned). */
+const resolvedKey = (alertId: string, org: string | null): string =>
+  `${alertId}@${org ?? ''}#resolved`;
+
+/** The org a verified envelope bound for this delivery: a signed copy of an alert is for that org's admins only. */
+function signedOrg(): string | null {
+  const ctx = orgContextStorage.getStore();
+  return ctx?.source === 'envelope' && ctx.orgId ? ctx.orgId : null;
 }
 
 /** Logs one ERROR at startup when the envelope settings drop every platform alert. */
@@ -108,7 +110,7 @@ export function logIfPlatformAlertsBlocked(logger: Logger): void {
   const why = platformAlertsBlockedByEnvelope();
   if (!why) return;
   logger.error(
-    'Code sandbox load alerts will not be delivered: they have no org to sign, and ' +
+    'Code sandbox load alerts will not be delivered: they are sent unsigned, and ' +
       `unsigned notification messages are rejected (${why})`,
     { reason: why },
   );
@@ -138,6 +140,8 @@ interface BudgetToken {
   group: string;
   scope: string;
   at: number;
+  /** The installation alert this token was taken for: its other orgs' copies share it. */
+  alertId: string;
 }
 
 /**
@@ -146,6 +150,11 @@ interface BudgetToken {
  */
 class HourlyBudget {
   private readonly used = new Map<string, number[]>();
+  // One installation alert is one token however many orgs' signed copies it arrives as: (group, alert id) -> token, holders.
+  private readonly shared = new Map<
+    string,
+    { token: BudgetToken; holders: number }
+  >();
 
   constructor(
     private readonly perScope: number,
@@ -164,8 +173,21 @@ class HourlyBudget {
     return [`${group}|${scope}`, `${group}|`];
   }
 
-  /** A token, or null (nothing taken) when the scope or the group is used up. */
-  take(group: string, scope: string, now: number): BudgetToken | null {
+  /**
+   * A token, or null (nothing taken) when the scope or the group is used up. A copy of an alert another copy already holds a
+   * token for (within the hour) shares that token and takes nothing.
+   */
+  take(
+    group: string,
+    scope: string,
+    now: number,
+    alertId: string,
+  ): BudgetToken | null {
+    const held = this.shared.get(`${group}|${alertId}`);
+    if (held && now - held.token.at < HOUR_MS) {
+      held.holders += 1;
+      return held.token;
+    }
     const [scopeKey, groupKey] = HourlyBudget.keys(group, scope);
     const inScope = this.recent(scopeKey, now);
     const inGroup = this.recent(groupKey, now);
@@ -174,10 +196,22 @@ class HourlyBudget {
     }
     this.used.set(scopeKey, [...inScope, now]);
     this.used.set(groupKey, [...inGroup, now]);
-    return { group, scope, at: now };
+    const token = { group, scope, at: now, alertId };
+    for (const [k, v] of this.shared)
+      if (now - v.token.at >= HOUR_MS) this.shared.delete(k);
+    this.shared.set(`${group}|${alertId}`, { token, holders: 1 });
+    return token;
   }
 
+  /** Gives the token back once no copy of its alert holds it any more. */
   refund(token: BudgetToken): void {
+    const key = `${token.group}|${token.alertId}`;
+    const held = this.shared.get(key);
+    if (held?.token === token) {
+      held.holders -= 1;
+      if (held.holders > 0) return;
+      this.shared.delete(key);
+    }
     for (const key of HourlyBudget.keys(token.group, token.scope)) {
       const times = this.used.get(key);
       if (!times) continue;
@@ -298,8 +332,22 @@ export class PlatformAlertHandler {
       });
       return;
     }
-    if (this.alreadyDelivered(alertId, now)) {
+    const org = signedOrg();
+    // Each org's signed copy is delivered and remembered apart; an unsigned one is for every org.
+    const deliveryKey = org ? `${alertId}@${org}` : alertId;
+    if (this.alreadyDelivered(deliveryKey, now)) {
       this.logger.debug('Platform alert skipped: already delivered', {
+        type,
+        alertId,
+      });
+      return;
+    }
+    // An alert that arrives after its resolved notice (a late retry of one org's copy) is stale: its admins already read that it ended.
+    if (
+      alert.kind !== 'resolved' &&
+      this.alreadyDelivered(resolvedKey(alertId, org), now)
+    ) {
+      this.logger.debug('Platform alert skipped: already resolved', {
         type,
         alertId,
       });
@@ -312,10 +360,12 @@ export class PlatformAlertHandler {
     // is neither counted again nor refused by the cap.
     let begun = false;
     if (durable) {
-      orgs = await this.resolveRecipients();
+      orgs = await this.recipients(org);
       begun = await this.anyOrg(orgs, (org) => deliveryRecordedFor(org.orgId));
     }
-    const token = begun ? null : this.deliveries.take(type, scope, now);
+    const token = begun
+      ? null
+      : this.deliveries.take(type, scope, now, alertId);
     if (!begun && !token) {
       this.warnLimited(
         `rate:${type}:${scope}`,
@@ -328,7 +378,7 @@ export class PlatformAlertHandler {
     let recipients = 0;
     let storedBefore = 0;
     try {
-      orgs ??= await this.resolveRecipients();
+      orgs ??= await this.recipients(org);
       for (const org of orgs) {
         let delivered: number;
         try {
@@ -359,6 +409,15 @@ export class PlatformAlertHandler {
     }
     if (recipients === 0 && storedBefore === 0) {
       if (token) this.deliveries.refund(token);
+      if (org && orgs.length === 0) {
+        // The publisher signs a copy for every active org; the recipients are the orgs `resolveRecipients` names, as for an
+        // unsigned alert (here: the installation's org). Another org's copy is expected, not a failure: a redelivery finds the same.
+        this.logger.debug(
+          'Platform alert copy skipped: its org receives no installation alerts',
+          { type, alertId, orgId: org },
+        );
+        return;
+      }
       this.logger.warn('Platform alert not delivered: no recipients', {
         type,
         alertId,
@@ -373,7 +432,9 @@ export class PlatformAlertHandler {
     }
 
     // Only now: an alert remembered before its mail was queued would drop the redelivery that queues it.
-    this.remember(alertId, now);
+    this.remember(deliveryKey, now);
+    if (alert.kind === 'resolved' && alert.resolvesAlertId)
+      this.remember(resolvedKey(alert.resolvesAlertId, org), now);
     this.logger.info('Platform alert delivered', {
       type,
       alertId,
@@ -381,6 +442,14 @@ export class PlatformAlertHandler {
       recipients,
       emailQueued,
     });
+  }
+
+  /** The admins to notify: of the signed copy's org only, or of every org for an unsigned event. */
+  private async recipients(
+    org: string | null,
+  ): Promise<PlatformRecipientOrg[]> {
+    const all = await this.resolveRecipients();
+    return org ? all.filter((o) => o.orgId === org) : all;
   }
 
   private async anyOrg(
@@ -412,7 +481,7 @@ export class PlatformAlertHandler {
     );
     let emailToken: BudgetToken | null = null;
     if (!granted) {
-      emailToken = this.emails.take(alert.kind, scope, now);
+      emailToken = this.emails.take(alert.kind, scope, now, alert.alertId);
       if (!emailToken) {
         this.warnLimited(
           `email-rate:${alert.kind}:${scope}`,

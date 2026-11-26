@@ -97,12 +97,14 @@ ABORT_TIMEOUT_S = 5.0
 # A role other than 'none' here is a session-level SET ROLE left behind by an earlier client.
 # The statement is parsed as the LOGIN, which holds no privileges until the switch, so only write UoWs (which call the
 # fence function) reference ``kernel``; the login needs USAGE on that schema and EXECUTE on the fence for them.
+# JIT is off in every unit: its statements read rows by key, and the planner's estimate for a list of keys (or a plan with nodes disabled) passes
+# jit_above_cost at a few thousand keys, where compiling costs 100-400 ms for a read of a few ms. Set here, it holds on any server (a managed one's configuration and roles are not ours to change).
 _PROLOGUE = """
 WITH pre AS MATERIALIZED (SELECT current_setting('role') AS r)
 SELECT pre.r, now() AS started{fence_out} FROM pre, LATERAL (
   SELECT set_config('role', $1, true), set_config('app.org_id', $2, true), set_config('app.request_id', $3, true),
          set_config('statement_timeout', $4, true), set_config('lock_timeout', $5, true),
-         set_config('plan_cache_mode', $6, true),
+         set_config('plan_cache_mode', $6, true), set_config('jit', 'off', true),
          CASE WHEN $7 <> '' THEN set_config('work_mem', $7, true) END{fence}
   WHERE pre.r IS NOT NULL) s
 """
@@ -655,7 +657,7 @@ class KernelDB:
             return LockTimeout(str(e))
         if prologue and state == "55000":
             return ProfileEpochMismatch(str(e))
-        lost = isinstance(e, asyncpg.InterfaceError) or (
+        lost = isinstance(e, asyncpg.InterfaceError) or _broken_protocol(e, tx._con) or (
             not isinstance(e, TimeoutError) and isinstance(e, (OSError, asyncio.IncompleteReadError))
         ) or lost_state(state)
         if lost:
@@ -664,6 +666,17 @@ class KernelDB:
         if prologue:
             return PrologueFailed(f"{type(e).__name__}: {e}")
         return e
+
+
+def _broken_protocol(e: Exception, con: asyncpg.Connection | None) -> bool:
+    """An asyncpg InternalClientError that means the connection is gone: its protocol state is broken ("failed", another operation in
+    progress, not connected), as a connection the server or the pooler dropped mid-operation leaves it, or the connection is already
+    closed (a backend the server ended as a statement started). asyncpg raises the same type for a missing codec on a live connection,
+    which is a bug and not a lost connection, so either the messages of its protocol state checks (protocol/coreproto.pyx
+    ``_set_state``, ``_ensure_connected``) or a closed connection is required."""
+    if not isinstance(e, asyncpg.InternalClientError):
+        return False
+    return str(e).startswith(("cannot switch to state", "not connected")) or (con is not None and connection_closed(con))
 
 
 def _class_of_state(state: str) -> str:

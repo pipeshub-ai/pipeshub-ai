@@ -18,6 +18,7 @@ from app.sandbox.docker_proxy import (
     filter_image,
     filter_info,
 )
+from tests.unit.sandbox.test_docker_proxy import TOKEN
 from tests.unit.sandbox.test_docker_proxy_isolation import (
     EGRESS,
     IMAGE,
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 _LIMITS: dict[str, int] = {"Memory": 512 * 1024 * 1024, "NanoCpus": 500_000_000, "PidsLimit": 256}
+# The rest of the sandbox floor (SEC-A-04) a raw create body needs, beside a non-root ``User``.
+_FLOOR: dict[str, Any] = {"CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges:true"], "ReadonlyRootfs": True}
 
 _RAW_INFO: dict[str, Any] = {
     "NCPU": 4, "MemTotal": 8 << 30, "Driver": "btrfs",
@@ -83,7 +86,7 @@ def _get(target: str) -> bytes:
 
 
 def _create_body(host: dict[str, Any] | None = None, **top: object) -> dict[str, Any]:
-    return {"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS, **(host or {})}, **top}
+    return {"Image": IMAGE, "User": "sandbox", "HostConfig": {"NetworkMode": "none", **_LIMITS, **_FLOOR, **(host or {})}, **top}
 
 
 # --- /info --------------------------------------------------------------------
@@ -142,6 +145,7 @@ class TestImageInspectIsFiltered:
 
         def get() -> object:
             client = docker.DockerClient(base_url=f"tcp://127.0.0.1:{port}", version="1.43")
+            client.api.headers["Authorization"] = f"Bearer {TOKEN}"
             try:
                 return client.images.get(IMAGE)
             finally:
@@ -252,9 +256,9 @@ class TestLogOptions:
         pytest.importorskip("docker")
         from docker.types import LogConfig
 
-        from tests.unit.sandbox.test_docker_proxy import _LEGACY_RUN, _sdk_create_body
+        from tests.unit.sandbox.test_docker_proxy import _RUN, _sdk_create_body
 
-        body = _sdk_create_body(**{**_LEGACY_RUN, "log_config": LogConfig(
+        body = _sdk_create_body(**{**_RUN, "log_config": LogConfig(
             type="local", config={"max-size": "20m", "max-file": "2"},
         )})
         out = policy.check_container_create(body)

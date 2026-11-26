@@ -848,7 +848,9 @@ class TestNearbyMessagesChannelAccess:
 class TestCreateFetchSlackNearbyMessagesTool:
     async def test_tool_delegates_to_impl(self):
         config = MagicMock()
-        tool_fn = fsn.create_fetch_slack_nearby_messages_tool(config_service=config)
+        tool_fn = fsn.create_fetch_slack_nearby_messages_tool(
+            config_service=config, graph_provider=_anchor_graph(), org_id=ORG, user_id="u1",
+        )
         expected = fsn.FetchSlackNearbyMessagesSuccess(
             messages=[],
             message_count=0,
@@ -863,79 +865,199 @@ class TestCreateFetchSlackNearbyMessagesTool:
             fsn,
             "_fetch_nearby_messages_impl",
             AsyncMock(return_value=expected),
-        ) as mock_impl:
+        ) as mock_impl, patch.object(fsn, "RecordReadGate", MagicMock(return_value=_Gate(frozenset({"rec-1"})))):
             result = await tool_fn.ainvoke(
                 {
+                    "record_id": "rec-1",
                     "timestamp": "2023-11-14T22:13:20Z",
                     "direction": "before",
-                    "channel_id": "C123",
-                    "connector_id": "conn-1",
                 },
             )
         assert result == expected
         mock_impl.assert_awaited_once()
 
     async def test_factory_forwards_access_context(self):
-        graph = MagicMock()
+        """The channel check in the implementation runs as the tool's user, after the anchor's own check."""
+        graph = _anchor_graph()
         tool_fn = fsn.create_fetch_slack_nearby_messages_tool(
             config_service=MagicMock(),
             graph_provider=graph,
-            org_id="org1",
+            org_id=ORG,
             user_id="user1",
         )
         with patch.object(
             fsn, "_fetch_nearby_messages_impl", AsyncMock(),
-        ) as mock_impl:
+        ) as mock_impl, patch.object(fsn, "RecordReadGate", MagicMock(return_value=_Gate(frozenset({"rec-1"})))):
             await tool_fn.ainvoke(
                 {
+                    "record_id": "rec-1",
                     "timestamp": "2023-11-14T22:13:20Z",
                     "direction": "before",
-                    "channel_id": "C123",
-                    "connector_id": "conn-1",
                 },
             )
         kwargs = mock_impl.await_args.kwargs
         assert kwargs["graph_provider"] is graph
-        assert kwargs["org_id"] == "org1"
+        assert kwargs["org_id"] == ORG
         assert kwargs["user_id"] == "user1"
 
     async def test_a_failed_access_check_keeps_the_graph_error_out_of_the_tool_result(self):
-        """The tool result goes to the model; the graph's text (host, query, values) must not."""
+        """The tool result goes to the model; the graph's text (host, query, values) must not. The anchor's access
+        check failing reads as the one refusal (SN-8), so nothing about the graph reaches the result."""
         secret = "neo4j://graph-db.internal.example:7687 MATCH (u:User {id: 'gk-7f3a9c'})"
-        graph = _graph()
-
-        async def get_user(user_id, *, raise_on_error=False):
-            if raise_on_error:  # the strict read behind the access check; the lenient one answers
-                raise ConnectionError(secret)
-            return {"id": "user-key"}
-
-        graph.get_user_by_user_id = AsyncMock(side_effect=get_user)
-        tool_fn = fsn.create_fetch_slack_nearby_messages_tool(config_service=MagicMock(), graph_provider=graph, **_ACCESS)
-        with patch.object(fsn, "SlackClient") as mock_client_cls:
+        gate = MagicMock()
+        gate.decide = AsyncMock(side_effect=ConnectionError(secret))
+        tool_fn = fsn.create_fetch_slack_nearby_messages_tool(
+            config_service=MagicMock(), graph_provider=_anchor_graph(), **_ACCESS,
+        )
+        with patch.object(fsn, "SlackClient") as mock_client_cls, \
+                patch.object(fsn, "RecordReadGate", MagicMock(return_value=gate)):
             mock_client_cls.build_from_services = AsyncMock(return_value=MagicMock())
-            result = await tool_fn.ainvoke({
-                "timestamp": "2023-11-14T22:13:20Z", "direction": "before",
-                "channel_id": "C123", "connector_id": "conn-1",
-            })
-        assert result.ok is False and "Failed to fetch nearby Slack messages" in result.error
+            result = await tool_fn.ainvoke({"record_id": "rec-1", "timestamp": "2023-11-14T22:13:20Z", "direction": "before"})
+        assert result.ok is False and result.error == fsn.anchor_refusal("rec-1")
         assert "graph-db.internal" not in result.error
         mock_client_cls.build_from_services.assert_not_called()
 
     async def test_tool_catches_unexpected_exception(self):
         config = MagicMock()
-        tool_fn = fsn.create_fetch_slack_nearby_messages_tool(config_service=config)
+        tool_fn = fsn.create_fetch_slack_nearby_messages_tool(
+            config_service=config, graph_provider=_anchor_graph(), org_id=ORG, user_id="u1",
+        )
         with patch.object(
             fsn,
             "_fetch_nearby_messages_impl",
             AsyncMock(side_effect=RuntimeError("boom")),
-        ):
+        ), patch.object(fsn, "RecordReadGate", MagicMock(return_value=_Gate(frozenset({"rec-1"})))):
             result = await tool_fn.ainvoke(
                 {
+                    "record_id": "rec-1",
                     "timestamp": "2023-11-14T22:13:20Z",
                     "direction": "before",
-                    "channel_id": "C123",
-                    "connector_id": "conn-1",
                 },
             )
         assert result.ok is False
         assert "Failed to fetch nearby Slack messages" in result.error
+
+
+ORG = "org-1"
+SLACK_MESSAGE = {
+    "id": "rec-1", "org_id": ORG, "connector_name": "SLACK", "connector_id": "conn-k",
+    "external_record_group_id": "C1",
+}
+
+
+class _Gate:
+    """``RecordReadGate``'s decisions: ``own`` for the ids in ``own``, the rest as given or ``denied``."""
+
+    def __init__(self, own: frozenset[str] = frozenset(), other: str = "denied", fail: bool = False) -> None:
+        self.own, self.other, self.fail = own, other, fail
+        self.asked: list[str] = []
+
+    async def decide(self, record_id: str) -> str:
+        self.asked.append(record_id)
+        if self.fail:
+            raise ConnectionError("graph down")
+        return "own" if record_id in self.own else self.other
+
+    async def decide_many(self, record_ids: list[str]) -> dict[str, str]:
+        return {rid: await self.decide(rid) for rid in record_ids}
+
+
+def _anchor_graph(record: dict[str, Any] | None = SLACK_MESSAGE) -> MagicMock:
+    graph = MagicMock()
+    graph.get_record_by_id = AsyncMock(return_value=dict(record) if record is not None else None)
+    return graph
+
+
+@pytest.mark.asyncio
+class TestNearbyAccess:
+    """H2 SN-1..SN-9: every call is anchored on an indexed Slack message the user may read themselves, and reads
+    that message's own channel through its own connector; anything else answers as a record that does not exist."""
+
+    async def _invoke(
+        self, gate: _Gate | None, graph: MagicMock | None = None, *, user: str | None = "u1", **args: Any
+    ) -> tuple[Any, AsyncMock]:
+        impl = AsyncMock(return_value=fsn.FetchSlackNearbyMessagesSuccess(
+            messages=[], message_count=0, anchor_iso_timestamp="2023-11-14T22:13:20Z", new_anchor_iso_timestamp=None,
+            channel_id="C1", direction="before", limit=5, connector_id="conn-k",
+        ))
+        tool_fn = fsn.create_fetch_slack_nearby_messages_tool(
+            config_service=MagicMock(), graph_provider=graph if graph is not None else _anchor_graph(), org_id=ORG,
+            user_id=user, caller_user_id="caller-1", tool_state=args.pop("tool_state", None),
+        )
+        call = {"record_id": "rec-1", "timestamp": "2023-11-14T22:13:20Z", "direction": "before", **args}
+        with patch.object(fsn, "_fetch_nearby_messages_impl", impl), patch.object(
+            fsn, "RecordReadGate", MagicMock(return_value=gate)
+        ) as built:
+            result = await tool_fn.ainvoke(call)
+        self.built = built
+        return result, impl
+
+    def _refused(self, result: Any, impl: AsyncMock) -> None:
+        assert result.ok is False
+        assert result.error == fsn.anchor_refusal("rec-1")
+        impl.assert_not_awaited()
+
+    async def test_sn1_a_readable_message_reads_its_own_channel_and_connector(self) -> None:
+        result, impl = await self._invoke(_Gate(frozenset({"rec-1"})))
+        assert result.ok is True
+        kwargs = impl.await_args.kwargs
+        assert (kwargs["channel_id"], kwargs["connector_id"]) == ("C1", "conn-k")
+        # The model may repeat them; they must be the record's.
+        _, impl = await self._invoke(_Gate(frozenset({"rec-1"})), channel_id="C1", connector_id="conn-k")
+        impl.assert_awaited_once()
+
+    async def test_sn2_a_record_the_user_cannot_read_answers_as_one_that_does_not_exist(self) -> None:
+        denied, impl = await self._invoke(_Gate())
+        self._refused(denied, impl)
+        missing, impl = await self._invoke(_Gate(frozenset({"rec-1"})), _anchor_graph(None))
+        self._refused(missing, impl)
+        assert denied.error == missing.error
+
+    async def test_sn3_a_full_publication_does_not_open_the_channel(self) -> None:
+        result, impl = await self._invoke(_Gate(other="published_full"))
+        self._refused(result, impl)
+
+    @pytest.mark.parametrize("args", [{"channel_id": "C2"}, {"connector_id": "conn-other"}, {"channel_id": "C2", "connector_id": "conn-k"}])
+    async def test_sn4_another_channel_or_connector_than_the_record_s_is_refused(self, args: dict[str, str]) -> None:
+        result, impl = await self._invoke(_Gate(frozenset({"rec-1"})), **args)
+        self._refused(result, impl)
+
+    async def test_sn5_a_thread_reply_reads_its_channel(self) -> None:
+        reply = {**SLACK_MESSAGE, "external_record_group_id": "thread_C9_1700000000.000100"}
+        _, impl = await self._invoke(_Gate(frozenset({"rec-1"})), _anchor_graph(reply))
+        assert impl.await_args.kwargs["channel_id"] == "C9"
+
+    @pytest.mark.parametrize(
+        "record",
+        [
+            {**SLACK_MESSAGE, "connector_name": "CONFLUENCE"},
+            {**SLACK_MESSAGE, "external_record_group_id": None},
+            {**SLACK_MESSAGE, "connector_id": ""},
+            {**SLACK_MESSAGE, "org_id": "org-other"},
+        ],
+    )
+    async def test_sn6_a_record_that_is_not_a_slack_message_of_the_org_is_refused(self, record: dict[str, Any]) -> None:
+        result, impl = await self._invoke(_Gate(frozenset({"rec-1"})), _anchor_graph(record))
+        self._refused(result, impl)
+
+    async def test_sn7_without_a_user_nothing_is_read(self) -> None:
+        result, impl = await self._invoke(_Gate(frozenset({"rec-1"})), user=None)
+        self._refused(result, impl)
+        self.built.assert_not_called()
+
+    async def test_sn8_a_failed_check_reads_nothing(self) -> None:
+        result, impl = await self._invoke(_Gate(fail=True))
+        self._refused(result, impl)
+
+    async def test_sn9_a_short_record_label_is_resolved_first(self) -> None:
+        shortener = MagicMock()
+        shortener.resolve = MagicMock(return_value="rec-1")
+        gate = _Gate(frozenset({"rec-1"}))
+        result, _ = await self._invoke(gate, record_id="R3", tool_state={"record_id_shortener": shortener})
+        assert result.ok is True and gate.asked == ["rec-1"]
+        shortener.resolve.assert_called_once_with("R3")
+
+    async def test_sn10_the_gate_is_the_request_s_user_and_caller(self) -> None:
+        graph = _anchor_graph()
+        await self._invoke(_Gate(frozenset({"rec-1"})), graph)
+        self.built.assert_called_once_with(graph, ORG, "u1", caller_user_id="caller-1")

@@ -1,0 +1,386 @@
+{
+ "benchmark": "harness",
+ "profile": "short-turn",
+ "started_at": "2026-09-27T16:47:57.775194+00:00",
+ "wall_s": 568.6,
+ "environment": {
+  "label": "local-m4-eval-redis",
+  "host": "macOS-15.5-arm64-arm-64bit",
+  "cpus": 10,
+  "deployment": {
+   "kvStoreType": "redis",
+   "messageBrokerType": "redis",
+   "graphDbType": "neo4j",
+   "vectorDbType": "qdrant",
+   "redisMode": "standalone"
+  },
+  "model_latency_ms": 200,
+  "chunk_interval_ms": 20
+ },
+ "config": {
+  "samples": 200,
+  "block": 20,
+  "warmup": 5,
+  "think_time_s": 0.2,
+  "chat_mode": "quick"
+ },
+ "metrics": {
+  "legacy": {
+   "samples": 200,
+   "ok": 200,
+   "errors": {},
+   "ttft_nonmodel": {
+    "n": 200,
+    "p50_ms": 202.5,
+    "p95_ms": 216.9,
+    "mean_ms": 200.8
+   },
+   "done_nonmodel": {
+    "n": 200,
+    "p50_ms": 228.4,
+    "p95_ms": 243.7,
+    "mean_ms": 226.6
+   },
+   "admission": {
+    "n": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "mean_ms": null
+   },
+   "first_frame": {
+    "n": 200,
+    "p50_ms": 23.5,
+    "p95_ms": 27.4,
+    "mean_ms": 21.3
+   },
+   "ttft_raw": {
+    "n": 200,
+    "p50_ms": 615.9,
+    "p95_ms": 631.7,
+    "mean_ms": 614.7
+   },
+   "done_raw": {
+    "n": 200,
+    "p50_ms": 773.0,
+    "p95_ms": 799.1,
+    "mean_ms": 773.5
+   },
+   "model_calls_p50": 2.0,
+   "model_time_p50_ms": 546.9,
+   "tools_offered": [
+    "artifacts__get_artifact_content",
+    "artifacts__get_artifact_download_url",
+    "artifacts__get_record_download_url",
+    "artifacts__list_artifacts",
+    "artifacts__promote_artifact",
+    "artifacts__save_artifact",
+    "artifacts__update_artifact",
+    "fetch_tools",
+    "install_packages",
+    "internaltools__ask_user_question",
+    "list_toolsets",
+    "load_skill",
+    "load_skill_resource",
+    "read_sandbox_file",
+    "retrieve_artifact_content",
+    "run_code",
+    "search_tools",
+    "skill_manage",
+    "skill_search",
+    "skills_list"
+   ]
+  },
+  "harness": {
+   "samples": 200,
+   "ok": 199,
+   "errors": {
+    "TimeoutError: turn timeout": 1
+   },
+   "ttft_nonmodel": {
+    "n": 199,
+    "p50_ms": 270.9,
+    "p95_ms": 287.7,
+    "mean_ms": 448.4
+   },
+   "done_nonmodel": {
+    "n": 199,
+    "p50_ms": 320.4,
+    "p95_ms": 342.8,
+    "mean_ms": 499.5
+   },
+   "admission": {
+    "n": 199,
+    "p50_ms": 51.4,
+    "p95_ms": 57.6,
+    "mean_ms": 48.0
+   },
+   "first_frame": {
+    "n": 199,
+    "p50_ms": 59.7,
+    "p95_ms": 67.0,
+    "mean_ms": 56.4
+   },
+   "ttft_raw": {
+    "n": 199,
+    "p50_ms": 683.4,
+    "p95_ms": 704.7,
+    "mean_ms": 861.7
+   },
+   "done_raw": {
+    "n": 199,
+    "p50_ms": 864.1,
+    "p95_ms": 894.2,
+    "mean_ms": 1044.3
+   },
+   "model_calls_p50": 2.0,
+   "model_time_p50_ms": 544.2,
+   "tools_offered": [
+    "artifacts__get_artifact_content",
+    "artifacts__get_artifact_download_url",
+    "artifacts__get_record_download_url",
+    "artifacts__list_artifacts",
+    "artifacts__promote_artifact",
+    "artifacts__save_artifact",
+    "artifacts__update_artifact",
+    "fetch_tools",
+    "internaltools__ask_user_question",
+    "list_toolsets",
+    "load_skill",
+    "load_skill_resource",
+    "retrieve_artifact_content",
+    "search_tools",
+    "skill_manage",
+    "skill_search",
+    "skills_list"
+   ]
+  }
+ },
+ "gate": {
+  "budget_ms": {
+   "ttft_nonmodel": 75.0,
+   "done_nonmodel": 100.0,
+   "commit_p50": 25.0
+  },
+  "ttft_nonmodel": {
+   "added_ms": 68.4,
+   "ratio": 1.338,
+   "pass": true
+  },
+  "done_nonmodel": {
+   "added_ms": 92.0,
+   "ratio": 1.403,
+   "pass": true
+  },
+  "commits": {
+   "journal.commit[complete]": {
+    "p50_ms": 21.0,
+    "pass": true
+   },
+   "journal.commit[model]": {
+    "p50_ms": 24.0,
+    "pass": true
+   },
+   "journal.commit[prerun]": {
+    "p50_ms": 9.0,
+    "pass": true
+   },
+   "journal.commit[reads]": {
+    "p50_ms": 12.0,
+    "pass": true
+   }
+  },
+  "pass": true
+ },
+ "breakdown": {
+  "runs": 199,
+  "events": {
+   "admission.accepted": {
+    "per_run": 1.0,
+    "ms_p50": 38.0,
+    "ms_p95": 44.0,
+    "ms_per_run_p50": 38.0
+   },
+   "journal.commit[complete]": {
+    "per_run": 1.0,
+    "ms_p50": 21.0,
+    "ms_p95": 25.0,
+    "ms_per_run_p50": 21.0
+   },
+   "journal.commit[model]": {
+    "per_run": 2.0,
+    "ms_p50": 24.0,
+    "ms_p95": 28.0,
+    "ms_per_run_p50": 45.0
+   },
+   "journal.commit[prerun]": {
+    "per_run": 1.0,
+    "ms_p50": 9.0,
+    "ms_p95": 12.0,
+    "ms_per_run_p50": 9.0
+   },
+   "journal.commit[reads]": {
+    "per_run": 1.0,
+    "ms_p50": 12.0,
+    "ms_p95": 16.0,
+    "ms_per_run_p50": 12.0
+   },
+   "journal.renew": {
+    "per_run": 1.0,
+    "ms_p50": 3.0,
+    "ms_p95": 14.5,
+    "ms_per_run_p50": 3.0
+   },
+   "run.assembled": {
+    "per_run": 1.0,
+    "ms_p50": 11.0,
+    "ms_p95": 14.0,
+    "ms_per_run_p50": 11.0
+   },
+   "run.claimed": {
+    "per_run": 2.0,
+    "ms_p50": 9.0,
+    "ms_p95": 12.0,
+    "ms_per_run_p50": 9.0
+   },
+   "run.disposition": {
+    "per_run": 1.0,
+    "ms_p50": 796.0,
+    "ms_p95": 822.0,
+    "ms_per_run_p50": 796.0
+   },
+   "run.transition": {
+    "per_run": 1.0,
+    "ms_p50": 16.0,
+    "ms_p95": 20.0,
+    "ms_per_run_p50": 16.0
+   }
+  },
+  "timeline_ms_from_admission_p50": [
+   {
+    "event": "admission.accepted#1",
+    "at_ms": 0.0
+   },
+   {
+    "event": "projection.subscribe#1",
+    "at_ms": 8.0
+   },
+   {
+    "event": "run.claimed#1",
+    "at_ms": 12.0
+   },
+   {
+    "event": "inline.hint#1",
+    "at_ms": 14.0
+   },
+   {
+    "event": "run.assembly#1",
+    "at_ms": 14.0
+   },
+   {
+    "event": "run.claimed#2",
+    "at_ms": 14.0
+   },
+   {
+    "event": "slots.claimed#1",
+    "at_ms": 14.0
+   },
+   {
+    "event": "run.model#1",
+    "at_ms": 15.0
+   },
+   {
+    "event": "run.tool_environment#1",
+    "at_ms": 22.0
+   },
+   {
+    "event": "run.assembled#1",
+    "at_ms": 25.0
+   },
+   {
+    "event": "run.catalog#1",
+    "at_ms": 25.0
+   },
+   {
+    "event": "run.capabilities_recorded#1",
+    "at_ms": 29.0
+   },
+   {
+    "event": "run.resume#1",
+    "at_ms": 29.0
+   },
+   {
+    "event": "tools.disclosure#1",
+    "at_ms": 30.0
+   },
+   {
+    "event": "hook.run_started#1",
+    "at_ms": 155.0
+   },
+   {
+    "event": "prerun.goal#1",
+    "at_ms": 155.0
+   },
+   {
+    "event": "journal.commit[prerun]#1",
+    "at_ms": 164.0
+   },
+   {
+    "event": "run.pre_run#1",
+    "at_ms": 164.0
+   },
+   {
+    "event": "journal.commit[model]#1",
+    "at_ms": 403.0
+   },
+   {
+    "event": "model.response#1",
+    "at_ms": 404.0
+   },
+   {
+    "event": "journal.commit[reads]#1",
+    "at_ms": 416.0
+   },
+   {
+    "event": "journal.commit[model]#2",
+    "at_ms": 786.0
+   },
+   {
+    "event": "model.response#2",
+    "at_ms": 787.0
+   },
+   {
+    "event": "presentation.finalized#1",
+    "at_ms": 787.0
+   },
+   {
+    "event": "transcript.projected#1",
+    "at_ms": 807.0
+   },
+   {
+    "event": "run.transition#1",
+    "at_ms": 808.0
+   },
+   {
+    "event": "journal.commit[complete]#1",
+    "at_ms": 809.0
+   },
+   {
+    "event": "run.complete#1",
+    "at_ms": 810.0
+   },
+   {
+    "event": "run.disposition#1",
+    "at_ms": 810.0
+   },
+   {
+    "event": "slots.run_done#1",
+    "at_ms": 810.0
+   },
+   {
+    "event": "projection.finished#1",
+    "at_ms": 812.0
+   }
+  ]
+ },
+ "note": "Measured for the P1a gate (B-2) on an Apple M4 (Docker Desktop, 10 CPUs, 15.7 GB): compose eval profile plus the harness overlay, image built from 3b57f7f43, Redis Streams broker, single-node replica set. Samples omitted."
+}

@@ -57,14 +57,14 @@ def _context_with_server(
     )
 
 
-async def _discover_ok(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None) -> list[MCPToolInfo]:
+async def _discover_ok(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None, *, runner: object = None) -> list[MCPToolInfo]:
     return [MCPToolInfo(
         name="search", namespaced_name=f"mcp_{config.name.lower()}_search",
         description="Search", input_schema={},
     )]
 
 
-async def _discover_fails(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None) -> list[MCPToolInfo]:
+async def _discover_fails(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None, *, runner: object = None) -> list[MCPToolInfo]:
     raise RuntimeError("connection refused")
 
 
@@ -195,7 +195,7 @@ class TestLoadInto:
         assert context.mcp_tool_load_failures[0]["reason"] == "error"
 
     async def test_two_instances_load_independently(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        async def _discover(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None) -> list[MCPToolInfo]:
+        async def _discover(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None, *, runner: object = None) -> list[MCPToolInfo]:
             if config.id == "inst-1":
                 return [MCPToolInfo(name="search", namespaced_name="mcp_jira_search", input_schema={})]
             raise RuntimeError("down")
@@ -224,7 +224,7 @@ class TestLoadInto:
     async def test_colliding_tool_name_is_skipped_but_group_still_registers_survivors(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        async def _discover(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None) -> list[MCPToolInfo]:
+        async def _discover(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None, *, runner: object = None) -> list[MCPToolInfo]:
             return [
                 MCPToolInfo(name="search", namespaced_name="mcp_jira_search", input_schema={}),
                 MCPToolInfo(name="create", namespaced_name="mcp_jira_create", input_schema={}),
@@ -256,7 +256,7 @@ class TestLoadInto:
         assert context.mcp_tool_load_failures == []
 
     async def test_all_discovered_tools_colliding_records_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        async def _discover(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None) -> list[MCPToolInfo]:
+        async def _discover(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None, *, runner: object = None) -> list[MCPToolInfo]:
             return [MCPToolInfo(name="search", namespaced_name="mcp_jira_search", input_schema={})]
 
         monkeypatch.setattr(MCPSessionManager, "tools", _session_discovery(_discover))
@@ -286,7 +286,7 @@ class TestLoadInto:
     async def test_discovery_respects_attached_tools_selection(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        async def _discover(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None) -> list[MCPToolInfo]:
+        async def _discover(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None, *, runner: object = None) -> list[MCPToolInfo]:
             return [
                 MCPToolInfo(name="search", namespaced_name="mcp_jira_mcp_search", input_schema={}),
                 MCPToolInfo(name="create", namespaced_name="mcp_jira_mcp_create", input_schema={}),
@@ -417,7 +417,9 @@ class TestRefreshOnExpiredTokenAtDiscovery:
 
         assert fake_sessions.seen_tokens == ["Bearer old", "Bearer new"]
         # The rejected token goes along so a refresh another process already did isn't repeated.
-        refresh.assert_awaited_once_with("inst-1", "user-1", context.config_service, stale_access_token="old")
+        refresh.assert_awaited_once_with(
+            "inst-1", "user-1", context.config_service, stale_access_token="old", org_id=context.org_id,
+        )
         assert registry.has("mcp_jira_mcp_search")
         # The calls reuse the session discovery refreshed, so they carry the new token.
         assert registry.resolve_by_name("mcp_jira_mcp_search")._server.auth["oauthTokens"]["accessToken"] == "new"

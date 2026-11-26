@@ -393,9 +393,9 @@ def test_the_statements_the_search_builds_from_parts_are_exactly_these() -> None
             found[(path.name, fn)] = count
     # the four statements of the dense path, and the fragments they and the filters are made of (membership probes and the payload
     # conditions and the scope filter's condition in its two forms, admitting and deferring: fixed text, every value a ``$n``)
-    assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 1,
+    assert found == {("dense.py", "exact_sql"): 1, ("dense.py", "index_sql"): 1, ("dense.py", "bounded_sql"): 1, ("dense.py", "count_sql"): 4,
                      ("lexical.py", "lexical_sql"): 1, ("scope_filter.py", "predicate"): 2, ("sql_filters.py", "_match"): 2,
-                     ("visibility.py", "candidates"): 1, ("visibility.py", "probe"): 1}, found
+                     ("visibility.py", "admitted"): 1, ("visibility.py", "probe"): 1}, found
 
 
 @pytest.mark.asyncio
@@ -488,7 +488,7 @@ class _SlowPoolDb:
     and the statements together (a wait longer than it is a timeout). The checked org has one connector and no unconnected point."""
 
     def __init__(self, wait_s: float, *, fail: Exception | None = None) -> None:
-        self.wait_s, self.fail, self.runs, self.budgets = wait_s, fail, 0, []
+        self.wait_s, self.fail, self.runs, self.budgets, self.waited = wait_s, fail, 0, [], 0
 
     async def run(self, fn, **opts: object) -> object:
         import asyncio
@@ -497,6 +497,7 @@ class _SlowPoolDb:
 
         self.runs += 1
         await asyncio.sleep(self.wait_s)
+        self.waited += 1
         timeout_ms = opts.get("timeout_ms")
         if timeout_ms is not None and self.wait_s * 1000 >= timeout_ms:
             raise DbTimeout("the statement ran out of the budget the pool wait used up")
@@ -539,18 +540,22 @@ async def test_a_failed_connector_check_keeps_the_arms_and_only_a_statement_time
     import asyncio
 
     from app.core import org_context
-    from app.core.db import DbTimeout, PoolTimeout
+    from app.core.db import ConnectionLost, DbTimeout, PoolTimeout
 
     t = dataclasses.replace(T, connector_ttl_s=0.0, connector_fail_ttl_s=300.0)
-    for fail, again in ((PoolTimeout("no pooled connection"), True), (DbTimeout("canceling statement due to statement timeout"), False)):
+    # a connection the server dropped (a restart, a failover) says nothing about the org's size either: asked again soon, as a busy pool is
+    for fail, again in ((PoolTimeout("no pooled connection"), True), (ConnectionLost("connection was closed in the middle of operation", retry_safe=True), True),
+                        (DbTimeout("canceling statement due to statement timeout"), False)):
         db = _SlowPoolDb(0.0, fail=fail)
         sizer = dense.Sizer(db, t)
         with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
             assert await sizer.connectors(ORG, 1) is None
-            await asyncio.sleep(0.05)
+            await asyncio.wait_for(asyncio.gather(*sizer._connectors_inflight.values()), 10)     # the first check has finished
             assert await sizer.connectors(ORG, 1) is None                              # fails closed: the arms stay on
-            await asyncio.sleep(0.05)
-            assert db.runs == (2 if again else 1), fail                                # a busy pool is asked again soon; a big org is not
+            # a busy pool or a lost connection is asked again soon (a second check runs); a big org is not (none is scheduled)
+            assert bool(sizer._connectors_inflight) is again, fail
+            await asyncio.wait_for(asyncio.gather(*sizer._connectors_inflight.values()), 10)
+            assert db.runs == (2 if again else 1), fail
 
 
 # ---- the lexical leg -------------------------------------------------------------------------------------------------------------------

@@ -58,7 +58,7 @@ def decide(rel: str, head: Callable[[], bytes | None]) -> tuple[bool, FileRole, 
         if _generated(head, header_only=True):
             return False, role, "generated"
         return True, role, None
-    if is_sensitive_path(name):
+    if is_sensitive_path(rel):
         return False, role, "sensitive"
     if is_ignored_path(rel) or role is not FileRole.GENERATED:
         return False, role, "ignored_path"

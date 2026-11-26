@@ -359,6 +359,7 @@ async def test_calls_past_the_renderer_slots_wait_unqueued_and_give_up_at_their_
     assert all("waiting for a renderer" in str(o) for o in outcomes)
     assert submitted == []
     # each gave up at its own 0.3 s deadline, at the first poll past it; queued behind each other they would take 6 s
+    # wall-clock-ok: loop.time() runs on virtual_loop_time here, the code's own clock, not the host's
     assert 0.3 <= elapsed <= 0.3 + svg_worker._ADMISSION_POLL_SECONDS + 1e-6
 
 

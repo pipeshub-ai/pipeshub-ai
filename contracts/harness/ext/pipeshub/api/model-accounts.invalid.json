@@ -1,0 +1,4 @@
+[
+  {"description": "a bare list", "instance": []},
+  {"description": "an account without its reference", "instance": {"accounts": [{"id": "openai", "provider": "openai", "label": null, "last4": "", "version": 1, "createdAt": "t", "rotatedAt": "t", "validation": "unvalidated"}]}}
+]

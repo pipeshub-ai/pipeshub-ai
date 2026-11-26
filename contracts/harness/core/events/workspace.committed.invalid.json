@@ -1,0 +1,157 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "turn.aborted",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "workspaceId": "ws_1",
+        "revision": 5,
+        "changed": [
+          "/workspace/report.md"
+        ]
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes workspace.committed",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "workspace.committed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "workspaceId": "ws_1",
+        "revision": 5,
+        "changed": [
+          "/workspace/report.md"
+        ]
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "workspace.committed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "workspaceId": "ws_1",
+        "revision": 5,
+        "changed": [
+          "/workspace/report.md"
+        ],
+        "unexpected": true
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "paths are absolute",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "workspace.committed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "workspaceId": "ws_1",
+        "revision": 5,
+        "changed": [
+          "report.md"
+        ]
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "a change kind is added, modified or deleted",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "workspace.committed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "workspaceId": "ws_1",
+        "revision": 5,
+        "changed": [
+          "/workspace/report.md"
+        ],
+        "kinds": {
+          "/workspace/report.md": "renamed"
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "change kinds are keyed by absolute paths",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "workspace.committed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "workspaceId": "ws_1",
+        "revision": 5,
+        "changed": [
+          "/workspace/report.md"
+        ],
+        "kinds": {
+          "workspace/report.md": "added"
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  }
+]

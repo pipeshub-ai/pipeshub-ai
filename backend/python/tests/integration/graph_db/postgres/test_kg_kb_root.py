@@ -1,10 +1,11 @@
-"""A knowledge base's root listed with its candidates from the typed graph (``kg.kb_root``) equals the walk's, after every mutation.
+"""A knowledge base's root listed with its candidates from the typed graph (``kg.kb_root``), a folder listed from its children's rows there (``kg.kb_folder``) and the trash
+read from kg's rows (``kg.trash``) equal the walk's, after every mutation.
 
 Random collections of folders and files (PARENT_CHILD and ATTACHMENT relations, a few second parents, names that differ only in case, a record of another organisation, one with
-no belongs-to edge) are stored, copied into kg and promoted; then records are deleted and restored, moved to the root and under a folder, renamed, added, and a parent node is
-removed from the graph with its relations left behind. After each step the root is listed with the read switch off (the walk) and on: pages, every sort, the search and every
-filter. The rest of the file breaks one thing at a time (a change waiting in the log, the switch off, a caller's transaction, a copy of older code, a seeded difference) and
-checks the plans.
+no belongs-to edge) are stored, copied into kg and promoted; then records are deleted and restored, moved to the root and under a folder, renamed, added, given another status,
+their file resized or retyped (a file made a folder and back), and a parent node is removed from the graph with its relations left behind. After each step the root, a few
+folders and the trash (both views) are listed with the read switch off (the walk) and on: pages, every sort, the search and every filter. The rest of the file breaks one thing at
+a time (a change waiting in the log, the switch off, a caller's transaction, a copy of older code, a seeded difference) and checks the plans.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import pytest
 
 from app.services.graph_db.postgres import kb_listings
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
+from app.services.graph_db.postgres.kg import kb_folder as kg_kb_folder
 from app.services.graph_db.postgres.kg import kb_root as kg_kb_root
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 
@@ -79,10 +81,27 @@ async def _world(p, db, org: str, seed: int, n: int = 16) -> tuple[list[str], se
     return records, folders
 
 
-async def _listing(p, org: str) -> dict[str, Any]:
-    """The root read every way the API reads it: pages across the folders and the records, every sort both ways, the search, each filter; kb2 and a missing collection."""
+FOLDER_READS = 16       # the reads of one folder by _listing
+
+
+async def _listing(p, org: str, folders: tuple[str, ...] | list[str] = ()) -> dict[str, Any]:
+    """The root and each of ``folders`` read every way the API reads them: pages across the folders and the records, every sort both ways, the search, each filter; kb2 and a
+    missing collection; and the trash, both views."""
     out: dict[str, Any] = {}
     with ctx(org):
+        for f in folders:
+            for skip, limit in ((0, 50), (1, 2), (3, 2)):
+                out[f"{f} page {skip} {limit}"] = await p.get_folder_children(KB, f, skip, limit)
+            for sort in ("name", "created_at", "updated_at", "size"):
+                for way in ("asc", "desc"):
+                    out[f"{f} sort {sort} {way}"] = await p.get_folder_children(KB, f, 0, 3, sort_by=sort, sort_order=way)
+            out[f"{f} search"] = await p.get_folder_children(KB, f, 0, 50, search="ALP")
+            out[f"{f} search ext"] = await p.get_folder_children(KB, f, 0, 50, search="x-r1")
+            out[f"{f} filters"] = await p.get_folder_children(KB, f, 0, 50, record_types=["FILE"], origins=["UPLOAD"])
+            out[f"{f} filters 2"] = await p.get_folder_children(KB, f, 0, 50, connectors=["GMAIL", "KNOWLEDGE_BASE"], indexing_status=["COMPLETED"])
+            out[f"{f} filters 3"] = await p.get_folder_children(KB, f, 0, 50, connectors=["GMAIL"], sort_by="size", sort_order="desc")
+        for files in (False, True):
+            out[f"trash {files}"] = await p.list_trashed_records(KB, org, skip=0, limit=26, single_file_batches_only=files, count_cap=10000)
         for skip, limit in ((0, 50), (0, 2), (1, 2), (3, 2), (5, 3), (40, 5)):
             out[f"page {skip} {limit}"] = await p.get_kb_children(KB, skip, limit)
         for sort in ("name", "created_at", "updated_at", "size"):
@@ -97,10 +116,10 @@ async def _listing(p, org: str) -> dict[str, Any]:
     return out
 
 
-async def _both(p, org: str) -> tuple[dict, dict]:
+async def _both(p, org: str, folders: tuple[str, ...] | list[str] = ()) -> tuple[dict, dict]:
     with _switch("0"):
-        walk = await _listing(p, org)
-    return walk, await _listing(p, org)
+        walk = await _listing(p, org, folders)
+    return walk, await _listing(p, org, folders)
 
 
 async def _rels(db, org: str, kind: str) -> list[tuple[str, str]]:
@@ -116,7 +135,7 @@ async def test_after_every_mutation_the_root_from_kg_equals_the_walk(pg_provider
     rnd = random.Random(2000 + seed)
     records, folders = await _world(pg_provider, pg_db, org, seed)
     batches: list[str] = []
-    steps = ["delete", "to_root", "under", "rename", "restore", "add", "drop_parent", "delete", "to_root", "under"]
+    steps = ["delete", "to_root", "under", "rename", "status", "restore", "add", "resize", "drop_parent", "retype", "delete", "to_root", "under", "retype"]
     for n, step in enumerate(steps):
         if step == "delete":
             batch = str(uuid.uuid4())
@@ -138,6 +157,17 @@ async def test_after_every_mutation_the_root_from_kg_equals_the_walk(pg_provider
         elif step == "rename":
             with ctx(org):
                 await pg_provider.batch_update_nodes([{"id": rnd.choice(records), "recordName": rnd.choice(NAMES)}], "records")
+        elif step == "status":
+            with ctx(org):
+                await pg_provider.batch_update_nodes([{"id": r, "indexingStatus": rnd.choice(["COMPLETED", "FAILED", None])} for r in rnd.sample(records, 3)], "records")
+        elif step == "resize":
+            with ctx(org):
+                await pg_provider.batch_update_nodes([{"id": f"f-{r}", "sizeInBytes": rnd.randrange(6)} for r in rnd.sample(records, 3)], "files")
+        elif step == "retype":            # a file made a folder (its file says isFile false) and a folder made a file, their mime types left as they were
+            flip_to = rnd.choice(records)
+            with ctx(org):
+                await pg_provider.batch_update_nodes([{"id": f"f-{flip_to}", "isFile": flip_to in folders}], "files")
+            folders ^= {flip_to}
         elif step == "add":
             new = [f"n{n}a", f"n{n}b"]
             await _add(pg_provider, org, rnd, new, {new[0]}, 100 + n)
@@ -152,10 +182,13 @@ async def test_after_every_mutation_the_root_from_kg_equals_the_walk(pg_provider
             folders.discard(gone)
         await flip(pg_db, org)
         tally.c.clear()
-        walk, got = await _both(pg_provider, org)
+        seen = rnd.sample(sorted(folders), min(3, len(folders)))
+        walk, got = await _both(pg_provider, org, seen)
         assert got == walk, step
         # every read but the missing collection's (no connector to serve) is kg's
         assert tally.c[("kb_root", "kg")] == 19 and tally.c[("kb_root", "not_served")] == 1 and not tally.c[("kb_root", "error")], (step, dict(tally.c))
+        assert tally.c[("kb_folder", "kg")] == FOLDER_READS * len(seen) and tally.c[("trash", "kg")] == 2, (step, dict(tally.c))
+        assert sum(v for (what, why), v in tally.c.items() if what in ("kb_folder", "trash") and why != "off") == FOLDER_READS * len(seen) + 2, (step, dict(tally.c))
     assert any(x["records"] or x["folders"] for x in walk.values() if isinstance(x, dict) and x.get("success")), "the sequence left the root empty: it would prove nothing"
 
 
@@ -227,8 +260,16 @@ async def test_with_the_switch_off_or_in_a_callers_transaction_or_inside_a_folde
         finally:
             await pg_provider.rollback_transaction(tid)
         assert (await pg_provider.get_kb_children(KB, 0, 50))["totalCount"] == 3
-        assert _ids(await pg_provider.get_folder_children(KB, "a", 0, 50)) == ["b"]           # a folder's listing is read by its own key, not from kg
-    assert tally.c[("kb_root", "off")] == 2 and tally.c[("kb_root", "kg")] == 1 and sum(tally.c.values()) == 3, dict(tally.c)
+        assert _ids(await pg_provider.get_folder_children(KB, "a", 0, 50)) == ["b"]           # a folder's listing is kg's too
+        tid = await pg_provider.begin_transaction(read=[], write=["records"])
+        try:
+            assert _ids(await pg_provider.get_folder_children(KB, "a", 0, 50, transaction=tid)) == ["b"]
+        finally:
+            await pg_provider.rollback_transaction(tid)
+    with _switch("0"), ctx(org):
+        assert _ids(await pg_provider.get_folder_children(KB, "a", 0, 50)) == ["b"]
+    assert tally.c[("kb_root", "off")] == 2 and tally.c[("kb_root", "kg")] == 1 and tally.c[("kb_folder", "kg")] == 1 and tally.c[("kb_folder", "off")] == 2, dict(tally.c)
+    assert sum(tally.c.values()) == 6, dict(tally.c)
 
 
 async def test_a_connector_copied_by_older_projection_code_takes_the_walk(pg_provider, pg_db, tally) -> None:
@@ -288,6 +329,15 @@ async def test_a_fill_page_reads_at_most_a_page_of_rows_and_relabels_on_the_last
     with ctx(org):
         assert await pg_db.run(epoch) == bf.TOPS_FROM
     assert await bf.fill_pc_tops(pg_db, org, KB, page=2, after=more) == ("enforce", None)
+    with ctx(org):
+        assert await pg_db.run(epoch) == bf.MARKS_FROM      # the grants' marks are filled next (``fill_grant_marks``)
+    assert await bf.fill_grant_marks(pg_db, org, KB) == ("enforce", None)
+    with ctx(org):
+        assert await pg_db.run(epoch) == bf.LISTING_FROM                          # the knowledge-base listing's fill takes it on from there
+    assert await bf.fill_kb_listing(pg_db, org, KB, page=2) == ("enforce", None)
+    with ctx(org):
+        assert await pg_db.run(epoch) == bf.PARENTS_FROM                          # the grants' node_parent is filled last (``fill_grant_parents``)
+    assert await bf.fill_grant_parents(pg_db, org, KB) == ("enforce", None)
     with ctx(org):
         assert await pg_db.run(epoch) == CODE_EPOCH
         assert sorted(_ids(await pg_provider.get_kb_children(KB, 0, 50))) == ["a", "d", "e"]
@@ -382,3 +432,194 @@ async def test_the_root_is_answered_by_index_searches(pg_provider, pg_db) -> Non
             got = await pg_provider.get_kb_children(KB, 0, 20)
         assert got["counts"]["totalFolders"] == 31 and got["counts"]["totalRecords"] == 2
         assert next(f for f in got["folders"] if f["id"] == "plan-1")["counts"]["totalItems"] == 99
+
+
+# ---- a folder and the trash from kg's knowledge-base listing columns (kg_0026) ------------------------------------------------------------------------------------------------------
+
+async def test_a_status_or_a_file_change_writes_the_listing_columns_of_that_record_alone(pg_provider, pg_db, monkeypatch) -> None:
+    """A status flip is a change of the record now (before kg_0026 it logged nothing): its projection writes the record's listing columns and nothing more; a write that changes
+    none of them (a rename) writes none; a resize of the file it is typed as writes that record's."""
+    from app.services.graph_db.postgres.kg import writers
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    written: list[tuple] = []
+    real = writers.KgWriter.kb_listing_set
+
+    async def spy(self, rows: list[tuple]) -> int:
+        written.extend(rows)
+        return await real(self, rows)
+    monkeypatch.setattr(writers.KgWriter, "kb_listing_set", spy)
+    with ctx(org):
+        await pg_provider.batch_update_nodes([{"id": "c", "recordName": "C2"}], "records")
+    await flip(pg_db, org)
+    assert written == []
+    with ctx(org):
+        await pg_provider.batch_update_nodes([{"id": "c", "indexingStatus": "FAILED"}], "records")
+    await flip(pg_db, org)
+    assert [(r[2], r[4]) for r in written] == [("c", "FAILED")]
+    written.clear()
+    with ctx(org):
+        await pg_provider.batch_update_nodes([{"id": "f-c", "sizeInBytes": 77}], "files")
+    await flip(pg_db, org)
+    assert [(r[2], r[8]) for r in written] == [("c", 77)]
+    with ctx(org):
+        page = await pg_provider.get_folder_children(KB, "b", 0, 50, indexing_status=["FAILED"])
+    assert [(r["id"], r["indexingStatus"], r["fileRecord"]["sizeInBytes"]) for r in page["records"]] == [("c", "FAILED", 77)]
+
+
+@pytest.mark.parametrize("older", [11, 10])
+async def test_a_copy_of_older_code_is_filled_in_place_by_the_bootstrap_and_stays_enforced_and_served(pg_provider, pg_db, tally, caplog, older) -> None:
+    """The upgrade path of kg_0026: a connector copied, verified and enforced by epoch 11 code holds no listing columns, and one of epoch 10 code no grant marks either. The bootstrap
+    fills what the copy lacks in place, in order (the grant marks, then the listing columns from the graph) and relabels the copy: still enforced, never copied again, and a
+    folder and the trash are kg's and the walk's. Until then the connector is not served."""
+    import logging
+
+    from app.services.graph_db.postgres.kg import bootstrap
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    with ctx(org):
+        await pg_provider.soft_delete_records(["e"], KB, delete_source="USER", batch_id="bt-e", deleted_by_user_id="u1")
+    await flip(pg_db, org)
+
+    async def cols(tx: Any) -> dict:  # noqa: ANN401
+        return {r["id"]: tuple(r)[1:] for r in await tx.fetch("""SELECT id, indexing_status, connector_name, doc_created_ms, doc_updated_ms, file_size, file_kind, kb_odd
+            FROM kg.records WHERE org_id = $1 ORDER BY id""", org)}
+    async def marks(tx: Any) -> list:  # noqa: ANN401
+        return [tuple(r) for r in await tx.fetch("SELECT principal_sk, node_sk, gtype, parent_held, node_group FROM kg.scope_members WHERE org_id = $1 ORDER BY 1, 2, 3", org)]
+    with ctx(org):
+        derived, marked = await pg_db.run(cols), await pg_db.run(marks)
+    assert derived["e"][5] == 1 and derived["a"][5] == 0 and derived[KB][5] is None
+    await _admin("""UPDATE kg.records SET indexing_status = NULL, connector_name = NULL, doc_created_ms = NULL, doc_updated_ms = NULL, file_size = NULL, file_kind = NULL, kb_odd = false
+        WHERE org_id = $1""", org)                                                                     # what epoch 11 code copied
+    if older == 10:                                                                                    # and epoch 10 code: no grant marks
+        await _admin("UPDATE kg.scope_members SET parent_held = false, node_group = NULL WHERE org_id = $1", org)
+    await _admin("UPDATE kg.projection_state SET code_epoch = $2 WHERE org_id = $1 AND app_sk <> 0", org, older)
+    tally.c.clear()
+    with ctx(org):
+        assert _ids(await pg_provider.get_folder_children(KB, "a", 0, 50)) == ["b"]
+    assert tally.c[("kb_folder", "not_served")] == 1, dict(tally.c)
+    caplog.set_level(logging.WARNING, logger=bootstrap.logger.name)
+    await bootstrap.bring_to_enforce(pg_db, org, {})
+    with ctx(org):
+        assert await pg_db.run(cols) == derived and await pg_db.run(marks) == marked
+        state = await pg_db.run(lambda tx: tx.fetch("""SELECT k.id, s.mode, s.code_epoch FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+            AND k.coll = 1 WHERE s.org_id = $1 ORDER BY k.id""", org))
+    assert [tuple(r) for r in state] == [(KB, "enforce", CODE_EPOCH), ("kb2", "enforce", CODE_EPOCH)]
+    assert not [r for r in caplog.records if r.name == bootstrap.logger.name], [r.getMessage() for r in caplog.records]
+    tally.c.clear()
+    walk, got = await _both(pg_provider, org, ["a", "b"])
+    assert got == walk and _ids(walk["a page 0 50"]) == ["b"] and walk["trash True"]["total"] == 1
+    assert tally.c[("kb_folder", "kg")] == 2 * FOLDER_READS and tally.c[("trash", "kg")] == 2, dict(tally.c)
+
+
+async def test_a_folder_with_a_child_kg_cannot_hold_or_of_another_connector_takes_the_walk(pg_provider, pg_db, tally) -> None:
+    """A child typed as two files (kb_odd) or of another connector (whose rows may wait in its own log) is the walk's; so is a folder kg holds no row for."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    with ctx(org):
+        await pg_provider.batch_upsert_nodes([{"_key": "f-c2", "isFile": True, "sizeInBytes": 1, "orgId": org}], "files")
+        await pg_provider.batch_create_edges([edge("c", "records", "f-c2", "files")], "isOfType")
+    await flip(pg_db, org)
+    tally.c.clear()
+    walk_free = await _listing_of(pg_provider, org, "b")
+    assert tally.c[("kb_folder", "odd")] == 1 and not tally.c[("kb_folder", "kg")], dict(tally.c)
+    with _switch("0"):
+        assert await _listing_of(pg_provider, org, "b") == walk_free
+    with ctx(org):
+        await pg_provider.delete_edge("c", "records", "f-c2", "files", "isOfType")
+        await pg_provider.batch_upsert_nodes([_doc(org, "o1", 1, False, random.Random(1), connectorId="kb2")], "records")
+        await pg_provider.batch_create_edges([edge("b", "records", "o1", "records", relationshipType="PARENT_CHILD")], "nodeRelations")
+    await flip(pg_db, org)
+    tally.c.clear()
+    got = await _listing_of(pg_provider, org, "b")
+    with _switch("0"):
+        assert await _listing_of(pg_provider, org, "b") == got
+    assert sorted(x["id"] for x in got["records"]) == ["c", "o1"] and tally.c[("kb_folder", "odd")] == 1, dict(tally.c)
+    tally.c.clear()
+    with ctx(org):
+        assert (await pg_provider.get_folder_children(KB, "nope", 0, 50))["totalCount"] == 0
+    assert tally.c[("kb_folder", "unknown")] == 1, dict(tally.c)
+
+
+async def test_a_file_node_gone_under_its_edge_counts_the_child_as_a_record_as_the_walk_does(pg_provider, pg_db, tally) -> None:
+    """c's file node goes while its isOfType edge stays: the walk reads no file for c (a record of b's in a's page counts), and kg holds c as typed as no file, not as a file
+    that says nothing (FILE_UNSAID, which no count takes)."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _admin("DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'files' AND id = 'f-c'", org)
+    await flip(pg_db, org)
+    tally.c.clear()
+    got = await _listing_of(pg_provider, org, "a")
+    with _switch("0"):
+        assert await _listing_of(pg_provider, org, "a") == got
+    assert next(f for f in got["folders"] if f["id"] == "b")["counts"]["records"] == 1 and tally.c[("kb_folder", "kg")] == 1, dict(tally.c)
+    with ctx(org):
+        assert await pg_db.run(lambda tx: tx.fetchval("SELECT file_kind FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'c'", org)) is None
+
+
+async def test_the_fill_writes_a_records_columns_to_that_record_alone(pg_provider, pg_db) -> None:
+    """A record whose id is its knowledge base's (another collection's key): the fill of an older copy writes the record's columns to the record's row, never to the App's."""
+    from app.services.graph_db.postgres.kg import backfill as bf
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    await _add(pg_provider, org, random.Random(3), [KB], set())
+    await flip(pg_db, org)
+
+    async def cols(tx: Any) -> list:  # noqa: ANN401
+        return [tuple(r) for r in await tx.fetch("""SELECT coll, id, indexing_status, connector_name, doc_created_ms, doc_updated_ms, file_size, file_kind, kb_odd FROM kg.records
+            WHERE org_id = $1 AND id = $2 ORDER BY coll""", org, KB)]
+    with ctx(org):
+        derived = await pg_db.run(cols)
+    assert derived[0][2:] == (None, None, None, None, None, None, False) and derived[1][7] == 1        # the App's columns are empty, the record's are its own
+    await _admin("""UPDATE kg.records SET indexing_status = NULL, connector_name = NULL, doc_created_ms = NULL, doc_updated_ms = NULL, file_size = NULL, file_kind = NULL, kb_odd = false
+        WHERE org_id = $1""", org)
+    await _admin("UPDATE kg.projection_state SET code_epoch = $2 WHERE org_id = $1 AND app_sk <> 0", org, bf.LISTING_FROM)
+    assert await bf.fill_kb_listing(pg_db, org, KB) == ("enforce", None)
+    with ctx(org):
+        assert await pg_db.run(cols) == derived
+
+
+async def _listing_of(p, org: str, folder: str) -> dict:
+    with ctx(org):
+        return await p.get_folder_children(KB, folder, 0, 50)
+
+
+async def test_a_folder_is_answered_by_index_searches(pg_provider, pg_db) -> None:
+    """EXPLAIN gate: a folder of 3,000 children (30 subfolders) beside 3,000 records elsewhere, never analysed and analysed: its children are a range of the children index and
+    its links, and every other read of the page (each page folder's children, each page row's node and file) is by key."""
+    org = new_org()
+    await _tree(pg_provider, pg_db, org)
+    for parent, base in (("a", 0), ("e", 3000)):          # e's children: rows a folder read must not touch
+        await _admin("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1::text, 'records', 'plan-' || g, jsonb_build_object('_key', 'plan-' || g, 'id', 'plan-' || g,
+              'orgId', $1::text, 'connectorId', $2::text, 'recordName', 'P' || g, 'indexingStatus', 'COMPLETED', 'createdAtTimestamp', g) FROM generate_series($3::int + 1, $3::int + 3000) g""",
+                     org, KB, base)
+        await _admin("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1::text, 'files', 'pf-' || g, jsonb_build_object('_key', 'pf-' || g, 'isFile', g % 100 > 0, 'sizeInBytes', g)
+              FROM generate_series($2::int + 1, $2::int + 3000) g""", org, base)
+        await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id) SELECT $1, 'isOfType', 'records', 'plan-' || g, 'files', 'pf-' || g
+              FROM generate_series($2::int + 1, $2::int + 3000) g""", org, base)
+        await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'records', $3::text, 'records',
+              'plan-' || g, 'PARENT_CHILD', '{"relationshipType": "PARENT_CHILD"}' FROM generate_series($2::int + 1, $2::int + 3000) g""", org, base, parent)
+    await flip(pg_db, org)
+    for state in ("fresh", "analysed"):
+        if state == "analysed":
+            await _admin("ANALYZE kg.records; ANALYZE kg.links; ANALYZE graph.nodes; ANALYZE graph.edges")
+
+        async def go(tx) -> list[str]:
+            await tx.fetchval(kg_hier.PROFILE)
+            await tx.fetchval(kg_hier.APP_KEY, org, KB)
+            sk, app, is_dir = await kg_kb_folder.folder(tx, org, KB, "a")
+            bad = []
+            for sql, args in ((kg_kb_folder.FOLDERS, (org, sk, app, None, 0, 20, is_dir)),
+                              (kg_kb_folder.RECORDS_PAGE, (org, sk, app, None, None, None, None, ["COMPLETED"], 4, False, 0, 20))):
+                ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, *args)
+                bad += _scans((json.loads(ran) if isinstance(ran, str) else ran)[0]["Plan"])
+            return bad
+        with ctx(org):
+            bad = await pg_db.run(go, custom_plan=True)
+        assert not bad, f"{state}: {bad}"
+        with ctx(org):
+            got = await pg_provider.get_folder_children(KB, "a", 0, 20, sort_by="size", sort_order="desc")
+        assert got["counts"]["folders"] == 31 and got["counts"]["records"] == 2970 and [r["id"] for r in got["records"]] == []        # b and every hundredth: folders
+        with ctx(org):
+            got = await pg_provider.get_folder_children(KB, "a", 40, 3, sort_by="size", sort_order="desc")
+        assert [r["id"] for r in got["records"]] == [f"plan-{g}" for g in sorted((g for g in range(1, 3001) if g % 100), reverse=True)][9:12]

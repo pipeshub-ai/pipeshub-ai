@@ -26,7 +26,7 @@ describe('slack-bot/utils/agui-stream', () => {
 
       const messages = onStatus.getCalls().map((call) => call.args[0] as string);
       const label = messages[3];
-      expect(label.endsWith('...')).to.equal(true);
+      expect(label!.endsWith('...')).to.equal(true);
       expect(messages.slice(0, 3)).to.deep.equal([`${label} 3/10`, `${label} 25%`, `${label} Reading page 3`]);
     });
 

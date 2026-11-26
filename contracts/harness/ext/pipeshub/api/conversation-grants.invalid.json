@@ -1,0 +1,43 @@
+[
+  {
+    "description": "the destination's grant key leaking into the list",
+    "instance": {
+      "grants": [
+        {
+          "grantId": "cg_0000000000000000000000000000000000000000",
+          "toolId": "web@searxng/fetch_url",
+          "tool": {
+            "app": "web",
+            "name": "fetch_url"
+          },
+          "destination": "onyx.app",
+          "sensitivity": "private",
+          "grantedBy": "5f1d7c2e9b1a4c3d2e1f0a9b",
+          "grantedByName": "Ada Lovelace",
+          "grantedAt": "2026-11-07T12:32:30.000Z",
+          "key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    }
+  },
+  {
+    "description": "a sensitivity the flow rule does not know",
+    "instance": {
+      "grants": [
+        {
+          "grantId": "cg_0000000000000000000000000000000000000000",
+          "toolId": "web@searxng/fetch_url",
+          "tool": {
+            "app": "web",
+            "name": "fetch_url"
+          },
+          "destination": "onyx.app",
+          "sensitivity": "secret",
+          "grantedBy": "5f1d7c2e9b1a4c3d2e1f0a9b",
+          "grantedByName": "Ada Lovelace",
+          "grantedAt": "2026-11-07T12:32:30.000Z"
+        }
+      ]
+    }
+  }
+]

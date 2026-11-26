@@ -63,10 +63,11 @@ export class AgentRegistrationController {
     res: Response,
     next: NextFunction,
   ): Promise<void> => {
-    const { claim_attempt_token, user_code, action } = req.body as {
+    const { claim_attempt_token, user_code, action, scopes } = req.body as {
       claim_attempt_token: string;
       user_code?: string;
       action: 'approve' | 'deny';
+      scopes?: string[];
     };
     return this.run(res, next, async () => ({
       ok: true,
@@ -75,6 +76,7 @@ export class AgentRegistrationController {
         user_code,
         action,
         sessionUser(req),
+        scopes,
       ),
     }));
   };
