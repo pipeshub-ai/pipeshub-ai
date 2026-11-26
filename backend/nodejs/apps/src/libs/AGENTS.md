@@ -40,7 +40,7 @@ flowchart LR
 
 **Map a failed call to another PipesHub service with `handleBackendError(error, operation)`.** It reads every shape the service commands and axios return. A `BaseError` passes through unchanged, so mapping twice is safe. It logs nothing: the call's `upstream.call.end` and the error middleware's `http.request.error` report the failure. Tested in `backend-error.test.ts`.
 
-**A 4xx keeps the service's words; a 5xx gets ours.** For the 4xx statuses `errorForStatus` names (400, 401, 403, 404, 409 and 422 among them) the message is the body's `detail`, `reason`, `message` or `msg`. A FastAPI validation array is joined by `stringifyErrorDetail`, never shown as `[object Object]`. Any other status becomes a 500 with `serverFailureMessage(operation)`, carrying `{ status }` as its cause so the log classes it `upstream_5xx`, not `internal`. The upstream's own 5xx text stays in that service's log, under the same request id. Because the 4xx words reach the user, the Python side must keep them client-safe (root guide).
+**A 4xx keeps the service's words; a 5xx gets ours.** For the 4xx statuses `errorForStatus` names (400, 401, 403, 404, 409 and 422 among them) the message is the body's `detail`, `reason`, `message` or `msg`. A FastAPI validation array is joined by `stringifyErrorDetail`, never shown as `[object Object]`. 429, 503 and 504 keep their status so the caller retries (`transientError`). A 502 whose body carries a typed refusal (`reasonCode` or `code`) stays a 502 `BadGatewayError` with that code, so the reader can tell which dependency refused; its message is still `serverFailureMessage(operation)`. Any other status becomes a 500 with `serverFailureMessage(operation)`, carrying `{ status }` as its cause so the log classes it `upstream_5xx`, not `internal`. The upstream's own 5xx text stays in that service's log, under the same request id. Because the 4xx words reach the user, the Python side must keep them client-safe (root guide).
 
 **Write `operation` as the end of "PipesHub tried to …".** For example `'create the organisation'`. `serverFailureMessage` builds the sentence and lowercases a leading capital.
 
@@ -83,7 +83,9 @@ flowchart LR
 - [ ] The service's base URL is registered in `registerAppUpstreams`.
 - [ ] Path params pasted into the URL are guarded (middlewares guide).
 - [ ] On failure, `next(handleBackendError(error, '<what PipesHub tried to do>'))`, with no log line of your own.
+- [ ] Check the returned `statusCode` before you answer success: `execute()` resolves on a non-2xx, it does not throw. In `modules/` that is `handleConnectorResponse`; elsewhere throw `handleBackendError(...)` on a non-2xx.
 - [ ] A write that must not be repeated passes `retries: 1` (`ConnectorServiceCommand`, or `executeConnectorCommand(..., { retries: 1 })`); it applies to `execute()` only. There a timeout is not retried, but a dropped connection is, up to three attempts by default; `executeStream()` makes up to three attempts and retries a timeout too.
+- [ ] On `AIServiceCommand` the same write passes `maxAttempts: 1`; it has no `retries`, and its default is three attempts for both `execute()` and `executeStream()`.
 
 ### Adding a call to a third party
 

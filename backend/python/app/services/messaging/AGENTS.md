@@ -75,7 +75,7 @@ The full map is [docs/indexing-service.md, 6. Where things live](../../../../../
 
 ### Removing a classifier rule or a give-up path
 
-- Without its rule, an exception falls to TRANSIENT: check that retrying it is what you want, and update the test that pinned it.
+- Without its rule, the exception falls through to the later rules, not straight to TRANSIENT: a store 4xx at the root becomes TERMINAL through the HTTP status rule (the reason `EntityLookupUnavailableError` and `RecordSchemaNarrowError` have rules of their own). Trace the rules that follow and the retryable status sets for the root's status, check the result is what you want, and update the test that pinned it.
 - A removed give-up path must not leave a message dropped without telling the `AbandonedMessageSink`.
 
 ## Tests
