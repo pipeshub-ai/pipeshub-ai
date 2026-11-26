@@ -463,7 +463,8 @@ async def table_structure_endpoint(
         part = form.get(spec.image)
         if part is None or isinstance(part, str):
             return _table_error(422, "invalid_request")
-        data = await part.read()
+        # one byte past what is left of the budget is enough to refuse it, without reading a large part in full
+        data = await part.read(MAX_IMAGE_BYTES - total + 1)
         total += len(data)
         if total > MAX_IMAGE_BYTES:
             return _table_error(422, "invalid_request")
