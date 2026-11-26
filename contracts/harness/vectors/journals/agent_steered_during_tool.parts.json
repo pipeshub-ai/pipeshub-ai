@@ -1,0 +1,33 @@
+{
+ "scenario": "agent_steered_during_tool",
+ "parts": [
+  {
+   "type": "text",
+   "content": "",
+   "runId": "run-golden"
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-export",
+   "toolName": "goldendocs__export_report",
+   "args": "{\"name\": \"q3\"}",
+   "status": "completed",
+   "runId": "run-golden",
+   "argsSummary": "Export Report: \"q3\"",
+   "resultPreview": "{\"name\": \"q3\", \"rows\": 3}",
+   "resultSummary": "Completed successfully"
+  },
+  {
+   "type": "user_input",
+   "content": "Add Q4 too, if it is closed.",
+   "messageSeq": 1,
+   "runId": "run-golden"
+  },
+  {
+   "type": "text",
+   "content": "The Q3 report is exported. Q4 is not closed yet, so it is not in it.",
+   "runId": "run-golden",
+   "isFinal": true
+  }
+ ]
+}

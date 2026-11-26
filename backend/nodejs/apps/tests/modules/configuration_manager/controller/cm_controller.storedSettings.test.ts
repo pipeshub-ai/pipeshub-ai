@@ -156,7 +156,7 @@ describe('Configuration manager stored settings', () => {
 
   before(() => {
     savedSecretKey = process.env.SECRET_KEY;
-    process.env.SECRET_KEY = process.env.SECRET_KEY || 'stored-settings-test-secret';
+    process.env.SECRET_KEY = process.env.SECRET_KEY || '338896dde981af9dae069c81dde0426cf88acb548dabf34c3c113306ad3b8f9f';
   });
 
   after(() => {

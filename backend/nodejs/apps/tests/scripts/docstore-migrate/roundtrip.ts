@@ -3,7 +3,7 @@
  * PostgreSQL and read back with the verifier's own decoder; the decoded documents must equal the prepared source documents.
  */
 import { expect } from 'chai';
-import { ObjectId } from 'mongodb';
+import { ObjectId, type Db } from 'mongodb';
 import { REPOSITORIES } from '../../../src/libs/repositories/all';
 import type { Importable } from '../../../src/libs/repositories/import';
 import { MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping';
@@ -27,8 +27,33 @@ export interface CopyResult {
 export const jobsUnit = <T>(fn: (tx: PgTx, k: PgTx['kernel']) => Promise<T>): Promise<T> =>
   system('test', () => withJobsUow({ write: true, service: 'import' }, (k) => fn(new PgTx(k), k)));
 
-/** Copies `docs` (collection name to raw documents) in mapping order, then decodes every copied document and compares. */
-export async function copyAndCompare(docs: Record<string, unknown[]>, mappings: CollectionMapping[] = MAPPINGS): Promise<CopyResult> {
+/** The raw documents as a MongoDB database for a mapping's `beforeTransforms` (a find by `_id` list is all they ask). */
+export function docsDb(docs: Record<string, unknown[]>): Db {
+  return {
+    collection: (name: string) => ({
+      find: (q: { _id?: { $in?: unknown[] } } = {}) => {
+        const want = q._id?.$in ? new Set(q._id.$in.map((i) => String(i).toLowerCase())) : undefined;
+        const hits = ((docs[name] ?? []) as Array<{ _id: unknown }>).filter((d) => !want || want.has(String(d._id).toLowerCase()));
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield* hits;
+          },
+        };
+      },
+    }),
+  } as unknown as Db;
+}
+
+/**
+ * Copies `docs` (collection name to raw documents) in mapping order, then decodes every copied document and compares, reading the
+ * source side as the verifier does (a mapping's `beforeTransforms` first).
+ */
+export async function copyAndCompare(
+  docs: Record<string, unknown[]>,
+  mappings: CollectionMapping[] = MAPPINGS,
+  /** Further MongoDB documents a mapping's `beforeTransforms` may look up (another group's, already in PostgreSQL). */
+  lookup: Record<string, unknown[]> = {},
+): Promise<CopyResult> {
   const report = new SourceReport();
   const inserted: CopyResult['inserted'] = {};
   const diffs: CopyResult['diffs'] = {};
@@ -36,11 +61,13 @@ export async function copyAndCompare(docs: Record<string, unknown[]>, mappings: 
   for (const m of todo) {
     const repo = REPOSITORIES[m.repository]() as Importable;
     expect(repo.importBatch, `${m.repository} has no importBatch`).to.be.a('function');
-    const neutralDocs = docs[m.collection].map((d) => toNeutral(d, new SourceReport(), m.collection));
+    const neutralDocs = docs[m.collection]!.map((d) => toNeutral(d, new SourceReport(), m.collection));
     inserted[m.collection] = (await jobsUnit((tx) => repo.importBatch(m.collection, neutralDocs, tx))).inserted;
   }
   for (const m of todo) {
-    const source = docs[m.collection].map((d) => prepareSource(m, d, report)).filter((d): d is NonNullable<typeof d> => d !== null);
+    const raws = docs[m.collection]!.map((d) => ({ ...(d as object) }));
+    await m.beforeTransforms?.(docsDb({ ...lookup, ...docs }), raws);
+    const source = raws.map((d) => prepareSource(m, d, report)).filter((d): d is NonNullable<typeof d> => d !== null);
     const decoded = await jobsUnit((_tx, k) => readDecoded(k, m, source.map((d) => String(d._id))));
     diffs[m.collection] = compareDocs(source, decoded);
   }
@@ -52,7 +79,7 @@ export async function copyAgainInserts(docs: Record<string, unknown[]>, mappings
   let n = 0;
   for (const m of mappings.filter((x) => docs[x.collection]?.length)) {
     const repo = REPOSITORIES[m.repository]() as Importable;
-    const neutralDocs = docs[m.collection].map((d) => toNeutral(d, new SourceReport(), m.collection));
+    const neutralDocs = docs[m.collection]!.map((d) => toNeutral(d, new SourceReport(), m.collection));
     const st = await jobsUnit((tx) => repo.importBatch(m.collection, neutralDocs, tx));
     n += Object.values(st.inserted).reduce((a, b) => a + b, 0);
   }

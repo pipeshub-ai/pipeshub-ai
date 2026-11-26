@@ -1160,12 +1160,14 @@ class TestRenumberCitationLinksMarkdownPattern:
         out = _renumber_citation_links(text, matches, {page: 9})
         assert "[9]" in out
 
-    def test_descriptive_link_text_kept_before_numeric_badge(self):
+    def test_descriptive_link_text_stays_beside_the_numeric_badge(self):
+        """P4.11 CR-1: the anchor text is the sentence's, so it stays, followed by ``[N](full_url)``."""
         page = "https://readable.example/guide"
         text = f"Details in [Installation guide]({page}) please."
         matches = list(re.finditer(citations_mod._MD_LINK_PATTERN, text))
         out = _renumber_citation_links(text, matches, {page: 4})
         assert out == f"Details in Installation guide [4]({page}) please."
+        assert "[Installation guide]" not in out
 
 
 class TestChatDocCitation:
@@ -2058,14 +2060,14 @@ class TestExpandMultiRefLinks:
         text = "See [a](ref1, ref2) and [b](ref3, ref4)."
         result = _expand_multi_ref_links(text)
         assert "[a](ref1)" in result
-        assert "[a](ref2)" in result
+        assert "[source](ref2)" in result
         assert "[b](ref3)" in result
-        assert "[b](ref4)" in result
+        assert "[source](ref4)" in result
 
     def test_preserves_link_text(self):
         text = "[My Link Text](ref10, ref11)"
         result = _expand_multi_ref_links(text)
-        assert result == "[My Link Text](ref10) [My Link Text](ref11)"
+        assert result == "[My Link Text](ref10) [source](ref11)", "the label once, on the first"
 
 
 class TestWrapBareRefs:
@@ -2683,7 +2685,9 @@ class TestBadgeUrl:
 # The patterns as they were before their scans were bounded, kept as the reference
 # for what must not change.
 _LEGACY_LABEL_RE = re.compile(
-    r'^\s*(?:(?:sources?|refs?|links?|citations?)\s*#?\s*\d*|\d+(?:\s*[,;]\s*\d+)*)?\s*$', re.IGNORECASE,
+    r'^\s*(?:(?:sources?|src|refs?|references?|links?|citations?|cite)\s*#?\s*\d*'
+    r'|\[?\^?\d+\]?(?:\s*[,;]\s*\d+)*)?\s*$',
+    re.IGNORECASE,
 )
 _LEGACY_LINK_PATTERNS = {
     "_MD_LINK_PATTERN": r'\[([^\]]*?)\]\((ref\d+|https?://[^)]+)\)',
@@ -2742,6 +2746,7 @@ class TestCitationScansAreBounded:
         tokens = [
             " ", "  ", "\t", "\n", " ", " ", "\x1c", "#", "1", "23", ",", ";", ", ", "source", "Sources",
             "REF", "refs", "link", "links", "citation", "Citations", "x", "s", "ref1", "-", ".", "(", "]", "é", "١",
+            "src", "cite", "Reference", "references", "[", "^", "[^",
         ]
         rng = random.Random(seed)
         for _ in range(20_000):

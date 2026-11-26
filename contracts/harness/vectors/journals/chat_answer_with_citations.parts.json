@@ -1,0 +1,11 @@
+{
+ "scenario": "chat_answer_with_citations",
+ "parts": [
+  {
+   "type": "text",
+   "content": "Refunds are accepted within 30 days of purchase [1](https://pipeshub.test/record/rec-refund/preview#blockIndex=0). The money goes back to the original payment method [2](https://pipeshub.test/record/rec-refund/preview#blockIndex=1).",
+   "runId": "run-golden",
+   "isFinal": true
+  }
+ ]
+}

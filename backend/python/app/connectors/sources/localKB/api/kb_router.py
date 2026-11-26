@@ -34,7 +34,6 @@ from app.connectors.sources.localKB.api.models import (
     KnowledgeBaseResponse,
     ListKnowledgeBaseResponse,
     ListPermissionsResponse,
-    ListRecordsResponse,
     ListTrashResponse,
     RemovePermissionResponse,
     RestoreRecordResponse,
@@ -142,18 +141,6 @@ kb_router = APIRouter(
     dependencies=[Depends(keep_path_inside_connection)],
 )
 
-
-def _listing_or_error(result: dict[str, Any]) -> dict[str, Any]:
-    """Turn the service's error payload into an error status.
-
-    The error payload is not a valid listing, so returned as-is it fails the
-    response model and the caller gets a bare 500 without the message.
-    """
-    if result.get("success") is False:
-        raise HTTPException(status_code=result.get("code") or 500, detail=result.get("reason"))
-    if result.get("error"):
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=result["error"])
-    return result
 
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
@@ -1002,47 +989,6 @@ async def delete_folder(
             status_code=500,
             detail=action_failed("delete this folder")
         )
-
-@kb_router.get(
-    "/{kb_id}/records",
-    response_model=ListRecordsResponse,
-    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
-)
-@inject
-async def list_kb_records(
-    kb_id: str,
-    request: Request,
-    page: int = 1,
-    limit: int = 20,
-    search: Optional[str] = None,
-    record_types: Optional[List[str]] = None,
-    origins: Optional[List[str]] = None,
-    connectors: Optional[List[str]] = None,
-    indexing_status: Optional[List[str]] = None,
-    date_from: Optional[int] = None,
-    date_to: Optional[int] = None,
-    sort_by: str = "createdAtTimestamp",
-    sort_order: str = "desc",
-    kb_service: KnowledgeBaseService = Depends(get_kb_service),
-) -> Dict[str, Any]:
-    user_id = request.state.user.get("userId")
-    org_id = request.state.user.get("orgId")
-    return _listing_or_error(await kb_service.list_kb_records(
-        kb_id=kb_id,
-        user_id=user_id,
-        org_id=org_id,
-        page=page,
-        limit=limit,
-        search=search,
-        record_types=record_types,
-        origins=origins,
-        connectors=connectors,
-        indexing_status=indexing_status,
-        date_from=date_from,
-        date_to=date_to,
-        sort_by=sort_by,
-        sort_order=sort_order,
-    ))
 
 @kb_router.get(
     "/{kb_id}/children",

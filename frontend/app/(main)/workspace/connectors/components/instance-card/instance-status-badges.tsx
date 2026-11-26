@@ -24,7 +24,7 @@ const SYNC_VALUE_COLOR: Record<
 };
 
 const ROW_LABEL_STYLE: React.CSSProperties = {
-  color: 'var(--gray-10)',
+  color: 'var(--gray-11)',
   flexShrink: 0,
   textTransform: 'uppercase',
   letterSpacing: '0.04px',

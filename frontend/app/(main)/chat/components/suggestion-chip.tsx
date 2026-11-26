@@ -92,7 +92,7 @@ export function SuggestionChip({ text, icons, onClick, fullWidth, locked }: Sugg
     >
       <Flex align="center" gap="2" style={{ flex: fullWidth ? 1 : undefined, minWidth: 0 }}>
         <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
-          {locked && <MaterialIcon name="lock" size={14} color="var(--slate-10)" />}
+          {locked && <MaterialIcon name="lock" size={14} color="var(--slate-11)" />}
           {icons.map((icon, idx) => {
             const IconComponent = iconMap[icon];
             return <IconComponent key={idx} />;
@@ -114,7 +114,7 @@ export function SuggestionChip({ text, icons, onClick, fullWidth, locked }: Sugg
         <MaterialIcon
           name="north_east"
           size={14}
-          color="var(--slate-9)"
+          color="var(--slate-11)"
           style={{ flexShrink: 0, marginLeft: 'var(--space-2)' }}
         />
       )}

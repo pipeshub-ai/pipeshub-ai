@@ -64,33 +64,182 @@ def test_bad_values_fall_back(monkeypatch, bad) -> None:
 
 def test_params_ride_on_the_dense_leg_only(monkeypatch) -> None:
     _params(monkeypatch)
-    q = QdrantUtils.search_request_to_qdrant(
+    dense, sparse = QdrantUtils.search_request_to_qdrant(
         HybridSearchRequest(dense_query=[0.1], sparse_query=SparseVector(indices=[1], values=[1.0]), limit=20)
     )
-    dense, sparse = q.prefetch
     assert dense.params.hnsw_ef == DEFAULT_HNSW_EF and sparse.params is None
-    assert q.limit == 20 + TIE_MARGIN
+    # Each leg reads its fusion depth (limit * 2) and a margin for ties at the cut.
+    assert dense.limit == sparse.limit == 40 + TIE_MARGIN
 
 
 def _point(pid: str, score: float) -> MagicMock:
     return MagicMock(id=pid, score=score, payload={})
 
 
-def test_stable_top_breaks_ties_by_id_whatever_the_arrival_order() -> None:
-    a = [_point("b", 0.5), _point("a", 0.5), _point("c", 0.9)]
-    b = [_point("a", 0.5), _point("c", 0.9), _point("b", 0.5)]
-    assert [p.id for p in QdrantUtils.stable_top(a, 3)] == [p.id for p in QdrantUtils.stable_top(b, 3)] == ["c", "a", "b"]
-    assert [p.id for p in QdrantUtils.stable_top(a, 2)] == ["c", "a"]
+def test_stable_ties_breaks_ties_by_id_whatever_the_arrival_order() -> None:
+    a = [_point("c", 0.9), _point("b", 0.5), _point("a", 0.5)]
+    b = [_point("c", 0.9), _point("a", 0.5), _point("b", 0.5)]
+    assert [p.id for p in QdrantUtils.stable_ties(a)] == [p.id for p in QdrantUtils.stable_ties(b)] == ["c", "a", "b"]
+
+
+def test_stable_ties_keeps_qdrants_order_for_a_distance_metric() -> None:
+    # Euclid: smaller is nearer, and Qdrant sends the nearest first. That order stays.
+    leg = [_point("near", 0.1), _point("b", 0.5), _point("a", 0.5), _point("far", 0.9)]
+    assert [p.id for p in QdrantUtils.stable_ties(leg)] == ["near", "a", "b", "far"]
+
+
+def _service(*leg_answers: list, stored: list[str] | None = None) -> QdrantService:
+    svc = QdrantService(QdrantConfig(host="localhost", port=6333, api_key="k"))
+    svc.client = AsyncMock()
+    svc.client.query_batch_points.return_value = [MagicMock(points=points) for points in leg_answers]
+    ids = stored if stored is not None else sorted({str(p.id) for points in leg_answers for p in points})
+    svc.client.retrieve.return_value = [MagicMock(id=i, payload={"page_content": i}) for i in ids]
+    return svc
 
 
 @pytest.mark.asyncio
 async def test_query_nearest_points_returns_the_requested_depth_in_stable_order() -> None:
-    svc = QdrantService(QdrantConfig(host="localhost", port=6333, api_key="k"))
-    svc.client = AsyncMock()
-    batch = MagicMock(points=[_point("b", 0.5), _point("a", 0.5), _point("z", 0.1)])
-    svc.client.query_batch_points.return_value = [batch]
+    svc = _service([_point("b", 0.5), _point("a", 0.5), _point("z", 0.1)])
     out = await svc.query_nearest_points("col", [HybridSearchRequest(dense_query=[0.1], limit=2)])
     assert [r.id for r in out[0]] == ["a", "b"]
+    assert [r.payload for r in out[0]] == [{"page_content": "a"}, {"page_content": "b"}]
+
+
+_DENSE = [_point("x", 0.9), _point("p", 0.8), _point("q", 0.8), _point("y", 0.7)]
+_SPARSE = [_point("y", 7.0), _point("q", 6.0), _point("x", 5.0), _point("p", 4.0)]
+
+
+@pytest.mark.asyncio
+async def test_a_tie_inside_a_leg_gives_the_same_points_and_scores_whatever_order_qdrant_sends() -> None:
+    """p and q tie in the dense leg. Qdrant sends tied points in either order; fused
+    on its server, the order a tie came in moved the point a place and changed its
+    score. Fused here, both arrival orders give the same answer."""
+    request = HybridSearchRequest(dense_query=[0.1], sparse_query=SparseVector(indices=[1], values=[1.0]), limit=4)
+    swapped = [_DENSE[0], _DENSE[2], _DENSE[1], _DENSE[3]]
+    one = await _service(_DENSE, _SPARSE).query_nearest_points("col", [request])
+    two = await _service(swapped, _SPARSE).query_nearest_points("col", [request])
+    assert [(r.id, r.score) for r in one[0]] == [(r.id, r.score) for r in two[0]]
+
+
+@pytest.mark.asyncio
+async def test_fused_scores_are_qdrants_rrf_scores() -> None:
+    request = HybridSearchRequest(dense_query=[0.1], sparse_query=SparseVector(indices=[1], values=[1.0]), limit=4)
+    out = await _service(_DENSE, _SPARSE).query_nearest_points("col", [request])
+    # 1 / (2 + index), summed over the legs; dense leg in (-score, id) order: x, p, q, y.
+    expected = {
+        "x": 1 / 2 + 1 / 4, "p": 1 / 3 + 1 / 5, "q": 1 / 4 + 1 / 3, "y": 1 / 5 + 1 / 2,
+    }
+    assert {r.id: r.score for r in out[0]} == pytest.approx(expected)
+    assert [r.id for r in out[0]] == ["x", "y", "q", "p"]
+
+
+@pytest.mark.asyncio
+async def test_each_leg_is_cut_at_its_fusion_depth_before_fusing() -> None:
+    # limit 1: each leg fuses its best 2; the margin's extra point must not score.
+    dense = [_point("a", 0.9), _point("b", 0.8), _point("c", 0.7)]
+    sparse = [_point("c", 9.0), _point("d", 8.0), _point("a", 7.0)]
+    request = HybridSearchRequest(dense_query=[0.1], sparse_query=SparseVector(indices=[1], values=[1.0]), limit=1)
+    out = await _service(dense, sparse).query_nearest_points("col", [request])
+    # a: first in dense (1/2), third in sparse and past its depth of 2. c: past dense's
+    # depth, first in sparse (1/2). They tie at 1/2 and the tie goes by id.
+    assert [(r.id, r.score) for r in out[0]] == [("a", 0.5)]
+
+
+@pytest.mark.asyncio
+async def test_several_requests_share_one_search_and_one_payload_read() -> None:
+    svc = _service([_point("a", 0.9)], [_point("b", 0.9)], [_point("c", 0.9)])
+    out = await svc.query_nearest_points("col", [
+        HybridSearchRequest(dense_query=[0.1], sparse_query=SparseVector(indices=[1], values=[1.0]), limit=2),
+        HybridSearchRequest(dense_query=[0.2], limit=2),
+    ])
+    assert [[r.id for r in rs] for rs in out] == [["a", "b"], ["c"]]
+    assert svc.client.query_batch_points.await_count == 1
+    assert svc.client.retrieve.await_count == 1
+    assert svc.client.retrieve.call_args.kwargs["ids"] == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_an_l2_leg_ranks_its_nearest_point_first() -> None:
+    svc = _service([_point("near", 0.1), _point("mid", 0.4), _point("far", 0.9)])
+    out = await svc.query_nearest_points("col", [HybridSearchRequest(dense_query=[0.1], limit=3)])
+    assert [r.id for r in out[0]] == ["near", "mid", "far"]
+
+
+class _TiedLeg:
+    """A leg where every point ties: Qdrant returns `limit` of them, from a subset it picks."""
+
+    def __init__(self, order: list[str]) -> None:
+        self.order = order
+        self.limits: list[int] = []
+
+    async def __call__(self, collection_name: str, requests: list) -> list:
+        self.limits.extend(r.limit for r in requests)
+        return [MagicMock(points=[_point(i, 0.5) for i in self.order[: r.limit]]) for r in requests]
+
+
+@pytest.mark.asyncio
+async def test_a_tie_past_the_margin_is_read_until_it_ends_so_any_subset_gives_one_answer() -> None:
+    """limit 1: the leg fuses its best 2 and asks for 4. Five points tie, so the four
+    returned are Qdrant's pick; two calls picking different four must still agree."""
+    answers = []
+    for order in (["a", "b", "c", "d", "e"], ["e", "d", "c", "b", "a"], ["b", "c", "d", "e", "a"]):
+        svc = _service()
+        leg = _TiedLeg(order)
+        svc.client.query_batch_points = AsyncMock(side_effect=leg.__call__)
+        svc.client.retrieve.side_effect = lambda **kw: [MagicMock(id=i, payload={}) for i in kw["ids"]]
+        out = await svc.query_nearest_points("col", [HybridSearchRequest(dense_query=[0.1], limit=1)])
+        answers.append([(r.id, r.score) for r in out[0]])
+        assert leg.limits == [4, 8]  # read again, deeper, once the tie ran past the answer
+    assert answers[0] == answers[1] == answers[2] == [("a", 0.5)]
+
+
+@pytest.mark.asyncio
+async def test_a_tie_larger_than_the_cap_stops_at_the_cap() -> None:
+    from app.services.vector_db.qdrant.utils import MAX_TIE_READ
+
+    svc = _service()
+    leg = _TiedLeg([f"p{i:05d}" for i in range(MAX_TIE_READ * 2)])
+    svc.client.query_batch_points = AsyncMock(side_effect=leg.__call__)
+    svc.client.retrieve.side_effect = lambda **kw: [MagicMock(id=i, payload={}) for i in kw["ids"]]
+    await svc.query_nearest_points("col", [HybridSearchRequest(dense_query=[0.1], limit=1)])
+    assert leg.limits == [4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+
+
+@pytest.mark.asyncio
+async def test_a_tie_that_ends_inside_the_answer_is_not_read_again() -> None:
+    svc = _service()
+    svc.client.query_batch_points = AsyncMock(
+        side_effect=lambda collection_name, requests: [
+            MagicMock(points=[_point("a", 0.9), _point("b", 0.5), _point("c", 0.5), _point("d", 0.1)]) for _ in requests
+        ]
+    )
+    svc.client.retrieve.side_effect = lambda **kw: [MagicMock(id=i, payload={}) for i in kw["ids"]]
+    await svc.query_nearest_points("col", [HybridSearchRequest(dense_query=[0.1], limit=1)])
+    assert svc.client.query_batch_points.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_point_deleted_before_its_payload_is_read_is_left_out() -> None:
+    svc = _service([_point("a", 0.9), _point("b", 0.8)], stored=["b"])
+    out = await svc.query_nearest_points("col", [HybridSearchRequest(dense_query=[0.1], limit=2)])
+    assert [r.id for r in out[0]] == ["b"]
+
+
+@pytest.mark.asyncio
+async def test_without_payloads_nothing_is_read_back() -> None:
+    svc = _service([_point("a", 0.9)])
+    out = await svc.query_nearest_points("col", [HybridSearchRequest(dense_query=[0.1], limit=2, with_payload=False)])
+    assert [(r.id, r.payload) for r in out[0]] == [("a", {})]
+    svc.client.retrieve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_named_payload_fields_are_the_ones_read_back() -> None:
+    svc = _service([_point("a", 0.9)])
+    await svc.query_nearest_points(
+        "col", [HybridSearchRequest(dense_query=[0.1], limit=2, with_payload=["page_content", "metadata"])],
+    )
+    assert svc.client.retrieve.call_args.kwargs["with_payload"] == ["page_content", "metadata"]
 
 
 @pytest.mark.asyncio

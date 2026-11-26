@@ -1,0 +1,1597 @@
+{
+  "description": "CPD-10 assigned item 4 (CPD10-60, CPD10-61): a child run's spec, pin included, exactly as Node's admission and ChildRunService.spawn produce it under CONTROL_PLANE_PIN=on for a migrated org whose agent's owner shared a skill through the agent. Written by backend/nodejs/apps/tests/modules/agent-harness/cpd10-child-owner.test.ts (WRITE_CHILD_OWNER_VECTORS=1) and compared there otherwise; read by backend/python/tests/unit/harness/pinning/test_cpd10_child_owner.py, which feeds each `spec` to the production assembler. `skill` is the skill the owner authored: `bundleDigest` is its content digest as the worker's skill store computes it for `body` (the Python test holds that), and is what the installation approves and the spec pins. `owner`: the child's parent was admitted for a colleague of the agent's owner; `no-owner`: the same, with a definition that names no owner.",
+  "skill": {
+    "name": "notes",
+    "body": "Keep the meeting notes short.",
+    "bundleDigest": "sha256:850de17d804288207ffb77b64d1b3302ff6ff05e1d4c10248b9bd9ffce20be9e"
+  },
+  "cases": [
+    {
+      "id": "owner",
+      "owner": "u1",
+      "spec": {
+        "schemaVersion": 3,
+        "harnessMajor": 2,
+        "foldVersion": 8,
+        "runKind": "child",
+        "executor": {
+          "kind": "loop"
+        },
+        "principalRef": "p_user-1",
+        "model": {
+          "policy": [
+            {
+              "provider": "openai",
+              "model": "gpt-x"
+            }
+          ],
+          "promptVersion": "pipeshub-agent-2026-09",
+          "reasoningEffort": "medium"
+        },
+        "grants": {
+          "tools": [],
+          "sandboxProfile": "none",
+          "egress": "none"
+        },
+        "budgets": {
+          "maxTurns": 15,
+          "maxTokens": 2000000,
+          "maxCostUsd": 5,
+          "activeTimeS": 600,
+          "calendarDeadline": "2027-01-01T00:00:00.000Z",
+          "maxChildren": 0
+        },
+        "capabilitiesDigest": "sha256:e5effe383d3c0278463ad885854012d09c2d44c8fdee3d622bc761e394749933",
+        "extensions": {
+          "x.pipeshub": {
+            "agent": {
+              "agentKey": "agent-1",
+              "definitionVersion": 7,
+              "mode": "auto"
+            },
+            "model": {
+              "modelKey": "model-1",
+              "modelName": "gpt-x"
+            },
+            "knowledge": {
+              "apps": [],
+              "kb": [
+                "kb-1"
+              ],
+              "strictScope": true
+            },
+            "mcp": [],
+            "skills": [
+              {
+                "name": "notes",
+                "bundleDigest": "sha256:850de17d804288207ffb77b64d1b3302ff6ff05e1d4c10248b9bd9ffce20be9e"
+              }
+            ],
+            "mounts": [],
+            "via": "session",
+            "resolved": {
+              "schemaVersion": 1,
+              "headRevision": 1,
+              "routing": {
+                "path": "legacy",
+                "reason": "org_disabled"
+              },
+              "scope": {
+                "agentKey": "agent-1",
+                "projectId": null,
+                "agentOwner": "u1"
+              },
+              "effectiveSet": {
+                "items": [
+                  {
+                    "installation": "skill_notes",
+                    "item": "skill:user/notes@1.0.0",
+                    "kind": "skill",
+                    "state": "ready",
+                    "reason": null,
+                    "tools": [
+                      {
+                        "toolId": "notes@skill_notes/notes",
+                        "descriptorDigest": "sha256:850de17d804288207ffb77b64d1b3302ff6ff05e1d4c10248b9bd9ffce20be9e"
+                      }
+                    ],
+                    "binding": null,
+                    "provenance": {
+                      "grantedBy": "agent:agent-1",
+                      "visibleVia": "owner",
+                      "approvedBy": null
+                    }
+                  }
+                ],
+                "digest": "sha256:63f5ced1bca247012290735fb1a0136e9fbf4dc9c0ed9ecb36b7bbc15d323787"
+              },
+              "effectiveConfig": {
+                "schemaVersion": 1,
+                "dimensions": {
+                  "engineProfile.engine": {
+                    "value": {
+                      "kind": "opencode",
+                      "version": "1.18.34",
+                      "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+                    },
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": {
+                          "kind": "opencode",
+                          "version": "1.18.34",
+                          "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+                        }
+                      }
+                    ]
+                  },
+                  "engineProfile.mode": {
+                    "value": "build",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "build"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "build"
+                      }
+                    ]
+                  },
+                  "engineProfile.isolationMin": {
+                    "value": "gvisor",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "gvisor"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "gvisor"
+                      }
+                    ]
+                  },
+                  "engineProfile.egress": {
+                    "value": "none",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "none"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "none"
+                      }
+                    ]
+                  },
+                  "engineProfile.tools.maxTools": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "engineProfile.tools.effects": {
+                    "value": [
+                      "execute",
+                      "read",
+                      "workspace",
+                      "write"
+                    ],
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": [
+                          "execute",
+                          "read",
+                          "workspace",
+                          "write"
+                        ]
+                      },
+                      {
+                        "layer": "parent",
+                        "value": [
+                          "execute",
+                          "read",
+                          "workspace",
+                          "write"
+                        ]
+                      }
+                    ]
+                  },
+                  "engineProfile.limits.maxSteps": {
+                    "value": 1000,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 1000
+                      },
+                      {
+                        "layer": "parent",
+                        "value": 1000
+                      }
+                    ]
+                  },
+                  "engineProfile.limits.maxWallS": {
+                    "value": 1800,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 1800
+                      },
+                      {
+                        "layer": "parent",
+                        "value": 1800
+                      }
+                    ]
+                  },
+                  "engineProfile.limits.maxTokens": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "engineProfile.limits.maxUsd": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "engineProfile.subAgents": {
+                    "value": {
+                      "enabled": false,
+                      "maxDepth": 1,
+                      "maxConcurrent": 1
+                    },
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": {
+                          "enabled": false,
+                          "maxDepth": 1,
+                          "maxConcurrent": 1
+                        }
+                      },
+                      {
+                        "layer": "parent",
+                        "value": {
+                          "enabled": false,
+                          "maxDepth": 1,
+                          "maxConcurrent": 1
+                        }
+                      }
+                    ]
+                  },
+                  "engineProfile.reasoningEffort": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "engineProfile.approvals.read": {
+                    "value": "allow",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "allow"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "allow"
+                      }
+                    ]
+                  },
+                  "engineProfile.approvals.workspace": {
+                    "value": "allow",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "allow"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "allow"
+                      }
+                    ]
+                  },
+                  "engineProfile.approvals.write": {
+                    "value": "ask",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "ask"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "ask"
+                      }
+                    ]
+                  },
+                  "engineProfile.approvals.execute": {
+                    "value": "ask",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "ask"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "ask"
+                      }
+                    ]
+                  },
+                  "engineProfile.skills": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "engineProfile.accountKinds": {
+                    "value": [
+                      "org_api_key",
+                      "org_cloud",
+                      "user_api_key",
+                      "user_plan_sandbox_login"
+                    ],
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": [
+                          "org_api_key",
+                          "org_cloud",
+                          "user_api_key",
+                          "user_plan_sandbox_login"
+                        ]
+                      },
+                      {
+                        "layer": "parent",
+                        "value": [
+                          "org_api_key",
+                          "org_cloud",
+                          "user_api_key",
+                          "user_plan_sandbox_login"
+                        ]
+                      }
+                    ]
+                  },
+                  "models.routes": {
+                    "value": [
+                      "anthropic:claude-x",
+                      "openai:gpt-x"
+                    ],
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "agent",
+                        "value": [
+                          "anthropic:claude-x",
+                          "openai:gpt-x"
+                        ]
+                      },
+                      {
+                        "layer": "parent",
+                        "value": [
+                          "anthropic:claude-x",
+                          "openai:gpt-x"
+                        ]
+                      }
+                    ]
+                  },
+                  "models.primary": {
+                    "value": "openai:gpt-x",
+                    "setBy": "parent",
+                    "ceilings": []
+                  },
+                  "budgets.maxTurns": {
+                    "value": 15,
+                    "setBy": "request",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 15
+                      },
+                      {
+                        "layer": "parent",
+                        "value": 15
+                      },
+                      {
+                        "layer": "request",
+                        "value": 15
+                      }
+                    ]
+                  },
+                  "budgets.maxTokens": {
+                    "value": 2000000,
+                    "setBy": "request",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 10000000
+                      },
+                      {
+                        "layer": "parent",
+                        "value": 10000000
+                      },
+                      {
+                        "layer": "request",
+                        "value": 2000000
+                      }
+                    ]
+                  },
+                  "budgets.maxCostUsd": {
+                    "value": 5,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 5
+                      },
+                      {
+                        "layer": "parent",
+                        "value": 5
+                      }
+                    ]
+                  },
+                  "budgets.activeTimeS": {
+                    "value": 600,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "request",
+                        "value": 600
+                      },
+                      {
+                        "layer": "parent",
+                        "value": 600
+                      }
+                    ]
+                  },
+                  "rollout.durable.modes": {
+                    "value": [
+                      "auto",
+                      "deep",
+                      "quick",
+                      "react"
+                    ],
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": [
+                          "auto",
+                          "deep",
+                          "quick",
+                          "react"
+                        ]
+                      }
+                    ]
+                  },
+                  "rollout.durable.assistantModes": {
+                    "value": [
+                      "internal_search",
+                      "web_search"
+                    ],
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": [
+                          "internal_search",
+                          "web_search"
+                        ]
+                      }
+                    ]
+                  },
+                  "rollout.durable.modelFamilies": {
+                    "value": null,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "snapshots.ttlDays": {
+                    "value": 7,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 7
+                      }
+                    ]
+                  },
+                  "triggers.webhookMaxBytes": {
+                    "value": 262144,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 262144
+                      }
+                    ]
+                  },
+                  "triggers.webhookPerMinute": {
+                    "value": 30,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 30
+                      }
+                    ]
+                  },
+                  "triggers.notifyChannels": {
+                    "value": [
+                      "email",
+                      "in_app",
+                      "slack"
+                    ],
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": [
+                          "in_app",
+                          "email",
+                          "slack"
+                        ]
+                      }
+                    ]
+                  },
+                  "quotas.activeRunsPerOrg": {
+                    "value": 200,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 200
+                      }
+                    ]
+                  },
+                  "quotas.activeRunsPerUser": {
+                    "value": 10,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 10
+                      }
+                    ]
+                  },
+                  "toolResults.maxChars": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "interactions.waitS": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "interactions.conversationGrants": {
+                    "value": true,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": true
+                      },
+                      {
+                        "layer": "parent",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "recovery.autoResume": {
+                    "value": true,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "sandbox.cpus": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "sandbox.memoryMb": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "sandbox.pids": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "sandbox.scratchMb": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "sandbox.inputMaxMb": {
+                    "value": null,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "ui.reasoning": {
+                    "value": true,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "ui.terminal": {
+                    "value": true,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "rollout.ENABLE_KNOWLEDGE_PUBLICATIONS": {
+                    "value": true,
+                    "setBy": "org",
+                    "ceilings": [
+                      {
+                        "layer": "org",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "rollout.ENABLE_SKILLS": {
+                    "value": true,
+                    "setBy": "org",
+                    "ceilings": [
+                      {
+                        "layer": "org",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "rollout.ENABLE_USER_CONTEXT": {
+                    "value": true,
+                    "setBy": "org",
+                    "ceilings": [
+                      {
+                        "layer": "org",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "rollout.CONTROL_PLANE_CAPABILITIES": {
+                    "value": true,
+                    "setBy": "org",
+                    "ceilings": [
+                      {
+                        "layer": "org",
+                        "value": true
+                      }
+                    ]
+                  }
+                }
+              },
+              "llm": null,
+              "deploymentDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+              "digest": "sha256:ee52f4a2db39d3a4e02700a233b7ff5c817a004d81196469f6b9451b9dedac17"
+            },
+            "parentAsks": true
+          }
+        }
+      }
+    },
+    {
+      "id": "no-owner",
+      "owner": null,
+      "spec": {
+        "schemaVersion": 3,
+        "harnessMajor": 2,
+        "foldVersion": 8,
+        "runKind": "child",
+        "executor": {
+          "kind": "loop"
+        },
+        "principalRef": "p_user-1",
+        "model": {
+          "policy": [
+            {
+              "provider": "openai",
+              "model": "gpt-x"
+            }
+          ],
+          "promptVersion": "pipeshub-agent-2026-09",
+          "reasoningEffort": "medium"
+        },
+        "grants": {
+          "tools": [],
+          "sandboxProfile": "none",
+          "egress": "none"
+        },
+        "budgets": {
+          "maxTurns": 15,
+          "maxTokens": 2000000,
+          "maxCostUsd": 5,
+          "activeTimeS": 600,
+          "calendarDeadline": "2027-01-01T00:00:00.000Z",
+          "maxChildren": 0
+        },
+        "capabilitiesDigest": "sha256:e5effe383d3c0278463ad885854012d09c2d44c8fdee3d622bc761e394749933",
+        "extensions": {
+          "x.pipeshub": {
+            "agent": {
+              "agentKey": "agent-1",
+              "definitionVersion": 7,
+              "mode": "auto"
+            },
+            "model": {
+              "modelKey": "model-1",
+              "modelName": "gpt-x"
+            },
+            "knowledge": {
+              "apps": [],
+              "kb": [
+                "kb-1"
+              ],
+              "strictScope": true
+            },
+            "mcp": [],
+            "skills": [],
+            "mounts": [],
+            "via": "session",
+            "resolved": {
+              "schemaVersion": 1,
+              "headRevision": 1,
+              "routing": {
+                "path": "legacy",
+                "reason": "org_disabled"
+              },
+              "scope": {
+                "agentKey": "agent-1",
+                "projectId": null
+              },
+              "effectiveSet": {
+                "items": [
+                  {
+                    "installation": "skill_notes",
+                    "item": "skill:user/notes@1.0.0",
+                    "kind": "skill",
+                    "state": "unavailable",
+                    "reason": "not_visible",
+                    "tools": [],
+                    "binding": null,
+                    "provenance": {
+                      "grantedBy": "agent:agent-1",
+                      "visibleVia": null,
+                      "approvedBy": null
+                    }
+                  }
+                ],
+                "digest": "sha256:fb80ad6b24b77b96b3376d37f2707f0d347796aa2b2d5e2ae0b7fab8d0c534b3"
+              },
+              "effectiveConfig": {
+                "schemaVersion": 1,
+                "dimensions": {
+                  "engineProfile.engine": {
+                    "value": {
+                      "kind": "opencode",
+                      "version": "1.18.34",
+                      "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+                    },
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": {
+                          "kind": "opencode",
+                          "version": "1.18.34",
+                          "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+                        }
+                      }
+                    ]
+                  },
+                  "engineProfile.mode": {
+                    "value": "build",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "build"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "build"
+                      }
+                    ]
+                  },
+                  "engineProfile.isolationMin": {
+                    "value": "gvisor",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "gvisor"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "gvisor"
+                      }
+                    ]
+                  },
+                  "engineProfile.egress": {
+                    "value": "none",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "none"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "none"
+                      }
+                    ]
+                  },
+                  "engineProfile.tools.maxTools": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "engineProfile.tools.effects": {
+                    "value": [
+                      "execute",
+                      "read",
+                      "workspace",
+                      "write"
+                    ],
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": [
+                          "execute",
+                          "read",
+                          "workspace",
+                          "write"
+                        ]
+                      },
+                      {
+                        "layer": "parent",
+                        "value": [
+                          "execute",
+                          "read",
+                          "workspace",
+                          "write"
+                        ]
+                      }
+                    ]
+                  },
+                  "engineProfile.limits.maxSteps": {
+                    "value": 1000,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 1000
+                      },
+                      {
+                        "layer": "parent",
+                        "value": 1000
+                      }
+                    ]
+                  },
+                  "engineProfile.limits.maxWallS": {
+                    "value": 1800,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 1800
+                      },
+                      {
+                        "layer": "parent",
+                        "value": 1800
+                      }
+                    ]
+                  },
+                  "engineProfile.limits.maxTokens": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "engineProfile.limits.maxUsd": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "engineProfile.subAgents": {
+                    "value": {
+                      "enabled": false,
+                      "maxDepth": 1,
+                      "maxConcurrent": 1
+                    },
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": {
+                          "enabled": false,
+                          "maxDepth": 1,
+                          "maxConcurrent": 1
+                        }
+                      },
+                      {
+                        "layer": "parent",
+                        "value": {
+                          "enabled": false,
+                          "maxDepth": 1,
+                          "maxConcurrent": 1
+                        }
+                      }
+                    ]
+                  },
+                  "engineProfile.reasoningEffort": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "engineProfile.approvals.read": {
+                    "value": "allow",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "allow"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "allow"
+                      }
+                    ]
+                  },
+                  "engineProfile.approvals.workspace": {
+                    "value": "allow",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "allow"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "allow"
+                      }
+                    ]
+                  },
+                  "engineProfile.approvals.write": {
+                    "value": "ask",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "ask"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "ask"
+                      }
+                    ]
+                  },
+                  "engineProfile.approvals.execute": {
+                    "value": "ask",
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": "ask"
+                      },
+                      {
+                        "layer": "parent",
+                        "value": "ask"
+                      }
+                    ]
+                  },
+                  "engineProfile.skills": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "engineProfile.accountKinds": {
+                    "value": [
+                      "org_api_key",
+                      "org_cloud",
+                      "user_api_key",
+                      "user_plan_sandbox_login"
+                    ],
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": [
+                          "org_api_key",
+                          "org_cloud",
+                          "user_api_key",
+                          "user_plan_sandbox_login"
+                        ]
+                      },
+                      {
+                        "layer": "parent",
+                        "value": [
+                          "org_api_key",
+                          "org_cloud",
+                          "user_api_key",
+                          "user_plan_sandbox_login"
+                        ]
+                      }
+                    ]
+                  },
+                  "models.routes": {
+                    "value": [
+                      "anthropic:claude-x",
+                      "openai:gpt-x"
+                    ],
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "agent",
+                        "value": [
+                          "anthropic:claude-x",
+                          "openai:gpt-x"
+                        ]
+                      },
+                      {
+                        "layer": "parent",
+                        "value": [
+                          "anthropic:claude-x",
+                          "openai:gpt-x"
+                        ]
+                      }
+                    ]
+                  },
+                  "models.primary": {
+                    "value": "openai:gpt-x",
+                    "setBy": "parent",
+                    "ceilings": []
+                  },
+                  "budgets.maxTurns": {
+                    "value": 15,
+                    "setBy": "request",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 15
+                      },
+                      {
+                        "layer": "parent",
+                        "value": 15
+                      },
+                      {
+                        "layer": "request",
+                        "value": 15
+                      }
+                    ]
+                  },
+                  "budgets.maxTokens": {
+                    "value": 2000000,
+                    "setBy": "request",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 10000000
+                      },
+                      {
+                        "layer": "parent",
+                        "value": 10000000
+                      },
+                      {
+                        "layer": "request",
+                        "value": 2000000
+                      }
+                    ]
+                  },
+                  "budgets.maxCostUsd": {
+                    "value": 5,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 5
+                      },
+                      {
+                        "layer": "parent",
+                        "value": 5
+                      }
+                    ]
+                  },
+                  "budgets.activeTimeS": {
+                    "value": 600,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "request",
+                        "value": 600
+                      },
+                      {
+                        "layer": "parent",
+                        "value": 600
+                      }
+                    ]
+                  },
+                  "rollout.durable.modes": {
+                    "value": [
+                      "auto",
+                      "deep",
+                      "quick",
+                      "react"
+                    ],
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": [
+                          "auto",
+                          "deep",
+                          "quick",
+                          "react"
+                        ]
+                      }
+                    ]
+                  },
+                  "rollout.durable.assistantModes": {
+                    "value": [
+                      "internal_search",
+                      "web_search"
+                    ],
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": [
+                          "internal_search",
+                          "web_search"
+                        ]
+                      }
+                    ]
+                  },
+                  "rollout.durable.modelFamilies": {
+                    "value": null,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "snapshots.ttlDays": {
+                    "value": 7,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 7
+                      }
+                    ]
+                  },
+                  "triggers.webhookMaxBytes": {
+                    "value": 262144,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 262144
+                      }
+                    ]
+                  },
+                  "triggers.webhookPerMinute": {
+                    "value": 30,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 30
+                      }
+                    ]
+                  },
+                  "triggers.notifyChannels": {
+                    "value": [
+                      "email",
+                      "in_app",
+                      "slack"
+                    ],
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": [
+                          "in_app",
+                          "email",
+                          "slack"
+                        ]
+                      }
+                    ]
+                  },
+                  "quotas.activeRunsPerOrg": {
+                    "value": 200,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 200
+                      }
+                    ]
+                  },
+                  "quotas.activeRunsPerUser": {
+                    "value": 10,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": 10
+                      }
+                    ]
+                  },
+                  "toolResults.maxChars": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "interactions.waitS": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "interactions.conversationGrants": {
+                    "value": true,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": true
+                      },
+                      {
+                        "layer": "parent",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "recovery.autoResume": {
+                    "value": true,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "sandbox.cpus": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "sandbox.memoryMb": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "sandbox.pids": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "sandbox.scratchMb": {
+                    "value": null,
+                    "setBy": "parent",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      },
+                      {
+                        "layer": "parent",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "sandbox.inputMaxMb": {
+                    "value": null,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": null
+                      }
+                    ]
+                  },
+                  "ui.reasoning": {
+                    "value": true,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "ui.terminal": {
+                    "value": true,
+                    "setBy": "release",
+                    "ceilings": [
+                      {
+                        "layer": "release",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "rollout.ENABLE_KNOWLEDGE_PUBLICATIONS": {
+                    "value": true,
+                    "setBy": "org",
+                    "ceilings": [
+                      {
+                        "layer": "org",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "rollout.ENABLE_SKILLS": {
+                    "value": true,
+                    "setBy": "org",
+                    "ceilings": [
+                      {
+                        "layer": "org",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "rollout.ENABLE_USER_CONTEXT": {
+                    "value": true,
+                    "setBy": "org",
+                    "ceilings": [
+                      {
+                        "layer": "org",
+                        "value": true
+                      }
+                    ]
+                  },
+                  "rollout.CONTROL_PLANE_CAPABILITIES": {
+                    "value": true,
+                    "setBy": "org",
+                    "ceilings": [
+                      {
+                        "layer": "org",
+                        "value": true
+                      }
+                    ]
+                  }
+                }
+              },
+              "llm": null,
+              "deploymentDigest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+              "digest": "sha256:0dd3982b6ba0c10cb75f0d87cc3f0e998f63a90bfc295a2c37e468c07f520616"
+            },
+            "parentAsks": true
+          }
+        }
+      }
+    }
+  ]
+}

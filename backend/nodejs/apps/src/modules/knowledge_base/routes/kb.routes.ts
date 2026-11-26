@@ -30,6 +30,10 @@ import {
   setDemoDataPreference,
   setDemoDataWorkspace,
 } from '../controllers/kb_controllers';
+import {
+  PRINCIPAL_DEACTIVATION,
+  type PrincipalDeactivationPort,
+} from '../../agent-harness/application/principal-deactivation';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
   getRecordByIdSchema,
@@ -66,15 +70,13 @@ import { KB_UPLOAD_LIMITS } from '../constants/kb.constants';
 import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/util';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { RequestHandler, Response, NextFunction } from 'express';
-import { Logger } from '../../../libs/services/logger.service';
 import { validateNoXSS, validateNoFormatSpecifiers } from '../../../utils/xss-sanitization';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
-import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
-
-const logger = Logger.getInstance({
-  service: 'KnowledgeBaseRoutes',
-});
+import {
+  bindPathLogFields,
+  guardPathParams,
+} from '../../../libs/middlewares/safe-path-params.middleware';
 
 export function createKnowledgeBaseRouter(
   container: Container,
@@ -94,6 +96,8 @@ export function createKnowledgeBaseRouter(
     'parentType',
     'parentId',
   );
+  // folderId, recordGroupId, parentType and parentId are not log context keys: they stay in the error line's params.
+  bindPathLogFields(router, { kbId: 'kb_id', recordId: 'record_id' });
 
   // Helper: resolve current max upload size (bytes) from platform settings
   const resolveMaxUploadSize = async (): Promise<number> => {
@@ -174,7 +178,6 @@ export function createKnowledgeBaseRouter(
           process(req, res, next);
         });
       } catch (_e) {
-        logger.error('Error creating dynamic buffer upload', { error: _e });
         next(_e);
       }
     };
@@ -220,7 +223,11 @@ export function createKnowledgeBaseRouter(
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.KB_WRITE),
     ValidationMiddleware.validate(demoDataWorkspaceSchema),
-    setDemoDataWorkspace(appConfig),
+    setDemoDataWorkspace(appConfig, () =>
+      container.isBound(PRINCIPAL_DEACTIVATION)
+        ? container.get<PrincipalDeactivationPort>(PRINCIPAL_DEACTIVATION)
+        : null,
+    ),
   );
 
   // Knowledge Hub unified browse API - Root
@@ -339,7 +346,6 @@ export function createKnowledgeBaseRouter(
           })
           .end();
       } catch (_e) {
-        logger.error('Error getting limits', { error: _e });
         next(_e);
       }
     },

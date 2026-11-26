@@ -72,7 +72,7 @@ export const fenceTuning = {
         process.env.MIGRATE_FENCE_CLIENT_OPTIONS,
       ) as FenceSendOptions;
     // the application's own options, not this tool's client (which does not retry writes and waits longer to find a server)
-    return appFenceSendOptions(rt.cfg.mongoUri);
+    return appFenceSendOptions(rt.cfg.appMongoUri);
   },
   pollMs: FENCE_POLL_GAP_MS,
   opsTimeoutMs: Number(process.env.MIGRATE_FENCE_OPS_TIMEOUT_S ?? 120) * 1000,
@@ -250,3 +250,200 @@ export const describeClients = (c: AppClient[]): string =>
     .slice(0, 3)
     .map((x) => x.client || x.appName)
     .join(', ')}${c.length > 3 ? ', …' : ''})`;
+
+interface RoleRef {
+  role: string;
+  db: string;
+}
+interface AppWritesRecord {
+  _id: string;
+  users: Array<{
+    user: string;
+    db: string;
+    revoked: RoleRef[];
+    granted: RoleRef[];
+  }>;
+}
+/** Kept beside the fence: what the switch took away, so that the rollback gives exactly that back. */
+export const APP_WRITES_ID = 'app_writes';
+/** The built-in roles that write a database when granted on it. */
+const DB_WRITE_ROLES = ['readWrite', 'dbOwner'];
+/** The actions that write documents (MongoDB privilege actions). */
+const WRITE_ACTIONS = ['insert', 'update', 'remove'];
+interface Privilege {
+  resource: { db?: string; collection?: string; anyResource?: boolean };
+  actions: string[];
+}
+/**
+ * Whether a user's effective privileges (all its roles, custom ones included) write one of `dbs`. A resource names a database, or all of
+ * them with db "" (https://www.mongodb.com/docs/manual/reference/resource-document/: `{ db: "", collection: "" }` is "all collections …
+ * in all the databases"), or `anyResource`.
+ */
+const writesAny = (privs: Privilege[], dbs: string[]): boolean =>
+  privs.some(
+    (p) =>
+      (p.resource.anyResource === true ||
+        p.resource.db === '' ||
+        dbs.includes(p.resource.db ?? '')) &&
+      p.actions.some((a) => WRITE_ACTIONS.includes(a)),
+  );
+
+export interface AppWritesReport {
+  /** `user@db: role on db, …` for every write role taken away (a `read` role is granted on the same database). */
+  revoked: string[];
+  /** Users MongoDB still lets write the application's databases, with why. */
+  stillWrite: string[];
+  /** Set when the revoke failed partway or could not run; the store switch itself is done. */
+  error?: string;
+}
+
+/** The sentence the switch's message carries about the revoke ('' when MongoDB refuses every other user's writes). */
+export const appWritesNote = (w: AppWritesReport): string =>
+  w.error
+    ? ` MongoDB's write roles were not all taken away (${w.error}): revoke readWrite on the application's database from the application's MongoDB user by hand (revokeRolesFromUser).`
+    : w.stillWrite.length
+      ? ` MongoDB still accepts writes from ${w.stillWrite.join('; ')}: when the application signs in as one of them, only the fence refuses its writes (give it a MongoDB user of its own, and the tool MIGRATE_MONGO_URI, to have MongoDB refuse them too).`
+      : '';
+const userKey = (u: { user: string; db: string }): string =>
+  `${u.user}@${u.db}`;
+const roleText = (r: RoleRef[]): string =>
+  r.map((x) => `${x.role} on ${x.db}`).join(', ');
+
+/**
+ * After the switch (MongoDB retired): every MongoDB user but this tool's own loses the built-in write roles it holds on the application's
+ * databases and gets `read` there instead, so a process that skips the fence (or runs with it off) is refused by the server (code 13).
+ * The tool keeps its login: it writes MongoDB back at a rollback. What was taken is recorded beside the fence for restoreAppWrites.
+ * MongoDB docs (fetched 2026-11-24): revokeRolesFromUser needs the `revokeRole` action, grantRolesToUser `grantRole`, and
+ * `usersInfo: { forAllDBs: true }` lists every user with its roles (https://www.mongodb.com/docs/manual/reference/command/usersInfo/).
+ * Built-in write roles granted on the application's databases are taken away; a user that still writes them afterwards (an administrator,
+ * a custom role) is reported, from its effective privileges (`usersInfo` with `showPrivileges`, one user at a time).
+ */
+export async function revokeAppWrites(
+  rt: MigrationRuntime,
+): Promise<AppWritesReport> {
+  const dbs = [rt.cfg.mongoDb, ...(rt.cfg.slackDb ? [rt.cfg.slackDb] : [])];
+  const report: AppWritesReport = { revoked: [], stillWrite: [] };
+  try {
+    const admin = rt.mongo.db('admin');
+    const status = (await admin.command({ connectionStatus: 1 })) as {
+      authInfo?: { authenticatedUsers?: Array<{ user: string; db: string }> };
+    };
+    const me = new Set(
+      (status.authInfo?.authenticatedUsers ?? []).map(userKey),
+    );
+    const users = ((await admin.command({ usersInfo: { forAllDBs: true } }))
+      .users ?? []) as Array<{
+      user: string;
+      db: string;
+      roles: RoleRef[];
+    }>;
+    const plan: AppWritesRecord['users'] = [];
+    const stillWrites = async (u: {
+      user: string;
+      db: string;
+    }): Promise<boolean> => {
+      const r = (await rt.mongo
+        .db(u.db)
+        .command({ usersInfo: u.user, showPrivileges: true })) as {
+        users?: Array<{ inheritedPrivileges?: Privilege[] }>;
+      };
+      return writesAny(r.users?.[0]?.inheritedPrivileges ?? [], dbs);
+    };
+    const others: Array<{ user: string; db: string; roles: RoleRef[] }> = [];
+    for (const u of users) {
+      const own = u.roles.filter(
+        (r) => DB_WRITE_ROLES.includes(r.role) && dbs.includes(r.db),
+      );
+      if (me.has(userKey(u))) {
+        // without MIGRATE_MONGO_URI the application signs in as this login too, and it cannot be taken away from both
+        if (rt.cfg.mongoUri === rt.cfg.appMongoUri && (await stillWrites(u)))
+          report.stillWrite.push(
+            `${userKey(u)} (${roleText(u.roles)}; the application signs in as this tool's login)`,
+          );
+        continue;
+      }
+      others.push(u);
+      if (!own.length) continue;
+      const granted = [...new Set(own.map((r) => r.db))]
+        .filter((db) => !u.roles.some((r) => r.role === 'read' && r.db === db))
+        .map((db) => ({ role: 'read', db }));
+      plan.push({ user: u.user, db: u.db, revoked: own, granted });
+    }
+    // after the revoke: whoever still writes, through any role
+    const reportOthers = async (): Promise<void> => {
+      for (const u of others)
+        if (await stillWrites(u)) {
+          const left = plan.some((q) => userKey(q) === userKey(u))
+            ? u.roles.filter(
+                (r) => !(DB_WRITE_ROLES.includes(r.role) && dbs.includes(r.db)),
+              )
+            : u.roles;
+          report.stillWrite.push(`${userKey(u)} (${roleText(left)})`);
+        }
+    };
+    if (!plan.length) {
+      await reportOthers();
+      return report;
+    }
+    // recorded first: a revoke cut short still leaves the record that undoes it (granting a role a user holds changes nothing)
+    const col = rt.db().collection<AppWritesRecord>('docstore_fence');
+    const prior = (await col.findOne({ _id: APP_WRITES_ID }))?.users ?? [];
+    await col.updateOne(
+      { _id: APP_WRITES_ID },
+      {
+        $set: {
+          users: [
+            ...prior.filter(
+              (p) => !plan.some((q) => userKey(q) === userKey(p)),
+            ),
+            ...plan,
+          ],
+        },
+      },
+      { upsert: true },
+    );
+    for (const u of plan) {
+      const on = rt.mongo.db(u.db);
+      // read first, so the user never loses its reads
+      if (u.granted.length)
+        await on.command({ grantRolesToUser: u.user, roles: u.granted });
+      await on.command({ revokeRolesFromUser: u.user, roles: u.revoked });
+      report.revoked.push(`${userKey(u)}: ${roleText(u.revoked)}`);
+    }
+    await reportOthers();
+  } catch (e) {
+    report.error = e instanceof Error ? e.message : String(e);
+  }
+  return report;
+}
+
+/**
+ * When MongoDB is made the store again: gives back the write roles revokeAppWrites took and drops the `read` it granted. Returns ''
+ * when there was nothing to do or all went well; otherwise what an operator must run, since the application cannot write until then.
+ */
+export async function restoreAppWrites(rt: MigrationRuntime): Promise<string> {
+  const col = rt.db().collection<AppWritesRecord>('docstore_fence');
+  const todo: string[] = [];
+  try {
+    const rec = await col.findOne({ _id: APP_WRITES_ID });
+    if (!rec) return '';
+    for (const u of rec.users) {
+      try {
+        const on = rt.mongo.db(u.db);
+        await on.command({ grantRolesToUser: u.user, roles: u.revoked });
+        if (u.granted.length)
+          await on.command({ revokeRolesFromUser: u.user, roles: u.granted });
+      } catch {
+        todo.push(
+          `db.getSiblingDB(${JSON.stringify(u.db)}).grantRolesToUser(${JSON.stringify(u.user)}, ${JSON.stringify(u.revoked)})`,
+        );
+      }
+    }
+    if (!todo.length) await col.deleteOne({ _id: APP_WRITES_ID });
+  } catch (e) {
+    return ` MongoDB's write roles could not be given back (${e instanceof Error ? e.message : String(e)}): read the ${APP_WRITES_ID} document of docstore_fence and grant each user its revoked roles before the application starts.`;
+  }
+  return todo.length
+    ? ` The application's MongoDB users could not get their write roles back: run in mongosh as an administrator, before the application starts: ${todo.join('; ')}`
+    : '';
+}

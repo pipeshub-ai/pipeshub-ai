@@ -15,6 +15,7 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames, DeleteSource
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.core.org_context import for_org
 from app.models.entities import AccessRule
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.permissions.errors import ViewerScopesUnavailable
@@ -37,6 +38,7 @@ from tests.integration.graph_permissions.write_path_support import (
     _suffix,
 )
 
+from .layers import as_org
 from .test_currency_real_graph import current, finish_pass
 from .test_generation_paths import _scope_fields_on, _writers_world, backend  # noqa: F401
 
@@ -246,7 +248,9 @@ async def test_the_registry_is_what_the_hierarchy_view_returns_for_the_organisat
     moved = _record(child.external_record_id, connector_id=conn, group_external=space2)
     await processor.on_records_moved([(child.external_record_id, moved, [])])
     assert await flat(view, ORG) == {child.id} and set(await view.pending_scopes(ORG)) == {conn}      # by connector
-    assert foreign in await flat(view, "another-org") and foreign not in await flat(view, ORG)
+    with as_org("another-org"):      # the other org's own pass reads its root
+        assert foreign in await flat(view, "another-org")
+    assert foreign not in await flat(view, ORG)
 
 
 async def test_a_pending_record_is_visible_again_when_the_pass_completes(backend) -> None:
@@ -338,7 +342,6 @@ async def test_a_record_with_no_other_sharer_registers_nothing_and_opens_nothing
 
 
 async def test_a_sharer_read_that_fails_marks_the_connectors_and_does_not_fail_the_write(backend, monkeypatch) -> None:
-    from app.core.org_context import for_org
 
     conn, page, child, shared = await _shared(backend)
 

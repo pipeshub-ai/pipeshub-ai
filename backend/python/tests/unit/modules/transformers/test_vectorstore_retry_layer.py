@@ -117,7 +117,7 @@ async def test_a_local_embedding_server_is_probed_without_the_gateway() -> None:
     local = AsyncMock(spec=EmbeddingServerEmbeddings)
     local.aembed_query = AsyncMock(side_effect=[_error(503)])
     with patch("app.modules.transformers.vectorstore.get_embedding_gateway", return_value=gateway), \
-            patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=local), \
+            patch("app.utils.llm.get_default_embedding_model", return_value=local), \
             pytest.raises(Exception):  # noqa: B017 - the build reports the model as unavailable
         await vs._build_embedding_model(None, "hash")
     assert local.aembed_query.await_count == 1, "the gateway must not repeat a local probe"

@@ -40,7 +40,7 @@ function DetailRow({ label, value }: DetailRowProps) {
         gap: 'var(--space-1)',
       }}
     >
-      <Text size="1" weight="medium" style={{ color: 'var(--olive-10)' }}>
+      <Text size="1" weight="medium" style={{ color: 'var(--olive-11)' }}>
         {label}
       </Text>
       <Text size="3" style={{ color: 'var(--olive-12)', wordBreak: 'break-all' }}>
@@ -66,7 +66,7 @@ function LinkRow({ label, href }: LinkRowProps) {
         gap: 'var(--space-1)',
       }}
     >
-      <Text size="1" weight="medium" style={{ color: 'var(--olive-10)' }}>
+      <Text size="1" weight="medium" style={{ color: 'var(--olive-11)' }}>
         {label}
       </Text>
       <Flex align="center" gap="1">
@@ -75,7 +75,7 @@ function LinkRow({ label, href }: LinkRowProps) {
           target="_blank"
           rel="noopener noreferrer"
           style={{
-            color: 'var(--accent-9)',
+            color: 'var(--accent-11)',
             textDecoration: 'none',
             fontSize: 'var(--font-size-3)',
             wordBreak: 'break-all',
@@ -96,11 +96,11 @@ function LinkRow({ label, href }: LinkRowProps) {
             alignItems: 'center',
             justifyContent: 'center',
             flexShrink: 0,
-            color: 'var(--accent-9)',
+            color: 'var(--accent-11)',
             lineHeight: 0,
           }}
         >
-          <MaterialIcon name="open_in_new" size={14} color="var(--accent-9)" />
+          <MaterialIcon name="open_in_new" size={14} color="var(--accent-11)" />
         </a>
       </Flex>
     </Box>

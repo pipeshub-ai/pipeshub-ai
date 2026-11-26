@@ -63,4 +63,10 @@ export interface OutboxRepository {
     failure: { attempts: number; nextAttemptAt: Date; lastError: string },
   ): Promise<void>;
   statusCounts(): Promise<Record<OutboxStatus, number>>;
+  /**
+   * An org's erasure: removes up to `limit` of the org's delivered events and answers how many. An event still on
+   * its way (pending or being published) stays, so the org's own deletion event still goes out; the TTL sweep
+   * removes it once delivered.
+   */
+  eraseDeliveredForOrg(orgId: string, limit: number): Promise<number>;
 }

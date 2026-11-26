@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 _MAIN: dict[str, Any] = json.loads(PINNED_LISTS.read_text())
 
-_NEW = ("msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx")
+_NEW = ("msg", "odt", "rtf", "xlsm", "log", "cfg", "docm", "dotx", "potx", "pptm")
 _GRAMMARS = ("pyi", "mts", "cts", "scala", "groovy", "gradle", "lua")
 _RTF = ("application/rtf", "text/rtf", "application/x-rtf")
 _NEW_MIMES = (
@@ -41,7 +41,7 @@ _NEW_MIMES = (
 )
 _TEMPLATE_MIMES = _NEW_MIMES[-2:]
 _TEXT_MIMES = ("text/x-log", "text/x-cfg")
-# The macro-enabled deck: indexable by its mime only, read as the pptx it is (reason pptm-mime).
+# The macro-enabled deck, read as the pptx it is; its mime keeps main's ppt hint.
 _PPTM_MIME = "application/vnd.ms-powerpoint.presentation.macroEnabled.12"
 # What each list gains: the new types, the code grammars, the xlsm hint.
 _ADDED: dict[str, object] = {
@@ -117,7 +117,7 @@ def _main_value_for_spelling(table: dict[str, str], mime: str) -> str | None:
 
 def test_the_tier_lists_are_reproduced_by_the_fall_through() -> None:
     by_ext = {e: file_types.by_extension(e).tier for e in file_types._BY_EXTENSION}  # type: ignore[union-attr]
-    heavy_new = {"odt", "rtf", "xlsm", "docm", "dotx", "potx"}
+    heavy_new = {"odt", "rtf", "xlsm", "docm", "dotx", "potx", "pptm"}
     light_new = {"msg", "log", "cfg"}
     assert _sorted(e for e, t in by_ext.items() if t == "heavy") == sorted({*_MAIN["HEAVY_EXTENSIONS"], *heavy_new})
     assert _sorted(e for e, t in by_ext.items() if t == "light") == sorted({*_MAIN["LIGHT_EXTENSIONS"], *light_new})
@@ -148,7 +148,7 @@ def test_the_node_table_is_main_s_without_the_upper_case_duplicates() -> None:
         # A new .log upload is stored under its own mime (rows stored as text/plain keep it).
         "log": "text/x-log", "cfg": "text/x-cfg", "docm": "application/vnd.ms-word.document.macroEnabled.12",
         "dotx": _TEMPLATE_MIMES[0], "potx": _TEMPLATE_MIMES[1],
-        "xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+        "xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12", "pptm": _PPTM_MIME,
     }
     assert file_types.node_upload_table() == dict(sorted({**main, **added}.items()))
     dropped = {k for k in _MAIN["node_extension_to_mime"] if k != k.lower()}

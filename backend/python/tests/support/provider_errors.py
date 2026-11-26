@@ -11,8 +11,11 @@ import httpx
 import openai
 from pydantic import BaseModel, ValidationError
 
+from app.agent_loop_lib.core.exceptions import TransportError
+
 MARK = "F24BMARK jane.doe@example.com"
 SENTINELS = ("F24BMARK", "@example.com")  # MARK, and any test account's email
+SECRET = "sk-proj-F30SECRETabcdefghijklmnopqrstuv"  # a key-shaped secret a body can carry; the masker knows the shape
 
 _OPENAI_ERRORS: dict[int, type[openai.APIStatusError]] = {
     400: openai.BadRequestError,
@@ -25,10 +28,19 @@ _REQUEST = httpx.Request("POST", "https://api.example/v1/chat/completions")
 
 
 def openai_error(status: int, error: dict | None = None) -> openai.APIStatusError:
-    """The openai SDK's error for ``status``, its message in the SDK's own format (``Error code: N - {body}``)."""
+    """The openai SDK's error for ``status``, its message in the SDK's own format (``Error code: N - {body}``) and,
+    as the SDK does, the inner ``error`` object as ``body`` (so ``.code`` and ``.type`` are set from it)."""
     body = {"error": error or {"message": MARK, "type": "invalid_request_error", "param": None, "code": None}}
     response = httpx.Response(status, request=_REQUEST, headers={"x-request-id": "req_f24b"})
-    return _OPENAI_ERRORS[status](f"Error code: {status} - {body}", response=response, body=body)
+    return _OPENAI_ERRORS[status](f"Error code: {status} - {body}", response=response, body=body["error"])
+
+
+def transport_error(status: int, error: dict | None = None) -> TransportError:
+    """What the agent loop's LangChain transport raises for a provider's answer: the SDK's error, quoted, and raised
+    ``from`` it (``LangChainTransport._wrap_error``)."""
+    sdk = openai_error(status, error)
+    return with_cause(TransportError(f"LangChain transport error (complete): {type(sdk).__name__}: {sdk}",
+                                     status_code=status), sdk)
 
 
 def httpx_error(status: int, message: str = MARK) -> httpx.HTTPStatusError:

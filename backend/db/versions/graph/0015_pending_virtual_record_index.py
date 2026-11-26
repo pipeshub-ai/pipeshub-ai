@@ -9,16 +9,18 @@ depends_on = None
 older_code_compatible = "adds an index only; older code does not read the field and reads the same rows"
 
 # records that carry a pending vrid are few: the partial predicate keeps the index tiny, and every holder query repeats it
-INDEXES = [
-    ("nodes_record_pending_vrid", "org_id, (doc->>'pendingVirtualRecordId')", "coll = 'records' AND doc ? 'pendingVirtualRecordId'"),
+ONLINE_INDEXES = [
+    {"table": "graph.nodes", "name": "nodes_record_pending_vrid", "cols": "org_id, (doc->>'pendingVirtualRecordId')",
+     "where": "coll = 'records' AND doc ? 'pendingVirtualRecordId'"},
 ]
 
 
 def upgrade():
-    for name, cols, where in INDEXES:
-        ensure_partitioned_index(op.get_bind(), "graph.nodes", name, cols, where=where, blocking=True)
+    # db.migrate builds ONLINE_INDEXES before this transaction without blocking writers; here they are found valid (a new install builds them, empty)
+    for ix in ONLINE_INDEXES:
+        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)
 
 
 def downgrade():
-    for name, *_ in INDEXES:
-        op.execute(f"DROP INDEX IF EXISTS graph.{name}")
+    for ix in ONLINE_INDEXES:
+        op.execute(f"DROP INDEX IF EXISTS graph.{ix['name']}")

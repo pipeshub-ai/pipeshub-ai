@@ -33,6 +33,7 @@ from app.modules.entity_resolution.organizations import organization_key
 from app.modules.indexing.entity_index_rebuild import EntityIndexState
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
     from logging import Logger
 
     from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
@@ -97,6 +98,7 @@ class _DryRunStore:
 
     async def replace_record_entity_relations(
         self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+        *, keep_edge_types: Collection[str] = (),
     ) -> None:
         self.edges += len(edges)
 

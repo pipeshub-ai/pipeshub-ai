@@ -217,19 +217,22 @@ async function send(page: import('@playwright/test').Page, text: string) {
   await textarea.press('Enter');
 }
 
+/** UXINT-2: a closed question is one receipt line ("You answered: EU · Chart", or skipped by a newer message). */
+function receipt(page: import('@playwright/test').Page) {
+  return page.getByTestId('interaction-receipt');
+}
+
+/** The open card's own question (the announcer's live region says it too, outside the card). */
+function cardQuestion(page: import('@playwright/test').Page, text: string) {
+  return page.getByTestId('question-card').getByText(text);
+}
+
 function submitBtn(page: import('@playwright/test').Page) {
   return page.locator('button').filter({ hasText: /^Submit$/ });
 }
 
 function skipBtn(page: import('@playwright/test').Page) {
   return page.locator('button').filter({ hasText: /^Skip$/ });
-}
-
-// A fully answered card opens closed (Show more reveals it); builds before that show the question at once.
-async function openClosedCards(page: import('@playwright/test').Page, question: string) {
-  const more = page.getByRole('button', { name: /^Show more/ });
-  await expect(more.or(page.getByText(question)).first()).toBeVisible({ timeout: 20_000 });
-  while (await more.count()) await more.first().click();
 }
 
 test.describe('Ask user question — journeys', () => {
@@ -248,7 +251,7 @@ test.describe('Ask user question — journeys', () => {
     await page.goto('/chat/');
     await page.waitForSelector('textarea', { timeout: 15_000 });
     await send(page, 'Help me write a report');
-    await expect(page.getByText('Which department are you in?')).toBeVisible({ timeout: 20_000 });
+    await expect(cardQuestion(page, 'Which department are you in?')).toBeVisible({ timeout: 20_000 });
     await expect(submitBtn(page)).toHaveCount(1);
 
     await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
@@ -281,7 +284,7 @@ test.describe('Ask user question — journeys', () => {
     await page.goto('/chat/');
     await page.waitForSelector('textarea', { timeout: 15_000 });
     await send(page, 'plan the launch');
-    await expect(page.getByText('Which region?')).toBeVisible({ timeout: 20_000 });
+    await expect(cardQuestion(page, 'Which region?')).toBeVisible({ timeout: 20_000 });
 
     await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -318,12 +321,10 @@ test.describe('Ask user question — journeys', () => {
       msg({ _id: 'b2', messageType: 'bot_response', content: 'Planning the EU chart.' }),
     ]));
     await page.goto(`/chat/?conversationId=${id}`);
-    await openClosedCards(page, 'Which region?');
-    await expect(page.getByText('Which region?')).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByText('Which format?')).toBeVisible();
+    // Both answers on the closed card's one line, in question order.
+    await expect(receipt(page)).toHaveText(/You answered: EU · Chart$/, { timeout: 20_000 });
+    await expect(receipt(page)).toHaveAttribute('data-status', 'answered');
     await expect(page.getByText('Planning the EU chart.')).toBeVisible();
-    await expect(page.getByText('EU').first()).toBeVisible();
-    await expect(page.getByText('Chart').first()).toBeVisible();
     await expect(submitBtn(page)).toHaveCount(0);
     await expect(page.getByText('User selections:')).toHaveCount(0);
   });
@@ -347,9 +348,8 @@ test.describe('Ask user question — journeys', () => {
       msg({ _id: 'b2', messageType: 'bot_response', content: 'That was fun.' }),
     ]));
     await page.goto(`/chat/?conversationId=${id}`);
-    await openClosedCards(page, 'Random question number 1?');
-    await expect(page.getByText('Random question number 1?')).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByText('Random question number 17?')).toBeVisible();
+    await expect(receipt(page)).toHaveCount(1, { timeout: 20_000 });
+    await expect(receipt(page)).toHaveText(new RegExp(`You answered: ${Array(17).fill('Yes').join(' · ')}$`));
     await expect(page.getByText('That was fun.')).toBeVisible();
     await expect(submitBtn(page)).toHaveCount(0);
   });
@@ -369,7 +369,7 @@ test.describe('Ask user question — journeys', () => {
       msg({ _id: 'b1', messageType: 'bot_response', content: '' }),
     ]));
     await page.goto(`/chat/?conversationId=${id}`);
-    await expect(page.getByText('Which region?')).toBeVisible({ timeout: 20_000 });
+    await expect(cardQuestion(page, 'Which region?')).toBeVisible({ timeout: 20_000 });
     await expect(submitBtn(page)).toHaveCount(1);
     await expect(page.locator('[role="radio"]')).toHaveCount(3);
   });
@@ -396,14 +396,15 @@ test.describe('Ask user question — journeys', () => {
       msg({ _id: 'b3', messageType: 'bot_response', content: '' }),
     ]));
     await page.goto(`/chat/?conversationId=${id}`);
-    await expect(page.getByText('Which format?')).toBeVisible({ timeout: 20_000 });
+    await expect(cardQuestion(page, 'Which format?')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText('Planning for EU.')).toBeVisible();
     await expect(submitBtn(page)).toHaveCount(1);
-    await openClosedCards(page, 'Which region?');
-    await expect(page.getByText('Which region?')).toBeVisible();
+    // The answered one is a receipt, not a second card.
+    await expect(receipt(page)).toHaveText([/You answered: EU$/]);
+    await expect(page.getByTestId('question-card')).toHaveCount(1);
   });
 
-  test('a later hi answers the open card: the card closes and the reply shows', async ({ page }) => {
+  test('card then a later hi: the hi answers the card, which closes to its receipt', async ({ page }) => {
     const id = 'conv-ask-then-hi';
     const asked = [
       msg({ _id: 'u1', messageType: 'user_query', content: 'helpme' }),
@@ -427,7 +428,7 @@ test.describe('Ask user question — journeys', () => {
     await page.goto('/chat/');
     await page.waitForSelector('textarea', { timeout: 15_000 });
     await send(page, 'helpme');
-    await expect(page.getByText('Which region?')).toBeVisible({ timeout: 20_000 });
+    await expect(cardQuestion(page, 'Which region?')).toBeVisible({ timeout: 20_000 });
 
     await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -444,12 +445,17 @@ test.describe('Ask user question — journeys', () => {
     });
     await send(page, 'hiii');
     await expect(page.getByText('Hi! How can I help you today?')).toBeVisible({ timeout: 20_000 });
-    // Typing while the card is open answers it, so the card closes.
+    // Main #4570: a message typed while the card is open is its answer on the server, so the card closes to
+    // "You replied in the chat." and cannot be answered again.
+    await expect(receipt(page)).toHaveText([/You replied in the chat\.$/]);
+    await expect(receipt(page)).toHaveAttribute('data-status', 'replied');
     await expect(submitBtn(page)).toHaveCount(0);
+    await expect(page.locator('[role="radio"]')).toHaveCount(0);
+    await expect(page.getByText('Hi! How can I help you today?')).toHaveCount(1);
     await expect(page.getByTestId('chat-stopped-marker')).toHaveCount(0);
   });
 
-  test('a later chat answers the open card once and does not copy onto it', async ({ page }) => {
+  test('a later chat answers the card and is not copied onto it', async ({ page }) => {
     const id = 'conv-ask-then-later-list';
     const later = 'You asked me to: send an email saying Hello from Pipeshub.';
     const asked = [
@@ -474,7 +480,7 @@ test.describe('Ask user question — journeys', () => {
     await page.goto('/chat/');
     await page.waitForSelector('textarea', { timeout: 15_000 });
     await send(page, 'ask me one question');
-    await expect(page.getByText('Which region?')).toBeVisible({ timeout: 20_000 });
+    await expect(cardQuestion(page, 'Which region?')).toBeVisible({ timeout: 20_000 });
 
     await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
@@ -491,8 +497,13 @@ test.describe('Ask user question — journeys', () => {
     });
     await send(page, 'what are the things i asked u to do');
     await expect(page.getByText(later)).toBeVisible({ timeout: 20_000 });
-    // Typing while the card is open answers it, so the card closes.
+    // Main #4570: a message typed while the card is open is its answer on the server, so the card closes to
+    // "You replied in the chat." and cannot be answered again.
+    await expect(receipt(page)).toHaveText([/You replied in the chat\.$/]);
+    await expect(receipt(page)).toHaveAttribute('data-status', 'replied');
     await expect(submitBtn(page)).toHaveCount(0);
+    await expect(page.locator('[role="radio"]')).toHaveCount(0);
+    // The later chat is not copied onto the card.
     await expect(page.getByText(later)).toHaveCount(1);
   });
 
@@ -514,7 +525,7 @@ test.describe('Ask user question — journeys', () => {
     await page.goto('/chat/');
     await page.waitForSelector('textarea', { timeout: 15_000 });
     await send(page, 'ask me five questions');
-    await expect(page.getByText('Pick option for question 1?')).toBeVisible({ timeout: 20_000 });
+    await expect(cardQuestion(page, 'Pick option for question 1?')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText(/Step 1 of 5/i)).toBeVisible();
 
     for (let step = 1; step <= 5; step += 1) {
@@ -557,7 +568,7 @@ test.describe('Ask user question — journeys', () => {
     await page.goto('/chat/');
     await page.waitForSelector('textarea', { timeout: 15_000 });
     await send(page, 'plan the launch');
-    await expect(page.getByText('Which region?')).toBeVisible({ timeout: 20_000 });
+    await expect(cardQuestion(page, 'Which region?')).toBeVisible({ timeout: 20_000 });
 
     let cancelBody: { runId?: string } | null = null;
     await page.route(`**/api/v1/conversations/${id}/cancel`, (route) => {
@@ -582,8 +593,9 @@ test.describe('Ask user question — journeys', () => {
     await stop.click();
     await expect.poll(() => cancelBody !== null, { timeout: 5_000 }).toBe(true);
     await expect(stop).not.toBeVisible({ timeout: 8_000 });
-    await openClosedCards(page, 'Which region?');
-    await expect(page.getByText('Which region?')).toBeVisible();
+    // The card keeps what was answered: its receipt stays above the stopped reply.
+    await expect(receipt(page)).toHaveText([/You answered: EU$/]);
+    await expect(submitBtn(page)).toHaveCount(0);
   });
 
   test('regenerate after an answered card keeps the saved answers and shows the new reply', async ({ page }) => {
@@ -627,10 +639,7 @@ test.describe('Ask user question — journeys', () => {
         }),
       });
     });
-    const regen = page
-      .locator('button')
-      .filter({ has: page.locator('span.material-icons-outlined').filter({ hasText: 'refresh' }) })
-      .first();
+    const regen = page.getByRole('button', { name: 'Regenerate', exact: true });
     await expect(regen).toBeVisible({ timeout: 8_000 });
     await regen.click();
     await expect(page.getByText('Regenerate response')).toBeVisible({ timeout: 5_000 });
@@ -639,9 +648,7 @@ test.describe('Ask user question — journeys', () => {
     await sendRegen.click();
     await expect(page.getByText('Regenerated plan for EU.')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText('Planning for EU.')).toHaveCount(0);
-    await openClosedCards(page, 'Which region?');
-    await expect(page.getByText('Which region?')).toBeVisible();
-    await expect(page.getByText('EU', { exact: true })).toBeVisible();
+    await expect(receipt(page)).toHaveText([/You answered: EU$/]);
   });
 
   test('a comma in the picked label is sent whole', async ({ page }) => {
@@ -661,7 +668,7 @@ test.describe('Ask user question — journeys', () => {
     await page.goto('/chat/');
     await page.waitForSelector('textarea', { timeout: 15_000 });
     await send(page, 'compare revenue');
-    await expect(page.getByText('Which metric?')).toBeVisible({ timeout: 20_000 });
+    await expect(cardQuestion(page, 'Which metric?')).toBeVisible({ timeout: 20_000 });
     await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       body = route.request().postData() ?? '';
@@ -679,7 +686,7 @@ test.describe('Ask user question — journeys', () => {
 });
 
 test.describe('Ask user question — stop a first turn that only asked', () => {
-  test('Stop as the card appears, then chat: the chat answers the card and nothing is left Stopped', async ({ page }) => {
+  test('Stop as the card appears leaves it open; a later chat then answers it', async ({ page }) => {
     const id = 'conv-ask-stop-then-chat';
     const asked = [
       msg({ _id: 'u1', messageType: 'user_query', content: 'helpme' }),
@@ -709,7 +716,7 @@ test.describe('Ask user question — stop a first turn that only asked', () => {
     await serveOpenSseStream(page, '/api/v1/conversations/stream', openAsk);
 
     await send(page, 'helpme');
-    await expect(page.getByText('Which region?')).toBeVisible({ timeout: 20_000 });
+    await expect(cardQuestion(page, 'Which region?')).toBeVisible({ timeout: 20_000 });
     const stop = page.getByTestId('chat-stop-button');
     await expect(stop).toBeVisible({ timeout: 5_000 });
     await stop.click();
@@ -732,8 +739,15 @@ test.describe('Ask user question — stop a first turn that only asked', () => {
     });
     await send(page, 'hiii');
     await expect(page.getByText('Hi! How can I help you today?')).toBeVisible({ timeout: 20_000 });
-    // Typing while the card is open answers it, so the card closes.
+    // Main #4570: a message typed while the card is open is its answer on the server, so the card closes to
+    // "You replied in the chat." and cannot be answered again.
+    await expect(receipt(page)).toHaveText([/You replied in the chat\.$/]);
+    await expect(receipt(page)).toHaveAttribute('data-status', 'replied');
     await expect(submitBtn(page)).toHaveCount(0);
+    await expect(page.locator('[role="radio"]')).toHaveCount(0);
+    await expect(page.getByText('Hi! How can I help you today?')).toHaveCount(1);
+    // Main #4763: the card was the stopped turn's whole output and shows its own state, so neither turn says
+    // Stopped.
     await expect(page.getByTestId('chat-stopped-marker')).toHaveCount(0);
   });
 
@@ -760,7 +774,7 @@ test.describe('Ask user question — stop a first turn that only asked', () => {
       });
     });
     await send(page, 'ask me something');
-    await expect(page.getByText('Which region?')).toBeVisible({ timeout: 20_000 });
+    await expect(cardQuestion(page, 'Which region?')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId('chat-stop-button')).toHaveCount(0);
     await expect(submitBtn(page)).toHaveCount(1);
   });

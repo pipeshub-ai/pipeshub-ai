@@ -18,14 +18,20 @@ XL_HEAVY_BYTES = 25 * 1024 * 1024
 
 
 def classify(extension: str | None, mime_type: str | None) -> ParseTier:
-    """Return the parse tier for a document.
-
-    Extension takes priority over mime type (more specific than a generic
-    ``application/octet-stream``); unknown formats default to HEAVY — the
-    safe direction, since an unrecognised format is more likely to need a
-    slow/expensive fallback parser than to be simple structured text.
+    """Return the parse tier for a document: the tier of the reader its labels select (a SQL table is read by the light
+    SQL reader, a CSV sent as ``application/vnd.ms-excel`` by the XLS reader). Labels that select no reader fall back to
+    the extension over the mime (more specific than a generic ``application/octet-stream``), and unknown formats default
+    to HEAVY — the safe direction, since an unrecognised format is more likely to need a slow/expensive fallback parser
+    than to be simple structured text.
     """
     return ParseTier(file_types.tier(extension, mime_type))
+
+
+def reader_tier(extension: str | None, mime_type: str | None, reader: file_types.Tier | None) -> ParseTier:
+    """The parse tier of a record read by a reader of tier *reader*: the labels' tier, raised to HEAVY when that
+    reader is a heavy format: what the handler resolves and the labels do not show, such as the stored mime of an event
+    that names none, or the record's path and name. The labels decide otherwise (``classify``)."""
+    return ParseTier.HEAVY if reader == "heavy" else classify(extension, mime_type)
 
 
 def parse_cost(tier: ParseTier, size_bytes: int | None) -> int:

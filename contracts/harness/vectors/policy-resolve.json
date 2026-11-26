@@ -1,0 +1,4974 @@
+{
+  "description": "The generic policy resolver (CPD-3): Node (domain/policy) and Python (harness_core.policy) resolve every case to the same effective config and digest, or the same refusal (code, dimension, layer), over the release's dimension table (policy-dimensions.json). `orders` hold each order kind's leq and meet; `invalidTables` are tables both registries refuse, naming the row. Expectations were computed by the Python resolver and reviewed by hand.",
+  "orders": [
+    {
+      "id": "min",
+      "order": {
+        "kind": "min"
+      },
+      "cases": [
+        {
+          "a": 1,
+          "b": 2,
+          "leq": true,
+          "meet": 1
+        },
+        {
+          "a": 2,
+          "b": 1,
+          "leq": false,
+          "meet": 1
+        },
+        {
+          "a": null,
+          "b": 3,
+          "leq": false,
+          "meet": 3
+        },
+        {
+          "a": 3,
+          "b": null,
+          "leq": true,
+          "meet": 3
+        },
+        {
+          "a": null,
+          "b": null,
+          "leq": true,
+          "meet": null
+        },
+        {
+          "a": 2.5,
+          "b": 2.5,
+          "leq": true,
+          "meet": 2.5
+        }
+      ]
+    },
+    {
+      "id": "subset",
+      "order": {
+        "kind": "subset"
+      },
+      "cases": [
+        {
+          "a": [
+            "a"
+          ],
+          "b": [
+            "a",
+            "b"
+          ],
+          "leq": true,
+          "meet": [
+            "a"
+          ]
+        },
+        {
+          "a": [
+            "c"
+          ],
+          "b": [
+            "a"
+          ],
+          "leq": false,
+          "meet": []
+        },
+        {
+          "a": [],
+          "b": [
+            "a"
+          ],
+          "leq": true,
+          "meet": []
+        },
+        {
+          "a": null,
+          "b": [
+            "a"
+          ],
+          "leq": false,
+          "meet": [
+            "a"
+          ]
+        },
+        {
+          "a": [
+            "a"
+          ],
+          "b": null,
+          "leq": true,
+          "meet": [
+            "a"
+          ]
+        },
+        {
+          "a": [
+            "b",
+            "a"
+          ],
+          "b": [
+            "a",
+            "b",
+            "c"
+          ],
+          "leq": true,
+          "meet": [
+            "a",
+            "b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rank",
+      "order": {
+        "kind": "rank",
+        "ranks": [
+          [
+            "low"
+          ],
+          [
+            "medium"
+          ],
+          [
+            "high"
+          ]
+        ]
+      },
+      "cases": [
+        {
+          "a": "low",
+          "b": "high",
+          "leq": true,
+          "meet": "low"
+        },
+        {
+          "a": "high",
+          "b": "low",
+          "leq": false,
+          "meet": "low"
+        },
+        {
+          "a": "medium",
+          "b": null,
+          "leq": true,
+          "meet": "medium"
+        },
+        {
+          "a": null,
+          "b": "low",
+          "leq": false,
+          "meet": "low"
+        }
+      ]
+    },
+    {
+      "id": "rank-raise",
+      "order": {
+        "kind": "rank-raise",
+        "ranks": [
+          [
+            "docker"
+          ],
+          [
+            "gvisor",
+            "k8s",
+            "managed"
+          ],
+          [
+            "microvm"
+          ]
+        ]
+      },
+      "cases": [
+        {
+          "a": "microvm",
+          "b": "docker",
+          "leq": true,
+          "meet": "microvm"
+        },
+        {
+          "a": "docker",
+          "b": "gvisor",
+          "leq": false,
+          "meet": "gvisor"
+        },
+        {
+          "a": "k8s",
+          "b": "gvisor",
+          "leq": true,
+          "meet": "gvisor"
+        },
+        {
+          "a": "gvisor",
+          "b": "k8s",
+          "leq": true,
+          "meet": "gvisor"
+        },
+        {
+          "a": "managed",
+          "b": "microvm",
+          "leq": false,
+          "meet": "microvm"
+        }
+      ]
+    },
+    {
+      "id": "bool-and",
+      "order": {
+        "kind": "bool-and"
+      },
+      "cases": [
+        {
+          "a": false,
+          "b": true,
+          "leq": true,
+          "meet": false
+        },
+        {
+          "a": true,
+          "b": false,
+          "leq": false,
+          "meet": false
+        },
+        {
+          "a": true,
+          "b": true,
+          "leq": true,
+          "meet": true
+        }
+      ]
+    },
+    {
+      "id": "bool-or",
+      "order": {
+        "kind": "bool-or"
+      },
+      "cases": [
+        {
+          "a": true,
+          "b": false,
+          "leq": true,
+          "meet": true
+        },
+        {
+          "a": false,
+          "b": true,
+          "leq": false,
+          "meet": true
+        },
+        {
+          "a": false,
+          "b": false,
+          "leq": true,
+          "meet": false
+        }
+      ]
+    },
+    {
+      "id": "flat-bottom",
+      "order": {
+        "kind": "flat",
+        "bottom": "none"
+      },
+      "cases": [
+        {
+          "a": "none",
+          "b": "allowlist:a",
+          "leq": true,
+          "meet": "none"
+        },
+        {
+          "a": "allowlist:a",
+          "b": "none",
+          "leq": false,
+          "meet": "none"
+        },
+        {
+          "a": "allowlist:a",
+          "b": "allowlist:b",
+          "leq": false,
+          "meet": "none"
+        },
+        {
+          "a": "allowlist:a",
+          "b": "allowlist:a",
+          "leq": true,
+          "meet": "allowlist:a"
+        }
+      ]
+    },
+    {
+      "id": "flat",
+      "order": {
+        "kind": "flat"
+      },
+      "cases": [
+        {
+          "a": {
+            "a": 1
+          },
+          "b": {
+            "a": 1
+          },
+          "leq": true,
+          "meet": {
+            "a": 1
+          }
+        },
+        {
+          "a": {
+            "a": 1
+          },
+          "b": {
+            "a": 2
+          },
+          "leq": false,
+          "meetUndefined": true
+        },
+        {
+          "a": {
+            "a": 1
+          },
+          "b": null,
+          "leq": true,
+          "meet": {
+            "a": 1
+          }
+        },
+        {
+          "a": null,
+          "b": {
+            "a": 1
+          },
+          "leq": false,
+          "meet": {
+            "a": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "tree",
+      "order": {
+        "kind": "tree",
+        "children": {
+          "build": [
+            "plan",
+            "review"
+          ]
+        }
+      },
+      "cases": [
+        {
+          "a": "plan",
+          "b": "build",
+          "leq": true,
+          "meet": "plan"
+        },
+        {
+          "a": "build",
+          "b": "plan",
+          "leq": false,
+          "meet": "plan"
+        },
+        {
+          "a": "plan",
+          "b": "review",
+          "leq": false,
+          "meetUndefined": true
+        },
+        {
+          "a": "review",
+          "b": "review",
+          "leq": true,
+          "meet": "review"
+        }
+      ]
+    },
+    {
+      "id": "gated",
+      "order": {
+        "kind": "gated",
+        "switch": "enabled",
+        "bounds": [
+          "maxDepth",
+          "maxConcurrent"
+        ],
+        "off": {
+          "enabled": false,
+          "maxDepth": 1,
+          "maxConcurrent": 1
+        }
+      },
+      "cases": [
+        {
+          "a": {
+            "enabled": false,
+            "maxDepth": 9,
+            "maxConcurrent": 9
+          },
+          "b": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "leq": true,
+          "meet": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          }
+        },
+        {
+          "a": {
+            "enabled": true,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "b": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          },
+          "leq": false,
+          "at": "enabled",
+          "meet": {
+            "enabled": false,
+            "maxDepth": 1,
+            "maxConcurrent": 1
+          }
+        },
+        {
+          "a": {
+            "enabled": true,
+            "maxDepth": 2,
+            "maxConcurrent": 1
+          },
+          "b": {
+            "enabled": true,
+            "maxDepth": 3,
+            "maxConcurrent": 4
+          },
+          "leq": true,
+          "meet": {
+            "enabled": true,
+            "maxDepth": 2,
+            "maxConcurrent": 1
+          }
+        },
+        {
+          "a": {
+            "enabled": true,
+            "maxDepth": 2,
+            "maxConcurrent": 5
+          },
+          "b": {
+            "enabled": true,
+            "maxDepth": 3,
+            "maxConcurrent": 4
+          },
+          "leq": false,
+          "at": "maxConcurrent",
+          "meet": {
+            "enabled": true,
+            "maxDepth": 2,
+            "maxConcurrent": 4
+          }
+        }
+      ]
+    },
+    {
+      "id": "approval-rules",
+      "order": {
+        "kind": "approval-rules"
+      },
+      "cases": [
+        {
+          "a": {
+            "classes": {
+              "read": "allow",
+              "workspace": "allow",
+              "write": "ask",
+              "execute": "ask"
+            },
+            "tools": {
+              "t": "deny"
+            }
+          },
+          "b": {
+            "classes": {
+              "read": "ask",
+              "workspace": "allow",
+              "write": "allow",
+              "execute": "allow"
+            },
+            "tools": {},
+            "flow": [
+              {
+                "level": "ask",
+                "above": "public"
+              }
+            ]
+          },
+          "leq": false,
+          "meet": {
+            "classes": {
+              "read": "ask",
+              "workspace": "allow",
+              "write": "ask",
+              "execute": "ask"
+            },
+            "tools": {
+              "t": "deny"
+            },
+            "flow": [
+              {
+                "level": "ask",
+                "above": "public"
+              }
+            ]
+          }
+        },
+        {
+          "a": {
+            "classes": {
+              "read": "ask",
+              "workspace": "allow",
+              "write": "ask",
+              "execute": "ask"
+            },
+            "tools": {
+              "t": "deny"
+            },
+            "flow": [
+              {
+                "level": "ask",
+                "above": "public"
+              }
+            ]
+          },
+          "b": {
+            "classes": {
+              "read": "allow",
+              "workspace": "allow",
+              "write": "ask",
+              "execute": "ask"
+            },
+            "tools": {
+              "t": "deny"
+            }
+          },
+          "leq": true,
+          "meet": {
+            "classes": {
+              "read": "ask",
+              "workspace": "allow",
+              "write": "ask",
+              "execute": "ask"
+            },
+            "tools": {
+              "t": "deny"
+            },
+            "flow": [
+              {
+                "level": "ask",
+                "above": "public"
+              }
+            ]
+          }
+        },
+        {
+          "a": {
+            "classes": {
+              "read": "ask",
+              "workspace": "allow",
+              "write": "allow",
+              "execute": "allow"
+            },
+            "tools": {},
+            "flow": [
+              {
+                "level": "ask",
+                "above": "public"
+              }
+            ]
+          },
+          "b": {
+            "classes": {
+              "read": "allow",
+              "workspace": "allow",
+              "write": "allow",
+              "execute": "allow"
+            },
+            "tools": {},
+            "flow": [
+              {
+                "level": "deny",
+                "above": "private"
+              }
+            ]
+          },
+          "leq": false,
+          "meet": {
+            "classes": {
+              "read": "ask",
+              "workspace": "allow",
+              "write": "allow",
+              "execute": "allow"
+            },
+            "tools": {},
+            "flow": [
+              {
+                "level": "ask",
+                "above": "public"
+              },
+              {
+                "level": "deny",
+                "above": "private"
+              }
+            ]
+          }
+        },
+        {
+          "a": {
+            "classes": {
+              "read": "ask",
+              "workspace": "allow",
+              "write": "allow",
+              "execute": "allow"
+            },
+            "tools": {},
+            "flow": [
+              {
+                "level": "ask",
+                "above": "public"
+              },
+              {
+                "level": "deny",
+                "above": "private"
+              }
+            ]
+          },
+          "b": {
+            "classes": {
+              "read": "allow",
+              "workspace": "allow",
+              "write": "allow",
+              "execute": "allow"
+            },
+            "tools": {},
+            "flow": [
+              {
+                "level": "deny",
+                "above": "private"
+              }
+            ]
+          },
+          "leq": true,
+          "meet": {
+            "classes": {
+              "read": "ask",
+              "workspace": "allow",
+              "write": "allow",
+              "execute": "allow"
+            },
+            "tools": {},
+            "flow": [
+              {
+                "level": "ask",
+                "above": "public"
+              },
+              {
+                "level": "deny",
+                "above": "private"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "rank-raise-rules",
+      "order": {
+        "kind": "rank-raise-rules",
+        "ranks": [
+          [
+            "none"
+          ],
+          [
+            "owner"
+          ],
+          [
+            "teamAdmin"
+          ],
+          [
+            "orgAdmin"
+          ]
+        ]
+      },
+      "cases": [
+        {
+          "a": {
+            "install:mcp": "orgAdmin"
+          },
+          "b": {
+            "install:mcp": "teamAdmin"
+          },
+          "leq": true,
+          "meet": {
+            "install:mcp": "orgAdmin"
+          }
+        },
+        {
+          "a": {
+            "install:mcp": "owner"
+          },
+          "b": {
+            "install:mcp": "orgAdmin"
+          },
+          "leq": false,
+          "at": "install:mcp",
+          "meet": {
+            "install:mcp": "orgAdmin"
+          }
+        },
+        {
+          "a": {
+            "install:*": "orgAdmin"
+          },
+          "b": {
+            "install:mcp": "teamAdmin"
+          },
+          "leq": true,
+          "meet": {
+            "install:*": "orgAdmin",
+            "install:mcp": "teamAdmin"
+          }
+        },
+        {
+          "a": {
+            "install:mcp": "orgAdmin"
+          },
+          "b": {
+            "install:*": "teamAdmin"
+          },
+          "leq": false,
+          "at": "install:*",
+          "meet": {
+            "install:*": "teamAdmin",
+            "install:mcp": "orgAdmin"
+          }
+        },
+        {
+          "a": null,
+          "b": {
+            "publish:skill": "owner"
+          },
+          "leq": false,
+          "at": "publish:skill",
+          "meet": {
+            "publish:skill": "owner"
+          }
+        },
+        {
+          "a": {
+            "publish:skill": "none"
+          },
+          "b": null,
+          "leq": true,
+          "meet": {
+            "publish:skill": "none"
+          }
+        },
+        {
+          "a": {
+            "install:mcp": "orgAdmin",
+            "publish:skill": "owner"
+          },
+          "b": {
+            "publish:skill": "owner"
+          },
+          "leq": true,
+          "meet": {
+            "install:mcp": "orgAdmin",
+            "publish:skill": "owner"
+          }
+        },
+        {
+          "a": {
+            "install:*": "orgAdmin",
+            "install:mcp": "none"
+          },
+          "b": {
+            "install:mcp": "teamAdmin"
+          },
+          "leq": true,
+          "meet": {
+            "install:*": "orgAdmin",
+            "install:mcp": "teamAdmin"
+          }
+        }
+      ]
+    },
+    {
+      "id": "min-map",
+      "order": {
+        "kind": "min-map"
+      },
+      "cases": [
+        {
+          "a": {
+            "default": 5
+          },
+          "b": {
+            "default": 10
+          },
+          "leq": true,
+          "meet": {
+            "default": 5
+          }
+        },
+        {
+          "a": {
+            "default": 10
+          },
+          "b": {
+            "default": 5
+          },
+          "leq": false,
+          "at": "default",
+          "meet": {
+            "default": 5
+          }
+        },
+        {
+          "a": {
+            "researcher": 5
+          },
+          "b": {
+            "default": 10
+          },
+          "leq": false,
+          "at": "default",
+          "meet": {
+            "default": 10,
+            "researcher": 5
+          }
+        },
+        {
+          "a": {
+            "default": 5
+          },
+          "b": {
+            "researcher": 10
+          },
+          "leq": true,
+          "meet": {
+            "default": 5
+          }
+        },
+        {
+          "a": {
+            "default": 10,
+            "researcher": 50
+          },
+          "b": {
+            "default": 10
+          },
+          "leq": true,
+          "meet": {
+            "default": 10
+          }
+        },
+        {
+          "a": null,
+          "b": {
+            "coder": 3
+          },
+          "leq": false,
+          "at": "coder",
+          "meet": {
+            "coder": 3
+          }
+        },
+        {
+          "a": {
+            "coder": 3
+          },
+          "b": null,
+          "leq": true,
+          "meet": {
+            "coder": 3
+          }
+        },
+        {
+          "a": null,
+          "b": null,
+          "leq": true,
+          "meet": null
+        },
+        {
+          "a": {},
+          "b": null,
+          "leq": true,
+          "meet": null
+        },
+        {
+          "a": {
+            "coder": 2.5,
+            "researcher": 7
+          },
+          "b": {
+            "coder": 4,
+            "writer": 1
+          },
+          "leq": false,
+          "at": "writer",
+          "meet": {
+            "coder": 2.5,
+            "researcher": 7,
+            "writer": 1
+          }
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "PR-1",
+      "behaviour": "no layer: nothing is set",
+      "layers": [],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {}
+        },
+        "digest": "sha256:00e41f056ba638b3732eb5a1ea3611906e8eb8cf71d1e70485f0ebc4e2222acb"
+      }
+    },
+    {
+      "id": "PR-2",
+      "behaviour": "release, org and agent narrow a limit; provenance lists each ceiling",
+      "layers": [
+        {
+          "kind": "release",
+          "values": {
+            "engineProfile": {
+              "engine": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "mode": "build",
+              "isolationMin": "docker",
+              "egress": "none",
+              "tools": {
+                "maxTools": null,
+                "effects": [
+                  "execute",
+                  "read",
+                  "workspace",
+                  "write"
+                ]
+              },
+              "limits": {
+                "maxSteps": 50,
+                "maxWallS": 1800,
+                "maxTokens": null,
+                "maxUsd": null
+              },
+              "subAgents": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "reasoningEffort": null,
+              "approvals": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "skills": null,
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "access": {
+                "routeId": "r1",
+                "digest": "d1"
+              },
+              "resultSchema": null
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "engineProfile": {
+              "limits": {
+                "maxSteps": 30
+              }
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "engineProfile": {
+              "limits": {
+                "maxSteps": 20
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "engineProfile.engine": {
+              "value": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": {
+                    "kind": "opencode",
+                    "version": "1.18.34",
+                    "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+                  }
+                }
+              ]
+            },
+            "engineProfile.access": {
+              "value": {
+                "routeId": "r1",
+                "digest": "d1"
+              },
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": {
+                    "routeId": "r1",
+                    "digest": "d1"
+                  }
+                }
+              ]
+            },
+            "engineProfile.mode": {
+              "value": "build",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "build"
+                }
+              ]
+            },
+            "engineProfile.isolationMin": {
+              "value": "docker",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "docker"
+                }
+              ]
+            },
+            "engineProfile.egress": {
+              "value": "none",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "none"
+                }
+              ]
+            },
+            "engineProfile.tools.maxTools": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.tools.effects": {
+              "value": [
+                "execute",
+                "read",
+                "workspace",
+                "write"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "execute",
+                    "read",
+                    "workspace",
+                    "write"
+                  ]
+                }
+              ]
+            },
+            "engineProfile.limits.maxSteps": {
+              "value": 20,
+              "setBy": "agent",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 50
+                },
+                {
+                  "layer": "org",
+                  "value": 30
+                },
+                {
+                  "layer": "agent",
+                  "value": 20
+                }
+              ]
+            },
+            "engineProfile.limits.maxWallS": {
+              "value": 1800,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 1800
+                }
+              ]
+            },
+            "engineProfile.limits.maxTokens": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.limits.maxUsd": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.subAgents": {
+              "value": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": {
+                    "enabled": false,
+                    "maxDepth": 1,
+                    "maxConcurrent": 1
+                  }
+                }
+              ]
+            },
+            "engineProfile.reasoningEffort": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.approvals.read": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.workspace": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.write": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.approvals.execute": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.skills": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.accountKinds": {
+              "value": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "org_api_key",
+                    "org_cloud",
+                    "user_api_key"
+                  ]
+                }
+              ]
+            },
+            "engineProfile.resultSchema": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:fb9c615cbe1456daccec40cb04be5add35f81184af5b782b260648c55b87416f"
+      }
+    },
+    {
+      "id": "PR-3",
+      "behaviour": "an agent above the org's limit is refused naming the agent",
+      "layers": [
+        {
+          "kind": "release",
+          "values": {
+            "engineProfile": {
+              "engine": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "mode": "build",
+              "isolationMin": "docker",
+              "egress": "none",
+              "tools": {
+                "maxTools": null,
+                "effects": [
+                  "execute",
+                  "read",
+                  "workspace",
+                  "write"
+                ]
+              },
+              "limits": {
+                "maxSteps": 50,
+                "maxWallS": 1800,
+                "maxTokens": null,
+                "maxUsd": null
+              },
+              "subAgents": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "reasoningEffort": null,
+              "approvals": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "skills": null,
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "access": {
+                "routeId": "r1",
+                "digest": "d1"
+              },
+              "resultSchema": null
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "engineProfile": {
+              "limits": {
+                "maxSteps": 30
+              }
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "engineProfile": {
+              "limits": {
+                "maxSteps": 40
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engineProfile.limits.maxSteps",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "PR-4",
+      "behaviour": "POL-15: two layers widen different dimensions; the top-most is named",
+      "layers": [
+        {
+          "kind": "release",
+          "values": {
+            "engineProfile": {
+              "engine": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "mode": "build",
+              "isolationMin": "docker",
+              "egress": "none",
+              "tools": {
+                "maxTools": null,
+                "effects": [
+                  "execute",
+                  "read",
+                  "workspace",
+                  "write"
+                ]
+              },
+              "limits": {
+                "maxSteps": 50,
+                "maxWallS": 1800,
+                "maxTokens": null,
+                "maxUsd": null
+              },
+              "subAgents": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "reasoningEffort": null,
+              "approvals": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "skills": null,
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "access": {
+                "routeId": "r1",
+                "digest": "d1"
+              },
+              "resultSchema": null
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "engineProfile": {
+              "limits": {
+                "maxSteps": 60
+              }
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "engineProfile": {
+              "skills": [
+                "pdf"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "engineProfile": {
+              "skills": [
+                "docx"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engineProfile.limits.maxSteps",
+          "layer": "org"
+        }
+      }
+    },
+    {
+      "id": "PR-5",
+      "behaviour": "one layer widens two dimensions; the first row is named",
+      "layers": [
+        {
+          "kind": "release",
+          "values": {
+            "engineProfile": {
+              "engine": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "mode": "build",
+              "isolationMin": "docker",
+              "egress": "none",
+              "tools": {
+                "maxTools": null,
+                "effects": [
+                  "execute",
+                  "read",
+                  "workspace",
+                  "write"
+                ]
+              },
+              "limits": {
+                "maxSteps": 50,
+                "maxWallS": 1800,
+                "maxTokens": null,
+                "maxUsd": null
+              },
+              "subAgents": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "reasoningEffort": null,
+              "approvals": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "skills": null,
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "access": {
+                "routeId": "r1",
+                "digest": "d1"
+              },
+              "resultSchema": null
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "engineProfile": {
+              "skills": [
+                "pdf"
+              ],
+              "limits": {
+                "maxSteps": 10
+              }
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "engineProfile": {
+              "skills": [
+                "docx"
+              ],
+              "limits": {
+                "maxSteps": 11
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engineProfile.limits.maxSteps",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "PR-6",
+      "behaviour": "a user may only choose: a ceiling set by the user layer is not exposed",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "routes": [
+                "a",
+                "b"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "user",
+          "values": {
+            "models": {
+              "routes": [
+                "a"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "not_exposed",
+          "dimension": "models.routes",
+          "layer": "user"
+        }
+      }
+    },
+    {
+      "id": "PR-7",
+      "behaviour": "an operator row below the deployment is not exposed",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "operator": {
+              "MCP_ALLOW_CUSTOM_STDIO": true
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "not_exposed",
+          "dimension": "operator.MCP_ALLOW_CUSTOM_STDIO",
+          "layer": "org"
+        }
+      }
+    },
+    {
+      "id": "PR-8",
+      "behaviour": "a choice is the nearest layer's",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "routes": [
+                "a",
+                "b"
+              ],
+              "primary": "a"
+            }
+          }
+        },
+        {
+          "kind": "user",
+          "values": {
+            "models": {
+              "primary": "b"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "models.routes": {
+              "value": [
+                "a",
+                "b"
+              ],
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": [
+                    "a",
+                    "b"
+                  ]
+                }
+              ]
+            },
+            "models.primary": {
+              "value": "b",
+              "setBy": "user",
+              "ceilings": []
+            }
+          }
+        },
+        "digest": "sha256:077f62230288dfd275ac89e48140f65bcb5cccfc92f336dbd9e8be08c7bcc6bc"
+      }
+    },
+    {
+      "id": "PR-9",
+      "behaviour": "a choice outside its ceiling is refused naming the layer that chose it",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "routes": [
+                "a"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "models": {
+              "primary": "b"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "outside_ceiling",
+          "dimension": "models.primary",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "PR-10",
+      "behaviour": "a narrowing below a choice leaves the choice outside: refused, naming the chooser",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "routes": [
+                "a",
+                "b"
+              ],
+              "primary": "a"
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "models": {
+              "routes": [
+                "b"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "outside_ceiling",
+          "dimension": "models.primary",
+          "layer": "org"
+        }
+      }
+    },
+    {
+      "id": "PR-11",
+      "behaviour": "a model per sub-agent role, each within the routes",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "routes": [
+                "a",
+                "b"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "models": {
+              "primary": "a",
+              "roles": {
+                "researcher": "b"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "models.routes": {
+              "value": [
+                "a",
+                "b"
+              ],
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": [
+                    "a",
+                    "b"
+                  ]
+                }
+              ]
+            },
+            "models.primary": {
+              "value": "a",
+              "setBy": "agent",
+              "ceilings": []
+            },
+            "models.roles": {
+              "value": {
+                "researcher": "b"
+              },
+              "setBy": "agent",
+              "ceilings": []
+            }
+          }
+        },
+        "digest": "sha256:aa9ee4fffe4dc374b55ce341c6e5261f33d6b08bf7466c509d3a94ca8a4f8f9f"
+      }
+    },
+    {
+      "id": "PR-12",
+      "behaviour": "a role outside the routes is refused",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "routes": [
+                "a"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "models": {
+              "roles": {
+                "researcher": "b"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "outside_ceiling",
+          "dimension": "models.roles",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "PR-13",
+      "behaviour": "approvals meet: an agent that allows writes after the org asks still asks (no refusal)",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "approvals": {
+              "writes": "ask"
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "approvals": {
+              "writes": "allow",
+              "tools": {
+                "jira.create_issue": "deny"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "approvals": {
+              "value": {
+                "classes": {
+                  "read": "allow",
+                  "workspace": "allow",
+                  "write": "ask",
+                  "execute": "ask"
+                },
+                "tools": {
+                  "jira.create_issue": "deny"
+                }
+              },
+              "setBy": "agent",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": {
+                    "writes": "ask"
+                  }
+                },
+                {
+                  "layer": "agent",
+                  "value": {
+                    "writes": "allow",
+                    "tools": {
+                      "jira.create_issue": "deny"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:7eadba2e0883bb7ee815f3f5107b91eae908d83f8c20f782b00456df2c314e88"
+      }
+    },
+    {
+      "id": "PR-14",
+      "behaviour": "approvals: flow rules from two layers both stay when neither covers the other",
+      "layers": [
+        {
+          "kind": "deployment",
+          "values": {
+            "approvals": {
+              "flow": {
+                "level": "ask",
+                "above": "public"
+              }
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "approvals": {
+              "flow": {
+                "level": "deny",
+                "above": "private"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "approvals": {
+              "value": {
+                "classes": {
+                  "read": "allow",
+                  "workspace": "allow",
+                  "write": "allow",
+                  "execute": "allow"
+                },
+                "tools": {},
+                "flow": [
+                  {
+                    "level": "ask",
+                    "above": "public"
+                  },
+                  {
+                    "level": "deny",
+                    "above": "private"
+                  }
+                ]
+              },
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "deployment",
+                  "value": {
+                    "flow": {
+                      "level": "ask",
+                      "above": "public"
+                    }
+                  }
+                },
+                {
+                  "layer": "org",
+                  "value": {
+                    "flow": {
+                      "level": "deny",
+                      "above": "private"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:75d886c03137c1895c08b3d0cc49a831d110dd1ca14201862ed1cecd7280b975"
+      }
+    },
+    {
+      "id": "PR-15",
+      "behaviour": "a rollout switch the deployment holds off cannot be turned on by an org",
+      "layers": [
+        {
+          "kind": "deployment",
+          "values": {
+            "rollout": {
+              "ENABLE_SKILLS": false
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "rollout": {
+              "ENABLE_SKILLS": true
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "rollout.ENABLE_SKILLS",
+          "layer": "org"
+        }
+      }
+    },
+    {
+      "id": "PR-16",
+      "behaviour": "an org may turn a rollout switch off",
+      "layers": [
+        {
+          "kind": "deployment",
+          "values": {
+            "rollout": {
+              "ENABLE_SKILLS": true
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "rollout": {
+              "ENABLE_SKILLS": false
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "rollout.ENABLE_SKILLS": {
+              "value": false,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "deployment",
+                  "value": true
+                },
+                {
+                  "layer": "org",
+                  "value": false
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:8fd00c53d46a2a9d77d6d77b9d7d51f7ad770c1ca4260866ee03ffd349a064e2"
+      }
+    },
+    {
+      "id": "PR-17",
+      "behaviour": "the kill switch: an org cannot lift the deployment's",
+      "layers": [
+        {
+          "kind": "deployment",
+          "values": {
+            "rollout": {
+              "AGENT_HARNESS_KILL_SWITCH": true
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "rollout": {
+              "AGENT_HARNESS_KILL_SWITCH": false
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "rollout.AGENT_HARNESS_KILL_SWITCH",
+          "layer": "org"
+        }
+      }
+    },
+    {
+      "id": "PR-18",
+      "behaviour": "the kill switch: an org may pull it",
+      "layers": [
+        {
+          "kind": "deployment",
+          "values": {
+            "rollout": {
+              "AGENT_HARNESS_KILL_SWITCH": false
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "rollout": {
+              "AGENT_HARNESS_KILL_SWITCH": true
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "rollout.AGENT_HARNESS_KILL_SWITCH": {
+              "value": true,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "deployment",
+                  "value": false
+                },
+                {
+                  "layer": "org",
+                  "value": true
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:f563ad898eeaf09c83f3917bbc9e5a5770df5ad5c00e266f4c1f62d296553a5a"
+      }
+    },
+    {
+      "id": "PR-19",
+      "behaviour": "an operator row is the deployment's",
+      "layers": [
+        {
+          "kind": "deployment",
+          "values": {
+            "operator": {
+              "AGENT_HARNESS_OFFERING": "managed",
+              "SANDBOX_MODE": "docker"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "operator.SANDBOX_MODE": {
+              "value": "docker",
+              "setBy": "deployment",
+              "ceilings": []
+            },
+            "operator.AGENT_HARNESS_OFFERING": {
+              "value": "managed",
+              "setBy": "deployment",
+              "ceilings": []
+            }
+          }
+        },
+        "digest": "sha256:2c6acb4a70f67b7f27a5a952e3e1af58db19a5af0139ee666e658afdf5254c47"
+      }
+    },
+    {
+      "id": "PR-20",
+      "behaviour": "a value the order cannot read is invalid",
+      "layers": [
+        {
+          "kind": "release",
+          "values": {
+            "engineProfile": {
+              "engine": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "mode": "build",
+              "isolationMin": "docker",
+              "egress": "none",
+              "tools": {
+                "maxTools": null,
+                "effects": [
+                  "execute",
+                  "read",
+                  "workspace",
+                  "write"
+                ]
+              },
+              "limits": {
+                "maxSteps": 50,
+                "maxWallS": 1800,
+                "maxTokens": null,
+                "maxUsd": null
+              },
+              "subAgents": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "reasoningEffort": null,
+              "approvals": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "skills": null,
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "access": {
+                "routeId": "r1",
+                "digest": "d1"
+              },
+              "resultSchema": null
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "engineProfile": {
+              "reasoningEffort": "extreme"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "invalid",
+          "dimension": "engineProfile.reasoningEffort",
+          "layer": "org"
+        }
+      }
+    },
+    {
+      "id": "PR-21",
+      "behaviour": "the live layer narrows the pin and never widens it",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "approvals": {
+              "writes": "ask"
+            },
+            "models": {
+              "routes": [
+                "a",
+                "b"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "live",
+          "values": {
+            "approvals": {
+              "classes": {
+                "write": "deny"
+              }
+            },
+            "models": {
+              "routes": [
+                "a"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "approvals": {
+              "value": {
+                "classes": {
+                  "read": "allow",
+                  "workspace": "allow",
+                  "write": "deny",
+                  "execute": "ask"
+                },
+                "tools": {}
+              },
+              "setBy": "live",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": {
+                    "writes": "ask"
+                  }
+                },
+                {
+                  "layer": "live",
+                  "value": {
+                    "classes": {
+                      "write": "deny"
+                    }
+                  }
+                }
+              ]
+            },
+            "models.routes": {
+              "value": [
+                "a"
+              ],
+              "setBy": "live",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": [
+                    "a",
+                    "b"
+                  ]
+                },
+                {
+                  "layer": "live",
+                  "value": [
+                    "a"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:155fa61105ed88f05d65e047a5e5555bd74242354a139392f65852749358a9cf"
+      }
+    },
+    {
+      "id": "PR-22",
+      "behaviour": "a live layer that widens a refusing ceiling is refused",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "routes": [
+                "a"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "live",
+          "values": {
+            "models": {
+              "routes": [
+                "a",
+                "b"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "models.routes",
+          "layer": "live"
+        }
+      }
+    },
+    {
+      "id": "PR-23",
+      "behaviour": "sub-agents: a depth above the layer above is refused naming the bound",
+      "layers": [
+        {
+          "kind": "release",
+          "values": {
+            "engineProfile": {
+              "engine": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "mode": "build",
+              "isolationMin": "docker",
+              "egress": "none",
+              "tools": {
+                "maxTools": null,
+                "effects": [
+                  "execute",
+                  "read",
+                  "workspace",
+                  "write"
+                ]
+              },
+              "limits": {
+                "maxSteps": 50,
+                "maxWallS": 1800,
+                "maxTokens": null,
+                "maxUsd": null
+              },
+              "subAgents": {
+                "enabled": true,
+                "maxDepth": 2,
+                "maxConcurrent": 2
+              },
+              "reasoningEffort": null,
+              "approvals": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "skills": null,
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "engineProfile": {
+              "subAgents": {
+                "enabled": true,
+                "maxDepth": 3,
+                "maxConcurrent": 1
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engineProfile.subAgents.maxDepth",
+          "layer": "org"
+        }
+      }
+    },
+    {
+      "id": "PR-24",
+      "behaviour": "sub-agents switched off normalize to the off value",
+      "layers": [
+        {
+          "kind": "release",
+          "values": {
+            "engineProfile": {
+              "engine": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "mode": "build",
+              "isolationMin": "docker",
+              "egress": "none",
+              "tools": {
+                "maxTools": null,
+                "effects": [
+                  "execute",
+                  "read",
+                  "workspace",
+                  "write"
+                ]
+              },
+              "limits": {
+                "maxSteps": 50,
+                "maxWallS": 1800,
+                "maxTokens": null,
+                "maxUsd": null
+              },
+              "subAgents": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "reasoningEffort": null,
+              "approvals": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "skills": null,
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "access": {
+                "routeId": "r1",
+                "digest": "d1"
+              },
+              "resultSchema": null
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "engineProfile": {
+              "subAgents": {
+                "enabled": false,
+                "maxDepth": 5,
+                "maxConcurrent": 5
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "engineProfile.engine": {
+              "value": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": {
+                    "kind": "opencode",
+                    "version": "1.18.34",
+                    "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+                  }
+                }
+              ]
+            },
+            "engineProfile.access": {
+              "value": {
+                "routeId": "r1",
+                "digest": "d1"
+              },
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": {
+                    "routeId": "r1",
+                    "digest": "d1"
+                  }
+                }
+              ]
+            },
+            "engineProfile.mode": {
+              "value": "build",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "build"
+                }
+              ]
+            },
+            "engineProfile.isolationMin": {
+              "value": "docker",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "docker"
+                }
+              ]
+            },
+            "engineProfile.egress": {
+              "value": "none",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "none"
+                }
+              ]
+            },
+            "engineProfile.tools.maxTools": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.tools.effects": {
+              "value": [
+                "execute",
+                "read",
+                "workspace",
+                "write"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "execute",
+                    "read",
+                    "workspace",
+                    "write"
+                  ]
+                }
+              ]
+            },
+            "engineProfile.limits.maxSteps": {
+              "value": 50,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 50
+                }
+              ]
+            },
+            "engineProfile.limits.maxWallS": {
+              "value": 1800,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 1800
+                }
+              ]
+            },
+            "engineProfile.limits.maxTokens": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.limits.maxUsd": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.subAgents": {
+              "value": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "setBy": "agent",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": {
+                    "enabled": false,
+                    "maxDepth": 1,
+                    "maxConcurrent": 1
+                  }
+                },
+                {
+                  "layer": "agent",
+                  "value": {
+                    "enabled": false,
+                    "maxDepth": 5,
+                    "maxConcurrent": 5
+                  }
+                }
+              ]
+            },
+            "engineProfile.reasoningEffort": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.approvals.read": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.workspace": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.write": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.approvals.execute": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.skills": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.accountKinds": {
+              "value": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "org_api_key",
+                    "org_cloud",
+                    "user_api_key"
+                  ]
+                }
+              ]
+            },
+            "engineProfile.resultSchema": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:5ba0b461759f2fbf07c21239fa98b64a765632b392e5d16bcd780a7f22aa6f39"
+      }
+    },
+    {
+      "id": "PR-25",
+      "behaviour": "modes: plan narrows build; review after plan widens",
+      "layers": [
+        {
+          "kind": "release",
+          "values": {
+            "engineProfile": {
+              "engine": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "mode": "build",
+              "isolationMin": "docker",
+              "egress": "none",
+              "tools": {
+                "maxTools": null,
+                "effects": [
+                  "execute",
+                  "read",
+                  "workspace",
+                  "write"
+                ]
+              },
+              "limits": {
+                "maxSteps": 50,
+                "maxWallS": 1800,
+                "maxTokens": null,
+                "maxUsd": null
+              },
+              "subAgents": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "reasoningEffort": null,
+              "approvals": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "skills": null,
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "access": {
+                "routeId": "r1",
+                "digest": "d1"
+              },
+              "resultSchema": null
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "engineProfile": {
+              "mode": "plan"
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "engineProfile": {
+              "mode": "review"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engineProfile.mode",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "PR-26",
+      "behaviour": "engines: a layer that does not admit the released engine is refused",
+      "layers": [
+        {
+          "kind": "release",
+          "values": {
+            "engineProfile": {
+              "engine": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "mode": "build",
+              "isolationMin": "docker",
+              "egress": "none",
+              "tools": {
+                "maxTools": null,
+                "effects": [
+                  "execute",
+                  "read",
+                  "workspace",
+                  "write"
+                ]
+              },
+              "limits": {
+                "maxSteps": 50,
+                "maxWallS": 1800,
+                "maxTokens": null,
+                "maxUsd": null
+              },
+              "subAgents": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "reasoningEffort": null,
+              "approvals": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "skills": null,
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "access": {
+                "routeId": "r1",
+                "digest": "d1"
+              },
+              "resultSchema": null
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "engineProfile": {
+              "engines": [
+                "codex"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engineProfile.engine",
+          "layer": "org"
+        }
+      }
+    },
+    {
+      "id": "PR-27",
+      "behaviour": "engines: admitted by kind and by kind@version; the engine stays the release's",
+      "layers": [
+        {
+          "kind": "release",
+          "values": {
+            "engineProfile": {
+              "engine": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "mode": "build",
+              "isolationMin": "docker",
+              "egress": "none",
+              "tools": {
+                "maxTools": null,
+                "effects": [
+                  "execute",
+                  "read",
+                  "workspace",
+                  "write"
+                ]
+              },
+              "limits": {
+                "maxSteps": 50,
+                "maxWallS": 1800,
+                "maxTokens": null,
+                "maxUsd": null
+              },
+              "subAgents": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "reasoningEffort": null,
+              "approvals": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "skills": null,
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "access": {
+                "routeId": "r1",
+                "digest": "d1"
+              },
+              "resultSchema": null
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "engineProfile": {
+              "engines": [
+                "opencode",
+                "codex"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "engineProfile": {
+              "engines": [
+                "opencode@1.18.34"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "engineProfile.engine": {
+              "value": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": {
+                    "kind": "opencode",
+                    "version": "1.18.34",
+                    "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+                  }
+                },
+                {
+                  "layer": "org",
+                  "value": [
+                    "opencode",
+                    "codex"
+                  ]
+                },
+                {
+                  "layer": "agent",
+                  "value": [
+                    "opencode@1.18.34"
+                  ]
+                }
+              ]
+            },
+            "engineProfile.access": {
+              "value": {
+                "routeId": "r1",
+                "digest": "d1"
+              },
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": {
+                    "routeId": "r1",
+                    "digest": "d1"
+                  }
+                }
+              ]
+            },
+            "engineProfile.mode": {
+              "value": "build",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "build"
+                }
+              ]
+            },
+            "engineProfile.isolationMin": {
+              "value": "docker",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "docker"
+                }
+              ]
+            },
+            "engineProfile.egress": {
+              "value": "none",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "none"
+                }
+              ]
+            },
+            "engineProfile.tools.maxTools": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.tools.effects": {
+              "value": [
+                "execute",
+                "read",
+                "workspace",
+                "write"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "execute",
+                    "read",
+                    "workspace",
+                    "write"
+                  ]
+                }
+              ]
+            },
+            "engineProfile.limits.maxSteps": {
+              "value": 50,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 50
+                }
+              ]
+            },
+            "engineProfile.limits.maxWallS": {
+              "value": 1800,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": 1800
+                }
+              ]
+            },
+            "engineProfile.limits.maxTokens": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.limits.maxUsd": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.subAgents": {
+              "value": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": {
+                    "enabled": false,
+                    "maxDepth": 1,
+                    "maxConcurrent": 1
+                  }
+                }
+              ]
+            },
+            "engineProfile.reasoningEffort": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.approvals.read": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.workspace": {
+              "value": "allow",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "allow"
+                }
+              ]
+            },
+            "engineProfile.approvals.write": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.approvals.execute": {
+              "value": "ask",
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": "ask"
+                }
+              ]
+            },
+            "engineProfile.skills": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            },
+            "engineProfile.accountKinds": {
+              "value": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": [
+                    "org_api_key",
+                    "org_cloud",
+                    "user_api_key"
+                  ]
+                }
+              ]
+            },
+            "engineProfile.resultSchema": {
+              "value": null,
+              "setBy": "release",
+              "ceilings": [
+                {
+                  "layer": "release",
+                  "value": null
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:54ae55995b4f00068201e1726ebd2d951d8bad90cb28a879b84cd99ba3286709"
+      }
+    },
+    {
+      "id": "PR-28",
+      "behaviour": "isolation of the same rank narrows; a weaker one widens",
+      "layers": [
+        {
+          "kind": "release",
+          "values": {
+            "engineProfile": {
+              "engine": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "mode": "build",
+              "isolationMin": "docker",
+              "egress": "none",
+              "tools": {
+                "maxTools": null,
+                "effects": [
+                  "execute",
+                  "read",
+                  "workspace",
+                  "write"
+                ]
+              },
+              "limits": {
+                "maxSteps": 50,
+                "maxWallS": 1800,
+                "maxTokens": null,
+                "maxUsd": null
+              },
+              "subAgents": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "reasoningEffort": null,
+              "approvals": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "skills": null,
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ],
+              "access": {
+                "routeId": "r1",
+                "digest": "d1"
+              },
+              "resultSchema": null
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "engineProfile": {
+              "isolationMin": "gvisor"
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "engineProfile": {
+              "isolationMin": "k8s"
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "engineProfile": {
+              "isolationMin": "docker"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engineProfile.isolationMin",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "PR-29",
+      "behaviour": "a ceiling no layer above set is taken as the first layer gives it",
+      "layers": [
+        {
+          "kind": "agent",
+          "values": {
+            "models": {
+              "routes": [
+                "b",
+                "a",
+                "a"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "models": {
+              "routes": [
+                "a"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "models.routes": {
+              "value": [
+                "a"
+              ],
+              "setBy": "request",
+              "ceilings": [
+                {
+                  "layer": "agent",
+                  "value": [
+                    "b",
+                    "a",
+                    "a"
+                  ]
+                },
+                {
+                  "layer": "request",
+                  "value": [
+                    "a"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:664307fe29b64122227e3d13c7b6ab6a980d84cfe42dac679ead7a52940becd9"
+      }
+    },
+    {
+      "id": "PR-30",
+      "behaviour": "an egress allowlist narrows only to none",
+      "layers": [
+        {
+          "kind": "release",
+          "values": {
+            "engineProfile": {
+              "engine": {
+                "kind": "opencode",
+                "version": "1.18.34",
+                "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+              },
+              "mode": "build",
+              "isolationMin": "docker",
+              "egress": "allowlist:pypi",
+              "tools": {
+                "maxTools": null,
+                "effects": [
+                  "execute",
+                  "read",
+                  "workspace",
+                  "write"
+                ]
+              },
+              "limits": {
+                "maxSteps": 50,
+                "maxWallS": 1800,
+                "maxTokens": null,
+                "maxUsd": null
+              },
+              "subAgents": {
+                "enabled": false,
+                "maxDepth": 1,
+                "maxConcurrent": 1
+              },
+              "reasoningEffort": null,
+              "approvals": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "skills": null,
+              "accountKinds": [
+                "org_api_key",
+                "org_cloud",
+                "user_api_key"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "engineProfile": {
+              "egress": "none"
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "engineProfile": {
+              "egress": "allowlist:pypi"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "engineProfile.egress",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "PR-31",
+      "behaviour": "catalog.approval: a team layer may not lower the org's rule for its kind",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "catalog": {
+              "approval": {
+                "install:mcp": "orgAdmin"
+              }
+            }
+          }
+        },
+        {
+          "kind": "team",
+          "values": {
+            "catalog": {
+              "approval": {
+                "install:mcp": "owner"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "catalog.approval.install:mcp",
+          "layer": "team"
+        }
+      }
+    },
+    {
+      "id": "PR-32",
+      "behaviour": "catalog.approval: a team raises a rule; the org's wildcard still binds every kind",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "catalog": {
+              "approval": {
+                "install:*": "teamAdmin",
+                "publish:skill": "owner"
+              }
+            }
+          }
+        },
+        {
+          "kind": "team",
+          "values": {
+            "catalog": {
+              "approval": {
+                "install:*": "teamAdmin",
+                "install:mcp": "orgAdmin",
+                "publish:skill": "teamAdmin"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "catalog.approval": {
+              "value": {
+                "install:*": "teamAdmin",
+                "install:mcp": "orgAdmin",
+                "publish:skill": "teamAdmin"
+              },
+              "setBy": "team",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": {
+                    "install:*": "teamAdmin",
+                    "publish:skill": "owner"
+                  }
+                },
+                {
+                  "layer": "team",
+                  "value": {
+                    "install:*": "teamAdmin",
+                    "install:mcp": "orgAdmin",
+                    "publish:skill": "teamAdmin"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:d509e8d19f4f76a98c55a8d1fd7121a75a03c4e20f6adb0058300626f220bec6"
+      }
+    },
+    {
+      "id": "PR-33",
+      "behaviour": "catalog.approval: a team rule for one kind does not satisfy the org's wildcard",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "catalog": {
+              "approval": {
+                "install:*": "orgAdmin"
+              }
+            }
+          }
+        },
+        {
+          "kind": "team",
+          "values": {
+            "catalog": {
+              "approval": {
+                "install:mcp": "orgAdmin"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "widening",
+          "dimension": "catalog.approval.install:*",
+          "layer": "team"
+        }
+      }
+    },
+    {
+      "id": "PR-34",
+      "behaviour": "catalog.delegation is the org's alone: a team layer setting it is not exposed",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "catalog": {
+              "delegation": [
+                "grant.write",
+                "installation.create"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "team",
+          "values": {
+            "catalog": {
+              "delegation": [
+                "grant.write"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "not_exposed",
+          "dimension": "catalog.delegation",
+          "layer": "team"
+        }
+      }
+    },
+    {
+      "id": "PR-35",
+      "behaviour": "catalog.delegation: the org's set, as a sorted set",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "catalog": {
+              "delegation": [
+                "installation.create",
+                "grant.write"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "catalog.delegation": {
+              "value": [
+                "grant.write",
+                "installation.create"
+              ],
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": [
+                    "installation.create",
+                    "grant.write"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:a9525a97808db5193514aba52bf9b8ed0afc94d9f075e40a9a24189f1a2ba3d6"
+      }
+    },
+    {
+      "id": "PR-36",
+      "behaviour": "approvals: a parent layer carries its pin’s resolved ceiling (no flow rule); a child request narrows it",
+      "layers": [
+        {
+          "kind": "parent",
+          "values": {
+            "approvals": {
+              "classes": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "tools": {
+                "t1": "ask"
+              },
+              "flow": []
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "approvals": {
+              "writes": "deny"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "approvals": {
+              "value": {
+                "classes": {
+                  "read": "allow",
+                  "workspace": "allow",
+                  "write": "deny",
+                  "execute": "deny"
+                },
+                "tools": {
+                  "t1": "ask"
+                }
+              },
+              "setBy": "request",
+              "ceilings": [
+                {
+                  "layer": "parent",
+                  "value": {
+                    "classes": {
+                      "read": "allow",
+                      "workspace": "allow",
+                      "write": "ask",
+                      "execute": "ask"
+                    },
+                    "tools": {
+                      "t1": "ask"
+                    },
+                    "flow": []
+                  }
+                },
+                {
+                  "layer": "request",
+                  "value": {
+                    "writes": "deny"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:c35985dc556fdbcc3f4fd4c29b3c4c445112d707cccfc47971bf9c7898ec3f51"
+      }
+    },
+    {
+      "id": "PR-37",
+      "behaviour": "approvals: a parent’s resolved ceiling with one flow rule is read as it was resolved",
+      "layers": [
+        {
+          "kind": "parent",
+          "values": {
+            "approvals": {
+              "classes": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "tools": {},
+              "flow": [
+                {
+                  "level": "ask",
+                  "above": "public"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "approvals": {
+              "value": {
+                "classes": {
+                  "read": "allow",
+                  "workspace": "allow",
+                  "write": "ask",
+                  "execute": "ask"
+                },
+                "tools": {},
+                "flow": [
+                  {
+                    "level": "ask",
+                    "above": "public"
+                  }
+                ]
+              },
+              "setBy": "parent",
+              "ceilings": [
+                {
+                  "layer": "parent",
+                  "value": {
+                    "classes": {
+                      "read": "allow",
+                      "workspace": "allow",
+                      "write": "ask",
+                      "execute": "ask"
+                    },
+                    "tools": {},
+                    "flow": [
+                      {
+                        "level": "ask",
+                        "above": "public"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:f25acc44e93da59b32832d205fc0ce51ad9956d79de8d8f0883713412fcb722b"
+      }
+    },
+    {
+      "id": "PR-38",
+      "behaviour": "approvals: a parent’s resolved ceiling with two flow rules neither of which covers the other keeps both",
+      "layers": [
+        {
+          "kind": "parent",
+          "values": {
+            "approvals": {
+              "classes": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "tools": {},
+              "flow": [
+                {
+                  "level": "ask",
+                  "above": "public"
+                },
+                {
+                  "level": "deny",
+                  "above": "private"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "approvals": {
+              "value": {
+                "classes": {
+                  "read": "allow",
+                  "workspace": "allow",
+                  "write": "ask",
+                  "execute": "ask"
+                },
+                "tools": {},
+                "flow": [
+                  {
+                    "level": "ask",
+                    "above": "public"
+                  },
+                  {
+                    "level": "deny",
+                    "above": "private"
+                  }
+                ]
+              },
+              "setBy": "parent",
+              "ceilings": [
+                {
+                  "layer": "parent",
+                  "value": {
+                    "classes": {
+                      "read": "allow",
+                      "workspace": "allow",
+                      "write": "ask",
+                      "execute": "ask"
+                    },
+                    "tools": {},
+                    "flow": [
+                      {
+                        "level": "ask",
+                        "above": "public"
+                      },
+                      {
+                        "level": "deny",
+                        "above": "private"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:4b5489c12c7af0044e8bbd8c456e8721387d6dc319316fd21dbe194cf6505584"
+      }
+    },
+    {
+      "id": "PR-39",
+      "behaviour": "approvals: a child request looser than its parent’s resolved ceiling changes nothing (approvals meet)",
+      "layers": [
+        {
+          "kind": "parent",
+          "values": {
+            "approvals": {
+              "classes": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "tools": {
+                "t1": "deny"
+              },
+              "flow": [
+                {
+                  "level": "ask",
+                  "above": "public"
+                },
+                {
+                  "level": "deny",
+                  "above": "private"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "approvals": {
+              "writes": "allow",
+              "tools": {
+                "t1": "allow"
+              },
+              "flow": {
+                "level": "off"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "approvals": {
+              "value": {
+                "classes": {
+                  "read": "allow",
+                  "workspace": "allow",
+                  "write": "ask",
+                  "execute": "ask"
+                },
+                "tools": {
+                  "t1": "deny"
+                },
+                "flow": [
+                  {
+                    "level": "ask",
+                    "above": "public"
+                  },
+                  {
+                    "level": "deny",
+                    "above": "private"
+                  }
+                ]
+              },
+              "setBy": "request",
+              "ceilings": [
+                {
+                  "layer": "parent",
+                  "value": {
+                    "classes": {
+                      "read": "allow",
+                      "workspace": "allow",
+                      "write": "ask",
+                      "execute": "ask"
+                    },
+                    "tools": {
+                      "t1": "deny"
+                    },
+                    "flow": [
+                      {
+                        "level": "ask",
+                        "above": "public"
+                      },
+                      {
+                        "level": "deny",
+                        "above": "private"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "layer": "request",
+                  "value": {
+                    "writes": "allow",
+                    "tools": {
+                      "t1": "allow"
+                    },
+                    "flow": {
+                      "level": "off"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:528e74f6ba8a8436285b1c32ed13043f6bcacf0e2b19e0aae7be798dd1a0ad2a"
+      }
+    },
+    {
+      "id": "PR-40",
+      "behaviour": "approvals: a child request’s flow rule that covers both of its parent’s replaces them",
+      "layers": [
+        {
+          "kind": "parent",
+          "values": {
+            "approvals": {
+              "classes": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "tools": {},
+              "flow": [
+                {
+                  "level": "ask",
+                  "above": "public"
+                },
+                {
+                  "level": "deny",
+                  "above": "private"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "approvals": {
+              "flow": {
+                "level": "deny",
+                "above": "public"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "approvals": {
+              "value": {
+                "classes": {
+                  "read": "allow",
+                  "workspace": "allow",
+                  "write": "ask",
+                  "execute": "ask"
+                },
+                "tools": {},
+                "flow": [
+                  {
+                    "level": "deny",
+                    "above": "public"
+                  }
+                ]
+              },
+              "setBy": "request",
+              "ceilings": [
+                {
+                  "layer": "parent",
+                  "value": {
+                    "classes": {
+                      "read": "allow",
+                      "workspace": "allow",
+                      "write": "ask",
+                      "execute": "ask"
+                    },
+                    "tools": {},
+                    "flow": [
+                      {
+                        "level": "ask",
+                        "above": "public"
+                      },
+                      {
+                        "level": "deny",
+                        "above": "private"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "layer": "request",
+                  "value": {
+                    "flow": {
+                      "level": "deny",
+                      "above": "public"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:bdb896439c1a6caa5be587c33ab790f30382899fa5d8008c224c26545304f25e"
+      }
+    },
+    {
+      "id": "PR-41",
+      "behaviour": "approvals: a resolved ceiling with a flow rule the schema refuses is invalid, never read looser",
+      "layers": [
+        {
+          "kind": "parent",
+          "values": {
+            "approvals": {
+              "classes": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "ask",
+                "execute": "ask"
+              },
+              "tools": {},
+              "flow": [
+                {
+                  "level": "off",
+                  "above": "public"
+                },
+                "deny"
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "invalid",
+          "dimension": "approvals",
+          "layer": "parent"
+        }
+      }
+    },
+    {
+      "id": "PR-42",
+      "behaviour": "approvals: a resolved ceiling with a level the schema refuses is invalid",
+      "layers": [
+        {
+          "kind": "parent",
+          "values": {
+            "approvals": {
+              "classes": {
+                "read": "allow",
+                "workspace": "allow",
+                "write": "sometimes",
+                "execute": "ask"
+              },
+              "tools": {},
+              "flow": [
+                {
+                  "level": "ask",
+                  "above": "public"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "invalid",
+          "dimension": "approvals",
+          "layer": "parent"
+        }
+      }
+    },
+    {
+      "id": "PR-43",
+      "behaviour": "MA1: a lower layer's higher cost ceiling for a role is met, never above the org's",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "roleCostCeilings": {
+                "default": 10
+              }
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "models": {
+              "roleCostCeilings": {
+                "default": 40,
+                "researcher": 4
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "models.roleCostCeilings": {
+              "value": {
+                "default": 10,
+                "researcher": 4
+              },
+              "setBy": "agent",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": {
+                    "default": 10
+                  }
+                },
+                {
+                  "layer": "agent",
+                  "value": {
+                    "default": 40,
+                    "researcher": 4
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "digest": "sha256:d74516d8f87f6c87cfd82cfe004909a271b40575706fe8de0d6dac858dca4156"
+      }
+    },
+    {
+      "id": "PR-44",
+      "behaviour": "MA1: a cost ceiling that is not a map of numbers is invalid",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "roleCostCeilings": {
+                "default": "cheap"
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "invalid",
+          "dimension": "models.roleCostCeilings",
+          "layer": "org"
+        }
+      }
+    },
+    {
+      "id": "PR-45",
+      "behaviour": "MA1: the request layer may not set a cost ceiling",
+      "layers": [
+        {
+          "kind": "request",
+          "values": {
+            "models": {
+              "roleCostCeilings": {
+                "default": 1
+              }
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "not_exposed",
+          "dimension": "models.roleCostCeilings",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "PR-46",
+      "behaviour": "C4.02: a choice the org locked is not overridable by the user",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "routes": [
+                "azure:a",
+                "azure:b"
+              ],
+              "primary": "azure:a"
+            },
+            "locks": [
+              "models.primary"
+            ]
+          }
+        },
+        {
+          "kind": "user",
+          "values": {
+            "models": {
+              "primary": "azure:b"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "locked",
+          "dimension": "models.primary",
+          "layer": "user"
+        }
+      }
+    },
+    {
+      "id": "PR-47",
+      "behaviour": "C4.02: repeating a locked choice changes nothing; the dimension names its lock",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "models": {
+              "routes": [
+                "azure:a",
+                "azure:b"
+              ],
+              "primary": "azure:a"
+            },
+            "locks": [
+              "models.primary"
+            ]
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "models": {
+              "primary": "azure:a"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "models.routes": {
+              "value": [
+                "azure:a",
+                "azure:b"
+              ],
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": [
+                    "azure:a",
+                    "azure:b"
+                  ]
+                }
+              ]
+            },
+            "models.primary": {
+              "value": "azure:a",
+              "setBy": "org",
+              "ceilings": [],
+              "lockedBy": "org"
+            }
+          }
+        },
+        "digest": "sha256:39755dc4018455c31b1458e88c8bb02db5fb9afa20ad0f340097d850fd57f1f8"
+      }
+    },
+    {
+      "id": "PR-48",
+      "behaviour": "C4.02: a locked ceiling may still be narrowed below",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "budgets": {
+              "maxTurns": 10
+            },
+            "locks": [
+              "budgets.maxTurns"
+            ]
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "budgets": {
+              "maxTurns": 5
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "budgets.maxTurns": {
+              "value": 5,
+              "setBy": "agent",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": 10
+                },
+                {
+                  "layer": "agent",
+                  "value": 5
+                }
+              ],
+              "lockedBy": "org"
+            }
+          }
+        },
+        "digest": "sha256:b0cdf8d399198cf2028232cd8a533f70f85d1daf1ca0a28ad844ba0e0c5490c5"
+      }
+    },
+    {
+      "id": "PR-49",
+      "behaviour": "C4.02: widening a locked ceiling is refused as locked",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "budgets": {
+              "maxTurns": 10
+            },
+            "locks": [
+              "budgets.maxTurns"
+            ]
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "budgets": {
+              "maxTurns": 20
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "locked",
+          "dimension": "budgets.maxTurns",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "PR-50",
+      "behaviour": "C4.02: a lock on a choice no layer set keeps it unset below",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "locks": [
+              "models.primary"
+            ]
+          }
+        },
+        {
+          "kind": "request",
+          "values": {
+            "models": {
+              "primary": "azure:b"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "locked",
+          "dimension": "models.primary",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "PR-51",
+      "behaviour": "C4.02: an agent layer whose section the org owns carries the org's lock",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "toolDisclosure": {
+              "mode": "lazy"
+            },
+            "locks": [
+              "toolDisclosure.mode"
+            ]
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "toolDisclosure": {
+              "mode": "filesystem"
+            },
+            "lockedBy": {
+              "toolDisclosure": "org"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "toolDisclosure.mode": {
+              "value": "filesystem",
+              "setBy": "agent",
+              "ceilings": [],
+              "lockedBy": "org"
+            }
+          }
+        },
+        "digest": "sha256:bb7d7b431115c72546db25a5daa8290b8cdecb2acda73bd8bf724a6ddab8eb63"
+      }
+    },
+    {
+      "id": "PR-52",
+      "behaviour": "C4.02: a section owned by a layer below the lock carries nothing",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "toolDisclosure": {
+              "mode": "lazy"
+            },
+            "locks": [
+              "toolDisclosure.mode"
+            ]
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "toolDisclosure": {
+              "mode": "filesystem"
+            },
+            "lockedBy": {
+              "toolDisclosure": "agent"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "locked",
+          "dimension": "toolDisclosure.mode",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "PR-53",
+      "behaviour": "C4.02: a lock that names no dimension is invalid",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "locks": [
+              "models"
+            ]
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "invalid",
+          "dimension": "models",
+          "layer": "org"
+        }
+      }
+    },
+    {
+      "id": "PR-54",
+      "behaviour": "C4.02: a layer may lock only what it may set",
+      "layers": [
+        {
+          "kind": "user",
+          "values": {
+            "locks": [
+              "budgets.maxTurns"
+            ]
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "not_exposed",
+          "dimension": "budgets.maxTurns",
+          "layer": "user"
+        }
+      }
+    },
+    {
+      "id": "PR-55",
+      "behaviour": "C4.02: the topmost lock holds",
+      "layers": [
+        {
+          "kind": "deployment",
+          "values": {
+            "budgets": {
+              "maxCostUsd": 5
+            },
+            "locks": [
+              "budgets.maxCostUsd"
+            ]
+          }
+        },
+        {
+          "kind": "org",
+          "values": {
+            "budgets": {
+              "maxCostUsd": 3
+            },
+            "locks": [
+              "budgets.maxCostUsd"
+            ]
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "budgets.maxCostUsd": {
+              "value": 3,
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "deployment",
+                  "value": 5
+                },
+                {
+                  "layer": "org",
+                  "value": 3
+                }
+              ],
+              "lockedBy": "deployment"
+            }
+          }
+        },
+        "digest": "sha256:b4febd796be3ef66aa1af80210f532a2347b0ba4b7e872586a90cd7dde9d2b97"
+      }
+    },
+    {
+      "id": "PR-56",
+      "behaviour": "C5.01: a tool-disclosure mode outside the org's modes is refused",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "toolDisclosure": {
+              "modes": [
+                "lazy",
+                "filesystem"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "toolDisclosure": {
+              "mode": "eager"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "outside_ceiling",
+          "dimension": "toolDisclosure.mode",
+          "layer": "agent"
+        }
+      }
+    },
+    {
+      "id": "PR-57",
+      "behaviour": "C5.01: the request layer may not pick the tool-disclosure mode",
+      "layers": [
+        {
+          "kind": "request",
+          "values": {
+            "toolDisclosure": {
+              "mode": "eager"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "refusal": {
+          "code": "not_exposed",
+          "dimension": "toolDisclosure.mode",
+          "layer": "request"
+        }
+      }
+    },
+    {
+      "id": "PR-58",
+      "behaviour": "C4.02: a locked approval rule set still meets a stricter or looser layer without refusing",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "approvals": {
+              "writes": "ask"
+            },
+            "locks": [
+              "approvals"
+            ]
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "approvals": {
+              "writes": "allow"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "approvals": {
+              "value": {
+                "classes": {
+                  "read": "allow",
+                  "workspace": "allow",
+                  "write": "ask",
+                  "execute": "ask"
+                },
+                "tools": {}
+              },
+              "setBy": "agent",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": {
+                    "writes": "ask"
+                  }
+                },
+                {
+                  "layer": "agent",
+                  "value": {
+                    "writes": "allow"
+                  }
+                }
+              ],
+              "lockedBy": "org"
+            }
+          }
+        },
+        "digest": "sha256:2d5316007c901726f32e5bc1af3e3f9241566f10d8d9baa57c38d6b59ec500f0"
+      }
+    },
+    {
+      "id": "PR-59",
+      "behaviour": "C5.01: the agent picks a disclosure mode inside the org's",
+      "layers": [
+        {
+          "kind": "org",
+          "values": {
+            "toolDisclosure": {
+              "modes": [
+                "lazy",
+                "filesystem"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "agent",
+          "values": {
+            "toolDisclosure": {
+              "mode": "filesystem"
+            }
+          }
+        }
+      ],
+      "expect": {
+        "config": {
+          "schemaVersion": 1,
+          "dimensions": {
+            "toolDisclosure.modes": {
+              "value": [
+                "filesystem",
+                "lazy"
+              ],
+              "setBy": "org",
+              "ceilings": [
+                {
+                  "layer": "org",
+                  "value": [
+                    "lazy",
+                    "filesystem"
+                  ]
+                }
+              ]
+            },
+            "toolDisclosure.mode": {
+              "value": "filesystem",
+              "setBy": "agent",
+              "ceilings": []
+            }
+          }
+        },
+        "digest": "sha256:dd710cabeec4605af4b86736d3ffb979eb42ee25f7d6db6ae0daf21f7f22fc33"
+      }
+    }
+  ],
+  "invalidTables": [
+    {
+      "id": "BT-1",
+      "behaviour": "a path appears twice",
+      "dimensions": [
+        {
+          "path": "a.b",
+          "kind": "ceiling",
+          "order": {
+            "kind": "min"
+          },
+          "exposure": [
+            "org"
+          ],
+          "description": "x"
+        },
+        {
+          "path": "a.b",
+          "kind": "ceiling",
+          "order": {
+            "kind": "min"
+          },
+          "exposure": [
+            "org"
+          ],
+          "description": "x"
+        }
+      ],
+      "names": "a.b"
+    },
+    {
+      "id": "BT-2",
+      "behaviour": "a choice within a dimension that is no ceiling",
+      "dimensions": [
+        {
+          "path": "a.c",
+          "kind": "choice",
+          "within": "a.d",
+          "exposure": [
+            "org"
+          ],
+          "description": "x"
+        }
+      ],
+      "names": "a.c"
+    },
+    {
+      "id": "BT-3",
+      "behaviour": "an operator row exposed below the deployment",
+      "dimensions": [
+        {
+          "path": "operator.X",
+          "kind": "operator",
+          "exposure": [
+            "deployment",
+            "org"
+          ],
+          "description": "x"
+        }
+      ],
+      "names": "operator.X"
+    },
+    {
+      "id": "BT-4",
+      "behaviour": "a ranked value in two groups",
+      "dimensions": [
+        {
+          "path": "a.r",
+          "kind": "ceiling",
+          "order": {
+            "kind": "rank",
+            "ranks": [
+              [
+                "x"
+              ],
+              [
+                "x",
+                "y"
+              ]
+            ]
+          },
+          "exposure": [
+            "org"
+          ],
+          "description": "x"
+        }
+      ],
+      "names": "a.r"
+    },
+    {
+      "id": "BT-5",
+      "behaviour": "a ceiling without an order",
+      "dimensions": [
+        {
+          "path": "a.m",
+          "kind": "ceiling",
+          "exposure": [
+            "org"
+          ],
+          "description": "x"
+        }
+      ],
+      "names": "a.m"
+    },
+    {
+      "id": "BT-6",
+      "behaviour": "a choice that meets",
+      "dimensions": [
+        {
+          "path": "a.m",
+          "kind": "ceiling",
+          "order": {
+            "kind": "min"
+          },
+          "exposure": [
+            "org"
+          ],
+          "description": "x"
+        },
+        {
+          "path": "a.n",
+          "kind": "choice",
+          "within": "a.m",
+          "widening": "meet",
+          "exposure": [
+            "org"
+          ],
+          "description": "x"
+        }
+      ],
+      "names": "a.n"
+    }
+  ]
+}

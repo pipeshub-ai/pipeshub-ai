@@ -27,11 +27,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # From its committed lock (integrity-checked by npm ci), not the registry's latest.
       - name: Install Spectral
-        run: npm install -g @stoplight/spectral-cli@6.17.0
+        run: npm ci --prefix .github/tools/spectral --ignore-scripts --no-audit --no-fund
 
       - name: Lint OpenAPI spec with Spectral
-        run: spectral lint "$SPEC" --ruleset .spectral.yaml --fail-severity error
+        run: .github/tools/spectral/node_modules/.bin/spectral lint "$SPEC" --ruleset .spectral.yaml --fail-severity error
 
   breaking:
     name: Detect breaking changes
@@ -66,7 +67,7 @@ jobs:
       - name: Check no operation leaves the SDK
         if: ${{ !cancelled() }}
         run: |
-          pip install --quiet pyyaml
+          PYTHON=python3 backend/python/requirements/install.sh tools
           python3 - base-openapi.yaml "$SPEC" <<'EOF'
           import sys
           import yaml

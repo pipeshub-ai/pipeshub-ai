@@ -1,0 +1,635 @@
+{
+  "schema": "pipeshub.acp-agents/1",
+  "version": "2026-11-12.3",
+  "_comment": "Release data (ACP-driver): each long-tail coding agent the generic ACP driver (harness_engines/acp) runs, as a declarative profile. A profile's kind is acp-<id>; its binary digest and image must equal its entry in allowlist.json. Signed with the vendor-rules release key (acp_agents.json.sig, scripts/engines/sign_vendor_rules.py) at release time; unsigned, no ACP engine is installed, except on a dev or test install running with the engine isolation dev override. See docs/agent-harness-v2/guides/adding-a-harness-adapter.md.",
+  "agents": [
+    {
+      "_comment": "opencode's own ACP server (`opencode acp`), the pinned 1.18.34 binary and image the native opencode driver uses. Its model traffic goes to the model gateway's chat-completions wire through the opencode provider config below, which also switches off every default network path (as harness_engines/opencode/launch.py does) and rules its tools by the run's mode. It advertises loadSession and keeps sessions under XDG_DATA_HOME=/state/opencode, so a fresh sandbox loads the session from those files. Its own server listens on loopback port 4096 so the driver can ask it (`mcp.status`) whether the tool gateway is connected before the first prompt: opencode opens a session without a gateway that refused it (E2E3-F6).",
+      "id": "opencode",
+      "name": "opencode (ACP)",
+      "agent": {"name": "OpenCode", "version": "1.18.34"},
+      "binary": {
+        "path": "/usr/local/bin/opencode",
+        "digest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182"
+      },
+      "image": "pxh-opencode-tools:1.18.34-ph7",
+      "argv": ["acp", "--pure", "--cwd", "/workspace", "--port", "4096"],
+      "modelApi": "chat_completions",
+      "env": {
+        "OPENCODE_DISABLE_MODELS_FETCH": "1",
+        "OPENCODE_DISABLE_AUTOUPDATE": "1",
+        "OPENCODE_DISABLE_SHARE": "1",
+        "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
+        "OPENCODE_PURE": "1",
+        "OPENCODE_DISABLE_LSP_DOWNLOAD": "1",
+        "OPENCODE_DISABLE_CLAUDE_CODE": "1",
+        "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
+        "OPENCODE_DISABLE_EMBEDDED_WEB_UI": "1",
+        "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+        "OPENCODE_CLIENT": "harness",
+        "XDG_CONFIG_HOME": "/opt/oc-xdg-config",
+        "XDG_DATA_HOME": "/state",
+        "XDG_CACHE_HOME": "/tmp/oc-cache",
+        "XDG_STATE_HOME": "/tmp/oc-state"
+      },
+      "gatewayEnv": {
+        "modelToken": "HARNESS_GATEWAY_TOKEN",
+        "toolsToken": "HARNESS_TOOLS_TOKEN",
+        "skillsDir": "HARNESS_SKILLS_DIR"
+      },
+      "configs": [
+        {
+          "env": "OPENCODE_CONFIG_CONTENT",
+          "toolRules": ["permission"],
+          "template": {
+            "autoupdate": false,
+            "share": "disabled",
+            "snapshot": false,
+            "formatter": false,
+            "lsp": false,
+            "enabled_providers": ["gateway"],
+            "provider": {
+              "gateway": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "Gateway",
+                "options": {"baseURL": "${model_base_url}", "apiKey": "{env:HARNESS_GATEWAY_TOKEN}"},
+                "models": {
+                  "${model}": {
+                    "name": "Engine model",
+                    "tool_call": true,
+                    "limit": {"context": 200000, "output": 8192}
+                  }
+                }
+              }
+            },
+            "model": "gateway/${model}",
+            "small_model": "gateway/${model}",
+            "default_agent": "harness",
+            "instructions": ["/usr/share/pxh-engine/RUNTIME.md", "${instructions_file}"],
+            "agent": {
+              "harness": {
+                "mode": "primary",
+                "description": "Engine run agent",
+                "prompt": "You are a coding engine. Work in the current folder, use the tools you are given, and finish with the result of the task. PipesHub's tools also work from the shell with the ph command: /pipeshub/AGENTS.md (read-only) says how. Scripts can call them as typed Python or TypeScript functions under /pipeshub/session/sdk: /pipeshub/tools/INDEX.md says how to import them.",
+                "steps": "${max_steps}"
+              },
+              "build": {"disable": true},
+              "plan": {"disable": true},
+              "general": {"disable": true},
+              "explore": {"disable": true},
+              "title": {"disable": true}
+            },
+            "permission": {
+              "*": "deny",
+              "tools_*": "allow",
+              "todowrite": "allow",
+              "external_directory": {
+                "*": "deny",
+                "/state/opencode/tool-output/*": "allow",
+                "/tmp/opencode/*": "allow",
+                "${skills_dir}/*": "allow",
+                "/pipeshub/*": "allow"
+              },
+              "skill": {"*": "allow", "customize-opencode": "deny"}
+            },
+            "skills": {"paths": ["{env:HARNESS_SKILLS_DIR}"]}
+          }
+        }
+      ],
+      "nativeTools": {
+        "read": ["read"],
+        "search": ["glob", "grep"],
+        "edit": ["edit", "write"],
+        "shell": ["bash"],
+        "skill": ["skill"],
+        "subagent": ["task"]
+      },
+      "toolRuleNames": {"edit": ["edit"]},
+      "planTool": "todowrite",
+      "mcp": {"server": "tools", "toolName": "{server}_{tool}", "status": {"api": "opencode", "port": 4096}},
+      "_compactionNotice": "opencode compacts an overflowed session and retries by itself, but ACP carries no notice: each turn's end asks its loopback server for the session's summary messages, and a new one is the chat's compaction note (MG-10, WP-91).",
+      "compactionNotice": "opencode",
+      "instructionsFile": "/state/acp/INSTRUCTIONS.md",
+      "resume": {"mode": "load", "paths": ["/state/opencode"]},
+      "clientFs": false
+    },
+    {
+      "_comment": "Gemini CLI's own ACP mode (`gemini --acp`), the pinned 0.63.0 release bundle (gemini-cli-bundle.zip, Node) in its own image. Its model traffic goes only to the model gateway's Gemini wire (/v1beta/models/engine-model:streamGenerateContent), with the gateway's placeholder as a custom bearer header (GEMINI_CLI_CUSTOM_HEADERS); the image's system settings (deployment/sandbox-images/acp-gemini/etc) pin the auth type to `gateway`, so Google sign-in, API keys and Vertex are refused, and the sandbox reaches no Google host (GA-23). Those system settings and the image's admin policy are the floor a repository cannot change: Gemini CLI starts MCP servers only in a trusted folder, so the workspace is trusted and its own .gemini settings merge under them (hooks, extensions, sub-agents, other MCP servers and auth stay off; every editing or shell tool asks the driver, which answers by the run's mode; the user policy folder is root's). What this profile renders is the run's: ~/.gemini/settings.json (root's, read-only: the model, mcpServers naming the tool gateway, the built-in tools the mode denies as tools.exclude, context.fileName AGENTS.md), the skills link in ~/.gemini/skills and the run's instructions as its global AGENTS.md. What it reads of a repository as lower-trust content (ADR-ENG-01): the trusted workspace's AGENTS.md and GEMINI.md (D2) and its .agents/skills, listed beside the run's: 0.63.0 disables a skill only by name (skills.disabled), never a scope (D1's exception, R31ENG-FU-1 upstream); what they prompt still goes through the tool gateway's grant and approvals. Sessions resume by session/load from its chats under ~/.gemini/tmp.",
+      "id": "gemini",
+      "name": "Gemini CLI (ACP)",
+      "agent": {"name": "gemini-cli", "version": "0.63.0"},
+      "binary": {
+        "path": "/usr/local/lib/gemini-cli/gemini.js",
+        "digest": "sha256:5aee9ecb65b0b821e36a12f6e9e837301636de1a849a5a8bcc9c2b2620bbd72e"
+      },
+      "image": "pxh-gemini-tools:0.63.0-ph7",
+      "argv": ["--acp"],
+      "modelApi": "gemini_generate_content",
+      "env": {
+        "GEMINI_CLI_HOME": "/state/acp/gemini",
+        "GEMINI_CLI_TRUST_WORKSPACE": "true",
+        "GEMINI_CLI_NO_RELAUNCH": "true",
+        "GEMINI_CLI_SYSTEM_SETTINGS_PATH": "/pxh-sealed/gemini/settings.json",
+        "NO_BROWSER": "true"
+      },
+      "gatewayEnv": {"modelToken": "HARNESS_GATEWAY_TOKEN", "toolsToken": "HARNESS_TOOLS_TOKEN", "skillsDir": "HARNESS_SKILLS_DIR"},
+      "configs": [
+        {"env": "GOOGLE_GEMINI_BASE_URL", "template": "${model_root_url}"},
+        {"env": "GEMINI_CLI_CUSTOM_HEADERS", "template": "Authorization: Bearer ${model_token}"},
+        {
+          "path": "/state/acp/gemini/.gemini/policies/run.toml",
+          "template": "# Gemini CLI's user policy folder: root's, so neither the agent nor a repository adds a rule to it.\n"
+        },
+        {
+          "_comment": "Gemini CLI's user settings: empty and root's, so nothing is planted there. The run's settings are in the system settings below, since a trusted workspace's .gemini/settings.json is merged over this layer (CF-02: a repository's model.name replaced the run's).",
+          "path": "/state/acp/gemini/.gemini/settings.json",
+          "template": {}
+        },
+        {
+          "_comment": "Gemini CLI's system settings (GEMINI_CLI_SYSTEM_SETTINGS_PATH), the one layer above a trusted workspace's .gemini/settings.json: the image's own system settings (base, kept whole) with the run's settings and the tool gateway beside them, the gateway's one declaration (WP-59, CF-02). Seeded root's into the read-only SEALED_DIR, which Gemini CLI trusts.",
+          "path": "/pxh-sealed/gemini/settings.json",
+          "base": "/etc/gemini-cli/settings.json",
+          "toolRules": ["tools", "exclude"],
+          "toolRulesForm": "denied",
+          "template": {
+            "general": {"maxAttempts": 3, "sessionRetention": {"enabled": false}},
+            "model": {"name": "${model}", "maxSessionTurns": "${max_steps}", "skipNextSpeakerCheck": true},
+            "context": {
+              "fileName": ["AGENTS.md"],
+              "includeDirectories": ["/pipeshub", "${skills_dir}"],
+              "loadMemoryFromIncludeDirectories": true
+            },
+            "tools": {"exclude": ["web_fetch", "google_web_search"], "useRipgrep": true},
+            "skills": {"enabled": true},
+            "mcpServers": {
+              "${mcp_server}": {
+                "httpUrl": "${tools_mcp_url}",
+                "headers": {"Authorization": "Bearer ${tools_token}"},
+                "timeout": "${tool_timeout_ms}",
+                "trust": false
+              }
+            }
+          }
+        }
+      ],
+      "nativeTools": {
+        "read": ["read_file"],
+        "search": ["list_directory", "glob", "grep_search"],
+        "edit": ["replace", "write_file"],
+        "shell": ["run_shell_command", "list_background_processes", "read_background_output"],
+        "skill": ["activate_skill"],
+        "subagent": ["invoke_agent"]
+      },
+      "_mcpStatus": "Gemini CLI 0.63.0 connects its MCP servers inside session/new and session/load and never retries one that refused, and nothing in ACP reports it, so the driver lists the gateway's tools itself before opening the session, from inside the sandbox over Gemini's own route with the Node that runs Gemini (E2E3-F6, WP-59); the Tool Gateway then confirms Gemini listed the tools while the session opened. The gateway is declared only in the rendered settings.json (declare: config): session/new and session/load send no mcpServers, since an ACP server entry replaces the settings entry with the URL and headers alone and the run's tool timeout and trust:false were lost.",
+      "mcp": {"server": "tools", "toolName": "mcp_{server}_{tool}", "status": {"api": "gateway", "runtime": "/usr/bin/node"}, "declare": "config"},
+      "instructionsFile": "/state/acp/gemini/.gemini/AGENTS.md",
+      "homes": ["/state/acp/gemini/.gemini"],
+      "skillsLink": "/state/acp/gemini/.gemini/skills",
+      "callIdNameSeparator": "__",
+      "_reservedToolNames": "Gemini CLI 0.63.0 adds its own ask_user to tools.exclude in ACP mode (packages/cli config: interactive || isAcpMode) and drops an MCP tool whose unprefixed name is excluded (ToolRegistry.isActiveTool), so the gateway lists its ask_user under its alias here.",
+      "reservedToolNames": ["ask_user"],
+      "usagePath": ["_meta", "quota", "token_count"],
+      "resume": {"mode": "load", "paths": ["/state/acp/gemini/.gemini/tmp"]},
+      "clientFs": false
+    },
+    {
+      "_comment": "Goose's own ACP mode (`goose acp`), the pinned 1.57.0 release binary (static, musl) in its own image. Its model traffic goes only to the model gateway's chat-completions wire through Goose's OpenAI provider (OPENAI_HOST is the gateway, OPENAI_API_KEY the gateway's placeholder). Everything it obeys is the rendered config.yaml (root's, read-only, under XDG_CONFIG_HOME): the provider, GOOSE_MODE approve (every tool asks the driver, which answers by the run's mode), telemetry and the keyring off, and the only extensions it loads: its developer tools narrowed to what the mode allows (available_tools), its skills tool, and nothing else; the tool gateway is the session's MCP server (session/new and session/load, so a resumed sandbox's URL and placeholder replace the ones Goose stored with the session), with the run's tool timeout in the entry's _meta. Goose opens its MCP session with the gateway inside session/new and lists the tools only once a prompt arrives (before each model call), so the gateway's witness of its connect is that handshake, not a tool list (mcp.status.witness, R30ENG-FU-3). Goose reads no repository config; a repository's plugins (.agents/plugins) start nothing the driver allows. What it reads of a repository as lower-trust content (ADR-ENG-01): its .goosehints and AGENTS.md between the git root and /workspace, into its Project Hints (D2), and its .agents/skills, listed beside the run's: 1.57.0 has no setting for either (D1's exception, R31ENG-FU-1 upstream); what they prompt still goes through the tool gateway's grant and approvals. Sessions resume by session/load from its session store under XDG_DATA_HOME (/state/goose).",
+      "id": "goose",
+      "name": "Goose (ACP)",
+      "agent": {
+        "name": "goose",
+        "version": "1.57.0"
+      },
+      "binary": {
+        "path": "/usr/local/bin/goose",
+        "digest": "sha256:bb259a6f0dd02ce9c5e3793edb91e68a84d40eb24478e8b28dd556ebf3681dc1"
+      },
+      "image": "pxh-goose-tools:1.57.0-ph7",
+      "argv": [
+        "acp"
+      ],
+      "modelApi": "chat_completions",
+      "env": {
+        "HOME": "/state/acp/goose/home",
+        "XDG_CONFIG_HOME": "/state/acp/goose",
+        "XDG_DATA_HOME": "/state",
+        "XDG_STATE_HOME": "/tmp/goose-state",
+        "XDG_CACHE_HOME": "/tmp/goose-cache",
+        "GOOSE_PROVIDER": "openai",
+        "GOOSE_MODE": "approve",
+        "GOOSE_TELEMETRY_OFF": "1",
+        "GOOSE_DISABLE_KEYRING": "1",
+        "OPENAI_BASE_PATH": "v1/chat/completions",
+        "GOOSE_DISABLE_SESSION_NAMING": "true"
+      },
+      "gatewayEnv": {
+        "modelToken": "OPENAI_API_KEY",
+        "model": "GOOSE_MODEL",
+        "toolsToken": "HARNESS_TOOLS_TOKEN",
+        "skillsDir": "HARNESS_SKILLS_DIR"
+      },
+      "configs": [
+        {
+          "env": "OPENAI_HOST",
+          "template": "${model_root_url}"
+        },
+        {
+          "path": "/state/acp/goose/goose/config.yaml",
+          "toolRules": [
+            "extensions",
+            "developer",
+            "available_tools"
+          ],
+          "toolRulesForm": "allowed",
+          "template": {
+            "GOOSE_PROVIDER": "openai",
+            "GOOSE_MODEL": "${model}",
+            "GOOSE_MODE": "approve",
+            "GOOSE_MAX_TURNS": "${max_steps}",
+            "GOOSE_TELEMETRY_ENABLED": false,
+            "GOOSE_DISABLE_KEYRING": true,
+            "extensions": {
+              "developer": {
+                "enabled": true,
+                "type": "platform",
+                "name": "developer",
+                "description": "",
+                "display_name": "Developer",
+                "bundled": true,
+                "available_tools": []
+              },
+              "analyze": {
+                "enabled": true,
+                "type": "platform",
+                "name": "analyze",
+                "description": "",
+                "display_name": "Analyze",
+                "bundled": true
+              },
+              "skills": {
+                "enabled": true,
+                "type": "platform",
+                "name": "skills",
+                "description": "",
+                "display_name": "Skills",
+                "bundled": true
+              },
+              "apps": {
+                "enabled": false,
+                "type": "platform",
+                "name": "apps",
+                "description": "",
+                "display_name": "Apps",
+                "bundled": true
+              },
+              "extensionmanager": {
+                "enabled": false,
+                "type": "platform",
+                "name": "extensionmanager",
+                "description": "",
+                "display_name": "Extension Manager",
+                "bundled": true
+              },
+              "summon": {
+                "enabled": false,
+                "type": "platform",
+                "name": "summon",
+                "description": "",
+                "display_name": "Summon",
+                "bundled": true
+              },
+              "scheduler": {
+                "enabled": false,
+                "type": "platform",
+                "name": "scheduler",
+                "description": "",
+                "display_name": "Scheduler",
+                "bundled": true
+              },
+              "tom": {
+                "enabled": false,
+                "type": "platform",
+                "name": "tom",
+                "description": "",
+                "display_name": "Top Of Mind",
+                "bundled": true
+              },
+              "todo": {
+                "enabled": false,
+                "type": "platform",
+                "name": "todo",
+                "description": "",
+                "display_name": "Todo",
+                "bundled": true
+              },
+              "chatrecall": {
+                "enabled": false,
+                "type": "platform",
+                "name": "chatrecall",
+                "description": "",
+                "display_name": "Chat Recall",
+                "bundled": true
+              },
+              "summarize": {
+                "enabled": false,
+                "type": "platform",
+                "name": "summarize",
+                "description": "",
+                "display_name": "Summarize",
+                "bundled": true
+              },
+              "code_execution": {
+                "enabled": false,
+                "type": "platform",
+                "name": "code_execution",
+                "description": "",
+                "display_name": "Code Mode",
+                "bundled": true
+              }
+            },
+            "GOOSE_DISABLE_SESSION_NAMING": true
+          }
+        }
+      ],
+      "nativeTools": {
+        "read": [
+          "analyze",
+          "read_image"
+        ],
+        "search": [
+          "tree"
+        ],
+        "edit": [
+          "write",
+          "edit"
+        ],
+        "shell": [
+          "shell"
+        ],
+        "skill": [
+          "load_skill"
+        ]
+      },
+      "mcp": {
+        "server": "tools",
+        "toolName": "{server}__{tool}",
+        "status": {
+          "api": "gateway",
+          "runtime": "/usr/bin/node",
+          "witness": "handshake"
+        },
+        "meta": {
+          "timeout": "${tool_timeout_s}"
+        }
+      },
+      "_toolNamePath": "Goose titles a tool call for display (\"tools: search · q\") and reports every kind as other; it names the tool only in the tool_call's _meta, and its session/request_permission carries the title alone, so the driver keeps the name per call id (C2.41).",
+      "toolNamePath": [
+        "_meta",
+        "goose",
+        "toolCall",
+        "toolName"
+      ],
+      "_errorReasons": "Goose answers the model gateway's 402 with its own credits error: its message is a top-up text without the gateway's [gateway:<code>] and its data says reason credits_exhausted, so that reason is a budget stop (which of the gateway's two budget codes it was is lost).",
+      "errorReasons": {
+        "credits_exhausted": "budget_exhausted"
+      },
+      "homes": [
+        "/state/acp/goose/home"
+      ],
+      "skillsLink": "/state/acp/goose/home/.agents/skills",
+      "resume": {
+        "mode": "load",
+        "paths": [
+          "/state/goose"
+        ]
+      },
+      "clientFs": false,
+      "instructionsFile": "/state/acp/goose/goose/.goosehints"
+    },
+    {
+      "_comment": "Qwen Code's own ACP mode (`qwen --acp`), the pinned 0.26.5 npm release (an esbuild bundle on Node) in its own image; the driver launches its entry point cli.js, never the package's cli-entry.js, which would prefer a self-update under ~/.qwen/updates. Its model traffic goes only to the model gateway's chat-completions wire through its OpenAI auth type (OPENAI_BASE_URL the gateway, OPENAI_API_KEY the gateway's placeholder); the image's system settings (deployment/sandbox-images/acp-qwen/etc) pin the auth type to openai, so Qwen OAuth, DashScope and other providers' keys are refused, and switch off usage statistics, telemetry, auto-update, hooks, web search and fetch, IDE, memory and extensions. Those system settings are the floor a repository cannot change: what this profile renders is the run's user settings (QWEN_HOME/settings.json, root's, read-only: the model, the built-in tools the mode allows as tools.core, context.fileName AGENTS.md), the sealed copy of the system settings with the tool gateway beside them (its one declaration, above a repository's .qwen/settings.json), the skills link and the run's instructions as its global AGENTS.md. A repository's AGENTS.md is read as lower-trust content (ADR-ENG-01 D2); its skill folders are switched off (D1, the user settings). It would discover its MCP servers in the background after answering session/new; QWEN_CODE_LEGACY_MCP_BLOCKING makes it connect inside session/new and session/load, as Gemini CLI does, so the gateway's tools are registered before the answer and the tool gateway's witness is read once (WP-102). It defers every MCP tool behind its tool_search bridge, which the floor switches off, so the gateway's entry says alwaysLoadTools: its tools are in every model call (WP-102). Its own goals, background agents and artifact registry are excluded by name in the floor: PipesHub is the run's control plane. Sessions resume by session/load from its runtime folder (QWEN_RUNTIME_DIR=/state/qwen).",
+      "id": "qwen",
+      "name": "Qwen Code (ACP)",
+      "agent": {
+        "name": "qwen-code",
+        "version": "0.26.5"
+      },
+      "binary": {
+        "path": "/usr/local/lib/qwen-code/cli.js",
+        "digest": "sha256:246f1cb65502335863d28a17ea43a10c6d9537bfb209b6f0beafccbf443c4435"
+      },
+      "image": "pxh-qwen-tools:0.26.5-ph7",
+      "argv": [
+        "--acp"
+      ],
+      "modelApi": "chat_completions",
+      "env": {
+        "QWEN_HOME": "/state/acp/qwen",
+        "QWEN_RUNTIME_DIR": "/state/qwen",
+        "QWEN_CODE_SYSTEM_SETTINGS_PATH": "/pxh-sealed/qwen/settings.json",
+        "QWEN_CODE_NO_RELAUNCH": "true",
+        "QWEN_DISABLE_AUTO_TITLE": "1",
+        "QWEN_CODE_LEGACY_MCP_BLOCKING": "1",
+        "NO_BROWSER": "true"
+      },
+      "gatewayEnv": {
+        "modelToken": "OPENAI_API_KEY",
+        "modelBaseUrl": "OPENAI_BASE_URL",
+        "model": "OPENAI_MODEL",
+        "toolsToken": "HARNESS_TOOLS_TOKEN",
+        "skillsDir": "HARNESS_SKILLS_DIR"
+      },
+      "configs": [
+        {
+          "_comment": "Qwen Code's user settings, root's: only what a workspace cannot take back. The run's settings are in the system settings below, since a workspace's .qwen/settings.json is merged over this layer (CF-02). skills.disabledLevels is UNION-merged across every settings scope, so project here switches off the repository's skill folders (.qwen/skills, .agents/skills under /workspace) whatever a workspace says; the run's skills are the user level (the skills link) (ADR-ENG-01 D1). It sits here, not in the system settings, because the sealed copy keeps the image's own disabledLevels whole.",
+          "path": "/state/acp/qwen/settings.json",
+          "template": {
+            "skills": {
+              "disabledLevels": [
+                "project"
+              ]
+            }
+          }
+        },
+        {
+          "_comment": "Qwen Code's system settings (QWEN_CODE_SYSTEM_SETTINGS_PATH), the one layer above a trusted workspace's .qwen/settings.json: the image's own system settings (base, kept whole) with the run's settings and the tool gateway beside them, the gateway's one declaration (CF-02). Seeded root's into the read-only SEALED_DIR.",
+          "path": "/pxh-sealed/qwen/settings.json",
+          "base": "/etc/qwen-code/settings.json",
+          "toolRules": [
+            "tools",
+            "core"
+          ],
+          "toolRulesForm": "allowed",
+          "template": {
+            "model": {
+              "name": "${model}",
+              "maxSessionTurns": "${max_steps}",
+              "skipNextSpeakerCheck": true
+            },
+            "context": {
+              "fileName": [
+                "AGENTS.md"
+              ],
+              "includeDirectories": [
+                "/pipeshub",
+                "${skills_dir}"
+              ]
+            },
+            "tools": {
+              "core": []
+            },
+            "mcpServers": {
+              "${mcp_server}": {
+                "httpUrl": "${tools_mcp_url}",
+                "headers": {
+                  "Authorization": "Bearer ${tools_token}"
+                },
+                "timeout": "${tool_timeout_ms}",
+                "trust": false,
+                "alwaysLoadTools": true
+              }
+            }
+          }
+        }
+      ],
+      "nativeTools": {
+        "read": [
+          "read_file"
+        ],
+        "search": [
+          "list_directory",
+          "glob",
+          "grep_search"
+        ],
+        "edit": [
+          "edit",
+          "write_file"
+        ],
+        "shell": [
+          "run_shell_command"
+        ],
+        "skill": [
+          "skill"
+        ],
+        "subagent": [
+          "agent"
+        ]
+      },
+      "mcp": {
+        "server": "tools",
+        "toolName": "mcp__{server}__{tool}",
+        "status": {
+          "api": "gateway",
+          "runtime": "/usr/bin/node"
+        },
+        "declare": "config"
+      },
+      "_toolNamePath": "Qwen Code titles a tool call and its session/request_permission for display (an MCP tool's title is its description) and names the tool in _meta.toolName (WP-102).",
+      "toolNamePath": [
+        "_meta",
+        "toolName"
+      ],
+      "_callUsagePath": "Qwen Code's session/prompt answer carries no usage; after each model call it sends an empty agent_message_chunk whose _meta.usage holds that call's inputTokens and outputTokens, so the turn's usage is their sum (CF-13, WP-102).",
+      "callUsagePath": [
+        "_meta",
+        "usage"
+      ],
+      "_compactionNotice": "Qwen Code compresses an overflowed session and retries by itself, but ACP carries no notice: each turn's end reads the compressions it recorded in the session's record (QWEN_RUNTIME_DIR/projects/-workspace/chats/<session>.jsonl, subtype chat_compression), and a new one is the chat's compaction note (MG-10, WP-102).",
+      "compactionNotice": "qwen",
+      "instructionsFile": "/state/acp/qwen/AGENTS.md",
+      "homes": [
+        "/state/acp/qwen"
+      ],
+      "skillsLink": "/state/acp/qwen/skills",
+      "resume": {
+        "mode": "load",
+        "paths": [
+          "/state/qwen"
+        ]
+      },
+      "commandResult": "labelled",
+      "_outputMayBeLost": "Qwen Code 0.26.5 reports about one short command in 35 as having printed nothing when it printed something (its child_process path sees the exit before the pipes' last data, R31JFIX-FU-2): an empty result is unverified and reads \"No output was captured.\" (R32ENGFU-FU-1). Drop it with a Qwen release that fixes the race.",
+      "outputMayBeLost": true,
+      "clientFs": false
+    },
+    {
+      "_comment": "DeepSeek Harness's own ACP server (`dsh --profile acp`, WP-105, C2.43): the pinned 0.2.2-rc.1 npm release (@deepseek-ai/dsh, MIT, with the exact dependency tree of deployment/sandbox-images/acp-dsh/engine/package-lock.json) in its own image; the driver launches the package's bin.js, pinned by digest. Its profile is a stack of plugin patch layers; the rendered patch (--patch, root's, read-only) is the top layer, above anything under its home, which lives in /tmp and is never captured. Its model traffic goes only to the model gateway's chat-completions wire through pi-ai's openai-completions route (the gateway's placeholder from the env; DeepSeek's thinking format, so reasoning goes back on tool turns); DeepSeek's account, API-key route and request extensions are off, as are its telemetry, plugin manager, remote access and every control-plane plugin of its own (goals, sub-agents, workflows, background jobs, plan mode, web). The run's mode switches the shell and file-writing plugins; only the run's skills are a skill root; the run's instructions are its shared agents home's AGENTS.md. Its native addons load from the read-only image (NARB_DISABLE_NATIVE_CACHE: the loader would copy them to /tmp, which is noexec in a sandbox). Its ACP server reports a fixed agentInfo version (0.0.1) and offers session/resume (no session/load), so sessions resume from its log under /state/dsh/sessions. ACP carries no usage and no compaction notice: each turn's end reads its session log (sessionRecord dsh). The gateway is sent in session/new and session/resume; dsh connects inside them and fails the request if it cannot.",
+      "id": "dsh",
+      "name": "DeepSeek Harness",
+      "agent": {"name": "deepseek-harness-acp", "version": "0.2.2-rc.1", "reportedVersion": "0.0.1"},
+      "binary": {"path": "/usr/local/lib/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js", "digest": "sha256:b6640801a5a65aae9f53ca21bcce3b2ea28bd9e9554c939c1ff7c4448d91fa18"},
+      "image": "pxh-dsh-tools:0.2.2-rc.1-ph7",
+      "argv": ["--profile", "acp", "--patch", "/state/acp/dsh/patch.yml"],
+      "modelApi": "chat_completions",
+      "env": {"DSH_HOME": "/tmp/dsh-home", "DSH_AGENTS_HOME": "/state/acp/dsh-agents", "DSH_TELEMETRY_DISABLED": "1", "DSH_PERMISSION_MODE": "danger-full-access", "NARB_DISABLE_NATIVE_CACHE": "1"},
+      "gatewayEnv": {"modelToken": "HARNESS_GATEWAY_TOKEN", "toolsToken": "HARNESS_TOOLS_TOKEN", "skillsDir": "HARNESS_SKILLS_DIR"},
+      "configs": [
+        {
+          "_comment": "dsh's --patch overlay: JSON is YAML. Applied after its bundles and its home's layers, so a file the agent writes under DSH_HOME changes nothing above it.",
+          "path": "/state/acp/dsh/patch.yml",
+          "template": [
+            {"_comment": "The model: pi-ai's openai-completions route to the model gateway's chat wire, the gateway's placeholder from the env, DeepSeek's thinking format (reasoning_content sent back on tool turns, MG-05). Every session the ACP server creates uses this route.", "id": "llm-pi-ai", "config": {"providers": {"gateway": {"displayName": "Gateway", "api": "openai-completions", "baseURL": "${model_base_url}", "apiKeyEnv": "${model_token_env}", "compat": {"thinkingFormat": "deepseek"}, "retryPolicy": {"mode": "normal", "maxRetries": 2}, "models": [{"id": "${model}", "name": "Engine model", "contextWindow": 200000, "maxTokens": 8192}]}}}},
+            {"id": "acp", "config": {"provider": "gateway", "model": "${model}"}},
+            {"id": "agent-default-model", "config": {"provider": "gateway", "model": "${model}"}},
+            {"_comment": "Sessions under /state (captured and restored for session/resume); its home, profiles and caches in /tmp, never captured.", "id": "session-persistence-jsonl", "config": {"root": "/state/dsh/sessions"}},
+            {"id": "storage-json", "config": {"root": "/tmp/dsh-home/storages"}},
+            {"_comment": "Only the shared agents home's AGENTS.md, where the run's instructions are: no project instruction file (AGENTS.md, CLAUDE.md or their .local overlays), which dsh would render with them at the same trust; the controller shows a repository's own, fenced (C3.10, CF-02).", "id": "agent-instructions", "config": {"maxBytes": 65536, "instructionFileCandidates": [], "localInstructionFileCandidates": []}},
+            {"_comment": "Only the run's skills: no repository, user or bundled skill root.", "id": "skill-filesystem", "config": {"includeDefaultRoots": false, "customSkillDirs": ["${skills_dir}"], "watch": false}},
+            {"id": "tool-skill", "disabled": "${denies_skill}"},
+            {"_comment": "The run's mode: the shell and the file-writing tools exist only where it allows them (CF-1).", "id": "tool-bash", "disabled": "${denies_shell}"},
+            {"id": "tool-fs", "config": {"applyPatch": false, "read": true, "readImage": true, "write": "${allows_edit}", "edit": "${allows_edit}"}},
+            {"_comment": "The engine sandbox is the boundary (CF-18): no inner sandbox, as Codex's danger-full-access; an ask dsh still sends is decided by the driver.", "id": "sandbox-policy", "config": {"mode": "danger-full-access", "workspaceRoot": "/workspace"}},
+            {"id": "approval", "config": {"policy": "ask"}},
+            {"_comment": "Off: DeepSeek's telemetry, account, provider request extensions (dsh_session_log uploads the session log to the provider) and plugin inventory; PipesHub is the control plane, so dsh's own goals, sub-agents, workflows, background jobs, plan mode, web tools, plugin manager, remote access and settings editors are off too.", "id": "otel", "disabled": true},
+            {"id": "session-telemetry-otel", "disabled": true},
+            {"id": "deepseek-account", "disabled": true},
+            {"id": "llm-deepseek-account", "disabled": true},
+            {"id": "llm-deepseek", "disabled": true},
+            {"id": "deepseek-llm-api-extensions", "disabled": true},
+            {"id": "session-log-deepseek", "disabled": true},
+            {"id": "plugin-package-inventory-deepseek", "disabled": true},
+            {"id": "plugin-manager", "disabled": true},
+            {"id": "remote-access", "disabled": true},
+            {"id": "typert-gateway", "disabled": true},
+            {"id": "config-editor", "disabled": true},
+            {"id": "settings", "disabled": true},
+            {"id": "command-feedback", "disabled": true},
+            {"id": "web", "disabled": true},
+            {"id": "web-search-deepseek", "disabled": true},
+            {"id": "web-deepseek-api", "disabled": true},
+            {"id": "web-fetch-http", "disabled": true},
+            {"id": "tool-web", "disabled": true},
+            {"id": "goal", "disabled": true},
+            {"id": "goal-round-driver", "disabled": true},
+            {"id": "command-goal", "disabled": true},
+            {"id": "tool-goal", "disabled": true},
+            {"id": "subagent", "disabled": true},
+            {"id": "subagent-spawn-in-process", "disabled": true},
+            {"id": "subagent-fork-in-process", "disabled": true},
+            {"id": "tool-subagent-control", "disabled": true},
+            {"id": "tool-subagent", "disabled": true},
+            {"id": "tool-subagent-fork", "disabled": true},
+            {"id": "workflow-ptc", "disabled": true},
+            {"id": "tool-workflow", "disabled": true},
+            {"id": "ptc-runtime", "disabled": true},
+            {"id": "jobs", "disabled": true},
+            {"id": "tool-jobs", "disabled": true},
+            {"id": "tool-working-directory", "disabled": true},
+            {"id": "plan-mode", "disabled": true},
+            {"_comment": "MCP resources: the tool gateway serves none; its three resource tools would only add to the tool list (CF-1).", "id": "mcp-resources", "disabled": true}
+          ]
+        }
+      ],
+      "nativeTools": {"read": ["read", "read_image"], "search": ["glob", "grep"], "edit": ["write", "edit"], "shell": ["bash"], "skill": ["skill"]},
+      "planTool": "todo_write",
+      "mcp": {"server": "tools", "toolName": "mcp__{server}__{tool}", "status": {"api": "gateway", "runtime": "/usr/local/bin/node"}},
+      "_sessionRecord": "DeepSeek Harness's session/prompt answer carries a stop reason only and ACP has no compaction notice; its session log records each model call's usage and each compaction it commits (WP-105).",
+      "sessionRecord": "dsh",
+      "instructionsFile": "/state/acp/dsh-agents/AGENTS.md",
+      "resume": {"mode": "resume", "paths": ["/state/dsh/sessions"]},
+      "_commandResult": "Its bash tool reports a failed command's exit code only as the result's last line, [exit code: N] (or [killed by signal: X]); ACP's rawOutput carries none (R31JFIX-FU-1).",
+      "commandResult": "marked",
+      "clientFs": false
+    }
+  ]
+}

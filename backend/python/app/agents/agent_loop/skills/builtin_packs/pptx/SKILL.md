@@ -11,7 +11,7 @@ metadata:
     source: builtin
     requires: [office-utils]
     pack_name: pptx
-    pack_version: 1.1.1
+    pack_version: 1.3.0
 ---
 
 # PowerPoint presentations (.pptx)
@@ -28,10 +28,18 @@ metadata:
 
 ## Creating a new deck (pptxgenjs)
 
-Minimal skeleton — `writeFile` is async and MUST be awaited before the program exits, or the file is silently truncated/missing:
+Minimal skeleton — `writeFile` is async and MUST be awaited before the program exits, or the file is silently truncated/missing. Write the deck to `$OUTPUT_DIR`: only files there reach the user.
 
 ```typescript
+import path from "node:path";
 import PptxGenJS from "pptxgenjs";
+
+// Every string that goes on a slide passes through this. A doubled escape ("\\n" in the source) puts a backslash
+// and an "n" on the slide instead of a line break; failing here lets you fix the code before the user sees it.
+function text(value: string): string {
+  if (value.includes("\\n")) throw new Error(`literal backslash-n in slide text: ${JSON.stringify(value)}`);
+  return value;
+}
 
 async function main() {
   const pptx = new PptxGenJS();
@@ -41,25 +49,35 @@ async function main() {
   // Title slide — distinct from content slides.
   const title = pptx.addSlide();
   title.background = { color: "1B2A4A" }; // deliberate palette, not a default
-  title.addText("Bug Bash — Last 2 Months", {
+  title.addText(text("Bug Bash — Last 2 Months"), {
     x: 0.8, y: 2.6, w: 11.7, h: 1.2, fontSize: 40, bold: true, color: "FFFFFF",
   });
-  title.addText("Leadership summary", { x: 0.8, y: 3.9, w: 11.7, h: 0.6, fontSize: 18, color: "9DB2D0" });
+  title.addText(text("Leadership summary"), { x: 0.8, y: 3.9, w: 11.7, h: 0.6, fontSize: 18, color: "9DB2D0" });
 
   // Content slide with header accent + bullets.
   const slide = pptx.addSlide();
   slide.addShape("rect", { x: 0, y: 0, w: 13.33, h: 0.9, fill: { color: "1B2A4A" } });
-  slide.addText("Key findings", { x: 0.5, y: 0.12, w: 9, h: 0.66, fontSize: 24, bold: true, color: "FFFFFF" });
+  slide.addText(text("Key findings"), { x: 0.5, y: 0.12, w: 9, h: 0.66, fontSize: 24, bold: true, color: "FFFFFF" });
   slide.addText([
-    { text: "12 sessions held across 9 feature areas", options: { bullet: true } },
-    { text: "38 bugs filed, 31 resolved", options: { bullet: true } },
+    { text: text("12 sessions held across 9 feature areas"), options: { bullet: true } },
+    { text: text("38 bugs filed, 31 resolved"), options: { bullet: true } },
   ], { x: 0.7, y: 1.3, w: 11.9, h: 4.5, fontSize: 18, color: "222222" });
 
-  await pptx.writeFile({ fileName: "deck.pptx" });
+  // Several lines in one text box: one run per line, each but the last ending with breakLine.
+  const closing = pptx.addSlide();
+  closing.addText([
+    { text: text("MAKE THE SAFE"), options: { breakLine: true } },
+    { text: text("CHOICE THE EASY"), options: { breakLine: true } },
+    { text: text("CHOICE.") },
+  ], { x: 0.8, y: 2.2, w: 11.7, h: 3, fontSize: 44, bold: true, color: "1B2A4A" });
+
+  await pptx.writeFile({ fileName: path.join(process.env.OUTPUT_DIR ?? ".", "deck.pptx") });
 }
 
 main();
 ```
+
+**Line breaks.** Give each line its own run with `options: { breakLine: true }`, as on the closing slide above. Never type a doubled escape such as `"SAFE\\nCHOICE"` in a string: the slide then shows a backslash and an `n` instead of a new line. Pass every slide string through a check like `text()` above so a slip fails the run instead of reaching the user.
 
 Positions/sizes are in inches on the slide layout; colors are hex strings without `#`. `addTable(rows, options)` handles tabular slides; `addImage({ data: "image/png;base64,..." })` embeds charts rendered elsewhere.
 
@@ -69,7 +87,7 @@ Design quality matters as much as technical correctness for a deck; a technicall
 2. **Vary layout across slides — don't reuse the same "title + bullet list" template for all of them.** A title slide, a two-column comparison slide, a big-number/stat slide, and a section-divider slide all look different in `pptxgenjs`'s `addSlide()`/`addText()`/`addShape()`/`addImage()` API. A deck where every slide is identical bullet-point boilerplate is a common failure mode — actively avoid it.
 3. **Avoid dense walls of text.** A slide is a visual aid, not a document — 5-7 words per bullet, 3-5 bullets per slide is a reasonable ceiling. If the source content is denser than that, summarize it for the slide and note that the detail lives in a companion doc, rather than shrinking the font to fit everything.
 4. **Set explicit font sizes for hierarchy** — title text meaningfully larger (28-40pt) than body text (16-20pt); don't rely on template defaults if you're building shapes/text boxes manually.
-5. **Before finishing, run through this checklist against your generated code**: Does every slide have a clear single takeaway? Is there a consistent color/font scheme across all slides? Are any text boxes likely to overflow their bounding box given the content length? Is the title slide distinct from content slides?
+5. **Before finishing, run through this checklist against your generated code**: Does every slide have a clear single takeaway? Does any slide string hold a literal backslash-n where a line break was meant? Is there a consistent color/font scheme across all slides? Are any text boxes likely to overflow their bounding box given the content length? Is the title slide distinct from content slides?
 
 ## Editing an existing .pptx
 
@@ -81,4 +99,8 @@ Use `office-utils`'s unpack → edit → pack cycle: individual slides live at `
 
 ## Not supported in this environment
 
-- Rendering slides to images for visual QA requires LibreOffice (`soffice`) + Poppler, neither of which is installed in the sandbox yet. You cannot visually verify a generated deck's layout — rely on the content-quality checklist above and on structural checks (does the file still parse? are text boxes' declared dimensions large enough for their text at the chosen font size?) instead of an actual render.
+- Rendering slides to images for visual QA requires LibreOffice (`soffice`), which is not installed in the sandbox yet. You cannot look at a generated deck, so check its geometry instead (below) and rely on the content-quality checklist above.
+
+## Check before you deliver (required)
+
+Every pptxgenjs shape has an absolute position, so a wrong `x`/`y` silently puts text off the slide or on top of other text. After writing the deck, run `python skills/office-utils/scripts/check_layout.py deck.pptx` (`/skills/...` for a coding engine). It flags shapes off the slide, text boxes over other text boxes and blank slides, and exits 1 while anything is flagged: fix and rerun until it prints `layout: clean`, then tell the user what it checked and that the slides were not rendered.

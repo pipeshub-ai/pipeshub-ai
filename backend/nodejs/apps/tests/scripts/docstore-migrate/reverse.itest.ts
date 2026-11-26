@@ -296,11 +296,23 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
 
     it('offline: a fence that was applied and then failed keeps PostgreSQL read-only and says where things stand', async () => {
       expect((await run(['migrate', '--offline'])).code).to.equal(0);
-      const r = await withHooks(() => rollback(w.rt, { ...quiet, failAt: 'fence-applied' }));
-      expect(r.ok).to.equal(false);
-      expect(r.message).to.contain("fence reads 'active'").and.to.contain('stays read-only');
-      expect(await fence()).to.equal('active');
-      expect(await storeEpoch()).to.include({ backend: 'postgres', readonly: true });
+      // as the switch leaves it for an application with a MongoDB user of its own: read only, and the record of what was taken
+      const admin = w.mongo.client.db('admin');
+      await admin.command({ createUser: 'appw', pwd: 'appw-pw', roles: [{ role: 'read', db: DB }] });
+      await w.mongo.client.db(DB).collection<any>('docstore_fence').insertOne({ _id: 'app_writes', users: [{ user: 'appw', db: 'admin', revoked: [{ role: 'readWrite', db: DB }], granted: [{ role: 'read', db: DB }] }] });
+      try {
+        const r = await withHooks(() => rollback(w.rt, { ...quiet, failAt: 'fence-applied' }));
+        expect(r.ok).to.equal(false);
+        expect(r.message).to.contain("fence reads 'active'").and.to.contain('stays read-only');
+        expect(await fence()).to.equal('active');
+        expect(await storeEpoch()).to.include({ backend: 'postgres', readonly: true });
+        // the fence was read back active, so MongoDB is live: the application can write there again
+        const roles = (await admin.command({ usersInfo: 'appw' })).users[0].roles.map((x: any) => `${x.role}@${x.db}`);
+        expect(roles).to.deep.equal([`readWrite@${DB}`]);
+        expect(await w.mongo.client.db(DB).collection<any>('docstore_fence').countDocuments({ _id: 'app_writes' })).to.equal(0);
+      } finally {
+        await admin.command({ dropUser: 'appw' });
+      }
     });
 
     it('offline: a fence that was not applied is read back as retired and PostgreSQL is reopened', async () => {
@@ -348,7 +360,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       await sql('UPDATE platform.store_epoch SET readonly = false');
       const u = await withHooks(() => rollbackOnline(w.rt, { log: () => undefined, maxFreezeMs: 600000, failAt: 'fence-unknown' }));
       expect(u.stage).to.equal('finalize');
-      expect(u.message).to.contain('could not be read back').and.to.contain('stays read-only');
+      expect(u.message).to.contain('could not be read back').and.to.contain('stays read-only').and.to.contain('grantRolesToUser');
       expect(await storeEpoch()).to.include({ readonly: true });
     });
 

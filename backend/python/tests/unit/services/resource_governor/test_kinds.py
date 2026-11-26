@@ -147,8 +147,10 @@ def test_classify_kind(extension: str | None, mime: str | None, expected: ParseK
     assert classify_kind(extension, mime) is expected
 
 
-def test_extension_wins_over_mime() -> None:
-    assert classify_kind("pdf", "text/plain") is ParseKind.PDF
+def test_the_reader_the_labels_select_gives_the_kind() -> None:
+    """Was test_extension_wins_over_mime: a .pdf stored as text/plain is read by the TXT reader, so its kind is text."""
+    assert classify_kind("pdf", "text/plain") is ParseKind.TEXT
+    assert classify_kind("pdf", "application/octet-stream") is ParseKind.PDF
 
 
 def test_excel_load_is_free_when_the_permit_covers_the_resident_charge() -> None:

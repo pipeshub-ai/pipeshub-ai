@@ -9,22 +9,28 @@ ARG RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime
 
 FROM ${PYTHON_DEPS_IMAGE} AS python-deps
 # The base image bakes in dependencies as of its publish time. Reconcile with the
-# current pyproject.toml so packages added since the base was published (e.g. new
-# connector SDKs like opensearch-py) end up in the app image. uv skips
-# already-satisfied packages, so this is a fast no-op when the base is current and
-# installs only the delta otherwise. The base carries uv + the build toolchain
-# (it is built FROM build-base in Dockerfile.base), so native wheels can still
-# compile here when a new dependency needs it.
+# current hashed lock (SEC-SC-07) so packages added or moved since the base was
+# published end up in the app image at their locked version and file. pip skips
+# packages already at their locked version, so this is a fast no-op when the base is
+# current and installs only the delta otherwise. The base carries the build toolchain
+# (it is built FROM build-base in Dockerfile.base), so a locked source archive can still
+# compile here.
 WORKDIR /app/python
 COPY backend/python/pyproject.toml ./
-# A base image published before the fork was excluded still carries unclecode-litellm. Removing it
-# deletes litellm/ files the real package also owns, so litellm is reinstalled right after.
-RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    uv pip uninstall --system unclecode-litellm && \
-    uv pip install --system --reinstall-package litellm -e . && \
+COPY backend/python/requirements/ ./requirements/
+ENV PIP_ROOT_USER_ACTION=ignore
+# A base image published before the fork was excluded still carries unclecode-litellm, which installs into the
+# same litellm/ directory as the real package. Both leave together so the locked litellm is installed whole.
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    if python3 -m pip show -q unclecode-litellm 2>/dev/null; then \
+      python3 -m pip uninstall -y --disable-pip-version-check unclecode-litellm litellm; \
+    fi && \
+    sh requirements/install.sh runtime --project . --editable && \
     crawl4ai-setup && \
     playwright install chromium
 
+
+FROM node:24-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS node-runtime
 
 FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 
@@ -33,35 +39,33 @@ FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 # wrapper present but unable to load PPT/PPTX files.
 # Install CJK fallback fonts until they are available in the published runtime
 # base image. LibreOffice uses these when documents reference unavailable fonts.
+# git: the worker's repository_fetch (WP-63) clones public repositories outside the sandbox with the distribution's git.
 # ripgrep: storage search runs grep stages through it (same: until the base has it).
+# Node.js comes from the digest-pinned official image, not a remote setup script piped to a shell (SEC-D-11).
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
+    node --version
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice-impress-nogui fonts-noto-cjk ripgrep \
+    libreoffice-impress-nogui fonts-noto-cjk git ripgrep \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # -----------------------------------------------------------------------------
 # Stage 1: Node.js Backend Build
 # -----------------------------------------------------------------------------
-FROM node:24-slim AS nodejs-backend
+FROM node:24-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS nodejs-backend
 WORKDIR /app/backend
 
 COPY backend/nodejs/apps/package*.json ./
 COPY backend/nodejs/apps/tsconfig.json ./
 
-# Install dependencies with architecture handling (npm ci: lockfile-speed + reproducible)
+# No install scripts on any architecture: the lock ships every native part prebuilt (sharp, msgpackr-extract),
+# and what the scripts would add is telemetry (@scarf/scarf), a bun binary nothing runs, or a version notice
+# (contracts/supply-chain/install-scripts.json). An allowlisted `npm rebuild` would run here if one were needed.
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    set -e; \
-    ARCH=$(uname -m); \
-    echo "Building for architecture: $ARCH"; \
-    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
-        echo "Detected ARM architecture"; \
-        npm ci --ignore-scripts && \
-        npm uninstall jpeg-recompress-bin mozjpeg imagemin-mozjpeg 2>/dev/null || true && \
-        npm install sharp --save || true; \
-    else \
-        echo "Detected x86 architecture"; \
-        npm ci; \
-    fi
+    npm ci --ignore-scripts
 
 COPY backend/nodejs/apps/src ./src
 RUN npm run build && \
@@ -78,14 +82,16 @@ RUN mkdir -p /app/templates && cd src && find . -name '*.hbs' -exec cp --parents
 # Stage 2: Frontend Build (Next.js in `frontend/`)
 # -----------------------------------------------------------------------------
 # Static export so the Node.js API can serve files from `backend/dist/public`.
-FROM node:24-slim AS frontend-build
+FROM node:24-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS frontend-build
 WORKDIR /app/frontend
 
 COPY frontend/package*.json ./
 
+# No install scripts (C644-FU-1): optional packages stay in, so the lock's own platform builds of next's SWC and
+# unrs-resolver's napi binding are installed from it and nothing is fetched outside the lock at build time.
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm config set legacy-peer-deps true && \
-    npm ci
+    npm ci --ignore-scripts
 
 COPY frontend/ ./
 
@@ -106,10 +112,12 @@ WORKDIR /app
 # local storage records absolute file:// URLs under ~/.local, and existing
 # volumes and custom mounts target /root/.local and /root/.cache/huggingface.
 # docker-entrypoint.sh hands root-owned data from earlier releases over to it.
+# The account must exist (torch resolves its cache directory through getpass),
+# and /home/user, the HOME the Helm chart sets, must be writable by it.
 RUN groupadd --gid 1000 pipeshub && \
     useradd --uid 1000 --gid 1000 --home-dir /root --no-create-home \
         --shell /usr/sbin/nologin pipeshub && \
-    install -d -o 1000 -g 1000 /root/.cache /root/.local && \
+    install -d -o 1000 -g 1000 /root/.cache /root/.local /home/user && \
     chown 1000:1000 /root
 ENV HOME=/root
 # Repositories pushed by `pipeshub index` are mirrored on the data volume, so they survive the container being replaced.
@@ -163,6 +171,18 @@ COPY --from=frontend-build /out ./backend/dist/public
 
 # Copy Python application code
 COPY backend/python/app/ /app/python/app/
+COPY backend/python/harness_core/ /app/python/harness_core/
+COPY backend/python/harness_engines/ /app/python/harness_engines/
+
+# Bytecode for the app's own code, built here: the code is root-owned and the services run as uid 1000, so none can
+# write __pycache__, and every process compiled every module it imports on every start. That cost each service its
+# start time and kept the compiler's peak in its heap: the idle harness worker held about 45 MiB of it (R25OPS-FU-1).
+RUN python -m compileall -q -j 0 /app/python/app /app/python/harness_core /app/python/harness_engines
+
+# The durable worker imports the query container directly, unlike query_main
+# which imports edition_config first. Instantiate it during the image build so
+# import-order cycles cannot ship as a worker restart loop.
+RUN cd /app/python && python -c 'from app.containers.query import QueryAppContainer; QueryAppContainer.init("agent_harness_worker_build_check")'
 
 # Copy the process monitor script
 COPY deployment/process_monitor.sh /app/process_monitor.sh
@@ -176,6 +196,20 @@ RUN chmod +x /app/process_monitor.sh && \
 # starts as root so the entrypoint can take over data from earlier root-running
 # releases; it drops to uid 1000 with no capabilities before any service starts.
 COPY --chmod=755 deployment/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# A container logs to stdout and the platform keeps it (Compose's logging
+# driver, the kubelet). Node's file logs are opt-in to a declared, writable
+# NODE_LOG_DIR, so no uid needs a writable path inside the image to log.
+ENV NODE_LOG_FILES=false
+
+# The sandbox plane this image speaks: 2 is the broker behind the Docker API proxy's broker profile (R43-SOCK).
+# rollback.sh reads it to warn before a rollback that would lose code execution; raise it with an incompatible change.
+LABEL ai.pipeshub.sandbox-plane.version="2"
+
+# What this image can run, for the installer and the chart to choose by (an image without the label predates them all
+# and gets the upstream layout): the sandbox broker and egress proxy, SECRET_KEY read from a file, the agent harness.
+# release_tooling_test.sh keeps install.sh's list equal to this one.
+LABEL ai.pipeshub.capabilities="sandbox-broker,secret-key-file,agent-harness"
 
 # Which build this image is; each service returns it from /health. Declared
 # last so a new commit rebuilds only these layers. With no build args the

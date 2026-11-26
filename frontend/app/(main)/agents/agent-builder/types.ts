@@ -1,6 +1,8 @@
+import type { AgentGates } from '../agent-gates';
+import type { AgentEnvironment } from '../agent-environment';
 import type { Node } from '@xyflow/react';
 import type { ReasoningEffort } from '@/chat/types';
-import type { AgentDetail } from '../types';
+import type { AgentDetail, RoleModels } from '../types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
 
 export interface AgentWebSearchAttachment {
@@ -120,6 +122,14 @@ export interface AgentFormPayload {
   defaultReasoningEffort?: ReasoningEffort | null;
   /** When false, omit user name/email/org from this agent's system prompt. Defaults to true. */
   sendUserContext?: boolean;
+  /** Only for an engine agent (E4a); null turns an engine agent back into a loop agent; a loop agent's payload never carries it. */
+  engineProfile?: Record<string, unknown> | null;
+  /** MA1: only when the agent sets a role model, or `{}` to clear the ones it had. */
+  roleModels?: RoleModels;
+  /** WP-31 D: only when the agent sets a gate, or `{}` to clear the ones it had. */
+  gates?: AgentGates;
+  /** C20.18: only when the agent sets an environment, or `{}` to clear the one it had. */
+  environment?: AgentEnvironment | Record<string, never>;
 }
 
 /** Agent shape used when rebuilding the graph (extends API detail with optional legacy fields). */

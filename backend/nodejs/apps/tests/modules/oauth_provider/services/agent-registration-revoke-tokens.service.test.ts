@@ -16,6 +16,9 @@ import { createMockLogger } from '../../../helpers/mock-logger';
 import { OAuthAccessToken } from '../../../../src/modules/oauth_provider/schema/oauth.access_token.schema';
 import { InvalidTokenError } from '../../../../src/libs/errors/oauth.errors';
 
+// OAuthAccessToken.findOne is read with .lean(); a fake has to answer it.
+const leanResult = (value: unknown): any => ({ lean: () => Promise.resolve(value) });
+
 const ISSUER = 'https://pipeshub.test';
 const SECRET = 'test-secret-key-for-signing-tokens-at-least-32-bytes';
 const USER = {
@@ -142,7 +145,7 @@ describe('AgentRegistrationService revocation reaches issued tokens', () => {
         resolveGrantedScopes: (r: string[]) => ({ granted: r, notGranted: [] }),
         getScopeDefinitions: (s: string[]) => s.map((name) => ({ name })),
       } as any,
-      { getOrCreate: sinon.stub().resolves('pipeshub-agent') } as any,
+      { getOrCreate: sinon.stub().resolves('pipeshub-agent'), capScopes: (a: any) => a.allowedScopes } as any,
       { frontendUrl: 'https://app.test', oauthIssuer: ISSUER } as any,
     );
   });
@@ -159,12 +162,9 @@ describe('AgentRegistrationService revocation reaches issued tokens', () => {
     new URL(uri).searchParams.get('claim_attempt_token')!;
   const claimed = async () => {
     const r = await service.register('service_auth', 'ada@example.com');
-    await service.completeClaim(
-      attemptToken(r.claim.verification_uri),
-      r.claim.user_code,
-      'approve',
-      USER,
-    );
+    const token = attemptToken(r.claim.verification_uri);
+    const shown = (await service.getClaimContext(token, USER)).scopes.map((s) => s.name);
+    await service.completeClaim(token, r.claim.user_code, 'approve', USER, shown);
     return r;
   };
 
@@ -183,7 +183,7 @@ describe('AgentRegistrationService revocation reaches issued tokens', () => {
     );
 
   it('an access token issued under a registration stops working once its owner revokes the registration', async () => {
-    sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any);
+    sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false } as any));
     const r = await claimed();
     await service.claimGrant(r.claim_token);
     const token = accessTokenOf(r.registration_id);
@@ -199,7 +199,7 @@ describe('AgentRegistrationService revocation reaches issued tokens', () => {
   });
 
   it('introspection reports a token inactive once its registration is revoked', async () => {
-    sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any);
+    sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false } as any));
     const r = await claimed();
     await service.claimGrant(r.claim_token);
     const token = accessTokenOf(r.registration_id);
@@ -211,7 +211,7 @@ describe('AgentRegistrationService revocation reaches issued tokens', () => {
   });
 
   it('an access token naming a registration that is gone or malformed is refused', async () => {
-    sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any);
+    sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false } as any));
     for (const id of ['reg_' + 'f'.repeat(24), 'f'.repeat(24)]) {
       await tokens.verifyAccessToken(accessTokenOf(id)).then(
         () => expect.fail(`a token naming ${id} was accepted`),

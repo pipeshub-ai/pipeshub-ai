@@ -7,11 +7,11 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
-import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+import rehypeSanitize from 'rehype-sanitize';
 import type { Schema } from 'hast-util-sanitize';
 import type { PluggableList } from 'unified';
 import 'katex/dist/katex.min.css';
-import { Box, Flex, Text, Heading } from '@radix-ui/themes';
+import { Box, Button, Flex, Text, Heading, Popover } from '@radix-ui/themes';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { InlineCitationBadge, InlineCitationGroup } from './response-tabs/citations';
@@ -36,64 +36,29 @@ import type { Root, Blockquote } from 'mdast';
 import { splitMarkdownBlocks } from '../../utils/split-streaming-markdown';
 import { downloadCode } from '../../utils/code-download';
 import { downloadTableCsv, tableNodeToRows, type TableNode } from '../../utils/table-csv';
-import { CHAT_LINK_STYLE, isRawUrlText, shortLinkLabel } from '../../utils/link-label';
+import {
+  CHAT_LINK_STYLE,
+  isRawUrlText,
+  linkDataHost,
+  linkWithoutData,
+  shortLinkLabel,
+} from '../../utils/link-label';
+import { UNTRUSTED_HTML_SCHEMA, rehypeSafeInlineStyle } from '@/lib/markdown/untrusted-html';
 
 /**
- * rehype-sanitize schema.
- *
- * Pipeline order: rehypeRaw → rehypeSanitize → rehypeKatex
- *
- * rehypeSanitize runs BEFORE rehypeKatex, so at sanitization time math nodes
- * are still plain `<code class="language-math">` elements — completely harmless.
- * rehypeKatex then converts them to its own HTML which is never sanitized.
- * This avoids having to allowlist the entire KaTeX SVG/MathML output surface.
- *
- * The schema only needs to cover raw HTML that the LLM may embed (callouts,
- * details/summary, styled spans, etc.). Dangerous constructs — <script>,
- * on* event handlers, javascript: URLs — remain blocked by defaultSchema.
- * `data:`/`blob:` are allowed for `src` only; `SafeMarkdownImage` decides
- * which image URLs load.
+ * Whether an answer's link goes somewhere: the web, mail, an app route or an anchor on the page. Anything else
+ * (a sandbox path such as `out/report.pdf`) would resolve against the chat page, so it renders as text (CHAT-TL R2).
  */
-const SANITIZE_SCHEMA: Schema = {
-  ...defaultSchema,
+export function isResolvableHref(href: string | undefined): href is string {
+  return !!href && /^(https?:|mailto:|\/(?!\/)|#)/i.test(href);
+}
+
+/** The untrusted-HTML schema, with `data:`/`blob:` allowed for `src` only: `SafeMarkdownImage` decides which image URLs load. */
+const ANSWER_HTML_SCHEMA: Schema = {
+  ...UNTRUSTED_HTML_SCHEMA,
   protocols: {
-    ...defaultSchema.protocols,
-    src: [...(defaultSchema.protocols?.src ?? []), 'data', 'blob'],
-  },
-  tagNames: [
-    ...(defaultSchema.tagNames ?? []),
-    // Collapsible sections the LLM may emit
-    'details', 'summary',
-  ],
-  attributes: {
-    ...defaultSchema.attributes,
-    // className on ALL elements (syntax highlighting, callout markers, etc.)
-    '*': [...(defaultSchema.attributes?.['*'] ?? []), 'className'],
-    // style is intentionally restricted to elements where inline styling is
-    // safe and dark-mode neutral.  Structural/semantic wrappers (section,
-    // article, nav, header, aside) are excluded because LLMs routinely emit
-    // hardcoded light colours (#fafafa backgrounds, #e5e7eb borders) that
-    // create jarring white boxes in dark mode.  rehype-sanitize has no
-    // built-in CSS-property–level filtering, so we control it at the
-    // element level instead.
-    'table':      [...(defaultSchema.attributes?.['table']      ?? []), 'style'],
-    'thead':      [...(defaultSchema.attributes?.['thead']      ?? []), 'style'],
-    'tbody':      [...(defaultSchema.attributes?.['tbody']      ?? []), 'style'],
-    'tfoot':      [...(defaultSchema.attributes?.['tfoot']      ?? []), 'style'],
-    'tr':         [...(defaultSchema.attributes?.['tr']         ?? []), 'style'],
-    'th':         [...(defaultSchema.attributes?.['th']         ?? []), 'style'],
-    'td':         [...(defaultSchema.attributes?.['td']         ?? []), 'style'],
-    // div: style intentionally omitted.  LLMs routinely use <div> as card
-    // wrappers with hardcoded light backgrounds (background:#f8f9fa etc.)
-    // that create white boxes in dark mode.  Our table component handles
-    // overflow-x:auto internally, so the div wrapper style is not needed.
-    'span':       [...(defaultSchema.attributes?.['span']       ?? []), 'style'],
-    'pre':        [...(defaultSchema.attributes?.['pre']        ?? []), 'style'],
-    'code':       [...(defaultSchema.attributes?.['code']       ?? []), 'style'],
-    'img':        [...(defaultSchema.attributes?.['img']        ?? []), 'style'],
-    'a':          [...(defaultSchema.attributes?.['a']          ?? []), 'style'],
-    'figure':     [...(defaultSchema.attributes?.['figure']     ?? []), 'style'],
-    'figcaption': [...(defaultSchema.attributes?.['figcaption'] ?? []), 'style'],
+    ...UNTRUSTED_HTML_SCHEMA.protocols,
+    src: [...(UNTRUSTED_HTML_SCHEMA.protocols?.src ?? []), 'data', 'blob'],
   },
 };
 
@@ -309,9 +274,12 @@ const REMARK_PLUGINS: PluggableList = [
   [remarkMath, { singleDollarTextMath: false }],
   remarkCallouts,
 ];
+// Sanitizing runs before KaTeX, so math is still a plain `<code class="language-math">`
+// when checked and KaTeX's own output never needs allowlisting.
 const REHYPE_PLUGINS: PluggableList = [
   rehypeRaw,
-  [rehypeSanitize, SANITIZE_SCHEMA],
+  [rehypeSanitize, ANSWER_HTML_SCHEMA],
+  rehypeSafeInlineStyle,
   rehypeStripStyleUrls,
   rehypeKatex,
 ];
@@ -459,7 +427,7 @@ function AnchorHeading({ level, children }: { level: 1 | 2 | 3 | 4 | 5 | 6; chil
             marginLeft: '8px',
             opacity: showAnchor || !canHover ? 0.55 : 0,
             transition: 'opacity 0.15s ease',
-            color: 'var(--slate-9)',
+            color: 'var(--slate-11)',
             textDecoration: 'none',
             fontWeight: 400,
             fontSize: '0.75em',
@@ -507,12 +475,67 @@ function MarkdownImage({ src, alt }: { src?: string | Blob; alt?: string }) {
         <Text
           size="1"
           as="span"
-          style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', fontStyle: 'italic', display: 'block' }}
+          style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', fontStyle: 'italic', display: 'block' }}
         >
           {alt}
         </Text>
       )}
     </Box>
+  );
+}
+
+/**
+ * A link to another site whose address carries data (SEC-EG-09). The visible
+ * link points at the address without that data, so a middle-click or a copied
+ * address leaks nothing; following the full address takes a confirm that names
+ * the receiving host.
+ */
+function DataLink({ href, host, children }: { href: string; host: string; children?: React.ReactNode }) {
+  const { t } = useTranslation();
+  const isMobile = useIsMobile();
+  const [open, setOpen] = useState(false);
+  const target = isMobile ? { minHeight: 44 } : undefined;
+
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger>
+        <a
+          href={linkWithoutData(href)}
+          title={t('chatStream.linkDataHint', { host })}
+          data-link-carries-data=""
+          onClick={(event) => {
+            event.preventDefault();
+            setOpen(true);
+          }}
+          style={{ ...CHAT_LINK_STYLE, fontSize: 'inherit', cursor: 'pointer' }}
+        >
+          {children}
+          <span aria-hidden="true" style={{ marginLeft: 2, verticalAlign: 'middle' }}>
+            <MaterialIcon name="output" size={12} color="var(--accent-11)" />
+          </span>
+        </a>
+      </Popover.Trigger>
+      <Popover.Content size="1" maxWidth="320px" side="top" align="start">
+        <Flex direction="column" gap="2">
+          <Text size="2" weight="bold">{t('chatStream.linkDataTitle')}</Text>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
+            {t('chatStream.linkDataBody', { host })}
+          </Text>
+          <Flex gap="2" justify="end">
+            <Popover.Close>
+              <Button type="button" size="1" variant="soft" color="gray" style={target}>
+                {t('action.cancel')}
+              </Button>
+            </Popover.Close>
+            <Button asChild size="1" style={target}>
+              <a href={href} target="_blank" rel="noopener noreferrer" onClick={() => setOpen(false)}>
+                {t('chatStream.linkDataOpen')}
+              </a>
+            </Button>
+          </Flex>
+        </Flex>
+      </Popover.Content>
+    </Popover.Root>
   );
 }
 
@@ -782,6 +805,9 @@ export function parseInlineCitations(
     const runNode = emitRun(run, citationCallbacks);
     const nextChar = text[afterIndex];
     if (nextChar && /^[.!?;:,]/.test(nextChar)) {
+      // "dollars [1]." is written with a space before the marker: the stop goes against the word, not after the space.
+      const before = parts[parts.length - 1];
+      if (typeof before === 'string' && /\s$/.test(before)) parts[parts.length - 1] = before.replace(/[ \t]+$/, '');
       parts.push(nextChar);
       parts.push(runNode);
       afterIndex += 1;
@@ -1131,20 +1157,29 @@ export function createMarkdownComponents(
       <MarkdownImage src={src} alt={alt} />
     ),
     a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
+      // CHAT-TL R2: an answer may link only what resolves; a sandbox path stays text.
+      if (!isResolvableHref(href)) {
+        return <>{processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}</>;
+      }
       // A pasted or autolinked URL reads as its short name (#123 for a pull request); written link text is kept.
-      const raw = href && typeof children === 'string' && isRawUrlText(children, href);
+      const raw = typeof children === 'string' && isRawUrlText(children, href);
+      const label = raw
+        ? shortLinkLabel(href)
+        : processChildren(children, citationMapsRef.current, citationCallbacksRef.current);
+      const dataHost = linkDataHost(href, window.location.origin);
+      if (dataHost) {
+        return <DataLink href={href} host={dataHost}>{label}</DataLink>;
+      }
       return (
         <a
-          href={href ? withCurrentOrgId(href) : href}
+          href={withCurrentOrgId(href)}
           target="_blank"
           rel="noopener noreferrer"
           title={raw ? href : undefined}
           // Inherit so links in headings keep heading size (not body font-size-2).
           style={{ ...CHAT_LINK_STYLE, fontSize: 'inherit' }}
         >
-          {raw
-            ? shortLinkLabel(href)
-            : processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
+          {label}
         </a>
       );
     },
