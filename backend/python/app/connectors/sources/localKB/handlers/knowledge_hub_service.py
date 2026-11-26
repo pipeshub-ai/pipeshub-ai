@@ -38,7 +38,11 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     SortField,
     SortOrder,
 )
-from app.connectors.sources.localKB.handlers.kh_search import SearchPage, search_page
+from app.connectors.sources.localKB.handlers.kh_search import (
+    SearchPage,
+    at_least_shown,
+    search_page,
+)
 from app.core.org_context import for_org
 from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingBusy,
@@ -416,6 +420,7 @@ class KnowledgeHubService:
         # ahead is the one the caller just came from and always exists.
         has_next = part["hasMore"] if direction == "next" else True
         has_prev = (cursor is not None) if direction == "next" else part["hasMore"]
+        total, total_capped = at_least_shown(total, seen_before + len(rows), capped=total_capped)
 
         def issue(row: dict[str, Any], next_direction: str, items_seen: int) -> str:
             return encode(
