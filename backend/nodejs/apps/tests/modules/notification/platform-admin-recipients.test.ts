@@ -87,4 +87,26 @@ describe('notification/platform-admin-recipients', () => {
     expect(warn.callCount).to.equal(1);
     expect(JSON.stringify(warn.firstCall.args)).to.not.include(orgId);
   });
+
+  it('warns once per process, naming no organisation, while none is live, and apart from the several-live warning', async () => {
+    resetPlatformRecipientWarnings();
+    const warn = sinon.stub();
+    sinon.stub(Logger, 'getInstance').returns({ warn } as never);
+    const listAdminIds = sinon.stub();
+    setUserRepository({ listAdminIds } as never);
+    const liveSummary = sinon.stub().resolves({ count: 0, oldestId: null });
+    setOrgRepository({ liveSummary } as never);
+
+    expect(await resolvePlatformAdminRecipients()).to.deep.equal([]);
+    await resolvePlatformAdminRecipients();
+    liveSummary.resolves({ count: 2, oldestId: orgId });
+    await resolvePlatformAdminRecipients();
+    await resolvePlatformAdminRecipients();
+
+    expect(listAdminIds.called).to.be.false;
+    expect(warn.callCount).to.equal(2);
+    expect(warn.firstCall.args[0]).to.include('no organisation is live');
+    expect(warn.secondCall.args[0]).to.include('more than one organisation is live');
+    expect(JSON.stringify(warn.args)).to.not.include(orgId);
+  });
 });
