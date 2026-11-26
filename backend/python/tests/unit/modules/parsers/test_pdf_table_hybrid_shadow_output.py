@@ -163,7 +163,7 @@ def test_a_parse_that_raises_after_a_table_was_collected_closes_the_collector(tm
     real_extract = ola.extract_layout_regions
     seen = {"n": 0}
 
-    def fail_on_the_second_page(page, **kwargs):  # noqa: ANN003, ANN202
+    def fail_on_the_second_page(page, **kwargs) -> list:
         seen["n"] += 1
         if seen["n"] == 2:
             raise RuntimeError("layout failed")
