@@ -21,8 +21,9 @@ from app.core.org_context import (
 from app.models.entities import CodeFileRecord, FileRecord, Record, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.postgres.records import RecordsMixin
-
-from tests.integration.graph_db.sync_point_contract import assert_a_null_clears_a_sync_point_field
+from tests.integration.graph_db.sync_point_contract import (
+    assert_a_null_clears_a_sync_point_field,
+)
 
 from .pg_support import OrgBound, StandInProvider, new_org
 

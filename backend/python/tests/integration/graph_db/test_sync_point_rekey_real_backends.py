@@ -26,7 +26,9 @@ from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.base.sync_point.rekey import rekey
 from app.core.org_context import for_org
 from app.utils.encryption.encryption_service import EncryptionService
-from tests.integration.graph_db.sync_point_contract import assert_a_null_clears_a_sync_point_field
+from tests.integration.graph_db.sync_point_contract import (
+    assert_a_null_clears_a_sync_point_field,
+)
 from tests.integration.real_graph import (
     backend_unavailable,
     connect_arango,
