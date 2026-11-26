@@ -1516,9 +1516,8 @@ async def finalize_import(request: Request, payload: FinalizeImportRequest) -> J
         raise HTTPException(status_code=400, detail=_IMPORT_FRONTMATTER_UNREADABLE) from e
 
     try:
-        metadata = await manager.create(name, content, payload.category, payload.subcategory)
-        for path, resource in payload.resources.items():
-            await manager.write_resource(name, path, resource)
+        # One write: a bundle that cannot be stored whole leaves nothing behind.
+        metadata = await manager.create(name, content, payload.category, payload.subcategory, dict(payload.resources))
     except SkillConflictError as e:
         raise _handle_conflict_error(e) from e
     except RegistryError as e:

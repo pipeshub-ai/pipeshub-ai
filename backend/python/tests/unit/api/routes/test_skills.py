@@ -393,7 +393,8 @@ class TestFinalizeImportRoute:
         ):
             response = await finalize_import(MagicMock(), payload)
         manager.create.assert_awaited_once()
-        manager.write_resource.assert_awaited_once_with("pdf-extractor", "scripts/run.py", "print(1)")
+        assert manager.create.await_args.args[4] == {"scripts/run.py": "print(1)"}  # stored with SKILL.md, in one write
+        manager.write_resource.assert_not_awaited()
         assert response.status_code == 201
 
 
