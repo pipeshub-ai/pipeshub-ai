@@ -1,0 +1,129 @@
+{
+  "description": "MA1: the model a child run calls, for Node (domain/child-model.ts) and Python (harness_core.journal.child_model). `roleKeys`: the keys a spawn's sub-agent definition is looked up under, in order: its domain agent, its role, then `default`; each with every run of characters outside [A-Za-z0-9_.-] replaced by one `-`, its ASCII letters lower-cased, leading characters outside [a-z0-9] dropped, cut to 64, empty keys left out, a repeated key named once. `cases`: `roleModels` maps a role key to a route (`<provider>:<model>`, split at the first colon); the first key the map holds decides (`expect.model`, with the key as `role`); none: the child inherits its parent's model (`expect.inherit`). `specs`: the model fields of a child's run spec: with a role model its `model.policy` is that one route and `x.pipeshub.model` names it (`extModel`); without one both are its parent's, as before. Written by hand.",
+  "roleKeys": [
+    { "subAgent": { "role": "researcher", "toolNames": [] }, "keys": ["researcher", "default"] },
+    { "subAgent": { "role": "Researcher One", "toolNames": [] }, "keys": ["researcher-one", "default"] },
+    { "subAgent": { "role": "  Web   Search / Reader! ", "toolNames": [] }, "keys": ["web-search-reader-", "default"] },
+    { "subAgent": { "role": "ticket finder", "domainAgent": "jira_agent", "toolNames": [] }, "keys": ["jira_agent", "ticket-finder", "default"] },
+    { "subAgent": { "role": "jira_agent", "domainAgent": "Jira_Agent", "toolNames": [] }, "keys": ["jira_agent", "default"] },
+    { "subAgent": { "role": "", "toolNames": [] }, "keys": ["default"] },
+    { "subAgent": { "role": "--", "toolNames": [] }, "keys": ["default"] },
+    { "subAgent": { "role": "default", "toolNames": [] }, "keys": ["default"] },
+    { "subAgent": { "role": "_.private", "toolNames": [] }, "keys": ["private", "default"] },
+    { "subAgent": { "role": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "toolNames": [] }, "keys": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "default"] },
+    { "subAgent": { "role": "Ünïcode rôle", "toolNames": [] }, "keys": ["n-code-r-le", "default"] },
+    { "subAgent": null, "keys": ["default"] }
+  ],
+  "cases": [
+    {
+      "id": "CM-1",
+      "behaviour": "no role models: the child inherits",
+      "roleModels": {},
+      "subAgent": { "role": "researcher", "toolNames": [] },
+      "expect": { "inherit": true }
+    },
+    {
+      "id": "CM-2",
+      "behaviour": "the role's own model",
+      "roleModels": { "researcher": "anthropic:claude-haiku-4-5", "default": "openai:gpt-5.4-mini" },
+      "subAgent": { "role": "Researcher", "toolNames": [] },
+      "expect": { "model": { "provider": "anthropic", "model": "claude-haiku-4-5", "role": "researcher" } }
+    },
+    {
+      "id": "CM-3",
+      "behaviour": "a role without its own entry takes `default`",
+      "roleModels": { "researcher": "anthropic:claude-haiku-4-5", "default": "openai:gpt-5.4-mini" },
+      "subAgent": { "role": "writer", "toolNames": [] },
+      "expect": { "model": { "provider": "openai", "model": "gpt-5.4-mini", "role": "default" } }
+    },
+    {
+      "id": "CM-4",
+      "behaviour": "a role without an entry and no `default` inherits",
+      "roleModels": { "researcher": "anthropic:claude-haiku-4-5" },
+      "subAgent": { "role": "writer", "toolNames": [] },
+      "expect": { "inherit": true }
+    },
+    {
+      "id": "CM-5",
+      "behaviour": "the domain agent's entry is nearer than the role's",
+      "roleModels": { "jira_agent": "openai:gpt-5.4-mini", "ticket-finder": "anthropic:claude-haiku-4-5" },
+      "subAgent": { "role": "ticket finder", "domainAgent": "jira_agent", "toolNames": [] },
+      "expect": { "model": { "provider": "openai", "model": "gpt-5.4-mini", "role": "jira_agent" } }
+    },
+    {
+      "id": "CM-6",
+      "behaviour": "a domain agent without an entry falls to the role's",
+      "roleModels": { "ticket-finder": "anthropic:claude-haiku-4-5" },
+      "subAgent": { "role": "ticket finder", "domainAgent": "jira_agent", "toolNames": [] },
+      "expect": { "model": { "provider": "anthropic", "model": "claude-haiku-4-5", "role": "ticket-finder" } }
+    },
+    {
+      "id": "CM-7",
+      "behaviour": "a child with no sub-agent definition (an engine child) takes `default`",
+      "roleModels": { "default": "openai:gpt-5.4-mini" },
+      "subAgent": null,
+      "expect": { "model": { "provider": "openai", "model": "gpt-5.4-mini", "role": "default" } }
+    },
+    {
+      "id": "CM-8",
+      "behaviour": "a model name with a colon keeps it: the route splits at the first",
+      "roleModels": { "default": "bedrock:anthropic.claude-haiku-4-5-v1:0" },
+      "subAgent": { "role": "x", "toolNames": [] },
+      "expect": { "model": { "provider": "bedrock", "model": "anthropic.claude-haiku-4-5-v1:0", "role": "default" } }
+    }
+  ],
+  "specs": [
+    {
+      "id": "CS-1",
+      "behaviour": "no role model: the child's model fields are its parent's",
+      "parent": {
+        "policy": [{ "provider": "openai", "model": "gpt-5.4" }],
+        "extModel": { "modelKey": "mk-a", "modelName": "gpt-5.4" }
+      },
+      "model": null,
+      "expect": {
+        "policy": [{ "provider": "openai", "model": "gpt-5.4" }],
+        "extModel": { "modelKey": "mk-a", "modelName": "gpt-5.4" }
+      }
+    },
+    {
+      "id": "CS-2",
+      "behaviour": "a role model replaces the route and names its configured entry",
+      "parent": {
+        "policy": [{ "provider": "openai", "model": "gpt-5.4" }],
+        "extModel": { "modelKey": "mk-a", "modelName": "gpt-5.4" }
+      },
+      "model": { "provider": "anthropic", "model": "claude-haiku-4-5", "modelKey": "mk-b" },
+      "expect": {
+        "policy": [{ "provider": "anthropic", "model": "claude-haiku-4-5" }],
+        "extModel": { "modelKey": "mk-b", "modelName": "claude-haiku-4-5" }
+      }
+    },
+    {
+      "id": "CS-3",
+      "behaviour": "a role model drops the parent's fallback routes: one route, never another model",
+      "parent": {
+        "policy": [
+          { "provider": "openai", "model": "gpt-5.4" },
+          { "provider": "openai", "model": "gpt-5.4-mini", "on": ["429_exhausted"] }
+        ],
+        "extModel": { "modelKey": "mk-a", "modelName": "gpt-5.4" }
+      },
+      "model": { "provider": "anthropic", "model": "claude-haiku-4-5", "modelKey": "mk-b" },
+      "expect": {
+        "policy": [{ "provider": "anthropic", "model": "claude-haiku-4-5" }],
+        "extModel": { "modelKey": "mk-b", "modelName": "claude-haiku-4-5" }
+      }
+    },
+    {
+      "id": "CS-4",
+      "behaviour": "a parent on the org default (no configured model named) and a role model",
+      "parent": { "policy": [{ "provider": "openai", "model": "gpt-5.4" }], "extModel": null },
+      "model": { "provider": "anthropic", "model": "claude-haiku-4-5", "modelKey": "mk-b" },
+      "expect": {
+        "policy": [{ "provider": "anthropic", "model": "claude-haiku-4-5" }],
+        "extModel": { "modelKey": "mk-b", "modelName": "claude-haiku-4-5" }
+      }
+    }
+  ]
+}

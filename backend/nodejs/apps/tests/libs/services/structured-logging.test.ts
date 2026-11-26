@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import { FileSink } from '../../../src/libs/services/log-file-sink';
 import winston from 'winston';
 import * as edition from '../../../src/edition';
 import * as seam from '../../../src/libs/services/structured-logging';
@@ -93,7 +94,8 @@ describe('libs/services/structured-logging', () => {
     it('keeps the file transports by default', () => {
       sinon.stub(seam, 'getProvider').returns(fakeProvider());
       const transports = transportsOf(new Logger({ service: 't' }));
-      expect(transports.filter((t) => t instanceof winston.transports.File)).to.have.length(2);
+      // error.log and combined.log, through the harness's FileSink (it reports a sink that cannot be written).
+      expect(transports.filter((t) => t instanceof FileSink)).to.have.length(2);
     });
 
     it('gives the console transport the provider format', () => {
@@ -127,7 +129,7 @@ describe('libs/services/structured-logging', () => {
       expect(record).to.not.have.any.keys('org_id', 'user_id');
       // Neither the file JSON nor the text line shows a raw id: an EE build that only hashes keeps hiding them.
       const formatted = (logger as any).logger.format.transform({ ...record }, {});
-      const fileLine = winston.format.json().transform({ ...formatted }, {})[Symbol.for('message')];
+      const fileLine = (winston.format.json().transform({ ...formatted }, {}) as any)[Symbol.for('message')];
       for (const rendered of [String(formatted[Symbol.for('message')]), String(fileLine)]) {
         expect(rendered.replace('h:org-1', '')).to.not.contain('org-1').and.not.contain('user-1');
         expect(rendered).to.not.match(/org_id|user_id/);

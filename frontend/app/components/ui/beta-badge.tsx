@@ -4,8 +4,11 @@ import { Badge, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 
 export interface BetaBadgeProps {
-  /** Overrides the default tooltip copy (`common.beta.tooltip`). */
-  tooltip?: string;
+  /**
+   * Overrides the default tooltip copy (`common.beta.tooltip`). null drops the tooltip, for a badge inside a row that
+   * already has one: two tooltips on one hover would stack.
+   */
+  tooltip?: string | null;
 }
 
 /**
@@ -16,11 +19,11 @@ export interface BetaBadgeProps {
 export function BetaBadge({ tooltip }: BetaBadgeProps) {
   const { t } = useTranslation();
 
-  return (
-    <Tooltip content={tooltip ?? t('common.beta.tooltip')}>
-      <Badge size="1" variant="soft" color="amber">
-        {t('common.beta.label')}
-      </Badge>
-    </Tooltip>
+  const badge = (
+    <Badge size="1" variant="soft" color="amber">
+      {t('common.beta.label')}
+    </Badge>
   );
+  if (tooltip === null) return badge;
+  return <Tooltip content={tooltip ?? t('common.beta.tooltip')}>{badge}</Tooltip>;
 }

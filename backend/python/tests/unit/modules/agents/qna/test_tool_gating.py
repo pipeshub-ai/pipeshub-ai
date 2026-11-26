@@ -45,8 +45,16 @@ class TestCodeExecutionEnabled:
         monkeypatch.setenv("PIPESHUB_ENABLE_CODE_EXECUTION", raw)
         assert code_execution_enabled({}) is False
 
-    @pytest.mark.parametrize("raw", ["", "   ", "maybe"])
-    def test_env_unrecognised_values_fall_through(self, monkeypatch, raw):
-        """Unrecognised env values fall through to the True default."""
+    @pytest.mark.parametrize("raw", ["", "   "])
+    def test_env_blank_values_fall_through(self, monkeypatch, raw) -> None:
+        """Blank is the matrix default (on), as for every env flag (F3)."""
         monkeypatch.setenv("PIPESHUB_ENABLE_CODE_EXECUTION", raw)
         assert code_execution_enabled({}) is True
+
+    def test_env_malformed_value_is_refused_naming_the_flag(self, monkeypatch) -> None:
+        """CPS FL-2: the one parse refuses it (the service already refused to start on it)."""
+        from app.utils.env_flags import InvalidEnvFlag
+
+        monkeypatch.setenv("PIPESHUB_ENABLE_CODE_EXECUTION", "maybe")
+        with pytest.raises(InvalidEnvFlag, match="PIPESHUB_ENABLE_CODE_EXECUTION"):
+            code_execution_enabled({})

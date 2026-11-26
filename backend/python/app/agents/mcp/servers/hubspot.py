@@ -4,7 +4,13 @@ This is the CRM-data server (`mcp.hubspot.com`), distinct from HubSpot's separat
 Developer MCP server used for scaffolding apps/CMS assets locally.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -41,6 +47,13 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             ),
         ),
         tags=["crm", "sales", "marketing"],
+        category=MCPCategory.SALES,
+        capabilities=[
+            "Look up a contact or company",
+            "Update a deal stage",
+            "Log sales activity",
+            "Review the pipeline",
+        ],
     )
 )
 class HubSpotMCPServer:

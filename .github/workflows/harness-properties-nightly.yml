@@ -1,0 +1,131 @@
+name: Harness Properties Nightly
+
+# QA-13 (TEST-STRATEGY §2, test plan 06): the harness's properties and state
+# machines at 5,000 random examples, and the run machine differentially against
+# MongoDB. PRs run the same tests seeded at the `ci` size (unit-test.yml).
+# Python selects `--hypothesis-profile=nightly`; Node reads
+# HARNESS_PROPERTY_PROFILE=nightly. A failure keeps its Hypothesis example
+# database and the fast-check seed and path in the uploaded logs.
+on:
+  schedule:
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-properties-nightly-${{ github.run_id }}
+  cancel-in-progress: true
+
+env:
+  MONGO_IMAGE: mongo:8.0.17
+
+jobs:
+  python:
+    name: Python properties and machines (nightly profile)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        working-directory: backend/python
+        run: |
+          requirements/install.sh dev --project . --editable
+
+      - name: Run the harness properties at 5,000 examples
+        working-directory: backend/python
+        run: |
+          mkdir -p "$RUNNER_TEMP/properties"
+          python -m pytest tests/unit/harness_core tests/unit/harness -m "not docker and not slow" \
+            --hypothesis-profile=nightly --timeout=0 -p no:cacheprovider \
+            --junitxml "$RUNNER_TEMP/properties/junit.xml"
+
+      - name: Keep the failing examples
+        if: failure()
+        run: cp -r backend/python/.hypothesis "$RUNNER_TEMP/properties/" || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: harness-properties-python
+          path: ${{ runner.temp }}/properties
+          retention-days: 14
+
+  node:
+    name: Node state machines (nightly profile, MongoDB differential)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: backend/nodejs/apps
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Start a MongoDB replica set
+        run: |
+          docker run -d --name mongo --ulimit nofile=64000:64000 -p 27017:27017 "$MONGO_IMAGE" mongod --replSet rs0 --bind_ip_all
+          for _ in $(seq 1 30); do
+            docker exec mongo mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker exec mongo mongosh --quiet --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] })'
+          for _ in $(seq 1 30); do
+            [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && exit 0
+            sleep 2
+          done
+          docker logs mongo
+          exit 1
+
+      - name: Run the state machines at 5,000 runs, then against MongoDB
+        env:
+          HARNESS_PROPERTY_PROFILE: nightly
+          TS_NODE_PROJECT: tsconfig.test.json
+          MONGO_IT_URI: mongodb://localhost:27017/?replicaSet=rs0&directConnection=true
+          REPLICA_SET_AVAILABLE: 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/properties"
+          set -o pipefail
+          mocha_run() {
+            npx mocha --no-config --require reflect-metadata --require ts-node/register \
+              --require ./tests/helpers/journal-history-hooks.ts --extension ts --exit --timeout 3600000 "$@"
+          }
+          {
+            mocha_run tests/modules/agent-harness/execution-store.model.test.ts \
+              tests/modules/agent-harness/schedule-firings.model.test.ts \
+              tests/modules/agent-harness/erasure-jobs.model.test.ts
+            mocha_run tests/modules/agent-harness/execution-store.model.mongo.itest.ts
+            mocha_run --grep 'QA13-10' tests/modules/agent-harness/schedule-store.mongo.itest.ts
+            mocha_run --grep 'QA13-11' tests/modules/agent-harness/session-erasure.mongo.itest.ts
+          } 2>&1 | tee "$RUNNER_TEMP/properties/mocha.log"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: harness-properties-node
+          path: ${{ runner.temp }}/properties
+          retention-days: 14

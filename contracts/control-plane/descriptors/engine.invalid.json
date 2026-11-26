@@ -1,0 +1,23 @@
+[
+  {
+    "description": "binary digest missing",
+    "instance": {
+      "name": "opencode",
+      "kind": "opencode",
+      "version": "1.18.34",
+      "optionsDigest": null,
+      "digest": "sha256:fc306f69d9e7a331f4d943c1ef606fdd9e2dfa71863d5f858f7e02bf7b42a998"
+    }
+  },
+  {
+    "description": "upper-case engine kind",
+    "instance": {
+      "name": "opencode",
+      "kind": "OpenCode",
+      "version": "1.18.34",
+      "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182",
+      "optionsDigest": null,
+      "digest": "sha256:fc306f69d9e7a331f4d943c1ef606fdd9e2dfa71863d5f858f7e02bf7b42a998"
+    }
+  }
+]

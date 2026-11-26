@@ -1,0 +1,6 @@
+{
+  "description": "How a rate-limited model provider's wait reaches the user's stream (ERR-UX2, D-5 parity): a durable run's run.yielded{llm_backoff} (Node's projector) and today's loop's retry (the AG-UI formatter) send the same STATE_SNAPSHOT status and retry field, which the web app words with a countdown (chatStream.providerWait).",
+  "frameType": "STATE_SNAPSHOT",
+  "status": "waiting_provider",
+  "retryAtField": "retry_at"
+}

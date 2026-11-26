@@ -1,0 +1,9 @@
+{
+  "$comment": "The base images a release builds from, by digest (SEC-D-04, ADR-SEC-05). release-publish.yml pulls exactly these and refuses a tag that has moved, so a base re-pushed on Docker Hub cannot reach a release unseen. Moving a base is a reviewed change to this file (CODEOWNERS). Update with: crane digest pipeshubai/pipeshub-ai-base:<tag>; scripts/supply_chain.py check requires every entry to be a 64-hex sha256.",
+  "repository": "pipeshubai/pipeshub-ai-base",
+  "digests": {
+    "python-deps": "sha256:455164dbc6d97b69dfd8734db767854426b3e21542593fc879cd1fefe558ebb2",
+    "python-deps-slim": "sha256:770ad28fc41466ba6e8612f3915ee91bf3446cfd6288e02252e06c1dafc4bc45",
+    "runtime": "sha256:dd5d6e193c7009c334b8ec07e6b2736547a145b56a6cbad68885e825ab62099d"
+  }
+}

@@ -57,6 +57,7 @@ export function RecordsSection({
                 {t('table.selected', { count: selectedRecords.length })}
               </Badge>
               <IconButton
+                aria-label={t('action.edit')}
                 variant="ghost"
                 color="gray"
                 size="1"
@@ -68,7 +69,7 @@ export function RecordsSection({
             </Flex>
           )}
         </Flex>
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: 'var(--gray-11)' }}>
           {t('workspace.connectors.configTab.recordsDescription', { name: connectorName })}
         </Text>
       </Flex>

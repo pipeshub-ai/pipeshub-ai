@@ -3,6 +3,7 @@
 import { Box, Flex } from '@radix-ui/themes'
 import { ReactNode } from 'react'
 import WorkspaceSidebar from './sidebar'
+import { DurableDefaultNotice } from './components/durable-default-notice'
 
 export default function WorkspaceLayout({
   children,
@@ -24,6 +25,7 @@ export default function WorkspaceLayout({
             'linear-gradient(180deg, var(--olive-2, #181917) 0%, var(--olive-1, #111210) 100%)',
         }}
       >
+        <DurableDefaultNotice />
         {children}
       </Box>
     </Flex>

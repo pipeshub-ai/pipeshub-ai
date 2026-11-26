@@ -124,6 +124,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('local-sync-status', listener);
     },
   },
+  /**
+   * The desktop session's refresh token, kept by main in the OS keychain (ADR-WEB-02 D5). `key` names one of several
+   * sessions (an edition's, by organisation); without it, the app's one session.
+   */
+  session: {
+    readRefreshToken: (key?: string): Promise<string | null> => (
+      ipcRenderer.invoke('session/refresh-token/read', key === undefined ? undefined : { key })
+    ),
+    writeRefreshToken: (refreshToken: string, key?: string): Promise<boolean> => (
+      ipcRenderer.invoke('session/refresh-token/write', key === undefined ? { refreshToken } : { refreshToken, key })
+    ),
+    clearRefreshToken: (key?: string): Promise<boolean> => (
+      ipcRenderer.invoke('session/refresh-token/clear', key === undefined ? undefined : { key })
+    ),
+    /** The keys that hold a session, besides the one session. */
+    refreshTokenKeys: (): Promise<string[]> => ipcRenderer.invoke('session/refresh-token/keys'),
+    /** Every session, keyed or not (a sign-out that ends them all). */
+    clearAllRefreshTokens: (): Promise<boolean> => ipcRenderer.invoke('session/refresh-token/clear', { all: true }),
+  },
   localFs: {
     openRecordSource: (payload: OpenLocalFsRecordSourcePayload) => (
       ipcRenderer.invoke('local-fs/open-record-source', payload)

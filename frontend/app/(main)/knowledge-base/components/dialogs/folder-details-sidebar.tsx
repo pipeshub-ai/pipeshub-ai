@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FolderIcon } from '@/app/components/ui';
 import type { KnowledgeHubApiResponse } from '../../types';
 import { isKbCollectionsHubApp } from '../../utils/all-records-transformer';
+import { useTranslation } from 'react-i18next';
 
 interface FolderDetailsSidebarProps {
   open: boolean;
@@ -39,7 +40,7 @@ function DetailRow({ label, value }: DetailRowProps) {
         gap: 'var(--space-2)',
       }}
     >
-      <Text size="1" weight="medium" style={{ color: 'var(--slate-10)' }}>
+      <Text size="1" weight="medium" style={{ color: 'var(--slate-11)' }}>
         {label}
       </Text>
       <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>
@@ -67,6 +68,7 @@ function formatTimestamp(timestamp: number | undefined): string | undefined {
 }
 
 export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDetailsSidebarProps) {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const currentNode = tableData?.currentNode;
   const breadcrumbs = tableData?.breadcrumbs;
@@ -96,7 +98,7 @@ export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDe
         }}
       >
         <VisuallyHidden>
-          <Dialog.Title>{currentNode?.name || 'Folder Details'}</Dialog.Title>
+          <Dialog.Title>{currentNode?.name || t('dialog.folderDetails')}</Dialog.Title>
         </VisuallyHidden>
 
         {/* Header */}
@@ -126,6 +128,7 @@ export function FolderDetailsSidebar({ open, onOpenChange, tableData }: FolderDe
 
           <Flex align="center" gap="1">
             <IconButton
+              aria-label={t('common.close')}
               variant="ghost"
               // Radix ghost buttons pull out by their padding; keep the header's own inset
               style={{ margin: 0 }}

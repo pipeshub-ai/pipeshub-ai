@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.connectors.core.constants import IconPaths
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.actions.util.sign_in_rejected import note_sign_in_rejected
 from app.agents.actions.util.tool_summaries import (
     args_template,
     confirmation,
@@ -25,6 +26,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -76,6 +78,9 @@ def _graph_error(error: str | None, fallback: str) -> str:
     if not match:
         return text
     status = int(match.group(1))
+    if status == HTTPStatus.UNAUTHORIZED:
+        # The saved sign-in is withdrawn and the next run offers the connect card (WP56-DEAUTH-2).
+        note_sign_in_rejected()
     hint = _GRAPH_STATUS_HINTS.get(status)
     if hint is None and status >= HTTPStatus.INTERNAL_SERVER_ERROR:
         hint = "Microsoft Teams is having a temporary problem. Try again in a moment."
@@ -750,7 +755,7 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
 # Toolset registration
 # ---------------------------------------------------------------------------
 
-@ToolsetBuilder("Teams")\
+@ToolsetBuilder("Teams", provider=ToolProvider.CONNECTOR)\
     .in_group("Microsoft 365")\
     .with_description("Microsoft Teams integration for messaging and collaboration")\
     .with_category(ToolsetCategory.APP)\
@@ -886,6 +891,8 @@ class Teams:
 
     def _handle_error(self, error: Exception, operation: str = "operation") -> tuple[bool, str]:
         error_msg = str(error).lower()
+        if getattr(error, "response_status_code", None) == HTTPStatus.UNAUTHORIZED:
+            note_sign_in_rejected()
 
         if isinstance(error, AttributeError):
             if (
@@ -1236,7 +1243,7 @@ class Teams:
         parameters=[
             ToolParameter(name="user", type=ParameterType.STRING, description="User ID, UPN/email, or display name", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user_info(self, user: str) -> tuple[bool, str]:
         """Get Teams user details with transformed response for easy extraction."""
@@ -1293,7 +1300,7 @@ class Teams:
         parameters=[
             ToolParameter(name="limit", type=ParameterType.INTEGER, description="Maximum users to return. If omitted, fetches all users with pagination.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_users_list(self, limit: Optional[int] = None) -> tuple[bool, str]:
         """Get users list with pagination support."""
@@ -1406,7 +1413,7 @@ class Teams:
             ToolParameter(name="days", type=ParameterType.INTEGER, description="Fetch messages from last N days", required=False),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of messages to return", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user_conversations(
         self,
@@ -1470,7 +1477,7 @@ class Teams:
             ToolParameter(name="team_id", type=ParameterType.STRING, description="Optional Team ID to scope channels to one team", required=False),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of channels to return (default 200)", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user_channels(self, team_id: Optional[str] = None, top: Optional[int] = 200) -> tuple[bool, str]:
         try:
@@ -1509,7 +1516,7 @@ class Teams:
             ToolParameter(name="meeting_type", type=ParameterType.STRING, description="Optional strict meeting type filter. Allowed values: 'recurring' or 'one_time'.", required=False),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of meetings to return (default 100, max 1000).", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda _args: "Fetching Teams meetings",
         result_summary=list_summary("results", _teams_meeting_label, "meeting"),
     )
@@ -1719,7 +1726,7 @@ class Teams:
             ToolParameter(name="timezone", type=ParameterType.STRING, description="Windows timezone name for returned datetimes. E.g. 'India Standard Time'.", required=False),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of results to return (1-50).", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def search_calendar_events_in_range(
         self,
@@ -1784,7 +1791,7 @@ class Teams:
             ToolParameter(name="join_url", type=ParameterType.STRING, description="The Teams join URL. Preferred over event_id — skips one API call.", required=False),
             ToolParameter(name="event_id", type=ParameterType.STRING, description="The calendar event ID. Used as fallback when join_url is not available.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_my_meeting_transcripts(
         self,
@@ -2004,7 +2011,7 @@ class Teams:
             ToolParameter(name="join_url", type=ParameterType.STRING, description="The Teams join URL. Preferred over event_id because it skips one API call.", required=False),
             ToolParameter(name="event_id", type=ParameterType.STRING, description="The calendar event ID. Used as fallback when join_url is unavailable.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_people_attended(
         self,
@@ -2055,7 +2062,7 @@ class Teams:
         parameters=[
             ToolParameter(name="meeting_id", type=ParameterType.STRING, description="ID of the meeting", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_people_invited(self, meeting_id: str) -> tuple[bool, str]:
         try:
@@ -2092,7 +2099,7 @@ class Teams:
             ToolParameter(name="is_online_meeting", type=ParameterType.BOOLEAN, description="Whether to create an online meeting link", required=False),
             ToolParameter(name="recurrence", type=ParameterType.STRING, description="Optional recurrence dict (JSON) to make this a repeating event with 'pattern' and 'range' keys.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template('Creating Teams event "{subject}"', "subject"),
         result_summary=entity_summary(lambda e: f"Event created: {e.get('subject') or '?'}", path=()),
     )
@@ -2190,7 +2197,7 @@ class Teams:
             ToolParameter(name="end_datetime", type=ParameterType.STRING, description="End datetime in ISO 8601 format (e.g. 2024-01-15T11:00:00)", required=True),
             ToolParameter(name="timezone", type=ParameterType.STRING, description="Timezone for the meeting (e.g. 'Asia/Kolkata', 'UTC')", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_channel_meeting(
         self,
@@ -2244,7 +2251,7 @@ class Teams:
             ToolParameter(name="description", type=ParameterType.STRING, description="Updated event description", required=False),
             ToolParameter(name="is_online_meeting", type=ParameterType.BOOLEAN, description="Whether event should be online", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def edit_event(
         self,
@@ -2287,7 +2294,7 @@ class Teams:
         parameters=[
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of teams to return (default 20, max 100)", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=lambda _args: "Fetching Microsoft Teams",
         result_summary=list_summary("results", _teams_team_label, "team"),
     )
@@ -2319,7 +2326,7 @@ class Teams:
         parameters=[
             ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_team(self, team_id: str) -> tuple[bool, str]:
         try:
@@ -2339,7 +2346,7 @@ class Teams:
             ToolParameter(name="display_name", type=ParameterType.STRING, description="Display name of the team", required=True),
             ToolParameter(name="description", type=ParameterType.STRING, description="Description of the team", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_team(self, display_name: str, description: Optional[str] = None) -> tuple[bool, str]:
         try:
@@ -2392,7 +2399,7 @@ class Teams:
             ToolParameter(name="channel_id", type=ParameterType.STRING, description="Optional channel ID. If provided, returns members for that channel.", required=False),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of members to return (default 100, max 500)", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_members(
         self,
@@ -2478,7 +2485,7 @@ class Teams:
             ToolParameter(name="role", type=ParameterType.STRING, description="Role for the new member: 'member' or 'owner'", required=False),
             ToolParameter(name="channel_id", type=ParameterType.STRING, description="Optional channel ID. If omitted, adds user to team. For private channel, user is added directly to channel.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def add_member(
         self,
@@ -2591,7 +2598,7 @@ class Teams:
             ToolParameter(name="team_id", type=ParameterType.STRING, description="ID of the Microsoft Team", required=True),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of channels to return (default 50, max 200)", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching channels for Teams team {team_id}", "team_id"),
         result_summary=list_summary("results", _teams_channel_label, "channel"),
     )
@@ -2622,7 +2629,7 @@ class Teams:
             ToolParameter(name="description", type=ParameterType.STRING, description="Description of the channel", required=False),
             ToolParameter(name="channel_type", type=ParameterType.STRING, description="Type of channel: 'standard' or 'private'", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_channel(
         self,
@@ -2715,7 +2722,7 @@ class Teams:
             ToolParameter(name="display_name", type=ParameterType.STRING, description="New display name for the channel", required=False),
             ToolParameter(name="description", type=ParameterType.STRING, description="New description for the channel", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def update_channel(
         self,
@@ -2763,7 +2770,7 @@ class Teams:
             ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel", required=True),
             ToolParameter(name="message", type=ParameterType.STRING, description="Message content to send", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
         args_summary=args_template("Sending Teams message to channel {channel_id}", "channel_id"),
         result_summary=confirmation("Message sent to channel {channel_id}", "channel_id"),
     )
@@ -2794,7 +2801,7 @@ class Teams:
             ToolParameter(name="user_identifier", type=ParameterType.STRING, description="User display name, email, user principal name, or user id to send message to", required=True),
             ToolParameter(name="message", type=ParameterType.STRING, description="Message content to send", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def send_user_message(
         self,
@@ -2838,7 +2845,7 @@ class Teams:
             ToolParameter(name="parent_message_id", type=ParameterType.STRING, description="ID of the parent message to reply to", required=True),
             ToolParameter(name="message", type=ParameterType.STRING, description="Reply text to post in the message thread", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def reply_to_message(
         self,
@@ -2875,7 +2882,7 @@ class Teams:
             ToolParameter(name="channel_ids", type=ParameterType.STRING, description="List of Teams channel IDs to send the same message to (JSON array)", required=True),
             ToolParameter(name="message", type=ParameterType.STRING, description="Message text to send to all channels", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def send_message_to_multiple_channels(
         self,
@@ -2916,7 +2923,7 @@ class Teams:
             ToolParameter(name="channel_id", type=ParameterType.STRING, description="Optional Channel ID to scope search", required=False),
             ToolParameter(name="top_per_channel", type=ParameterType.INTEGER, description="Max recent messages scanned per channel (default 25)", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def search_messages(
         self,
@@ -2966,7 +2973,7 @@ class Teams:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Teams message to react to", required=True),
             ToolParameter(name="reaction_type", type=ParameterType.STRING, description="Reaction type to add (e.g.: like, heart, laugh, surprised, sad, angry)", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def add_reaction(
         self,
@@ -3005,7 +3012,7 @@ class Teams:
             ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel", required=True),
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Teams message", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_reactions(self, team_id: str, channel_id: str, message_id: str) -> tuple[bool, str]:
         try:
@@ -3043,7 +3050,7 @@ class Teams:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Teams message", required=True),
             ToolParameter(name="reaction_type", type=ParameterType.STRING, description="Reaction type to remove", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def remove_reaction(
         self,
@@ -3081,7 +3088,7 @@ class Teams:
             ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel", required=True),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of messages to return (default 20, max 100)", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_channel_messages(
         self,
@@ -3122,7 +3129,7 @@ class Teams:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the parent Teams message", required=True),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of replies to return (default 50, max 200)", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_thread_replies(
         self,
@@ -3165,7 +3172,7 @@ class Teams:
             ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel (required when updating a channel message)", required=False),
             ToolParameter(name="chat_id", type=ParameterType.STRING, description="ID of the Teams chat (required when updating a direct chat message)", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def update_message(
         self,
@@ -3214,7 +3221,7 @@ class Teams:
             ToolParameter(name="channel_id", type=ParameterType.STRING, description="ID of the Microsoft Teams channel", required=True),
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Teams message", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_message_permalink(self, team_id: str, channel_id: str, message_id: str) -> tuple[bool, str]:
         try:
@@ -3250,7 +3257,7 @@ class Teams:
             ToolParameter(name="member_user_ids", type=ParameterType.STRING, description="List of Azure AD user object IDs (or UPNs) to include in the chat (JSON array)", required=True),
             ToolParameter(name="topic", type=ParameterType.STRING, description="Topic/title for group chats (optional for 1:1 chats)", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_chat(
         self,
@@ -3312,7 +3319,7 @@ class Teams:
         parameters=[
             ToolParameter(name="chat_id", type=ParameterType.STRING, description="ID of the chat to retrieve", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_chat(self, chat_id: str) -> tuple[bool, str]:
         try:

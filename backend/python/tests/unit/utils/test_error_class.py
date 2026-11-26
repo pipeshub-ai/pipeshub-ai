@@ -585,6 +585,14 @@ class TestChainHas:
         assert EC.chain_has(outer, KeyError, ValueError) is True
         assert EC.chain_has(outer, KeyError) is False
 
+    def test_chain_link_is_the_first_match(self) -> None:
+        inner = OSError("inner")
+        middle = _chained(ValueError("middle"), inner)
+        outer = _chained(RuntimeError("outer"), middle)
+        assert EC.chain_link(outer, OSError) is inner
+        assert EC.chain_link(outer, OSError, ValueError) is middle
+        assert EC.chain_link(outer, KeyError) is None
+
 
 class TestChainHelpers:
     def test_has_chain(self) -> None:
@@ -675,3 +683,41 @@ class TestLogUnitEnd:
         EC.log_unit_end(logger, "unit.end", exc, level=logging.ERROR, outcome="failure")
         end = records[-1]
         assert end.levelno == logging.ERROR and "KeyError" in end.exc_text and hasattr(end, "error_message")
+
+
+class TestRetryLater:
+    """``retry_later``: a store that could not answer just now (worth asking again), never a bug of ours."""
+
+    def test_an_outage_or_a_timeout_however_wrapped(self) -> None:
+        from app.core.db.errors import CommitOutcomeUnknown, ConnectionLost, PoolTimeout
+
+        for exc in (ConnectionRefusedError("down"), TimeoutError(), ConnectionLost("lost", retry_safe=True), CommitOutcomeUnknown("commit"), PoolTimeout("pool"),
+                    _http_status_error(503), _chained(RuntimeError("Neo4j reconnection failed"), ConnectionError("down"))):
+            assert EC.retry_later(exc) is True, type(exc).__name__
+
+    def test_the_neo4j_driver_losing_the_server(self) -> None:
+        neo4j_exceptions = pytest.importorskip("neo4j.exceptions")
+        assert EC.retry_later(neo4j_exceptions.ServiceUnavailable("gone")) is True
+        assert EC.retry_later(neo4j_exceptions.SessionExpired("gone")) is True
+
+    def test_a_group_counts_only_when_every_member_is_retry_later(self) -> None:
+        assert EC.retry_later(ExceptionGroup("g", [ConnectionError("a"), TimeoutError()])) is True
+        assert EC.retry_later(_chained(RuntimeError("check"), ExceptionGroup("g", [ConnectionError("a")]))) is True
+        assert EC.retry_later(ExceptionGroup("g", [ConnectionError("a"), TypeError("bug")])) is False
+        assert EC.retry_later(ExceptionGroup("g", [ConnectionError("a"), ValueError("other")])) is False
+
+    def test_a_bug_or_a_refusal_is_not(self) -> None:
+        for exc in (TypeError("x"), KeyError("k"), ValueError("v"), _http_status_error(404), _http_status_error(500),
+                    _chained(TypeError("bug"), ConnectionError("down"), explicit=False), asyncio.CancelledError()):
+            assert EC.retry_later(exc) is False, type(exc).__name__
+
+    def test_a_member_met_twice_is_judged_each_time_not_taken_for_a_loop(self) -> None:
+        lost = ConnectionError("down")
+        assert EC.retry_later(ExceptionGroup("reads", [lost, lost])) is True
+        assert EC.retry_later(ExceptionGroup("reads", [_chained(RuntimeError("a"), lost), _chained(RuntimeError("b"), lost)])) is True
+
+    def test_a_group_whose_member_loops_back_ends(self) -> None:
+        member = ValueError("not decisive")
+        group = ExceptionGroup("g", [member])
+        member.__cause__ = group
+        assert EC.retry_later(group) is False

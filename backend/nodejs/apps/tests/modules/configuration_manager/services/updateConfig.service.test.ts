@@ -165,5 +165,19 @@ describe('ConfigService (updateConfig)', () => {
         expect(err).to.be.instanceOf(AxiosError)
       }
     })
+
+    it('throws our own failure as a 500 carrying it as the cause, without logging it (the request logs it once)', async () => {
+      nock('http://iam-backend:3001').post('/api/v1/users/updateAppConfig').reply(200, {})
+      const bug = new TypeError('reload bookkeeping broke')
+      mockLogger.debug.throws(bug)
+      try {
+        await service.updateConfig('token')
+        expect.fail('should have thrown')
+      } catch (err: any) {
+        expect(err).to.be.instanceOf(InternalServerError)
+        expect(err.cause).to.equal(bug)
+        for (const method of ['error', 'warn', 'info'] as const) expect(mockLogger[method].called, method).to.be.false
+      }
+    })
   })
 })

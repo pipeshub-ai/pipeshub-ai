@@ -1,4 +1,6 @@
 import mongoose, { Schema, Model } from 'mongoose';
+import { CUT_SHORT_REASONS } from '../../agent-harness/contracts/generated/core/enums';
+import { BUDGET_SCOPE_PATTERN } from '../../agent-harness/domain/cost-ledger';
 import {
   IChatSessionMessageDocument,
   IFeedback,
@@ -94,6 +96,10 @@ const feedbackSchema = new Schema<IFeedback>(
       default: 'user',
     },
     feedbackProvider: { type: Schema.Types.ObjectId },
+    // G-15: the run that wrote the rated answer and the agent version it ran.
+    runId: { type: String },
+    agentKey: { type: String },
+    agentVersion: { type: Number },
     timestamp: { type: Number, default: Date.now },
     revisions: [
       {
@@ -136,6 +142,8 @@ const attachmentRefSchema = new Schema(
     virtualRecordId: { type: String },
     // Origin metadata ('upload' | 'paste-text') — see IChatAttachmentRef.source.
     source: { type: String, enum: ['upload', 'paste-text'] },
+    // Set by erasure of another conversation that carried the same upload (QA-15G).
+    removed: { type: Boolean },
   },
   { _id: false },
 );
@@ -151,6 +159,15 @@ const attachmentRefSchema = new Schema(
  * any documented response shape — attachMessages() strips them before a
  * message ever reaches a response.
  */
+// Lean reads that select `+label` (the history source, session forks) are untouched.
+const withoutLabel = (
+  _doc: unknown,
+  ret: Record<string, unknown>,
+): Record<string, unknown> => {
+  delete ret['label'];
+  return ret;
+};
+
 const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
   {
     sessionId: {
@@ -185,6 +202,38 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     // Set on a `bot_response` persisted from a cancelled/disconnected run
     // (see savePartialConversation) so the UI can render a "Stopped" marker.
     status: { type: String, enum: ['stopped'] },
+    // A collaborator's turn (SS2): who sent it. Absent: the session's owner.
+    senderId: { type: Schema.Types.ObjectId },
+    // In a conversation continued privately (SS3): a stub standing for another participant's turn.
+    foreignTurn: { type: Boolean },
+    // Copied from another conversation by a fork (FORKFIX): its runs stayed there, so it names none.
+    copied: { type: Boolean },
+    // The durable run that wrote this answer (UX5): the activity panel finds the run after a reload.
+    runId: { type: String },
+    // An error answer's code (`messageType: 'error'`): the web app words it in the reader's language (ERR-UX).
+    errorCode: { type: String },
+    // With errorCode `mcp_tool_withdrawn` (WP-84): the labels of the servers that withdrew a tool, which the words name.
+    errorServers: { type: [String], default: undefined },
+    // With errorCode `operator_stopped` (ADR-OPS-01 D5): the control's scope and reason, never its note.
+    errorStop: {
+      type: new Schema({ scope: String, reason: String }, { _id: false }),
+      default: undefined,
+    },
+    // An answer a limit cut short (BUDGETEND): which limit; the web app and the Slack bot show a notice.
+    truncatedBy: { type: String, enum: [...CUT_SHORT_REASONS] },
+    // Which shared budget ran out, with truncatedBy budget (C9.06, WP-51), as the extension that keeps it names it.
+    budgetScope: { type: String, match: BUDGET_SCOPE_PATTERN },
+    // WP-89: the run's settled outcome, which the web app words beside the answer's prose in the reader's language;
+    // its `closing` is the English a surface with no UI (the Slack bot) appends.
+    runOutcome: { type: Schema.Types.Mixed, default: undefined },
+    // ANSWER-CONTRACT-FU-2: the request's subject was not found; the web app words it above the answer in the
+    // reader's language, and leaves out its `line`, the English the content starts with for a surface with no UI.
+    notFound: { type: Schema.Types.Mixed, default: undefined },
+    // R32REPO-FU-1: what the run tried and could not do (a declined clone); worded the same way, its `line` left out.
+    limits: { type: Schema.Types.Mixed, default: undefined },
+    // A durable run's answer (P2.5a): the turn's confidentiality label. It names
+    // records and live items, so it is never read unless asked for by name.
+    label: { type: Schema.Types.Mixed, select: false },
     citations: [messageCitationSchema],
     confidence: { type: String, enum: CONFIDENCE_LEVELS },
     followUpQuestions: [followUpQuestionSchema],
@@ -266,6 +315,25 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
       ],
     },
     attachments: [attachmentRefSchema],
+    // The /command a user_query was expanded from (SLASH1); `content` holds the expanded text, or only what was typed for `/review` (LC2FIX `storedQuestion`).
+    command: {
+      type: new Schema(
+        {
+          name: { type: String, required: true },
+          version: { type: String, required: true },
+          contentDigest: { type: String, required: true },
+          args: { type: Schema.Types.Mixed, default: {} },
+          typed: { type: String, required: true },
+          owner: { type: String, required: true },
+          authorId: { type: String },
+          authorFormer: { type: Boolean },
+          teamId: { type: String },
+          files: { type: Number },
+        },
+        { _id: false, minimize: false },
+      ),
+      default: undefined,
+    },
     // Reference data for follow-up queries (stores IDs from tool responses)
     referenceData: [referenceDataItemSchema],
     // Tool call data for tool_call messageType
@@ -281,12 +349,21 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     timestamps: true, // parity with the old embedded messageSchema
     versionKey: false, // embedded subdocuments never had __v; a top-level one would be a new, leaking field
     collection: 'chatSessionMessages',
+    // A message written in this request (insert, replace) carries its label in memory; it names records a reader may
+    // not see, so it never leaves the server in a response (FG2: today's loop's answers have labels too).
+    toJSON: { transform: withoutLabel },
+    toObject: { transform: withoutLabel },
   },
 );
 
 // Serves both the seq-ordered read path and duplicate-seq protection —
 // the real backstop for allocateSeq's optimistic $inc allocation.
 chatSessionMessageSchema.index({ sessionId: 1, seq: 1 }, { unique: true });
+// Erasure marks an erased upload in the org's other messages (QA-15G); only messages with attachments are indexed.
+chatSessionMessageSchema.index(
+  { orgId: 1, 'attachments.recordId': 1 },
+  { partialFilterExpression: { 'attachments.recordId': { $exists: true } } },
+);
 
 export const ChatSessionMessage: Model<IChatSessionMessageDocument> =
   mongoose.model<IChatSessionMessageDocument>(

@@ -32,6 +32,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -190,7 +191,7 @@ class GetUserProfileInput(BaseModel):
 
 
 # Register Gmail toolset
-@ToolsetBuilder("Gmail")\
+@ToolsetBuilder("Gmail", provider=ToolProvider.CONNECTOR)\
     .in_group("Google Workspace")\
     .with_description("Gmail integration for sending, receiving, and managing emails")\
     .with_category(ToolsetCategory.APP)\
@@ -343,7 +344,7 @@ class Gmail:
             ToolParameter(name="thread_id", type=ParameterType.STRING, description="The thread ID to maintain conversation context", required=False),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def reply(
         self,
@@ -404,7 +405,7 @@ class Gmail:
             ToolParameter(name="mail_body", type=ParameterType.STRING, description="The body content of the email", required=False),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="write"), Tag(key="effect", value="write"), Tag(key="sink", value="self")],
     )
     async def draft_email(
         self,
@@ -461,7 +462,7 @@ class Gmail:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="The message ID for threading", required=False),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
         args_summary=lambda args: f"Sending email to {', '.join(args.get('mail_to') or []) or '?'}",
         result_summary=confirmation("Email sent"),
     )
@@ -523,7 +524,7 @@ class Gmail:
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Maximum number of emails to return", required=False, default=10),
             ToolParameter(name="page_token", type=ParameterType.STRING, description="Token for pagination", required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching Gmail: "{query}"', "query"),
         result_summary=list_summary(("messages",), lambda m: m.get("subject") or "(no subject)", "email"),
     )
@@ -616,7 +617,7 @@ class Gmail:
         parameters=[
             ToolParameter(name="message_id", type=ParameterType.STRING, description="The ID of the email to get details for", required=True),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template("Fetching Gmail message {message_id}", "message_id"),
         result_summary=entity_summary(lambda e: f"Fetched email: {_gmail_message_label(e)}", path=()),
     )
@@ -649,7 +650,7 @@ class Gmail:
         parameters=[
             ToolParameter(name="message_id", type=ParameterType.STRING, description="The ID of the email to get attachments for", required=True),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_email_attachments(
         self,
@@ -681,7 +682,7 @@ class Gmail:
         parameters=[
             ToolParameter(name="user_id", type=ParameterType.STRING, description="Always 'me': only the signed-in user's own profile can be read", required=False, default="me"),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user_profile(
         self,

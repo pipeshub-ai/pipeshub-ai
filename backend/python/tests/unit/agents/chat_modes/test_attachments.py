@@ -9,15 +9,15 @@ import logging
 from unittest.mock import AsyncMock
 
 from app.agents.chat_modes.attachments import resolve_attachments
+from tests.support.record_access import InMemoryRecordAccess
 
 LOGGER = logging.getLogger("test")
 
 
-def _granting_graph() -> AsyncMock:
+def _granting_graph(access: InMemoryRecordAccess | None = None) -> AsyncMock:
     graph = AsyncMock()
     graph.get_records_by_virtual_record_id.return_value = ["rec-1"]
-    graph.check_record_access_with_details.return_value = {"id": "rec-1"}
-    return graph
+    return (access or InMemoryRecordAccess()).readable("user-1", "org-1", "rec-1").serve(graph)
 
 
 def _access() -> dict:
@@ -95,7 +95,7 @@ class TestAttachmentAccess:
     async def test_denied_document_is_not_scoped(self) -> None:
         graph = AsyncMock()
         graph.get_records_by_virtual_record_id.return_value = ["rec-secret"]
-        graph.check_record_access_with_details.return_value = None
+        InMemoryRecordAccess().user("user-1", "org-1").record("rec-secret", "org-1").serve(graph)
 
         result = await resolve_attachments(
             [{"virtualRecordId": "vrid-secret", "mimeType": "application/pdf", "fileName": "secret.pdf"}],
@@ -105,20 +105,21 @@ class TestAttachmentAccess:
         assert result.virtual_record_ids == []
 
     async def test_missing_user_never_checks_or_scopes_the_record(self) -> None:
-        graph = _granting_graph()
+        access = InMemoryRecordAccess()
+        graph = _granting_graph(access)
 
         result = await resolve_attachments(
             [{"virtualRecordId": "vrid-1", "mimeType": "text/plain"}],
             org_id="org-1", logger=LOGGER, graph_provider=graph,
         )
 
-        graph.check_record_access_with_details.assert_not_called()
+        assert access.asked_about == []
         assert result.virtual_record_ids == []
 
     async def test_denied_image_is_left_out_of_the_retrieval_scope(self) -> None:
         graph = AsyncMock()
         graph.get_records_by_virtual_record_id.return_value = ["rec-img"]
-        graph.check_record_access_with_details.return_value = None
+        InMemoryRecordAccess().user("user-1", "org-1").record("rec-img", "org-1").serve(graph)
 
         result = await resolve_attachments(
             [{"virtualRecordId": "vrid-img", "mimeType": "image/png", "fileName": "chart.png"}],
@@ -132,12 +133,9 @@ class TestAttachmentAccess:
         async def _lookup(virtual_record_id, raise_on_error=False):
             return ["rec-ok"] if virtual_record_id == "vrid-ok" else ["rec-no"]
 
-        async def _check(_user_id, _org_id, record_id):
-            return {"id": record_id} if record_id == "rec-ok" else None
-
         graph = AsyncMock()
         graph.get_records_by_virtual_record_id.side_effect = _lookup
-        graph.check_record_access_with_details.side_effect = _check
+        InMemoryRecordAccess().readable("user-1", "org-1", "rec-ok").record("rec-no", "org-1").serve(graph)
 
         result = await resolve_attachments(
             [

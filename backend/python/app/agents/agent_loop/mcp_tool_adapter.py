@@ -18,15 +18,19 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import httpx2
+from mcp.shared.exceptions import MCPError
+from mcp.types import CONNECTION_CLOSED
 
 from app.agent_loop_lib.core.messages import ImagePart, TextPart
 from app.agent_loop_lib.tools.base import (
+    Tag,
     Tool,
     ToolOutput,
     ToolParameter,
 )
 from app.agents.actions.util.result_view import Described, describe
 from app.agents.actions.util.tool_summaries import first_line, inline_args
+from app.agents.agent_loop.mcp_liveness import MCPServerRevoked
 from app.agents.agent_loop.mcp_result import mcp_result_to_tool_output
 from app.agents.agent_loop.mcp_sign_in import BUTTON_HINT, note_sign_in_needed
 from app.agents.agent_loop.tool_adapter import (
@@ -34,6 +38,7 @@ from app.agents.agent_loop.tool_adapter import (
     _params_from_schema,
     resolve_json_schema_refs,
 )
+from app.agents.mcp.boundary import inside_organization
 from app.agents.mcp.client import (
     DEFAULT_CALL_TIMEOUT_SECONDS,
     LIST_TOOLS_TIMEOUT_SECONDS,
@@ -44,6 +49,7 @@ from app.agents.mcp.client import (
 )
 from app.agents.mcp.errors import (
     MCPCallInterruptedError,
+    MCPConnectTimeoutError,
     MCPHttpStatusError,
     MCPInsufficientScopeError,
     MCPToolNotOfferedError,
@@ -59,6 +65,11 @@ from app.agents.mcp.failure import (
 from app.agents.mcp.oauth_client import MCPOAuthError
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
 from app.utils.url_redaction import redact_urls_in_text
+from harness_core.effects.failures import tool_error_code
+from harness_core.mcp_hub.annotations import declared_hints, hint_tags
+from harness_core.sandbox.mcp_runner.errors import MCPRunnerRefused
+from harness_core.security.display_safe import tool_display_name
+from harness_core.tools.tags import TAG_RISK_DESTRUCTIVE
 
 if TYPE_CHECKING:
     from mcp.shared.dispatcher import ProgressFnT
@@ -69,8 +80,9 @@ if TYPE_CHECKING:
     from app.agents.agent_loop.mcp_session import MCPSessionManager
     from app.agents.mcp.models import MCPToolInfo
     from app.agents.mcp.tool_kind import ToolKind
+    from harness_core.contracts.generated.enums import ToolErrorCode
 
-__all__ = ["MCPToolAdapter"]
+__all__ = ["MCPToolAdapter", "mcp_error_code"]
 
 
 class _StoppedByUser(Exception):
@@ -162,6 +174,17 @@ class MCPToolAdapter(SchemaShallowValidationMixin, Tool):
         return self._server.instance_id
 
     @property
+    def tool_name(self) -> str:
+        """The tool's name on its server, as approvals and pins name it."""
+        return self._tool_info.name
+
+    @property
+    def descriptor_digest(self) -> str:
+        from app.harness.mcp_hub.manifests import descriptor_of
+
+        return descriptor_of(self._tool_info).digest()
+
+    @property
     def log_kind(self) -> str:
         return "mcp"
 
@@ -197,10 +220,24 @@ class MCPToolAdapter(SchemaShallowValidationMixin, Tool):
         return f"/mcp/{self._server.instance_id}/{self._tool_info.name}"
 
     @property
+    def tags(self) -> list[Tag]:
+        # The MCP spec's own hints (FG2): unannotated, a tool is a send (fail closed, REPORT 6.5). The hints are in the
+        # approved digest, and an org's approval rule still applies over them.
+        # An instance its admin marked as inside the organization keeps its arguments there (SEC-B-02-FU-1).
+        inside = inside_organization(getattr(self._server, "instance", None))
+        tags = list(hint_tags(declared_hints(self._tool_info.annotations), inside_organization=inside))
+        # Its risk class (OWD-7) follows the same kind its starting approval rule does: deleting words win over hints.
+        return [*tags, TAG_RISK_DESTRUCTIVE] if self.kind == "destructive" else tags
+
+    @property
     def display_name(self) -> str:
         # The namespaced name (`mcp_{type}_{tool}`) has no `__` separator, so the UI
-        # cannot derive the server from it; say it here instead.
-        return f"{self._server.display_name} · {self._tool_info.name}"
+        # cannot derive the server from it; say it here instead. The server's `title` annotation names the tool
+        # for people; without one the UI humanizes the id (TOOLNAMES).
+        # The title is the server's text: display-safe, and never a second "Server · " (SEC-B-04).
+        title = (self._tool_info.annotations or {}).get("title")
+        shown = title.strip()[:80] if isinstance(title, str) and title.strip() else self._tool_info.name
+        return tool_display_name(self._server.display_name, shown)
 
     def summarize_args(self, args: dict[str, Any]) -> str | None:
         return inline_args(args)
@@ -253,6 +290,16 @@ class MCPToolAdapter(SchemaShallowValidationMixin, Tool):
                 "The call may still finish on the server.",
                 end_fields={"reason": "stopped", "error_class": "cancelled"},
             )
+        except MCPServerRevoked as exc:
+            return ToolOutput(
+                success=False, error=str(exc), error_code=exc.tool_error_code,
+                end_fields={"reason": "server_revoked", "error_class": "forbidden"},
+            )
+        except MCPRunnerRefused as exc:
+            return ToolOutput(
+                success=False, error=f"MCP runner refused: {exc.reason_code}", error_code="unavailable",
+                end_fields={"reason": "runner_refused", "error_class": "unavailable"},
+            )
         except Exception as exc:
             reason = classify_mcp_failure(exc)
             error = self._error_message(exc)
@@ -261,7 +308,7 @@ class MCPToolAdapter(SchemaShallowValidationMixin, Tool):
             # The executor logs it once, by class: no stack for a timeout, a dead server or an
             # expired sign-in, and never the error's text (a URL with an API key, the arguments).
             cls = mcp_error_class(exc, reason)
-            return ToolOutput(success=False, error=error, cause=exc, end_fields={
+            return ToolOutput(success=False, error=error, error_code=mcp_error_code(exc), cause=exc, end_fields={
                 "error_class": cls, "mcp_reason": reason.value,
                 "status": getattr(first_leaf(exc), "status_code", None),
                 "level": misconfigured_level(self._server.instance_id, cls),
@@ -349,6 +396,8 @@ class MCPToolAdapter(SchemaShallowValidationMixin, Tool):
                 f"The {server} MCP server was still working after {exc.limit_seconds:.0f} seconds, "
                 "the limit for one call, so PipesHub stopped waiting. It may still finish on the server."
             )
+        if isinstance(exc, MCPConnectTimeoutError):
+            return str(exc)
         if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
             seconds = self._server.instance.get("callTimeoutSeconds") or DEFAULT_CALL_TIMEOUT_SECONDS
             return f"The {server} MCP server did not respond within {seconds:.0f} seconds."
@@ -356,3 +405,22 @@ class MCPToolAdapter(SchemaShallowValidationMixin, Tool):
             return str(exc)
         text = redact_urls_in_text(first_line(str(exc)))[:_MAX_ERROR_CHARS]
         return f"The MCP tool call failed ({type(exc).__name__}){': ' + text if text else ''}"
+
+
+_REASON_CODES: dict[MCPFailureReason, "ToolErrorCode"] = {
+    MCPFailureReason.AUTH_EXPIRED: "auth",
+    MCPFailureReason.UNAUTHORIZED: "auth",
+    MCPFailureReason.NEEDS_PERMISSION: "auth",
+    MCPFailureReason.BLOCKED: "unavailable",
+    MCPFailureReason.TIMEOUT: "timeout",
+    MCPFailureReason.UNREACHABLE: "unavailable",
+}
+
+
+def mcp_error_code(exc: BaseException) -> "ToolErrorCode":
+    """The durable journal's code for a failed MCP call: a refused sign-in is ``auth``, a server that
+    went away or refused the connection is ``unavailable`` (QA17-O4); anything else is typed by its class."""
+    leaf = first_leaf(exc)
+    if isinstance(leaf, MCPError) and leaf.code == CONNECTION_CLOSED:
+        return "unavailable"
+    return _REASON_CODES.get(classify_mcp_failure(exc)) or tool_error_code(exc)

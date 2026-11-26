@@ -30,7 +30,7 @@ KG = "python/app/services/graph_db/postgres/kg/"
 KNOWN = Counter({
     (KG + "stamp.py", "<module>"): 1,                                   # the module docstring
     (KG + "stamp.py", "_current_scopes"): 1,                            # the stamp writer compares the rows with what it computed
-    (KG + "verify.py", "verify_app"): 1,                                # the verify names a row left without its record
+    (KG + "verify.py", "<module>"): 1,                                  # the verify names a row left without its record (ORPHAN_SCOPES)
     (KG + "backfill.py", "backfill_scope.reset"): 1,                    # the restart deletes those rows under the connector's lock
     ("db/versions/kg/0008_scopes_r13.sql", "<file>"): 7,                # the table, its index, settings, policy and grants
     ("db/versions/kg/0008_scopes_r13.py", "<module>"): 1,               # its docstring
