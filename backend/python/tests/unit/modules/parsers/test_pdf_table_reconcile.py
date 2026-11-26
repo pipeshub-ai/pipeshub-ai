@@ -585,7 +585,20 @@ def test_a_caption_line_is_never_folded_into_a_table_read_by_the_order_of_eviden
         assert gate(legacy_table, caption)  # the legacy flow folds it in
         assert not gate(evidence_table, caption) and not gate(caption, evidence_table)
         assert not gate(evidence_table, above)  # nor any text ending above the table: the header is read from the grid
-        assert gate(evidence_table, body)  # other text is not affected
+        assert gate(legacy_table, body)
+        assert not gate(evidence_table, body)  # nor text starting below it: the grid already ends where the table does
+        inside = _region(LayoutRegionType.TEXT, (60.0, 350.0, 100.0, 360.0), "Value")
+        assert gate(evidence_table, inside)  # text inside the table is not affected
+
+
+def test_a_note_below_a_table_read_by_the_order_of_evidence_stays_a_sibling() -> None:
+    table = ola.LayoutRegion(type=LayoutRegionType.TABLE, bbox=(60.0, 300.0, 420.0, 400.0), text="a b",
+                             table_grid=[["a", "b"], ["c", "d"]], from_evidence=True, table_q=0.9)
+    note = _region(LayoutRegionType.TEXT, (60.0, 401.0, 160.0, 409.0), "Values are examples.")
+    out = ola._resolve_overlaps([table, note])
+    assert len(out) == 2
+    kept = next(r for r in out if r.type == LayoutRegionType.TABLE)
+    assert kept.table_grid == [["a", "b"], ["c", "d"]] and kept.bbox == (60.0, 300.0, 420.0, 400.0)
 
 
 def _key_spans_rows_with_row_rules_right_of_it(c: canvas.Canvas) -> None:
