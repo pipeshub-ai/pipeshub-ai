@@ -107,8 +107,33 @@ if [[ "${PIPESHUB_INGRESS}" == true ]]; then
   : "${PIPESHUB_HOST:?Set PIPESHUB_HOST, for example pipeshub.example.com}"
 fi
 
+# ADR-OPS-07: the security profile. A new release adopts the hardened one; an existing release keeps what it runs (the
+# value it was given, else the compatibility profile it has run since before the switch existed), so re-running this
+# script never flips it. PIPESHUB_HARDENED=true|false decides instead.
+release_hardened() {
+  local given
+  case "$(printf '%s' "${PIPESHUB_HARDENED:-}" | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes|on) echo true; return ;;
+    false|0|no|off) echo false; return ;;
+    "") ;;
+    *) die "PIPESHUB_HARDENED must be true or false, not '${PIPESHUB_HARDENED}'" ;;
+  esac
+  if ! helm status "${RELEASE}" --namespace "${NAMESPACE}" >/dev/null 2>&1; then
+    echo true; return
+  fi
+  given="$(helm get values "${RELEASE}" --namespace "${NAMESPACE}" -o yaml 2>/dev/null \
+    | sed -n 's/^hardened:[[:space:]]*"\{0,1\}\([A-Za-z0-9]*\)"\{0,1\}[[:space:]]*$/\1/p' | head -n 1)"
+  case "$(printf '%s' "$given" | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes|on) echo true ;;
+    *) echo false ;;
+  esac
+}
+HARDENED="$(release_hardened)"
+echo "install-eks: security profile $([[ "${HARDENED}" == true ]] && echo hardened || echo "compatibility (set PIPESHUB_HARDENED=true to adopt the hardened profile)")"
+
 helm_args=(
   upgrade --install "${RELEASE}" "${CHART}"
+  --set "hardened=${HARDENED}"
   --namespace "${NAMESPACE}"
   -f "${CHART}/values-eks.yaml"
 )

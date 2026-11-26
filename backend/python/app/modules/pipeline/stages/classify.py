@@ -32,7 +32,10 @@ from app.modules.pipeline.models import (
 from app.modules.pipeline.policy import PipelinePolicy
 from app.modules.pipeline.stage import StageIO
 from app.modules.pipeline.stages.record_io import StoredRecordMissing
-from app.modules.transformers.document_extraction import ExtractionLLMError
+from app.modules.transformers.document_extraction import (
+    ExtractionContentFilteredError,
+    ExtractionLLMError,
+)
 from app.services.base_client import (
     TRANSIENT_STATUS_CODES,
     ServiceBackpressureError,
@@ -168,6 +171,8 @@ class ClassifyStage:
                     return StageResult.paused_for(None, reason, traced=traced)
                 return StageResult(outcome=StageOutcome.PAUSED, reason=reason, sent=True, requests=1)
             return StageResult(outcome=StageOutcome.PAUSED, reason=reason, sent=False)
+        except ExtractionContentFilteredError as exc:
+            return StageResult(outcome=StageOutcome.FAILED, reason=str(exc))
         except (ExtractionLLMError, ExtractionClientError) as exc:
             return StageResult(outcome=StageOutcome.RETRY, reason=f"Classification failed: {exc}")
         except ServiceCallError as exc:

@@ -166,6 +166,11 @@ def refresh_name(org_id: str, record_id: str, event_id: str) -> str:
     return f"pc:refresh:{{{org_id}:{record_id}}}:{event_id}"
 
 
+def refresh_done_name(org_id: str, record_id: str, event_id: str) -> str:
+    """The marker that a refresh run under ``event_id`` has ended (a second event of the same refresh is a no-op)."""
+    return f"pc:refreshdone:{{{org_id}:{record_id}}}:{event_id}"
+
+
 class LockBackend(Protocol):
     #: True when every replica sees this backend's locks and markers (Redis); False for one process's own.
     shared: bool

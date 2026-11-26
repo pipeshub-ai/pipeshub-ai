@@ -8,6 +8,7 @@ export { InlineCitationPopoverHost } from './inline-citation-popover-host';
 export { ReferenceCard } from './citation-card';
 export { SourcesTab } from './sources-tab';
 export { CitationsTab } from './citations-tab';
+export { CitationUnavailableBadge, CitationUnavailableCard } from './citation-unavailable';
 export {
   buildCitationMapsFromApi,
   buildCitationMapsFromStreaming,

@@ -138,7 +138,7 @@ export const USER_SPEC: Spec = {
     'getLive', 'getForEdit', 'getEmail', 'getAny', 'getAuthSnapshot', 'getRoleSnapshot', 'getLiveFields', 'getByIdOrEmail', 'getOldestId', 'getLiveByEmail',
     'listLiveByIds', 'listNamesByIds', 'listAllLive', 'listSummariesByIds', 'listWithGroups', 'listByEmails', 'listAdminIds', 'listServiceAccounts',
     'getServiceAccount', 'serviceAccountIdsAmong', 'countActiveAdmins', 'countLive', 'emailTakenByOther', 'hasRemovedAccount', 'create', 'createMany', 'updateProfile', 'markDeleted',
-    'restoreByEmails', 'promoteToAdmin', 'setRole', 'lockOrgAdminChanges', 'deleteRemoved', 'listRemovedIdsByEmail', 'setDisabledByEmailDomain',
+    'restoreByEmails', 'promoteToAdmin', 'setRole', 'lockOrgAdminChanges', 'withAdminLease', 'deleteRemoved', 'listRemovedIdsByEmail', 'setDisabledByEmailDomain',
     'restoreServiceAccount', 'enableServiceAccount', 'updateServiceAccount',
   ]),
   listDirectory: { org: 0, as: 'anyone' },

@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { Types } from 'mongoose'
 import * as controllerModule from '../../../../src/modules/enterprise_search/controller/es_controller'
+import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
@@ -520,6 +521,8 @@ describe('es_controller streaming answers', () => {
           toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
           now: Date.now(),
         })
+        // This test is about the heartbeat, so it runs the real one (the harness stubs it); its timer is fake.
+        sinon.stub(searchUtils, 'keepRunAlive').callThrough()
         const run = await startStream(flow)
         run.ai.send('TEXT_MESSAGE_CONTENT', delta('Still working'))
         await settle()
@@ -687,7 +690,7 @@ describe('es_controller streaming answers', () => {
     run.ai.finish()
     await run.res.ended
 
-    const sent = run.res.eventsOf('RUN_FINISHED')[0]?.data.result.conversation.messages as Array<Record<string, unknown>>
+    const sent = (run.res.eventsOf('RUN_FINISHED')[0]?.data as any).result.conversation.messages as Array<Record<string, unknown>>
     const old = sent.find((m) => m.messageType === 'bot_response' && (m.answerHidden !== undefined || m.content === 'An older answer.'))
     expect(old?.answerHidden).to.deep.equal({ redacted: true, reason: 'no_longer_accessible' })
     expect(JSON.stringify(sent)).to.not.contain('An older answer.')
@@ -711,7 +714,7 @@ describe('es_controller streaming answers', () => {
     await run.res.ended
 
     const errors = run.res.eventsOf('RUN_ERROR')
-    const carried = errors.flatMap((e) => (e.data.conversation?.messages ?? []) as Array<Record<string, unknown>>)
+    const carried = errors.flatMap((e) => ((e.data as any).conversation?.messages ?? []) as Array<Record<string, unknown>>)
     expect(carried.length, 'the event carries the conversation').to.be.greaterThan(0)
     expect(carried.some((m) => m.answerHidden !== undefined)).to.equal(true)
     expect(JSON.stringify(errors)).to.not.contain('An earlier lost answer.')

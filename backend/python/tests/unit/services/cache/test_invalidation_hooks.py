@@ -21,6 +21,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.sync.sync_runner import run_sync_task
+from app.core.org_context import for_org
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.services.cache import invalidation_hooks as hooks
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -250,7 +251,8 @@ class TestDeleteRecordResultShape:
         provider.execute_query = AsyncMock(return_value=[])
         provider.client.execute_query = AsyncMock(return_value=[])
 
-        result = await provider.delete_record(record_id="rec-1", user_id="user-1", org_id="org-1")
+        with for_org("org-1", job="test"):  # the delete route runs inside the caller's org
+            result = await provider.delete_record(record_id="rec-1", user_id="user-1", org_id="org-1")
 
         assert result["success"] is True
         assert result["connectorId"] == "conn-1"

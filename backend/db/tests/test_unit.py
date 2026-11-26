@@ -1,4 +1,5 @@
 """Unit tests: no database needed."""
+import importlib.util
 import json
 from pathlib import Path
 
@@ -51,6 +52,13 @@ def test_epoch_lint_rejects_bad_id_and_file_prefix(branch):
 def test_expected_heads_read_from_the_files(branch):
     _rev(branch, "identity", 4, 3)
     assert epoch_lint.expected_heads([branch]) == ({"identity": (4, 3)}, {"identity_0004"})
+
+
+def test_epoch_lint_reads_annotated_revision_attributes(branch):
+    (branch / "0004_annotated.py").write_text('revision: str = "identity_0004"\ndown_revision: str = "identity_0002"\nmin_code_epoch: int = 4\n')
+    assert "expected 'identity_0003'" in "\n".join(epoch_lint.lint_branch(branch))
+    (branch / "0004_annotated.py").write_text('revision: str = "identity_0004"\ndown_revision: str = "identity_0003"\nmin_code_epoch: int = 4\n')
+    assert epoch_lint.expected_heads([branch]) == ({"identity": (4, 4)}, {"identity_0004"})
 
 
 def test_expected_heads_refuse_a_second_head(branch):
@@ -340,6 +348,36 @@ def test_lint_create_if_not_exists_of_another_modules_table(tmp_path, monkeypatc
     assert lint.lint_file(f) == []
 
 
+@pytest.mark.parametrize("annotated", [False, True])                  # ONLINE_DROPS: list[str] = [...] is the same declaration
+@pytest.mark.parametrize("mark,flagged", [
+    ("", True),
+    ("min_code_epoch = 0\n", True),                                    # no mark, as for every other rule
+    ('older_code_compatible = "unused"\n', True),                      # a reason of fewer than four words is none
+    ('older_code_compatible = "no plan of any release reads these"\n', False),
+    ('older_code_compatible: str = "no plan of any release reads these"\n', False),
+    ("min_code_epoch = 1\n", False),
+    ("min_code_epoch: int = 1\n", False),
+])
+def test_lint_a_revision_that_retires_indexes_says_whether_older_code_needs_them(tmp_path, monkeypatch, mark, flagged, annotated):
+    """ONLINE_DROPS is dropped by db.migrate, not by SQL the lint reads, so the revision itself must say min_code_epoch or why older code still works."""
+    monkeypatch.setattr(lint, "version_locations", lambda: [str(tmp_path)])
+    (tmp_path / "0002_retire.py").write_text(mark + f'ONLINE_DROPS{": list[str]" if annotated else ""} = ["a.ix"]\n')
+    assert bool(lint.retiring_violations()) is flagged
+    if flagged:
+        assert "set min_code_epoch (older code plans with them) or older_code_compatible" in lint.retiring_violations()[0]
+
+
+@pytest.mark.parametrize("raw,want", [("", None), (" ", None), ("512", "512MB"), ("0", 2), ("-1", 2), ("1.5", 2), ("1GB", 2), ("9999999", 2), ("\u00b2", 2)])
+def test_the_index_build_memory_is_a_whole_number_of_megabytes(monkeypatch, raw, want):
+    monkeypatch.setenv("PG_INDEX_BUILD_MEMORY_MB", raw)
+    if want == 2:
+        with pytest.raises(migrate.RunnerError) as e:
+            migrate.build_memory()
+        assert e.value.code == migrate.EXIT_CONFIG and "PG_INDEX_BUILD_MEMORY_MB" in str(e.value)
+    else:
+        assert migrate.build_memory() == want
+
+
 @pytest.mark.parametrize("sql,flagged", [
     ("REVOKE CREATE ON SCHEMA a FROM pipeshub_vetted_a", False),
     ("REVOKE pipeshub_vetted_a, pipeshub_vetted_b FROM pipeshub_owner", False),
@@ -402,8 +440,13 @@ def test_extra_locations_read_from_the_edition_file(tmp_path, monkeypatch):
     assert locations.version_locations()[-1] == str(mod)
 
 
-def test_shipped_edition_seam_is_empty():
-    assert locations.extra_locations() == []
+def test_shipped_edition_seam_names_only_module_directories_that_exist():
+    """An edition's extra migration modules must all be there: a missing one would silently migrate less."""
+    spec = importlib.util.spec_from_file_location("_shipped_edition", locations.BACKEND_DIR / "python" / "app" / "edition.py")
+    edition = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(edition)
+    declared = getattr(edition, "EXTRA_MIGRATION_LOCATIONS", [])
+    assert len(locations.extra_locations()) == len(declared)
 
 
 def test_url_is_required_and_normalised(monkeypatch):
@@ -434,7 +477,7 @@ def test_pooler_is_refused(monkeypatch):
 
 def test_schema_requirements_from_the_tree():
     from db import schema_requirements
-    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 18, "code": 18}}
+    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 19, "code": 19}}
     with pytest.raises(SystemExit):
         schema_requirements.requirements(["nope"])
 
@@ -576,7 +619,10 @@ def test_the_compose_image_role_script_has_the_layout_of_bootstrap_roles():
     flat = lambda s: re.sub(r"\s+", " ", s).strip()
     vetted = {f"pipeshub_vetted_{s}" for s in b.SHIPPED_VETTED}
     quoted = set(re.findall(r"'(pipeshub_\w+)'", sql))
-    assert quoted == {r for r, _ in b.ROLES} | vetted
+    assert quoted == {r for r, _ in b.ROLES} | vetted | {b.MONITOR}
+    # the opt-in monitoring login: the same one membership both ways (kernel_0019 accepts exactly this one)
+    assert "GRANT pg_monitor TO pipeshub_monitor WITH INHERIT TRUE, SET FALSE;" in flat(sql)
+    assert 'GRANT pg_monitor TO {} WITH INHERIT TRUE, SET FALSE' in Path(b.__file__).read_text()
     logins = set(re.findall(r"\('(pipeshub_\w+)', :'\w+'\)", sql)) | {"pipeshub_ro"}
     assert logins == {r for r, login in b.ROLES if login}
     assert set(re.findall(r":(PG_\w+_PASSWORD)\b", text)) | set(re.findall(r"\w+:(PG_\w+_PASSWORD)", text)) == set(b.PASSWORD_VARS.values())
@@ -594,3 +640,223 @@ def test_the_compose_image_role_script_has_the_layout_of_bootstrap_roles():
     assert handed_out == vetted
     assert flat(b.LARGE_OBJECTS_SQL) in flat(sql)
     assert {"pg_trgm", "vector"} <= set(re.findall(r"CREATE EXTENSION IF NOT EXISTS (\w+) WITH SCHEMA ext", sql))   # the extensions CI installs
+
+
+_BUILD = 'def upgrade():\n    ensure_partitioned_index(op.get_bind(), "graph.nodes", "nodes_x", "org_id, (doc->>\'x\')", blocking=True)\n'
+
+
+@pytest.mark.parametrize("name,body,sql,flagged", [
+    ("blocking on an existing table", _BUILD, None, True),
+    ("its name is one of ONLINE_INDEXES", 'ONLINE_INDEXES = [{"table": "graph.nodes", "name": "nodes_x", "cols": "org_id"}]\n' + _BUILD, None, False),
+    ("another name is", 'ONLINE_INDEXES = [{"table": "graph.nodes", "name": "nodes_y", "cols": "org_id"}]\n' + _BUILD, None, True),
+    ("the name on another table is", 'ONLINE_INDEXES = [{"table": "kg.records", "name": "nodes_x", "cols": "org_id"}]\n' + _BUILD, None, True),
+    ("built from ONLINE_INDEXES", 'ONLINE_INDEXES = []\n\n\ndef upgrade():\n    for ix in ONLINE_INDEXES:\n'
+                                  '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n', None, False),
+    ("built from another list", 'INDEXES = []\n\n\ndef upgrade():\n    for ix in INDEXES:\n'
+                                '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n', None, True),
+    ("the loop name rebound by a nested loop", 'ONLINE_INDEXES = []\nOTHER = []\n\n\ndef upgrade():\n    for ix in ONLINE_INDEXES:\n'
+                                               '        for ix in OTHER:\n            ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n',
+     None, True),
+    ("the loop name reused for another list", 'ONLINE_INDEXES = []\nINDEXES = []\n\n\ndef upgrade():\n    for ix in ONLINE_INDEXES:\n'
+                                              '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n    for ix in INDEXES:\n'
+                                              '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n', None, True),
+    ("names built at run time", 'def upgrade():\n    for t, n in X:\n        ensure_partitioned_index(op.get_bind(), t, n, "c", blocking=True)\n', None, True),
+    ("its table is created by the revision's .sql", _BUILD, "CREATE TABLE graph.nodes (org_id text)", False),
+    ("IF NOT EXISTS of a table an earlier revision creates", _BUILD, "CREATE TABLE IF NOT EXISTS graph.nodes (org_id text)", True),
+    ("its table only in a comment of the .sql", _BUILD, "-- CREATE TABLE graph.nodes (k int)\n/* CREATE TABLE graph.nodes (k int) */\nSELECT 1", True),
+    ("its table only in a string of the .sql", _BUILD, "SELECT 'CREATE TABLE graph.nodes (k int)'", True),
+    ("a reasoned waiver", 'blocking_index_ok = "the index keys a column this revision adds"\n' + _BUILD, None, False),
+    ("a waiver without a reason", 'blocking_index_ok = "ok"\n' + _BUILD, None, True),
+    ("online, not blocking", _BUILD.replace("blocking=True", "blocking=False"), None, False),
+    ("only in downgrade()", _BUILD.replace("def upgrade", "def downgrade"), None, False),
+])
+def test_lint_refuses_an_index_built_inside_the_upgrade_transaction(tmp_path, name, body, sql, flagged):
+    py = tmp_path / "0003_x.py"
+    py.write_text('revision = "graph_0003"\n' + body)
+    if sql:
+        py.with_suffix(".sql").write_text(sql)
+    msgs = lint.lint_revision(py, {"graph": 2})
+    assert any("inside the upgrade's transaction" in m for m in msgs) is flagged, (name, msgs)
+
+
+@pytest.mark.parametrize("later,flagged", [
+    ('ONLINE_INDEXES = [{"table": "graph.nodes", "name": "nodes_x", "cols": "org_id"}]\n', False),   # pending whenever 0003 is: built ahead
+    ('ONLINE_INDEXES = [{"table": "graph.nodes", "name": "nodes_y", "cols": "org_id"}]\n', True),
+])
+def test_lint_takes_an_index_a_later_revision_lists_online_as_built_ahead(tmp_path, later, flagged):
+    py = tmp_path / "0003_x.py"
+    py.write_text('revision = "graph_0003"\n' + _BUILD)
+    (tmp_path / "0004_y.py").write_text('revision = "graph_0004"\n' + later)
+    (tmp_path / "0002_w.py").write_text('revision = "graph_0002"\nONLINE_INDEXES = [{"table": "graph.nodes", "name": "nodes_x", "cols": "c"}]\n')
+    assert any("inside the upgrade's transaction" in m for m in lint.lint_revision(py, {"graph": 2})) is flagged
+
+
+@pytest.mark.parametrize("name,body,flagged", [
+    ("an f-string", 'def upgrade():\n    op.execute(f"DROP INDEX IF EXISTS graph.{n}")\n', True),
+    ("concatenated", 'def upgrade():\n    op.execute("DROP INDEX " + n)\n', True),
+    ("its kind built at run time", 'def upgrade():\n    op.execute(f"DROP {kind} graph.x")\n', True),
+    ("through a name", 'def upgrade():\n    sql = "drop index %s" % n\n    op.execute(sql)\n', True),
+    ("through a name assigned again after it ran", 'def upgrade():\n    sql = "DROP INDEX graph.x"\n    op.execute(sql)\n'
+                                                    '    sql = "SELECT 1"\n    op.execute(sql)\n', True),
+    ("its verb built at run time", 'def upgrade():\n    verb = "DROP"\n    op.execute(f"{verb} INDEX graph.x")\n', True),
+    ("one of a name's values built at run time", 'def upgrade():\n    sql = "SELECT 1"\n    sql = f"{verb} INDEX graph.x"\n    op.execute(sql)\n', True),
+    ("a module constant", 'UPGRADE = "DROP INDEX graph.x"\n\n\ndef upgrade():\n    op.execute(UPGRADE)\n', True),
+    ("a module constant that is no drop", 'UPGRADE = "CREATE OR REPLACE VIEW graph.v AS SELECT 1"\n\n\ndef upgrade():\n    op.execute(UPGRADE)\n', False),
+    ("its verb a parameter", 'def upgrade():\n    run(op.get_bind(), "x")\n\n\ndef run(c, sql):\n    c.exec_driver_sql(sql)\n', True),
+    ("a CREATE INDEX built at run time", 'def upgrade():\n    op.execute(f"CREATE INDEX IF NOT EXISTS {n} ON graph.x (c)")\n', True),
+    ("its verb built at run time in a DO body", 'def upgrade():\n    op.execute(f"DO $$ BEGIN {verb} INDEX graph.x; END $$;")\n', True),
+    ("a prefix reassigned after it ran", 'def upgrade():\n    prefix = "DROP "\n    op.execute(prefix + "INDEX graph.x")\n    prefix = "SELECT "\n', True),
+    ("a module name shadowed by a parameter", 'sql = "SELECT 1"\n\n\ndef upgrade():\n    run(op.get_bind(), "DROP INDEX graph.x")\n\n\n'
+                                              'def run(c, sql):\n    c.exec_driver_sql(sql)\n', True),
+    (".format", 'def upgrade():\n    op.get_bind().exec_driver_sql("DROP INDEX {}".format(n))\n', True),
+    ("a literal in a revision without .sql", 'def upgrade():\n    op.execute("DROP INDEX graph.x")\n', True),
+    ("a waiver does not clear it", 'older_code_compatible = "older code never reads that index at all"\n'
+                                   'def upgrade():\n    op.execute(f"DROP INDEX graph.{n}")\n', True),
+    ("a contract does", 'min_code_epoch = 3\ndef upgrade():\n    op.execute(f"DROP INDEX graph.{n}")\n', False),
+    ("another statement", 'def upgrade():\n    op.execute("CREATE INDEX x ON graph.x (c)")\n', False),
+    ("a comment inside the drop", 'def upgrade():\n    op.execute("DROP /* retired lookup */ INDEX graph.x")\n', True),
+    ("a comment between the words", 'def upgrade():\n    op.execute("DROP/**/INDEX graph.x")\n', True),
+    ("a line comment in a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN DROP -- retired\\n INDEX graph.x; END $$")\n', True),
+    ("DROP INDEX only in a string", 'def upgrade():\n    op.execute("SELECT \'DROP INDEX graph.x\'")\n', False),
+    ("EXECUTE of a literal in a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN EXECUTE \'DROP INDEX graph.x\'; END $$")\n', True),
+    ("EXECUTE format in a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN EXECUTE format(\'DROP INDEX %I\', \'x\'); END $$")\n', True),
+    ("any EXECUTE in a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN EXECUTE \'SELECT 1\'; END $$")\n', True),
+    ("a DO nested in a DO body", 'def upgrade():\n    op.execute("DO $o$ BEGIN DO $$ BEGIN DROP INDEX graph.x; END $$; END $o$")\n', True),
+    ("a function body created in a DO body", 'def upgrade():\n    op.execute("DO $o$ BEGIN CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$ SELECT 1 $$; END $o$")\n', True),
+    ("a DO with a quoted body", 'def upgrade():\n    op.execute("DO \'BEGIN DROP INDEX graph.x; END\'")\n', True),
+    ("a procedure body the upgrade calls", 'def upgrade():\n    op.execute("CREATE PROCEDURE pg_temp.p() LANGUAGE plpgsql AS $$ BEGIN DROP INDEX graph.x; END $$; '
+                                           'CALL pg_temp.p();")\n', True),
+    ("a function body that runs EXECUTE", 'def upgrade():\n    op.execute("CREATE OR REPLACE FUNCTION pg_temp.f() RETURNS void LANGUAGE plpgsql AS $f$ BEGIN '
+                                          'EXECUTE \'SELECT 1\'; END $f$; SELECT pg_temp.f()")\n', True),
+    ("a function body in a quoted string", 'def upgrade():\n    op.execute("CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS \'SELECT 1\'; SELECT pg_temp.f()")\n', True),
+    ("a dollar-quoted default before the body", 'def upgrade():\n    op.execute("CREATE FUNCTION pg_temp.f(a text DEFAULT $$a$$) RETURNS void '
+                                                'LANGUAGE plpgsql AS $$ BEGIN DROP INDEX graph.x; END $$; SELECT pg_temp.f()")\n', True),
+    ("a function body that runs EXECUTE, not run", 'def upgrade():\n    op.execute("CREATE OR REPLACE FUNCTION pg_temp.f() RETURNS void LANGUAGE plpgsql '
+                                                   'AS $f$ BEGIN EXECUTE \'SELECT 1\'; END $f$")\n', False),
+    ("a function body in BEGIN ATOMIC", 'def upgrade():\n    op.execute("CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END; SELECT pg_temp.f()")\n', True),
+    ("a function body that drops nothing", 'def upgrade():\n    op.execute("CREATE OR REPLACE FUNCTION kg.f(p jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$ '
+                                           'SELECT p || \'{}\'::jsonb $$")\n', False),
+    ("a DO with a quoted body inside a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN DO \'BEGIN DROP INDEX graph.x; END\'; END $$")\n', True),
+    ("a procedure with a quoted body created and called in a DO body",
+     'def upgrade():\n    op.execute("DO $$ BEGIN CREATE PROCEDURE p() LANGUAGE plpgsql AS \'BEGIN DROP INDEX graph.x; END\'; CALL p(); END $$")\n', True),
+    ("a trigger created in a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN CREATE TRIGGER t AFTER INSERT ON graph.y EXECUTE FUNCTION graph.f(); END $$")\n', True),
+    ("DROP INDEX as data in a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN RAISE NOTICE \'DROP INDEX x\'; INSERT INTO graph.t VALUES (\'DO\'); END $$")\n', False),
+    ("a DO body that drops nothing", 'def upgrade():\n    op.execute("DO $$ BEGIN PERFORM 1; END $$")\n', False),
+    ("DROP INDEX only in a dollar-quoted string", 'def upgrade():\n    op.execute("SELECT $$DROP INDEX graph.x$$")\n', False),
+    ("DROP INDEX only in a tagged dollar-quoted string", 'def upgrade():\n    op.execute("SELECT $q$DROP INDEX graph.x$q$")\n', False),
+    ("DROP INDEX only in a comment", 'def upgrade():\n    op.execute("SELECT 1 -- DROP INDEX graph.x")\n', False),
+    ("in downgrade()", 'def downgrade():\n    op.execute(f"DROP INDEX graph.{n}")\n\n\ndef upgrade():\n    pass\n', False),
+])
+def test_lint_refuses_a_drop_index_built_at_run_time(tmp_path, name, body, flagged):
+    py = tmp_path / "0003_x.py"
+    py.write_text('revision = "graph_0003"\n' + body)
+    msgs = lint.lint_revision(py, {"graph": 2})
+    assert any("may DROP INDEX" in m for m in msgs) is flagged, (name, msgs)
+
+
+def test_lint_leaves_released_revisions_alone(tmp_path):
+    py = tmp_path / "0003_x.py"
+    py.write_text('revision = "graph_0003"\n' + _BUILD + '    op.execute(f"DROP INDEX graph.{n}")\n')
+    assert len(lint.lint_revision(py, {"graph": 2})) == 2
+    assert lint.lint_revision(py, {"graph": 3}) == []
+    assert lint.main([str(py)]) == 0                                # graph_0003 is in released_heads.json
+    py.write_text(py.read_text().replace("graph_0003", "graph_9999"))
+    assert lint.main([str(py)]) == 1
+
+
+def test_lint_of_a_revision_py_reads_the_constant_sql_of_its_upgrade_when_it_has_a_sql_file(tmp_path):
+    py = tmp_path / "0003_x.py"
+    py.write_text('revision = "graph_9999"\n\n\ndef upgrade():\n    op.execute("DROP INDEX graph.x")\n')
+    py.with_suffix(".sql").write_text("SELECT 1;\n")
+    assert lint.main([str(py)]) == 1
+    py.write_text('revision = "graph_9999"\n\n\ndef upgrade():\n    op.execute("DROP/**/INDEX graph.x")\n')    # comments are whitespace
+    assert lint.main([str(py)]) == 1
+
+
+@pytest.mark.parametrize("call,flagged", [
+    ('op.execute(build())', True),                              # a call's result
+    ('op.execute(sa.text(f"SELECT {n}"))', True),
+    ('op.execute(self.sql)', True),                             # an attribute
+    ('op.execute("SELECT %s" % n)', True),
+    ('op.execute("SELECT {}".format(n))', True),
+    ('op.execute("SELECT " + n)', True),
+    ('sql = "SELECT 1"\n    op.execute(sql)', True),          # a local name, constant or not
+    ('op.execute(LOOPED)', True),                               # a module name bound twice
+    ('op.execute(f"SELECT {CONST!r}")', True),                 # a conversion
+    ('op.execute("SELECT 1")', False),
+    ('op.execute("SELECT " + "1")', False),
+    ('op.execute(CONST)', False),                               # a module constant nothing else binds
+    ('op.execute(f"SELECT 1 FROM {CONST}")', False),
+    ('op.get_bind().exec_driver_sql(sa.text(CONST))', False),
+    ('op.execute(sql="DROP INDEX graph.x")', True),           # SQL passed by keyword
+    ('op.execute(sqltext="DROP INDEX graph.x")', True),
+    ('op.get_bind().exec_driver_sql(statement="DROP INDEX graph.x")', True),
+    ('op.execute(sqltext=f"SELECT {n}")', True),
+    ('op.execute(sa.text(text=f"SELECT {n}"))', True),
+    ('op.execute(**kw)', True),                                 # SQL that cannot be found
+    ('op.execute(*args)', True),
+    ('op.execute(sqltext="SELECT 1")', False),
+])
+def test_lint_takes_sql_it_cannot_read_to_the_end_as_a_possible_drop(tmp_path, call, flagged):
+    """Fail closed: SQL that is not constant text needs min_code_epoch, wherever its unknown part is; only constant text is read."""
+    py = tmp_path / "0003_x.py"
+    body = f'CONST = "graph.t"\nLOOPED = "a"\nfor LOOPED in ("b",):\n    pass\n\n\ndef upgrade():\n    {call}\n'
+    py.write_text('revision = "graph_0003"\n' + body)
+    assert any("may DROP INDEX" in m for m in lint.lint_revision(py, {"graph": 2})) is flagged, call
+    py.write_text('revision = "graph_0003"\nmin_code_epoch = 3\n' + body)
+    assert not any("may DROP INDEX" in m for m in lint.lint_revision(py, {"graph": 2}))
+
+
+_PROC = "CREATE PROCEDURE graph.p() LANGUAGE plpgsql AS $$ BEGIN DROP INDEX graph.x; END $$;\n"
+_EXEC_FN = "CREATE OR REPLACE FUNCTION graph.f() RETURNS void LANGUAGE plpgsql AS $f$ BEGIN EXECUTE 'SELECT 1'; END $f$;\n"
+
+
+@pytest.mark.parametrize("name,sql,mark,flagged", [
+    ("a procedure that drops an index, called", _PROC + "CALL graph.p();\n", "", True),
+    ("called by its bare name", _PROC + "CALL P();\n", "", True),
+    ("a function with EXECUTE, selected", _EXEC_FN + "SELECT graph.f();\n", "", True),
+    ("performed in a DO body", _EXEC_FN + "DO $$ BEGIN PERFORM \"f\"(); END $$;\n", "", True),
+    ("called from a routine that is run", _EXEC_FN + "CREATE FUNCTION graph.g() RETURNS void LANGUAGE sql AS $$ SELECT graph.f() $$;\n"
+                                          "SELECT graph.g();\n", "", True),
+    ("run by a trigger the file creates", _EXEC_FN + "CREATE TRIGGER t AFTER INSERT ON graph.y FOR EACH ROW EXECUTE FUNCTION graph.f();\n", "", True),
+    ("created, not run (a writer the services call)", _EXEC_FN + "GRANT EXECUTE ON FUNCTION graph.f() TO pipeshub_node;\n"
+                                                      "SELECT kernel.register_function('graph.f()'::regprocedure);\n", "", False),
+    ("run, its body reads nothing unsafe", "CREATE FUNCTION graph.h() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;\nSELECT graph.h();\n", "", False),
+    ("run, with a contract", _PROC + "CALL graph.p();\n", "min_code_epoch = 3\n", False),
+    ("a dollar-quoted default before the body", "CREATE FUNCTION graph.f(a text DEFAULT $$a$$) RETURNS void LANGUAGE plpgsql "
+                                                "AS $$ BEGIN DROP INDEX graph.x; END $$;\nSELECT graph.f();\n", "", True),
+    ("a C function, run", "CREATE FUNCTION graph.f() RETURNS void LANGUAGE c AS 'lib', 'sym';\nSELECT graph.f();\n", "", True),
+    ("a DO with a quoted body", "DO 'BEGIN DROP INDEX graph.x; END';\n", "", True),
+    ("EXECUTE in a DO body, with a waiver", "DO $$ BEGIN EXECUTE 'DROP INDEX graph.x'; END $$;\n", "", True),
+    ("a DO body that drops nothing", "DO $$ BEGIN PERFORM 1; END $$;\n", "", False),
+    ("a DO with a quoted body inside a DO body", "DO $$ BEGIN DO 'BEGIN DROP INDEX graph.x; END'; END $$;\n", "", True),
+    ("a quoted procedure created and called in a DO body",
+     "DO $$ BEGIN CREATE PROCEDURE p() LANGUAGE plpgsql AS 'BEGIN DROP INDEX graph.x; END'; CALL p(); END $$;\n", "", True),
+    ("DROP INDEX as data in a DO body", "DO $$ BEGIN RAISE NOTICE 'DROP INDEX x'; INSERT INTO graph.t VALUES ('DO'); END $$;\n", "", False),
+])
+def test_lint_reads_the_body_of_a_routine_the_file_runs(tmp_path, name, sql, mark, flagged):
+    """A routine the .sql creates and runs in the same upgrade is code of that upgrade: its body is read with the DO-body rules. A routine it
+    only creates (called later by the services) runs outside the upgrade's transaction and is not read."""
+    f = tmp_path / "0003_x.sql"
+    f.write_text(sql)
+    f.with_suffix(".py").write_text('revision = "graph_9999"\nolder_code_compatible = "a test revision that older code never sees"\n' + mark)
+    assert any("runs in the upgrade" in m for m in lint.lint_file(f)) is flagged, (name, lint.lint_file(f))
+
+
+def test_lint_leaves_the_bodies_of_a_released_revision_alone(tmp_path):
+    f = tmp_path / "0003_x.sql"
+    f.write_text("DO $$ BEGIN EXECUTE 'SELECT 1'; END $$;\n")
+    f.with_suffix(".py").write_text('revision = "graph_0003"\nolder_code_compatible = "a test revision that older code never sees"\n')
+    assert not any("runs in the upgrade" in m for m in lint.lint_file(f))      # graph_0003 is in released_heads.json: it cannot change
+
+
+@pytest.mark.parametrize("sql,flagged", [
+    ("SELECT E'it\\'s'; DROP INDEX graph.x", True),            # the escaped quote does not end the string
+    ("SELECT E'DROP INDEX graph.x \\' still data'", False),
+    ("SELECT 'it''s'; DROP INDEX graph.x", True),
+    ("SELECT E'\\'', 'x'; DROP INDEX graph.x; SELECT 'y'", True),     # read as '' (a doubled quote) the drop hid in a string
+])
+def test_lint_reads_backslash_escapes_in_an_e_string(tmp_path, sql, flagged):
+    py = tmp_path / "0003_x.py"
+    py.write_text('revision = "graph_0003"\n\n\ndef upgrade():\n    op.execute(' + repr(sql) + ')\n')
+    assert any("may DROP INDEX" in m for m in lint.lint_revision(py, {"graph": 2})) is flagged, sql

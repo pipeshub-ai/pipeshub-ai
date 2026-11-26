@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from tests.support.bound_org import bind_test_org
+
 MODULE = "app.api.routes.mcp_servers"
 
 
@@ -256,6 +258,11 @@ class TestHandleOAuthCallbackClientConfigChanged:
 
 @pytest.mark.usefixtures("_instance_in_callers_org")
 class TestRefreshOAuthToken:
+    @pytest.fixture(autouse=True)
+    def _own_instance(self) -> Iterator[None]:
+        with patch("app.api.routes.mcp_servers._get_org_instance", new=AsyncMock(return_value={"_id": "inst-1", "orgId": "o1"})):
+            yield
+
     @pytest.mark.asyncio
     async def test_success(self):
         from app.api.routes.mcp_servers import refresh_oauth_token
@@ -397,6 +404,11 @@ class TestRefreshOAuthToken:
 
 @pytest.mark.usefixtures("_instance_in_callers_org")
 class TestGetOAuthConfig:
+    @pytest.fixture(autouse=True)
+    def _own_instance(self) -> Iterator[None]:
+        with patch("app.api.routes.mcp_servers._get_org_instance", new=AsyncMock(return_value={"_id": "inst-1", "orgId": "o1"})):
+            yield
+
     @pytest.mark.asyncio
     async def test_non_admin_raises_403(self):
         from app.api.routes.mcp_servers import get_oauth_config
@@ -544,3 +556,9 @@ class TestUpdateOAuthConfig:
             with pytest.raises(HTTPException) as exc_info:
                 await update_oauth_config(request, "inst-1", self._payload())
             assert exc_info.value.status_code == 500
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("o1")

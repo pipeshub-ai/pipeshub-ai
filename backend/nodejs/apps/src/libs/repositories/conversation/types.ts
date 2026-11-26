@@ -105,6 +105,9 @@ export interface NewSession {
   projectVisibility?: 'private' | 'project';
   compareOf?: string;
   compareFromMessageId?: string;
+  /** The agent harness's executor pin and import ledger, for a session it creates (a durable chat, a fork). */
+  harnessVersion?: HarnessVersionDto;
+  harnessLedger?: HarnessLedgerDto;
 }
 
 export interface MessageCitationDto {
@@ -140,6 +143,21 @@ export interface MessageDto {
   parts?: IMessagePart[];
   createdAt?: Date;
   updatedAt?: Date;
+  /** The agent harness's fields (WP109-FU-2); `label` only when read `withLabels`. */
+  senderId?: string;
+  foreignTurn?: boolean;
+  copied?: boolean;
+  runId?: string;
+  errorCode?: string;
+  errorServers?: string[];
+  errorStop?: IMessage['errorStop'];
+  truncatedBy?: IMessage['truncatedBy'];
+  budgetScope?: IMessage['budgetScope'];
+  runOutcome?: IMessage['runOutcome'];
+  notFound?: IMessage['notFound'];
+  limits?: IMessage['limits'];
+  command?: IMessage['command'];
+  label?: IMessage['label'];
 }
 
 /** A message as the store returns it. */
@@ -301,6 +319,65 @@ export interface AttachmentsAndCitedRecords {
     citationId?:
       { metadata?: { recordId?: string; connector?: string } } | string;
   }>;
+}
+
+export type HarnessVersionDto = 'legacy' | 'durable-v1';
+
+/** The durable harness's import ledger: the messages it accounted for, up to `seq` (agent-harness session-import). */
+export interface HarnessLedgerDto {
+  seq: number;
+  digest: string;
+  diverged?: boolean;
+}
+
+/** A session with the agent harness's own fields, which no other read returns (WP109-FU-2). Deleted sessions included. */
+export interface HarnessSessionRow {
+  /** As a lean read gives it, `sharedWith` included. */
+  session: ChatSessionDto;
+  sessionType: 'chat' | 'agent';
+  nextSeq: number;
+  harnessVersion?: HarnessVersionDto;
+  harnessLedger?: HarnessLedgerDto;
+  erasureRequestedAt?: number;
+}
+
+/** The agent harness's fields a write sets, with the session's status and activity when given. Only the fields present are written. */
+export interface HarnessSessionPatch {
+  harnessVersion?: HarnessVersionDto;
+  harnessLedger?: HarnessLedgerDto;
+  erasureRequestedAt?: number;
+  status?: string;
+  lastActivityAt?: number;
+}
+
+/** A deleted session whose erasure was asked for and has not finished (the marker goes with the session). */
+export interface ErasureRequestDto {
+  orgId: string;
+  sessionId: string;
+  requestedAt: number;
+  deletedBy?: string;
+}
+
+/** A session's deletion fields and how many messages and citation links it holds (the erasure backfill). */
+export interface SessionDeletionDto {
+  orgId: string;
+  sessionId: string;
+  isDeleted: boolean;
+  deletedBy?: string;
+  erasureRequestedAt?: number;
+  updatedAt?: Date;
+  messages: number;
+  citations: number;
+}
+
+/** A person's own conversation, as `listUserSessionsAfter` lists it. */
+export interface UserSessionDto {
+  _id: string;
+  sessionType: 'chat' | 'agent';
+  title?: string;
+  agentKey?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
 }
 
 export interface ConversationRepository {
@@ -501,8 +578,12 @@ export interface ConversationRepository {
     archived: { by: string } | null,
     tx?: Tx,
   ): Promise<ChatSessionDto | null>;
-  /** Removes a session and its messages outright: for a copy that failed half-way, never shown to anyone. */
-  discardSession(id: string, orgId: string, tx?: Tx): Promise<void>;
+  /** Removes a session and its messages outright: for a copy that failed half-way, never shown to anyone, and for erasure. */
+  discardSession(
+    id: string,
+    orgId: string,
+    tx?: Tx,
+  ): Promise<{ sessions: number; messages: number }>;
   /**
    * The owner pins or unpins their own chat. Pinning an archived chat finds nothing; unpinning always works so a stale pin can be
    * cleared. Neither changes `updatedAt`. Repeating either is a no-op that still returns the row.
@@ -520,7 +601,11 @@ export interface ConversationRepository {
     tx?: Tx,
   ): Promise<{ session: ChatSessionDto; citationIds: string[] } | null>;
   /** Soft delete of an agent chat by a member with write access. */
-  softDeleteAgent(id: string, userId: string): Promise<ChatSessionDto | null>;
+  softDeleteAgent(
+    id: string,
+    userId: string,
+    tx?: Tx,
+  ): Promise<ChatSessionDto | null>;
   setProjectLink(
     scope: SessionScope,
     id: string,
@@ -601,6 +686,10 @@ export interface ConversationRepository {
       limit?: number;
       withCitations?: boolean;
       order?: 'asc' | 'desc';
+      /** A durable answer's label (P2.5a), never read unless asked for: it names sources a reader may not see. */
+      withLabels?: boolean;
+      /** Only messages after this seq (a keyset page); with `skip` it counts from there. */
+      afterSeq?: number;
     },
     tx?: Tx,
   ): Promise<MessageRow[]>;
@@ -624,4 +713,122 @@ export interface ConversationRepository {
   // ---- citations
   createCitations(cs: NewCitation[], tx?: Tx): Promise<CitationDto[]>;
   getCitations(ids: string[], orgId: string): Promise<CitationDto[]>;
+  /** Removes citations of the org outright (erasure); the count removed. */
+  deleteCitations(ids: string[], orgId: string, tx?: Tx): Promise<number>;
+
+  // ---- the agent harness's fields and sweeps (WP109-FU-2)
+  /** `forUpdate`: the session row stays locked to the end of `tx` (PostgreSQL), so a check of it holds for the write after. */
+  findHarnessSession(
+    id: string,
+    orgId: string,
+    opts?: { forUpdate?: boolean },
+    tx?: Tx,
+  ): Promise<HarnessSessionRow | null>;
+  /** False when the session does not exist. */
+  setHarnessFields(
+    id: string,
+    orgId: string,
+    patch: HarnessSessionPatch,
+    tx?: Tx,
+  ): Promise<boolean>;
+  /**
+   * ADR-UI-01 D2: moves `userId`'s "seen up to" mark on the session to `at` unless it already is later, without
+   * touching the session's own times; the mark held, or null when there is no such session.
+   */
+  markHarnessSeen(
+    id: string,
+    orgId: string,
+    userId: string,
+    at: number,
+    tx?: Tx,
+  ): Promise<number | null>;
+  /** ADR-UI-01 D2: `userId`'s marks on these sessions of the org; a session they never marked is left out. */
+  harnessSeenMarks(
+    orgId: string,
+    userId: string,
+    ids: readonly string[],
+  ): Promise<Map<string, number>>;
+  /** Live sessions of the org last active before `before`, least recently active first. */
+  listIdleSessions(
+    orgId: string,
+    before: number,
+    limit: number,
+  ): Promise<string[]>;
+  /** Deletes a live session still idle since before `before`, marked for erasure at `at`; false when it no longer is. */
+  expireIdleSession(
+    orgId: string,
+    id: string,
+    before: number,
+    at: number,
+    tx?: Tx,
+  ): Promise<boolean>;
+  /** Deleted sessions of every org marked for erasure, by (requestedAt, id) after `after`. */
+  listErasureRequests(
+    after: { requestedAt: number; sessionId: string } | null,
+    limit: number,
+  ): Promise<ErasureRequestDto[]>;
+  /** Deleted sessions by id after `after`, of one org or (null) of every org. */
+  listDeletedSessions(
+    after: string | null,
+    limit: number,
+    orgId: string | null,
+  ): Promise<SessionDeletionDto[]>;
+  /** The named sessions of the org, deleted or not, by id. */
+  sessionDeletionStates(
+    orgId: string,
+    ids: readonly string[],
+  ): Promise<SessionDeletionDto[]>;
+  /** The user's own sessions that are not deleted (archived included), chats and agent chats, by id after `after`. */
+  listUserSessionsAfter(
+    orgId: string,
+    userId: string,
+    after: string | null,
+    limit: number,
+  ): Promise<UserSessionDto[]>;
+  /** Marks the attachments naming `recordIds` removed in the org's messages outside one session; the messages changed. */
+  markAttachmentsRemoved(
+    orgId: string,
+    exceptSessionId: string,
+    recordIds: readonly string[],
+  ): Promise<number>;
+  /** For each record id some message of the org attaches, one session whose message does. */
+  findAttachmentCarriers(
+    orgId: string,
+    recordIds: readonly string[],
+  ): Promise<Map<string, string>>;
+  /** The titles of the org's chats among `ids` (plain and agent chats alike) that are not deleted, by id; for display only. */
+  listTitles(
+    orgId: string,
+    ids: readonly string[],
+  ): Promise<Map<string, string>>;
+
+  // ---- an org's or a person's deletion (ORGDEL, CLEANUP-G1, G2)
+  /** The person's own sessions that are not deleted, by id; `shared` when someone else holds a share of it. */
+  listOwnedForHandover(
+    orgId: string,
+    userId: string,
+  ): Promise<Array<{ sessionId: string; shared: boolean }>>;
+  /** The sessions `fromUserId` owns among `ids` become `toUserId`'s (owner and initiator) and `toUserId` no longer holds a share of them; how many moved. */
+  transferOwners(
+    orgId: string,
+    ids: readonly string[],
+    fromUserId: string,
+    toUserId: string,
+    tx?: Tx,
+  ): Promise<number>;
+  /** Marks the sessions deleted with their erasure asked for at `at` (an earlier request's time stands); how many there were. */
+  markDeletedForErasure(
+    orgId: string,
+    ids: readonly string[],
+    at: number,
+    tx?: Tx,
+  ): Promise<number>;
+  /** Every session id of the org, deleted or not, after `after` in id order. */
+  listSessionIdsAfter(
+    orgId: string,
+    after: string | null,
+    limit: number,
+  ): Promise<string[]>;
+  /** Removes up to `limit` of the org's citations (its erasure); how many it removed. */
+  deleteOrgCitations(orgId: string, limit: number): Promise<number>;
 }

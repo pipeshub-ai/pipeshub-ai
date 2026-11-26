@@ -1,0 +1,165 @@
+{
+ "format": "pipeshub.harness.cassette/v1",
+ "manifest": {
+  "name": "j25-ask",
+  "source": "scripted",
+  "provider": "scripted",
+  "model": "scripted-brain",
+  "accepts_output_limit": false
+ },
+ "interactions": [
+  {
+   "request": {
+    "call": "complete",
+    "digest": "49ca4b0b60fe24d61dff",
+    "message_count": 1,
+    "last_user": "tool ask_user {\"question\": \"Which region should the report cover?\", \"options\": [\"EU\", \"US\"]}\nsay I need to know which region first.\n\nAbout your workspace (the current directory):\nThis task has no input files: start the work without listing the folder.\nDeliverables go under out/: create it in the sam",
+    "tools": [
+     "ask_user",
+     "create",
+     "lookup",
+     "read",
+     "search",
+     "shell",
+     "write"
+    ]
+   },
+   "events": [
+    {
+     "type": "complete",
+     "response": {
+      "message": {
+       "role": "assistant",
+       "content": [
+        {
+         "type": "text",
+         "text": ""
+        }
+       ],
+       "tool_calls": [
+        {
+         "id": "call_1",
+         "name": "ask_user",
+         "arguments": {
+          "question": "Which region should the report cover?",
+          "options": [
+           "EU",
+           "US"
+          ]
+         }
+        }
+       ],
+       "truncated": false
+      },
+      "usage": {
+       "input_tokens": 316,
+       "output_tokens": 21,
+       "cache_read_tokens": 0,
+       "cache_write_tokens": 0,
+       "reasoning_tokens": 0
+      },
+      "stop_reason": "tool_use",
+      "model": "scripted-brain"
+     }
+    }
+   ],
+   "structured": null,
+   "usage": null,
+   "error": null
+  },
+  {
+   "request": {
+    "call": "complete",
+    "digest": "a546f1de681e6525dcd3",
+    "message_count": 3,
+    "last_user": "tool ask_user {\"question\": \"Which region should the report cover?\", \"options\": [\"EU\", \"US\"]}\nsay I need to know which region first.\n\nAbout your workspace (the current directory):\nThis task has no input files: start the work without listing the folder.\nDeliverables go under out/: create it in the sam",
+    "tools": [
+     "ask_user",
+     "create",
+     "lookup",
+     "read",
+     "search",
+     "shell",
+     "write"
+    ]
+   },
+   "events": [
+    {
+     "type": "complete",
+     "response": {
+      "message": {
+       "role": "assistant",
+       "content": [
+        {
+         "type": "text",
+         "text": "I need to know which region first."
+        }
+       ],
+       "tool_calls": null,
+       "truncated": false
+      },
+      "usage": {
+       "input_tokens": 410,
+       "output_tokens": 8,
+       "cache_read_tokens": 0,
+       "cache_write_tokens": 0,
+       "reasoning_tokens": 0
+      },
+      "stop_reason": "end_turn",
+      "model": "scripted-brain"
+     }
+    }
+   ],
+   "structured": null,
+   "usage": null,
+   "error": null
+  },
+  {
+   "request": {
+    "call": "complete",
+    "digest": "d1bd650da051a60bee84",
+    "message_count": 5,
+    "last_user": "say EU, thanks\n\nAbout your workspace (the current directory):\nThis task has no input files: start the work without listing the folder.\nDeliverables go under out/: create it in the same command that writes the first one (for example `mkdir -p out && python3 make.py`), not as a step of its own. A file",
+    "tools": [
+     "ask_user",
+     "create",
+     "lookup",
+     "read",
+     "search",
+     "shell",
+     "write"
+    ]
+   },
+   "events": [
+    {
+     "type": "complete",
+     "response": {
+      "message": {
+       "role": "assistant",
+       "content": [
+        {
+         "type": "text",
+         "text": "EU, thanks"
+        }
+       ],
+       "tool_calls": null,
+       "truncated": false
+      },
+      "usage": {
+       "input_tokens": 540,
+       "output_tokens": 2,
+       "cache_read_tokens": 0,
+       "cache_write_tokens": 0,
+       "reasoning_tokens": 0
+      },
+      "stop_reason": "end_turn",
+      "model": "scripted-brain"
+     }
+    }
+   ],
+   "structured": null,
+   "usage": null,
+   "error": null
+  }
+ ]
+}

@@ -1,0 +1,405 @@
+[
+  {
+    "description": "every dimension is explicit in a pinned profile",
+    "instance": {
+      "engine": {
+        "kind": "engine-a",
+        "version": "1.2.3",
+        "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "mode": "build",
+      "isolationMin": "docker",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "skills": null
+    }
+  },
+  {
+    "description": "no unknown dimension",
+    "instance": {
+      "engine": {
+        "kind": "engine-a",
+        "version": "1.2.3",
+        "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "mode": "build",
+      "isolationMin": "docker",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null,
+      "network": "open"
+    }
+  },
+  {
+    "description": "mode is plan, build or review",
+    "instance": {
+      "engine": {
+        "kind": "engine-a",
+        "version": "1.2.3",
+        "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "mode": "yolo",
+      "isolationMin": "docker",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null
+    }
+  },
+  {
+    "description": "isolation is a known runtime",
+    "instance": {
+      "engine": {
+        "kind": "engine-a",
+        "version": "1.2.3",
+        "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "mode": "build",
+      "isolationMin": "none",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null
+    }
+  },
+  {
+    "description": "egress is none or one named allowlist",
+    "instance": {
+      "engine": {
+        "kind": "engine-a",
+        "version": "1.2.3",
+        "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "mode": "build",
+      "isolationMin": "docker",
+      "egress": "any",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null
+    }
+  },
+  {
+    "description": "a step limit is positive",
+    "instance": {
+      "engine": {
+        "kind": "engine-a",
+        "version": "1.2.3",
+        "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "mode": "build",
+      "isolationMin": "docker",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 0,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null
+    }
+  },
+  {
+    "description": "effect classes are the four the gateway knows",
+    "instance": {
+      "engine": {
+        "kind": "engine-a",
+        "version": "1.2.3",
+        "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "mode": "build",
+      "isolationMin": "docker",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "network"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null
+    }
+  },
+  {
+    "description": "an approval is allow, ask or deny",
+    "instance": {
+      "engine": {
+        "kind": "engine-a",
+        "version": "1.2.3",
+        "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "mode": "build",
+      "isolationMin": "docker",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "maybe",
+        "execute": "ask"
+      },
+      "skills": null
+    }
+  },
+  {
+    "description": "the engine is pinned by binary digest",
+    "instance": {
+      "engine": {
+        "kind": "engine-a",
+        "version": "1.2.3"
+      },
+      "mode": "build",
+      "isolationMin": "docker",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": null
+    }
+  },
+  {
+    "description": "skills are machine names",
+    "instance": {
+      "engine": {
+        "kind": "engine-a",
+        "version": "1.2.3",
+        "binaryDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "mode": "build",
+      "isolationMin": "docker",
+      "egress": "none",
+      "tools": {
+        "maxTools": null,
+        "effects": [
+          "execute",
+          "read",
+          "workspace",
+          "write"
+        ]
+      },
+      "limits": {
+        "maxSteps": 50,
+        "maxWallS": 1800,
+        "maxTokens": null,
+        "maxUsd": null
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      },
+      "reasoningEffort": null,
+      "approvals": {
+        "read": "allow",
+        "workspace": "allow",
+        "write": "ask",
+        "execute": "ask"
+      },
+      "skills": [
+        "Not A Name"
+      ]
+    }
+  }
+]

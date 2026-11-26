@@ -1,0 +1,142 @@
+{
+  "format": "pipeshub.harness.recording/v1",
+  "manifest": {
+    "scenario": "quick-kb-lookup",
+    "source": "legacy",
+    "harness": "legacy-agent-loop",
+    "model": "scripted-model",
+    "scrub_version": "1"
+  },
+  "inputs": {
+    "route": "agent",
+    "chat_mode": "quick",
+    "query": "How many days of paid leave do I get?",
+    "fixtures": {
+      "knowledge": [
+        {
+          "id": "kb-leave",
+          "title": "Leave policy",
+          "text": "Full-time employees get 25 days of paid leave per calendar year."
+        }
+      ],
+      "tickets": [],
+      "slack": {},
+      "emails": [],
+      "files": [],
+      "web": {}
+    }
+  },
+  "steps": [
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 2,
+        "last_user": "How many days of paid leave do I get?",
+        "last_tool": null,
+        "last_tool_status": null,
+        "tools": [
+          "drive__read_file",
+          "drive__share_file",
+          "gmail__read_email",
+          "gmail__search_emails",
+          "gmail__send_email",
+          "internaltools__ask_user_question",
+          "jira__add_comment",
+          "jira__create_issue",
+          "jira__get_issue",
+          "jira__search_issues",
+          "knowledge__read_document",
+          "knowledge__search",
+          "knowledgegraph__fetch_record",
+          "retrieve_artifact_content",
+          "search_tools",
+          "slack__read_channel",
+          "slack__send_message",
+          "web__fetch_url"
+        ],
+        "digest": "3acf371b033fcef9"
+      },
+      "response": {
+        "text": "",
+        "reasoning": "",
+        "tool_calls": [
+          {
+            "id": "call-1",
+            "name": "knowledge__search",
+            "args": {
+              "query": "paid leave"
+            }
+          }
+        ],
+        "usage": {
+          "input_tokens": 900,
+          "output_tokens": 20,
+          "cache_read_tokens": 600,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "tool_use"
+      },
+      "error": null
+    },
+    {
+      "kind": "tool",
+      "call_id": "call-1",
+      "name": "knowledge__search",
+      "args": {
+        "query": "paid leave"
+      },
+      "status": "succeeded",
+      "result": "{\"results\": [{\"id\": \"kb-leave\", \"title\": \"Leave policy\", \"text\": \"Full-time employees get 25 days of paid leave per calendar year.\"}]}",
+      "error": null,
+      "sources": []
+    },
+    {
+      "kind": "model",
+      "request": {
+        "message_count": 4,
+        "last_user": "How many days of paid leave do I get?",
+        "last_tool": "knowledge__search",
+        "last_tool_status": "succeeded",
+        "tools": [
+          "drive__read_file",
+          "drive__share_file",
+          "gmail__read_email",
+          "gmail__search_emails",
+          "gmail__send_email",
+          "internaltools__ask_user_question",
+          "jira__add_comment",
+          "jira__create_issue",
+          "jira__get_issue",
+          "jira__search_issues",
+          "knowledge__read_document",
+          "knowledge__search",
+          "knowledgegraph__fetch_record",
+          "retrieve_artifact_content",
+          "search_tools",
+          "slack__read_channel",
+          "slack__send_message",
+          "web__fetch_url"
+        ],
+        "digest": "5d06beb765ccc765"
+      },
+      "response": {
+        "text": "You get 25 days of paid leave per calendar year.",
+        "reasoning": "",
+        "tool_calls": [],
+        "usage": {
+          "input_tokens": 1000,
+          "output_tokens": 15,
+          "cache_read_tokens": 900,
+          "cache_write_tokens": 0
+        },
+        "stop_reason": "end_turn"
+      },
+      "error": null
+    }
+  ],
+  "effects": [],
+  "final": {
+    "answer": "You get 25 days of paid leave per calendar year.",
+    "status": "completed"
+  }
+}

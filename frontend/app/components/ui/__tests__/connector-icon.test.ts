@@ -21,6 +21,8 @@ describe('resolveConnectorType', () => {
     expect(resolveConnectorType('granola')).toBe('granola');
     expect(resolveConnectorType('fireflies')).toBe('fireflies');
     expect(resolveConnectorType('fathom')).toBe('fathom');
+    expect(resolveConnectorType('canva')).toBe('canva');
+    expect(resolveConnectorType('Canva MCP')).toBe('canva');
     expect(resolveConnectorType('instantly')).toBe('instantly');
     expect(resolveConnectorType('Instantly')).toBe('instantly');
   });

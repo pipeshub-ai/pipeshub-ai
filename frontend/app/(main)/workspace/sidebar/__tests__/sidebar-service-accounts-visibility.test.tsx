@@ -30,6 +30,10 @@ vi.mock('@/lib/store/feature-flags-store', () => ({
   selectMcpEnabled: (s: typeof flagsState) => s.flags?.ENABLE_MCP !== false,
   selectActionsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_ACTIONS !== false,
   selectSkillsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_SKILLS !== false,
+  selectScheduledRunsEnabled: () => false,
+  selectAgentHarnessOn: () => false,
+  selectAgentHarnessResumeEnabled: () => false,
+  selectEngineRunsEnabled: () => false,
 }));
 
 vi.mock('react-i18next', () => ({

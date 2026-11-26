@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import (
     Skill,
     SkillConflictError,
@@ -118,6 +119,14 @@ class BuiltinSkillSeeder:
             # else: already at the current pack version — nothing to do.
         return settled
 
+    @property
+    def packs(self) -> tuple[Skill, ...]:
+        return tuple(self._packs)
+
+    def seeded_files(self, skill: Skill) -> dict[str, str]:
+        """What a seeded copy holds: the content `GraphSkillStore.content_files` serves for it."""
+        return {**self._pack_resources(skill), "SKILL.md": render_skill_md(skill)}
+
     def _pack_resources(self, skill: Skill) -> dict[str, str]:
         """Pack file contents loaded once in `__init__` — `sync` must not
         re-read the tree on the event loop."""
@@ -131,6 +140,11 @@ class BuiltinSkillSeeder:
                 resources=self._pack_resources(skill),
             )
             logger.info("builtin_seeder: seeded %r (pack v%s)", skill.metadata.name, skill.metadata.pack_version)
+            return True
+        except RegistryError:
+            # One name per org (`{org}_{name}`, SLASH1 O2): a member's own skill keeps the name; the org goes without
+            # this builtin rather than failing its seed. Settled: retrying cannot change it.
+            logger.info("builtin_seeder: %r is taken by an org skill; builtin not seeded", skill.metadata.name)
             return True
         except Exception:
             logger.exception("builtin_seeder: failed to seed builtin skill %r", skill.metadata.name)

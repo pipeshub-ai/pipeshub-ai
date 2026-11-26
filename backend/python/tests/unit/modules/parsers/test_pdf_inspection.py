@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import io
-import time
 from unittest.mock import patch
 
 import pdfplumber
 import pytest
+from pdfminer.psparser import PSBaseParser
 from pypdfium2 import PdfiumError
 
 from app.exceptions.indexing_exceptions import PasswordProtectedError
@@ -370,10 +370,19 @@ class TestRepairPdf:
 
         repaired = repair_pdf(damaged)
 
-        started = time.monotonic()
-        with pdfplumber.open(io.BytesIO(repaired)) as pdf:
+        steps = 0
+        fillbuf = PSBaseParser.fillbuf
+
+        def counted(parser: PSBaseParser) -> bool:
+            nonlocal steps
+            steps += 1
+            return fillbuf(parser)
+
+        with patch.object(PSBaseParser, "fillbuf", counted), pdfplumber.open(io.BytesIO(repaired)) as pdf:
             assert len(pdf.pages) == 1
-        assert time.monotonic() - started < 1.0
+        # pdfminer's tokeniser checks its buffer once per step: about 180 for the repaired file, a million when it
+        # reads the 1 MiB stream from a wrong offset byte by byte.
+        assert steps < 10_000
 
     def test_trailing_garbage_is_dropped(self) -> None:
         damaged = garbage_tail_pdf(4 * MIB)

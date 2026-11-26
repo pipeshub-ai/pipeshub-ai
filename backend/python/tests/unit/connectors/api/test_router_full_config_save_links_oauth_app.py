@@ -44,8 +44,9 @@ class InMemoryConfigService:
         self.failing_paths = failing_paths
         self.values.setdefault("/services/endpoints", {"frontend": {"publicEndpoint": "https://pipeshub.example"}})
 
-    async def get_config(self, path: str, default: object = None, use_cache: bool = True) -> object:
-        del use_cache
+    async def get_config(self, path: str, default: object = None, use_cache: bool = True, *,
+                         raise_on_error: bool = False) -> object:
+        del use_cache, raise_on_error
         return copy.deepcopy(self.values.get(path, default))
 
     async def set_config(self, path: str, value: object) -> bool:
@@ -100,14 +101,15 @@ def _request(body: dict[str, Any], *, role: str = "admin", connector_type: str =
     return request
 
 
-def _instance(connector_type: str = "Drive") -> dict[str, Any]:
+def _instance(connector_type: str = "Drive", scope: str | None = None) -> dict[str, Any]:
     return {
         "_key": CONNECTOR_ID,
         "type": connector_type,
         "name": "My Drive",
         "isActive": False,
         "authType": "OAUTH",
-        "scope": "personal",
+        # ServiceNow is a team connector; Drive a personal one.
+        "scope": scope or ("team" if connector_type == "ServiceNow" else "personal"),
         "createdBy": USER_ID,
     }
 
@@ -119,13 +121,14 @@ async def _save(
     role: str = "admin",
     connector_type: str = "Drive",
     requests: list[MagicMock] | None = None,
+    scope: str | None = None,
 ) -> dict[str, Any]:
     request = _request(body, role=role, connector_type=connector_type)
     if requests is not None:
         requests.append(request)
     with (
         patch.object(
-            router_module, "get_validated_connector_instance", AsyncMock(return_value=_instance(connector_type))
+            router_module, "get_validated_connector_instance", AsyncMock(return_value=_instance(connector_type, scope))
         ),
         patch.object(router_module, "resolve_config_service", return_value=store),
     ):
@@ -242,7 +245,11 @@ class TestInlineCredentialsLinkAnOAuthApp:
         assert await _start_drive(store) is True
 
     async def test_a_name_already_taken_by_another_app_is_refused_as_on_the_other_saves(self) -> None:
-        other = {"_id": "other-app", "orgId": ORG_ID, "oauthInstanceName": "My Drive", "config": {"clientId": "x"}}
+        # Names are unique per owner: here another of this person's own apps.
+        other = {
+            "_id": "other-app", "orgId": ORG_ID, "oauthInstanceName": "My Drive", "config": {"clientId": "x"},
+            "ownerUserId": USER_ID,
+        }
         store = InMemoryConfigService(
             {CONFIG_PATH: {"auth": {"connectorScope": "personal"}}, OAUTH_APPS_PATH: [other]}
         )
@@ -301,14 +308,15 @@ class TestOtherSavesAreUnchanged:
         assert store.apps() == []
         assert "oauthConfigId" not in store.values[CONFIG_PATH]["auth"]
 
-    async def test_a_member_saving_credentials_creates_no_app(self) -> None:
-        # As on the other save paths, only an admin's credentials become an OAuth app.
+    async def test_a_member_saving_credentials_on_their_connector_makes_their_own_app(self) -> None:
+        # As on the other save paths: a person's client on their personal connector is their own app.
         store = InMemoryConfigService({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
 
         await _save(store, {"auth": {"clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET}}, role="member")
 
-        assert store.apps() == []
-        assert "oauthConfigId" not in store.values[CONFIG_PATH]["auth"]
+        [app] = store.apps()
+        assert app["ownerUserId"] == USER_ID
+        assert store.values[CONFIG_PATH]["auth"]["oauthConfigId"] == app["_id"]
 
     async def test_a_failed_app_write_fails_the_save_and_stores_nothing(self) -> None:
         store = InMemoryConfigService({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
@@ -332,7 +340,8 @@ class TestOtherSavesAreUnchanged:
         assert store.apps() == []
         assert store.values[CONFIG_PATH] == {"auth": {"connectorScope": "personal"}}
 
-    async def test_a_failed_connector_write_takes_back_the_new_app_and_fails_the_save(self) -> None:
+    async def test_a_failed_connector_write_keeps_the_new_app_says_so_and_fails_the_save(self) -> None:
+        # As on create: taking the app back could undo a concurrent edit (the store has no compare-and-set).
         store = InMemoryConfigService(
             {CONFIG_PATH: {"auth": {"connectorScope": "personal"}}}, failing_paths=(CONFIG_PATH,)
         )
@@ -341,7 +350,8 @@ class TestOtherSavesAreUnchanged:
             await _save(store, {"auth": {"clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET}})
 
         assert caught.value.status_code == 500
-        assert store.apps() == []
+        assert "pick that app when you try again" in caught.value.detail
+        assert len(store.apps()) == 1
         assert store.values[CONFIG_PATH] == {"auth": {"connectorScope": "personal"}}
 
 
@@ -407,7 +417,7 @@ class TestALinkedConnectorSavedAgainBehavesAsOnTheAuthOnlySave:
     async def test_a_new_secret_without_naming_the_app_links_a_new_app_and_leaves_the_old_one(self) -> None:
         store = _linked_store()
 
-        await _save(store, {"auth": {"clientSecret": "new-secret"}})
+        await _save(store, {"auth": {"clientSecret": "new-secret"}}, scope="team")
 
         apps = {app["_id"]: app for app in store.apps()}
         assert apps.pop("app-1") == SHARED_APP
@@ -423,7 +433,7 @@ class TestALinkedConnectorSavedAgainBehavesAsOnTheAuthOnlySave:
     async def test_a_new_secret_for_the_app_the_request_names_updates_that_app(self) -> None:
         store = _linked_store()
 
-        await _save(store, {"auth": {"oauthConfigId": "app-1", "clientSecret": "new-secret"}})
+        await _save(store, {"auth": {"oauthConfigId": "app-1", "clientSecret": "new-secret"}}, scope="team")
 
         assert len(store.apps()) == 1
         assert store.apps()[0]["config"] == {"clientId": "app-client", "clientSecret": "new-secret"}
@@ -607,7 +617,7 @@ class TestTheConnectorAndItsAppAgree:
     async def test_a_new_secret_takes_the_client_id_from_the_app_not_an_older_copy(self) -> None:
         store = _linked_store(clientId=CLIENT_ID)  # an older client ID still stored inline
 
-        await _save(store, {"auth": {"clientSecret": "new-secret"}})
+        await _save(store, {"auth": {"clientSecret": "new-secret"}}, scope="team")
 
         apps = {app["_id"]: app for app in store.apps()}
         assert apps.pop("app-1") == SHARED_APP
@@ -619,7 +629,8 @@ class TestTheConnectorAndItsAppAgree:
         store = _linked_store(clientId=CLIENT_ID)
 
         await _save(
-            store, {"auth": {"oauthConfigId": "app-1", "clientId": CLIENT_ID, "clientSecret": "new-secret"}}
+            store, {"auth": {"oauthConfigId": "app-1", "clientId": CLIENT_ID, "clientSecret": "new-secret"}},
+            scope="team",
         )
 
         assert store.apps()[0]["config"] == {"clientId": "app-client", "clientSecret": "new-secret"}

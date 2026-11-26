@@ -13,4 +13,6 @@ export interface ICrawlingTaskService {
 export interface CrawlingResult {
   success: boolean;
   error?: string;
+  /** Not attempted, and why (a snake_case reason): the worker's crawling_job.end says `outcome=skipped`. */
+  skipped?: 'desktop_offline';
 }

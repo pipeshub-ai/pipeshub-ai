@@ -6,7 +6,11 @@ import httpx
 import pytest
 
 from app.agents.mcp.models import OAuthTokens
-from app.agents.mcp.oauth_client import MCPOAuthError, refresh_access_token
+from app.agents.mcp.oauth_client import (
+    MCPMalformedTokenError,
+    MCPOAuthError,
+    refresh_access_token,
+)
 from app.agents.openapi import auth as auth_module
 from app.agents.openapi.auth import (
     ApiToolsetAuthError,
@@ -190,6 +194,16 @@ class TestOAuth:
         with pytest.raises(ApiToolsetAuthError) as raised:
             await source.access_token()
         assert "abc" not in str(raised.value)
+
+    @pytest.mark.parametrize("scheme", [CLIENT_CREDENTIALS, AUTH_CODE], ids=["client_credentials", "refresh"])
+    async def test_a_malformed_token_answer_asks_to_check_the_oauth_settings(
+        self, endpoint: _FakeTokenEndpoint, scheme: AuthScheme,
+    ) -> None:
+        endpoint.error = MCPMalformedTokenError("expires_in")  # what the token client raises for such an answer
+        creds = ApiToolsetCredentials(client_id="c", oauth=_tokens("old", expires_in=10, age=100, refresh="r1"))
+        source = OAuthTokenSource(scheme, creds, token_url="https://a/t", allow_private=False)
+        with pytest.raises(ApiToolsetAuthError, match="Check the API action's OAuth settings"):
+            await source.access_token()
 
 
 PROVIDER_DOWN = (

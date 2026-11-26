@@ -30,6 +30,11 @@ from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
+from app.agents.agent_loop.connected_sources import (
+    MCP_PARENT,
+    SOURCES_STATE_KEY,
+    group_description,
+)
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from tests.unit.agents.adapter.test_prompt_builder import FakeTool
@@ -317,6 +322,23 @@ _FIXTURES: dict[str, dict[str, Any]] = {
         },
         "tool_names": [*sorted(_KNOWLEDGE_ESSENTIAL_TOOLS), *_CALCULATOR_TOOLS],
     },
+    # The default chat with an attached MCP server (R36LIVE-FU-2): lazy
+    # disclosure, the server's group under `mcp` described by its tools, and
+    # its name recorded as the MCP loaders record it.
+    "lazy_with_attached_server": {
+        "agent_knowledge": [_mk_kb("Private KB", KB_ID)],
+        "has_knowledge": True,
+        "available_connectors": [],
+        "tool_disclosure": "lazy",
+        "pinned_toolsets": ["knowledgegraph"],
+        "registry_toolsets": {"knowledgegraph": sorted(_KNOWLEDGE_ESSENTIAL_TOOLS)},
+        "mcp_servers": {
+            "mcp_e2esaas": ("e2esaas", "Tools: create ticket, lookup note.",
+                            ["mcp_e2esaas_create_ticket", "mcp_e2esaas_lookup_note"]),
+            "mcp_tracker": ("Tracker", "", []),
+        },
+        "tool_names": [*sorted(_KNOWLEDGE_ESSENTIAL_TOOLS), "search_tools", "fetch_tools", "call_tool"],
+    },
     # Full-record escalation granted — the one fixture where "## Reading
     # Records in Full" is expected to render.
     "kb_with_full_record": {
@@ -372,6 +394,12 @@ def _build_registry_for_fixture(fx: dict[str, Any]) -> ToolRegistry:
         for name in names:
             registry.register_tool(FakeTool(name, description=f"Fake {name} tool."))
         registry.register_toolset(group_name, f"{group_name} toolset", list(names))
+    for group_name, (label, summary, names) in (fx.get("mcp_servers") or {}).items():
+        for name in names:
+            registry.register_tool(FakeTool(name, description=f"Fake {name} tool."))
+        registry.register_toolset(group_name, group_description(label, summary), list(names), parent=MCP_PARENT)
+    if fx.get("mcp_servers"):
+        registry.register_toolset(MCP_PARENT, "Attached MCP servers.", [])
     return registry
 
 
@@ -389,6 +417,8 @@ def build_prompt_for_fixture(fixture_name: str) -> str:
             "agent_toolsets": fx.get("agent_toolsets") or [],
         }
     )
+    for group_name, (label, summary, _names) in (fx.get("mcp_servers") or {}).items():
+        context.tool_state.setdefault(SOURCES_STATE_KEY, {})[group_name] = {"name": label, "summary": summary}
     if fx.get("bound_tool_names"):
         from app.agents.agent_loop.prompt_builder import BOUND_TOOL_NAMES_KEY
 
@@ -442,7 +472,7 @@ _FIXTURES_WITH_XREFS = ["kb_plus_service_tools"]
 _FIXTURES_WITH_TOOL_REFS = [
     "kb_only", "kb_plus_3_apps", "duplicate_apps", "kb_plus_service_tools", "web_search_mode",
     "run_code_no_web", "service_only", "lazy_with_pinned", "kb_with_full_record",
-    "kb_with_calculator", "lazy_with_calculator",
+    "kb_with_calculator", "lazy_with_calculator", "lazy_with_attached_server",
 ]
 _ALL_FIXTURES = list(_FIXTURES.keys())
 
@@ -604,7 +634,7 @@ def test_golden_snapshot_kb_plus_service_tools() -> None:
 def test_invariant_pinned_toolset_tools_listed_under_available_tools() -> None:
     """A toolset named in `spec.pinned_toolsets` is bound at turn 0 —
     its tools must render under "Available Tools", never under the
-    "Tools you must load before calling" block, regardless of it also
+    "Tools outside your tool list" block, regardless of it also
     belonging to a registered toolset group (the Part 0a false-instruction
     bug: claiming a preloaded tool's schema "is NOT loaded")."""
     prompt = build_prompt_for_fixture("lazy_with_pinned")
@@ -621,8 +651,8 @@ def test_invariant_non_pinned_toolset_not_listed_under_available_tools() -> None
 
 def test_invariant_non_pinned_toolset_under_load_first_block() -> None:
     prompt = build_prompt_for_fixture("lazy_with_pinned")
-    assert "Tools you must load before calling" in prompt
-    load_first_section = prompt.split("Tools you must load before calling", 1)[1]
+    assert "Tools outside your tool list" in prompt
+    load_first_section = prompt.split("Tools outside your tool list", 1)[1]
     assert "`jira`" in load_first_section
 
 
@@ -630,14 +660,14 @@ def test_invariant_load_first_block_asks_search_tools_for_capability_keywords() 
     """`search_tools` scores by query-token overlap, so the user's question
     passed as the query buries the tool that would answer it."""
     prompt = build_prompt_for_fixture("lazy_with_pinned")
-    load_first_section = prompt.split("Tools you must load before calling", 1)[1]
+    load_first_section = prompt.split("Tools outside your tool list", 1)[1]
     assert "capability keywords" in load_first_section
     assert "never the user's question" in load_first_section
 
 
 def test_invariant_pinned_toolset_group_name_not_in_load_first_block() -> None:
     prompt = build_prompt_for_fixture("lazy_with_pinned")
-    load_first_section = prompt.split("Tools you must load before calling", 1)[1]
+    load_first_section = prompt.split("Tools outside your tool list", 1)[1]
     assert "`knowledgegraph`" not in load_first_section
 
 
@@ -650,15 +680,15 @@ def test_invariant_bound_toolset_tools_listed_like_pinned() -> None:
     available_section = prompt.split("## Available Tools", 1)[1].split("\n## ", 1)[0]
     assert "codegraph__read_code" in available_section
     assert "codegraph__get_neighbour" in available_section
-    assert "Tools you must load before calling" in prompt
-    load_first = prompt.split("Tools you must load before calling", 1)[1]
+    assert "Tools outside your tool list" in prompt
+    load_first = prompt.split("Tools outside your tool list", 1)[1]
     assert "`codegraph`" not in load_first
     assert "`jira`" in load_first  # still lazy
 
 
 def test_invariant_unbound_codegraph_still_under_load_first() -> None:
     prompt = build_prompt_for_fixture("lazy_with_pinned_and_codegraph")
-    load_first = prompt.split("Tools you must load before calling", 1)[1]
+    load_first = prompt.split("Tools outside your tool list", 1)[1]
     assert "`codegraph`" in load_first
     available_section = prompt.split("## Available Tools", 1)[1].split("\n## ", 1)[0]
     assert "codegraph__read_code" not in available_section
@@ -770,4 +800,4 @@ def test_invariant_lazy_calculator_named_by_its_toolset() -> None:
     section = prompt.split("## Exact Numbers", 1)[1].split("\n## ", 1)[0]
     assert 'fetch_tools("calculator")' in section
     assert all(name not in prompt for name in _CALCULATOR_TOOLS)
-    assert "`calculator`" in prompt.split("Tools you must load before calling", 1)[1]
+    assert "`calculator`" in prompt.split("Tools outside your tool list", 1)[1]

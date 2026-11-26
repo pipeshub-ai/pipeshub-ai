@@ -2,13 +2,14 @@
 organisation and connector reads reach across organisations only through their vetted functions."""
 import json
 import re
+import time
 
 import psycopg
 import pytest
 
 from db import vetted_harness
 
-from .test_integration import connect
+from .test_integration import connect, run_doctor
 
 A, B = "a" * 24, "b" * 24
 NODE = "INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES (%s, %s, %s, %s::jsonb)"
@@ -862,6 +863,7 @@ KG_LOOKUPS = {
     "person_by_source_key": ("(%s)", ("c1:u1",)),
     "principals_by_email": ("(%s::text[], %s::text[])", (["users", "groups", "person"], ["ann@x.com"])),
     "people_by_name": ("(%s, %s)", ("ann", 10)),
+    "records_by_name": ("(%s, %s, %s)", ("c1", "%zed%", 10)),
 }
 
 
@@ -881,7 +883,10 @@ BAD_KG = [
     ("person_by_source_key", "(%s)", a) for a in ((None,), ("",), ("k" * 401,))] + [
     ("principals_by_email", "(%s::text[], %s::text[])", a) for a in ((None, ["a"]), (["users"], None), ([None], ["a"]), (["other"], ["a"]), (["users"] * 4, ["a"]), (["users"], [None]),
                                                                   (["users"], [""]), (["users"], ["e" * 1001]), (["users"], ["e"] * 1001))] + [
-    ("people_by_name", "(%s, %s)", a) for a in ((None, 10), ("", 10), ("n" * 401, 10), ("n", 0), ("n", 1001), ("n", None))]
+    ("people_by_name", "(%s, %s)", a) for a in ((None, 10), ("", 10), ("n" * 401, 10), ("n", 0), ("n", 1001), ("n", None))] + [
+    ("records_by_name", "(%s, %s, %s)", a) for a in ((None, "%abc%", 1), ("", "%abc%", 1), ("c" * 201, "%abc%", 1), ("c", None, 1), ("c", "%ab%", 1), ("c", "%a%b%c%", 1),
+                                                     ("c", "%Abc%", 1), ("c", "%item%", 1), ("c", "%kel%", 1), ("c", "%a_c%", 1), ("c", "%a\\%", 1), ("c", "abc%", 1), ("c", "%abc", 1),
+                                                     ("c", "%%abc%", 1), ("c", "%" + "a" * 2000 + "%", 1), ("c", "%abc%", 0), ("c", "%abc%", 100001), ("c", "%abc%", None))]
 
 
 @pytest.mark.parametrize(("fn", "marks", "args"), BAD_KG, ids=[f"{f}-{i}" for i, (f, _, _) in enumerate(BAD_KG)])
@@ -1573,3 +1578,527 @@ def test_the_address_and_site_lookups_read_their_keys_where_the_plain_statements
         as_role(c, "pipeshub_connectors", A)
         assert sorted(r[0] for r in c.execute(AT, (["https://w/p7"],))) == ["r6007", "r7"]
         assert [r[0] for r in c.execute(SITES, (A, ["JIRA", "JIRA DATA CENTER"], None))] == [f"https://s{i}.atlassian.net" for i in range(3)]
+
+
+# ---- indexes built and dropped outside the upgrade's transaction (db.migrate's online step) ------------------------------------------------
+ONLINE = ("nodes_record_ticket_url", "nodes_record_pending_vrid", "nodes_record_weburl", "nodes_record_ticket_site", "nodes_block_record_seek",
+          "nodes_block_name_seek", "nodes_codefile_path_seek", "nodes_record_refresh_intent", "nodes_record_name_trgm")
+RETIRED = ("nodes_block_record", "nodes_block_name")
+_DDL = re.compile(r"^(CREATE (UNIQUE )?INDEX|DROP INDEX|ALTER INDEX|REINDEX)\b", re.I)
+
+
+def _populate(c, n: int = 3000) -> str:
+    """Rows every online index of graph_0014..0020 holds; returns the leaf they are in."""
+    as_role(c, "pipeshub_connectors", A)
+    c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'recordType', 'TICKET', "
+              "'webUrl', 'https://s.atlassian.net/browse/K-' || i, 'pendingVirtualRecordId', 'v' || i, 'refreshIntentId', 'ri' || i) "
+              "FROM generate_series(1, %s) i", (A, A, n))
+    c.execute("INSERT INTO graph.nodes SELECT %s, 'blocks', 'b' || i, jsonb_build_object('orgId', %s::text, 'recordId', 'r' || i, 'connectorId', 'c1', "
+              "'nameFolded', 'n' || i) FROM generate_series(1, %s) i", (A, A, n))
+    c.execute("INSERT INTO graph.nodes SELECT %s, 'codeFiles', 'f' || i, jsonb_build_object('orgId', %s::text, 'filePath', 'src/p' || i || '.py') "
+              "FROM generate_series(1, %s) i", (A, A, n))
+    c.execute("RESET ROLE")
+    return c.execute("SELECT DISTINCT tableoid::regclass::text FROM graph.nodes WHERE org_id = %s", (A,)).fetchone()[0]
+
+
+def _whole_and_valid(c, index: str) -> bool:
+    """An index on every table of graph.nodes' tree, the root included, and every one valid."""
+    n, ok = c.execute("SELECT count(*), bool_and(i.indisvalid) FROM pg_partition_tree(%s::regclass) t JOIN pg_index i ON i.indexrelid = t.relid",
+                      (f"graph.{index}",)).fetchone()
+    return ok is True and n == c.execute("SELECT count(*) FROM pg_partition_tree('graph.nodes')").fetchone()[0]
+
+
+def _exists(c, index: str) -> bool:
+    return c.execute("SELECT to_regclass(%s) IS NOT NULL", (f"graph.{index}",)).fetchone()[0]
+
+
+def _left_of(c, indexes) -> list[str]:
+    """Every index in schema graph named for one of these: the parent, an intermediate one (nodes_def_<name>) or a leaf's (<leaf>_nodes_def_<name>)."""
+    return [r[0] for r in c.execute("SELECT relname FROM pg_class WHERE relnamespace = 'graph'::regnamespace AND relkind IN ('i', 'I') "
+                                    "AND (relname = ANY(%s) OR relname LIKE ANY(%s))", (list(indexes), [f"%\\_{i}" for i in indexes]))]
+
+
+def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_drops_none(db, monkeypatch, capsys):
+    """From graph_0013 on a populated graph: every index of graph_0014..0022 is built before the upgrade's transaction, concurrently on the leaf
+    that holds rows; the indexes graph_0020 retires go after the commit; the transaction itself runs no index statement at all (one there would
+    keep the writers, or for a drop every reader, of graph.nodes waiting until the commit)."""
+    from sqlalchemy import Engine, event
+
+    from db import migrate
+
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    r = run_migrate(url, "downgrade", "graph_0013", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    with connect(cluster, name) as c:
+        leaf = _populate(c).split(".")[1]
+        assert not any(_exists(c, i) for i in ONLINE) and all(_exists(c, i) for i in RETIRED)
+    seen: list[tuple[bool, str]] = []
+
+    def spy(conn, _cursor, statement, *_):
+        seen.append((conn.connection.driver_connection.autocommit, " ".join(statement.split())))
+    monkeypatch.setenv("PG_MIGRATE_URL", url)
+    monkeypatch.setenv("PG_MIGRATE_RETRY_BASE_S", "0.1")
+    event.listen(Engine, "before_cursor_execute", spy)
+    try:
+        code = migrate.main(["upgrade"])
+    finally:
+        event.remove(Engine, "before_cursor_execute", spy)
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert [s for auto, s in seen if not auto and _DDL.match(s)] == []
+    online = [s for auto, s in seen if auto and _DDL.match(s)]
+    for index in ONLINE:
+        assert any(re.match(rf"CREATE INDEX CONCURRENTLY {leaf}_\w*_{index} ON graph\.{leaf} ", s) for s in online), (index, online)
+        assert f"index graph.{index}: built in" in out
+    for index in RETIRED:
+        assert f"DROP INDEX IF EXISTS graph.{index}" in online
+    with connect(cluster, name) as c:
+        assert all(_whole_and_valid(c, i) for i in ONLINE)
+        assert not any(_exists(c, i) for i in RETIRED) and _whole_and_valid(c, "nodes_codefile_path")
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (22, 0)
+
+
+def test_an_online_build_a_stopped_run_left_invalid_is_rebuilt(db):
+    """A run stopped during CREATE INDEX CONCURRENTLY leaves the parent index invalid (ON ONLY, not every leaf attached) and the leaf's index
+    invalid. The next run drops the invalid leaf index, builds it again and attaches it; the catalog checks, which refuse an invalid index, pass."""
+    import runpy
+    from pathlib import Path
+
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    r = run_migrate(url, "downgrade", "graph_0014", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    ix = runpy.run_path(str(Path(__file__).parents[1] / "versions" / "graph" / "0015_pending_virtual_record_index.py"))["ONLINE_INDEXES"][0]
+    with connect(cluster, name) as c:
+        leaf = _populate(c)
+        c.execute(f"CREATE INDEX {ix['name']} ON ONLY {ix['table']} ({ix['cols']}) WHERE {ix['where']}")
+        parent = c.execute("SELECT inhparent::regclass::text FROM pg_inherits WHERE inhrelid = %s::regclass", (leaf,)).fetchone()[0]
+        stub = ix["name"] if parent == "graph.nodes" else f"{parent.split('.')[1]}_{ix['name']}"       # ddl names a leaf's index after its tree path
+        if parent != "graph.nodes":
+            c.execute(f"CREATE INDEX {stub} ON ONLY {parent} ({ix['cols']}) WHERE {ix['where']}")
+        stub = f"{leaf.split('.')[1]}_{stub}"
+        with pytest.raises(psycopg.errors.UniqueViolation):          # a concurrent build that failed half way: left behind, invalid
+            c.execute(f"CREATE UNIQUE INDEX CONCURRENTLY {stub} ON {leaf} (org_id)")
+        assert c.execute("SELECT indisvalid FROM pg_index WHERE indexrelid = %s::regclass", (f"graph.{stub}",)).fetchone()[0] is False
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"index graph.{ix['name']}: built in" in r.stdout
+    with connect(cluster, name) as c:
+        assert _whole_and_valid(c, ix["name"])
+        assert "pendingVirtualRecordId" in c.execute("SELECT pg_get_indexdef(%s::regclass)", (f"graph.{stub}",)).fetchone()[0]
+
+
+def test_the_indexes_built_for_an_upgrade_that_did_not_commit_are_dropped(db, tmp_path):
+    """The upgrade's checks refuse it (exit 4), so its revisions roll back: the indexes the online step built for them are dropped as well, and the
+    build the database was on runs against it unchanged."""
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    assert run_migrate(url, "downgrade", "graph_0013", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    with connect(cluster, name) as c:
+        _populate(c)
+    extra = tmp_path / "surface.extra.txt"
+    extra.write_text("index graph.nodes_never on graph.nodes unique=false exclusion=false valid=true def=0\n")
+    r = run_migrate(url, PG_MIGRATE_SURFACE_FILES=str(extra))
+    assert r.returncode == 4, r.stdout + r.stderr
+    for index in ONLINE:
+        assert f"index graph.{index}: built in" in r.stdout and f"index graph.{index}: dropped (the upgrade did not commit)" in r.stdout
+    with connect(cluster, name) as c:
+        assert not any(_exists(c, i) for i in ONLINE) and all(_whole_and_valid(c, i) for i in RETIRED)
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == 13
+        assert _left_of(c, ONLINE) == []
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize("outcome", ["committed", "unknown"])
+def test_an_upgrade_that_raised_keeps_its_indexes_unless_it_did_not_commit(db, monkeypatch, capsys, outcome):
+    """An error can reach db.migrate after the server committed (the reply to COMMIT lost with the connection). The revisions then own the
+    indexes the online step built: dropped, they would be missing from a schema whose next run has nothing pending and builds none (exit 4 on
+    the surface). They are dropped only when the upgrade's session has ended without moving the epochs (the test above); when that cannot be
+    told (the session is still there), they stay and the next run finds them valid."""
+    from db import migrate
+
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    assert run_migrate(url, "downgrade", "graph_0013", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    with connect(cluster, name) as c:
+        _populate(c)
+    real = migrate._upgrade_with_retries
+    with connect(cluster, name) as other:                           # a session that is still there: the upgrade's, as far as it can tell
+
+        def reply_lost(cfg, target):
+            if outcome == "committed":
+                real(cfg, target)
+            else:
+                cfg.attributes["upgrade_pid"] = other.info.backend_pid
+            raise psycopg.OperationalError("server closed the connection unexpectedly")
+        monkeypatch.setattr(migrate, "_upgrade_with_retries", reply_lost)
+        monkeypatch.setattr(migrate, "OUTCOME_WAIT_S", 1.0)
+        monkeypatch.setenv("PG_MIGRATE_URL", url)
+        code = migrate.main(["upgrade"])
+    out = capsys.readouterr().out
+    assert code == 1 and "dropped (the upgrade did not commit)" not in out, out
+    assert ("committed although it raised" if outcome == "committed" else "could not tell whether the upgrade committed") in out, out
+    with connect(cluster, name) as c:
+        assert all(_whole_and_valid(c, i) for i in ONLINE)
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == (22 if outcome == "committed" else 13)
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout + r.stderr
+    with connect(cluster, name) as c:
+        assert all(_whole_and_valid(c, i) for i in ONLINE) and not any(_exists(c, i) for i in RETIRED)
+
+
+def test_a_retired_index_goes_after_the_commit_and_a_drop_that_had_to_wait_is_done_by_the_next_run(db):
+    """graph_0020 retires two graph_0001 indexes: a new install ends without them, a downgrade brings them back as graph_0001 made them, and an
+    upgrade whose drop waits on a reader still commits (exit 0, a warning); the next run drops them. No min_code_epoch: nothing reads them, so a
+    rollback to an earlier build keeps working."""
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    with connect(cluster, name) as c:
+        assert not any(_exists(c, i) for i in RETIRED) and _whole_and_valid(c, "nodes_codefile_path")
+    r = run_migrate(url, "downgrade", "graph_0019", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    with connect(cluster, name) as c:
+        assert all(_whole_and_valid(c, i) for i in RETIRED)
+        _populate(c, 200)
+    with connect(cluster, name) as holder:
+        holder.execute("BEGIN")
+        holder.execute("SELECT count(*) FROM graph.nodes")          # a reader's lock, held: a DROP INDEX on graph.nodes waits for it
+        r = run_migrate(url, timeout=180)
+        holder.execute("ROLLBACK")
+    assert r.returncode == 0, r.stdout + r.stderr
+    for index in RETIRED:
+        assert f"WARNING index graph.{index} was not dropped" in r.stdout, r.stdout
+    with connect(cluster, name) as c:
+        assert all(_exists(c, i) for i in RETIRED)
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (22, 0)
+    r = run_doctor(url)                                                 # the health check accepts them as the migrate run did
+    assert r.returncode == 0 and "doctor: healthy" in r.stdout, r.stdout
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout + r.stderr
+    for index in RETIRED:
+        assert f"index graph.{index}: dropped (retired by a revision)" in r.stdout
+    with connect(cluster, name) as c:
+        assert not any(_exists(c, i) for i in RETIRED)
+    r = run_migrate(url)                                                # the surface without them is the expected one
+    assert r.returncode == 0 and "dropped" not in r.stdout, r.stdout + r.stderr
+
+
+def test_a_build_that_failed_half_way_down_the_tree_is_dropped_whole(db):
+    """graph.nodes is LIST-partitioned with a HASH-partitioned default (nodes_def), so a build makes an intermediate partitioned index,
+    nodes_def_<name>, and the leaves' <leaf>_nodes_def_<name>. A build that fails on one leaf (its index is there with another definition, so ATTACH
+    refuses it) leaves the parent and nodes_def_<name> invalid and unattached and the leaves before it attached: all of them are dropped, the
+    intermediate one by a plain DROP INDEX (a partitioned index cannot be dropped CONCURRENTLY), so the build the database was on still starts."""
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    assert run_migrate(url, "downgrade", "graph_0014", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    with connect(cluster, name) as c:
+        leaf = _populate(c)
+        parent = c.execute("SELECT inhparent::regclass::text FROM pg_inherits WHERE inhrelid = %s::regclass", (leaf,)).fetchone()[0]
+        assert parent == "graph.nodes_def"
+        c.execute(f"CREATE INDEX {leaf.split('.')[1]}_nodes_def_nodes_record_pending_vrid ON {leaf} (org_id)")      # valid, not this definition
+    r = run_migrate(url)
+    assert r.returncode == 1 and "index graph.nodes_record_pending_vrid: dropped (the upgrade did not commit)" in r.stdout, r.stdout + r.stderr
+    assert "WARNING" not in r.stdout, r.stdout
+    with connect(cluster, name) as c:
+        assert _left_of(c, ["nodes_record_pending_vrid"]) == []
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == 14
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_an_online_build_never_runs_a_plain_build_on_a_leaf_that_holds_rows(db):
+    """An empty leaf gets a plain build (instant, and it waits for no snapshot). A row written after the first look must not get one: the
+    emptiness is checked again under the leaf's SHARE lock, held through the build, and a leaf that holds rows by then is built CONCURRENTLY."""
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.pool import NullPool
+
+    from db.lib import ddl
+    cluster, name = db
+    with connect(cluster, name) as c:
+        c.execute("CREATE TABLE public.rt (k int) PARTITION BY LIST (k)")
+        c.execute("CREATE TABLE public.rt_1 PARTITION OF public.rt FOR VALUES IN (1)")
+    engine = create_engine(f"postgresql+psycopg://postgres@127.0.0.1:{cluster.port}/{name}", poolclass=NullPool, isolation_level="AUTOCOMMIT")
+    seen: list[str] = []
+
+    def spy(_conn, _cursor, statement, *_):
+        seen.append(" ".join(statement.split()))
+        if seen[-1].startswith("SELECT pg_relation_size") and sum(x.startswith("SELECT pg_relation_size") for x in seen) == 1:
+            with connect(cluster, name) as w:                  # a writer fills the leaf right after the first look
+                w.execute("INSERT INTO public.rt SELECT 1 FROM generate_series(1, 1000)")
+    event.listen(engine, "after_cursor_execute", spy)
+    try:
+        with engine.connect() as c:
+            ddl.ensure_partitioned_index(c, "public.rt", "rt_k", "k", blocking=False)
+    finally:
+        engine.dispose()
+    assert not any(re.match(r"CREATE INDEX IF NOT EXISTS rt_1_rt_k ON (public\.)?rt_1 ", s) for s in seen), seen
+    assert any(re.match(r"CREATE INDEX CONCURRENTLY rt_1_rt_k ON (public\.)?rt_1 ", s) for s in seen), seen
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT bool_and(i.indisvalid) FROM pg_partition_tree('public.rt_k') t JOIN pg_index i ON i.indexrelid = t.relid").fetchone()[0]
+
+
+def test_an_invalid_index_on_an_empty_leaf_is_rebuilt_not_kept(db):
+    """A stopped CONCURRENTLY build leaves the leaf's index invalid; the leaf may be empty (zero bytes) by the next run. The plain build of an empty
+    leaf would find the name taken and keep the invalid index: it is dropped and built again instead, and the tree ends valid."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import NullPool
+
+    from db.lib import ddl
+    cluster, name = db
+    with connect(cluster, name) as c:
+        c.execute("CREATE TABLE public.rt (k int) PARTITION BY LIST (k)")
+        c.execute("CREATE TABLE public.rt_1 PARTITION OF public.rt FOR VALUES IN (1)")
+        c.execute("INSERT INTO public.rt VALUES (1), (1)")
+        with pytest.raises(psycopg.errors.UniqueViolation):          # a concurrent build that failed: left behind, invalid
+            c.execute("CREATE UNIQUE INDEX CONCURRENTLY rt_1_rt_k ON public.rt_1 (k)")
+        c.execute("TRUNCATE public.rt_1")
+        assert c.execute("SELECT pg_relation_size('public.rt_1'), indisvalid FROM pg_index WHERE indexrelid = 'public.rt_1_rt_k'::regclass").fetchone() == (0, False)
+    engine = create_engine(f"postgresql+psycopg://postgres@127.0.0.1:{cluster.port}/{name}", poolclass=NullPool, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as c:
+            ddl.ensure_partitioned_index(c, "public.rt", "rt_k", "k", blocking=False)
+    finally:
+        engine.dispose()
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT count(*), bool_and(i.indisvalid), bool_and(NOT i.indisunique) FROM pg_partition_tree('public.rt_k') t "
+                         "JOIN pg_index i ON i.indexrelid = t.relid").fetchone() == (2, True, True)
+
+
+def test_an_online_build_analyzes_a_table_that_got_an_expression_index(db):
+    """The planner has no statistics for an index's expression until the table is analyzed (autovacuum may not get to it for long): the online
+    step analyzes a table once it has built an index with an expression key on it, and leaves a table with only plain-column indexes alone."""
+    from types import SimpleNamespace
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import NullPool
+
+    from db import migrate
+    cluster, name = db
+    with connect(cluster, name) as c:
+        c.execute("CREATE TABLE public.rt (k int) PARTITION BY LIST (k)")
+        c.execute("CREATE TABLE public.rt_1 PARTITION OF public.rt FOR VALUES IN (1) WITH (autovacuum_enabled = off)")
+        c.execute("INSERT INTO public.rt SELECT 1 FROM generate_series(1, 1000)")
+    stats = "SELECT count(*) FROM pg_statistic WHERE starelid = %s::regclass"
+    engine = create_engine(f"postgresql+psycopg://postgres@127.0.0.1:{cluster.port}/{name}", poolclass=NullPool, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as c:
+            migrate._build_online(c, [SimpleNamespace(ONLINE_INDEXES=[{"table": "public.rt", "name": "rt_k", "cols": "k"}])], [])
+        with connect(cluster, name) as c:
+            assert c.execute(stats, ("public.rt_1",)).fetchone()[0] == 0
+        with engine.connect() as c:
+            migrate._build_online(c, [SimpleNamespace(ONLINE_INDEXES=[{"table": "public.rt", "name": "rt_k1", "cols": "(k + 1)"}])], [])
+    finally:
+        engine.dispose()
+    with connect(cluster, name) as c:
+        assert c.execute(stats, ("public.rt_1_rt_k1",)).fetchone()[0] == 1          # the leaf index's expression column
+        assert c.execute(stats, ("public.rt_1",)).fetchone()[0] == 1
+        # what is an expression is read from the catalog, not from the text of the key: a plain column whose name holds a parenthesis is
+        # not one, so the table is not analyzed for it
+        c.execute('CREATE TABLE public.pt (k int, "a(b)" int) PARTITION BY LIST (k)')
+        c.execute("CREATE TABLE public.pt_1 PARTITION OF public.pt FOR VALUES IN (1) WITH (autovacuum_enabled = off)")
+        c.execute('INSERT INTO public.pt SELECT 1, 1 FROM generate_series(1, 1000)')
+    engine = create_engine(f"postgresql+psycopg://postgres@127.0.0.1:{cluster.port}/{name}", poolclass=NullPool, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as c:
+            migrate._build_online(c, [SimpleNamespace(ONLINE_INDEXES=[{"table": "public.pt", "name": "pt_ab", "cols": '"a(b)"'}])], [])
+    finally:
+        engine.dispose()
+    with connect(cluster, name) as c:
+        assert c.execute(stats, ("public.pt_1",)).fetchone()[0] == 0
+
+
+def test_a_long_online_build_logs_its_progress(db, monkeypatch, capsys):
+    """A concurrent build waits for the writers of its leaf and then reads it whole: while it runs, the step logs its phase and blocks every
+    PROGRESS_EVERY_S, read by the migrate login (the owner role, which the build runs as, is not shown another session's progress)."""
+    import runpy
+    import threading
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from db import migrate
+
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    assert run_migrate(url, "downgrade", "graph_0014", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    ix = runpy.run_path(str(Path(__file__).parents[1] / "versions" / "graph" / "0015_pending_virtual_record_index.py"))["ONLINE_INDEXES"][0]
+    with connect(cluster, name) as c:
+        leaf = _populate(c)
+    monkeypatch.setattr(migrate, "PROGRESS_EVERY_S", 0.2)
+    writer = psycopg.connect(host="127.0.0.1", port=cluster.port, user="postgres", dbname=name)       # an open write on the leaf
+    writer.execute(f"INSERT INTO {leaf} VALUES (%s, 'records', 'held', '{{}}'::jsonb)", (A,))
+    engine, failed = migrate._online(url, None), []
+
+    def build():
+        try:
+            with engine.connect() as c:
+                migrate._build_online(c, [SimpleNamespace(ONLINE_INDEXES=[ix])], [])
+        except Exception as exc:  # reported by the assertion below
+            failed.append(exc)
+    t = threading.Thread(target=build)
+    t.start()
+    try:
+        with connect(cluster, name) as c:
+            for _ in range(300):
+                if c.execute("SELECT count(*) FROM pg_stat_progress_create_index WHERE phase = 'waiting for writers before build'").fetchone()[0]:
+                    break
+                time.sleep(0.1)
+            else:
+                pytest.fail("the build never waited for the writer")
+        time.sleep(1)
+    finally:
+        writer.rollback()
+        writer.close()
+        t.join(60)
+        engine.dispose()
+    assert not failed and not t.is_alive(), failed
+    out = capsys.readouterr().out
+    assert re.search(rf"index graph\.{ix['name']}: waiting for writers before build, blocks \d+/\d+, partitions \d+/\d+", out), out
+    with connect(cluster, name) as c:
+        assert _whole_and_valid(c, ix["name"])
+
+
+def _autocommit(cluster, name):
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import NullPool
+    return create_engine(f"postgresql+psycopg://postgres@127.0.0.1:{cluster.port}/{name}", poolclass=NullPool, isolation_level="AUTOCOMMIT")
+
+
+def test_a_partition_made_while_the_parent_index_was_invalid_keeps_the_index_the_server_gave_it(db):
+    """A run stopped after the ON ONLY parent: a partition created before the next run gets an index of the parent's from the server, attached
+    under a name the server chose. The next run completes that one instead of building a second index that ATTACH would refuse."""
+    from db.lib import ddl
+    cluster, name = db
+    with connect(cluster, name) as c:
+        c.execute("CREATE TABLE public.rt (k int) PARTITION BY LIST (k)")
+        c.execute("CREATE TABLE public.rt_1 PARTITION OF public.rt FOR VALUES IN (1)")
+        c.execute("INSERT INTO public.rt VALUES (1)")
+        c.execute("CREATE INDEX rt_k ON ONLY public.rt (k)")                     # the stopped run
+        c.execute("CREATE TABLE public.rt_2 PARTITION OF public.rt FOR VALUES IN (2)")
+        assert c.execute("SELECT count(*) FROM pg_inherits WHERE inhparent = 'public.rt_k'::regclass").fetchone()[0] == 1
+    engine = _autocommit(cluster, name)
+    try:
+        with engine.connect() as c:
+            ddl.ensure_partitioned_index(c, "public.rt", "rt_k", "k", blocking=False)
+    finally:
+        engine.dispose()
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT indisvalid FROM pg_index WHERE indexrelid = 'public.rt_k'::regclass").fetchone()[0] is True
+        assert c.execute("SELECT count(*) FROM pg_index WHERE indrelid IN ('public.rt_1'::regclass, 'public.rt_2'::regclass)").fetchone()[0] == 2
+
+
+def test_dropping_an_online_index_leaves_a_same_named_index_of_another_table(db):
+    """The indexes of a build's tree are found by their names, built from the partitions' names: an index of another table that has such a
+    name is not part of the tree and stays."""
+    from db import migrate
+    cluster, name = db
+    with connect(cluster, name) as c:
+        c.execute("CREATE TABLE public.rt (k int) PARTITION BY LIST (k)")
+        c.execute("CREATE TABLE public.rt_1 PARTITION OF public.rt FOR VALUES IN (1)")
+        c.execute("CREATE INDEX rt_k ON ONLY public.rt (k)")
+        c.execute("CREATE TABLE public.other (k int)")
+        c.execute("CREATE INDEX rt_1_rt_k ON public.other (k)")                  # the name a leaf index of rt_k would have
+    engine = _autocommit(cluster, name)
+    try:
+        with engine.connect() as c:
+            migrate.drop_online(c, "public.rt_k")
+    finally:
+        engine.dispose()
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT to_regclass('public.rt_k') IS NULL, to_regclass('public.rt_1_rt_k') IS NOT NULL").fetchone() == (True, True)
+
+
+def test_an_online_index_on_an_unqualified_table_is_named_in_public(db):
+    """ddl puts the index of an unqualified table in public: the step records and checks it there, so a failed upgrade drops it and an
+    expression key gets its table analyzed."""
+    from types import SimpleNamespace
+
+    from db import migrate
+    cluster, name = db
+    with connect(cluster, name) as c:
+        c.execute("CREATE TABLE public.rt (k int) PARTITION BY LIST (k)")
+        c.execute("CREATE TABLE public.rt_1 PARTITION OF public.rt FOR VALUES IN (1) WITH (autovacuum_enabled = off)")
+        c.execute("INSERT INTO public.rt SELECT 1 FROM generate_series(1, 1000)")
+    engine, started = _autocommit(cluster, name), []
+    try:
+        with engine.connect() as c:
+            migrate._build_online(c, [SimpleNamespace(ONLINE_INDEXES=[{"table": "rt", "name": "rt_k1", "cols": "(k + 1)"}])], started)
+    finally:
+        engine.dispose()
+    assert started == ["public.rt_k1"]
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT count(*) FROM pg_statistic WHERE starelid = 'public.rt_1'::regclass").fetchone()[0] == 1
+
+
+# ---- the knowledge hub's name search (graph_0022) ----------------------------------------------------------------------------------------
+BY_NAME = "SELECT coll, node_id FROM graph.records_by_name(%s, %s, %s)"
+# the same condition as a plain statement of the service, under its row policy
+PLAIN_BY_NAME = ("SELECT n.coll, n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll IN ('records', 'recordGroups') AND n.doc->>'connectorId' = %s "
+                 "AND (coalesce(n.doc->>'name', '') || ' ' || coalesce(n.doc->>'recordName', '') || ' ' || coalesce(n.doc->>'groupName', '')) ILIKE %s")
+NAMED_NODES = {   # id -> (coll, connector, document): names in every field a listing reads a name from, in every case, and nodes the search never answers
+    "r1": ("records", "c1", {"recordName": "Printer-Jam.pdf"}), "r2": ("records", "c1", {"name": "printer jam notes", "recordName": "other"}),
+    "r3": ("records", "c1", {"recordName": "PRINTER_JAM_TRAY.2"}), "g1": ("recordGroups", "c1", {"groupName": "Printer Jams"}),
+    "r4": ("records", "c1", {"recordName": "jam printer"}), "r5": ("records", "c2", {"recordName": "printer jam elsewhere"}),
+    "r6": ("records", "c1", {"name": 12345, "recordName": "item"}), "r7": ("records", "c1", {}), "f1": ("files", "c1", {"recordName": "printer jam file"}),
+    "r8": ("records", "c1", {"recordName": "Café crème 2026"}), "r9": ("records", "c1", {"recordName": "x" * 3000 + " printer jam"}),
+}
+PATTERNS = ["%pr%nter%jam%", "%jam%pr%nter%", "%jam%", "%123%", "%caf%cr%2026%", "%zzz%", "%nter%", "%jams%"]      # as name_pattern spells them (no i or k)
+
+
+def _seed_names(c):
+    for org in (A, B):
+        as_role(c, "pipeshub_connectors", org)
+        for nid, (coll, conn, doc) in NAMED_NODES.items():
+            if not (org == B and nid == "r2"):                                       # "printer jam notes" is A's alone
+                c.execute(NODE, (org, coll, nid, json.dumps({"orgId": org, "connectorId": conn, **doc})))
+
+
+def test_the_name_search_answers_what_the_plain_statement_answered_for_the_org_alone(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_names(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_query", org)
+            for conn in ("c1", "c2", "c3"):
+                for pattern in PATTERNS:
+                    assert sorted(_ids(c, BY_NAME, conn, pattern, 1000)) == sorted(_ids(c, PLAIN_BY_NAME, conn, pattern)), (org, conn, pattern)
+        as_role(c, "pipeshub_query", A)
+        assert sorted(_ids(c, BY_NAME, "c1", "%pr%nter%jam%", 1000)) == [("recordGroups", "g1"), ("records", "r1"), ("records", "r2"), ("records", "r3"), ("records", "r9")]
+        assert _ids(c, BY_NAME, "c1", "%123%", 1000) == [("records", "r6")] and len(_ids(c, BY_NAME, "c1", "%nter%", 2)) == 2
+        as_role(c, "pipeshub_query", B)
+        assert ("records", "r2") not in _ids(c, BY_NAME, "c1", "%pr%nter%jam%", 1000)
+
+
+def test_the_name_search_reads_by_the_trigram_index_where_the_plain_statement_cannot(rdb):
+    """20,000 records in each of two connectors of the org (and 20,000 in another org): the function reaches nodes_record_name_trgm (no sequential scan) on the first
+    and the seventh call; the service's own statement of the same condition reaches the org's leaf only (the ILIKE is not leakproof)."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'connectorId', 'c' || (i %% 2), "
+                      "'recordName', 'item ' || i || ' handle') FROM generate_series(1, 40000) i", (org, org))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        plans = vetted_harness.plans_auto_explain(c, "pipeshub_query", A, "SELECT node_id FROM graph.records_by_name(%s, %s, %s)", ("c1", "%tem%12345%", 10001))
+        for i in (0, 6):
+            assert _uses(plans[i], "nodes_record_name_trgm") and "Seq Scan on" not in plans[i], (i, plans[i])
+        plain = vetted_harness.plans_auto_explain(c, "pipeshub_query", A, PLAIN_BY_NAME.replace("%s", "'c1'", 1).replace("%s", "'%%tem%%12345%%'"))
+        assert not any(_uses(p, "nodes_record_name_trgm") for p in plain), plain[0]
+        as_role(c, "pipeshub_query", A)
+        assert _ids(c, BY_NAME, "c1", "%tem%12345%", 10001) == [("records", "r12345")]

@@ -1,0 +1,18 @@
+[
+  {
+    "description": "an offering that does not exist",
+    "instance": {"version": "1", "offering": "enterprise", "policy": {"disabledRules": [], "consumerPlans": false}, "rules": []}
+  },
+  {
+    "description": "a row outcome the page does not know",
+    "instance": {"version": "1", "offering": "oss", "policy": {"disabledRules": [], "consumerPlans": false}, "rules": [{"id": "r", "provider": "p", "accountKind": "org_api_key", "route": "gateway", "engines": null, "status": "allowed", "consumer": false, "source": "", "built": true, "outcome": "maybe"}]}
+  },
+  {
+    "description": "a policy without the consumer-plan switch",
+    "instance": {"version": "1", "offering": "oss", "policy": {"disabledRules": []}, "rules": []}
+  },
+  {
+    "description": "a row carrying a secret field",
+    "instance": {"version": "1", "offering": "oss", "policy": {"disabledRules": [], "consumerPlans": false}, "rules": [{"id": "r", "provider": "p", "accountKind": "org_api_key", "route": "gateway", "engines": null, "status": "allowed", "consumer": false, "source": "", "built": true, "outcome": "allowed", "apiKey": "sk-x"}]}
+  }
+]
