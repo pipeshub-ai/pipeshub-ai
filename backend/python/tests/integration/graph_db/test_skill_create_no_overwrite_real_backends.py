@@ -84,6 +84,12 @@ async def graph(
             cleanup.push_async_callback(disconnect)
         org = f"it-org-{uuid.uuid4().hex[:10]}"
         yield provider, org
+        if not isinstance(provider, Neo4jProvider):  # Neo4j's DETACH DELETE below takes the edges with the nodes
+            for edges in ("permission", "agentSkillRelation", "agentHasSkill"):
+                await provider.http_client.execute_aql(
+                    f"FOR e IN {edges} FILTER STARTS_WITH(e._from, @p) OR STARTS_WITH(e._to, @p) REMOVE e IN {edges}",
+                    {"p": f"{SKILLS}/{org}_"},
+                )
         for collection in (SKILLS, VERSIONS):
             if isinstance(provider, Neo4jProvider):
                 await provider.client.execute_query(
@@ -225,8 +231,12 @@ async def test_a_stale_update_cannot_replace_a_skill_created_in_between(graph) -
     stale = await provider.get_document(f"{org}_swapped", SKILLS)
 
     assert await owner.delete_skill("swapped") is True
-    await asyncio.sleep(0.01)
     await _store(provider, org, "user-b").create_skill("swapped", _md("swapped", "new-owner"))
+    # The worst case: the new skill carries the token the stale read holds, so only the generation tells them apart.
+    assert await provider.update_node(f"{org}_swapped", SKILLS, {"updatedAtTimestamp": stale["updatedAtTimestamp"]})
+    replacement = await provider.get_document(f"{org}_swapped", SKILLS)
+    assert replacement["updatedAtTimestamp"] == stale["updatedAtTimestamp"]
+    assert replacement["generation"] != stale["generation"]
 
     with pytest.raises((SkillConflictError, RegistryError)):
         await owner._commit_skill_update(  # the write an update makes after its ownership read

@@ -103,6 +103,13 @@ def _effect(entry: object) -> str | None:
     return next((tag.value for tag in hint_tags(hints) if tag.key == EFFECT_TAG_KEY), None)
 
 
+def _same_creation(read: Document, now: Document | None) -> bool:
+    """Whether ``now`` is still the creation ``read`` saw (a skill stored before generations has none yet)."""
+    if now is None or (read.get("createdBy"), read.get("createdAtTimestamp")) != (now.get("createdBy"), now.get("createdAtTimestamp")):
+        return False
+    return not read.get("generation") or read.get("generation") == now.get("generation")
+
+
 class LegacyCapabilityReader:
     """Reads one org's facts; another org's instances and agents are never in them."""
 
@@ -307,7 +314,9 @@ class LegacyCapabilityReader:
                 continue
             name, version, tenant = _text(skill, "name"), _text(skill, "version"), _text(skill, "orgId")
             digest = await self._skill_digest(tenant, name, version) if name and version else None
-            if digest is None:
+            if digest is None or not _same_creation(skill, await self._graph.get_document(_target_key(edge), _SKILLS, raise_on_error=True)):
+                # The digest is resolved by name and version: one read for a skill deleted and created again since
+                # would pair this creation's facts with the next one's content.
                 continue
             skills.append(
                 {

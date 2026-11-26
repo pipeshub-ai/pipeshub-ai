@@ -147,6 +147,19 @@ class TestAMemberCannotStoreABuiltin:
         assert listed == []
 
 
+    async def test_an_import_with_a_bad_resource_stores_nothing_and_can_be_sent_again(self, graph) -> None:
+        req_b = _request("user-b", "org-1", graph)
+        bad = FinalizeImportRequest(content=_CLAIMING_MD, resources={"notes.md": "ok", "../escape.md": "no"})
+        with pytest.raises(HTTPException) as exc:
+            await finalize_import(req_b, bad)
+        assert exc.value.status_code == 400
+        assert "org-1_imported-skill" not in graph._col("agentSkills")
+
+        resp = await finalize_import(req_b, FinalizeImportRequest(content=_CLAIMING_MD, resources={"notes.md": "ok"}))
+        assert resp.status_code == 201
+        assert json.loads((await get_skill(req_b, "imported-skill")).body)["resources"]
+
+
 class TestAdminModeration:
     async def test_an_admin_can_disable_enable_and_delete_a_members_skill(self, graph) -> None:
         req_a = await _first_author(graph)

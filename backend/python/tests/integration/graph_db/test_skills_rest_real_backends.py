@@ -95,6 +95,12 @@ async def client(
         stack.enter_context(patch.object(skills_routes, "fetch_caller_role", new=_fetch_role))
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=_app(provider, org)), base_url="http://it") as http:
             yield http, provider, org
+        if not isinstance(provider, Neo4jProvider):  # Neo4j's DETACH DELETE below takes the edges with the nodes
+            for edges in ("permission", "agentSkillRelation", "agentHasSkill"):
+                await provider.http_client.execute_aql(
+                    f"FOR e IN {edges} FILTER STARTS_WITH(e._from, @p) OR STARTS_WITH(e._to, @p) REMOVE e IN {edges}",
+                    {"p": f"agentSkills/{org}_"},
+                )
         for collection in ("agentSkills", "agentSkillVersions"):
             if isinstance(provider, Neo4jProvider):
                 await provider.client.execute_query(
