@@ -176,12 +176,25 @@ export class MongoOrgRepository implements OrgRepository {
 
     const session = sessionOf(tx);
     const opts = session ? { session } : undefined;
-    await authConfig.save(opts);
-    await allUsersGroup.save(opts);
-    await standardUsersGroup.save(opts);
-    await adminUser.save(opts);
-    await credentials.save(opts);
-    await org.save(opts);
+    const written: Array<{ deleteOne(): Promise<unknown> }> = [];
+    try {
+      for (const doc of [
+        authConfig,
+        allUsersGroup,
+        standardUsersGroup,
+        adminUser,
+        credentials,
+        org,
+      ]) {
+        await doc.save(opts);
+        written.push(doc);
+      }
+    } catch (error) {
+      // Without a transaction nothing undoes the rows already written, so remove them: the organisation is created whole or not at all.
+      if (!session)
+        await Promise.allSettled(written.map((doc) => doc.deleteOne()));
+      throw error;
+    }
     return {
       org: dto(org),
       adminUserId: String(adminUser._id),

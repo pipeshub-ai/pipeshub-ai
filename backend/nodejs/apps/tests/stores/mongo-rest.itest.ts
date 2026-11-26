@@ -9,6 +9,7 @@ import 'reflect-metadata';
 import { randomUUID } from 'crypto';
 import { expect } from 'chai';
 import mongoose from 'mongoose';
+import sinon from 'sinon';
 import { MongoService } from '../../src/libs/services/mongo.service';
 import { MongoUnitOfWork } from '../../src/libs/repositories/mongo';
 import { MongoOrgRepository } from '../../src/libs/repositories/org/mongo';
@@ -84,6 +85,10 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
     transactional: rsAvailable,
     newId: () => new mongoose.Types.ObjectId().toString(),
     asNewOrg: (_ids, fn) => fn(),
+    failCredentialWrites: async () => {
+      const stub = sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential write refused'));
+      return async () => stub.restore();
+    },
   });
 
   it('lists a legacy project-wide pin first for the owner only', async () => {

@@ -31,6 +31,8 @@ export interface OrgFixture {
   asNewOrg<T>(ids: NewOrgIds, fn: () => Promise<T>): Promise<T>;
   /** An organisation with a live account of its own that the calls may run as (PostgreSQL only needs it for the metrics suite). */
   withJobs?: boolean;
+  /** Makes the store refuse every admin credential write until the returned function is called. */
+  failCredentialWrites(): Promise<() => Promise<void>>;
 }
 
 export interface RestFixture extends OrgFixture {
@@ -137,6 +139,24 @@ export function describeOrgContract(fx: OrgFixture): void {
       const found = await orgs.getLive(createdOrg);
       if (fx.transactional) expect(found).to.equal(null);
       else expect(found).to.not.equal(null);
+    });
+
+    it('creates the organisation whole or not at all: a refused credential write leaves no org, user, group or sign-in config', async () => {
+      const ids = orgs.allocateIds();
+      const restore = await fx.failCredentialWrites();
+      let failed = false;
+      try {
+        await fx.asNewOrg(ids, () => fx.uow.run((tx) => orgs.createWithAdmin({ ...orgInput(), ids }, tx)));
+      } catch {
+        failed = true;
+      } finally {
+        await restore();
+      }
+      expect(failed, 'the credential write was refused').to.equal(true);
+      expect(await orgs.getLive(ids.orgId)).to.equal(null);
+      expect(await users.getLive(ids.orgId, ids.adminUserId)).to.equal(null);
+      expect(await groups.groupsOfUser(ids.orgId, ids.adminUserId)).to.deep.equal([]);
+      expect(await fx.orgAuth.getLive(ids.orgId)).to.equal(null);
     });
 
     it('reads, updates and soft-deletes', async () => {
