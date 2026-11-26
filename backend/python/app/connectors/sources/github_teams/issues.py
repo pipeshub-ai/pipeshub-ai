@@ -594,11 +594,15 @@ class IssuesSync:
 
         Gated for free by ``issue_dependencies_summary`` on the listing payload:
         an issue that blocks nothing (the overwhelming majority) costs zero calls.
+        The gate is ``total_blocking``: "Total count of issues this issue is
+        blocking (open and closed)", while ``blocking`` counts open ones only
+        (https://docs.github.com/public/fpt/schema.docs.graphql,
+        IssueDependenciesSummary), so a link to a closed issue is still read.
         Each returned item embeds ``repository.id``, so cross-repo targets map
         to ``{repo_id}/issues/{n}`` with no extra lookup. Errors degrade to no
         links — never fail the ticket.
         """
-        if not isinstance(summary, dict) or not summary.get("blocking"):
+        if not isinstance(summary, dict) or not (summary.get("total_blocking") or summary.get("blocking")):
             return []
         try:
             res = await self.c.runtime.ds_call(
