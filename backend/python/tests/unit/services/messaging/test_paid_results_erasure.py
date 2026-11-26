@@ -38,9 +38,11 @@ async def _events(handler, event_type: str, payload: dict) -> list:
     return [e async for e in handler.process_event(event_type, payload) if e.event != IndexingEvent.START_DOWNLOAD]
 
 
-def _handler() -> Any:  # noqa: ANN401 - a RecordEventHandler built over mocks
+def _handler(*, purged: bool = False) -> Any:  # noqa: ANN401 - a RecordEventHandler built over mocks
+    """``purged``: the row a deleteRecord finds, in the trash as the purge leaves it (a live row is a record pushed again)."""
     handler = make_record_handler()
-    handler.event_processor.graph_provider.get_document = AsyncMock(return_value={"_key": REC, "orgId": ORG, "virtualRecordId": "vr"})
+    row = {"_key": REC, "orgId": ORG, "virtualRecordId": "vr", **({"isDeleted": True} if purged else {})}
+    handler.event_processor.graph_provider.get_document = AsyncMock(return_value=row)
     handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
     handler._request_code_edge_build_for_deleted = AsyncMock()
     handler._hand_over_shared_copy = AsyncMock()
@@ -49,7 +51,7 @@ def _handler() -> Any:  # noqa: ANN401 - a RecordEventHandler built over mocks
 
 async def test_record_and_org_purge(store: MemoryResultStore) -> None:
     _seed(store)
-    handler = _handler()
+    handler = _handler(purged=True)
 
     events = await _events(handler, EventTypes.DELETE_RECORD.value, {"recordId": REC, "orgId": ORG, "virtualRecordId": "vr"})
 
@@ -61,7 +63,7 @@ async def test_record_and_org_purge(store: MemoryResultStore) -> None:
 
 async def test_a_record_delete_without_an_org_takes_it_from_the_record(store: MemoryResultStore) -> None:
     _seed(store)
-    handler = _handler()
+    handler = _handler(purged=True)
 
     await _events(handler, EventTypes.DELETE_RECORD.value, {"recordId": REC, "virtualRecordId": "vr"})
 
@@ -71,7 +73,7 @@ async def test_a_record_delete_without_an_org_takes_it_from_the_record(store: Me
 
 async def test_a_storage_failure_raises_so_the_broker_redelivers_until_it_succeeds(store: MemoryResultStore) -> None:
     _seed(store)
-    handler = _handler()
+    handler = _handler(purged=True)
     store.failing = {"purge"}
 
     with pytest.raises(ConnectionError):
@@ -85,7 +87,7 @@ async def test_a_storage_failure_raises_so_the_broker_redelivers_until_it_succee
 
 
 async def test_a_record_with_nothing_stored_deletes_cleanly(store: MemoryResultStore) -> None:
-    handler = _handler()
+    handler = _handler(purged=True)
 
     events = await _events(handler, EventTypes.DELETE_RECORD.value, {"recordId": REC, "orgId": ORG, "virtualRecordId": "vr"})
 
@@ -96,7 +98,7 @@ async def test_the_purge_happens_even_with_the_cache_switched_off(store: MemoryR
     monkeypatch.setenv("PAID_CACHE", "off")
     _seed(store)
 
-    await _events(_handler(), EventTypes.DELETE_RECORD.value, {"recordId": REC, "orgId": ORG, "virtualRecordId": "vr"})
+    await _events(_handler(purged=True), EventTypes.DELETE_RECORD.value, {"recordId": REC, "orgId": ORG, "virtualRecordId": "vr"})
 
     assert store.paths(ORG, REC) == []
 

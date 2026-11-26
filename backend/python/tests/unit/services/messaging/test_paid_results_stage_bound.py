@@ -102,7 +102,7 @@ class _YieldingLocks(InProcessLocks):
 
 def _record_handler(producer: Any) -> Any:  # noqa: ANN401
     handler = make_record_handler(producer=producer)
-    handler.event_processor.graph_provider.get_document = AsyncMock(return_value={"_key": REC, "orgId": ORG, "virtualRecordId": "vr"})
+    handler.event_processor.graph_provider.get_document = AsyncMock(return_value={"_key": REC, "orgId": ORG, "virtualRecordId": "vr", "isDeleted": True})
     handler.event_processor.processor.indexing_pipeline.bulk_delete_embeddings = AsyncMock()
     handler._request_code_edge_build_for_deleted = AsyncMock()
     handler._hand_over_shared_copy = AsyncMock()

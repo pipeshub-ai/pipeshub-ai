@@ -408,6 +408,10 @@ class SinkOrchestrator(Transformer):
         """
         if not projection_enabled():
             return
+        if ctx.settings.get(RUN_SUPERSEDED):
+            # This run's stored write lost: the run is not the newest, so it has no values to stamp as such.
+            record_property_projection("superseded_run")
+            return
         try:
             async with asyncio.timeout(PROJECTION_TIMEOUT_SECONDS):
                 await project_properties(
@@ -810,7 +814,7 @@ class SinkOrchestrator(Transformer):
         reconciliation = (
             ctx.reconciliation_context.new_metadata if ctx.reconciliation_context else None
         )
-        properties = await self._provided_properties(record, record_doc)
+        properties = await self._provided_properties(ctx, record, record_doc)
         try:
             written = await self.artifact_writer.write_revision(
                 record,
@@ -843,15 +847,19 @@ class SinkOrchestrator(Transformer):
         return node is not None and node.get("storedRun") == run
 
     async def _provided_properties(
-        self, record: Record, record_doc: dict[str, Any]
+        self, ctx: TransformContext, record: Record, record_doc: dict[str, Any]
     ) -> RecordMetadata | None:
-        """The values a ticket's source provided, for ``properties.json``.
+        """The values the record's source provided, for ``properties.json``.
 
-        Indexing builds a plain ``Record`` from the record document; a ticket's
+        Values the run was handed (a push's, in ``ctx.settings``) win. Otherwise
+        indexing builds a plain ``Record`` from the record document; a ticket's
         fields are in its tickets document, read here only for a record whose
         type is stored there. Never fails the write: without them the set is
         stored without ``properties.json``.
         """
+        handed = ctx.settings.get(PROVIDED_PROPERTIES, NOT_PROVIDED)
+        if isinstance(handed, RecordMetadata):
+            return handed
         if isinstance(record, TicketRecord):
             return ticket_metadata(record)
         tickets = CollectionNames.TICKETS.value

@@ -558,6 +558,30 @@ class TestPageFailures:
         assert broker.deleted() == ["a"]
         assert kv.outbox() == {}
 
+    async def test_a_delete_event_is_sent_only_after_its_row_is_gone(self, clean_env) -> None:
+        """The deleteRecord handler skips the id-keyed cleanup of an id that reads live (a record pushed again under
+        the same key). That is only right if no producer sends the event while its row is still live."""
+        graph, kv = _Graph(), _KV()
+        graph.trash("a", days_ago=20)
+        graph.trash("b", days_ago=20)
+        live_at_send: list[str] = []
+
+        class _Checking(_Broker):
+            async def send_messages(self, topic, messages) -> list[bool]:
+                for _key, message in messages:
+                    if message["eventType"] == EventTypes.DELETE_RECORD.value:
+                        key = message["payload"]["recordId"]
+                        row = graph.records.get(key)
+                        if row is not None and row.get("isDeleted") is not True:
+                            live_at_send.append(key)
+                        assert row is None, f"{key} still has a row when its deleteRecord is sent"
+                return await super().send_messages(topic, messages)
+
+        broker = _Checking()
+        assert await _purger(graph, kv, broker).tick() == Outcome.FINISHED
+
+        assert sorted(broker.deleted()) == ["a", "b"] and live_at_send == []
+
     async def test_a_delete_whose_answer_is_lost_still_sends_its_cleanup(self, clean_env) -> None:
         graph, kv, broker = _Graph(), _KV(), _Broker()
         graph.trash("a", days_ago=20)
