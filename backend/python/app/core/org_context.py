@@ -267,9 +267,15 @@ def validate_mode() -> bool:
 enforcing = validate_mode
 
 
+# Frames that wrap every store call; naming one as the caller would hide which code made the call.
+_WRAPPER_FILES = ("/app/telemetry/modules/db_metrics.py",)
+
+
 def _caller(depth: int) -> str:
     try:
         f = sys._getframe(depth)
+        while f.f_back is not None and f.f_code.co_filename.endswith(_WRAPPER_FILES):
+            f = f.f_back
         return f"{f.f_code.co_filename.rsplit('/app/', 1)[-1]}:{f.f_lineno}"
     except ValueError:
         return "?"

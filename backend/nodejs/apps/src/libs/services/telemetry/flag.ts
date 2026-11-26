@@ -9,6 +9,9 @@ import { TELEMETRY_DEFAULT_ENABLED } from '../../../edition';
  */
 export const TELEMETRY_COLLECTION_FLAG = 'TELEMETRY_COLLECTION_FLAG';
 
+/** What start-up logs when the switch is off. */
+export const telemetryOffMessage = `Telemetry disabled (${TELEMETRY_COLLECTION_FLAG} is not 'true')`;
+
 export function isTelemetryEnabled(): boolean {
   const raw = process.env[TELEMETRY_COLLECTION_FLAG]?.trim();
   if (!raw) {
