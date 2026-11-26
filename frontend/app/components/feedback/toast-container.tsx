@@ -120,29 +120,46 @@ const REPEAT_ANNOUNCEMENT_GAP_MS = 100;
 
 /**
  * Screen readers hear toasts through this region, which stays mounted with or without toasts:
- * a live region inserted together with its text is often not read at all. It carries the newest
- * toast, so a progress toast updated in place is heard again with its result.
+ * a live region inserted together with its text is often not read at all. It carries the toast
+ * that changed last, whether it was just added or just updated (a progress toast turning into
+ * its result), so two requests that finish in any order are both heard. A dismissal says nothing.
  */
-function ToastAnnouncer({ toast }: { toast?: ToastData }) {
+function ToastAnnouncer({ toasts }: { toasts: ToastData[] }) {
   const [text, setText] = useState('');
+  const seen = useRef(new Map<string, string>());
   const shown = useRef<{ id: string; text: string }>({ id: '', text: '' });
-  const id = toast?.id ?? '';
-  const next = toast ? [toast.title, toast.description].filter(Boolean).join('. ') : '';
+  // Owned by the change that set it: a re-render with no toast change must not cancel it.
+  const restore = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (restore.current) clearTimeout(restore.current);
+  }, []);
 
   useEffect(() => {
+    const words = (t: ToastData) => [t.title, t.description].filter(Boolean).join('. ');
+    const signature = (t: ToastData) => `${t.variant}\u0000${words(t)}`;
+    // Newest first, as the store keeps them, so a burst of changes reads the newest.
+    const changed = toasts.find((t) => seen.current.get(t.id) !== signature(t));
+    seen.current = new Map(toasts.map((t) => [t.id, signature(t)]));
+    if (!changed) return;
+
+    if (restore.current) clearTimeout(restore.current);
+    restore.current = null;
+    const next = words(changed);
     const previous = shown.current;
-    if (previous.id === id && previous.text === next) return undefined;
-    shown.current = { id, text: next };
-    if (!next || next !== previous.text) {
+    shown.current = { id: changed.id, text: next };
+    if (next !== previous.text) {
       setText(next);
-      return undefined;
+      return;
     }
-    // A different toast with the same words leaves the region unchanged, which is not announced.
-    // Empty it, then put the words back in a later task; a newer toast cancels the restore.
+    // A change with the same words leaves the region unchanged, which is not announced.
+    // Empty it, then put the words back in a later task; a newer change cancels the restore.
     setText('');
-    const restore = setTimeout(() => setText(next), REPEAT_ANNOUNCEMENT_GAP_MS);
-    return () => clearTimeout(restore);
-  }, [id, next]);
+    restore.current = setTimeout(() => {
+      restore.current = null;
+      setText(next);
+    }, REPEAT_ANNOUNCEMENT_GAP_MS);
+  }, [toasts]);
 
   return (
     <VisuallyHidden>
@@ -165,8 +182,7 @@ export function ToastContainer() {
     setMounted(true);
   }, []);
 
-  // New toasts are added first, so the newest one still on screen is the first that is not leaving.
-  const announcer = <ToastAnnouncer toast={toasts.find((t) => !t.isExiting)} />;
+  const announcer = <ToastAnnouncer toasts={toasts.filter((t) => !t.isExiting)} />;
 
   if (toasts.length === 0 || !mounted) {
     return announcer;
