@@ -21,7 +21,7 @@ pytestmark = pytest.mark.integration
 # of a shared table, which every other worker's plans (and plan gates) read; a migration's statements, which rewrite every org's rows. Matched in the strings of a
 # test and of the helpers, fixtures and constants it uses.
 DATABASE_WIDE = re.compile(r"LOCK TABLE|DROP INDEX|CREATE (UNIQUE )?INDEX|REINDEX (TABLE|INDEX|SCHEMA|DATABASE)|\bVACUUM\b|TRUNCATE (TABLE )?[a-z]|CLUSTER [a-z]"
-                           r"|ROW LEVEL SECURITY|pg_statistic|UPDATE pg_class|SET STATISTICS|\bSET \(|\bRESET \(|(?<![(\w])ANALYZE(?=\s+[a-z{%]|\s*;|\s*$)|^analyze$"
+                           r"|ROW LEVEL SECURITY|pg_statistic|UPDATE pg_class|SET STATISTICS|\bSET \(|\bRESET \(|(?<![(\w])(?<!EXPLAIN )ANALYZE(?=\s*\(|\s+[A-Za-z{%]|\s*;|\s*$)|^analyze$"
                            r"|^\d{4}_[a-z0-9_]+\.py$")       # a migration revision's own statements, which name no org
 
 
@@ -64,6 +64,7 @@ def unmarked_database_wide_tests(modules: dict[str, str], conftests: list[str]) 
     defs: dict[tuple[str, str], ast.AST] = {}                  # (module, name): a module-level function, class or constant
     imports: dict[tuple[str, str], tuple[str, str]] = {}
     tests: list[tuple[str, str, tuple, bool]] = []
+    test_classes: list[tuple[tuple[str, str], bool]] = []      # each Test class and whether its module's pytestmark marks it
     for mod, source in modules.items():
         tree = ast.parse(source)
         module_marked = any(isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "pytestmark" for t in n.targets) and _marked(n.value) for n in tree.body)
@@ -73,9 +74,7 @@ def unmarked_database_wide_tests(modules: dict[str, str], conftests: list[str]) 
                 if mod in conftests:
                     continue
                 if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
-                    class_marked = module_marked or any(_marked(d) for d in node.decorator_list)
-                    tests += [(mod, f"{node.name}::{m.name}", ("method", (mod, node.name), m.name), class_marked or any(_marked(d) for d in m.decorator_list))
-                              for m in node.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name.startswith("test_")]
+                    test_classes.append(((mod, node.name), module_marked))
                 elif not isinstance(node, ast.ClassDef) and node.name.startswith("test_"):
                     tests.append((mod, node.name, ("def", (mod, node.name)), module_marked or any(_marked(d) for d in node.decorator_list)))
             elif isinstance(node, ast.Assign):
@@ -123,6 +122,13 @@ def unmarked_database_wide_tests(modules: dict[str, str], conftests: list[str]) 
                 if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     out.setdefault(m.name, (c[0], m))
         return out
+
+    # a Test class's tests are the test_ methods its MRO finds, inherited ones included, as pytest collects them; a mark on the method, on a class of the MRO or in
+    # the test class's module applies
+    for cls, module_marked in test_classes:
+        class_marked = module_marked or any(_marked(d) for c in mro(cls) for d in defs[c].decorator_list)
+        tests += [(cls[0], f"{cls[1]}::{name}", ("method", cls, name), class_marked or any(_marked(d) for d in fn.decorator_list))
+                  for name, (_, fn) in methods(cls).items() if name.startswith("test_")]
 
     # nodes: ("def", key) for a module-level definition, ("alias", key) for an import (an edge to what it imports, a definition or another import), and
     # ("method", receiver class, name) for a method run on that class
@@ -209,6 +215,20 @@ def test_the_guard_follows_imports_through_re_exports_and_survives_an_import_cyc
                          "def test_through_the_re_export():\n    prepare()\ndef test_direct():\n    direct()\ndef test_ghost():\n    ghost()\n",
                "loop_a": "from .loop_b import ghost\n", "loop_b": "from .loop_a import ghost\n"}
     assert sorted(unmarked_database_wide_tests(modules, [])) == ["test_a::test_direct", "test_a::test_through_the_re_export"]
+
+
+def test_the_guard_collects_inherited_test_methods_with_their_marks() -> None:
+    """pytest collects a test a base class defines on each Test class that inherits it: unmarked there it is flagged, marked on a class of its MRO it is not."""
+    modules = {"test_a": 'import pytest\nclass Base:\n    def test_plan(self):\n        run("ANALYZE kg.records")\n'
+                         'class TestPlans(Base):\n    pass\n@pytest.mark.pg_table_lock\nclass MarkedBase:\n    def test_marked(self):\n        run("ANALYZE kg.records")\n'
+                         'class TestMarked(MarkedBase):\n    pass\n'}
+    assert unmarked_database_wide_tests(modules, []) == ["test_a::TestPlans::test_plan"]
+
+
+def test_the_guard_matches_analyze_with_options_and_not_explain_analyze() -> None:
+    modules = {"test_a": 'def test_options():\n    run("ANALYZE (SKIP_LOCKED) kg.records")\ndef test_verbose():\n    run("ANALYZE VERBOSE kg.records")\n'
+                         'def test_explain():\n    run("EXPLAIN (ANALYZE, BUFFERS) SELECT 1")\ndef test_old_explain():\n    run("EXPLAIN ANALYZE SELECT 1")\n'}
+    assert sorted(unmarked_database_wide_tests(modules, [])) == ["test_a::test_options", "test_a::test_verbose"]
 
 
 def test_the_guard_is_reachability_whatever_the_cycles_and_the_order() -> None:

@@ -458,9 +458,10 @@ KEY_OF = {"records_id": "id", "records_pkey": "sk", "records_parent": "parent_sk
 
 def _not_seeks(plan: dict[str, Any], indexes: set[str], levels: dict[str, int]) -> list[str]:
     """What in an ``EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`` plan is not a seek: a scan of a kg table that is not one of ``indexes``, whose index condition does not bound
-    the key column, that returns or filters out more than one row per probe, or (an index-only scan) that reads more index pages per probe than a descent of the
-    index (``levels``: its btree level) and the next leaf; and an index of ``indexes`` the plan never uses. Heap pages are reported, not bounded: they measure what
-    VACUUM has reached (row versions not yet removed, pages not yet all-visible), here and on a real install alike, not the plan."""
+    the key column, that returns or filters out more than one row per probe, or that reads more pages per probe than a descent of the index (``levels``: its btree
+    level), the next leaf and one more page (the row's heap page, or an index-only scan's visibility map page); and an index of ``indexes`` the plan never uses.
+    The bound holds on vacuumed tables, which the gate measures (EXPLAIN counts buffers, not which of them are the index's): an index-only scan that still fetched
+    from the heap ran on pages not all-visible, a measurement the bound cannot judge, and is reported as such."""
     found: list[str] = []
     used: set[str] = set()
 
@@ -480,8 +481,10 @@ def _not_seeks(plan: dict[str, Any], indexes: set[str], levels: dict[str, int]) 
             found.append(f"the index condition does not bound the key: {bad}")
         elif loops and (node["Actual Rows"] > 1 or removed > 1):
             found.append(f"{bounds[0][0]}: {seen}")
-        elif loops and node["Node Type"] == "Index Only Scan" and pages - fetches > levels[bounds[0][0]] + 2:
-            found.append(f"{bounds[0][0]}: more index pages than a descent of its {levels[bounds[0][0]] + 1} levels and the next leaf: {seen}")
+        elif loops and node["Node Type"] == "Index Only Scan" and fetches:
+            found.append(f"{bounds[0][0]}: fetched from the heap, so its pages were not all-visible when measured (vacuum first): {seen}")
+        elif loops and pages > levels[bounds[0][0]] + 3:
+            found.append(f"{bounds[0][0]}: more pages than a descent of its {levels[bounds[0][0]] + 1} levels, the next leaf and one heap or visibility map page: {seen}")
     return found + [f"{i} is not used" for i in sorted(indexes - used)]
 
 
@@ -503,16 +506,17 @@ async def _btree_levels(indexes: set[str]) -> dict[str, int]:
         await con.close()
 
 
-def test_the_seek_check_bounds_rows_and_index_pages_and_not_heap_fetches() -> None:
-    """A probe is judged by its shape: one row, nothing filtered out, an index-only scan's index pages within a descent of the index; heap fetches are not held
-    against it."""
-    def scan(**kw: Any) -> dict[str, Any]:  # noqa: ANN401
-        return {"Plan": {"Node Type": "Index Only Scan", "Schema": "kg", "Relation Name": "records", "Index Name": "records_parent",
+def test_the_seek_check_bounds_rows_and_pages_on_vacuumed_tables() -> None:
+    """A probe is judged by its shape: one row, nothing filtered out, and no more pages than a descent of the index, the next leaf and one more page. An index-only
+    scan that fetched from the heap was measured on pages not all-visible: buffers do not say how many of its pages were the index's, so it is not passed."""
+    def scan(kind: str = "Index Only Scan", **kw: Any) -> dict[str, Any]:  # noqa: ANN401
+        return {"Plan": {"Node Type": kind, "Schema": "kg", "Relation Name": "records", "Index Name": "records_parent",
                          "Index Cond": "((org_id = r.org_id) AND (parent_sk >= r.sk))", "Actual Loops": 1, "Actual Rows": 1, **kw}}
     levels = {"records_parent": 2}
-    assert _not_seeks(scan(**{"Shared Hit Blocks": 9, "Heap Fetches": 5}), {"records_parent"}, levels) == []
-    assert _not_seeks(scan(**{"Shared Hit Blocks": 4}), {"records_parent"}, levels) == []
-    assert len(_not_seeks(scan(**{"Shared Hit Blocks": 9}), {"records_parent"}, levels)) == 1                    # 9 index pages for a 3-level index
+    assert _not_seeks(scan(**{"Shared Hit Blocks": 5}), {"records_parent"}, levels) == []                     # 3 levels, the next leaf, the visibility map
+    assert _not_seeks(scan("Index Scan", **{"Shared Hit Blocks": 5}), {"records_parent"}, levels) == []       # 3 levels, the next leaf, the row's heap page
+    assert len(_not_seeks(scan(**{"Shared Hit Blocks": 6}), {"records_parent"}, levels)) == 1
+    assert len(_not_seeks(scan(**{"Shared Hit Blocks": 9, "Heap Fetches": 5}), {"records_parent"}, levels)) == 1      # 7 index pages could hide in these 9
     assert len(_not_seeks(scan(**{"Actual Rows": 40, "Shared Hit Blocks": 4}), {"records_parent"}, levels)) == 1
     assert len(_not_seeks(scan(**{"Rows Removed by Filter": 300, "Shared Hit Blocks": 4}), {"records_parent"}, levels)) == 1
 
