@@ -62,6 +62,7 @@ from app.services.vector_db.pgvector.errors import (
     OrgRequired,
     PgVectorError,
     PgVectorUnsupportedError,
+    SearchBusy,
     SpaceMismatch,
     classify_pg_search_error,
 )
@@ -577,7 +578,7 @@ class PgVectorService(IVectorDBService):
         searched; an empty accessible list in the filter finds nothing. The requests of a call run a few at a time. A leg that cannot run
         in its tier is answered by the bounded exact path, counted, logged and flagged on every result (``SearchResult.degraded``).
         A leg is ``min(2 * limit, 2000)`` rows (the lexical leg at most 1,000). A lexical leg that runs out of time or fails answers nothing and
-        flags the result. The legs run as separate statements, one unit of work each."""
+        flags the result. An answer that is empty because no leg could run raises :class:`SearchBusy`, never an empty list. The legs run as separate statements, one unit of work each."""
         coll = await self._assert_connected()[1].require_collection(collection_name)
         gate = asyncio.Semaphore(self._cfg.search.request_concurrency)
 
@@ -638,6 +639,10 @@ class PgVectorService(IVectorDBService):
                 degraded_notice.note(reason)
             degraded = reasons[0] if reasons else None
             ranked = fusion.rrf(rows, req.limit)
+            # The dense leg sees every candidate, so its empty answer is complete (the lexical leg's only when there is no dense query).
+            # Empty because that leg could not run is not "nothing matched": busy, which the search retry answers as a timeout.
+            if not ranked and (answers[0][1] == "overload" if req.dense_query is not None else answers[-1][1] in ("timeout", "error")):
+                raise SearchBusy("the search could not run within its budget; try again")
             if not req.with_payload:
                 return [SearchResult(id=pid, score=score, degraded=degraded) for pid, score in ranked]
             points = {p.id: p for p in await db.run(

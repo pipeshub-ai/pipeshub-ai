@@ -11,9 +11,16 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 import pytest
 
-from app.services.graph_db.postgres.kg import drainer, grant_marks, stampgraph
+from app.services.graph_db.postgres.kg import (
+    dependents,
+    drainer,
+    grant_marks,
+    restamp,
+    stampgraph,
+)
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 from app.services.graph_db.postgres.kg.reader import seeks
+from app.services.graph_db.postgres.kg.writers import KgWriter
 from tests.support import plan_gate
 
 from .pg_support import new_org
@@ -120,7 +127,9 @@ async def test_the_first_drain_of_a_large_connector_commits_with_no_statistics_u
 
 
 # The key column each index of a statement below must be bounded by (with the org): a probe of any other index, or of one of these by the org alone, reads the org per row.
-KEY_OF = {"records_pkey": r"\bsk >= ", "records_id": r"\bid >= ", "records_parent": r"\bparent_sk >= ", "links_pkey": r"\bparent_sk\b", "links_child": r"\bchild_sk\b",
+KEY_OF = {"records_pkey": r"\bsk >= ", "records_id": r"\bid >= ", "records_parent": r"\bparent_sk >= ", "records_group": r"\bgroup_sk >= ", "records_fence": r"\bfence_job >= ",
+          "records_app": r"\bapp_sk IS NULL\b",
+          "links_pkey": r"\bparent_sk\b", "links_child": r"\bchild_sk\b",
           "scope_members_pkey": r"\bprincipal_sk\b", "scope_members_by_node": r"\bnode_sk >= "}
 KG = ("records", "links", "scope_members")
 
@@ -206,3 +215,40 @@ def test_the_plan_gate_judges_rows_per_probe_as_explain_reports_them() -> None:
              "Actual Rows": 5000, "Actual Loops": 100, "Rows Removed by Filter": 0}
     assert _not_seeks({"Plan": probe}) == ["records_pkey: 5000 rows per probe"]
     assert _not_seeks({"Plan": {**probe, "Actual Rows": 1}}) == []
+
+
+async def test_the_walk_below_a_large_change_reads_by_keys_with_no_statistics_and_analysed(pg_provider, pg_db, no_stats) -> None:
+    """EXPLAIN gate for the reads of a large change's walk (stamp.affected's kg children, and a subtree job's pages and rows, restamp._walk) on the world above with its folders
+    marked by a job: with kg's statistics cleared and then analysed, each reads kg.records and kg.links only by its key's index, bounded by the org and the key, a folder's rows at
+    most per probe (each read stops at its limit, so a group of 5,000 members is no larger a probe)."""
+    p, org = pg_provider, new_org()
+    await _world(p, org)
+    assert (await flip(pg_db, org))[0] == 1
+    job = 2 ** 40
+
+    async def mark(tx) -> tuple[list[int], int]:
+        rows = await tx.fetch("SELECT sk, coll, id, kind FROM kg.records WHERE org_id = $1 AND folder ORDER BY sk", org)
+        await KgWriter(tx).fence_rows([(r["sk"], r["coll"], r["id"], r["kind"]) for r in rows], job)
+        return [r["sk"] for r in rows], await tx.fetchval("SELECT sk FROM kg.records WHERE org_id = $1 AND coll = 2", org)
+    with ctx(org):
+        folders, group = await pg_db.run(mark, write=True)
+    assert len(folders) == FOLDERS
+    few = FILES // 2
+    wants = {"walk next": (restamp.WALK_NEXT, [job, 0, FOLDERS], True), "kg children": (dependents.KIDS_KG, [[*folders, group], few], True),
+             "page by parent": (restamp.WALK_PAGE_PARENT, [folders, few], True), "page by group": (restamp.WALK_PAGE_GROUP, [[group], few], True),
+             "page by links": (restamp.WALK_PAGE_LINKS, [folders, few], False), "one by parent": (restamp.WALK_ONE_PARENT, [folders[0], 0, few], True),
+             "one by group": (restamp.WALK_ONE_GROUP, [group, 0, few], True), "one by links": (restamp.WALK_ONE_LINKS, [folders[0], 0, 0, few], False),
+             "hide read": (restamp.HIDE_READ, [folders], True), "rows of no connector": (restamp.APPLESS_PARENT, [restamp.APPLESS_SCAN], True)}
+    for state in ("no statistics", "analysed"):
+        await (no_stats() if state == "no statistics" else _admin(RESTORE))
+        for name, (sql, args, rows) in wants.items():
+            async def go(tx, sql=sql, args=args) -> tuple[int, dict[str, Any]]:
+                async with seeks(tx):
+                    n = len(await tx.fetch(sql, org, *args))
+                    ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, org, *args)
+                return n, (json.loads(ran) if isinstance(ran, str) else ran)[0]
+            with ctx(org):
+                n, ran = await pg_db.run(go, custom_plan=True)
+            assert n > 0 or not rows, f"{state} {name}: the statement found nothing, so the gate judged no probe"
+            if bad := _not_seeks(ran):
+                pytest.fail(f"{state} {name}: not a seek per key: {bad}\n{json.dumps(ran, indent=1)[:6000]}")
