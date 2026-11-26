@@ -290,11 +290,11 @@ async def test_mg4_a_skill_created_again_while_its_digest_is_read_is_left_out() 
     facts_reader = reader(graph, kv, asked)
     digest = facts_reader._skill_digest
 
-    async def recreated_meanwhile(tenant: str, name: str, version: str) -> str | None:
+    async def recreated_meanwhile(org: str, name: str, version: str) -> str | None:
         if name == "notes":
             graph.add("agentSkills", "org-a_notes", name="notes", version="1.0.0", orgId="org-a", source="manual",
                       createdBy="u9", status="active", generation="g2", createdAtTimestamp=2)
-        return await digest(tenant, name, version)
+        return await digest(org, name, version)
 
     facts_reader._skill_digest = recreated_meanwhile
     agent = (await facts_reader.read("org-a", agent_key="a7")).model_dump(by_alias=True)["agents"][0]
