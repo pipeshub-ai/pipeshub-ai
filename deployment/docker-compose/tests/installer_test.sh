@@ -568,6 +568,15 @@ wizard="$(awk '/PostgreSQL profile \(opt-in\): kept across/{g=1} g{print} g&&/^ 
   check "wizard generates the others" "$PG_BACKUP_PASSWORD:$PG_ADMIN_PASSWORD:$PG_MONITOR_PASSWORD" "xxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxx"
   check "wizard pins the major" "$PG_MAJOR" "18"
 )
+# The metrics login was set by hand before the installer wrote it, so an exported value is the one its role may hold already.
+(
+  get_existing_val() { echo "${2:-}"; }
+  gen_secret() { printf 'x%.0s' $(seq 1 "${1:-32}"); }
+  PG_MONITOR_PASSWORD=exportedmonitor PG_NODE_PASSWORD=exportednode
+  eval "$wizard"
+  check_exact "wizard takes an exported monitoring password" "$PG_MONITOR_PASSWORD" "exportedmonitor"
+  check_exact "wizard still generates the other PG passwords" "$PG_NODE_PASSWORD" "xxxxxxxxxxxxxxxx"
+)
 check ".env writer lists all ten PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\${PG_' "$INNER_INSTALLER")" "10"
 
 # --reconfigure rebuilds COMPOSE_PROFILES from the wizard's choices; the saved override needs the PostgreSQL profiles, so they must
@@ -634,6 +643,14 @@ check ".env writer lists all ten PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\
   printf "${base}PG_MONITOR_PASSWORD=mine\n" >"$work/.env"
   (cd "$work" && bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
   check_exact "a value set by hand is kept" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "PG_MONITOR_PASSWORD=mine"
+  (cd "$work" && PG_MONITOR_PASSWORD=exportedmonitor bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
+  check_exact "a value in .env wins over an exported one" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "PG_MONITOR_PASSWORD=mine"
+  printf "$base" >"$work/.env"
+  (cd "$work" && PG_MONITOR_PASSWORD=exportedmonitor bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
+  check_exact "a reused .env takes the exported monitoring password" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "PG_MONITOR_PASSWORD=exportedmonitor"
+  printf "$base" >"$work/.env"
+  (cd "$work" && PG_MONITOR_PASSWORD=exportedmonitor bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
+  check_exact "--reconfigure takes the exported monitoring password" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "PG_MONITOR_PASSWORD=exportedmonitor"
 )
 
 # When docker needs root the installer runs itself again through sudo, which resets the environment: every setting the installer
@@ -675,7 +692,7 @@ STUB
 # Every variable the installer reads before it first sets it (so a value from the caller's environment counts) is in the list it keeps
 # across sudo. Not inputs: bash's own variables, internal flags read inside functions defined before they are set (the platform
 # probes, IMAGE_SOURCE, SANDBOX_PLAN), and the secrets the installer reads from .env or generates (SECRET_KEY, SECRET_KEY_PREVIOUS,
-# the PostgreSQL passwords set with printf -v), never from the environment.
+# the PostgreSQL passwords set with printf -v), never from the environment. PG_MONITOR_PASSWORD is the one exception (kept: checked below).
 _read="$(awk '
   { a=""; rest=$0
     if (match($0, /^[[:space:]]*(export |local |readonly )?[A-Z][A-Z0-9_]*=/)) { a=substr($0, RSTART, RLENGTH); sub(/^[[:space:]]*(export |local |readonly )?/, "", a); sub(/=$/, "", a); rest=substr($0, RSTART+RLENGTH) }
@@ -684,6 +701,7 @@ _read="$(awk '
 _kept="$(awk '/^    _keep=""/{g=1} g&&/; do$/{print; exit} g{print}' "$INNER_INSTALLER" | grep -oE '\b[A-Z][A-Z0-9_]*\b' | sort -u)"
 check_exact "the sudo re-exec list covers every setting the installer reads" "$(comm -23 <(printf '%s\n' "$_read") <(printf '%s\n' "$_kept"))" ""
 check "the guard finds settings without the PIPESHUB_ prefix" "$_read" "HEALTH_WAIT_SECS"
+check "the sudo re-exec keeps an exported monitoring password" "$_kept" "PG_MONITOR_PASSWORD"
 
 # --uninstall keeps the PostgreSQL volume unless --delete-postgres is given, also with --yes (checked with a recording docker).
 (

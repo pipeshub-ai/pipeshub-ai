@@ -69,7 +69,7 @@ if [[ $EUID -ne 0 ]] && \
               PIPESHUB_IMAGE_CAPABILITIES PIPESHUB_OFFLINE_BUNDLE PIPESHUB_IMAGE_VERIFY PIPESHUB_IMAGE_VERIFY_NO_TLOG \
               PIPESHUB_IMAGE_PUBKEY PIPESHUB_SIGNER_REPOSITORY PIPESHUB_SIGNER_WORKFLOW PIPESHUB_GVISOR \
               PIPESHUB_GVISOR_RELEASE PIPESHUB_GVISOR_BASE_URL PIPESHUB_GVISOR_BIN_DIR PIPESHUB_GVISOR_SHA512 \
-              SANDBOX_MODE SANDBOX_BROKER_WAIT_SECS DOCKER_HOST MONGO_URI; do
+              SANDBOX_MODE SANDBOX_BROKER_WAIT_SECS DOCKER_HOST MONGO_URI PG_MONITOR_PASSWORD; do
       [[ -n "${!_v+x}" ]] && _keep="${_keep:+$_keep,}$_v"
     done
     # With nothing set the call stays plain sudo, which needs no permission to keep variables.
@@ -2007,7 +2007,10 @@ if ! ${SKIP_WIZARD:-false}; then
   # PostgreSQL profile (opt-in): kept across --reconfigure like the other credentials.
   PG_MAJOR="$(get_existing_val PG_MAJOR "18")"
   for _pg in ADMIN NODE CONNECTORS INDEXING QUERY KV JOBS MIGRATE BACKUP MONITOR; do
-    printf -v "PG_${_pg}_PASSWORD" '%s' "$(get_existing_val "PG_${_pg}_PASSWORD" "$(gen_secret 16)")"
+    _pw="$(gen_secret 16)"
+    # The metrics login was set by hand before the installer wrote it, so an exported value may be what its role already holds.
+    [[ "$_pg" == MONITOR ]] && _pw="${PG_MONITOR_PASSWORD:-$_pw}"
+    printf -v "PG_${_pg}_PASSWORD" '%s' "$(get_existing_val "PG_${_pg}_PASSWORD" "$_pw")"
   done
 
   # Optional MongoDB knobs from env.template. The wizard never asks about these,
@@ -2371,8 +2374,9 @@ fi
 
 # Keep .env and -p in sync so later --stop / --uninstall only tear down this copy.
 persist_env_var "COMPOSE_PROJECT_NAME" "$PROJECT_NAME"
-# A .env written before the metrics login existed (reused, or --upgrade) gets its password once; a value already set is kept.
-[[ -n "$(get_existing_val PG_MONITOR_PASSWORD "")" ]] || persist_env_var PG_MONITOR_PASSWORD "$(gen_secret 16)"
+# A .env written before the metrics login existed (reused, or --upgrade) gets its password once: the exported one, if any, as
+# pg-roles.sh may have created the role with it; else a new one. A value already in .env is kept.
+[[ -n "$(get_existing_val PG_MONITOR_PASSWORD "")" ]] || persist_env_var PG_MONITOR_PASSWORD "${PG_MONITOR_PASSWORD:-$(gen_secret 16)}"
 
 # ==============================================================================
 # 14. DEPLOYMENT SUMMARY
