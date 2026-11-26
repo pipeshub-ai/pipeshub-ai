@@ -59901,7 +59901,11 @@ paths:
         '403': { description: "The token lacks agent:write; an engine agent needs an org admin; or the caller may not set the agent's policy" }
         '409': { description: An engine named in the profile cannot be used in this org now }
         '422': { description: A policy section widens the org's ceilings or is set on its own page (CP_* code naming the dimension) }
-        '503': { description: The document holds policy and this deployment keeps no agent policy }
+        '503':
+          description: |-
+            The document holds policy and this deployment keeps no agent policy, or the store holding the
+            organization's toolset instance list did not answer (nothing is imported; retry after the
+            `Retry-After` seconds).
   /agents/conversations/show/archives:
     get:
       tags:
@@ -69441,7 +69445,12 @@ paths:
             The caller asked for no `scope`, or for `org`, and is not confirmed as an administrator, but
             their role could not be confirmed either, so nothing was created (`SERVICE_UNAVAILABLE`; the
             connector service's wording is replaced with `This part of PipesHub is briefly unavailable.
-            Please try again in a few seconds.`). Asking for `personal` avoids the role check.
+            Please try again in a few seconds.`). Asking for `personal` avoids the role check. Also for an
+            organization instance when the store holding the instance list did not answer while it was read
+            or re-read for the write: the instance is not created and no other instance is changed. A new OAuth
+            configuration saved just before may remain and keeps its name, so retrying with the same inline OAuth
+            credentials answers `409` until that configuration is linked (`oauthConfigId`) or deleted; any other
+            create can be retried after the `Retry-After` seconds.
           content:
             application/json:
               schema:
@@ -69673,6 +69682,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |-
+            Administrators only: the store holding the instance list did not answer while it was read or
+            re-read for the write, so no instance was changed. New `authConfig` values saved to the OAuth
+            configuration just before may remain. When the instance had a linked OAuth configuration, a
+            retry after the `Retry-After` seconds updates it in place. When it had none, that save created
+            a new configuration that no instance links to: retry with its `oauthConfigId`, or delete it
+            first, or a retry with the same `authConfig` creates another one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Toolset Instances
@@ -69762,6 +69783,15 @@ paths:
             The agent-usage check or the store could not be read or written.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |-
+            Administrators only: the store holding the instance list did not answer while it was read or
+            re-read for the write, so the instance stays, with its users' sign-ins and its rules, and no other
+            instance is changed. Safe to retry after the `Retry-After` seconds.
           content:
             application/json:
               schema:
