@@ -2567,7 +2567,7 @@
       "rotateCredentialsPlaceholder": "New API key",
       "rotateCredentialsSave": "Update key",
       "rotateCredentialsFailed": "Could not update the key",
-      "connectionEndpointsDiffer": "Some models in this connection use a different endpoint: {{models}}. Move them back to the connection's endpoint or delete them, then try again.",
+      "connectionEndpointsDiffer": "These models in the connection use a different endpoint from {{reference}}: {{models}}. Put every model in the connection on one endpoint, then try again.",
       "identity": {
         "menuItem": "Identity forwarding",
         "title": "Identity forwarding",

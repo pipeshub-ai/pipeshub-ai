@@ -2613,7 +2613,7 @@
       "rotateCredentialsPlaceholder": "Nueva clave de API",
       "rotateCredentialsSave": "Actualizar clave",
       "rotateCredentialsFailed": "No se pudo actualizar la clave",
-      "connectionEndpointsDiffer": "Algunos modelos de esta conexión usan otro endpoint: {{models}}. Vuelve a ponerles el endpoint de la conexión o elimínalos y vuelve a intentarlo.",
+      "connectionEndpointsDiffer": "Estos modelos de la conexión usan un endpoint distinto al de {{reference}}: {{models}}. Pon todos los modelos de la conexión en el mismo endpoint y vuelve a intentarlo.",
       "identity": {
         "menuItem": "Reenvío de identidad",
         "title": "Reenvío de identidad",

@@ -58,12 +58,13 @@ describe('rotate credentials dialog', () => {
           { modelKey: 'a', modelType: 'llm', name: 'gpt-4o' },
           { modelKey: 'b', modelType: 'llm', name: 'gpt-4o-mini' },
         ],
+        reference: { modelKey: 'c', modelType: 'llm', name: 'gpt-5' },
       }),
     );
     await rotate();
     expect(
       await screen.findByText(
-        "Some models in this connection use a different endpoint: gpt-4o, gpt-4o-mini. Move them back to the connection's endpoint or delete them, then try again.",
+        "These models in the connection use a different endpoint from gpt-5: gpt-4o, gpt-4o-mini. Put every model in the connection on one endpoint, then try again.",
       ),
     ).toBeTruthy();
   });

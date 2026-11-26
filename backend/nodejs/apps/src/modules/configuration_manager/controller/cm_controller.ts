@@ -134,6 +134,7 @@ import {
   mergeAiModelCredentials,
   AI_MODEL_DESTINATION_KEYS,
   aiModelDestinationChanged,
+  aiModelDestinationsDiffer,
   hasForwardingCredentials,
   reusesSavedAiModelCredentials,
   withoutForwardingCredentials,
@@ -3679,8 +3680,11 @@ function destinationHost(
   existing: Record<string, unknown>,
   provider: unknown,
 ): string | undefined {
-  const key = AI_MODEL_DESTINATION_KEYS.find((k) =>
-    aiModelDestinationChanged({ [k]: incoming[k] }, existing, provider),
+  // A key the request leaves out is unchanged, so it is never the moved one.
+  const key = AI_MODEL_DESTINATION_KEYS.find(
+    (k) =>
+      k in incoming &&
+      aiModelDestinationChanged({ [k]: incoming[k] }, existing, provider),
   );
   try {
     return new URL(String(incoming[key as string])).host;
@@ -3787,11 +3791,11 @@ export const updateAIModelProvider =
         incoming,
         savedConfiguration,
       );
+      // The save keeps the stored provider, so a check run as another provider
+      // would not describe what is saved.
       if (
         targetModel.provider &&
-        String(provider).toLowerCase() !== targetModel.provider.toLowerCase() &&
-        (reusesCredentials ||
-          (!destinationChanged && hasForwardingCredentials(savedConfiguration)))
+        String(provider).toLowerCase() !== targetModel.provider.toLowerCase()
       ) {
         res.status(400).json({
           status: 'error',
@@ -3952,9 +3956,12 @@ export const updateAIModelProvider =
             latestSaved,
             current.model.provider,
           );
+          // The check ran against the endpoint read before it, which also
+          // covers a request that leaves the endpoint out.
           if (
-            latestDestinationChanged &&
-            reusesSavedAiModelCredentials(incoming, latestSaved)
+            aiModelDestinationsDiffer(savedConfiguration, latestSaved) ||
+            (latestDestinationChanged &&
+              reusesSavedAiModelCredentials(incoming, latestSaved))
           ) {
             movedDuringCheck = true;
             throw new AiModelsWriteAborted();

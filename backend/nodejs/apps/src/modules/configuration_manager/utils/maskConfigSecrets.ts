@@ -262,6 +262,7 @@ export const CREDENTIAL_REENTRY_REQUIRED = {
 } as const;
 
 type ConnectionMember = { modelType: string; entry: AIModelConfiguration };
+type ModelRef = { modelKey: string; modelType: string; name: string };
 
 /**
  * The 400 body for a new connection-wide secret when the connection's models
@@ -271,32 +272,38 @@ type ConnectionMember = { modelType: string; entry: AIModelConfiguration };
 export function connectionEndpointsDifferBody(
   members: ConnectionMember[],
 ): Record<string, unknown> | null {
-  const home = members[0]?.entry.configuration ?? {};
+  const describe = ({ modelType, entry }: ConnectionMember): ModelRef => ({
+    modelKey: entry.modelKey,
+    modelType,
+    name: String(
+      entry.modelFriendlyName || entry.configuration.model || entry.modelKey,
+    ),
+  });
+  const first = members[0];
+  if (!first) return null;
   const away = members
     .filter(({ entry }) =>
       aiModelDestinationsDiffer(
         entry.configuration,
-        home,
-        members[0]?.entry.provider,
+        first.entry.configuration,
+        first.entry.provider,
       ),
     )
-    .map(({ modelType, entry }) => ({
-      modelKey: entry.modelKey,
-      modelType,
-      name: String(
-        entry.modelFriendlyName || entry.configuration.model || entry.modelKey,
-      ),
-    }));
+    .map(describe);
   if (away.length === 0) return null;
+  // The first member is only what the others are compared with: storage order
+  // does not say which endpoint is the intended one, so name no side to move.
+  const reference = describe(first);
   return {
     status: 'error',
     error_code: CREDENTIAL_REENTRY_REQUIRED.error_code,
-    message: `These models use a different endpoint from the rest of the connection: ${away
+    message: `These models use a different endpoint from ${reference.name}: ${away
       .map((model) => model.name)
       .join(
         ', ',
-      )}. Move them back to the connection's endpoint or delete them, then save again.`,
+      )}. Put every model in the connection on one endpoint, then save again.`,
     models: away,
+    reference,
   };
 }
 
