@@ -186,6 +186,15 @@ describe('contract: no jsonwebtoken verify outside the allowlist', function () {
         expect(findVerifyCalls(source)).to.have.length.greaterThan(0);
       });
     }
+    it('reports the key jws.verify takes as its third argument', () => {
+      for (const source of [
+        "import jws from 'jws';\nexport const f = (t: string, k: string) => jws.verify(t, 'HS256', k);",
+        "import { verify } from 'jws';\nexport const f = (t: string, k: string) => verify(t, 'HS256', k);",
+        "import jws from 'jws';\nexport const f = (t: string, k: string) => jws.verify.call(null, t, 'HS256', k);",
+      ]) {
+        expect(findVerifyCalls(source).map((c) => c.key)).to.deep.equal(['k']);
+      }
+    });
     it('ignores decode, sign and a verify of something else', () => {
       expect(
         findVerifyCalls(
