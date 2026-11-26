@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sandbox Commands</title>
+<style>
+:root {
+  --bg: #f7f8fa; --panel: #ffffff; --text: #1c2024; --muted: #60646c; --faint: #8b8d98;
+  --line: #e0e1e6; --hover: #eef1ff; --accent: #3e63dd; --badge: #f0f0f3; --jade: #e6f6eb; --jade-text: #208368;
+  --add: #2a7e3b; --del: #ce2c31; --code: #f0f0f3; --term: #f4f5f7; --warn-bg: #fff7e0; --warn-line: #f3d68a; --warn-text: #8a5a00;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111113; --panel: #18191b; --text: #edeef0; --muted: #b0b4ba; --faint: #777b84;
+    --line: #2e3135; --hover: #1d2340; --accent: #9eb1ff; --badge: #232529; --jade: #0f2e22; --jade-text: #1fd8a4;
+    --add: #3dd68c; --del: #ff9592; --code: #212225; --term: #0d0e10; --warn-bg: #2a2110; --warn-line: #5c4512; --warn-text: #ffca61;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111113; --panel: #18191b; --text: #edeef0; --muted: #b0b4ba; --faint: #777b84;
+  --line: #2e3135; --hover: #1d2340; --accent: #9eb1ff; --badge: #232529; --jade: #0f2e22; --jade-text: #1fd8a4;
+  --add: #3dd68c; --del: #ff9592; --code: #212225; --term: #0d0e10; --warn-bg: #2a2110; --warn-line: #5c4512; --warn-text: #ffca61;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 18px; margin: 0 40px 4px 0; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 32px 0 8px; }
+p.note { color: var(--muted); margin: 0 0 16px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.menu { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 4px; width: min(420px, 100%); box-shadow: 0 8px 24px rgba(0,0,0,.08); }
+.group { font-size: 11px; font-weight: 600; letter-spacing: .05em; color: var(--faint); padding: 8px 8px 4px; text-transform: uppercase; }
+.opt { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 8px; align-items: baseline; padding: 6px 8px; border-radius: 6px; }
+.opt[aria-selected="true"] { background: var(--hover); }
+.opt[aria-disabled="true"] .name, .opt[aria-disabled="true"] .desc { color: var(--faint); }
+.name { font-weight: 600; }
+.desc { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sub { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--badge); color: var(--muted); white-space: nowrap; }
+.foot { display: flex; justify-content: flex-end; gap: 12px; font-size: 11px; color: var(--faint); padding: 6px 8px 4px; border-top: 1px solid var(--line); margin-top: 4px; }
+.row { border-left: 2px solid var(--line); padding: 6px 0 6px 12px; margin: 14px 0; min-width: 0; }
+.row .head { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.row .head .mono { color: var(--text); overflow-wrap: anywhere; }
+.row .body { margin-top: 4px; min-width: 0; }
+.saved { font-size: 11px; color: var(--faint); }
+.btn { font: inherit; font-size: 12px; min-height: 32px; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.link { color: var(--accent); text-decoration: none; font-size: 12px; }
+.select { display: inline-block; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--code); }
+.muted { color: var(--muted); } .faint { color: var(--faint); }
+.add { color: var(--add); } .del { color: var(--del); }
+.tree { list-style: none; margin: 4px 0 0; padding: 0; font-size: 13px; }
+.tree li { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; padding: 3px 0; border-bottom: 1px dashed var(--line); align-items: center; }
+.tree li .p { overflow-wrap: anywhere; min-width: 0; }
+.tree li.d .p { font-weight: 600; }
+.tree .ind { padding-left: 16px; }
+.tree .act { color: var(--accent); min-width: 28px; text-align: center; }
+.term { background: var(--term); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin-top: 6px; font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.term .err { color: var(--del); }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; font-size: 13px; }
+.kv > span:nth-child(odd) { color: var(--muted); }
+.card { background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 8px; padding: 10px 12px; margin-top: 8px; }
+.card .t { font-weight: 600; color: var(--warn-text); }
+.preview { border: 1px solid var(--line); border-radius: 6px; margin-top: 6px; background: var(--panel); font-size: 12.5px; }
+.preview .bar { padding: 4px 10px; border-bottom: 1px solid var(--line); color: var(--muted); display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.preview pre { margin: 0; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ln { color: var(--faint); user-select: none; display: inline-block; width: 2.2em; }
+.kw { color: var(--accent); }
+.radio { display: grid; gap: 6px; margin-top: 6px; }
+.radio label { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: baseline; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; min-height: 44px; }
+.radio label.off { color: var(--faint); }
+.radio .why { grid-column: 2; font-size: 12px; color: var(--muted); }
+.toggle { position: fixed; top: 8px; right: 16px; }
+@media (max-width: 480px) { .tree li .m { display: none; } .tree li { grid-template-columns: 1fr auto; } }
+</style>
+</head>
+<body>
+<main>
+  <button class="btn toggle" type="button" id="theme" aria-label="Toggle theme">◐</button>
+  <h1>SLASH3: sandbox commands</h1>
+  <p class="note">A static mock of the sandbox slash commands. It has no product code and no live data.</p>
+
+  <h2>The menu after typing “/”</h2>
+  <div class="menu" role="listbox" aria-label="Commands" aria-activedescendant="opt-run">
+    <div role="group" aria-labelledby="g-builtin">
+      <div class="group" id="g-builtin">Built-in</div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/new</span><span class="desc">Start a new chat</span><span class="badge">also /clear</span></div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/diff</span><span class="desc">Files this chat changed</span><span></span></div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">More built-ins…</span><span class="desc">22 more</span><span></span></div>
+    </div>
+    <div role="group" aria-labelledby="g-sandbox">
+      <div class="group" id="g-sandbox">Sandbox</div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/files</span><span class="desc">Files in this chat's workspace</span><span></span></div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/open</span><span class="desc">Show a file here</span><span class="badge mono">path</span></div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/download</span><span class="desc">A file, or everything as .zip</span><span></span></div>
+      <div class="opt" role="option" aria-selected="false" aria-disabled="true"><span class="name mono">/upload</span><span class="desc">Add files to the workspace</span><span></span><span class="sub">ⓘ Wait for this run to finish</span></div>
+      <div class="opt" role="option" id="opt-run" aria-selected="true"><span class="name mono">/run</span><span class="desc">Run a command, without the model</span><span class="badge mono">command</span></div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/sandbox</span><span class="desc">What runs this chat's code</span><span class="badge">also /env</span></div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/engine</span><span class="desc">Coding engine for your next message</span><span></span></div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/logs</span><span class="desc">Commands and their output</span><span></span></div>
+    </div>
+    <div role="group" aria-labelledby="g-you">
+      <div class="group" id="g-you">Your commands</div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/triage</span><span class="desc">Triage an incident</span><span class="badge">You</span></div>
+    </div>
+    <div class="foot"><span>↑↓ move</span><span>Enter choose</span><span>Esc close</span></div>
+  </div>
+  <p class="note" style="margin-top:8px">The same menu in a shared chat, for a participant: every Sandbox row is greyed out with “Only the chat's owner can use the sandbox”. In a chat without the code tool, <span class="mono">/run</span> shows “This chat can't run code”.</p>
+
+  <h2>/files</h2>
+  <div class="row">
+    <div class="head"><span class="mono">/files</span><span>Version 7 · 6 files · 1.4 MB</span></div>
+    <ul class="tree mono" role="tree" aria-label="Workspace files">
+      <li class="d" role="treeitem" aria-expanded="true"><span class="p">▾ out/</span><span class="m faint">1.3 MB</span><span></span></li>
+      <li role="treeitem"><span class="p ind">travel_policy.md</span><span class="m faint">12 KB</span><span class="act" aria-label="Open">▸</span></li>
+      <li role="treeitem"><span class="p ind">summary.csv</span><span class="m faint">3.1 KB</span><span class="act" aria-label="Open">▸</span></li>
+      <li role="treeitem"><span class="p ind">chart.png</span><span class="m faint">1.3 MB</span><span class="act" aria-label="Open">▸</span></li>
+      <li class="d" role="treeitem" aria-expanded="true"><span class="p">▾ uploads/</span><span class="m faint">48 KB</span><span></span></li>
+      <li role="treeitem"><span class="p ind">expenses_q3.xlsx</span><span class="m faint">48 KB</span><span class="act" aria-label="Download">⤓</span></li>
+      <li role="treeitem"><span class="p">analyse.py</span><span class="m faint">2.2 KB</span><span class="act" aria-label="Open">▸</span></li>
+    </ul>
+    <div class="btns"><button class="btn" type="button">Download all (.zip)</button></div>
+  </div>
+
+  <h2>/open</h2>
+  <div class="row">
+    <div class="head"><span class="mono">/open analyse.py</span></div>
+    <div class="preview mono">
+      <div class="bar"><span>analyse.py · 58 lines · version 7</span><a class="link" href="#drawer">Open in Activity</a></div>
+<pre><span class="ln">1</span><span class="kw">import</span> csv
+<span class="ln">2</span><span class="kw">from</span> pathlib <span class="kw">import</span> Path
+<span class="ln">3</span>
+<span class="ln">4</span>rows = list(csv.DictReader(Path(<span class="add">"out/summary.csv"</span>).open()))
+<span class="ln">5</span>total = sum(float(r[<span class="add">"amount"</span>]) <span class="kw">for</span> r <span class="kw">in</span> rows)
+<span class="ln">6</span>print(f<span class="add">"{len(rows)} rows, total {total:.2f}"</span>)
+<span class="faint">… 52 more lines</span></pre>
+    </div>
+  </div>
+
+  <h2>/run, offline (no card, as for the agent)</h2>
+  <div class="row">
+    <div class="head"><span class="mono">/run python analyse.py &amp;&amp; ls out</span><span class="saved">saved</span></div>
+    <div class="body">
+      <div class="term mono" role="log" aria-live="polite">$ python analyse.py &amp;&amp; ls out
+42 rows, total 18311.40
+chart.png
+summary.csv
+travel_policy.md
+report.txt</div>
+      <div class="muted" style="font-size:12px;margin-top:4px">✓ exit 0 · 1.8 s · sandbox without network · 1 file added: <span class="mono">out/report.txt</span> (version 8)</div>
+      <div class="btns">
+        <button class="btn" type="button">Ask about this</button>
+        <button class="btn" type="button">Undo</button>
+        <a class="link" href="#drawer" style="align-self:center">View full output</a>
+      </div>
+    </div>
+  </div>
+
+  <h2>/run that needs the network (approval card, inline)</h2>
+  <p class="note">In a chat whose sandbox has network: the deployment's <span class="mono">run_code</span> reaches public hosts through the egress proxy. Below it, the same command in an offline sandbox.</p>
+  <div class="row">
+    <div class="head"><span class="mono">/run curl -sS https://api.frankfurter.app/latest?from=EUR</span><span class="saved">saved</span></div>
+    <div class="body">
+      <div class="card" role="group" aria-labelledby="ap-t">
+        <div class="t" id="ap-t">Run this command? It can reach the internet.</div>
+        <div style="font-size:13px;margin-top:4px">This chat's sandbox reaches public hosts through PipesHub's proxy. Earlier in this chat the agent read <b>2 confidential records</b>, so your organization asks before anything leaves.</div>
+        <div class="term mono">curl -sS https://api.frankfurter.app/latest?from=EUR</div>
+        <div class="btns">
+          <button class="btn primary" type="button">Allow</button>
+          <button class="btn" type="button">Allow for this conversation</button>
+          <button class="btn" type="button">Deny</button>
+        </div>
+      </div>
+      <div class="faint" style="font-size:12px;margin-top:6px">The same card the agent's code gets. Your answer is recorded with the run.</div>
+    </div>
+  </div>
+  <div class="row">
+    <div class="head"><span class="mono">/run curl -sS https://example.com</span><span class="saved">saved</span></div>
+    <div class="body">
+      <div class="term mono">$ curl -sS https://example.com
+<span class="err">curl: (6) Could not resolve host: example.com</span></div>
+      <div class="muted" style="font-size:12px;margin-top:4px">✗ exit 6 · 0.3 s · This sandbox has no network. Ask the agent to use web search instead.</div>
+    </div>
+  </div>
+
+  <h2>/sandbox</h2>
+  <div class="row">
+    <div class="head"><span class="mono">/sandbox</span></div>
+    <div class="body kv">
+      <span>Executor</span><span>Claude Code 2.1.294 <span class="faint">· next message: Codex 0.160.0</span></span>
+      <span>Code runs in</span><span class="mono">pxh-sandbox · sha256:0687a6bc · gVisor</span>
+      <span>Runtime</span><span>Python 3.12 · 48 packages <a class="link" href="#pk">▸ list</a></span>
+      <span>Network</span><span>None</span>
+      <span>Approvals</span><span>Code runs without asking (own sandbox)</span>
+      <span>Workspace</span><span>Version 8 · 7 files · 1.4 MB</span>
+      <span>Kept sandbox</span><span>Signed in to Claude · ends after 30 min idle (18 min left), at the latest 21:40</span>
+    </div>
+    <div class="btns"><button class="btn" type="button">End now…</button></div>
+    <div class="faint" style="font-size:12px;margin-top:6px">Each message starts a fresh sandbox from your files. Only a Claude sign-in sandbox is kept between messages.</div>
+  </div>
+
+  <h2>/engine</h2>
+  <div class="row">
+    <div class="head"><span class="mono">/engine</span><span class="saved">saved</span></div>
+    <div class="body">
+      Coding engine for this chat <span class="muted">· from your next message</span>
+      <div class="radio" role="radiogroup" aria-label="Coding engine">
+        <label><input type="radio" name="e"><span>None – built-in agent loop</span></label>
+        <label><input type="radio" name="e" checked><span>Codex</span></label>
+        <label><input type="radio" name="e"><span>Claude Code</span></label>
+        <label class="off"><input type="radio" name="e" disabled><span>opencode</span><span class="why">This engine isn't installed on this server</span></label>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:6px">Your files carry over. The reply in progress keeps its engine. Your Claude sign-in for this chat ends after 30 min idle.</div>
+      <a class="link" href="#settings">Make this my default</a>
+    </div>
+  </div>
+
+  <p class="note" id="drawer">“Open in Activity”, “View full output” and <span class="mono">/logs</span> open the existing Activity drawer at Commands (UX5). They are not linked in this mock.</p>
+</main>
+<script>
+document.getElementById('theme').addEventListener('click', () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  root.dataset.theme = dark ? 'light' : 'dark';
+});
+</script>
+</body>
+</html>

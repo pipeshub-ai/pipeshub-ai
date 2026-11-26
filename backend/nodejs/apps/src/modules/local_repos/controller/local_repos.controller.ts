@@ -9,7 +9,6 @@
 
 import { NextFunction, Response } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { Logger } from '../../../libs/services/logger.service';
 import { UnauthorizedError } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
@@ -18,8 +17,6 @@ import {
   handleBackendError,
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
-
-const logger = Logger.getInstance({ service: 'LocalReposController' });
 
 const LOCAL_REPOS_BASE = '/api/v1/local-repos';
 // A batch of files is up to a few MiB of source; the mirror write is local disk.
@@ -108,10 +105,6 @@ function proxy(
           `${action} failed`,
         );
       } catch (error: unknown) {
-        logger.error(`Error in local repositories proxy: ${action}`, {
-          error: error instanceof Error ? error.message : String(error),
-          userId: req.user?.userId as unknown,
-        });
         next(handleBackendError(error, action));
       }
     };

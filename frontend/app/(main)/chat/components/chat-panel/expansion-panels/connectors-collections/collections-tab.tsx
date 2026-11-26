@@ -353,7 +353,7 @@ export function CollectionsTab({
           <MaterialIcon
             name="search"
             size={ICON_SIZES.PRIMARY}
-            color="var(--slate-9)"
+            color="var(--slate-11)"
           />
           <input
             type="text"
@@ -377,7 +377,7 @@ export function CollectionsTab({
       </Flex>
 
       {queryTooShort && (
-        <Text size="1" style={{ color: 'var(--neutral-a10)', padding: '0 var(--space-1)', flexShrink: 0 }}>
+        <Text size="1" style={{ color: 'var(--neutral-a11)', padding: '0 var(--space-1)', flexShrink: 0 }}>
           {t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })}
         </Text>
       )}
@@ -415,7 +415,7 @@ export function CollectionsTab({
 
         {hasError && !isLoading && (
           <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
-            <Text size="2" style={{ color: 'var(--red-9)' }}>
+            <Text size="2" style={{ color: 'var(--red-11)' }}>
               {t('chat.failedToLoadCollections')}
             </Text>
           </Flex>
@@ -426,7 +426,7 @@ export function CollectionsTab({
           flatKbItems.length === 0 ? (
             searchingServer ? null : (
             <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
-              <Text size="2" style={{ color: 'var(--slate-9)' }}>
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>
                 {searchQuery ? t('message.noCollections') : t('chat.noCollectionsAvailable')}
               </Text>
             </Flex>
@@ -443,7 +443,7 @@ export function CollectionsTab({
         {/* ── Normal mode (connectors / all): time-grouped root rows ── */}
         {filterMode !== 'collections' && !isLoading && !hasError && !queryTooShort && groupedCollections.length === 0 && !searchingServer && (
           <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
-            <Text size="2" style={{ color: 'var(--slate-9)' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
               {searchQuery || collections.length > 0
                 ? t(filterMode === 'connectors' ? 'chat.noConnectorsFound' : 'message.noCollections')
                 : t('chat.noCollectionsAvailable')}
@@ -470,7 +470,7 @@ export function CollectionsTab({
                     fontWeight: 400,
                     lineHeight: 'var(--line-height-1)',
                     letterSpacing: '0.04px',
-                    color: 'var(--olive-9)',
+                    color: 'var(--olive-11)',
                   }}
                 >
                   {label}

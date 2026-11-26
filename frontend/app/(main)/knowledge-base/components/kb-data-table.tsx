@@ -310,7 +310,7 @@ export function KbDataTable({
               ? t('sidebar.noCollectionSelected')
               : t('sidebar.noCollectionsAvailable')}
           </Text>
-          <Text size="2" style={{ color: 'var(--slate-10)' }}>
+          <Text size="2" style={{ color: 'var(--slate-11)' }}>
             {hasCollections
               ? t('sidebar.selectCollectionOrCreate')
               : t('sidebar.noCollectionsCreatePrompt')}
@@ -365,7 +365,7 @@ export function KbDataTable({
                       : t('kb.folderEmpty')
                 }
               </Text>
-              <Text size="2" style={{ color: 'var(--slate-10)', textAlign: 'center', maxWidth: 420, padding: `0 ${PAGE_PADDING_X}` }}>
+              <Text size="2" style={{ color: 'var(--slate-11)', textAlign: 'center', maxWidth: 420, padding: `0 ${PAGE_PADDING_X}` }}>
                 {hasSearchQuery
                   ? t('kb.searchEmptyHint')
                   : hasActiveFilters
@@ -524,6 +524,7 @@ function RecordsLoadingTable({
   showSourceColumn: boolean;
   isMobile: boolean;
 }) {
+  const { t } = useTranslation();
   const { style: columnWidthStyle } = useKbColumnWidths();
   return (
     <Flex
@@ -533,7 +534,9 @@ function RecordsLoadingTable({
       aria-label={label}
       style={{ flex: 1, minHeight: 0, backgroundColor: 'var(--olive-1)', ...columnWidthStyle }}
     >
+      {/* The table's outline while it loads: the status says what is happening, so the header is only drawn. */}
       <Flex
+        aria-hidden
         align="center"
         style={{
           height: 36,
@@ -543,12 +546,12 @@ function RecordsLoadingTable({
         }}
       >
         <Box style={{ width: 36, flexShrink: 0 }} />
-        <TableHeaderCell label="File Name" flex={1} />
-        <TableHeaderCell label="Status" width={kbCol('status')} minWidth={kbColMin('status')} align="center" />
-        {showSourceColumn && <TableHeaderCell label="Source" width={kbCol('source')} minWidth={kbColMin('source')} align="center" />}
-        {!isMobile && <TableHeaderCell label="Size" width={kbCol('size')} minWidth={kbColMin('size')} align="center" />}
-        {!isMobile && <TableHeaderCell label="Created" width={kbCol('created')} minWidth={kbColMin('created')} align="center" />}
-        {!isMobile && <TableHeaderCell label="Updated" width={kbCol('updated')} minWidth={kbColMin('updated')} align="center" />}
+        <TableHeaderCell label={t('table.fileName')} flex={1} />
+        <TableHeaderCell label={t('table.status')} width={kbCol('status')} minWidth={kbColMin('status')} align="center" />
+        {showSourceColumn && <TableHeaderCell label={t('table.source')} width={kbCol('source')} minWidth={kbColMin('source')} align="center" />}
+        {!isMobile && <TableHeaderCell label={t('table.size')} width={kbCol('size')} minWidth={kbColMin('size')} align="center" />}
+        {!isMobile && <TableHeaderCell label={t('table.created')} width={kbCol('created')} minWidth={kbColMin('created')} align="center" />}
+        {!isMobile && <TableHeaderCell label={t('table.updated')} width={kbCol('updated')} minWidth={kbColMin('updated')} align="center" />}
         <Box style={{ width: 104, flexShrink: 0 }} />
       </Flex>
       <Box style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>

@@ -1,0 +1,147 @@
+{
+  "_comment": "Release data (PROJECT-PLAN rule 8): the engine versions a deployment may run, each pinned by the sha256 of the binary inside its image. The registry refuses any other version or digest; the image build (deployment/sandbox-images/<engine>/build.sh) verifies the release asset and the binary against this file. A new version is a reviewed change here, after its licence scan and its candidate gate (build.sh --candidate; E9 \"Admitting a new engine version\"). An engine may list several versions side by side (C14.01), each its own entry with its own image: the first entry of a kind is the version new conversations start on; a conversation keeps the version it started on while that version stays listed and its org allows it, and an org admin may turn any version off (`kind@version` in the org ceiling's engines). Every engine's release default profile is contracts/harness/core/policy/release.json (`engineProfile`); an org ceiling, the agent and the request may only narrow it (E4a).",
+  "engines": [
+    {
+      "kind": "opencode",
+      "version": "1.18.34",
+      "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182",
+      "image": "pxh-opencode-tools:1.18.34-ph7",
+      "cpus": 2,
+      "variants": {
+        "_comment": "Images of this engine version, each a target of deployment/sandbox-images/opencode/Dockerfile carrying the same binary. `image` above is the one every run uses (E0b: the wave 1 runtimes are the release default); the engine-only image is built for its own tests and is not a run image.",
+        "engine": "pxh-opencode:1.18.34",
+        "tools": "pxh-opencode-tools:1.18.34-ph7"
+      },
+      "asset": {
+        "name": "opencode-linux-x64-musl.tar.gz",
+        "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.34/opencode-linux-x64-musl.tar.gz",
+        "sha256": "9dd4470885d07205e31b702465564aaee97be26ee3dc192ec6702a15e7a21272",
+        "member": "opencode"
+      }
+    },
+    {
+      "kind": "codex",
+      "version": "0.160.0",
+      "binaryDigest": "sha256:d9244ef26a5193aec701e61c2f9280d44040efbedb9c16b4c0c6f41e354bcdd3",
+      "image": "pxh-codex-tools:0.160.0-ph7",
+      "variants": {
+        "_comment": "As opencode's (E0b): every run uses the tools image, so the programs Codex writes run in its own shell (EMPTYOUT); the engine-only image is built for its own tests.",
+        "engine": "pxh-codex:0.160.0",
+        "tools": "pxh-codex-tools:0.160.0-ph7"
+      },
+      "asset": {
+        "name": "codex-app-server-x86_64-unknown-linux-musl.tar.gz",
+        "url": "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-app-server-x86_64-unknown-linux-musl.tar.gz",
+        "sha256": "d0a05909836d4a73634641b89c7a62fd99c0978cdfe7ae9b8b631e9ee6d9da46",
+        "member": "codex-app-server-x86_64-unknown-linux-musl"
+      }
+    },
+    {
+      "_comment": "Claude Code is proprietary (D29): PipesHub never ships it. The customer's admin supplies the binary and builds the image with deployment/sandbox-images/claude-code/build.sh --binary PATH; the build and every run refuse any other digest. Tested version: 2.1.319, admitted 2026-11-14 (R50-CC319, owner-approved) after the 2.1.294 binary was lost to a prune of the shared Docker host; replaces 2.1.294 (admitted 2026-10-09 by CC1).",
+      "kind": "claude_code",
+      "version": "2.1.319",
+      "binaryDigest": "sha256:dabafec82ca1319fa43d8be36a10fc61b1d11821cb98ad5df04ad95e199b8eed",
+      "image": "pxh-claude-code-tools:2.1.319-ph7",
+      "variants": {
+        "_comment": "As Codex's (EMPTYOUT, CCPY): every run uses the tools image (CPython 3.12 on the same Debian release and opencode's lock, from the same pins' glibc wheels), so the programs Claude Code writes run in its own shell; the engine-only image is built for its own tests. Both are admin-built from the same binary.",
+        "engine": "pxh-claude-code:2.1.319",
+        "tools": "pxh-claude-code-tools:2.1.319-ph7"
+      },
+      "supply": "admin"
+    },
+    {
+      "_comment": "opencode's own ACP server driven by the generic ACP driver (ACP-driver): the same binary and run image as the native opencode entry, no download of its own. Runs only where its profile in acp_agents.json is installed (signed, or the dev override on a dev or test install); an admin then enables it per organization by naming it in the engine profile.",
+      "kind": "acp-opencode",
+      "version": "1.18.34",
+      "name": "opencode (ACP)",
+      "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182",
+      "image": "pxh-opencode-tools:1.18.34-ph7",
+      "variants": {
+        "_comment": "The native opencode entry's run image, which carries the same binary: no image of its own.",
+        "tools": "pxh-opencode-tools:1.18.34-ph7"
+      }
+    },
+    {
+      "_comment": "Gemini CLI's own ACP mode driven by the generic ACP driver (WP-13): Google's Apache-2.0 release bundle (Node; the entry point gemini.js, whose imports name every chunk by its content hash, is the pinned binary). Its model traffic reaches only the model gateway's Gemini wire; no Google sign-in or key (GA-23). Runs only where its profile in acp_agents.json is installed (signed, or the dev override on a dev or test install); an admin then enables it per organization by naming it in the engine profile.",
+      "kind": "acp-gemini",
+      "version": "0.63.0",
+      "name": "Gemini CLI (ACP)",
+      "binaryDigest": "sha256:5aee9ecb65b0b821e36a12f6e9e837301636de1a849a5a8bcc9c2b2620bbd72e",
+      "image": "pxh-gemini-tools:0.63.0-ph7",
+      "variants": {
+        "_comment": "As the native engines' (E0b): every run uses the tools image (CPython 3.12 and opencode's lock beside Node), so the programs Gemini CLI writes run in its own shell. The engine-only image (the Dockerfile's engine stage) is built for the tools layer's licence scan (opencode/tools/scan.sh acp-gemini) and is not a run image.",
+        "engine": "pxh-gemini:0.63.0",
+        "tools": "pxh-gemini-tools:0.63.0-ph7"
+      },
+      "asset": {
+        "name": "gemini-cli-bundle.zip",
+        "url": "https://github.com/google-gemini/gemini-cli/releases/download/v0.63.0/gemini-cli-bundle.zip",
+        "sha256": "c9d66e50a0fe098a32486360308e558c472809da276caf2aac2769d8f10571c2",
+        "member": "gemini.js",
+        "tree": true
+      }
+    },
+    {
+      "_comment": "Goose's own ACP mode (`goose acp`) driven by the generic ACP driver (C2.41): the AAIF's Apache-2.0 release binary (a static Rust build for musl). Its model traffic reaches only the model gateway's chat-completions wire through Goose's OpenAI provider; telemetry, the keyring and every extension but its built-in developer tools are off. Runs only where its profile in acp_agents.json is installed (signed, or the dev override on a dev or test install); an admin then enables it per organization by naming it in the engine profile.",
+      "kind": "acp-goose",
+      "version": "1.57.0",
+      "name": "Goose (ACP)",
+      "binaryDigest": "sha256:bb259a6f0dd02ce9c5e3793edb91e68a84d40eb24478e8b28dd556ebf3681dc1",
+      "image": "pxh-goose-tools:1.57.0-ph7",
+      "variants": {
+        "_comment": "As the native engines' (E0b): every run uses the tools image; the engine-only image (the Dockerfile's engine stage) is built for the tools layer's licence scan and is not a run image.",
+        "engine": "pxh-goose:1.57.0",
+        "tools": "pxh-goose-tools:1.57.0-ph7"
+      },
+      "asset": {
+        "name": "goose-x86_64-unknown-linux-musl.tar.gz",
+        "url": "https://github.com/aaif-goose/goose/releases/download/v1.57.0/goose-x86_64-unknown-linux-musl.tar.gz",
+        "sha256": "6c3a05e30e1a425dc06a410dbe24b3f3697c9721b1ea2340434ddda6b64267ae",
+        "member": "./goose"
+      }
+    },
+    {
+      "_comment": "Qwen Code's own ACP mode (`qwen --acp`) driven by the generic ACP driver (C2.41): Qwen's Apache-2.0 npm release (@qwen-code/qwen-code; the registry tarball, whose npm integrity is sha512-iqcBqLQDmKvOtRcVvF78l7bf0NpdymGFBo0qNY0ausPezht+PLXkh15vnIILaBKtM4BabtHSv60xWftMomJ7hw==; the entry point cli.js, whose imports name every chunk by content hash, is the pinned binary). Its model traffic reaches only the model gateway's chat-completions wire through its OpenAI auth type; no Qwen OAuth, DashScope or key. Runs only where its profile in acp_agents.json is installed (signed, or the dev override on a dev or test install); an admin then enables it per organization by naming it in the engine profile. minMemoryMb: Its live set is about 300 MB, but the first shell commands of a session make V8 tier up the tree-sitter-bash parser it checks every command with, which takes about 1.6 GB more for some seconds (the same in a bare node process; gone with --liftoff-only or --no-liftoff, flags NODE_OPTIONS refuses). The default 1 GiB sandbox is OOM-killed there (R23PERF-FU-2).",
+      "kind": "acp-qwen",
+      "version": "0.26.5",
+      "name": "Qwen Code (ACP)",
+      "binaryDigest": "sha256:246f1cb65502335863d28a17ea43a10c6d9537bfb209b6f0beafccbf443c4435",
+      "image": "pxh-qwen-tools:0.26.5-ph7",
+      "minMemoryMb": 3072,
+      "variants": {
+        "_comment": "As the native engines' (E0b): every run uses the tools image; the engine-only image is built for the tools layer's licence scan and is not a run image.",
+        "engine": "pxh-qwen:0.26.5",
+        "tools": "pxh-qwen-tools:0.26.5-ph7"
+      },
+      "asset": {
+        "name": "qwen-code-0.26.5.tgz",
+        "url": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.26.5.tgz",
+        "sha256": "fb8dd2b327beedbe639966fca24d27b1b2860b148b78628812178262af871d1a",
+        "member": "package/cli.js",
+        "tree": true
+      }
+    },
+    {
+      "_comment": "DeepSeek Harness's own ACP server (`dsh --profile acp`) driven by the generic ACP driver (WP-105, C2.43): DeepSeek's MIT npm release (@deepseek-ai/dsh; the registry tarball, whose npm integrity is sha512-ijR9UEVYkG15Q/Q79JzvzLBzQOQfc63VLr9n6flpwHPhr5IKn2UxthnSoto/P9l7qGd7pPvI1Ra6TW7LH3oKpg==; its entry point lib/bin.js is the pinned binary). dsh is a Node program over some 650 packages, so the image installs the exact tree of the pinned lock (asset.lock: every package's integrity in it, npm ci without install scripts). A developer preview (an rc): its model traffic reaches only the model gateway's chat-completions wire; DeepSeek's account, keys, telemetry and its own control plane are off. Runs only where its profile in acp_agents.json is installed (signed, or the dev override on a dev or test install); an admin then enables it per organization by naming it in the engine profile. Never an org default.",
+      "kind": "acp-dsh",
+      "version": "0.2.2-rc.1",
+      "name": "DeepSeek Harness",
+      "binaryDigest": "sha256:b6640801a5a65aae9f53ca21bcce3b2ea28bd9e9554c939c1ff7c4448d91fa18",
+      "image": "pxh-dsh-tools:0.2.2-rc.1-ph7",
+      "variants": {
+        "_comment": "As the native engines' (E0b): every run uses the tools image; the engine-only image is built for the tools layer's licence scan and is not a run image.",
+        "engine": "pxh-dsh:0.2.2-rc.1",
+        "tools": "pxh-dsh-tools:0.2.2-rc.1-ph7"
+      },
+      "asset": {
+        "name": "dsh-0.2.2-rc.1.tgz",
+        "url": "https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.2.2-rc.1.tgz",
+        "sha256": "ad21968aed0337a326b853507a23b30eacbbec4d67ab07f3b6fde69b75b19cd6",
+        "member": "package/lib/bin.js",
+        "tree": true,
+        "lock": "engine/package-lock.json",
+        "lockSha256": "d4d2bbb7665d3b7de1ce92bec6f42d117289a12f9f6639e6ce5e008507f19190"
+      }
+    }
+  ]
+}

@@ -165,6 +165,7 @@ def test_a_wait_stops_on_cancel_and_a_waiter_is_granted_when_capacity_frees(ledg
         assert permit.cpu == 1
         return time.monotonic() - t
 
+    # wall-clock-ok: the release lands at 0.1 s; the 1 s ceiling is ten times that, far under the 5 s deadline it must beat
     assert 0.08 <= asyncio.run(run()) < 1.0
 
 
@@ -323,6 +324,7 @@ def test_death_reclaim(ledger: Path) -> None:
     proc.join()
     t = time.monotonic()
     p = b.reserve_blocking(Demand(Family.PARSE, 1, 0, "small"), deadline_s=3)
+    # wall-clock-ok: a dead holder's share is taken back at once (ms); the failure is waiting out the 3 s deadline
     assert p is not None and time.monotonic() - t < 1.0
     snap = b.snapshot()
     assert snap["used"] == 1 and snap["processes"] == 1

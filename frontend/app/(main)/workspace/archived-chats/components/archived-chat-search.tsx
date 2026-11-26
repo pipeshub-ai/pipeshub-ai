@@ -264,7 +264,7 @@ export function ArchivedChatSearch({
                 </Flex>
               ) : (
                 <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
-                  <Text size="2" style={{ color: 'var(--slate-a9)' }}>
+                  <Text size="2" style={{ color: 'var(--slate-a11)' }}>
                     {t('message.noResults')}
                   </Text>
                 </Flex>
@@ -287,7 +287,7 @@ export function ArchivedChatSearch({
                         <Text
                           size="1"
                           style={{
-                            color: 'var(--slate-a9)',
+                            color: 'var(--slate-a11)',
                             fontWeight: 400,
                           }}
                         >
@@ -309,7 +309,7 @@ export function ArchivedChatSearch({
 
                   {timeGroups.length === 0 && !isLoading && (
                     <Flex align="center" justify="center" style={{ padding: 'var(--space-6)' }}>
-                      <Text size="2" style={{ color: 'var(--slate-a9)' }}>
+                      <Text size="2" style={{ color: 'var(--slate-a11)' }}>
                         {t('workspace.archivedChats.emptyList')}
                       </Text>
                     </Flex>

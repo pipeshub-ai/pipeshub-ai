@@ -18,10 +18,12 @@ installMemoryStorage();
 
 vi.mock('@/config', async () => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
-  return { useAuthStore: auth.useAuthStore, logoutAndRedirect: vi.fn() };
+  const rules = await vi.importActual<typeof import('@/app/(main)/chat/approval-ask-rules')>('@/app/(main)/chat/approval-ask-rules');
+  const runErrors = await vi.importActual<typeof import('@/app/(main)/chat/run-error-extras')>('@/app/(main)/chat/run-error-extras');
+  return { useAuthStore: auth.useAuthStore, approvalAskRules: rules.approvalAskRules, runErrorExtras: runErrors.runErrorExtras, logoutAndRedirect: vi.fn() };
 });
 
-const { useAuthStore } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/config');
 const { useChatStore } = await import('../store');
 const { streamRegenerateForSlot, withEditedQuestion, withoutQuestionCard, editWasNotTaken } = await import('../streaming');
 const { ChatStreamError } = await import('../stream-error');
@@ -90,7 +92,7 @@ const sentBody = () => JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
 beforeEach(() => {
   fetchMock.mockReset();
   vi.stubGlobal('fetch', fetchMock);
-  useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'r' });
+  useAuthStore.setState({ accessToken: jwtExpiringIn(3600) });
   useChatStore.setState({ ...initialState, slots: {}, activeSlotId: null, pendingConversations: {}, conversations: [] });
   window.history.replaceState(null, '', '/chat/');
   vi.spyOn(console, 'error').mockImplementation(() => {});

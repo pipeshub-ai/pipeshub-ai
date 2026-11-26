@@ -266,7 +266,7 @@ describe('IamService', () => {
       ];
       const result = { statusCode: 200, data: mockUsers[0] };
       expect(result.statusCode).to.equal(200);
-      expect(result.data._id).to.equal('u1');
+      expect(result.data!._id).to.equal('u1');
     });
 
     it('should attempt to call API for getUserByEmail', async () => {
@@ -612,7 +612,7 @@ describe('IamService - branch coverage', () => {
       }
       const result = { statusCode: 200, data: users[0] }
       expect(result.statusCode).to.equal(200)
-      expect(result.data._id).to.equal('u1')
+      expect(result.data!._id).to.equal('u1')
     })
 
     it('should handle AxiosError in getUserByEmail', () => {
@@ -936,7 +936,7 @@ describe('IamService - additional coverage', () => {
       }
       const result = { statusCode: 200, data: users[0] }
       expect(result.statusCode).to.equal(200)
-      expect(result.data._id).to.equal('u1')
+      expect(result.data!._id).to.equal('u1')
     })
 
     it('should throw AxiosError on failure', async () => {

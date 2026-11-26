@@ -91,11 +91,9 @@ jobs:
       - name: Install the migration tool and the Python dependencies
         run: |
           python -m venv "$RUNNER_TEMP/migrate-venv"
-          "$RUNNER_TEMP/migrate-venv/bin/pip" install -r backend/db/requirements.txt
-          pip install uv
+          "$RUNNER_TEMP/migrate-venv/bin/pip" install --require-hashes --no-deps -r backend/db/requirements.lock
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout
-          uv pip install --system -e ".[full,dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: pgvector provider (lifecycle, collections, per-organisation questions, writes, reads)
         working-directory: backend/python

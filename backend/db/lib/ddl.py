@@ -9,8 +9,8 @@ import re
 import time
 from collections.abc import Callable
 from datetime import date, datetime, timezone
-from typing import Any
 
+import psycopg
 from sqlalchemy import Connection
 from sqlalchemy.exc import OperationalError
 
@@ -62,36 +62,73 @@ def ensure_partitioned_index(conn: Connection, table: str, name: str, cols: str,
     per leaf, then ATTACH. Handles nested trees (an intermediate partitioned table gets its own
     ``ON ONLY`` index). ``where`` makes the index partial (a literal predicate written in the revision). ``blocking`` builds each leaf with a
     plain CREATE INDEX instead (writers wait for the build): for a revision of an upgrade that runs as one transaction, where a concurrent build is refused.
-    ``using`` names the access method (``gin``); default btree. Idempotent."""
+    ``using`` names the access method (``gin``); default btree. Idempotent: a valid index of that name is left alone without a statement on the
+    table (``CREATE INDEX IF NOT EXISTS`` takes the table's lock before it finds the name, and in a revision that lock lasts to the commit)."""
     _ident(table), _ident(name)
     schema = table.split(".")[0] if "." in table else "public"
     _ident(using or "btree")
+    if _index_valid(conn, f"{schema}.{name}"):
+        return
     _build(conn, table, schema, name, cols, "UNIQUE " if unique else "", f" WHERE {where}" if where else "", blocking=blocking, using=f"USING {using} " if using else "")
 
 
 def _build(conn: Connection, table: str, schema: str, idx: str, cols: str, u: str, w: str = "", *, blocking: bool = False, using: str = "") -> None:
+    def run(sql: str) -> None:
+        # Online, a statement that takes the table's lock (SHARE for a plain build, which writers wait behind) gives up after 2 s and retries, so it
+        # never queues writers behind a long transaction; in a revision the session's own lock_timeout applies (a retry cannot run in a failed transaction).
+        if blocking:
+            conn.exec_driver_sql(sql)
+        else:
+            _retry(conn, lambda: conn.exec_driver_sql(sql))
     children = [r[0] for r in conn.exec_driver_sql(
         "SELECT c.oid::regclass::text FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid "
         "WHERE i.inhparent = %s::regclass ORDER BY 1", (table,))]
     if _scalar(conn, "SELECT relkind = 'p' FROM pg_class WHERE oid = %s::regclass", table):
-        conn.exec_driver_sql(f"CREATE {u}INDEX IF NOT EXISTS {idx} ON ONLY {table} {using}({cols}){w}")
+        run(f"CREATE {u}INDEX IF NOT EXISTS {idx} ON ONLY {table} {using}({cols}){w}")
         for child in children:
-            child_idx = f"{child.split('.')[-1]}_{idx}"
+            # A partition created or attached while this index was invalid (a stopped run) got an index of its own, attached under a name the
+            # server chose: that one is completed, not a second one built beside it, which ATTACH would refuse.
+            child_idx = _scalar(conn, "SELECT quote_ident(c.relname) FROM pg_inherits i JOIN pg_index x ON x.indexrelid = i.inhrelid JOIN pg_class c ON c.oid = i.inhrelid "
+                                "WHERE i.inhparent = to_regclass(%s) AND x.indrelid = %s::regclass", f"{schema}.{idx}", child) or f"{child.split('.')[-1]}_{idx}"
             _build(conn, child, schema, child_idx, cols, u, w, blocking=blocking, using=using)
             attached = _scalar(conn, "SELECT EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = %s::regclass "
                                "AND inhparent = %s::regclass)", f"{schema}.{child_idx}", f"{schema}.{idx}")
             if not attached:
-                conn.exec_driver_sql(f"ALTER INDEX {schema}.{idx} ATTACH PARTITION {schema}.{child_idx}")
+                run(f"ALTER INDEX {schema}.{idx} ATTACH PARTITION {schema}.{child_idx}")
     else:
-        if blocking or conn.exec_driver_sql("SELECT pg_relation_size(%s::regclass) = 0", (table,)).scalar():
-            # A leaf that never held a row (a new install): a plain build takes its lock for no time and, unlike CONCURRENTLY, does not wait
-            # for every other session's snapshot (a second migration run waiting for the advisory lock holds one).
-            conn.exec_driver_sql(f"CREATE {u}INDEX IF NOT EXISTS {idx} ON {table} {using}({cols}){w}")
-        else:
+        plain = f"CREATE {u}INDEX IF NOT EXISTS {idx} ON {table} {using}({cols}){w}"
+        if blocking:
+            conn.exec_driver_sql(plain)
+        # An invalid index of that name (a stopped concurrent build) goes to ensure_index, which drops and rebuilds it, whatever the leaf holds now:
+        # the plain build's IF NOT EXISTS would keep it.
+        elif _index_valid(conn, f"{schema}.{idx}") is False or not (
+                conn.exec_driver_sql("SELECT pg_relation_size(%s::regclass) = 0", (table,)).scalar() and _retry(conn, lambda: _plain_if_empty(conn, table, plain))):
             ensure_index(conn, f"{schema}.{idx}", f"CREATE {u}INDEX CONCURRENTLY {idx} ON {table} {using}({cols}){w}")
 
 
-def _retry(conn: Connection, step: Callable[[], Any], attempts: int = 3, backoff: float = 0.5) -> None:
+def _plain_if_empty(conn: Connection, table: str, plain: str) -> bool:
+    """A leaf that never held a row (a new organisation's): a plain build is instant and, unlike CONCURRENTLY, does not wait for every other
+    session's snapshot. It is made under the leaf's SHARE lock, taken before the leaf is looked at again, so no writer can fill it in between and
+    have the build read its rows with every writer waiting. False when the leaf holds rows by then (the caller builds it CONCURRENTLY). Inside a
+    revision's transaction (a new install's baseline) the lock lasts to that commit and no transaction of its own is opened."""
+    own = conn.connection.driver_connection.info.transaction_status == psycopg.pq.TransactionStatus.IDLE
+    if own:
+        conn.exec_driver_sql("BEGIN")
+    try:
+        conn.exec_driver_sql(f"LOCK TABLE {table} IN SHARE MODE")
+        empty = conn.exec_driver_sql("SELECT pg_relation_size(%s::regclass) = 0", (table,)).scalar()
+        if empty:
+            conn.exec_driver_sql(plain)
+        if own:
+            conn.exec_driver_sql("COMMIT")
+    except BaseException:
+        if own:
+            conn.exec_driver_sql("ROLLBACK")
+        raise
+    return bool(empty)
+
+
+def _retry[T](conn: Connection, step: Callable[[], T], attempts: int = 3, backoff: float = 0.5) -> T:
     """Run ``step`` under a 2 s lock_timeout; a lock timeout is retried with backoff."""
     conn.exec_driver_sql("SET lock_timeout = '2s'")
     try:

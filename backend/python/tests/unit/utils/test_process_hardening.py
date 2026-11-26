@@ -95,3 +95,55 @@ def test_onnxruntime_starts_no_telemetry_client_after_app_import(tmp_path: Path)
     service = tmp_path / "service"
     _ = _run_clean("import app, onnxruntime", service)
     assert _files_under(service) == []
+
+
+def test_tiktoken_points_at_litellm_encodings_and_an_explicit_operator_value_is_kept() -> None:
+    from app.utils.process_hardening import use_bundled_tiktoken_encodings
+
+    unset: dict[str, str] = {}
+    use_bundled_tiktoken_encodings(unset)
+    assert unset["TIKTOKEN_CACHE_DIR"].endswith(os.path.join("litellm", "litellm_core_utils", "tokenizers"))
+    assert os.path.isdir(unset["TIKTOKEN_CACHE_DIR"])
+
+    operator_choice = {"TIKTOKEN_CACHE_DIR": "/srv/tiktoken"}
+    use_bundled_tiktoken_encodings(operator_choice)
+    assert operator_choice == {"TIKTOKEN_CACHE_DIR": "/srv/tiktoken"}
+
+
+def test_missing_litellm_encodings_warn_and_leave_the_env_unset(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.utils import process_hardening
+
+    monkeypatch.setattr(process_hardening.importlib.util, "find_spec", lambda name: None)
+    unset: dict[str, str] = {}
+    process_hardening.use_bundled_tiktoken_encodings(unset)
+    assert unset == {}
+    assert "TIKTOKEN_CACHE_DIR" in caplog.text
+
+
+_OFFLINE_COUNTER_DRIVER = textwrap.dedent(
+    """
+    from tests.support.no_network import NetworkGuard
+    NetworkGuard("fail").install()
+
+    import app  # the bootstrap every service entry point runs first
+    from app.modules.transformers.vectorstore import _token_len
+    from app.utils.chat_helpers import count_tokens_text
+
+    text = "a" + " a" * 99  # cl100k_base: 100 tokens; the fallbacks say 199 (bytes) and 49 (chars / 4)
+    print(_token_len(text), count_tokens_text(text, None))
+    """
+)
+
+
+def test_token_counters_are_exact_offline_after_bootstrap(tmp_path: Path) -> None:
+    backend_python = Path(__file__).resolve().parents[3]
+    env = {k: v for k, v in os.environ.items() if k != "TIKTOKEN_CACHE_DIR"}
+    env.update(TMPDIR=str(tmp_path), PYTHONPATH=str(backend_python))
+    out = subprocess.run(
+        [sys.executable, "-B", "-c", _OFFLINE_COUNTER_DRIVER], env=env, cwd=backend_python,
+        capture_output=True, text=True, check=True, timeout=120,
+    ).stdout
+    assert out.split()[-2:] == ["100", "100"]
+    assert list(tmp_path.iterdir()) == []

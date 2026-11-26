@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/resolved-turn.schema.json",
+  "title": "ResolvedTurn",
+  "description": "The claims of `X-PipesHub-Resolved` (CPD-10 §3): what Node resolved for one legacy chat turn, signed as a compact JWS (EdDSA, the gateway-token keyring, its own audience) and verified by the query service, which then assembles the turn from it instead of reading the settings, approvals and credential documents again. A projection of the turn's pin, not the pin: a pin of 200 items does not fit a header. Bound to the org, the user, the agent and the conversation, and short-lived (`exp` is `iat` + 60 s; a lifetime over 120 s is malformed). Never holds a secret: bindings by reference.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "iss",
+    "aud",
+    "iat",
+    "exp",
+    "ver",
+    "org",
+    "sub",
+    "agent",
+    "cid",
+    "pin",
+    "stages",
+    "flow"
+  ],
+  "properties": {
+    "iss": {
+      "const": "pipeshub-node/agent-harness"
+    },
+    "aud": {
+      "description": "Its own audience: a gateway token never verifies as a resolved turn, nor the reverse.",
+      "const": "pipeshub-query/resolved-turn"
+    },
+    "iat": {
+      "description": "Seconds since the epoch.",
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/UInt"
+    },
+    "exp": {
+      "description": "Seconds since the epoch.",
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/UInt"
+    },
+    "ver": {
+      "description": "A verifier refuses a version it does not know.",
+      "const": 1
+    },
+    "org": {
+      "$ref": "common.schema.json#/$defs/OrgId"
+    },
+    "sub": {
+      "description": "The authenticated user.",
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Id"
+    },
+    "agent": {
+      "description": "The route's agent key; null for the built-in assistant.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Id"
+        }
+      ]
+    },
+    "cid": {
+      "description": "The conversation the turn belongs to: a header replayed on another conversation is refused.",
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Id"
+    },
+    "pin": {
+      "$ref": "#/$defs/PinSummary"
+    },
+    "stages": {
+      "description": "Every `rollout.*` switch as resolved, by flag name: the query service's Labs readers answer from it.",
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+      },
+      "additionalProperties": {
+        "type": "boolean"
+      }
+    },
+    "flow": {
+      "description": "The resolved approvals' flow rules: today's loop's flow guard meets them with the deployment's own rule.",
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/FlowRule"
+      }
+    },
+    "access": {
+      "description": "Present only when Node's agent directory holds a current \"may run\" for this actor; absent: the query service checks the agent's permission as before.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run"
+      ],
+      "properties": {
+        "run": {
+          "const": true
+        }
+      }
+    },
+    "bindings": {
+      "description": "The credential each ready, bound item of the effective set uses, by reference; an installation not named is read as before.",
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "$ref": "#/$defs/TurnBinding"
+      }
+    }
+  },
+  "$defs": {
+    "PinSummary": {
+      "description": "What identifies the resolution: its digest, the org head it saw, and the route and scope it decided. `routing.path` is `legacy` on this header.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "head",
+        "routing",
+        "scope"
+      ],
+      "properties": {
+        "digest": {
+          "$ref": "common.schema.json#/$defs/Digest"
+        },
+        "head": {
+          "$ref": "common.schema.json#/$defs/Revision"
+        },
+        "routing": {
+          "$ref": "resolved-run-config.schema.json#/$defs/Routing"
+        },
+        "scope": {
+          "$ref": "resolved-run-config.schema.json#/$defs/RunScope"
+        }
+      }
+    },
+    "FlowRule": {
+      "description": "One layer's flow rule as resolved: `level` for an external write once the run's context is above `above`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "level",
+        "above"
+      ],
+      "properties": {
+        "level": {
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/approval-rules.schema.json#/$defs/FlowLevel"
+        },
+        "above": {
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/approval-rules.schema.json#/$defs/FlowThreshold"
+        }
+      }
+    },
+    "TurnBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "installation",
+        "owner",
+        "ref"
+      ],
+      "properties": {
+        "installation": {
+          "$ref": "common.schema.json#/$defs/InstallationRef"
+        },
+        "owner": {
+          "$ref": "common.schema.json#/$defs/BindingOwnerRef"
+        },
+        "ref": {
+          "$ref": "common.schema.json#/$defs/BindingRef"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "iss": "pipeshub-node/agent-harness",
+      "aud": "pipeshub-query/resolved-turn",
+      "iat": 1791840000,
+      "exp": 1791840060,
+      "ver": 1,
+      "org": "o1",
+      "sub": "u3",
+      "agent": "a7",
+      "cid": "665f1c2e9b1d4a0012ab34cd",
+      "pin": {
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "head": 1042,
+        "routing": {
+          "path": "legacy",
+          "reason": "project_scope"
+        },
+        "scope": {
+          "agentKey": "a7",
+          "projectId": "p-9",
+          "agentOwner": "u1"
+        }
+      },
+      "stages": {
+        "ENABLE_ACTIONS": true,
+        "ENABLE_MCP": false,
+        "ENABLE_SKILLS": true,
+        "ENABLE_USER_CONTEXT": true
+      },
+      "flow": [
+        {
+          "level": "ask",
+          "above": "public"
+        }
+      ],
+      "access": {
+        "run": true
+      },
+      "bindings": [
+        {
+          "installation": "inst_01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+          "owner": "user:u3",
+          "ref": "bnd_01J9ZZZZZZZZZZZZZZZZZZZZZZ"
+        }
+      ]
+    },
+    {
+      "iss": "pipeshub-node/agent-harness",
+      "aud": "pipeshub-query/resolved-turn",
+      "iat": 1791840000,
+      "exp": 1791840060,
+      "ver": 1,
+      "org": "o1",
+      "sub": "u3",
+      "agent": null,
+      "cid": "665f1c2e9b1d4a0012ab34ce",
+      "pin": {
+        "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "head": 0,
+        "routing": {
+          "path": "legacy",
+          "reason": "chat_mode_not_supported"
+        },
+        "scope": {
+          "agentKey": null,
+          "projectId": null
+        }
+      },
+      "stages": {},
+      "flow": []
+    }
+  ]
+}

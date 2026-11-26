@@ -6,6 +6,7 @@ import AmazonS3Adapter from '../../../../src/modules/storage/providers/s3.provid
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const s3Provider = require('../../../../src/modules/storage/providers/s3.provider') as typeof import('../../../../src/modules/storage/providers/s3.provider')
 import { StorageUploadError } from '../../../../src/libs/errors/storage.errors'
+import { captureLogRecords } from '../../../helpers/log-capture'
 import {
   buildS3HealthCheckErrorMessage,
   validateS3Capabilities,
@@ -135,8 +136,8 @@ describe('s3-health-check.util', () => {
 
       expect(result.success).to.be.false
       expect(result.checks).to.have.lengthOf(1)
-      expect(result.checks[0].capability).to.equal('bucketAccess')
-      expect(result.checks[0].passed).to.be.false
+      expect(result.checks[0]!.capability).to.equal('bucketAccess')
+      expect(result.checks[0]!.passed).to.be.false
     })
 
     it('should return bucketAccess failure when region fails format validation', async () => {
@@ -148,8 +149,8 @@ describe('s3-health-check.util', () => {
       })
 
       expect(result.success).to.be.false
-      expect(result.checks[0].capability).to.equal('bucketAccess')
-      expect(result.checks[0].passed).to.be.false
+      expect(result.checks[0]!.capability).to.equal('bucketAccess')
+      expect(result.checks[0]!.passed).to.be.false
     })
   })
 
@@ -613,6 +614,74 @@ describe('s3-health-check.util', () => {
 
       // delete threw, but must not affect overall result
       expect(result.success).to.be.true
+    })
+  })
+
+  // -------------------------------------------------------------------------
+  // Log lines: a failed check is the admin's settings (WARN), a passed one DEBUG
+  // -------------------------------------------------------------------------
+  describe('validateS3Capabilities — log lines', () => {
+    const levels = (records: Record<string, any>[]) =>
+      records.filter((r) => r.service === 'S3HealthCheck').map((r) => [r.level === 'warning' ? 'warn' : r.level, r.message])
+
+    it('writes the passed checks and the start at DEBUG, the result at INFO, and no uploaded object URL', async () => {
+      stubCleanupClient(buildFakeS3DeleteStub())
+      stubAllAdapterMethodsPassing()
+      stubFetchSuccess()
+      const records = captureLogRecords()
+
+      await validateS3Capabilities(VALID_CREDS)
+
+      expect(levels(records)).to.deep.equal([
+        ['debug', 'Starting S3 health check'],
+        ['debug', 'S3 upload check passed'],
+        ['debug', 'S3 read check passed'],
+        ['debug', 'S3 signedUrlGet check passed'],
+        ['debug', 'S3 getContent check passed'],
+        ['debug', 'S3 signedUrlPut check passed'],
+        ['info', 'S3 health check completed'],
+      ])
+      expect(JSON.stringify(records)).to.not.contain(FAKE_URL)
+    })
+
+    it('writes each failed check at WARN, never ERROR', async () => {
+      stubCleanupClient(buildFakeS3DeleteStub())
+      sinon.stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService').resolves({ statusCode: 200, data: FAKE_URL })
+      sinon.stub(AmazonS3Adapter.prototype, 'getBufferFromStorageService').rejects(new StorageUploadError('Failed', { originalError: 'AccessDenied' }))
+      sinon.stub(AmazonS3Adapter.prototype, 'getSignedUrl').resolves({ statusCode: 200, data: 'https://signed-get-url' })
+      sinon.stub(AmazonS3Adapter.prototype, 'generatePresignedUrlForDirectUpload').rejects(new Error('denied'))
+      stubFetchFailure(403)
+      const records = captureLogRecords()
+
+      const result = await validateS3Capabilities(VALID_CREDS)
+
+      expect(result.success).to.be.false
+      expect(levels(records).filter(([level]) => level !== 'debug')).to.deep.equal([
+        ['warn', 'S3 read check failed'],
+        ['warn', 'S3 getContent check failed'],
+        ['warn', 'S3 signedUrlPut check failed'],
+        ['info', 'S3 health check completed'],
+      ])
+    })
+
+    it('writes an adapter that cannot start (the admin\'s settings) at WARN, never ERROR', async () => {
+      const records = captureLogRecords()
+
+      const result = await validateS3Capabilities({ ...VALID_CREDS, bucketName: '' })
+
+      expect(result.success).to.be.false
+      expect(levels(records).filter(([level]) => level !== 'debug')).to.deep.equal([['warn', 'S3 adapter initialization failed']])
+    })
+
+    it('writes an upload refusal at WARN', async () => {
+      stubCleanupClient(buildFakeS3DeleteStub())
+      sinon.stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService').rejects(new StorageUploadError('Failed', { originalError: 'AccessDenied' }))
+      sinon.stub(AmazonS3Adapter.prototype, 'generatePresignedUrlForDirectUpload').resolves({ statusCode: 200, data: { url: 'https://signed-put-url' } })
+      const records = captureLogRecords()
+
+      await validateS3Capabilities(VALID_CREDS)
+
+      expect(levels(records).filter(([level]) => level === 'warn' || level === 'error')).to.deep.equal([['warn', 'S3 upload check failed']])
     })
   })
 })

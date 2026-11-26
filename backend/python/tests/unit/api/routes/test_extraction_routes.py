@@ -18,6 +18,7 @@ from app.api.routes.extraction import router as extraction_router
 from app.models.blocks import SemanticMetadata
 from app.modules.transformers.document_extraction import (
     DocumentClassification,
+    ExtractionContentFilteredError,
     ExtractionLLMError,
     SubCategories,
     semantic_metadata_from_classification,
@@ -585,6 +586,7 @@ def test_classify_without_a_configured_llm_returns_422_with_error_code() -> None
     [
         (LLMUnavailableError("connection refused"), "LLM_UNAVAILABLE"),
         (ExtractionLLMError("no usable output"), "LLM_FAILED"),
+        (ExtractionContentFilteredError(), "LLM_CONTENT_FILTERED"),
     ],
 )
 def test_model_failures_answer_424_with_a_code(error: Exception, code: str) -> None:

@@ -80,7 +80,7 @@ describe('chat drafts and signing out', () => {
   it('removes drafts before the session is cleared', async () => {
     window.localStorage.setItem(DRAFT_KEY, '{"text":"private","savedAt":1}');
     const { logoutFromWorkspaceMenu, useAuthStore } = await import('../auth-store');
-    useAuthStore.getState().setTokens('access', 'refresh');
+    useAuthStore.getState().setTokens('access');
     let draftAtLogout: string | null | undefined;
     const unsubscribe = useAuthStore.subscribe((state) => {
       if (!state.isAuthenticated) draftAtLogout = window.localStorage.getItem(DRAFT_KEY);
@@ -95,7 +95,7 @@ describe('chat drafts and signing out', () => {
   it('keeps unsent text when the session merely ends', async () => {
     window.localStorage.setItem(DRAFT_KEY, '{"text":"keep me","savedAt":1}');
     const { useAuthStore } = await import('../auth-store');
-    useAuthStore.getState().setTokens('access', 'refresh');
+    useAuthStore.getState().setTokens('access');
 
     useAuthStore.getState().logout();
 
@@ -110,7 +110,7 @@ describe('chat drafts and signing out', () => {
     saveDraft(DRAFT_KEY, 'typed as the page unloads');
     expect(loadDraft(DRAFT_KEY)).toBe('');
 
-    useAuthStore.getState().setTokens('access', 'refresh');
+    useAuthStore.getState().setTokens('access');
     saveDraft(DRAFT_KEY, 'typed after signing in again');
     expect(loadDraft(DRAFT_KEY)).toBe('typed after signing in again');
   });
@@ -129,7 +129,7 @@ describe('signing out ends the session on the server', () => {
   it('sends the access token it is about to discard to the logout endpoint', async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
     const { logoutFromWorkspaceMenu, useAuthStore } = await import('../auth-store');
-    useAuthStore.getState().setTokens('old-access', 'old-refresh');
+    useAuthStore.getState().setTokens('old-access');
 
     logoutFromWorkspaceMenu();
 
@@ -140,13 +140,15 @@ describe('signing out ends the session on the server', () => {
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer old-access');
     // The page navigates away right after; keepalive lets the request finish.
     expect(init.keepalive).toBe(true);
+    // The answer clears the HttpOnly session cookie, also across the from-source split (ADR-WEB-02).
+    expect(init.credentials).toBe('include');
     expect(useAuthStore.getState().accessToken).toBeNull();
   });
 
   it('still signs out on this device when the server cannot be reached', async () => {
     fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
     const { logoutFromWorkspaceMenu, useAuthStore } = await import('../auth-store');
-    useAuthStore.getState().setTokens('old-access', 'old-refresh');
+    useAuthStore.getState().setTokens('old-access');
 
     expect(() => logoutFromWorkspaceMenu()).not.toThrow();
 
@@ -165,7 +167,7 @@ describe('signing out ends the session on the server', () => {
 
   it('does not call the server when the session merely expires', async () => {
     const { useAuthStore } = await import('../auth-store');
-    useAuthStore.getState().setTokens('old-access', 'old-refresh');
+    useAuthStore.getState().setTokens('old-access');
 
     useAuthStore.getState().logout();
 
@@ -191,7 +193,7 @@ describe('signing out drops what was cached for this user', () => {
       tokenAtReset = useAuthStore.getState().accessToken;
       reset();
     });
-    useAuthStore.getState().setTokens('access', 'refresh');
+    useAuthStore.getState().setTokens('access');
   });
 
   afterEach(() => {

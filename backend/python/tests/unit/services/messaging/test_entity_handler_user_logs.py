@@ -133,6 +133,7 @@ async def test_user_deleted_logs_ids_only(caplog: pytest.LogCaptureFixture) -> N
     svc._remove_mcp_data = AsyncMock()
     svc._remove_personal_toolsets = AsyncMock()
     svc._remove_api_toolset_data = AsyncMock()
+    svc._remove_personal_oauth_apps = AsyncMock()
 
     assert await svc.process_event("userDeleted", dict(PAYLOAD)) is True
 

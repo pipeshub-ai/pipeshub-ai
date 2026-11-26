@@ -82,7 +82,7 @@ export function SettingsSection({
       </legend>
       <div style={{ clear: 'both' }} />
       {description ? (
-        <Text as="p" size="1" style={{ color: 'var(--gray-10)', marginTop: 4 }}>
+        <Text as="p" size="1" style={{ color: 'var(--gray-11)', marginTop: 4 }}>
           {description}
         </Text>
       ) : null}

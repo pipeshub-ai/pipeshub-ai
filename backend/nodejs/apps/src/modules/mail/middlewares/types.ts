@@ -32,6 +32,11 @@ export enum EmailTemplateType {
   DomainLimitReached = 'domainLimitReached',
   JoinRequestNotify = 'joinRequestNotify',
   JoinRequestDecision = 'joinRequestDecision',
+  ScheduledRunEnded = 'scheduledRunEnded',
+  SandboxCapacityAlert = 'sandboxCapacityAlert',
   ConnectorAccountConnect = 'connectorAccountConnect',
   LicenseGraceReminder = 'licenseGraceReminder',
+  SupportRequest = 'supportRequest',
+  FeedbackReceived = 'feedbackReceived',
+  FeedbackCopy = 'feedbackCopy',
 }

@@ -19,6 +19,7 @@ import {
   responsesInputToTurns,
   turnsToQuery,
 } from '../../../src/modules/openai_compat/utils/openai-format';
+import { registerUpstreams } from '../../../src/libs/http/upstream-call';
 
 const CONV = '0123456789abcdef01234567';
 
@@ -241,6 +242,11 @@ describe('openai_compat routes against a fake chat API', () => {
     api.close();
     upstream.close();
   });
+
+  // The calls to our own API go through upstreamFetch, which sends only to a registered PipesHub service. The registry is
+  // global to the mocha worker, so each test registers the fake and clears it after.
+  beforeEach(() => registerUpstreams({ nodejs: [`http://127.0.0.1:${(upstream.address() as AddressInfo).port}`] }));
+  afterEach(() => registerUpstreams({}));
 
   beforeEach(() => {
     calls.length = 0;

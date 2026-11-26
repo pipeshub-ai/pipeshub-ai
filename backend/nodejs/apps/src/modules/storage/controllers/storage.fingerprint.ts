@@ -6,7 +6,6 @@
  */
 import type { DocumentRepository } from '../../../libs/repositories/document';
 import { ServerClockUnavailable } from '../../../libs/repositories/document/types';
-import { ServiceUnavailableError } from '../../../libs/errors/http.errors';
 import { StorageUrlParseError } from '../../../libs/errors/storage.errors';
 import type { Document } from '../types/storage.service.types';
 import {
@@ -16,6 +15,7 @@ import {
   isSettled,
   type ObjectStat,
 } from '../utils/storage-fingerprint';
+import { storageUnavailable } from '../utils/utils';
 
 export interface StorageFingerprint {
   version: number;
@@ -30,7 +30,6 @@ export interface StorageFingerprint {
 }
 
 export interface FingerprintLogger {
-  error(message: string, meta?: Record<string, unknown>): void;
   warn(message: string, meta?: Record<string, unknown>): void;
   info?(message: string, meta?: Record<string, unknown>): void;
 }
@@ -75,12 +74,9 @@ async function onePass(
       if (error instanceof StorageUrlParseError) {
         unverifiable = true;
       } else {
-        deps.logger.error('Could not read the stored object of a document', {
-          documentId: id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new ServiceUnavailableError(
+        throw storageUnavailable(
           'Could not read the stored object; try again',
+          error,
         );
       }
     }

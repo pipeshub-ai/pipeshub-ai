@@ -17,7 +17,12 @@ from app.agents.chat_modes.internal_search_prompt import internal_search_instruc
 _BEFORE_THE_SWITCHES = (
     "Answer ONLY from the organization's internal knowledge base / provided context and "
     "attachments. Do not use your own training knowledge to answer factual questions. If the "
-    "answer is not present in the retrieved context, say so explicitly rather than guessing.\n\n"
+    "answer is not present in the retrieved context, say so explicitly rather than guessing. "
+    "Once you have read the records the answer rests on (or there is nothing further to fetch), if "
+    "they only mention or use a term without explaining it, say the documents do "
+    "not explain it (you may describe how they use it). Never supply a definition or fact from "
+    "your own knowledge as if the documents stated it, and never cite a block for something it "
+    "does not say.\n\n"
     "The context you are given contains the most relevant BLOCKS from each document — not "
     "the full documents. For questions that can be answered by locating the right passage "
     "(a date, a name, a number, a status), the blocks are sufficient. For questions that "
@@ -66,6 +71,28 @@ _ALL_COMBINATIONS = list(itertools.product((False, True), repeat=3))
 
 def _text(*, composition: bool = False, thorough: bool = False, entity_tools: bool = False) -> str:
     return internal_search_instructions(composition=composition, thorough=thorough, entity_tools=entity_tools)
+
+
+_UNEXPLAINED_TERM_RULE = (
+    "Once you have read the records the answer rests on (or there is nothing further to fetch), if "
+    "they only mention or use a term without explaining it, say the documents do "
+    "not explain it"
+)
+_NO_OUTSIDE_FACTS = "Never supply a definition or fact from your own knowledge"
+_NO_FALSE_CITATION = "never cite a block for something it does not say"
+
+
+class TestGroundingRule:
+    @pytest.mark.parametrize(("composition", "thorough", "entity_tools"), _ALL_COMBINATIONS)
+    def test_unexplained_term_rule_is_in_every_mode(
+        self, composition: bool, thorough: bool, entity_tools: bool
+    ) -> None:
+        text = _text(composition=composition, thorough=thorough, entity_tools=entity_tools)
+        for marker in (_UNEXPLAINED_TERM_RULE, _NO_OUTSIDE_FACTS, _NO_FALSE_CITATION):
+            assert text.count(marker) == 1, marker
+
+    def test_rule_sits_in_the_grounding_paragraph(self) -> None:
+        assert _text().split("\n\n")[0].endswith("does not say.")
 
 
 class TestBothOff:

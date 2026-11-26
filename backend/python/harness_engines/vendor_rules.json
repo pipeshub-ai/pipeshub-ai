@@ -1,0 +1,410 @@
+{
+  "schema": "pipeshub.vendor-rules/1",
+  "version": "2026-10-19.1",
+  "rules": [
+    {
+      "id": "openai-api-key-org",
+      "provider": "openai",
+      "accountKind": "org_api_key",
+      "route": "gateway",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "https://openai.com/policies/row-terms-of-use/",
+      "note": "OpenAI API key (org)"
+    },
+    {
+      "id": "openai-api-key-user",
+      "provider": "openai",
+      "accountKind": "user_api_key",
+      "route": "gateway",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "https://openai.com/policies/row-terms-of-use/",
+      "note": "OpenAI API key (the user's own)"
+    },
+    {
+      "id": "azureopenai-api-key-org",
+      "provider": "azureopenai",
+      "accountKind": "org_api_key",
+      "route": "gateway",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "PipesHub: the organization's own endpoint and key (no vendor plan involved)",
+      "note": "Azure OpenAI deployment reached with the org's key"
+    },
+    {
+      "id": "azureopenai-cloud-org",
+      "provider": "azureopenai",
+      "accountKind": "org_cloud",
+      "route": "gateway",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "PipesHub: the organization's own endpoint and key (no vendor plan involved)",
+      "note": "Azure OpenAI org cloud account (P2.4b)"
+    },
+    {
+      "id": "openaicompatible-api-key-org",
+      "provider": "openaicompatible",
+      "accountKind": "org_api_key",
+      "route": "gateway",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "PipesHub: the organization's own endpoint and key (no vendor plan involved)",
+      "note": "An OpenAI-compatible endpoint the org configured"
+    },
+    {
+      "id": "openai-chatgpt-workspace-token",
+      "provider": "openai",
+      "accountKind": "user_plan_injected",
+      "route": "vendor_injected",
+      "engines": [
+        "codex"
+      ],
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "pending_vendor",
+      "consumer": true,
+      "source": "https://learn.chatgpt.com/docs/enterprise/access-tokens",
+      "note": "ChatGPT Business/Enterprise Codex access tokens: allowed for trusted runners; whether a platform may store them is pending OpenAI"
+    },
+    {
+      "id": "openai-chatgpt-siwc-gateway",
+      "provider": "openai",
+      "accountKind": "user_plan_injected",
+      "route": "gateway",
+      "engines": [
+        "codex"
+      ],
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "pending_vendor",
+      "consumer": true,
+      "source": "https://developers.openai.com/siwc/request-client-id",
+      "note": "ChatGPT plan via Sign in with ChatGPT, its token used by PipesHub's gateway (never in the sandbox): offered only to OpenAI's commercial partners, pending in every offering until OpenAI's written yes"
+    },
+    {
+      "id": "openai-codex-app-server-login",
+      "provider": "openai",
+      "accountKind": "user_plan_sandbox_login",
+      "route": "vendor_sandbox_login",
+      "engines": [
+        "codex"
+      ],
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "prohibited",
+      "consumer": true,
+      "source": "https://learn.chatgpt.com/docs/app-server (Auth endpoints: \"App-server authentication has never been permitted for commercial or hosted services.\")",
+      "note": "The person's own ChatGPT login inside Codex in the sandbox (codex login, app-server login): do not use"
+    },
+    {
+      "id": "openai-codex-chatgpt-auth-tokens",
+      "provider": "openai",
+      "accountKind": "user_plan_injected",
+      "route": "vendor_sandbox_login",
+      "engines": [
+        "codex"
+      ],
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "prohibited",
+      "consumer": true,
+      "source": "https://learn.chatgpt.com/docs/app-server (Auth endpoints: \"App-server authentication has never been permitted for commercial or hosted services.\")",
+      "note": "Codex app-server chatgptAuthTokens mode (a ChatGPT login PipesHub holds, handed to the engine in the sandbox): do not use"
+    },
+    {
+      "id": "anthropic-api-key-org",
+      "provider": "anthropic",
+      "accountKind": "org_api_key",
+      "route": "gateway",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "note": "Anthropic API key (the org's, for its own staff)"
+    },
+    {
+      "id": "anthropic-api-key-user",
+      "provider": "anthropic",
+      "accountKind": "user_api_key",
+      "route": "gateway",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "note": "Anthropic API key (the user's own)"
+    },
+    {
+      "id": "anthropic-api-key-org-injected",
+      "provider": "anthropic",
+      "accountKind": "org_api_key",
+      "route": "vendor_injected",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "note": "Anthropic API key (org), vendor-direct injected"
+    },
+    {
+      "id": "anthropic-api-key-user-injected",
+      "provider": "anthropic",
+      "accountKind": "user_api_key",
+      "route": "vendor_injected",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "note": "Anthropic API key (the user's own), vendor-direct injected"
+    },
+    {
+      "id": "anthropic-platform-paid-claude-code",
+      "provider": "anthropic",
+      "accountKind": "org_api_key",
+      "route": "gateway",
+      "engines": [
+        "claude_code"
+      ],
+      "offering": [
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "note": "PipesHub may not pay for or resell Claude usage without an agreement: in the managed offering an org key may be PipesHub's"
+    },
+    {
+      "id": "anthropic-platform-paid-claude-code-injected",
+      "provider": "anthropic",
+      "accountKind": "org_api_key",
+      "route": "vendor_injected",
+      "engines": [
+        "claude_code"
+      ],
+      "offering": [
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "note": "As anthropic-platform-paid-claude-code, vendor-direct injected"
+    },
+    {
+      "id": "bedrock-cloud-org",
+      "provider": "bedrock",
+      "accountKind": "org_cloud",
+      "route": "gateway",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "note": "Bedrock for Claude: gateway only (a proxy cannot swap SigV4 signing)"
+    },
+    {
+      "id": "vertexai-cloud-org",
+      "provider": "vertexai",
+      "accountKind": "org_cloud",
+      "route": "gateway",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "note": "Vertex for Claude and Gemini: gateway only"
+    },
+    {
+      "id": "foundry-cloud-org",
+      "provider": "foundry",
+      "accountKind": "org_cloud",
+      "route": "gateway",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "note": "Foundry for Claude: gateway only"
+    },
+    {
+      "id": "anthropic-claude-plan-claude-code",
+      "provider": "anthropic",
+      "accountKind": "user_plan_sandbox_login",
+      "route": "vendor_sandbox_login",
+      "engines": [
+        "claude_code"
+      ],
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": true,
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "note": "Claude plan in unmodified Claude Code, the user signs in inside the sandbox; persisting the login between sessions is pending Anthropic"
+    },
+    {
+      "id": "anthropic-claude-plan-other-harness",
+      "provider": "anthropic",
+      "accountKind": "user_plan_sandbox_login",
+      "route": "vendor_sandbox_login",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "prohibited",
+      "consumer": true,
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "note": "Claude plan used by any other harness or by our loop"
+    },
+    {
+      "id": "anthropic-claude-plan-injected",
+      "provider": "anthropic",
+      "accountKind": "user_plan_injected",
+      "route": "vendor_injected",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "prohibited",
+      "consumer": true,
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "note": "Claude plan held or injected by PipesHub, for any engine"
+    },
+    {
+      "id": "gemini-api-key-org",
+      "provider": "gemini",
+      "accountKind": "org_api_key",
+      "route": "gateway",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "https://ai.google.dev/gemini-api/terms",
+      "note": "Gemini API key (org)"
+    },
+    {
+      "id": "gemini-api-key-user",
+      "provider": "gemini",
+      "accountKind": "user_api_key",
+      "route": "gateway",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "allowed",
+      "consumer": false,
+      "source": "https://ai.google.dev/gemini-api/terms",
+      "note": "Gemini API key (the user's own)"
+    },
+    {
+      "id": "gemini-personal-login-outside-cli",
+      "provider": "gemini",
+      "accountKind": "user_plan_sandbox_login",
+      "route": "vendor_sandbox_login",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "prohibited",
+      "consumer": true,
+      "source": "https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md",
+      "note": "Gemini personal login outside Gemini CLI"
+    },
+    {
+      "id": "gemini-personal-login-injected",
+      "provider": "gemini",
+      "accountKind": "user_plan_injected",
+      "route": "vendor_injected",
+      "engines": null,
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "prohibited",
+      "consumer": true,
+      "source": "https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md",
+      "note": "Gemini personal login held or injected by PipesHub"
+    },
+    {
+      "id": "gemini-login-hosted-gemini-cli",
+      "provider": "gemini",
+      "accountKind": "user_plan_sandbox_login",
+      "route": "vendor_sandbox_login",
+      "engines": [
+        "gemini_cli"
+      ],
+      "offering": [
+        "managed",
+        "oss"
+      ],
+      "status": "pending_vendor",
+      "consumer": true,
+      "source": "https://github.com/google-gemini/gemini-cli/blob/main/docs/resources/tos-privacy.md",
+      "note": "Gemini personal or Code Assist login in hosted Gemini CLI: pending Google; not supported"
+    }
+  ]
+}

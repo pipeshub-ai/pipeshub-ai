@@ -321,7 +321,7 @@ class TestGetAllKeys:
     async def test_returns_decoded_keys(self):
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=None):
             for key in [b"pipeshub:kv:a", b"pipeshub:kv:b/c"]:
                 yield key
 
@@ -333,7 +333,7 @@ class TestGetAllKeys:
     async def test_empty(self):
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=None):
             return
             yield  # noqa: E501 - make it an async generator
 
@@ -346,7 +346,7 @@ class TestGetAllKeys:
         """If Redis returns string keys (decode_responses=True), handle them."""
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=None):
             for key in ["pipeshub:kv:x"]:
                 yield key
 
@@ -358,7 +358,7 @@ class TestGetAllKeys:
     async def test_redis_error_raises(self):
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=None):
             raise Exception("scan fail")
             yield  # noqa: E501
 
@@ -438,12 +438,43 @@ class TestWatchKey:
 # list_keys_in_directory
 # ============================================================================
 
+class TestScanBatchSize:
+    """SCAN walks the whole database whatever it matches; Redis' default of 10 keys per round trip
+    made a directory listing take seconds on a shared Redis."""
+
+    @staticmethod
+    def _recording(store) -> list[int | None]:
+        counts: list[int | None] = []
+
+        async def _scan_iter(match: str | None = None, count: int | None = None) -> AsyncIterator[bytes]:
+            counts.append(count)
+            return
+            yield
+
+        store._mock_client.scan_iter = _scan_iter
+        return counts
+
+    @pytest.mark.asyncio
+    async def test_directory_listing_reads_keys_in_large_batches(self) -> None:
+        store = _make_store()
+        counts = self._recording(store)
+        await store.list_keys_in_directory("/services/mcp/instances/")
+        assert counts and counts[0] >= 1000
+
+    @pytest.mark.asyncio
+    async def test_listing_every_key_reads_keys_in_large_batches(self) -> None:
+        store = _make_store()
+        counts = self._recording(store)
+        await store.get_all_keys()
+        assert counts and counts[0] >= 1000
+
+
 class TestListKeysInDirectory:
     @pytest.mark.asyncio
     async def test_returns_keys(self):
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=None):
             for key in [b"pipeshub:kv:dir/a", b"pipeshub:kv:dir/b"]:
                 yield key
 
@@ -458,7 +489,7 @@ class TestListKeysInDirectory:
 
         scan_calls = []
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=None):
             scan_calls.append(match)
             return
             yield  # noqa: E501
@@ -473,7 +504,7 @@ class TestListKeysInDirectory:
 
         scan_calls = []
 
-        async def _scan_iter(match: str | None = None) -> AsyncIterator[bytes]:
+        async def _scan_iter(match: str | None = None, count: int | None = None) -> AsyncIterator[bytes]:
             scan_calls.append(match)
             return
             yield
@@ -489,7 +520,7 @@ class TestListKeysInDirectory:
 
         scan_calls = []
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=None):
             scan_calls.append(match)
             return
             yield  # noqa: E501
@@ -502,7 +533,7 @@ class TestListKeysInDirectory:
     async def test_redis_error_raises(self):
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=None):
             raise Exception("fail")
             yield  # noqa: E501
 
@@ -923,7 +954,7 @@ class TestListKeysInDirectoryBytes:
         """Bytes keys are properly decoded in list_keys_in_directory."""
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=None):
             for key in [b"pipeshub:kv:dir/key1", b"pipeshub:kv:dir/key2"]:
                 yield key
 
@@ -936,7 +967,7 @@ class TestListKeysInDirectoryBytes:
         """String keys (non-bytes) are handled in list_keys_in_directory."""
         store = _make_store()
 
-        async def _scan_iter(match=None):
+        async def _scan_iter(match=None, count=None):
             for key in ["pipeshub:kv:dir/key1"]:
                 yield key
 
@@ -1319,7 +1350,7 @@ class TestPubsubUsesADedicatedProviderConnection:
 # Failures are raised, not logged: the caller that handles one logs it once
 # ============================================================================
 
-async def _scan_fails(match: str | None = None) -> AsyncIterator[bytes]:
+async def _scan_fails(match: str | None = None, count: int | None = None) -> AsyncIterator[bytes]:
     raise OSError("Error 111 connecting")
     yield b""  # unreachable; makes this an async generator
 

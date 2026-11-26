@@ -1,0 +1,112 @@
+[
+  {
+    "description": "a state that is not a list word",
+    "instance": {
+      "runs": [
+        {
+          "runId": "run_2",
+          "sessionId": "ses_1",
+          "parentRunId": "run_1",
+          "job": true,
+          "agentKey": null,
+          "agentName": null,
+          "conversationTitle": "Fix PAY-1423",
+          "engine": "claude_code",
+          "state": "waiting",
+          "status": "running",
+          "outcome": null,
+          "createdAt": 1762678800000,
+          "updatedAt": 1762678860000,
+          "endedAt": null
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "description": "an internal field (the run's lease) leaking into the list",
+    "instance": {
+      "runs": [
+        {
+          "runId": "run_2",
+          "sessionId": "ses_1",
+          "parentRunId": "run_1",
+          "job": true,
+          "agentKey": null,
+          "agentName": null,
+          "conversationTitle": "Fix PAY-1423",
+          "engine": "claude_code",
+          "state": "needs_you",
+          "status": "running",
+          "outcome": null,
+          "createdAt": 1762678800000,
+          "updatedAt": 1762678860000,
+          "endedAt": null,
+          "leaseExpiresAt": 1
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "description": "an operator's note leaking into the stop",
+    "instance": {
+      "runs": [
+        {
+          "runId": "run_1",
+          "sessionId": "ses_1",
+          "parentRunId": null,
+          "job": false,
+          "agentKey": "triage",
+          "agentName": "Support triage",
+          "conversationTitle": "Fix PAY-1423",
+          "engine": null,
+          "state": "stopped",
+          "status": "cancelled",
+          "outcome": null,
+          "createdAt": 1762678700000,
+          "updatedAt": 1762678900000,
+          "endedAt": 1762678900000,
+          "operatorStop": {
+            "scope": "session",
+            "reason": "maintenance",
+            "at": 1,
+            "note": "rotating keys"
+          }
+        }
+      ],
+      "nextCursor": null
+    }
+  },
+  {
+    "description": "a page without its cursor",
+    "instance": {
+      "runs": []
+    }
+  },
+  {
+    "description": "an empty job title",
+    "instance": {
+      "runs": [
+        {
+          "runId": "run_2",
+          "sessionId": "ses_1",
+          "parentRunId": "run_1",
+          "job": true,
+          "agentKey": null,
+          "agentName": null,
+          "conversationTitle": "Fix PAY-1423",
+          "engine": "claude_code",
+          "state": "working",
+          "status": "running",
+          "outcome": null,
+          "createdAt": 1762678800000,
+          "updatedAt": 1762678860000,
+          "endedAt": null,
+          "title": ""
+        }
+      ],
+      "nextCursor": null
+    }
+  }
+]

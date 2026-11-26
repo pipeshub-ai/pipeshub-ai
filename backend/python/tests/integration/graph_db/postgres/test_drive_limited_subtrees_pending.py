@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from typing import TYPE_CHECKING
 
 import pytest
@@ -38,7 +39,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 async def connector(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[GoogleDriveTeamConnector]:
     if not os.environ.get("PG_CORE_URL"):
         pytest.skip("PG_CORE_URL is not set")
-    monkeypatch.setenv("SECRET_KEY", "limited-pending-it-secret")
+    monkeypatch.setenv("SECRET_KEY", secrets.token_urlsafe(32))
     db = KernelDB(DbConfig.from_env("connectors"))
     await db.start()
     org = new_org()

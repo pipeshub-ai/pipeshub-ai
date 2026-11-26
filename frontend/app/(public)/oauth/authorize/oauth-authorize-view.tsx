@@ -494,7 +494,7 @@ export function OAuthAuthorizeView() {
                     className="material-icons-outlined"
                     style={{
                       fontSize: 16,
-                      color: 'var(--gray-10)',
+                      color: 'var(--gray-11)',
                       marginTop: 1,
                       flexShrink: 0,
                     }}

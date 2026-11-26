@@ -16,7 +16,7 @@ from tests.integration.github_teams.sim.model import Behaviour
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
-os.environ.setdefault("SECRET_KEY", "github-teams-it-secret-key-0123456789abcdef")
+os.environ.setdefault("SECRET_KEY", "07097f3587e6f0bfab231be974c129371ea4ceda3176ea135b4d8d1baf163fc4")
 
 
 def pytest_configure(config: pytest.Config) -> None:

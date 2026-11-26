@@ -54,7 +54,10 @@ beforeEach(() => {
   window.localStorage.clear();
   served.notice = undefined;
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe('reminders at 14, 7, 3 and 1 days', () => {
   it('names the reminder a countdown is in', () => {
@@ -102,6 +105,7 @@ describe('LicenseBanners', () => {
     const { container } = show(<LicenseBanners />);
     expect(container.textContent).toContain(`Your license key starts on ${shortDate(start)}`);
     expect(container.textContent).toContain(shortDate(inDays(9)));
+    expect(container.textContent).toContain('If the grace ends first, only the people who created them can see their content');
     expect(screen.queryByText('Install a license key')).toBeNull();
     expect(container.querySelector('a')).toBeNull();
   });
@@ -264,6 +268,22 @@ describe('ConnectorLicenseBadge', () => {
       expect(screen.getByText(label)).toBeTruthy();
       cleanup();
     }
+  });
+
+  it.each([
+    ['missing' as const, null, 'which needs a license key'],
+    ['startsLater' as const, inDays(12), 'after the upgrade grace ends'],
+    ['startsLater' as const, inDays(3), 'does not include copying access'],
+  ])('explains a connector that will be limited when the key is %s (%s)', async (key, keyDate, words) => {
+    // The opened tooltip measures itself; jsdom has no ResizeObserver.
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    as('admin');
+    served.notice = notice({ upgradeGrace: grace(inDays(5), key, keyDate), connectors: { limited: 0, restoring: 0, items } });
+    show(<ConnectorLicenseBadge connectorId="a" />);
+    fireEvent.focus(screen.getByText('Will be limited'));
+    expect((await screen.findAllByText(new RegExp(words))).length).toBeGreaterThan(0);
+    if (key === 'startsLater') expect(screen.queryAllByText(/which needs a license key/)).toHaveLength(0);
+    if (words.startsWith('does not')) expect(screen.queryAllByText(/after the upgrade grace ends/)).toHaveLength(0);
   });
 
   it('shows nothing on an unlisted connector (storage and database ones never are), nor to a member', () => {

@@ -18,6 +18,7 @@ from app.services.skills.package_importer import (
     ImportPreview,
     PackageImportError,
     SkillPackageImporter,
+    _canonical_archive_path,
 )
 from app.utils.public_http import (
     PublicFetchError,
@@ -201,6 +202,57 @@ class TestPreviewUpload:
         importer = SkillPackageImporter()
         with pytest.raises(PackageImportError, match="unsafe path"):
             importer.preview_upload("archive.zip", buf.getvalue())
+
+    @pytest.mark.parametrize("path", ["scripts\\run.py", "scripts//run.py", "scripts/./run.py"])
+    def test_noncanonical_cross_platform_paths_are_rejected(self, path: str) -> None:
+        data = _make_zip({"SKILL.md": _VALID_SKILL_MD.encode(), path: b"unsafe"})
+        with pytest.raises(PackageImportError, match="unsafe path"):
+            SkillPackageImporter().preview_upload("archive.zip", data)
+
+    def test_nul_path_is_rejected_by_archive_path_boundary(self) -> None:
+        # ZipInfo truncates NUL-containing names, so exercise the boundary directly.
+        with pytest.raises(PackageImportError, match="unsafe path"):
+            _canonical_archive_path("scripts/\x00run.py")
+
+    def test_case_folded_duplicate_paths_are_rejected(self) -> None:
+        data = _make_zip({
+            "SKILL.md": _VALID_SKILL_MD.encode(),
+            "scripts/Run.py": b"first",
+            "scripts/run.py": b"second",
+        })
+        with pytest.raises(PackageImportError, match="duplicate path"):
+            SkillPackageImporter().preview_upload("archive.zip", data)
+
+    def test_encrypted_zip_is_rejected(self) -> None:
+        data = bytearray(_make_zip({"SKILL.md": _VALID_SKILL_MD.encode()}))
+        # Set the "encrypted" general-purpose flag bit in the central directory entry.
+        central_dir = data.rfind(b"PK\x01\x02")
+        data[central_dir + 8] |= 0x1
+        with pytest.raises(PackageImportError, match="Encrypted zip"):
+            SkillPackageImporter().preview_upload("archive.zip", bytes(data))
+
+    def test_oversized_archive_member_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(package_importer, "_MAX_ARCHIVE_MEMBER_BYTES", 8)
+        data = _make_zip({
+            "SKILL.md": b"x" * 4,
+            "scripts/run.py": b"123456789",
+        })
+        with pytest.raises(PackageImportError, match="member is too large"):
+            SkillPackageImporter().preview_upload("archive.zip", data)
+
+    def test_tar_link_is_rejected(self) -> None:
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            skill = _VALID_SKILL_MD.encode()
+            skill_info = tarfile.TarInfo("SKILL.md")
+            skill_info.size = len(skill)
+            tf.addfile(skill_info, io.BytesIO(skill))
+            link = tarfile.TarInfo("scripts/run.py")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/etc/passwd"
+            tf.addfile(link)
+        with pytest.raises(PackageImportError, match="link or special"):
+            SkillPackageImporter().preview_upload("archive.tar.gz", buf.getvalue())
 
     def test_too_large_upload_rejected(self) -> None:
         importer = SkillPackageImporter()

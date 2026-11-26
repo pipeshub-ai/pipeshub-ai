@@ -6,7 +6,10 @@ import {
   connectorAccountConnect,
   domainLimitReached,
   emailChangeNotice,
+  feedbackCopy,
+  feedbackReceived,
   isEmailChangeNoticeData,
+  isSandboxCapacityAlertData,
   joinRequestDecision,
   joinRequestNotify,
   licenseGraceReminder,
@@ -14,6 +17,10 @@ import {
   orgEmailVerification,
   resetEmail,
   resetPassword,
+  sandboxCapacityAlert,
+  sandboxCapacityAlertText,
+  scheduledRunEnded,
+  supportRequest,
   suspiciousLoginAttempt,
 } from './emailTemplates';
 
@@ -63,13 +70,49 @@ export function getEmailContent(
     case EmailTemplateType.JoinRequestDecision:
       return joinRequestDecision(templateData);
 
+    case EmailTemplateType.ScheduledRunEnded as string:
+      return scheduledRunEnded(templateData);
+
+    case EmailTemplateType.SandboxCapacityAlert as string:
+      if (!isSandboxCapacityAlertData(templateData)) {
+        throw new BadRequestError(
+          'sandboxCapacityAlert requires heading, intro, reasonText, actions, stats and docsUrl',
+        );
+      }
+      return sandboxCapacityAlert(templateData);
     case EmailTemplateType.ConnectorAccountConnect as string:
       return connectorAccountConnect(templateData);
 
     case EmailTemplateType.LicenseGraceReminder as string:
       return licenseGraceReminder(templateData);
+    // `as string`: the type is a plain string here, as for every case above.
+    case EmailTemplateType.SupportRequest as string:
+      return supportRequest(templateData);
+
+    case EmailTemplateType.FeedbackReceived as string:
+      return feedbackReceived(templateData);
+
+    case EmailTemplateType.FeedbackCopy as string:
+      return feedbackCopy(templateData);
 
     default:
       throw 'Unknown Template';
   }
+}
+
+/**
+ * The plain-text part for a template that has one, or `undefined` to send
+ * HTML only. Called after `getEmailContent` accepted the same data.
+ */
+export function getEmailText(
+  emailTemplateType: string,
+  templateData: Record<string, unknown>,
+): string | undefined {
+  if (
+    emailTemplateType === (EmailTemplateType.SandboxCapacityAlert as string) &&
+    isSandboxCapacityAlertData(templateData)
+  ) {
+    return sandboxCapacityAlertText(templateData);
+  }
+  return undefined;
 }

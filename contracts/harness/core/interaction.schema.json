@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/interaction.schema.json",
+  "title": "Interaction",
+  "description": "Human-in-the-loop interaction (REPORT 6.5.2): question, approval or client tool.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/QuestionInteraction"
+    },
+    {
+      "$ref": "#/$defs/ApprovalInteraction"
+    },
+    {
+      "$ref": "#/$defs/ClientToolInteraction"
+    }
+  ],
+  "$defs": {
+    "QuestionOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "label"
+      ],
+      "properties": {
+        "value": {
+          "$ref": "common.schema.json#/$defs/Text"
+        },
+        "label": {
+          "$ref": "common.schema.json#/$defs/Text"
+        }
+      }
+    },
+    "Question": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "questionId",
+        "text"
+      ],
+      "properties": {
+        "questionId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "text": {
+          "$ref": "common.schema.json#/$defs/Text"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QuestionOption"
+          }
+        },
+        "allowFreeText": {
+          "type": "boolean"
+        }
+      }
+    },
+    "QuestionInteraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interactionId",
+        "runId",
+        "kind",
+        "createdAt",
+        "bindingDigest",
+        "questions"
+      ],
+      "properties": {
+        "interactionId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "runId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "createdAt": {
+          "$ref": "common.schema.json#/$defs/Timestamp"
+        },
+        "expiresAt": {
+          "$ref": "common.schema.json#/$defs/Timestamp"
+        },
+        "bindingDigest": {
+          "description": "Digest of the kind-specific binding; carried by interaction.requested.",
+          "$ref": "common.schema.json#/$defs/Digest"
+        },
+        "kind": {
+          "const": "question"
+        },
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/Question"
+          }
+        }
+      },
+      "description": "Ends the turn with needs_input; the answer starts the next run."
+    },
+    "ApprovalBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invocationId",
+        "argsDigest",
+        "specDigest",
+        "expiresAt"
+      ],
+      "properties": {
+        "invocationId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "argsDigest": {
+          "$ref": "common.schema.json#/$defs/Digest"
+        },
+        "specDigest": {
+          "$ref": "common.schema.json#/$defs/Digest"
+        },
+        "expiresAt": {
+          "$ref": "common.schema.json#/$defs/Timestamp"
+        }
+      },
+      "description": "Consumed once; authority is re-checked at execution."
+    },
+    "Approvers": {
+      "type": "object",
+      "additionalProperties": false,
+      "x-extensible": true,
+      "description": "Who decides the approval. An overlay may add scopes and the fields they name.",
+      "required": [
+        "scope"
+      ],
+      "properties": {
+        "scope": {
+          "enum": [
+            "run_actor",
+            "workflow_owner"
+          ],
+          "x-extensible-enum": true
+        }
+      }
+    },
+    "ApprovalInteraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interactionId",
+        "runId",
+        "kind",
+        "createdAt",
+        "bindingDigest",
+        "toolId",
+        "binding",
+        "approvers"
+      ],
+      "properties": {
+        "interactionId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "runId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "createdAt": {
+          "$ref": "common.schema.json#/$defs/Timestamp"
+        },
+        "expiresAt": {
+          "$ref": "common.schema.json#/$defs/Timestamp"
+        },
+        "bindingDigest": {
+          "description": "Digest of the kind-specific binding; carried by interaction.requested.",
+          "$ref": "common.schema.json#/$defs/Digest"
+        },
+        "kind": {
+          "const": "approval"
+        },
+        "toolId": {
+          "$ref": "common.schema.json#/$defs/ToolId"
+        },
+        "binding": {
+          "$ref": "#/$defs/ApprovalBinding"
+        },
+        "approvers": {
+          "$ref": "#/$defs/Approvers"
+        }
+      },
+      "description": "Suspends the run and resumes in place."
+    },
+    "ClientToolInteraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interactionId",
+        "runId",
+        "kind",
+        "createdAt",
+        "bindingDigest",
+        "invocationId",
+        "toolName",
+        "argsDigest",
+        "args"
+      ],
+      "properties": {
+        "interactionId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "runId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "createdAt": {
+          "$ref": "common.schema.json#/$defs/Timestamp"
+        },
+        "expiresAt": {
+          "$ref": "common.schema.json#/$defs/Timestamp"
+        },
+        "bindingDigest": {
+          "description": "Digest of the kind-specific binding; carried by interaction.requested.",
+          "$ref": "common.schema.json#/$defs/Digest"
+        },
+        "kind": {
+          "const": "client_tool"
+        },
+        "invocationId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "toolName": {
+          "$ref": "common.schema.json#/$defs/ModelToolName"
+        },
+        "argsDigest": {
+          "$ref": "common.schema.json#/$defs/Digest"
+        },
+        "args": {
+          "type": "object"
+        }
+      },
+      "description": "Executed by the browser; the result is trusted only for session callers."
+    }
+  },
+  "examples": [
+    {
+      "interactionId": "int_1",
+      "runId": "run_1",
+      "createdAt": "2026-10-01T12:00:00.123Z",
+      "bindingDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "question",
+      "questions": [
+        {
+          "questionId": "q1",
+          "text": "Which project?",
+          "options": [
+            {
+              "value": "ENG",
+              "label": "Engineering"
+            }
+          ],
+          "allowFreeText": true
+        }
+      ]
+    },
+    {
+      "interactionId": "int_1",
+      "runId": "run_1",
+      "createdAt": "2026-10-01T12:00:00.123Z",
+      "bindingDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "approval",
+      "expiresAt": "2026-10-02T12:00:00Z",
+      "toolId": "slack@inst_1/post_message",
+      "binding": {
+        "invocationId": "inv_9",
+        "argsDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "specDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "expiresAt": "2026-10-02T12:00:00Z"
+      },
+      "approvers": {
+        "scope": "run_actor"
+      }
+    },
+    {
+      "interactionId": "int_1",
+      "runId": "run_1",
+      "createdAt": "2026-10-01T12:00:00.123Z",
+      "bindingDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "client_tool",
+      "invocationId": "inv_3",
+      "toolName": "open_file_picker",
+      "argsDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "args": {
+        "accept": [
+          "pdf"
+        ]
+      }
+    }
+  ]
+}

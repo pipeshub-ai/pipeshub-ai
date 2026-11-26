@@ -92,7 +92,7 @@ export function McpServerActionsMenu({ entries, container }: { entries: McpMenuE
             ) : entry.kind === 'info' ? (
               <DropdownMenu.Item disabled>
                 <Flex align="center" gap="2">
-                  <MaterialIcon name={entry.icon} size={16} color="var(--gray-10)" />
+                  <MaterialIcon name={entry.icon} size={16} color="var(--gray-11)" />
                   <Text size="1" style={{ color: 'var(--gray-11)' }}>
                     {entry.label}
                   </Text>
@@ -109,7 +109,7 @@ export function McpServerActionsMenu({ entries, container }: { entries: McpMenuE
                   <Flex direction="column">
                     <Text size="2">{entry.label}</Text>
                     {entry.description && (
-                      <Text size="1" style={{ color: entry.danger ? 'var(--red-10)' : 'var(--gray-10)' }}>
+                      <Text size="1" style={{ color: entry.danger ? 'var(--red-11)' : 'var(--gray-11)' }}>
                         {entry.description}
                       </Text>
                     )}

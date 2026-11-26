@@ -144,7 +144,7 @@ image:
   registry: registry-1.docker.io
   repository: bitnami/mongodb
   tag: latest
-  digest: ""
+  digest: "sha256:011d28bb7e79046aac5b45e3c770fddfe1a87814f08d4779294ef515f09f435d"
   ## Specify a imagePullPolicy
   ## ref: https://kubernetes.io/docs/concepts/containers/images/#pre-pulled-images
   ##
@@ -270,7 +270,7 @@ tls:
     registry: registry-1.docker.io
     repository: bitnami/nginx
     tag: latest
-    digest: ""
+    digest: "sha256:5de370b777686602b3028b09557403cafec0da24c0a4510803bab12735cf7677"
     pullPolicy: IfNotPresent
     ## Optionally specify an array of imagePullSecrets.
     ## Secrets must be manually created in the namespace.
@@ -869,7 +869,7 @@ externalAccess:
       registry: registry-1.docker.io
       repository: bitnami/kubectl
       tag: latest
-      digest: ""
+      digest: "sha256:8919c149c2e3d6860e0143c117900e64d71395172aaef0e01e604bb98c8e7ce0"
       ## Specify a imagePullPolicy
       ## ref: https://kubernetes.io/docs/concepts/containers/images/#pre-pulled-images
       ##
@@ -922,7 +922,7 @@ externalAccess:
       registry: registry-1.docker.io
       repository: bitnami/os-shell
       tag: latest
-      digest: ""
+      digest: "sha256:5e77f6a00c416967070a080f6a9092c5cb8cff7ff05a33b1f1bd01e6c79a7236"
       ## Specify a imagePullPolicy
       ## ref: https://kubernetes.io/docs/concepts/containers/images/#pre-pulled-images
       ##
@@ -1659,7 +1659,7 @@ volumePermissions:
     registry: registry-1.docker.io
     repository: bitnami/os-shell
     tag: latest
-    digest: ""
+    digest: "sha256:5e77f6a00c416967070a080f6a9092c5cb8cff7ff05a33b1f1bd01e6c79a7236"
     ## Specify a imagePullPolicy
     ## ref: https://kubernetes.io/docs/concepts/containers/images/#pre-pulled-images
     ##
@@ -2471,7 +2471,7 @@ metrics:
     registry: registry-1.docker.io
     repository: bitnami/mongodb-exporter
     tag: latest
-    digest: ""
+    digest: "sha256:edf3656b6d94b1f69481d842c095e03f17ef7b3586fb1b5807f5557693823b58"
     pullPolicy: IfNotPresent
     ## Optionally specify an array of imagePullSecrets.
     ## Secrets must be manually created in the namespace.

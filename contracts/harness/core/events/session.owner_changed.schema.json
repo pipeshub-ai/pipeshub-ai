@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/session.owner_changed.schema.json",
+  "title": "SessionOwnerChangedEvent",
+  "description": "The session's owner changed (CLEANUP-G2): its owner was deleted or removed from the org while the session was shared with others, so it moved to an org admin, the org's earliest active one, and nobody it was shared with loses it. Node writes it on the session's root stream, with no runId; it lands in the org's audit chain. No fold reads it.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "session.owner_changed"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/SessionOwnerChangedData"
+    }
+  },
+  "$defs": {
+    "SessionOwnerChangedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "by",
+        "from",
+        "to",
+        "reason"
+      ],
+      "properties": {
+        "by": {
+          "$ref": "../common.schema.json#/$defs/PrincipalRef",
+          "description": "Who deleted or removed the previous owner."
+        },
+        "from": {
+          "$ref": "../common.schema.json#/$defs/PrincipalRef",
+          "description": "The previous owner."
+        },
+        "to": {
+          "$ref": "../common.schema.json#/$defs/PrincipalRef",
+          "description": "The new owner: the org's earliest active admin."
+        },
+        "reason": {
+          "description": "Why it moved.",
+          "enum": [
+            "owner_deleted"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "type": "session.owner_changed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-20T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "by": "p_admin1",
+        "from": "p_user2",
+        "to": "p_admin1",
+        "reason": "owner_deleted"
+      }
+    }
+  ]
+}

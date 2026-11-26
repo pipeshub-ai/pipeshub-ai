@@ -22,7 +22,7 @@ export function ReadonlyField({ field, value, warned }: ReadonlyFieldProps) {
         style={{ backgroundColor: 'var(--slate-3)', cursor: 'default' }}
       />
       {field.helperText && (
-        <Text size="1" style={{ color: 'var(--slate-10)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>
           {field.helperText}
         </Text>
       )}
