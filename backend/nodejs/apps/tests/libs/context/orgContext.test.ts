@@ -137,8 +137,8 @@ describe('orgContext', () => {
       else process.env.ORG_CONTEXT_MODE = prev
     })
 
-    it('shadow (default) counts missing and mismatched access and lets it through', () => {
-      delete process.env.ORG_CONTEXT_MODE
+    it('shadow counts missing and mismatched access and lets it through', () => {
+      process.env.ORG_CONTEXT_MODE = 'shadow'
       const n = (k: string) => orgContextViolations.get(k) ?? 0
       const m0 = n('missing:site-a'), x0 = n('mismatch:site-b')
       expect(ambientOrg('org_x', 'site-a')).to.equal('org_x')
@@ -149,6 +149,15 @@ describe('orgContext', () => {
       })
       expect(n('missing:site-a')).to.equal(m0 + 1)
       expect(n('mismatch:site-b')).to.equal(x0 + 1)
+    })
+
+    it('enforce is the default, also for an empty value', () => {
+      for (const unset of [undefined, '', ' ']) {
+        if (unset === undefined) delete process.env.ORG_CONTEXT_MODE
+        else process.env.ORG_CONTEXT_MODE = unset
+        expect(validateMode()).to.equal(true)
+        expect(() => ambientOrg('org_x', 's-default')).to.throw(MissingOrgContext)
+      }
     })
 
     it('rejects an unknown ORG_CONTEXT_MODE instead of falling back to shadow', () => {

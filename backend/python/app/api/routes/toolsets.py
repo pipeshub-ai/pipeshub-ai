@@ -1075,7 +1075,7 @@ def _decode_state_with_instance(encoded_state: str) -> dict[str, Any]:
     try:
         decoded = base64.urlsafe_b64decode(encoded_state.encode()).decode()
         state_data = json.loads(decoded)
-        if "state" not in state_data or "instance_id" not in state_data or "user_id" not in state_data:
+        if not (isinstance(state_data, dict) and all(isinstance(state_data.get(k), str) for k in ("state", "instance_id", "user_id"))):
             raise ValueError("Missing required fields in state data")
         return state_data
     except json.JSONDecodeError as e:
@@ -2715,7 +2715,6 @@ async def handle_toolset_oauth_callback(
         instance_id = state_data["instance_id"]
         state_user_id = state_data["user_id"]
         is_agent_flow = state_data.get("is_agent", False)
-        bind_request_log_fields(request, toolset_id=instance_id, agent_id=state_user_id if is_agent_flow else None)
 
         # For regular user flows, validate that the callback user matches the initiating user.
         # For agent flows, the state carries the agentKey (not a user ID), so we skip that
@@ -2762,6 +2761,8 @@ async def handle_toolset_oauth_callback(
 
         # Load instance: an agent's sign-in only ever reaches org instances.
         instance = await _find_instance(instance_id, org_id, None if is_agent_flow else user_id, config_service)
+        # Bound only once found: the state is the caller's own text (as the connector callback, router.py).
+        bind_request_log_fields(request, toolset_id=instance["_id"], agent_id=state_user_id if is_agent_flow else None)
         personal = toolset_store.is_personal(instance)
 
         toolset_type = instance.get("toolsetType", "")

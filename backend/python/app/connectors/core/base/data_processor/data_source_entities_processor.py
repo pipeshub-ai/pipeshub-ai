@@ -68,7 +68,7 @@ from app.connectors.core.sync.run_context import (
 )
 from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
-from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, RecordSchemaNarrowError, is_graph_memory_refusal
+from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, RecordSchemaNarrowError
 from app.models.entities import (
     AppMetadata,
     AppRole,
@@ -2894,15 +2894,16 @@ class DataSourceEntitiesProcessor:
         # are the addresses and issue keys in its text (see record_links). An
         # edit can remove one, so they are always cleaned up as well.
         # None, unlike [], means the connector did not read the record's links on
-        # this save (a Slack reindex): its link edges are kept as they are.
+        # this save (a Slack reindex, a Jira issue stored closed after its build
+        # failed): its link edges are kept as they are.
         if (
             isinstance(
                 record,
                 (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord, PullRequestRecord),
             )
-            and not (isinstance(record, MessageRecord) and record.related_external_records is None)
+            and record.related_external_records is not None
         ):
-            await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
+            await self._handle_related_external_records(record, record.related_external_records, tx_store)
 
         # Records that pasted this record's address before it was indexed. On
         # every save: on Neo4j's default auto-commit sessions the record row is
@@ -6156,6 +6157,12 @@ class DataSourceEntitiesProcessor:
 
         ``replace_members=False`` only adds the given members and keeps the existing ones,
         for callers that can see just part of a group's membership at a time.
+
+        Each group is written in a transaction of its own. A group's replace locks every one of
+        its members, and groups share members: two syncs that each wrote several groups in one
+        transaction took those locks group by group, in different orders, and deadlocked. A
+        replace is idempotent, so a group written before a failure is just written again when
+        the call is retried.
         """
         rewritten: set[str] = set()
         try:
@@ -6163,34 +6170,11 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning("on_new_user_groups received an empty list; skipping processing.")
                 return
 
-            refused = False
             try:
-                async with self._sync_transaction() as tx_store:
-                    for user_group, members in user_groups:
-                        if await self._write_user_group(tx_store, user_group, members, replace_members=replace_members):
-                            rewritten.add(user_group.connector_id)
-            except Exception as e:
-                # A refusal of the combined write: a marked one, or the pool's own error from groups that
-                # are each small and add up. Either way the groups are written apart.
-                if len(user_groups) == 1 or not is_graph_memory_refusal(e):
-                    raise
-                refused = True
-            skipped: list[str] = []
-            if refused:
-                # With explicit transactions the combined write rolled back whole; without them each
-                # statement committed on its own, so groups written before the refusal stand. Either
-                # way, a group the server's memory pool refused must not take the others with it: write
-                # them apart, each group's upsert and its replace in one transaction of their own. The
-                # connectors collected by the combined attempt stay in ``rewritten``: dropping access
-                # for a superset is harmless, missing one leaves a stale access list. Done after the
-                # handler has ended, so the aggregated error below carries no earlier error as its context.
-                try:
-                    skipped = await self._write_user_groups_apart(user_groups, rewritten, replace_members=replace_members)
-                finally:
-                    # The groups written before another error stay committed, so their access
-                    # lists must drop whatever happens to the rest.
-                    await self._access_changed(rewritten)
-            else:
+                skipped = await self._write_user_groups_apart(user_groups, rewritten, replace_members=replace_members)
+            finally:
+                # The groups written before an error stay committed, so their access lists
+                # must drop whatever happens to the rest.
                 await self._access_changed(rewritten)
             if skipped:
                 raise GraphMemoryLimitError(

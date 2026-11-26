@@ -437,7 +437,8 @@ class TestConvertBufferToPdfStream:
             )
 
         input_path = mock_convert.await_args.args[0]
-        assert input_path.endswith("Quarterly review.pptx")
+        assert input_path.endswith(".pptx")
+        assert "Quarterly" not in input_path
 
     @pytest.mark.asyncio
     async def test_streaming_response_buffer(self):
@@ -711,7 +712,7 @@ class TestHandleOauthConfigCreation:
             base_url="http://localhost",
             logger=logging.getLogger("test"),
         )
-        assert result is None
+        assert result.app_id is None
 
     @pytest.mark.asyncio
     async def test_no_credentials_with_existing_id_returns_id(self):
@@ -730,7 +731,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "existing-id"
+        assert result.app_id == "existing-id"
 
     @pytest.mark.asyncio
     async def test_no_credentials_no_id_returns_none(self):
@@ -749,7 +750,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result is None
+        assert result.app_id is None
 
     @pytest.mark.asyncio
     async def test_new_config_creation(self):
@@ -775,7 +776,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "new-id"
+        assert result.app_id == "new-id"
         mock_conflict.assert_called_once()
         mock_create.assert_awaited_once()
 
@@ -806,7 +807,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "oauth-1"
+        assert result.app_id == "oauth-1"
         # Name didn't change, so no conflict check on update
         mock_conflict.assert_not_called()
 
@@ -837,7 +838,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "oauth-1"
+        assert result.app_id == "oauth-1"
         mock_conflict.assert_called_once()
         # Verify exclude_index was passed
         _, kwargs = mock_conflict.call_args
@@ -869,7 +870,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "new-id"
+        assert result.app_id == "new-id"
         mock_conflict.assert_called_once()
         # oauth_app_id should have been reset to None for the create call
         call_kwargs = mock_create.call_args[1]
@@ -902,7 +903,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "oauth-1"
+        assert result.app_id == "oauth-1"
         # Verify create was called with existing name
         call_kwargs = mock_create.call_args[1]
         assert call_kwargs["instance_name"] == "Existing Name" or mock_create.call_args[0][2] == "Existing Name"
@@ -931,7 +932,7 @@ class TestHandleOauthConfigCreation:
                 base_url="http://localhost",
                 logger=logging.getLogger("test"),
             )
-        assert result == "new-id"
+        assert result.app_id == "new-id"
 
 
 # ============================================================================

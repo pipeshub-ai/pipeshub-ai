@@ -17,6 +17,7 @@ from hypothesis import settings
 from hypothesis.database import DirectoryBasedExampleDatabase
 
 from tests.hang_dump import pytest_exception_interact  # noqa: F401  (a hook: pytest finds it by name)
+from tests.xdist_scopes import pytest_xdist_make_scheduler  # noqa: F401  (a hook: pytest finds it by name)
 
 os.environ.setdefault("SECRET_KEY", "78aa78e734a5383b62cd145ce0e7037fa5496d3b899200385dd1cc44b2f70421")
 # LiteLLM fetches its model price map from GitHub when imported unless told to use the copy it ships (H9).

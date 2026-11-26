@@ -251,6 +251,7 @@
   "app/utils/execute_query.py": 2,
   "app/utils/fetch_slack_nearby_messages.py": 2,
   "app/utils/fetch_slack_thread.py": 4,
+  "app/utils/oauth_config.py": 1,
   "app/utils/pattern_match.py": 1
  }
 }
