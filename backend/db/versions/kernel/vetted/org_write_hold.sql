@@ -1,10 +1,10 @@
 -- The two write fences (hand-written: the prologue class has no manifest entry) also refuse a unit whose org's writes are held
--- (kernel.org_writes_held, an extension point; here it holds none). The unit's org is app.org_id, which the prologue sets in a
--- subquery whose output the fence's subquery depends on, so it is set before the fence runs; a unit with no org is never held.
--- Before it asks, the fence takes the SHARED per-org barrier (class 7342, key hashtext(org)), held to commit: whoever starts a hold
--- takes the same key exclusively in the transaction that records it, which waits for that org's writers in flight and refuses
--- (25006) the ones that start meanwhile; once it commits, the fence's next statement sees the hold. Everything else is the bodies
--- of kernel_0011 and platform_0001.
+-- (kernel.org_writes_held, an extension point; here it holds none). The unit's org is app.org_id, which the prologue sets in its
+-- materialized pre subquery, before the subquery that calls the fence; a unit with no org is never held. The hold is asked after
+-- the fence holds its install-wide barrier (7341 here, 7340 for the document store), so whoever records a hold takes both
+-- exclusively in that transaction: it waits for every write unit in flight and refuses new ones until it commits, and every fence
+-- that runs after it sees the hold. No per-org lock: a hold is rare, a write unit is not. Everything else is the bodies of
+-- kernel_0011 and platform_0001.
 GRANT pipeshub_vetted_kernel TO pipeshub_owner WITH SET TRUE;
 GRANT USAGE ON SCHEMA kernel TO pipeshub_vetted_kernel;
 GRANT CREATE ON SCHEMA kernel TO pipeshub_vetted_kernel;
@@ -23,13 +23,8 @@ BEGIN
   IF v_epoch IS DISTINCT FROM p_epoch THEN
     RAISE EXCEPTION 'deployment profile epoch is %, this process expects %', v_epoch, p_epoch USING ERRCODE = '55000';
   END IF;
-  IF v_org IS NOT NULL THEN
-    IF NOT pg_try_advisory_xact_lock_shared(7342, hashtext(v_org)) THEN
-      RAISE EXCEPTION 'the organisation''s writes are being held' USING ERRCODE = '25006';
-    END IF;
-    IF kernel.org_writes_held(v_org) THEN
-      RAISE EXCEPTION 'the organisation''s writes are held' USING ERRCODE = '25006';
-    END IF;
+  IF v_org IS NOT NULL AND kernel.org_writes_held(v_org) THEN
+    RAISE EXCEPTION 'the organisation''s writes are held' USING ERRCODE = '25006';
   END IF;
 END $fn$;
 CREATE OR REPLACE FUNCTION kernel.assert_store_epoch(p_epoch int) RETURNS void
@@ -49,16 +44,10 @@ BEGIN
   IF r.readonly THEN
     RAISE EXCEPTION 'the document store is read-only' USING ERRCODE = '25006';
   END IF;
-  IF v_org IS NOT NULL THEN
-    IF NOT pg_try_advisory_xact_lock_shared(7342, hashtext(v_org)) THEN
-      RAISE EXCEPTION 'the organisation''s writes are being held' USING ERRCODE = '25006';
-    END IF;
-    IF kernel.org_writes_held(v_org) THEN
-      RAISE EXCEPTION 'the organisation''s writes are held' USING ERRCODE = '25006';
-    END IF;
+  IF v_org IS NOT NULL AND kernel.org_writes_held(v_org) THEN
+    RAISE EXCEPTION 'the organisation''s writes are held' USING ERRCODE = '25006';
   END IF;
 END $fn$;
 SET LOCAL ROLE pipeshub_owner;
 REVOKE CREATE ON SCHEMA kernel FROM pipeshub_vetted_kernel;
 REVOKE pipeshub_vetted_kernel FROM pipeshub_owner;
-INSERT INTO kernel.lock_keys VALUES (7342, 'org_write_hold', 'the per-org write barrier: shared in the write fences, exclusive while a hold of that org is recorded');

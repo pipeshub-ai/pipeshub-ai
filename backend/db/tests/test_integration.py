@@ -494,9 +494,9 @@ def test_profile_fence_is_volatile_read_committed_and_callable_by_the_login(db):
 
 
 def _prologue(fence: str) -> str:
-    """The units' shape (app/core/db/uow.py, src/libs/db/uow.ts): the fence runs in a LATERAL that reads the org the first one set."""
-    return ("SELECT f.fence FROM (SELECT set_config('role', %s, true), set_config('app.org_id', %s, true) AS org) s, "
-            f"LATERAL (SELECT {fence}(1) AS fence WHERE s.org IS NOT NULL) f")
+    """The units' shape (app/core/db/uow.py, src/libs/db/uow.ts): the org is set in a materialized pre that the fence's subquery reads."""
+    return ("WITH pre AS MATERIALIZED (SELECT %s::text AS role, set_config('app.org_id', %s, true) AS org) "
+            f"SELECT s.fence FROM pre, LATERAL (SELECT set_config('role', pre.role, true), {fence}(1) AS fence WHERE pre.org IS NOT NULL) s")
 
 
 def test_the_write_fences_refuse_only_an_org_whose_writes_are_held(db):
@@ -543,13 +543,14 @@ def test_the_write_fences_refuse_only_an_org_whose_writes_are_held(db):
             assert c.execute("SELECT has_function_privilege(%s, 'kernel.org_writes_held(text)', 'EXECUTE')", (role,)).fetchone()[0] is False
 
 
-def test_a_hold_waits_for_the_orgs_writers_in_flight_and_refuses_those_that_start_meanwhile(db):
-    """The fences take the org's barrier (7342, hashtext(org)) shared, to commit: whoever records a hold takes it exclusively first,
-    so it cannot start while one of that org's writers is past its fence, and while it is open that org's new writers are refused."""
+def test_a_hold_is_recorded_behind_the_fences_barriers_so_no_writer_in_flight_outlives_it(db):
+    """The fences ask for the hold after they hold their install-wide barrier (7341 for the profile fence, 7340 for the document
+    store's), shared to commit: whoever records a hold takes both exclusively first, so it cannot start while any writer is past its
+    fence, and while it is open every new writer is refused; the fences take no lock of their own for the hold."""
     cluster, name = db
     assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
     org, other = "a" * 24, "b" * 24
-    take = "SELECT pg_try_advisory_xact_lock(7342, hashtext(%s))"
+    take = "SELECT pg_try_advisory_xact_lock(7341, 1) AND pg_try_advisory_xact_lock(7340, 1)"
 
     def unit(fence: str, who: str) -> psycopg.Connection:
         c = connect(cluster, name, "pipeshub_node_login")
@@ -558,18 +559,19 @@ def test_a_hold_waits_for_the_orgs_writers_in_flight_and_refuses_those_that_star
         return c
 
     with connect(cluster, name) as k:
-        assert k.execute("SELECT name FROM kernel.lock_keys WHERE class_id = 7342").fetchone() == ("org_write_hold",)
+        for fence in ("assert_profile_epoch", "assert_store_epoch"):
+            src = k.execute("SELECT prosrc FROM pg_proc WHERE oid = %s::regprocedure", (f"kernel.{fence}(int)",)).fetchone()[0]
+            assert src.count("advisory") == 1 and "org_writes_held" in src
     for fence in ("kernel.assert_profile_epoch", "kernel.assert_store_epoch"):
-        with unit(fence, org) as writer, connect(cluster, name) as opener:      # a writer of the org is past its fence
+        with unit(fence, org) as writer, connect(cluster, name) as opener:      # a writer is past its fence
             opener.autocommit = False
-            assert opener.execute(take, (org,)).fetchone()[0] is False
+            assert opener.execute(take).fetchone()[0] is False
             opener.rollback()
             writer.rollback()                                                  # it ends
-            assert opener.execute(take, (org,)).fetchone()[0] is True          # now the hold can be recorded
-            with pytest.raises(psycopg.errors.ReadOnlySqlTransaction, match="being held"):
-                unit(fence, org).close()
-            for who in (other, ""):                                            # another org, and a unit with no org, still write
-                unit(fence, who).close()
+            assert opener.execute(take).fetchone()[0] is True                  # now the hold can be recorded
+            for who in (org, other, ""):                                       # and nobody writes until it commits
+                with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+                    unit(fence, who).close()
             opener.rollback()
         unit(fence, org).close()
 
