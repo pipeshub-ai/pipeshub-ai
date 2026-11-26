@@ -502,12 +502,15 @@ async def shown_to(matrix: MatrixLane, viewer: str, sources: list[dict[str, Any]
     from app.harness.knowledge.service import KnowledgePublications
     from app.services.artifact_registry.models import Actor
     from app.services.record_content import TieredRecordAuthorizer
+    from tests.support.bound_org import another_request
 
     graph = matrix.services.graph
     actor = Actor(org_id=matrix.org.org_id, user_id=matrix.org.user_id(viewer))
     known = {f.alias or name for name, f in PipeshubRecordSource.model_fields.items()}
     asked = [PipeshubRecordSource.model_validate({k: v for k, v in s.items() if k in known}) for s in sources]
-    statuses = await TieredRecordAuthorizer(graph).decide(
-        actor, asked, publications=KnowledgePublications(graph, matrix.services.config)
-    )
+    # Node's /records/access reaches this as the viewer's request, bound to the viewer's org.
+    with another_request(actor.org_id, actor.user_id):
+        statuses = await TieredRecordAuthorizer(graph).decide(
+            actor, asked, publications=KnowledgePublications(graph, matrix.services.config)
+        )
     return bool(statuses) and all(status == "readable" for status in statuses)
