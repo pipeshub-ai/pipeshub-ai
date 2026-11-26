@@ -5,7 +5,7 @@ import * as runtimeBoot from '../../../src/libs/db/runtime-boot'
 import * as edition from '../../../src/edition'
 import { PostgresDistributedKeyValueStore } from '../../../src/libs/keyValueStore/providers/PostgresDistributedKeyValueStore'
 
-/** Which org the PostgreSQL key-value store's units bind: none by default, the ambient org for a key `kvKeyBindsOrg` claims. */
+/** Which org the PostgreSQL key-value store's units bind: none for a key `kvKeyBindsOrg` does not claim, the ambient org for one it claims. Each test sets the hook. */
 const ORG = 'a'.repeat(24)
 
 function fakeRuntime() {
@@ -39,8 +39,9 @@ async function useEveryOperation(key: string): Promise<void> {
 describe('PostgresDistributedKeyValueStore org binding', () => {
   afterEach(() => sinon.restore())
 
-  it('binds no org for any key by default', async () => {
-    for (const k of ['/services/aiModels', `${ORG}/services/aiModels`, '']) expect(edition.kvKeyBindsOrg(k)).to.equal(false)
+  it('binds no org in any unit when the hook claims no key', async () => {
+    // the open-source default, set explicitly: a build's own hook may claim keys (its default is tested in tests/libs/edition)
+    sinon.stub(edition, 'kvKeyBindsOrg').returns(false)
     const units = fakeRuntime()
     await useEveryOperation(`${ORG}/services/aiModels`)
     expect(units).to.have.length(6)

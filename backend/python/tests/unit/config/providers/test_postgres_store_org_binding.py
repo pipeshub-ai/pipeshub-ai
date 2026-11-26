@@ -1,5 +1,5 @@
-"""Which org the PostgreSQL key-value store binds: none by default (every key belongs to the install), the ambient org when
-``edition.kv_key_binds_org`` says a key belongs to it."""
+"""Which org the PostgreSQL key-value store binds: none for a key ``edition.kv_key_binds_org`` does not claim, the ambient org for
+one it claims. The hook is set in each test, so the tests hold whatever a build's own hook answers."""
 
 from __future__ import annotations
 
@@ -61,16 +61,13 @@ def _store(rt: _Runtime) -> PostgresKeyValueStore:
     return store
 
 
-@pytest.mark.parametrize("key", ["/services/aiModels", f"{ORG}/services/aiModels", ""])
-def test_the_default_binds_no_org_for_any_key(key: str) -> None:
-    assert edition.kv_key_binds_org(key) is False
-
-
 @pytest.mark.asyncio
-async def test_by_default_every_unit_binds_no_org() -> None:
+async def test_a_hook_that_claims_no_key_binds_no_org_in_any_unit() -> None:
+    # the open-source default, set explicitly: a build's own hook may claim keys (its default is tested beside the other hooks)
     rt = _Runtime()
-    await _use_every_operation(_store(rt), "/services/aiModels")
-    await _store(rt).get_all_keys()
+    with patch.object(edition, "kv_key_binds_org", lambda key: False):
+        await _use_every_operation(_store(rt), f"{ORG}/services/aiModels")
+        await _store(rt).get_all_keys()
     assert len(rt.units) == 7 and all(org is False for _w, org in rt.units)
 
 
