@@ -249,7 +249,7 @@ class SourceAccounts:
             raw = await self.config_service.get_config(
                 source_accounts_key(self.connector_id, bucket), use_cache=False, raise_on_error=True)
             stored = _mapping(raw or {}, self.connector_id)
-            self._stored[bucket] = raw or None
+            self._stored[bucket] = raw     # exactly as read: a stored {} is present, and a compare-and-set expecting None (absent) never matches it
             self._linked[bucket], self._reused[bucket] = _lower(stored.get("linked")), _lower(stored.get("reused"))
             deleted[bucket] = self._deleted[bucket] = _lower(stored.get("deleted"))
             if self._epoch == epoch:   # else read before a change this process has seen: read again when wanted
@@ -348,7 +348,7 @@ class SourceAccounts:
                          "version": uuid.uuid4().hex if changed or stored.get("saving") else stored.get("version")}
                 if deleted_checked is not None or "deletedChecked" in stored:
                     noted["deletedChecked"] = bool(stored.get("deletedChecked")) or bool(deleted_checked)
-            if noted == stored or await self.config_service.compare_and_set_config(key, raw or None, noted):
+            if noted == stored or await self.config_service.compare_and_set_config(key, raw, noted):
                 self._take_marker(noted, fresh)
                 return
         raise RuntimeError(f"The account state of connector {self.connector_id} kept changing while it was saved")

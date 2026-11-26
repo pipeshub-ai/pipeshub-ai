@@ -1117,3 +1117,39 @@ async def test_a_connector_that_never_saved_its_state_reads_as_empty(world) -> N
     assert accounts.loaded and accounts.reused == {}
     await _admit(directory, accounts, [_user("ana@x.com", "ana-oid")])
     assert directory.calls == [("link", ["ana-oid"])]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("where", ["marker", "bucket"])
+async def test_a_key_that_holds_an_empty_mapping_is_saved_over(world, where) -> None:
+    """The compare-and-set expects exactly what was read: a key holding ``{}`` is present, not absent, so expecting None
+    never matched it and every save gave up as if another process kept changing the state."""
+    directory, accounts, config = world
+    key = source_accounts_key(CONNECTOR) if where == "marker" else source_accounts_key(CONNECTOR, _bucket("ana@x.com"))
+    config.saved[key] = {}
+    await _admit(directory, accounts, [_user("ana@x.com", "ana-oid")])
+    assert directory.calls == [("link", ["ana-oid"])]
+    assert config.saved[source_accounts_key(CONNECTOR)].get("version")
+    assert _saved(config)["linked"] == {"ana@x.com": "ana-oid"}
+
+
+@pytest.mark.asyncio
+async def test_a_change_to_an_empty_marker_between_the_read_and_the_save_is_still_seen(world) -> None:
+    directory, accounts, config = world
+    key = source_accounts_key(CONNECTOR)
+    config.saved[key] = {}
+    real = config.compare_and_set_config
+    answers: list[bool] = []
+
+    async def other_writer_first(k: str, expected: object, new: object) -> bool:
+        if k == key and not answers:
+            config.saved[key] = {"seeded": True, "version": "theirs"}       # another replica saves after this run read {}
+        swapped = await real(k, expected, new)
+        if k == key:
+            answers.append(swapped)
+        return swapped
+    config.compare_and_set_config = other_writer_first
+
+    await _admit(directory, accounts, [_user("ana@x.com", "ana-oid")])
+    assert answers[0] is False and answers[-1] is True
+    assert config.saved[key]["version"] not in (None, "theirs")
