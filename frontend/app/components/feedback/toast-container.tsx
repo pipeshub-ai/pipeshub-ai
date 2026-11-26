@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
-import { Box, Text, Theme } from '@radix-ui/themes';
+import { Box, Text, Theme, VisuallyHidden } from '@radix-ui/themes';
 import {
   useToastStore,
   selectToasts,
@@ -126,15 +126,30 @@ export function ToastContainer() {
     setMounted(true);
   }, []);
 
+  // Toasts are announced through this region, which stays mounted with or without toasts:
+  // a live region inserted together with its text is often not read at all. It carries the
+  // newest toast, so a progress toast updated in place is heard again with its result.
+  const newest = toasts.filter((t) => !t.isExiting).at(-1);
+  const announcer = (
+    <VisuallyHidden>
+      <div role="status" aria-live="polite" aria-atomic="true" data-ph-toast-announcer="">
+        {newest ? [newest.title, newest.description].filter(Boolean).join('. ') : ''}
+      </div>
+    </VisuallyHidden>
+  );
+
   if (toasts.length === 0 || !mounted) {
-    return null;
+    return announcer;
   }
 
   // On a phone, side panels fill the screen with their actions in the footer; keep toasts off them.
   const topToasts = isMobile ? toasts : toasts.filter((t) => t.placement === 'top');
   const bottomToasts = isMobile ? [] : toasts.filter((t) => t.placement !== 'top');
 
-  return ReactDOM.createPortal(
+  return (
+    <>
+      {announcer}
+      {ReactDOM.createPortal(
     <Theme accentColor="jade" grayColor="olive" appearance={appearance} radius="medium" data-accent-color="emerald">
       <style jsx global>{`
         @keyframes toastSlideIn {
@@ -174,5 +189,7 @@ export function ToastContainer() {
       />
     </Theme>,
     document.body
+      )}
+    </>
   );
 }

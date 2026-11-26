@@ -565,7 +565,7 @@ describe('Team connectors page: starting a sync from the setup dialog', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(screen.getByText('Turning on…')).toBeTruthy();
-    expect(screen.getByRole('switch').hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('switch').getAttribute('aria-disabled')).toBe('true');
 
     api.getConnectorInstance.mockResolvedValue(makeInstance({ isActive: true }));
     await act(async () => toggle.resolve({}));
@@ -573,5 +573,21 @@ describe('Team connectors page: starting a sync from the setup dialog', () => {
     await waitFor(() => expect(screen.queryByText('Turning on…')).toBeNull());
     await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Jira is now syncing'));
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('stays open after a failed start so you can try again', async () => {
+    const toggle = openAfterSetup();
+    api.toggleConnector.mockReset();
+    api.toggleConnector.mockRejectedValue(new Error('Check the API token.'));
+    void toggle;
+    const dialog = await screen.findByRole('dialog', { name: 'Instance is configured and ready to sync!' });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /Start syncing now/ }));
+
+    await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Failed to start sync'));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    await waitFor(() =>
+      expect(within(dialog).getByRole('button', { name: /Start syncing now/ }).hasAttribute('disabled')).toBe(false)
+    );
   });
 });

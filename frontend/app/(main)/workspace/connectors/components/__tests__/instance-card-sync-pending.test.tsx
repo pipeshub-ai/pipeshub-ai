@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 
 vi.mock('../../api', () => ({ ConnectorsApi: {} }));
@@ -32,10 +32,21 @@ describe('InstanceCard: sync turning on or off', () => {
     useConnectorsStore.getState().setSyncTogglePending(instance._key, 'on');
     renderInTheme(<InstanceCard instance={instance} onToggleSyncActive={vi.fn()} />);
 
-    expect(syncSwitch().hasAttribute('disabled')).toBe(true);
+    // Busy, not disabled: a disabled control drops keyboard focus mid-request.
+    expect(syncSwitch().hasAttribute('disabled')).toBe(false);
+    expect(syncSwitch().getAttribute('aria-disabled')).toBe('true');
     expect(syncSwitch().getAttribute('aria-busy')).toBe('true');
     expect(screen.getByText('Turning on…')).toBeTruthy();
-    expect(screen.getByRole('status', { name: 'Turning on…' }).getAttribute('aria-live')).toBe('polite');
+  });
+
+  it('ignores a click while sync is turning on', () => {
+    const instance = makeInstance({ isActive: false });
+    const onToggle = vi.fn();
+    useConnectorsStore.getState().setSyncTogglePending(instance._key, 'on');
+    renderInTheme(<InstanceCard instance={instance} onToggleSyncActive={onToggle} />);
+
+    fireEvent.click(syncSwitch());
+    expect(onToggle).not.toHaveBeenCalled();
   });
 
   it('shows "Turning off…" while sync is turning off', () => {
@@ -49,13 +60,13 @@ describe('InstanceCard: sync turning on or off', () => {
   it('reflects a change started somewhere else and clears when it ends', () => {
     const instance = makeInstance({ isActive: false });
     renderInTheme(<InstanceCard instance={instance} onToggleSyncActive={vi.fn()} />);
-    expect(syncSwitch().hasAttribute('disabled')).toBe(false);
+    expect(syncSwitch().hasAttribute('aria-disabled')).toBe(false);
 
     act(() => useConnectorsStore.getState().setSyncTogglePending(instance._key, 'on'));
-    expect(syncSwitch().hasAttribute('disabled')).toBe(true);
+    expect(syncSwitch().getAttribute('aria-disabled')).toBe('true');
 
     act(() => useConnectorsStore.getState().clearSyncTogglePending(instance._key));
-    expect(syncSwitch().hasAttribute('disabled')).toBe(false);
+    expect(syncSwitch().hasAttribute('aria-disabled')).toBe(false);
     expect(syncSwitch().hasAttribute('aria-busy')).toBe(false);
     expect(screen.queryByText('Turning on…')).toBeNull();
   });
@@ -65,7 +76,7 @@ describe('InstanceCard: sync turning on or off', () => {
     useConnectorsStore.getState().setSyncTogglePending('someone-else', 'on');
     renderInTheme(<InstanceCard instance={instance} onToggleSyncActive={vi.fn()} />);
 
-    expect(syncSwitch().hasAttribute('disabled')).toBe(false);
-    expect(screen.queryByRole('status', { name: 'Turning on…' })).toBeNull();
+    expect(syncSwitch().hasAttribute('aria-disabled')).toBe(false);
+    expect(screen.queryByText('Turning on…')).toBeNull();
   });
 });

@@ -235,12 +235,12 @@ describe('ConnectorDetailsLayout: enabling and disabling sync', () => {
     renderLayout({ instances: [makeInstance({ isActive: false })], onToggleSyncActive });
 
     fireEvent.click(screen.getByRole('switch'));
-    await waitFor(() => expect(screen.getByRole('switch').hasAttribute('disabled')).toBe(true));
+    await waitFor(() => expect(screen.getByRole('switch').getAttribute('aria-disabled')).toBe('true'));
     fireEvent.click(screen.getByRole('switch'));
 
     expect(onToggleSyncActive).toHaveBeenCalledTimes(1);
     finish();
-    await waitFor(() => expect(screen.getByRole('switch').hasAttribute('disabled')).toBe(false));
+    await waitFor(() => expect(screen.getByRole('switch').hasAttribute('aria-disabled')).toBe(false));
   });
 
   it('offers the sync buttons only while sync is on', () => {

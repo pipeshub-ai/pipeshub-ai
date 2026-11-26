@@ -564,7 +564,12 @@ function PersonalConnectorsPageContent() {
         return 'done';
       },
     });
-    if (result === 'failed') await refreshConnectorRowQuiet(instanceId).catch(() => {});
+    if (result === 'failed') {
+      // Stay open so the person can try again from the button they pressed.
+      await refreshConnectorRowQuiet(instanceId).catch(() => {});
+      return;
+    }
+    if (result === 'skipped') return;
 
     if (useConnectorsStore.getState().newlyConfiguredConnectorId === instanceId) {
       setShowConfigSuccessDialog(false);

@@ -117,8 +117,8 @@ export function InstanceCard({
       ? 'workspace.connectors.instanceCard.turningOn'
       : 'workspace.connectors.instanceCard.turningOff'
   );
-  const syncSwitchDisabled =
-    !canToggleSync || syncToggleInFlight || !onToggleSyncActive || !canManageConnectorSync;
+  // In flight the switch is busy, not disabled: a disabled control drops keyboard focus.
+  const syncSwitchDisabled = !canToggleSync || !onToggleSyncActive || !canManageConnectorSync;
 
   const showIndexingActions =
     Boolean(instance._key) &&
@@ -144,7 +144,9 @@ export function InstanceCard({
       checked={instance.isActive}
       disabled={syncSwitchDisabled}
       aria-busy={syncToggleInFlight || undefined}
+      aria-disabled={syncToggleInFlight || undefined}
       onCheckedChange={() => {
+        if (syncToggleInFlight) return;
         if (instance.isActive) {
           if (onToggleSyncActive && instance._key && !syncToggleInFlight) setDisableConfirmOpen(true);
           return;
@@ -333,17 +335,10 @@ export function InstanceCard({
                 syncSwitchControl
               )}
               {syncToggleInFlight && (
-                <Flex
-                  role="status"
-                  aria-live="polite"
-                  aria-label={syncToggleLabel}
-                  align="center"
-                  gap="1"
-                  style={{ marginLeft: 'var(--space-1)' }}
-                >
-                  {/* One announcement: the row is the status, the ring is decoration. */}
+                // The toast announces the change; this is the visible cue on the card itself.
+                <Flex align="center" gap="1" style={{ marginLeft: 'var(--space-1)' }}>
                   <span aria-hidden="true" style={{ display: 'inline-flex' }}>
-                    <Spinner size={12} color="var(--gray-11)" ariaLabel={syncToggleLabel} />
+                    <Spinner size={12} color="var(--gray-11)" />
                   </span>
                   <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
                     {syncToggleLabel}
