@@ -519,14 +519,17 @@ class OneDrivePermissionsMixin:
 
         group_with_members = []
         all_groups_read = True
-        for result in results:
+        for group, result in zip(groups, results):
             if isinstance(result, GraphReadFailedError) and result.permanent:
                 self.logger.warning(f"Skipping group: {result}; it keeps its stored members")
+                await self._keep_stored_group(group.id)
             elif isinstance(result, Exception):
                 self.logger.error(f"❌ Error processing group: {result}", exc_info=True)
                 all_groups_read = False
+                await self._keep_stored_group(group.id)
             elif result is None:
                 all_groups_read = False
+                await self._keep_stored_group(group.id)
             else:
                 group_with_members.append(result)
 

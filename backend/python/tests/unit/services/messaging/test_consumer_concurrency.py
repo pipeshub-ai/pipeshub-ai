@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import random
 import threading
 import time
 from contextlib import contextmanager
@@ -383,17 +384,33 @@ class TestAcquireDistributedSlot:
             main_loop=asyncio.get_running_loop(),
         )
         # base 0.01s growing to a 0.2s cap, mirroring the shipped 0.5s->5s
-        # ratio at a scale a unit test can wait out. Jitter's floor is the base
-        # poll, so real draws only bound the attempts on average (about 1 run
-        # in 300 made 13); each draw is pinned to the middle of its range.
-        with _lease_env(max_backoff=0.2), patch(
-            "app.services.messaging.consumer_concurrency.random.uniform",
-            side_effect=lambda low, high: (low + high) / 2,
+        # ratio. The window is counted on a clock the sleeps advance and the
+        # jitter draws its mean: on the wall clock with real draws the count
+        # is a random variable (13 was seen), and a slow host adds to it.
+        now = 0.0
+        ceilings: list[float] = []
+        real_sleep = asyncio.sleep
+
+        async def sleep(delay: float) -> None:
+            nonlocal now
+            now += delay
+            await real_sleep(0)
+
+        def mean_draw(low: float, high: float) -> float:
+            ceilings.append(high)
+            return (low + high) / 2
+
+        with (
+            _lease_env(max_backoff=0.2),
+            patch("app.services.messaging.consumer_concurrency.time", SimpleNamespace(monotonic=lambda: now)),
+            patch.object(asyncio, "sleep", sleep),
+            patch.object(random, "uniform", mean_draw),
         ):
             result = await acquire_distributed_slot(
                 host, "parsing:light", "owner", 5, deadline_seconds=0.5
             )
         assert result is False
+        assert ceilings[:6] == pytest.approx([0.02, 0.04, 0.08, 0.16, 0.2, 0.2])
         # The old flat 0.01s poll would make ~50 attempts in this window.
         assert manager.try_acquire.await_count <= 12
 

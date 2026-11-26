@@ -83,13 +83,13 @@ function GridCard({ item, handlers }: { item: ArtifactListItem; handlers: Artifa
             </Badge>
           )}
         </Flex>
-        <Text size="1" style={{ ...ellipsis, color: 'var(--slate-10)' }}>
+        <Text size="1" style={{ ...ellipsis, color: 'var(--slate-11)' }}>
           {[typeLabel, formatSize(item.sizeInBytes ?? undefined), item.createdAt ? formatDate(item.createdAt) : null]
             .filter(Boolean)
             .join(' · ')}
         </Text>
         {item.conversationTitle && (
-          <Flex align="center" gap="1" style={{ minWidth: 0, color: 'var(--slate-9)' }}>
+          <Flex align="center" gap="1" style={{ minWidth: 0, color: 'var(--slate-11)' }}>
             <MaterialIcon name="chat_bubble_outline" size={12} />
             <Text size="1" style={ellipsis} title={item.conversationTitle}>
               {item.conversationTitle}

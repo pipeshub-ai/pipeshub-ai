@@ -7,6 +7,7 @@ from contextlib import suppress
 import pytest
 
 from app.services.llm_gateway.limiter import CrossLoopSemaphore
+from tests.support.settle import settle
 
 
 def test_the_cap_holds_across_two_event_loops() -> None:
@@ -66,7 +67,7 @@ async def test_a_cancelled_waiter_leaves_no_trace() -> None:
         await waiter
     assert sem.waiting == 0
     sem.release()
-    await asyncio.wait_for(sem.acquire(), 1)
+    await settle(sem.acquire())
     assert sem.in_use == 1
 
 
@@ -82,7 +83,7 @@ async def test_a_permit_handed_to_a_waiter_cancelled_meanwhile_is_passed_on() ->
         await waiter
     await asyncio.sleep(0)
     assert sem.in_use == 0
-    await asyncio.wait_for(sem.acquire(), 1)
+    await settle(sem.acquire())
 
 
 def test_releasing_more_than_was_acquired_is_refused() -> None:

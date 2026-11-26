@@ -157,7 +157,7 @@ class ZendeskPermissionsMixin:
                 "truncated and the group is rebuilt from scratch on every write"
             )
         if not replace_members:
-            self._skip("custom role access")
+            self._skip("custom role access", left_unread=False)
             self.logger.error(
                 "Zendesk: custom role export failed — keeping existing group and "
                 "all-tickets members, adding only agents whose access is known"
@@ -564,6 +564,27 @@ class ZendeskPermissionsMixin:
                 sorted(emails), self.connector_id
             )
 
+    async def _keep_organization_group(self, org_id: str) -> None:
+        """Keep an unanswered organization's group through a full sync's unlink.
+
+        The org is also recorded so a ticket that already had its org_ grant keeps it
+        this sync.
+
+        A failed keep must not stop the tickets and Help Center: the run is reported
+        incomplete instead, so nothing is unlinked and a full sync stays owed.
+        """
+        self._unanswered_org_ids.add(org_id)
+        try:
+            await self.data_entities_processor.note_kept_user_group(
+                self.connector_id, f"org_{org_id}"
+            )
+        except Exception as e:
+            self._skip("organization groups")
+            self.logger.warning(
+                f"Zendesk: could not keep the group of organization {org_id}; "
+                f"this full sync unlinks nothing: {e}"
+            )
+
     async def _add_organizations_missing_from_export(
         self, org_user_groups: list[tuple[AppUserGroup, list[AppUser]]]
     ) -> list[tuple[AppUserGroup, list[AppUser]]]:
@@ -599,6 +620,7 @@ class ZendeskPermissionsMixin:
                 )
             except Exception as e:
                 self.logger.warning(f"Zendesk: could not check organization {org_id}: {e}")
+                await self._keep_organization_group(org_id)
                 continue
             if response.status_code == HttpStatusCode.NOT_FOUND.value:
                 for external_id in (f"org_{org_id}", f"{ORG_AGENTS_GROUP_PREFIX}{org_id}"):
@@ -614,6 +636,7 @@ class ZendeskPermissionsMixin:
                 self.logger.warning(
                     f"Zendesk: organization {org_id} missing from the export and unreadable"
                 )
+                await self._keep_organization_group(org_id)
                 continue
             self._org_id_to_data[org_id] = org_data
             org_user_groups.append((self._org_user_group(org_id), []))
@@ -772,6 +795,7 @@ class ZendeskPermissionsMixin:
         include_customer_access: bool = True,
         assignee_id: Any = None,
         requester_id: Any = None,
+        keeps_org_grant: bool = False,
     ) -> list[Permission]:
         permissions: list[Permission] = [self._all_tickets_permission()]
         granted: set[str] = set()
@@ -799,7 +823,8 @@ class ZendeskPermissionsMixin:
             grant_group(f"{ORG_AGENTS_GROUP_PREFIX}{organization_id}")
         # Granted whether or not the org shares tickets: run_sync empties the group of
         # an org that does not, so toggling sharing needs no change to the tickets.
-        if include_customer_access and known_org:
+        # An unanswered org's group is left as it is: a ticket that had its grant keeps it.
+        if include_customer_access and (known_org or keeps_org_grant):
             grant_group(f"org_{organization_id}")
 
         emails: set[str] = set()

@@ -46,6 +46,20 @@ class TestToolErrorTracker:
         assert_denied(ctx)
         assert "3" in ctx.decision_reason or "failed" in ctx.decision_reason.lower()
 
+    async def test_a_tool_whose_service_is_unavailable_is_not_blocked(self) -> None:
+        """FIX-P1 S2: three calls that failed because the tool's service was down (a sandbox broker restarting)
+        say nothing about how the model uses the tool: they neither block it nor break a streak of real failures."""
+        tracker = ToolErrorTracker(threshold=3)
+        path = "/toolsets/coding_sandbox/run_code"
+        await run_post_tool(tracker.post_tool_use, ToolOutput(success=False, error="bad args"), tool_path=path)
+        for _ in range(3):
+            down = ToolOutput(success=False, error="sandbox broker unavailable", error_code="unavailable")
+            await run_post_tool(tracker.post_tool_use, down, tool_path=path)
+        assert_allowed(await run_pre_tool(tracker.pre_tool_use, tool_path=path))
+        for _ in range(2):
+            await run_post_tool(tracker.post_tool_use, ToolOutput(success=False, error="bad args"), tool_path=path)
+        assert_denied(await run_pre_tool(tracker.pre_tool_use, tool_path=path))
+
     async def test_success_resets_the_streak(self) -> None:
         tracker = ToolErrorTracker(threshold=3)
         path = "/connectors/jira/search"
@@ -143,6 +157,70 @@ class TestToolErrorTracker:
 
         ctx = await run_pre_tool(tracker.pre_tool_use, tool_path=path)
         assert_allowed(ctx)
+
+    @staticmethod
+    def _turn(index: int) -> SimpleNamespace:
+        return SimpleNamespace(turn=SimpleNamespace(turn_index=index))
+
+    async def _block_at_turn_2(self, tracker: ToolErrorTracker, path: str) -> None:
+        for turn_index in range(3):
+            await run_post_tool(
+                tracker.post_tool_use, ToolOutput(success=False, error="boom"), tool_path=path,
+                scope=self._turn(turn_index),
+            )
+
+    async def test_evalfix_f1_a_block_is_lifted_after_its_cooldown_and_the_message_says_when(self) -> None:
+        """FIX-P1-F1: the model was told the tool was "temporarily disabled", but nothing ever lifted the block (a
+        denied call records nothing). The pause now lasts a stated number of turns, and the message says how many."""
+        tracker = ToolErrorTracker(threshold=3, cooldown_turns=2)
+        path = "/connectors/jira/search"
+        await self._block_at_turn_2(tracker, path)
+
+        first = await run_pre_tool(tracker.pre_tool_use, tool_path=path, scope=self._turn(3))
+        assert_denied(first)
+        assert "2 turns" in first.decision_reason
+        assert "temporarily" not in first.decision_reason
+        last = await run_pre_tool(tracker.pre_tool_use, tool_path=path, scope=self._turn(4))
+        assert_denied(last)
+        assert "1 turn" in last.decision_reason
+        assert_allowed(await run_pre_tool(tracker.pre_tool_use, tool_path=path, scope=self._turn(5)))
+
+    async def test_evalfix_f1_a_failure_after_the_pause_pauses_it_again_and_a_success_clears_it(self) -> None:
+        tracker = ToolErrorTracker(threshold=3, cooldown_turns=2)
+        path = "/connectors/jira/search"
+        await self._block_at_turn_2(tracker, path)
+        await run_post_tool(
+            tracker.post_tool_use, ToolOutput(success=False, error="boom"), tool_path=path, scope=self._turn(5),
+        )
+        assert_denied(await run_pre_tool(tracker.pre_tool_use, tool_path=path, scope=self._turn(6)))
+        assert_allowed(await run_pre_tool(tracker.pre_tool_use, tool_path=path, scope=self._turn(8)))
+        await run_post_tool(
+            tracker.post_tool_use, ToolOutput(success=True, data="ok"), tool_path=path, scope=self._turn(8),
+        )
+        await run_post_tool(
+            tracker.post_tool_use, ToolOutput(success=False, error="boom"), tool_path=path, scope=self._turn(9),
+        )
+        assert_allowed(await run_pre_tool(tracker.pre_tool_use, tool_path=path, scope=self._turn(10)))
+
+    async def test_evalfix_f1_denials_replayed_from_the_journal_do_not_extend_the_pause(self) -> None:
+        """A resumed run rebuilds the streaks from its journaled outcomes, where a denied call reads as a failure. A
+        live run never records a denial, so the rebuilt pause must end on the same turn."""
+        tracker = ToolErrorTracker(threshold=3, cooldown_turns=2)
+        path = "/connectors/jira/search"
+        await self._block_at_turn_2(tracker, path)
+        for turn_index in (3, 4):
+            tracker.record(path, is_error=True, turn_index=turn_index)
+        assert_allowed(await run_pre_tool(tracker.pre_tool_use, tool_path=path, scope=self._turn(5)))
+
+    async def test_evalfix_f1_without_turns_the_block_lasts_the_request_and_says_so(self) -> None:
+        tracker = ToolErrorTracker(threshold=3)
+        path = "/connectors/jira/search"
+        for _ in range(3):
+            await run_post_tool(tracker.post_tool_use, ToolOutput(success=False, error="boom"), tool_path=path)
+        ctx = await run_pre_tool(tracker.pre_tool_use, tool_path=path)
+        assert_denied(ctx)
+        assert "rest of this request" in ctx.decision_reason
+        assert "temporarily" not in ctx.decision_reason
 
 
 class TestResultAccumulation:

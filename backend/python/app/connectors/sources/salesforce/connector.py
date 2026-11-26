@@ -68,7 +68,11 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.salesforce.api_errors import SalesforceRequestFailed, salesforce_error
 from app.connectors.sources.salesforce.common.apps import SalesforceApp
 from app.connectors.sources.salesforce.deletions import SalesforceDeletions
-from app.connectors.sources.salesforce.eligibility import SalesforceEligibility
+from app.connectors.sources.salesforce.eligibility import (
+    READER_USER_TYPES,
+    READERS_SOQL,
+    SalesforceEligibility,
+)
 from app.connectors.sources.salesforce.file_links import SalesforceFileLinks
 from app.connectors.sources.salesforce.rows import (
     SalesforceRole,
@@ -2547,7 +2551,7 @@ class SalesforceConnector(SalesforcePermissionsMixin, BaseConnector):
                 user_sync_point = await self.user_sync_point.read_sync_point(USERS_SYNC_POINT_KEY)
                 last_sync_ts_ms = user_sync_point.get("lastSyncTimestamp")
                 base_soql = (
-                    "SELECT Id, FirstName, LastName, Email, Phone, MobilePhone, Title, IsActive, CreatedDate, "
+                    "SELECT Id, FirstName, LastName, Email, Phone, MobilePhone, Title, IsActive, UserType, CreatedDate, "
                     "LastModifiedDate, UserRoleId FROM User"
                 )
                 if last_sync_ts_ms:
@@ -3148,8 +3152,9 @@ class SalesforceConnector(SalesforcePermissionsMixin, BaseConnector):
         transaction.  Per-page commit semantics: a crash mid-stream leaves earlier
         pages persisted; the sync point is only advanced if every page completes.
 
-        Returns the ids of the users Salesforce reports inactive: they cannot sign in,
-        so they are not linked to the connector (see ``_withdraw_ineligible_users``)."""
+        Returns the ids of the users who are not linked to the connector (see
+        ``_withdraw_ineligible_users``): inactive ones cannot sign in, and a user of a type
+        outside ``READER_USER_TYPES`` is nobody's account (a site's guest user)."""
         try:
             total = 0
             inactive: set[str] = set()
@@ -3157,12 +3162,16 @@ class SalesforceConnector(SalesforcePermissionsMixin, BaseConnector):
                 if not page:
                     continue
                 parsed_users = [SalesforceUser.model_validate(r) for r in page]
-                inactive.update(u.Id for u in parsed_users if u.Id and u.IsActive is False)
-                app_users = [self.user_to_app_user(u) for u in parsed_users if u.IsActive is not False]
+                app_users = []
+                for u in parsed_users:
+                    if u.IsActive is not False and u.UserType in READER_USER_TYPES:
+                        app_users.append(self.user_to_app_user(u))
+                    elif u.Id:
+                        inactive.add(u.Id)
                 if app_users:
                     await self.data_entities_processor.on_new_app_users(app_users)
                     total += len(app_users)
-            self.logger.info("Finished syncing %d Salesforce users (%d inactive)", total, len(inactive))
+            self.logger.info("Finished syncing %d Salesforce users (%d not linked)", total, len(inactive))
             return inactive
         except Exception as e:
             self.logger.error(f"Error syncing users: {e}", exc_info=True)
@@ -3220,9 +3229,7 @@ class SalesforceConnector(SalesforcePermissionsMixin, BaseConnector):
         """Lower-cased emails of the Salesforce users who can sign in; None when unreadable."""
         emails: set[str] = set()
         try:
-            async for page in self._soql_query_paginated(
-                api_version=api_version, q="SELECT Id, Email FROM User WHERE IsActive = true",
-            ):
+            async for page in self._soql_query_paginated(api_version=api_version, q=READERS_SOQL):
                 emails.update(
                     u["Email"].lower() for u in page
                     if u.get("Email") and u.get("Id") not in (frozen or set())
@@ -3255,7 +3262,11 @@ class SalesforceConnector(SalesforcePermissionsMixin, BaseConnector):
                 gone = [u for u in stored
                         if u.source_user_id in ineligible and (u.email or "").lower() not in eligible]
                 if gone:
-                    await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+                    # Their grants go too: the product group keeps its stored list when its
+                    # readers cannot be read. A user linked again gets them back from the
+                    # permission step, which reads every linked user on every sync.
+                    await self.data_entities_processor.withdraw_app_user_access(
+                        self.connector_id, gone, drop_grants=True)
         if frozen is None:
             return
         thawed = sorted(previously_frozen - frozen)
@@ -3264,7 +3275,7 @@ class SalesforceConnector(SalesforcePermissionsMixin, BaseConnector):
             if safe:
                 ids_clause = "','".join(safe)
                 soql = (
-                    "SELECT Id, FirstName, LastName, Email, Phone, MobilePhone, Title, IsActive, CreatedDate, "
+                    "SELECT Id, FirstName, LastName, Email, Phone, MobilePhone, Title, IsActive, UserType, CreatedDate, "
                     f"LastModifiedDate, UserRoleId FROM User WHERE Id IN ('{ids_clause}')"
                 )
                 await self._sync_users(self._soql_query_paginated(api_version=api_version, q=soql))

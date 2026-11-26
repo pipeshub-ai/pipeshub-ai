@@ -202,11 +202,11 @@ export class TokenExchangeService {
     });
 
     this.logger.info('Delegated token issued', {
-      orgId: actor.orgId,
-      serviceAccountId: actor.serviceAccountId,
-      subjectUserId: subject.userId,
+      org_id: actor.orgId,
+      service_account_id: actor.serviceAccountId,
+      target_user_id: subject.userId,
       scopes,
-      expiresIn: tokens.expiresIn,
+      expires_in: tokens.expiresIn,
     });
 
     return {

@@ -302,6 +302,7 @@ class FakeEntitiesProcessor:
         self.app_users: dict[str, Any] = {}
         self.user_groups: dict[str, tuple[Any, list[Any]]] = {}
         self.kept_user_groups: list[str] = []
+        self.kept_record_groups: list[str] = []
         self.external_app_users: set[str] = set()
         self.active_users: list[Any] = []
         self.deleted: list[str] = []
@@ -690,6 +691,9 @@ class FakeEntitiesProcessor:
 
     def note_kept_user_groups(self, connector_id: str, groups: list[Any]) -> None:
         self.kept_user_groups.extend(g.source_user_group_id for g in groups)
+
+    async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
+        self.kept_record_groups.append(external_group_id)
 
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]], *, replace_members: bool = True) -> None:
         for group, members in groups:

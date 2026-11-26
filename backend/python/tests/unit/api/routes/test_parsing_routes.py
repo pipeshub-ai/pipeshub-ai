@@ -12,7 +12,7 @@ import jwt
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-from httpx import ASGITransport, AsyncClient, Response
+from httpx import ASGITransport, AsyncClient, MockTransport, Response
 
 from app.api.middlewares.auth import authMiddleware
 from app.api.middlewares.caller_role import CallerRole, CallerRoleStatus
@@ -20,13 +20,15 @@ from app.api.middlewares.request_context import RequestContextMiddleware
 from app.api.routes.parsing import router as parsing_router
 from app.models.blocks import BlocksContainer
 from app.services.base_client import ServiceCallError
-from app.services.docling.client import DoclingUnavailableError
+from app.services.docling.client import DoclingNotServing, DoclingUnavailableError
+from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
 )
 from app.services.parsing.client import ParsingClient, ParsingClientError
 from app.services.parsing.interface import (
+    DOCLING_UNAVAILABLE_REASON,
     ParseError,
     ParseErrorCode,
     ParseResult,
@@ -39,6 +41,7 @@ from app.services.resource_governor.models import ResourceSnapshot
 from app.utils.error_class import log_failure
 from tests.support.log_capture import assert_text_free, failure_line
 from tests.support.provider_errors import SENTINELS, openai_error
+from tests.support.settle import settle
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -523,7 +526,7 @@ async def test_light_request_proceeds_while_heavy_pool_saturated(monkeypatch: py
 
     def _resolve(_mime: str, extension: str, _provider: object) -> MagicMock:
         if extension == "pdf":
-            return _slow_parser(heavy_release, hold_seconds=1.0)
+            return _slow_parser(heavy_release)
         return light_parser
 
     registry = MagicMock(spec=ParserRegistry)
@@ -541,14 +544,15 @@ async def test_light_request_proceeds_while_heavy_pool_saturated(monkeypatch: py
         )
         await asyncio.sleep(0.05)  # let the heavy request saturate the heavy-parse gate
 
-        light_response = await asyncio.wait_for(
+        light_response = await settle(
             client.post(
                 "/api/v1/parse",
                 files={"file": ("b.csv", b"a,b\n1,2", "text/csv")},
                 data={"mime_type": "text/csv", "extension": "csv", "provider": "default"},
             ),
-            timeout=1.0,
         )
+        # Answered while the heavy parse still held its slot, not after it.
+        assert not heavy_task.done()
 
         heavy_release.set()
         await heavy_task
@@ -563,7 +567,7 @@ async def test_health_stays_responsive_while_parse_in_flight() -> None:
     request."""
     release_event = asyncio.Event()
     registry = MagicMock(spec=ParserRegistry)
-    registry.resolve = MagicMock(return_value=_slow_parser(release_event, hold_seconds=1.0))
+    registry.resolve = MagicMock(return_value=_slow_parser(release_event))
 
     app = _build_app(registry, heavy_limit=1)
 
@@ -577,7 +581,8 @@ async def test_health_stays_responsive_while_parse_in_flight() -> None:
         )
         await asyncio.sleep(0.05)  # let the parse request acquire the slot and start "working"
 
-        health_response = await asyncio.wait_for(client.get("/health"), timeout=1.0)
+        health_response = await settle(client.get("/health"))
+        assert not parse_task.done()
         assert health_response.status_code == 200
         assert health_response.json()["status"] == "ok"
 
@@ -817,12 +822,11 @@ def _default_pdf_provider(docling_error: Exception) -> tuple[SmartPDFParser, Mag
     return SmartPDFParser(docling, ocr, large_pdf_parser=layout), ocr
 
 
-async def _indexer_parses(parser: SmartPDFParser) -> tuple[list[int], Exception]:
-    """Statuses the route answered and what ParsingClient raised for one parse."""
+def _indexer_client(parser: SmartPDFParser, statuses: list[int]) -> ParsingClient:
+    """The real ParsingClient, talking to the real route that serves *parser*; it notes every status answered."""
     registry = MagicMock(spec=ParserRegistry)
     registry.resolve = MagicMock(return_value=parser)
     transport = ASGITransport(app=_build_app(registry))
-    statuses: list[int] = []
 
     async def record(response: Response) -> None:
         statuses.append(response.status_code)
@@ -831,6 +835,13 @@ async def _indexer_parses(parser: SmartPDFParser) -> tuple[list[int], Exception]
         service_url="http://parsing.test", max_retries=2, retry_delay=0.0, config_service=_SecretsConfigService()
     )
     client._make_client = lambda: AsyncClient(transport=transport, event_hooks={"response": [record]})
+    return client
+
+
+async def _indexer_parses(parser: SmartPDFParser, client: ParsingClient | None = None) -> tuple[list[int], Exception]:
+    """Statuses the route answered and what ParsingClient raised for one parse."""
+    statuses: list[int] = []
+    client = client or _indexer_client(parser, statuses)
     with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)), \
             pytest.raises(Exception) as raised:
         await client.parse(
@@ -862,3 +873,109 @@ async def test_a_pdf_no_parser_can_read_with_docling_up_still_fails_terminally()
     assert isinstance(raised, ParsingClientError)
     assert MessageErrorClassifier.classify_by_exception(raised) == MessageErrorType.TERMINAL
     ocr.parse.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_docling_never_receiving_the_file_is_waited_for_by_the_indexer() -> None:
+    """One 424, not retried and not a parsing-service failure: the indexer hands the record back to wait for Docling."""
+    parser, ocr = _default_pdf_provider(DoclingNotServing("Docling is not serving"))
+
+    statuses, raised = await _indexer_parses(parser)
+
+    assert statuses == [424]
+    assert isinstance(raised, DoclingNotServing) and isinstance(raised, RequeueWithoutAttempt)
+    assert raised.delay_s == DoclingNotServing.HANDBACK_DELAY_S
+    ocr.parse.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_docling_outages_do_not_open_the_parsing_breaker() -> None:
+    """Open, it would fail every parse of every file type for its cooldown; the parsing service itself is serving."""
+    parser, _ = _default_pdf_provider(DoclingNotServing("Docling is not serving"))
+    statuses: list[int] = []
+    client = _indexer_client(parser, statuses)
+
+    for _ in range(client.circuit_breaker.failure_threshold + 1):
+        _, raised = await _indexer_parses(parser, client)
+        assert isinstance(raised, DoclingNotServing)
+
+    assert statuses == [424] * (client.circuit_breaker.failure_threshold + 1)
+    assert not client.circuit_breaker.is_open
+
+
+@pytest.mark.parametrize(
+    "details",
+    [{"reason": "cpu_lane"}, {}, None],
+    ids=["other-reason", "no-reason", "no-details"],
+)
+@pytest.mark.asyncio
+async def test_backpressure_for_any_other_reason_stays_a_parsing_client_error(details: dict | None) -> None:
+    error = {"code": ParseErrorCode.PARSE_BACKPRESSURE.value, "message": "busy", "details": details}
+    client = ParsingClient(
+        service_url="http://parsing.test", max_retries=2, retry_delay=0.0, config_service=_SecretsConfigService()
+    )
+    client._make_client = lambda: AsyncClient(
+        transport=MockTransport(lambda _r: Response(424, json={"success": False, "error": error})),
+    )
+
+    with pytest.raises(ParsingClientError) as raised:
+        await client.parse(file_content=b"%PDF-1.4", record_name="report.pdf", mime_type="application/pdf", extension="pdf")
+
+    assert raised.value.code == ParseErrorCode.PARSE_BACKPRESSURE
+    assert not isinstance(raised.value, RequeueWithoutAttempt)
+
+
+def test_an_older_indexer_reads_the_docling_outage_answer_as_a_transient_failure() -> None:
+    """A client from before the reason reads only the code: retried and counted, as before, never a verdict on the file."""
+    older = ParsingClientError(
+        code=ParseErrorCode.PARSE_BACKPRESSURE, message="Docling is not serving; retry later",
+        details={"reason": DOCLING_UNAVAILABLE_REASON},
+    )
+
+    assert MessageErrorClassifier.classify_by_exception(older) == MessageErrorType.TRANSIENT
+
+
+def _parsing_answers(*answers: Response) -> ParsingClient:
+    """A ParsingClient whose transport gives these answers in turn."""
+    seen: list[int] = []
+
+    def handler(_request: object) -> Response:
+        seen.append(1)
+        return answers[min(len(seen), len(answers)) - 1]
+
+    client = ParsingClient(
+        service_url="http://parsing.test", max_retries=3, retry_delay=0.0, config_service=_SecretsConfigService()
+    )
+    client._make_client = lambda: AsyncClient(transport=MockTransport(handler))
+    return client
+
+
+_DOCLING_DOWN = {
+    "success": False,
+    "error": {"code": ParseErrorCode.PARSE_BACKPRESSURE.value, "message": "Docling is not serving; retry later",
+              "details": {"reason": DOCLING_UNAVAILABLE_REASON}},
+}
+
+
+@pytest.mark.asyncio
+async def test_a_docling_outage_answer_after_a_5xx_of_the_same_parse_stays_counted() -> None:
+    """The 500 may have been Docling failing on this file (a crash, then a restart that refuses the retry)."""
+    client = _parsing_answers(Response(500, json={"detail": "boom"}), Response(424, json=_DOCLING_DOWN))
+
+    with pytest.raises(DoclingUnavailableError) as raised:
+        await client.parse(file_content=b"%PDF-1.4", record_name="report.pdf", mime_type="application/pdf", extension="pdf")
+
+    assert type(raised.value) is DoclingUnavailableError
+    assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
+
+
+@pytest.mark.asyncio
+async def test_a_docling_outage_as_the_first_answer_is_waited_for() -> None:
+    from app.services.base_client import earlier_attempt_delivered
+
+    client = _parsing_answers(Response(424, json=_DOCLING_DOWN))
+    first = await client._request_with_retry("POST", "http://parsing.test/api/v1/parse", operation="parse")
+
+    assert earlier_attempt_delivered(first) is False
+    with pytest.raises(DoclingNotServing):
+        await client.parse(file_content=b"%PDF-1.4", record_name="report.pdf", mime_type="application/pdf", extension="pdf")

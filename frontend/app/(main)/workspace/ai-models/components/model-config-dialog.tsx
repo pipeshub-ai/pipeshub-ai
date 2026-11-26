@@ -50,7 +50,7 @@ const PER_MODEL_FIELD_NAMES = new Set([
 const NO_HIDDEN_FIELDS: ReadonlySet<string> = new Set();
 
 /** Besides required fields, these change which models the provider lists. */
-const DISCOVERY_SCOPE_FIELDS = ['endpoint', 'region', 'awsAccessKeyId'];
+const DISCOVERY_SCOPE_FIELDS = ['endpoint', 'region', 'awsAccessKeyId', 'awsAccessSecretKey'];
 
 const DISCOVERY_DEBOUNCE_MS = 500;
 
@@ -237,10 +237,10 @@ function compatIcon(fieldName: string): string {
 
 function fieldStartAdornment(fieldName: string): React.ReactNode | undefined {
   if (fieldName === 'apiKey') {
-    return <MaterialIcon name="key" size={16} color="var(--gray-10)" />;
+    return <MaterialIcon name="key" size={16} color="var(--gray-11)" />;
   }
   if (fieldName === 'model' || fieldName === 'contextLength') {
-    return <MaterialIcon name="widgets" size={16} color="var(--gray-10)" />;
+    return <MaterialIcon name="widgets" size={16} color="var(--gray-11)" />;
   }
   return undefined;
 }
@@ -909,8 +909,12 @@ export function ModelConfigDialog({
 
   const discoveryMode = provider?.discovery?.mode ?? 'manual';
   const canListModels = discoveryMode !== 'manual';
-  const requiredFields = provider?.discovery?.requiredFields ?? [];
-  const credentialKey = [...requiredFields, ...DISCOVERY_SCOPE_FIELDS]
+  const listingFields = provider?.discovery?.requiredFields ?? [];
+  // An endpoint answers with the key when it has one, but discovery does not require the
+  // key because only some capabilities do. Wait for it where this form requires it.
+  const apiKeyField = listingFields.includes('endpoint') ? fields.find((f) => f.name === 'apiKey') : undefined;
+  const requiredFields = apiKeyField?.required ? [...listingFields, 'apiKey'] : listingFields;
+  const credentialKey = [...requiredFields, ...DISCOVERY_SCOPE_FIELDS, ...(apiKeyField ? ['apiKey'] : [])]
     .map((name) => String(values[name] ?? ''))
     .join('\u0000');
   const seenCredential = useRef<string | null>(null);
@@ -1407,7 +1411,7 @@ function ModelConfigFormBody({
                         {field.displayName}
                       </Text>
                       {field.description ? (
-                        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                        <Text size="1" style={{ color: 'var(--gray-11)' }}>
                           {field.description}
                         </Text>
                       ) : null}

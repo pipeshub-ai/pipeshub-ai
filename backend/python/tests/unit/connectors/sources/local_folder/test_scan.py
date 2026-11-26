@@ -186,14 +186,14 @@ def test_a_folder_that_vanishes_during_the_walk_is_just_gone(tmp_path):
 
 
 def test_a_pattern_that_repeats_stars_does_not_stall_the_walk(tmp_path):
-    import time
+    from tests.support.cpu_budget import thread_cpu
 
     hostile = "*a" * 40 + "b"
     rules = scan.parse_ignore([hostile, "**/" + "*a" * 40 + "b", "x/" + "*a" * 40 + "b"])
-    started = time.monotonic()
-    for name in ("a" * 200, "dir/" + "a" * 200, "x/" + "a" * 200):
-        assert not scan.IgnoreStack([("", rules)]).ignored(name, False)
-    assert time.monotonic() - started < 1.0  # the expression it was before takes minutes
+    with thread_cpu() as cpu:
+        for name in ("a" * 200, "dir/" + "a" * 200, "x/" + "a" * 200):
+            assert not scan.IgnoreStack([("", rules)]).ignored(name, False)
+    assert cpu.seconds < 1.0  # the expression it was before takes minutes
     assert scan.IgnoreStack([("", rules)]).ignored("a" * 40 + "b", False)  # and it still matches what it should
 
 

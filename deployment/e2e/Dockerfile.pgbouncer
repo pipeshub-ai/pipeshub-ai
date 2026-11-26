@@ -1,0 +1,9 @@
+# DEV-ONLY: the PgBouncer of the e2e lane's PostgreSQL document store (run.sh, E2E_DOC_STORE=postgres; built as
+# pxh-e2e-pgbouncer:<hash of this file>). On the PostgreSQL image the store runs on, whose PGDG apt source carries a
+# PgBouncer recent enough for prepared statements in transaction mode (max_prepared_statements, 1.21+), as CI's
+# pg-stores job installs it.
+FROM pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
+RUN apt-get update && apt-get install -y --no-install-recommends pgbouncer \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+USER postgres
+ENTRYPOINT ["bash", "/e2e/pgbouncer.sh"]

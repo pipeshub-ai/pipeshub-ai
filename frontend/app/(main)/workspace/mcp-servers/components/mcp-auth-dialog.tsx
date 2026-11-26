@@ -146,7 +146,7 @@ export function McpAuthDialog({ instance, template, open, onOpenChange, onAuthen
                 autoFocus
               />
               {authHint?.helpText && (
-                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)' }}>
                   {authHint.helpText}
                 </Text>
               )}

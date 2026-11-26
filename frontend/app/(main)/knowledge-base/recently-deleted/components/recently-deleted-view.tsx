@@ -316,7 +316,7 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
               <Text size="2" weight="medium" style={{ ...cellTextStyle, cursor: 'pointer' }} onClick={backToCollection}>
                 {collectionName}
               </Text>
-              <MaterialIcon name="chevron_right" size={16} color="var(--slate-9)" />
+              <MaterialIcon name="chevron_right" size={16} color="var(--slate-11)" />
             </>
           )}
           <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', whiteSpace: 'nowrap' }}>
@@ -417,7 +417,7 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
             <TableSkeleton rows={5} hasRowActions hasCheckbox rowHeight={56} />
           ) : loadError && !data ? (
             <Flex direction="column" align="center" gap="3" style={{ padding: 'var(--space-8) var(--space-4)', textAlign: 'center' }}>
-              <MaterialIcon name="error_outline" size={32} color="var(--slate-9)" />
+              <MaterialIcon name="error_outline" size={32} color="var(--slate-11)" />
               <Text size="2" style={{ color: 'var(--slate-11)', maxWidth: '28rem' }}>{loadError}</Text>
               <Button variant="soft" size="1" onClick={() => void load(page, cursor)} style={{ cursor: 'pointer' }}>
                 {t('action.tryAgain')}
@@ -425,7 +425,7 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
             </Flex>
           ) : items.length === 0 ? (
             <Flex direction="column" align="center" gap="2" style={{ padding: 'var(--space-8) var(--space-4)', textAlign: 'center' }}>
-              <MaterialIcon name="delete_outline" size={32} color="var(--slate-9)" />
+              <MaterialIcon name="delete_outline" size={32} color="var(--slate-11)" />
               <Text size="3" weight="medium" style={{ color: 'var(--slate-12)' }}>{t('collections.trash.emptyTitle')}</Text>
               <Text size="2" style={{ color: 'var(--slate-11)', maxWidth: '28rem' }}>{t('collections.trash.empty')}</Text>
             </Flex>
@@ -465,7 +465,7 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
             flexShrink: 0,
           }}
         >
-          <Text size="2" style={{ color: 'var(--slate-9)' }}>
+          <Text size="2" style={{ color: 'var(--slate-11)' }}>
             {t(pagination.totalCapped ? 'collections.trash.showingAtLeast' : 'collections.trash.showing', {
               from,
               to,

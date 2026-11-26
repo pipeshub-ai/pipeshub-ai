@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/task.created.schema.json",
+  "title": "TaskCreatedEvent",
+  "description": "Task ledger entry created.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "task.created"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/TaskCreatedData"
+    }
+  },
+  "$defs": {
+    "TaskCreatedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskId",
+        "title",
+        "status",
+        "deps"
+      ],
+      "properties": {
+        "taskId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "title": {
+          "$ref": "../common.schema.json#/$defs/Text"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "in_progress",
+            "completed",
+            "cancelled"
+          ]
+        },
+        "deps": {
+          "type": "array",
+          "items": {
+            "$ref": "../common.schema.json#/$defs/Id"
+          }
+        },
+        "asksFirst": {
+          "type": "boolean",
+          "description": "The step names a tool the run's pinned approval rules ask about (UXR-B1). Absent: not known, never 'will not ask'. Written only when the claim's control plane names node feature task_asks_first."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "task.created",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "taskId": "t1",
+        "title": "Draft summary",
+        "status": "pending",
+        "deps": []
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/conversation-run-state.schema.json",
+  "title": "ConversationRunState",
+  "description": "ADR-UI-01 D2 (UI-B1 G1): the `harnessState` the caller's conversation list (`GET /api/v1/conversations`, `GET /api/v1/agents/{agentKey}/conversations`) carries on each durable conversation: whether it is working now (anyone's run), whether one of the caller's own runs or jobs in it waits on them (`needsYou`), and whether one of their runs ended after they last opened it (`finishedUnseen`, against their `seenUpTo` mark, which `PUT \u2026/seen` moves). A conversation never marked has nothing unseen.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "activeRun",
+    "runState",
+    "needsYou",
+    "finishedUnseen",
+    "seenUpTo"
+  ],
+  "properties": {
+    "activeRun": {
+      "description": "The run the conversation is running now; null: none.",
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runId",
+            "status"
+          ],
+          "properties": {
+            "runId": {
+              "$ref": "../../../core/common.schema.json#/$defs/Id"
+            },
+            "status": {
+              "enum": [
+                "queued",
+                "running",
+                "waiting_approval",
+                "paused",
+                "recovering",
+                "needs_reconciliation",
+                "cancelling",
+                "completed",
+                "failed",
+                "cancelled"
+              ]
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "runState": {
+      "anyOf": [
+        {
+          "enum": [
+            "working",
+            "needs_you"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "needsYou": {
+      "type": "boolean"
+    },
+    "finishedUnseen": {
+      "type": "boolean"
+    },
+    "seenUpTo": {
+      "anyOf": [
+        {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "examples": [
+    {
+      "activeRun": {
+        "runId": "run_1",
+        "status": "running"
+      },
+      "runState": "needs_you",
+      "needsYou": true,
+      "finishedUnseen": false,
+      "seenUpTo": 1762678800000
+    },
+    {
+      "activeRun": null,
+      "runState": null,
+      "needsYou": false,
+      "finishedUnseen": true,
+      "seenUpTo": 1762678000000
+    }
+  ]
+}

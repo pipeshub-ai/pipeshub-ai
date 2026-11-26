@@ -10,6 +10,8 @@ import { createConnectorRouter } from '../../../../src/modules/tokens_manager/ro
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
+import { requestContextMiddleware } from '../../../../src/libs/middlewares/request.context'
+import { accessLog } from '../../../../src/libs/middlewares/access-log.middleware'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema'
@@ -54,6 +56,8 @@ export type Reply =
       headers?: Record<string, string>
       /** Sent verbatim instead of JSON, for services that answer with bytes or HTML. */
       raw?: string
+      /** Answer this long after the request arrived (the service is still working). */
+      delayMs?: number
     }
   | 'drop'
 type ReplyFn = (call: RecordedCall) => Reply
@@ -96,8 +100,12 @@ export class FakeBackend {
           req.socket.destroy()
           return
         }
-        res.writeHead(reply.status, { 'content-type': 'application/json', ...reply.headers })
-        res.end(reply.raw ?? JSON.stringify(reply.body === undefined ? {} : reply.body))
+        const answer = (): void => {
+          res.writeHead(reply.status, { 'content-type': 'application/json', ...reply.headers })
+          res.end(reply.raw ?? JSON.stringify(reply.body === undefined ? {} : reply.body))
+        }
+        if (reply.delayMs === undefined) answer()
+        else setTimeout(answer, reply.delayMs)
       })
     })
     await new Promise<void>((resolve) => this.server!.listen(0, '127.0.0.1', resolve))
@@ -250,6 +258,8 @@ export const startHarness = async ({
     getJobStatus: async () => null,
     upsertRepeatingSchedule: async () => 'scheduled',
     removeConnectorSchedules: async () => false,
+    markReconcilePending: async () => undefined,
+    clearReconcilePending: async () => undefined,
   } as unknown as CrawlingSchedulerService)
 
   sinon
@@ -260,6 +270,10 @@ export const startHarness = async ({
     .callsFake((() => query(null)) as unknown as typeof UserActivities.findOne)
 
   const app = express()
+  // As app.ts: every request runs in its own context, so a test can tell its lines from another's (x-request-id),
+  // and ends with its access line.
+  app.use(requestContextMiddleware)
+  app.use(accessLog())
   app.use(express.json())
   app.use('/api/v1/connectors', createRouter(container, crawlingContainer))
   for (const extra of extraRouters) app.use(extra.mountPath, extra.create(container))
@@ -320,8 +334,9 @@ export const call = async (
   path: string,
   token?: string,
   body?: unknown,
+  extraHeaders: Record<string, string> = {},
 ): Promise<ApiResponse> => {
-  const headers: Record<string, string> = {}
+  const headers: Record<string, string> = { ...extraHeaders }
   if (token) headers.authorization = `Bearer ${token}`
   if (body !== undefined) headers['content-type'] = 'application/json'
   const res = await fetch(`${h.baseUrl}${path}`, {

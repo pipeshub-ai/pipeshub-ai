@@ -257,11 +257,11 @@ describe('ChatSessionsMigration', () => {
     expect(messageStubs.bulkWrite.calledOnce).to.equal(true);
     const ops = messageStubs.bulkWrite.firstCall.args[0];
     expect(ops).to.have.length(2);
-    expect(ops[0].updateOne.update.$setOnInsert.seq).to.equal(1);
-    expect(ops[0].updateOne.update.$setOnInsert.sessionId).to.equal(legacyDoc._id);
-    expect(ops[0].updateOne.update.$setOnInsert.orgId).to.equal(orgId);
-    expect(ops[0].updateOne.upsert).to.equal(true);
-    expect(ops[1].updateOne.update.$setOnInsert.seq).to.equal(2);
+    expect(ops[0]!.updateOne.update.$setOnInsert.seq).to.equal(1);
+    expect(ops[0]!.updateOne.update.$setOnInsert.sessionId).to.equal(legacyDoc._id);
+    expect(ops[0]!.updateOne.update.$setOnInsert.orgId).to.equal(orgId);
+    expect(ops[0]!.updateOne.upsert).to.equal(true);
+    expect(ops[1]!.updateOne.update.$setOnInsert.seq).to.equal(2);
 
     // Session upsert: nextSeq = message count, sessionType stamped, upsert-only.
     expect(sessionStubs.collectionUpdateOne.calledOnce).to.equal(true);

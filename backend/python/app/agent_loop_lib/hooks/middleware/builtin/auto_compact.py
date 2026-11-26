@@ -159,9 +159,12 @@ def make_llm_summarizer(transport_registry, provider: str, model: str) -> Summar
 
         joined = _SEPARATOR.join(parts)
 
+        from harness_core.models.transport_model import TransportModel
+
         try:
             with llm_usage_source("auto_compact"):
-                response = await transport.complete(
+                # A summary's own output limit (P4.17); the stall bound stays the caller's, as before.
+                response = await TransportModel(transport, purpose="summary", timeouts=None).complete(
                     messages=[UserMessage(
                         content=f"{_SUMMARIZER_PROMPT}\n{joined}",
                     )],

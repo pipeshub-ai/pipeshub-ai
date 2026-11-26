@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from logging import Logger
 from typing import Any, AsyncContextManager, Optional
 
@@ -505,6 +506,7 @@ class BaseDataStore(ABC):
     @abstractmethod
     async def replace_record_entity_relations(
         self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+        *, keep_edge_types: Collection[str] = (),
     ) -> None:
         """Replace the record's ``entityRelations`` edges of ``origin`` to
         ``to_collections`` with ``edges``, atomically; see
@@ -575,6 +577,10 @@ class TransactionStore(BaseDataStore):
 
     def is_transient_error(self, error: BaseException) -> bool:
         """Whether *error* rolled this transaction back cleanly so it can be run again."""
+        return False
+
+    async def publish_with_commit(self, producer: Any, topic: str, messages: list[tuple[str | None, dict]]) -> bool:  # noqa: ANN401
+        """Publish *messages* inside this transaction; False when the store cannot, and the caller publishes after the commit."""
         return False
 
     @abstractmethod

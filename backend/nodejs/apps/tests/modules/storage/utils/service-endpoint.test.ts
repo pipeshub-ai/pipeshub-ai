@@ -14,6 +14,11 @@ describe('storedServiceEndpoint', () => {
     expect(await storedServiceEndpoint(kv, 'cm', 'http://default')).to.equal('http://cm:3001')
   })
 
+  it('reads an address stored as a JSON string of JSON (older Python writer)', async () => {
+    const kv = store(JSON.stringify(JSON.stringify({ storage: { endpoint: 'http://storage:3000' } })))
+    expect(await storedServiceEndpoint(kv, 'storage', 'http://default')).to.equal('http://storage:3000')
+  })
+
   for (const [what, stored] of [
     ['nothing is stored', null],
     ['the document is empty', '{}'],

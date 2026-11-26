@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
-import { Box, Flex, Tooltip } from '@radix-ui/themes';
+import { Box, Flex, Tooltip, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
 import { Conversation } from '@/chat/types';
@@ -20,6 +20,9 @@ import { DeleteChatDialog, ArchiveChatDialog, MoveToProjectDialog } from './dial
 import { Spinner } from '@/app/components/ui/spinner';
 import { toast } from '@/lib/store/toast-store';
 import { exportConversation } from '@/chat/utils/export-conversation';
+import { sidebarDot, type SidebarDot } from '@/lib/harness-jobs/jobs-list';
+import { slotWaitingCount } from '@/chat/interactions';
+import type { ChatSlot } from '@/chat/types';
 
 /** Duration must match `typing-reveal` animation duration in globals.css */
 const TYPING_ANIMATION_DURATION_MS = 400;
@@ -32,8 +35,39 @@ function TypingTitle({ title }: { title: string }) {
   );
 }
 
-/** Title text with a streaming spinner — shared between ChatSectionElement and GeneratingTitleItem. */
-function StreamingTitleLabel({ title }: { title: string }) {
+/** A running chat whose title is not known yet. */
+function GeneratingTitleLabel({ label }: { label: string }) {
+  return (
+    <span className="generating-shimmer">
+      <span className="generating-shimmer-base">{label}</span>
+      <span className="generating-shimmer-overlay" aria-hidden="true">{label}</span>
+    </span>
+  );
+}
+
+const DOT_COLOR: Record<'needsYou' | 'finished', string> = { needsYou: 'var(--amber-9)', finished: 'var(--accent-9)' };
+
+/**
+ * A chat row's one mark (D10): amber for needs you, the spinner for working, the jade dot for finished and not seen.
+ * Its words are always there for a screen reader; colour is never the only sign.
+ */
+export function ChatDotMark({ dot, label }: { dot: SidebarDot['dot']; label: string }) {
+  return (
+    <span data-testid="chat-dot" data-dot={dot} style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center' }}>
+      <span aria-hidden style={{ display: 'inline-flex', lineHeight: 0 }}>
+        {dot === 'working' ? (
+          <Spinner size={12} color="var(--accent-11)" />
+        ) : (
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: DOT_COLOR[dot] }} />
+        )}
+      </span>
+      <VisuallyHidden>{label}</VisuallyHidden>
+    </span>
+  );
+}
+
+/** Title text with the row's mark after it: every row, the one this tab streams too (D10). */
+function MarkedTitleLabel({ title, mark }: { title: React.ReactNode; mark: React.ReactNode }) {
   return (
     <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
       <span
@@ -46,38 +80,25 @@ function StreamingTitleLabel({ title }: { title: string }) {
       >
         {title}
       </span>
-      <Spinner size={12} color="var(--accent-11)" />
+      {mark}
     </Flex>
   );
 }
 
-/** Title text with a dot for an answer that finished while the chat was out of view. */
-function UnreadTitleLabel({ title, dotLabel }: { title: string; dotLabel: string }) {
-  return (
-    <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
-      <span
-        style={{
-          flex: 1,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {title}
-      </span>
-      <span
-        role="img"
-        aria-label={dotLabel}
-        data-testid="unread-dot"
-        style={{
-          flexShrink: 0,
-          width: 8,
-          height: 8,
-          borderRadius: '50%',
-          background: 'var(--accent-9)',
-        }}
-      />
-    </Flex>
+/** The row's mark in words, for a screen reader: colour is never the only sign (D10). */
+export function markWords(t: (key: string) => string, mark: SidebarDot): string {
+  if (mark.dot === 'needsYou') return t('sidebar.dot.needsYou');
+  if (mark.dot === 'working') return t('sidebar.dot.working');
+  return mark.unseen ? t('sidebar.dot.finished') : t('chat.answerReady.unread');
+}
+
+/** A slot of this chat, in this sidebar's scope, holds an ask open on its person (`slotWaitingCount`, D10). */
+function waitsInScope(slots: Record<string, ChatSlot>, conversationId: string, scopeAgentId: string | null): boolean {
+  return Object.values(slots).some(
+    (slot) =>
+      slot.convId === conversationId &&
+      (scopeAgentId === null ? !slot.threadAgentId : slot.threadAgentId === scopeAgentId) &&
+      slotWaitingCount(slot) > 0,
   );
 }
 
@@ -140,6 +161,7 @@ export function ChatSectionElement({
   const isConversationStreaming = useChatStore((s) =>
     isConversationStreamingInScope(s.slots, conversation.id, agentId ?? null),
   );
+  const isConversationWaiting = useChatStore((s) => waitsInScope(s.slots, conversation.id, agentId ?? null));
 
   const hasUnreadAnswer = useChatStore((s) => s.unreadConversationIds.has(conversation.id));
   const markConversationRead = useChatStore((s) => s.markConversationRead);
@@ -369,7 +391,7 @@ export function ChatSectionElement({
             role="img"
             style={{ display: 'inline-flex', verticalAlign: 'middle', marginLeft: 4 }}
           >
-            <MaterialIcon name="smart_toy" size={13} color="var(--accent-9)" />
+            <MaterialIcon name="smart_toy" size={13} color="var(--accent-11)" />
           </span>
         </Tooltip>
       </>
@@ -411,21 +433,30 @@ export function ChatSectionElement({
             font: 'inherit',
           }}
         />
-        {isSavingRename && <Spinner size={12} color="var(--slate-10)" />}
+        {isSavingRename && <Spinner size={12} color="var(--slate-11)" />}
       </Flex>
     );
   }
 
   const conversationHref = buildChatHref({ agentId, projectId, conversationId: conversation.id });
+  const mark = sidebarDot(conversation.harnessState, {
+    streaming: isConversationStreaming,
+    unread: hasUnreadAnswer,
+    active: isActive,
+    waiting: isConversationWaiting,
+  });
 
   return (
     <>
       <SidebarItem
         label={
-          isConversationStreaming ? (
-            <StreamingTitleLabel title={conversation.title} />
-          ) : hasUnreadAnswer && !isActive ? (
-            <UnreadTitleLabel title={conversation.title} dotLabel={t('chat.answerReady.unread')} />
+          isConversationStreaming && !conversation.title ? (
+            <GeneratingTitleLabel label={t('chat.generatingTitle')} />
+          ) : mark ? (
+            <MarkedTitleLabel
+              title={isTypingTitle ? <TypingTitle title={conversation.title} /> : conversation.title}
+              mark={<ChatDotMark dot={mark.dot} label={markWords(t, mark)} />}
+            />
           ) : isTypingTitle ? (
             <TypingTitle title={conversation.title} />
           ) : (
@@ -508,6 +539,7 @@ export function GeneratingTitleItem({ slotId }: { slotId: string }) {
   const activeSlotId = useChatStore((s) => s.activeSlotId);
   const slotConvId = useChatStore((s) => s.slots[slotId]?.convId ?? null);
   const pendingTitle = useChatStore((s) => s.pendingConversations[slotId]?.title ?? null);
+  const waiting = useChatStore((s) => slotWaitingCount(s.slots[slotId]) > 0);
 
   const isActive = slotConvId
     ? currentConversationId === slotConvId
@@ -527,13 +559,17 @@ export function GeneratingTitleItem({ slotId }: { slotId: string }) {
     }
   };
 
+  // D10: the row this tab streams is marked as any row is, so an ask it holds open shows Needs you over the spinner.
+  const mark = sidebarDot(null, { streaming: true, unread: false, active: isActive, waiting }) ?? { dot: 'working' as const };
+  const dot = <ChatDotMark dot={mark.dot} label={markWords(t, mark)} />;
+
   if (pendingTitle) {
     return (
       <SidebarItem
         isActive={isActive}
         href={href}
         onClick={handleClick}
-        label={<StreamingTitleLabel title={pendingTitle} />}
+        label={<MarkedTitleLabel title={pendingTitle} mark={dot} />}
         textColor="var(--slate-12)"
         fontWeight={500}
       />
@@ -546,10 +582,11 @@ export function GeneratingTitleItem({ slotId }: { slotId: string }) {
       href={href}
       onClick={handleClick}
       label={
-        <span className="generating-shimmer">
-          <span className="generating-shimmer-base">{t('chat.generatingTitle')}</span>
-          <span className="generating-shimmer-overlay" aria-hidden="true">{t('chat.generatingTitle')}</span>
-        </span>
+        mark.dot === 'needsYou' ? (
+          <MarkedTitleLabel title={<GeneratingTitleLabel label={t('chat.generatingTitle')} />} mark={dot} />
+        ) : (
+          <GeneratingTitleLabel label={t('chat.generatingTitle')} />
+        )
       }
       textColor="var(--slate-11)"
       fontWeight={500}

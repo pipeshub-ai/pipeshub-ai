@@ -326,12 +326,14 @@ async def test_a_hung_graph_read_is_bounded_fails_open_and_stalls_no_caller_beyo
     loop = asyncio.get_running_loop()
     t0 = loop.time()
     results = await asyncio.gather(*(world.guard.check(backend) for _ in range(8)))
+    # wall-clock-ok: the hung read is 3600 s; eight callers waiting one after another never finish
     assert loop.time() - t0 < 1.5, "8 callers waited one after another on the hung read"
     assert world.graph.reads == 1 and results == [False] * 8
     assert world.guard.wm_record == "100" and not world.guard.gone
     t1 = loop.time()
     paid = Paid()
     await world.cache.get_or_compute(_key(0), paid)                     # inside the retry window: no read, no wait
+    # wall-clock-ok: no read happens inside the retry window; the regression waits the 3600 s hung read
     assert loop.time() - t1 < 0.1 and paid.calls == 1 and world.graph.reads == 1
     world.clock[0] += orphan.RETRY_S + 1                                 # the graph is back and the record is gone
     world.graph.delay = 0

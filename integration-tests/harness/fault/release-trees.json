@@ -1,0 +1,12 @@
+{
+  "$comment": "Release trees the fault suite rolls back to besides release N (release_tree.release_ref, the newest replay corpus). R-29 promises that a rollback reaches the release before this build (N-1) and nothing older, so a rollback scenario runs on `previous`: a tree that postdates every feature its scenario exercises. A rollback onto a tree from before a feature is kept only as an expected refusal (WORKER_INCOMPATIBLE, typed, no data touched). (FUPERF-FU-1). Move `previous` forward at each release; `postdates` names the features it must hold and the last tree without each, which integration-tests/unit/test_release_tree.py checks against git.",
+  "previous": {
+    "gitRef": "6c9da2244198ae524be10a8c5f53f2cb3fb85c4f",
+    "name": "round 22 (main-sync, the head round 23 started from)",
+    "recordedAt": "2026-11-11",
+    "postdates": {
+      "CPD-10": "e43676fb792439bee4949f582b02438d2811ff2a",
+      "PERF-B": "7a0bf116bb782696c81bfa45f441a6516ceb1095"
+    }
+  }
+}

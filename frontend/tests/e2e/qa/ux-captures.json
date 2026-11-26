@@ -1,0 +1,17 @@
+{
+  "set": "classic",
+  "playwright": "1.64.1",
+  "maxDiffPixelRatio": 0.01,
+  "threshold": 0.2,
+  "viewports": { "desktop": { "width": 1280, "height": 800 }, "phone": { "width": 390, "height": 844 } },
+  "schemes": ["light", "dark"],
+  "captures": [
+    "agent-builder", "agent-versions", "chat-answer", "chat-approval", "chat-grants",
+    "chat-question", "chat-steps-open", "chat-welcome", "collections", "connectors", "delete-chat", "delete-org",
+    "job-card", "job-panel", "jobs-list", "mcp-servers", "mcp-sign-in", "mcp-tool-rules", "needs-you",
+    "settings-ai-access", "settings-labs", "settings-profile",
+    "settings-schedules"
+  ],
+  "engineCaptures": ["engine-job-card", "engine-job-panel"],
+  "axeKnown": {}
+}

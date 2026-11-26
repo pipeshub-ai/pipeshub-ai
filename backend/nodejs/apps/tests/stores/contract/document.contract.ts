@@ -287,7 +287,7 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       const deleted = rows.find((r) => r._id === gone._id);
       expect(deleted?.isDeleted).to.equal(true);
       expect(Object.keys(rows[0]).sort()).to.deep.equal(
-        ['_id', 'documentName', 'documentPath', 'extension', 'isVersionedFile', 'versionHistory', 'isDeleted'].filter((k) => k in rows[0]).sort(),
+        ['_id', 'documentName', 'documentPath', 'extension', 'isVersionedFile', 'versionHistory', 'isDeleted'].filter((k) => k in rows[0]!).sort(),
       );
     });
 
@@ -567,9 +567,9 @@ export function describeDocumentContract(fx: DocumentFixture): void {
         const id = await revision(org);
         await repo.claimArtifactSetForDelete(org, id, { now: T0 + 1000, staleMs: STALE });
         const [listed] = await repo.listArtifactSets(org, 'v1');
-        expect(listed._id).to.equal(id);
-        expect(listed.artifactSet?.retiringAt).to.equal(T0 + 1000);
-        expect(listed.updatedAt).to.equal(T0);
+        expect(listed!._id).to.equal(id);
+        expect(listed!.artifactSet?.retiringAt).to.equal(T0 + 1000);
+        expect(listed!.updatedAt).to.equal(T0);
       });
     });
 
@@ -642,7 +642,7 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       await repo.create(mk(fx.newId(), { documentName: 'record_v1', documentPath: `${prefix}v1` }));
       const first = await repo.pageFlatEnvelopes(org, prefix, undefined, 1);
       expect(first.map((r) => r._id)).to.deep.equal([a._id]);
-      const next = await repo.pageFlatEnvelopes(org, prefix, first[0]._id, 10);
+      const next = await repo.pageFlatEnvelopes(org, prefix, first[0]!._id, 10);
       expect(next.map((r) => r._id)).to.deep.equal([b._id]);
     });
 
@@ -1066,7 +1066,7 @@ export function describeDocumentContract(fx: DocumentFixture): void {
         const page = await repo.pageByConnector(org, sc, after, 2);
         seen.push(...page.map((p) => p._id));
         if (page.length < 2) break;
-        after = page[page.length - 1]._id;
+        after = page[page.length - 1]!._id;
       }
       expect(seen).to.deep.equal(want);
       expect(Object.keys((await repo.pageByConnector(org, sc, undefined, 1))[0]).sort()).to.deep.equal(['_id', 'documentName', 'documentPath']);

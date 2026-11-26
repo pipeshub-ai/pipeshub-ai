@@ -110,7 +110,7 @@ describe('ScopeValidatorService', () => {
     it('should return definitions for valid scopes', () => {
       const defs = service.getScopeDefinitions(['org:read'])
       expect(defs).to.have.lengthOf(1)
-      expect(defs[0].name).to.equal('org:read')
+      expect(defs[0]!.name).to.equal('org:read')
     })
 
     it('should filter out undefined definitions for unknown scopes', () => {

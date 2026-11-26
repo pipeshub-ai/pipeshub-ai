@@ -6,6 +6,7 @@ The focus is on who ends up able to see what: users, groups, space grants,
 page restrictions, and the audit-log pass that catches restriction changes.
 """
 
+import asyncio
 import json
 import logging
 from collections.abc import Callable
@@ -22,8 +23,9 @@ from atlassian_behaviour_fakes import (
     json_response,
     logged,
     record_logs,
+    run_full_sync,
 )
-from confluence_dc_removal_fakes import RemovalRecordsDb
+from confluence_dc_removal_fakes import RemovalRecordsDb, unlinked_by_full_sync
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import (
@@ -161,6 +163,13 @@ def comment(cid: str, version: int = 1, **extra: object) -> dict[str, Any]:
         "_links": {"webui": f"/comment/{cid}"},
         **extra,
     }
+
+
+def unparsable_backfill(request: httpx.Request) -> httpx.Response:
+    """The homepage's last-modified lookup reads fine; the full read that backfills it gets a body that is not JSON."""
+    if AtlassianApiStub.query(request).get("expand") == "history.lastUpdated,version,space":
+        return json_response(content("500"))
+    return httpx.Response(200, content=b"<html>proxy error</html>")
 
 
 def listing(results: list[dict[str, Any]], next_start: Optional[int] = None) -> dict[str, Any]:
@@ -1816,6 +1825,20 @@ class TestRemovalFromSource:
         assert not {"p1", "p2", "p3"} & set(db.records)
         assert store.values_for("confluence_pages/ENG")["last_sync_time"] == ""
 
+    async def test_a_space_filter_that_leaves_out_every_listed_space_removes_them_and_completes(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        connector.config_service.config["filters"] = {
+            "sync": {"values": {"space_keys": {"operator": "not_in", "type": "list", "value": ["ENG"]}}}
+        }
+
+        await connector.run_sync()
+
+        assert "10" not in db.record_groups
+        assert not {"p1", "p2", "p3"} & set(db.records)
+        assert connector.full_sync_coverage().complete is True, "the filters leaving every space out is no failed read"
+
     async def test_a_removed_space_leaves_no_type_docs_behind(self, atlassian_api, db, store, search) -> None:
         connector = await self._two_pages_synced(atlassian_api, db, store, search)
         eng_ids = {r.id for r in db.records.values() if r.external_record_group_id == "10"}
@@ -1940,7 +1963,7 @@ class TestRemovalFromSource:
 
         assert "10" in db.record_groups
         assert {"p1", "p2"} <= set(db.records)
-
+        assert connector.full_sync_coverage().complete is False
 
 
 async def _no_licence(connector_id: str | None) -> bool:
@@ -1967,3 +1990,871 @@ class TestWithoutALicenceKey:
         assert db.record_group_permissions == {"10": []}, "the space carries no grant of its own"
         assert db.user_groups == []
         assert _access_reads(atlassian_api, "/permissions", "/restriction", "/group", AUDIT) == []
+
+
+ANA = user("ana", "ana@example.com")
+BOB = user("bob", "bob@example.com")
+P1_RESTRICTION = f"{API}/content/p1/restriction/relevantViewRestrictions"
+
+
+class TestAFullSyncUnlinksOnlyWhatLeftConfluence:
+    """A full sync takes the links of every stored node it did not write. What is still in
+    Confluence keeps them, whether the sync read it, kept it as stored, or could not read it."""
+
+    @staticmethod
+    async def _full_sync(connector, db, store) -> dict[str, set[str]]:
+        store.sync_points.clear()  # the full sync's prep deletes the checkpoints
+        db.kept_records.clear()
+        graph = await run_full_sync(connector, db)
+        return unlinked_by_full_sync(graph, db)
+
+    @staticmethod
+    def _among(unlinked: dict[str, set[str]], ids: set[str]) -> set[str]:
+        return set().union(*unlinked.values()) & ids
+
+    async def test_a_page_comment_and_group_gone_from_confluence_are_unlinked_and_nothing_else(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        comments = f"{API}/content/p1/child/comment"
+        atlassian_api.on("GET", comments, {"results": [comment("c1"), comment("c2")], "_links": {"base": BASE}})
+        search.add("page", 0, listing([content("p1", attachments=[attachment("a1")]), content("p2")]))
+        await connector.run_sync()
+        assert {"p1", "a1", "c1", "c2", "p2"} <= set(db.records)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        atlassian_api.on("GET", comments, {"results": [comment("c1")], "_links": {"base": BASE}})
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"p1", "a1", "c1", "p2", "10", "eng"}) == set()
+        assert self._among(unlinked, {"c2", "old"}) == {"c2", "old"}, "what left Confluence loses its links"
+
+    async def test_an_archived_page_keeps_its_links_with_its_files_and_comments(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
+        search.add("page", 0, listing([content("p1", attachments=[attachment("a1")]), content("p2")]))
+        await connector.run_sync()
+        assert {"p1", "a1", "c1"} <= set(db.records)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        search.add("page", 0, listing([content("p2")]))  # the search leaves archived pages out
+        search.existing["page"] = [content("p2")]
+        search.archived = [content("p1")]
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"p1", "a1", "c1"}) == set(), "an archived page is still in Confluence"
+        assert self._among(unlinked, {"old"}) == {"old"}
+
+    async def test_an_archived_page_keeps_its_replies_and_comment_files(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/content/c1/child/comment", {"results": [comment("r1")], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/content/c1/child/attachment", {"results": [attachment("ca1")], "_links": {"base": BASE}})
+        search.add("page", 0, listing([content("p1"), content("p2")]))
+        await connector.run_sync()
+        assert {"p1", "c1", "r1", "ca1"} <= set(db.records)
+        search.add("page", 0, listing([content("p2")]))
+        search.existing["page"] = [content("p2")]
+        search.archived = [content("p1")]
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        kept = {r.external_record_id for r in db.records.values() if r.id in db.kept_records}
+        assert {"p1", "c1", "r1", "ca1"} <= kept
+        assert self._among(unlinked, {"p1", "c1", "r1", "ca1"}) == set()
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_deleted_child_page_of_an_archived_page_is_still_removed(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1"), child_of("p3", "p1")]))
+        await connector.run_sync()
+        p3 = db.records["p3"].id
+        search.add("page", 0, listing([]))
+        search.existing["page"] = []
+        search.archived = [content("p1")]
+
+        await self._full_sync(connector, db, store)
+
+        assert "p3" not in db.records, "gone from both listings"
+        assert p3 not in db.kept_records
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_an_incremental_run_does_not_walk_archived_pages(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1", attachments=[attachment("a1")]), content("p2")]))
+        await connector.run_sync()
+        search.add("page", 0, listing([]))
+        search.existing["page"] = [content("p2")]
+        search.archived = [content("p1")]
+        parents: list[str] = []
+        read_children = db.get_records_by_parent
+
+        async def spy(connector_id: str, parent_external_record_id: str, *args: object, **kwargs: object) -> list[Record]:
+            parents.append(parent_external_record_id)
+            return await read_children(connector_id, parent_external_record_id, *args, **kwargs)
+
+        db.get_records_by_parent = spy
+
+        await connector.run_sync()
+
+        assert {"p1", "a1"} <= set(db.records)
+        assert db.kept_records == []
+        assert "p1" not in parents
+
+    @staticmethod
+    async def _archived_restricted_page(atlassian_api, db, store, search, *users: str) -> ConfluenceDataCenterConnector:
+        """p1 (file a1, comment c1) restricted to ``users``, then archived; p2 stays current."""
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA, BOB], {})
+        atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
+        atlassian_api.on("GET", P1_RESTRICTION, restricted_to(users=[{"type": "known", "userKey": u} for u in users]))
+        search.add("page", 0, listing([content("p1", attachments=[attachment("a1")]), content("p2")]))
+        await connector.run_sync()
+        assert len(db.record_permissions["p1"]) == len(users)
+        search.add("page", 0, listing([content("p2")]))
+        search.existing["page"] = [content("p2")]
+        search.archived = [content("p1")]
+        return connector
+
+    @pytest.mark.parametrize("now", [["ana"], ["ana", "bob"]], ids=["narrowed", "unchanged"])
+    async def test_an_archived_page_gets_its_current_restrictions_with_its_files_and_comments(
+        self, atlassian_api, db, store, search, now
+    ) -> None:
+        connector = await self._archived_restricted_page(atlassian_api, db, store, search, "ana", "bob")
+        atlassian_api.on("GET", P1_RESTRICTION, restricted_to(users=[{"type": "known", "userKey": u} for u in now]))
+        db.permission_updates.clear()
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert {p.email for p in db.record_permissions["p1"]} == {f"{u}@example.com" for u in now}
+        assert db.records["p1"].access_rule == AccessRule.RESTRICTED
+        updated = {r.external_record_id: (r.inherit_permissions, perms) for r, perms in db.permission_updates}
+        assert updated == {"a1": (True, []), "c1": (True, [])}, "its file and comment take the page's access"
+        assert self._among(unlinked, {"p1", "a1", "c1"}) == set()
+        assert connector.full_sync_coverage().complete is True
+        assert len(atlassian_api.calls("GET", P1_RESTRICTION)) == 2, "one read on its first sync, one on the full sync"
+
+    @pytest.mark.parametrize("failure", ["restriction-read", "record-lookup", "record-gone"])
+    async def test_an_archived_page_whose_restrictions_cannot_be_read_unlinks_nothing(
+        self, atlassian_api, db, store, search, failure
+    ) -> None:
+        connector = await self._archived_restricted_page(atlassian_api, db, store, search, "ana", "bob")
+        if failure == "restriction-read":
+            atlassian_api.on("GET", P1_RESTRICTION, json_response({"message": "busy"}, status=503))
+        else:
+            atlassian_api.on("GET", P1_RESTRICTION, restricted_to(users=[{"type": "known", "userKey": "ana"}]))
+            db.get_typed_record_by_external_id = (
+                AsyncMock(side_effect=ConnectionError("database unavailable"))
+                if failure == "record-lookup"
+                # Deleted between the stored scan and the refresh: its new access is not written.
+                else AsyncMock(return_value=None)
+            )
+        p1, c1 = db.records["p1"].id, db.records["c1"].id
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert connector.full_sync_coverage().complete is False, "a full sync is still owed"
+        assert unlinked == {"records": set(), "record_groups": set(), "groups": set()}
+        assert {p.email for p in db.record_permissions["p1"]} == {"ana@example.com", "bob@example.com"}
+        assert db.records["p1"].access_rule == AccessRule.RESTRICTED
+        assert {p1, c1} <= set(db.kept_records)
+
+    async def test_a_stand_in_group_named_only_by_an_archived_page_keeps_its_links(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._archived_restricted_page(atlassian_api, db, store, search, "contractor")
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"contractor", "p1"}) == set()
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_run_that_is_not_a_full_sync_reads_no_archived_page_restrictions(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._archived_restricted_page(atlassian_api, db, store, search, "ana", "bob")
+        reads = len(atlassian_api.calls("GET", P1_RESTRICTION))
+        store.sync_points.clear()  # read in full, as a space added to the filters is
+
+        await connector.run_sync()
+
+        assert len(atlassian_api.calls("GET", P1_RESTRICTION)) == reads
+        assert {p.email for p in db.record_permissions["p1"]} == {"ana@example.com", "bob@example.com"}
+
+    async def test_a_reused_stand_in_group_keeps_its_links(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        search.add("page", 0, listing([content("p1"), content("p2")]))
+        p1, p2 = (f"{API}/content/{p}/restriction/relevantViewRestrictions" for p in ("p1", "p2"))
+        atlassian_api.on("GET", p1, restricted_to(users=[{"type": "known", "userKey": "contractor"}]))
+        atlassian_api.on("GET", p2, restricted_to(users=[{"type": "known", "userKey": "ghost"}]))
+        await connector.run_sync()
+        assert {"contractor", "ghost"} <= {g.source_user_group_id for g, _ in db.user_groups}
+        atlassian_api.on("GET", p2, restricted_to(users=[{"type": "known", "userKey": "ana"}]))
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"contractor", "p1"}) == set(), "p1 still names the user without an email"
+        assert self._among(unlinked, {"ghost"}) == {"ghost"}, "a stand-in no restriction names any more goes"
+        assert connector.full_sync_coverage().complete is True
+
+    @pytest.mark.parametrize("failure", ["member-listing", "member-lookup"])
+    async def test_a_group_whose_members_could_not_be_read_keeps_its_links(
+        self, atlassian_api, db, store, search, failure
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        atlassian_api.on(
+            "GET", f"{API}/space/ENG/permissions",
+            json_response([{"operation": {"operationKey": "read", "targetType": "space"}, "subject": {"type": "group", "name": "eng"}}]),
+        )
+        await connector.run_sync()
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        if failure == "member-listing":
+            atlassian_api.on("GET", f"{API}/group/eng/member", json_response({"message": "busy"}, status=503))
+        else:
+            db.get_all_app_users = AsyncMock(side_effect=ConnectionError("database unavailable"))
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"eng"}) == set(), "its stored members and its space grant stay"
+        assert "ana@example.com" in db.members_of("eng")
+        assert (EntityType.GROUP, "eng", PermissionType.READ) in {
+            (p.entity_type, p.external_id, p.type) for p in db.record_group_permissions["10"]
+        }
+        assert self._among(unlinked, {"old"}) == {"old"}
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_group_listing_cut_short_unlinks_no_group(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        first = {"results": [{"name": f"g{i}"} for i in range(50)]}
+        pages = {"0": first, "50": {"results": [{"name": "late"}, {"name": "old"}]}}
+        groups = f"{API}/group"
+        atlassian_api.on("GET", groups, lambda r: json_response(pages[AtlassianApiStub.query(r).get("start", "0")]))
+        await connector.run_sync()
+        assert {"late", "old"} <= {g.source_user_group_id for g, _ in db.user_groups}
+        pages["50"] = json_response({"message": "busy"}, status=503)
+        atlassian_api.on(
+            "GET", groups,
+            lambda r: pages["50"] if AtlassianApiStub.query(r).get("start") == "50" else json_response(first),
+        )
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"late", "old"}) == set(), "a group the listing did not reach may still be there"
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_space_listing_cut_short_unlinks_no_space(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        spaces = {
+            "0": json_response({"results": [space("ENG", 10)], "_links": {"base": BASE, "next": f"{API}/space?limit=25&start=25"}}),
+            "25": json_response({"results": [space("HR", 20)], "_links": {"base": BASE}}),
+        }
+        atlassian_api.on("GET", f"{API}/space", lambda r: spaces[AtlassianApiStub.query(r).get("start", "0")])
+        hr_page = {**content("h1", space_id=20), "space": {"id": 20, "key": "HR"}}
+
+        def by_space(handler: Callable[[httpx.Request], httpx.Response]) -> Callable[[httpx.Request], httpx.Response]:
+            def answer(request: httpx.Request) -> httpx.Response:
+                q = AtlassianApiStub.query(request)
+                if q.get("spaceKey") == "HR" or "space='HR'" in q.get("cql", ""):
+                    return json_response(listing([hr_page] if q.get("status") != "archived" else []))
+                return handler(request)
+            return answer
+
+        atlassian_api.on("GET", f"{API}/content/search", by_space(search))
+        atlassian_api.on("GET", f"{API}/content", by_space(search.database))
+        await connector.run_sync()
+        assert "20" in db.record_groups and "h1" in db.records
+        spaces["25"] = json_response({"message": "busy"}, status=503)
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"20", "h1"}) == set(), "a space the listing did not reach may still be there"
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_space_whose_grants_could_not_be_read_keeps_its_links(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("ENG", 10), space("EMPTY", 30)], "_links": {"base": BASE}})
+        grants = f"{API}/space/EMPTY/permissions"
+        atlassian_api.on(
+            "GET", grants,
+            json_response([{"operation": {"operationKey": "read", "targetType": "space"}, "subject": {"type": "group", "name": "eng"}}]),
+        )
+        await connector.run_sync()
+        assert db.record_group_permissions["30"]
+        atlassian_api.on("GET", grants, json_response({"message": "busy"}, status=503))
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"30"}) == set(), "a space with no pages whose grants were kept stays linked"
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_space_whose_grants_could_not_be_read_or_kept_unlinks_nothing(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        atlassian_api.on("GET", f"{API}/space", {"results": [space("ENG", 10), space("EMPTY", 30)], "_links": {"base": BASE}})
+        grants = f"{API}/space/EMPTY/permissions"
+        atlassian_api.on(
+            "GET", grants,
+            json_response([{"operation": {"operationKey": "read", "targetType": "space"}, "subject": {"type": "group", "name": "eng"}}]),
+        )
+        await connector.run_sync()
+        atlassian_api.on("GET", grants, json_response({"message": "busy"}, status=503))
+        db.note_kept_record_group = AsyncMock(side_effect=ConnectionError("database unavailable"))
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"30"}) == set()
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_group_that_cannot_be_noted_kept_unlinks_no_group(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        await connector.run_sync()
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        atlassian_api.on("GET", f"{API}/group/eng/member", json_response({"message": "busy"}, status=503))
+        db.fail_note_kept_group = True
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"eng", "old"}) == set()
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_group_that_fails_to_save_unlinks_no_group(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        await connector.run_sync()
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        save = db.on_new_user_groups
+
+        async def failing_for_eng(groups: list[tuple[Any, list[Any]]]) -> None:
+            if any(g.name == "eng" for g, _ in groups):
+                raise ConnectionError("database unavailable")
+            await save(groups)
+
+        db.on_new_user_groups = failing_for_eng
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"eng", "old"}) == set()
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_group_deleted_before_its_members_are_read_is_saved_empty(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        await connector.run_sync()
+        atlassian_api.on("GET", f"{API}/group/eng/member", json_response({"message": "no group"}, status=404))
+        db.note_kept_user_group = AsyncMock()
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert db.members_of("eng") == []
+        assert self._among(unlinked, {"eng"}) == set(), "written by this sync"
+        db.note_kept_user_group.assert_not_awaited()
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_stand_in_group_is_noted_kept_only_when_reused(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1")]))
+        atlassian_api.on(
+            "GET", f"{API}/content/p1/restriction/relevantViewRestrictions",
+            restricted_to(users=[{"type": "known", "userKey": "contractor"}]),
+        )
+        lookups: list[Optional[AppUserGroup]] = []
+        notes: list[list[Any]] = []
+        lookup, note = db.get_user_group_by_external_id, db.note_kept_user_groups
+
+        async def spy_lookup(connector_id: str, external_id: str) -> object:
+            found = await lookup(connector_id, external_id)
+            lookups.append(found)
+            return found
+
+        def spy_note(connector_id: str, groups: list[Any]) -> None:
+            notes.append(groups)
+            note(connector_id, groups)
+
+        db.get_user_group_by_external_id, db.note_kept_user_groups = spy_lookup, spy_note
+
+        await connector.run_sync()
+        assert lookups[0] is None, "the first sync creates the stand-in"
+        assert notes == [[g] for g in lookups if g is not None]
+
+        lookups.clear()
+        notes.clear()
+        await self._full_sync(connector, db, store)
+
+        assert lookups and all(g is not None for g in lookups)
+        assert notes == [[g] for g in lookups]
+
+    async def test_a_page_whose_restrictions_could_not_be_read_keeps_its_links(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
+        search.add("page", 0, listing([content("p1", attachments=[attachment("a1")]), content("p2")]))
+        await connector.run_sync()
+        assert {"p1", "a1", "c1"} <= set(db.records)
+        atlassian_api.on(
+            "GET", f"{API}/content/p1/restriction/relevantViewRestrictions", json_response({"message": "busy"}, status=503)
+        )
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"p1", "a1", "c1"}) == set()
+
+    async def test_a_page_that_failed_to_save_keeps_its_links(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1", attachments=[attachment("a1")]), content("p2")]))
+        await connector.run_sync()
+        db.fail_lookup_for = {"p1"}
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"p1", "a1"}) == set()
+
+    async def test_a_page_listing_cut_short_unlinks_no_page(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1")], next_start=50))
+        search.add("page", 50, listing([content("p2")]))
+        await connector.run_sync()
+        assert {"p1", "p2"} <= set(db.records)
+        search.add("page", 50, json_response({"message": "busy"}, status=503))
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"p2"}) == set()
+
+    async def test_attachments_whose_listing_failed_keep_their_links(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        truncated = content("p1", attachments=[attachment("a1")])
+        truncated["children"]["attachment"]["size"] = 2
+        search.add("page", 0, listing([truncated]))
+        files = f"{API}/content/p1/child/attachment"
+        atlassian_api.on("GET", files, {"results": [attachment("a1"), attachment("a2")], "_links": {"base": BASE}})
+        await connector.run_sync()
+        assert {"a1", "a2"} <= set(db.records)
+        atlassian_api.on("GET", files, json_response({"message": "busy"}, status=503))
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"a1", "a2"}) == set()
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_attachments_whose_listing_raised_keep_their_links(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        truncated = content("p1", attachments=[attachment("a1")])
+        truncated["children"]["attachment"]["size"] = 2
+        search.add("page", 0, listing([truncated]))
+        files = f"{API}/content/p1/child/attachment"
+        atlassian_api.on("GET", files, {"results": [attachment("a1"), attachment("a2")], "_links": {"base": BASE}})
+        await connector.run_sync()
+
+        def unreachable(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection reset", request=request)
+
+        atlassian_api.on("GET", files, unreachable)
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"a1", "a2"}) == set()
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_comments_whose_listing_failed_keep_their_links(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        comments = f"{API}/content/p1/child/comment"
+        atlassian_api.on("GET", comments, {"results": [comment("c1")], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/content/c1/child/comment", {"results": [comment("r1")], "_links": {"base": BASE}})
+        search.add("page", 0, listing([content("p1")]))
+        await connector.run_sync()
+        assert {"c1", "r1"} <= set(db.records)
+        atlassian_api.on("GET", comments, json_response({"message": "busy"}, status=503))
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"c1", "r1"}) == set()
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_replies_whose_listing_failed_keep_their_links(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        replies = f"{API}/content/c1/child/comment"
+        atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
+        atlassian_api.on("GET", replies, {"results": [comment("r1")], "_links": {"base": BASE}})
+        search.add("page", 0, listing([content("p1")]))
+        await connector.run_sync()
+        assert {"c1", "r1"} <= set(db.records)
+        atlassian_api.on("GET", replies, json_response({"message": "busy"}, status=503))
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"c1", "r1"}) == set()
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_comment_without_an_author_keeps_the_run_complete(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        authorless = {**comment("cx"), "version": {"number": 1, "when": "2024-05-02T10:00:00.000Z"}}
+        atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1"), authorless], "_links": {"base": BASE}})
+        search.add("page", 0, listing([content("p1")]))
+        await connector.run_sync()
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert "cx" not in db.records
+        assert connector.full_sync_coverage().complete is True, "a comment skipped for its shape is skipped every run"
+        assert self._among(unlinked, {"p1", "c1", "old"}) == {"old"}
+
+    @staticmethod
+    def _space_with_homepage(atlassian_api) -> None:
+        def spaces(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("expand") == "homepage":
+                return json_response({"results": [{**space("ENG", 10), "homepage": {"id": 500, "title": "Home"}}]})
+            return json_response({"results": [space("ENG", 10)], "_links": {"base": BASE}})
+
+        atlassian_api.on("GET", f"{API}/space", spaces)
+
+    @pytest.mark.parametrize("failure", ["error-status", "unparsable"])
+    async def test_a_stored_homepage_whose_backfill_failed_keeps_its_links(
+        self, atlassian_api, db, store, search, failure
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        self._space_with_homepage(atlassian_api)
+        atlassian_api.on("GET", f"{API}/content/500", content("500"))
+        search.add("page", 0, listing([content("p1")]))
+        search.existing["page"] = [content("p1"), content("500")]
+        await connector.run_sync()
+        assert "500" in db.records
+        atlassian_api.on("GET", f"{API}/content/500", unparsable_backfill if failure == "unparsable" else json_response({"message": "busy"}, status=503))
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"500", "p1"}) == set()
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_stored_homepage_whose_lookup_fails_after_a_failed_backfill_keeps_its_links(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        self._space_with_homepage(atlassian_api)
+        atlassian_api.on("GET", f"{API}/content/500", content("500"))
+        search.add("page", 0, listing([content("p1")]))
+        search.existing["page"] = [content("p1"), content("500")]
+        await connector.run_sync()
+        assert "500" in db.records
+        atlassian_api.on("GET", f"{API}/content/500", json_response({"message": "busy"}, status=503))
+        read_stored = db.get_record_by_external_id
+
+        async def unavailable_for_homepage(
+            connector_id: str, external_record_id: str, *, raise_on_error: bool = False
+        ) -> Record | None:
+            # As the real stores: a failed read raises only when asked to, and otherwise reads as never stored.
+            if external_record_id == "500":
+                if raise_on_error:
+                    raise RuntimeError("database unavailable")
+                return None
+            return await read_stored(connector_id, external_record_id, raise_on_error=raise_on_error)
+
+        db.get_record_by_external_id = unavailable_for_homepage
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"500"}) == set()
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_an_archived_walk_ends_on_a_cycle_and_notes_each_record_once(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
+        search.add("page", 0, listing([content("p1"), content("p2")]))
+        await connector.run_sync()
+        search.add("page", 0, listing([content("p2")]))
+        search.existing["page"] = [content("p2")]
+        search.archived = [content("p1")]
+        read_children = db.get_records_by_parent
+        p1 = db.records["p1"]
+        loop_back = p1.model_copy(update={"id": "loop-back", "record_type": RecordType.COMMENT})
+
+        async def cyclic(connector_id: str, parent_external_record_id: str, *args: object, **kwargs: object) -> list[Record]:
+            children = await read_children(connector_id, parent_external_record_id, *args, **kwargs)
+            return [*children, loop_back] if parent_external_record_id == "c1" else children
+
+        db.get_records_by_parent = cyclic
+
+        await asyncio.wait_for(self._full_sync(connector, db, store), timeout=10)
+
+        assert sorted(db.kept_records) == sorted([p1.id, db.records["c1"].id, "loop-back"])
+
+    async def test_a_homepage_never_stored_and_never_readable_keeps_the_run_complete(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        self._space_with_homepage(atlassian_api)
+        atlassian_api.on("GET", f"{API}/content/500", json_response({"message": "forbidden"}, status=403))
+        search.add("page", 0, listing([content("p1")]))
+        search.existing["page"] = [content("p1"), content("500")]
+        await connector.run_sync()
+        assert "500" not in db.records
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert connector.full_sync_coverage().complete is True, "nothing stored was left unwritten"
+        assert self._among(unlinked, {"p1", "old"}) == {"old"}
+
+    async def test_a_space_listing_that_comes_back_empty_unlinks_no_space(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        search.add("page", 0, listing([content("p1")]))
+        await connector.run_sync()
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        atlassian_api.on("GET", f"{API}/space", {"results": [], "_links": {"base": BASE}})
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"10", "p1", "old"}) == set(), "an empty listing is the account failing"
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_database_listing_that_cannot_be_read_keeps_the_space_linked(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        search.add("page", 0, listing([content("p1"), content("p2")]))
+        await connector.run_sync()
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        search.existing["page"] = json_response({"message": "busy"}, status=503)
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"p1", "p2", "10", "old"}) == set()
+        assert connector.full_sync_coverage().complete is False
+
+    async def test_a_new_page_that_fails_to_sync_by_id_keeps_the_run_complete(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        search.add("page", 0, listing([content("p1")]))
+        await connector.run_sync()
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        search.existing["page"] = [content("p1"), content("p9")]
+
+        def by_id(request: httpx.Request) -> httpx.Response:
+            if "id in (p9)" in AtlassianApiStub.query(request)["cql"]:
+                return json_response(listing([content("p9")]))
+            return search(request)
+
+        atlassian_api.on("GET", f"{API}/content/search", by_id)
+        db.fail_lookup_for = {"p9"}
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert connector.full_sync_coverage().complete is True, "p9 was never stored, so nothing is left unwritten"
+        assert self._among(unlinked, {"p1", "old"}) == {"old"}
+
+    @pytest.mark.parametrize("failure", ["no-title", "save-raises"])
+    async def test_a_never_stored_page_that_always_fails_keeps_full_syncs_complete(
+        self, atlassian_api, db, store, search, failure
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        search.add("page", 0, listing([content("p2")]))
+        await connector.run_sync()
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        if failure == "no-title":
+            search.add("page", 0, listing([{**content("p3"), "title": ""}, content("p2")]))
+        else:
+            search.add("page", 0, listing([content("p9"), content("p2")]))
+            db.fail_lookup_for = {"p9"}
+
+        for _ in range(3):
+            unlinked = await self._full_sync(connector, db, store)
+            assert connector.full_sync_coverage().complete is True, "a page never stored leaves nothing unwritten"
+        assert self._among(unlinked, {"p2", "old"}) == {"old"}
+
+    async def test_each_full_sync_reports_its_own_coverage(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        search.add("page", 0, listing([content("p1")]))
+        await connector.run_sync()
+        search.existing["page"] = json_response({"message": "busy"}, status=503)
+
+        await self._full_sync(connector, db, store)
+        assert connector.full_sync_coverage().complete is False
+
+        del search.existing["page"]
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert connector.full_sync_coverage().complete is True
+        assert self._among(unlinked, {"p1", "eng", "old"}) == {"old"}
+
+    async def test_an_archived_page_the_filters_now_leave_out_is_removed_not_kept(
+        self, atlassian_api, db, store, search, monkeypatch
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        search.add("page", 0, listing([content("p1", attachments=[attachment("a1")]), content("p2")]))
+        await connector.run_sync()
+        p1 = db.records["p1"].id
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        search.add("page", 0, listing([content("p2")]))
+        search.existing["page"] = [content("p2")]
+        search.archived = [content("p1")]
+        filtered_out = connector._listed_item_filtered_out
+        monkeypatch.setattr(
+            connector, "_listed_item_filtered_out", lambda item_id, *args: item_id == "p1" or filtered_out(item_id, *args)
+        )
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert "p1" not in db.records
+        assert p1 not in db.kept_records, "a page being removed is not also kept"
+        assert connector.full_sync_coverage().complete is True
+        assert self._among(unlinked, {"p2", "old"}) == {"old"}
+
+    async def test_a_group_listed_with_an_id_is_kept_by_that_id(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        groups = f"{API}/group"
+        atlassian_api.on("GET", f"{API}/user/list", {"results": [ANA]})
+        atlassian_api.on("GET", groups, {"results": [
+            {"type": "group", "name": "eng", "id": "gid-eng"}, {"type": "group", "name": "old", "id": "gid-old"},
+        ]})
+        for name in ("eng", "old"):
+            atlassian_api.on("GET", f"{API}/group/{name}/member", {"results": [ANA]})
+        await connector.run_sync()
+        assert {"gid-eng", "gid-old"} <= {g.source_user_group_id for g, _ in db.user_groups}
+        atlassian_api.on("GET", groups, {"results": [{"type": "group", "name": "eng", "id": "gid-eng"}]})
+        atlassian_api.on("GET", f"{API}/group/eng/member", json_response({"message": "busy"}, status=503))
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"gid-eng", "gid-old"}) == {"gid-old"}
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_stored_records_that_cannot_be_read_unlink_nothing(
+        self, atlassian_api, db, store, search, monkeypatch
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        search.add("page", 0, listing([content("p1"), content("p2")]))
+        await connector.run_sync()
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+        monkeypatch.setattr(connector, "_stored_content", AsyncMock(side_effect=ConnectionError("database unavailable")))
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert connector.full_sync_coverage().complete is False
+        assert self._among(unlinked, {"p1", "p2", "10", "old"}) == set()
+
+    @pytest.mark.parametrize("failure", ["error-status", "raises"])
+    async def test_a_stored_homepage_whose_space_cannot_be_read_keeps_its_links(
+        self, atlassian_api, db, store, search, failure
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        self._space_with_homepage(atlassian_api)
+        atlassian_api.on("GET", f"{API}/content/500", content("500"))
+        search.add("page", 0, listing([content("p1")]))
+        search.existing["page"] = [content("p1"), content("500")]
+        await connector.run_sync()
+        assert "500" in db.records
+
+        def homepage_unreadable(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("expand") != "homepage":
+                return json_response({"results": [space("ENG", 10)], "_links": {"base": BASE}})
+            if failure == "raises":
+                raise httpx.ConnectError("connection reset", request=request)
+            return json_response({"message": "busy"}, status=503)
+
+        atlassian_api.on("GET", f"{API}/space", homepage_unreadable)
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert connector.full_sync_coverage().complete is False
+        assert self._among(unlinked, {"500", "p1"}) == set()
+
+    async def test_a_stored_homepage_whose_restrictions_could_not_be_read_keeps_its_links(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        self._space_with_homepage(atlassian_api)
+        atlassian_api.on("GET", f"{API}/content/500", content("500"))
+        search.add("page", 0, listing([content("p1")]))
+        search.existing["page"] = [content("p1"), content("500")]
+        await connector.run_sync()
+        assert "500" in db.records
+        atlassian_api.on(
+            "GET", f"{API}/content/500/restriction/relevantViewRestrictions", json_response({"message": "busy"}, status=503)
+        )
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert connector.full_sync_coverage().complete is False
+        assert self._among(unlinked, {"500", "p1"}) == set()
+
+    async def test_a_homepage_never_stored_whose_restrictions_cannot_be_read_keeps_the_run_complete(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        self._space_with_homepage(atlassian_api)
+        atlassian_api.on("GET", f"{API}/content/500", content("500"))
+        atlassian_api.on(
+            "GET", f"{API}/content/500/restriction/relevantViewRestrictions", json_response({"message": "busy"}, status=503)
+        )
+        search.add("page", 0, listing([content("p1")]))
+        search.existing["page"] = [content("p1"), content("500")]
+        await connector.run_sync()
+        assert "500" not in db.records
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert connector.full_sync_coverage().complete is True, "nothing stored was left unwritten"
+        assert self._among(unlinked, {"p1", "old"}) == {"old"}
+
+    @pytest.mark.parametrize("failure", [
+        "page-file-fails", "comment-fails", "comment-file-lookup-fails", "reply-fails",
+        "comments-raise", "replies-raise", "comments-bad-cursor", "replies-bad-cursor",
+    ])
+    async def test_a_file_comment_or_reply_left_unread_unlinks_nothing(
+        self, atlassian_api, db, store, search, failure
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA], "old": [ANA]})
+        comments, replies = f"{API}/content/p1/child/comment", f"{API}/content/c1/child/comment"
+        atlassian_api.on("GET", comments, {"results": [comment("c1")], "_links": {"base": BASE}})
+        atlassian_api.on("GET", replies, {"results": [comment("r1")], "_links": {"base": BASE}})
+        atlassian_api.on("GET", f"{API}/content/c1/child/attachment", {"results": [attachment("ca1")], "_links": {"base": BASE}})
+        search.add("page", 0, listing([content("p1", attachments=[attachment("a1")])]))
+        await connector.run_sync()
+        assert {"p1", "a1", "c1", "r1", "ca1"} <= set(db.records)
+        with_directory(atlassian_api, [ANA], {"eng": [ANA]})
+
+        def unreachable(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection reset", request=request)
+
+        listings = {"comments": (comments, "c1"), "replies": (replies, "r1")}
+        lookups = {"page-file-fails": "a1", "comment-fails": "c1", "comment-file-lookup-fails": "ca1", "reply-fails": "r1"}
+        listing_of, _, how = failure.partition("-")
+        if failure in lookups:
+            db.fail_lookup_for = {lookups[failure]}
+        elif how == "raise":
+            atlassian_api.on("GET", listings[listing_of][0], unreachable)
+        else:
+            path, cid = listings[listing_of]
+            atlassian_api.on("GET", path, {"results": [comment(cid)], "_links": {"base": BASE, "next": f"{path}?cursor=abc"}})
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert connector.full_sync_coverage().complete is False
+        assert self._among(unlinked, {"p1", "a1", "c1", "r1", "ca1", "old"}) == set()

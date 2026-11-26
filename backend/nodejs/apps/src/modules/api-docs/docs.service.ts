@@ -197,7 +197,9 @@ export class ApiDocsService {
     ];
     const specPath = paths.find((p) => fs.existsSync(p));
     if (!specPath) {
-      this.logger.warn(`PipesHub OpenAPI spec not found in any of: ${paths.join(', ')}`);
+      this.logger.warn('PipesHub OpenAPI spec not found', {
+        path_count: paths.length,
+      });
       return;
     }
 

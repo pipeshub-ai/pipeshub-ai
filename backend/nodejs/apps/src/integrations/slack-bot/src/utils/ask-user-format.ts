@@ -1,3 +1,5 @@
+import { escapeSlackText } from './slack-escape';
+
 export interface AskUserQuestionOption {
   id: string;
   label: string;
@@ -129,12 +131,12 @@ export function formatAskUserQuestionMrkdwn(
       ? normalized.toolData.userIntent.trim()
       : "";
   if (intent) {
-    lines.push(`_${intent}_`);
+    lines.push(`_${escapeSlackText(intent)}_`);
   }
 
   questions.forEach((q, index) => {
     lines.push("");
-    lines.push(`${index + 1}. ${q.question}`);
+    lines.push(`${index + 1}. ${escapeSlackText(q.question)}`);
   });
 
   lines.push("");

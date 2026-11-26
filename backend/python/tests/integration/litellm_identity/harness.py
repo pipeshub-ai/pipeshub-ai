@@ -209,6 +209,19 @@ general_settings:
     )
 
 
+def _rig_network(name: str) -> None:
+    """A bridge on a subnet of the rig pool, never the daemon's default pools (a shared daemon runs out of them)."""
+    import docker
+
+    from tests.support.docker_networks import create_rig_network
+
+    client = docker.from_env()
+    try:
+        _ = create_rig_network(client, name, labels={"pipeshub.litellm-test": name})
+    finally:
+        client.close()
+
+
 @contextlib.contextmanager
 def litellm_stack(version: str, *, extra_general: str = "", extra_env: dict[str, str] | None = None) -> Iterator[LiteLLMStack]:
     """Postgres, LiteLLM and a fake provider, torn down on exit."""
@@ -221,12 +234,13 @@ def litellm_stack(version: str, *, extra_general: str = "", extra_env: dict[str,
     provider.start()
     created: list[str] = []
     try:
-        _docker("network", "create", network)
+        _rig_network(network)
+        # Listed before it runs: a container that is created but fails to start is still removed.
+        created.append(postgres)
         _docker(
             "run", "-d", "--name", postgres, "--network", network,
             "-e", "POSTGRES_PASSWORD=pw", "-e", "POSTGRES_DB=litellm", POSTGRES_IMAGE,
         )
-        created.append(postgres)
         config = workdir / "config.yaml"
         config.write_text(_config_yaml(provider.port, extra_general))
         env = {
@@ -236,6 +250,7 @@ def litellm_stack(version: str, *, extra_general: str = "", extra_env: dict[str,
             **(extra_env or {}),
         }
         env_args = [arg for key, value in env.items() for arg in ("-e", f"{key}={value}")]
+        created.append(proxy)
         _docker(
             "run", "-d", "--name", proxy, "--network", network,
             "--add-host", "host.docker.internal:host-gateway",
@@ -245,7 +260,6 @@ def litellm_stack(version: str, *, extra_general: str = "", extra_env: dict[str,
             _warmed_image(version),
             "--config", "/app/config.yaml", "--port", "4000",
         )
-        created.append(proxy)
         port = _docker("port", proxy, "4000/tcp").stdout.strip().splitlines()[0].rsplit(":", 1)[1]
         base_url = f"http://127.0.0.1:{port}"
         _wait_until_ready(base_url, proxy)

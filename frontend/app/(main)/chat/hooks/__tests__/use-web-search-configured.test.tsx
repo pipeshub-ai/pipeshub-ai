@@ -30,6 +30,12 @@ describe('useWebSearchConfigured', () => {
     await waitFor(() => expect(result.current).toBe(configured));
   });
 
+  it('reads quietly: a failed background read shows no error toast', async () => {
+    api.getConfig.mockResolvedValue({ providers: [], configured: true });
+    renderHook(() => useWebSearchConfigured(), { wrapper });
+    await waitFor(() => expect(api.getConfig).toHaveBeenCalledWith({ suppressErrorToast: true }));
+  });
+
   it('stays unknown when the server sends no flag, so an older server keeps web search', async () => {
     api.getConfig.mockResolvedValue({ providers: [] });
     const { result } = renderHook(() => useWebSearchConfigured(), { wrapper });

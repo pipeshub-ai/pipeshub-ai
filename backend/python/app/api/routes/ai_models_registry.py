@@ -139,7 +139,7 @@ async def get_provider_schema(
     """Get the field schema for a specific provider."""
     schema = ai_model_registry.get_provider_schema(provider_id, capability)
     if schema is None:
-        raise HTTPException(status_code=404, detail=f"Provider '{provider_id}' not found")
+        raise HTTPException(status_code=404, detail="Provider not found")
 
     provider = ai_model_registry.get_provider(provider_id)
     return JSONResponse(

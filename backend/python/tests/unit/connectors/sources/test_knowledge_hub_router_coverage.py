@@ -629,6 +629,28 @@ class TestHandleGetNodes:
         assert "unexpected" not in str(exc_info.value.detail).lower()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("raised_by_service", [True, False], ids=["raised", "answered_by_the_service"])
+    async def test_a_graph_store_that_could_not_answer_is_a_503_with_retry_after(self, raised_by_service: bool) -> None:
+        """Raised past the service (another graph read of the route), or answered by it as a 503: either way the
+        web app is told when to ask again."""
+        from app.utils.user_messages import DATABASE_UNREACHABLE
+
+        request = _make_request()
+        svc = _make_knowledge_hub_service()
+        svc.get_nodes = (AsyncMock(side_effect=ConnectionResetError("graph restarting")) if raised_by_service
+                         else AsyncMock(return_value=_make_error_result(DATABASE_UNREACHABLE, 503)))
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _handle_get_nodes(
+                request=request, knowledge_hub_service=svc, parent_id=None, parent_type=None, only_containers=False,
+                page=1, limit=50, sort_by="name", sort_order="asc", q=None, node_types=None, record_types=None,
+                origins=None, connector_ids=None, indexing_status=None, created_at=None, updated_at=None, size=None,
+                flattened=False, include=None,
+            )
+        assert (exc_info.value.status_code, exc_info.value.detail, exc_info.value.headers) == (
+            503, DATABASE_UNREACHABLE, {"Retry-After": "5"})
+
+    @pytest.mark.asyncio
     async def test_with_all_filters(self):
         """Test with all filter parameters set."""
         request = _make_request()
