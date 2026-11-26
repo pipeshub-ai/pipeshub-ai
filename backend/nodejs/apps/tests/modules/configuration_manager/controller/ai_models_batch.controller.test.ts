@@ -236,6 +236,20 @@ describe('ai model discover, batch, and rotate', () => {
     expect(res.statusCode).to.equal(200);
   });
 
+  it('maps an error answer that was not JSON, so the client gets its status and Retry-After', async () => {
+    execute.resolves({ statusCode: 503, data: undefined, msg: 'Service Unavailable', headers: { 'retry-after': '5' } });
+    const { res } = sseResponse();
+    let passed: any;
+    await discoverAIModels(memoryStore(seedConfig()) as any, appConfig)(
+      { body: { provider: 'openAI', configuration: { model: 'gpt-4o', apiKey: 'k' } }, headers: {} } as any,
+      res as any,
+      (error: unknown) => { passed = error; },
+    );
+    expect(res.body).to.equal(undefined);
+    expect(passed.statusCode).to.equal(503);
+    expect(passed.metadata.retryAfter).to.equal('5');
+  });
+
   it('returns 404 when the model key is unknown', async () => {
     const store = memoryStore(seedConfig());
     const { res } = sseResponse();

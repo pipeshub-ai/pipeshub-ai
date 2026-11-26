@@ -540,7 +540,7 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
 
         const r = await callRoute(h, route, route.caller ? sessionToken(h, route.caller) : token)
 
-        expect(r.status, `${route.method} ${route.pattern}`).to.equal(500)
+        expect(r.status, `${route.method} ${route.pattern}`).to.equal(502)
         expect(errorMessage(r), route.pattern).to.match(/^Something went wrong/)
         for (const pattern of INTERNAL_DETAIL) expect(r.text, `${route.pattern} ${pattern}`).to.not.match(pattern)
       }
