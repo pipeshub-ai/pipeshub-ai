@@ -8,12 +8,17 @@ keeps it. A 404 of a group's members ("the group is not found") leaves nothing t
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from tests.unit.connectors.sources.test_jira_cloud_connector import _make_connector
 
+if TYPE_CHECKING:
+    from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 
-def _connector():
+
+def _connector() -> JiraConnector:
     connector = _make_connector()
     connector._kept_unread_access = False
     connector._kept_after_refusal = []

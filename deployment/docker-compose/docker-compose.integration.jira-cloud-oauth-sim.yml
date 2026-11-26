@@ -31,7 +31,7 @@ services:
     mem_limit: 768m
 
   jira-cloud-oauth-tls:
-    image: nginx:1.27.5-alpine
+    image: nginx:1.27.5-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     restart: always
     depends_on:
       jira-cloud-oauth-sim:
@@ -49,7 +49,7 @@ services:
 
   # Healthy only while both names resolve, on this network, to the TLS front and to nothing else.
   jira-cloud-oauth-guard:
-    image: nginx:1.27.5-alpine
+    image: nginx:1.27.5-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     restart: always
     depends_on:
       jira-cloud-oauth-tls:

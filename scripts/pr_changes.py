@@ -414,12 +414,13 @@ CONNECTOR_TEST_MARKERS: dict[str, tuple[str, ...]] = {
 # Teams' (which, like GitLab's, uses Jira's block parser), Gmail and the individual
 # Google Drive suite on the workspace Drive suite's helpers, Salesforce on Gmail's
 # user helper, and the cleanup tests on core create MinIO, Postgres and S3 connectors.
+# Core also collects Jira's Jira Cloud simulator suite, which no shard selects.
 # test_pr_changes.py follows the suite's imports and fails when this misses one.
 CONNECTOR_TESTS_ALSO_RUN: dict[str, tuple[str, ...]] = {
     "github_teams": ("connectors-1",),
     "gmail": ("connectors-3",),
     "google_drive_workspace": ("connectors-2", "connectors-4"),
-    "jira": ("connectors-1", "connectors-4"),
+    "jira": ("connectors-1", "connectors-4", "core"),
     "minio": ("core",),
     "postgres": ("core",),
     "s3": ("connectors-1", "core"),

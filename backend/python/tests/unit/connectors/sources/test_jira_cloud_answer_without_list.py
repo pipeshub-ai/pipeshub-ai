@@ -11,12 +11,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from tests.unit.connectors.sources.test_jira_cloud_connector import _make_connector, _make_mock_response
+from tests.unit.connectors.sources.test_jira_cloud_connector import (
+    _make_connector,
+    _make_mock_response,
+)
 
 BODIES = [{}, {"permissions": None, "records": None, "values": None, "issues": None}, {"permissions": {}, "records": {}, "values": {}, "issues": {}}]
 
 
-def _response(body):
+def _response(body) -> MagicMock:
     response = _make_mock_response(200)
     response.json = MagicMock(return_value=body)
     return response
@@ -92,7 +95,8 @@ async def test_an_empty_issue_list_ends_the_project() -> None:
     connector = _make_connector()
     connector.data_source = MagicMock()
     connector._search_issues_with_retry = AsyncMock(return_value=_response({"issues": [], "isLast": True}))
-    assert [b async for b in connector._fetch_issues_batched("PROJ", "p1", [])][0][:2] == ([], False)
+    batches = [b async for b in connector._fetch_issues_batched("PROJ", "p1", [])]
+    assert batches[0][:2] == ([], False)
 
 
 @pytest.mark.parametrize("body", [*BODIES, []])

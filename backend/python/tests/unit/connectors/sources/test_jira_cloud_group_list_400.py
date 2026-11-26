@@ -7,14 +7,21 @@ sync did not see was unlinked, and what named them (a comment restricted to one)
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from tests.unit.connectors.sources.test_jira_cloud_connector import _make_connector, _make_mock_response
+from tests.unit.connectors.sources.test_jira_cloud_connector import (
+    _make_connector,
+    _make_mock_response,
+)
+
+if TYPE_CHECKING:
+    from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 
 
-def _connector(status):
+def _connector(status) -> JiraConnector:
     connector = _make_connector()
     connector.data_source = MagicMock()
     connector._call_with_retry = AsyncMock(return_value=_make_mock_response(status))

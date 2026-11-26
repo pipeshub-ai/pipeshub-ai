@@ -7,6 +7,7 @@ the account's group and role memberships were saved without it and that user los
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -18,10 +19,13 @@ from tests.unit.connectors.sources.test_jira_cloud_connector import (
     _then_empty,
 )
 
+if TYPE_CHECKING:
+    from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+
 ME, MY_EMAIL = "acc-sync", "Sync.Account@example.com"
 
 
-def _connector(*pages, cached=(), me=ME, email=MY_EMAIL, active=()):
+def _connector(*pages, cached=(), me=ME, email=MY_EMAIL, active=()) -> JiraConnector:
     connector = _make_connector()
     connector.data_source = MagicMock()
     connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=list(active))
