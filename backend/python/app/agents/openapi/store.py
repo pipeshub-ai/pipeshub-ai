@@ -24,9 +24,13 @@ from app.agents.openapi.models import (
     ApiToolsetInstance,
     OAuthClient,
 )
+from app.config.configuration_service import delete_config_or_raise
+from app.utils import error_class
 from app.utils.concurrency import gather_with_concurrency
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from app.config.configuration_service import ConfigurationService
 
 logger = logging.getLogger(__name__)
@@ -55,10 +59,11 @@ class ApiToolsetStore:
             raise RuntimeError("The toolset could not be saved")
 
     async def delete_instance(self, instance_id: str) -> None:
-        """The instance, every credential for it and its OAuth app."""
+        """The instance, every credential for it and its OAuth app; raises when any may still be stored. The record
+        goes last, so the delete can be sent again (a record whose delete reply was lost may already be gone)."""
         await self.delete_instance_credentials(instance_id)
-        await self._config.delete_config(get_oauth_client_path(instance_id))
-        await self._config.delete_config(get_instance_path(instance_id))
+        await delete_config_or_raise(self._config, get_oauth_client_path(instance_id))
+        await delete_config_or_raise(self._config, get_instance_path(instance_id))
 
     async def _read_instance(self, key: str) -> Optional[ApiToolsetInstance]:
         data = await self._config.get_config(key, default=None, use_cache=False)
@@ -82,26 +87,28 @@ class ApiToolsetStore:
             raise RuntimeError("The credentials could not be saved")
 
     async def delete_credentials(self, instance_id: str, owner_id: str) -> None:
-        await self._config.delete_config(get_credentials_path(instance_id, owner_id))
+        """Raises when the credential may still be stored."""
+        await delete_config_or_raise(self._config, get_credentials_path(instance_id, owner_id))
 
     async def remove_org(self, org_id: str) -> int:
         """Every toolset of a deleted org, with its credentials. Returns how many toolsets went."""
-        instances = await self.list_instances(org_id)
-        for instance in instances:
-            await self.delete_instance(instance.id)
-        return len(instances)
+        return await self._for_each_instance(org_id, self.delete_instance)
 
     async def remove_owner(self, org_id: str, owner_id: str) -> int:
         """A deleted user's credentials for every toolset of their org. Returns how many went."""
+        return await self._for_each_instance(org_id, lambda instance_id: self.delete_credentials(instance_id, owner_id))
+
+    async def _for_each_instance(self, org_id: str, delete: Callable[[str], Awaitable[None]]) -> int:
+        """Runs ``delete`` for every toolset of the org, the rest too when one fails (see :func:`_attempt_each`)."""
         instances = await self.list_instances(org_id)
-        for instance in instances:
-            await self.delete_credentials(instance.id, owner_id)
+        await _attempt_each([instance.id for instance in instances], delete, "toolsets")
         return len(instances)
 
     async def delete_instance_credentials(self, instance_id: str) -> None:
-        """Every user's and the shared credential for one instance."""
-        for key in await self._config.list_keys_in_directory(get_credentials_prefix(instance_id)):
-            await self._config.delete_config(key)
+        """Every user's and the shared credential for one instance, the rest too when one fails; raises when any may
+        still be stored."""
+        keys = await self._config.list_keys_in_directory(get_credentials_prefix(instance_id))
+        await _attempt_each(keys, lambda key: delete_config_or_raise(self._config, key), "credentials")
 
     # -- OAuth app and sign-in state ----------------------------------------
 
@@ -128,3 +135,18 @@ class ApiToolsetStore:
             return False
         await self._config.delete_config(get_oauth_state_path(state))
         return True
+
+
+async def _attempt_each(items: list[str], delete: Callable[[str], Awaitable[None]], what: str) -> None:
+    """Runs ``delete`` on every item, the rest too when one fails; then raises the first failure that is not an outage
+    (a bug of ours stays one), else the first."""
+    failures: list[Exception] = []
+    for item in items:
+        try:
+            await delete(item)
+        except Exception as e:
+            failures.append(e)
+    if failures:
+        first = next((e for e in failures if not error_class.retry_later(e)), failures[0])
+        first.add_note(f"{len(failures)} of {len(items)} {what} failed")
+        raise first

@@ -92,7 +92,7 @@ from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
 from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_user_or_503
+from app.utils.user_lookup import get_user_or_503, raise_if_unavailable
 from app.utils.user_messages import not_found
 
 # Re-export for client builders / token refresh .
@@ -2410,6 +2410,19 @@ async def update_toolset_credentials(
 
     return {"status": "success", "message": "Credentials updated successfully."}
 
+
+async def _remove_credentials(
+    config_service: ConfigurationService, instance_id: str, owner_id: str, user_id: str, failure: str,
+) -> None:
+    """Disconnects ``owner_id`` (a user or an agent) from the instance. A store that kept the credential or could not
+    answer is a 503 (asked again), any other failure a 500 with ``failure``: never a success over a stored credential."""
+    try:
+        await legacy_records(config_service).remove("toolset", current_org_id(), instance_id, owner_id, user_id=user_id)
+    except Exception as e:
+        raise_if_unavailable(e)
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=failure) from e
+
+
 @router.delete("/instances/{instance_id}/credentials", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def remove_toolset_credentials(
@@ -2434,12 +2447,7 @@ async def remove_toolset_credentials(
     except Exception as e:
         error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
-    try:
-        await legacy_records(config_service).remove(
-            "toolset", current_org_id(), instance_id, user_id, user_id=user_id
-        )
-    except Exception as e:
-        error_class.log_failure(logger, "toolset.route.failed", e, op="delete_credentials")
+    await _remove_credentials(config_service, instance_id, user_id, user_id, "Failed to remove credentials.")
 
     return {"status": "success", "message": "Credentials removed successfully."}
 
@@ -2475,12 +2483,7 @@ async def reauthenticate_toolset_instance(
     except Exception as e:
         error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
-    try:
-        await legacy_records(config_service).remove(
-            "toolset", current_org_id(), instance_id, user_id, user_id=user_id
-        )
-    except Exception as e:
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to clear credentials.") from e
+    await _remove_credentials(config_service, instance_id, user_id, user_id, "Failed to clear credentials.")
 
     return {"status": "success", "message": "Credentials cleared. Please re-authenticate."}
 
@@ -3740,13 +3743,9 @@ async def remove_agent_toolset_credentials(
     except Exception as e:
         error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
-    try:
-        await legacy_records(config_service).remove(
-            "toolset", current_org_id(), instance_id, agent_key,
-            user_id=_get_user_context(request)["user_id"],
-        )
-    except Exception as e:
-        error_class.log_failure(logger, "toolset.route.failed", e, op="delete_credentials")
+    await _remove_credentials(
+        config_service, instance_id, agent_key, _get_user_context(request)["user_id"], "Failed to remove agent credentials.",
+    )
 
     return {"status": "success", "message": "Agent credentials removed successfully."}
 
@@ -3783,13 +3782,9 @@ async def reauthenticate_agent_toolset(
     except Exception as e:
         error_class.log_failure(logger, "toolset.route.failed", e, op="cancel_refresh")
 
-    try:
-        await legacy_records(config_service).remove(
-            "toolset", current_org_id(), instance_id, agent_key,
-            user_id=_get_user_context(request)["user_id"],
-        )
-    except Exception as e:
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to clear agent credentials.") from e
+    await _remove_credentials(
+        config_service, instance_id, agent_key, _get_user_context(request)["user_id"], "Failed to clear agent credentials.",
+    )
 
     return {"status": "success", "message": "Agent credentials cleared. Please re-authenticate."}
 

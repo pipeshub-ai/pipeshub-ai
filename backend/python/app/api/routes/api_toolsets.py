@@ -35,6 +35,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
 from app.services.featureflag.platform_settings import is_api_toolsets_enabled
 from app.utils.desktop_state import strip_desktop_state
+from app.utils.user_lookup import await_or_503
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
@@ -227,17 +228,19 @@ async def _save(request: Request, body: InstanceRequest, instance_id: str, exist
     except service.ApiToolsetError as e:
         raise _bad_request(e) from e
     oauth_app = service.oauth_client_from(body.oauth_client_id, body.oauth_client_secret)
-    if instance.auth_scheme.type is AuthType.OAUTH2_AUTHORIZATION_CODE:
+    uses_oauth_app = instance.auth_scheme.type is AuthType.OAUTH2_AUTHORIZATION_CODE
+    if uses_oauth_app:
         current = await store.get_oauth_client(instance_id)
         if oauth_app is None and current is None:
             raise _bad_request(service.ApiToolsetError("Enter the client ID of the OAuth app registered with the API."))
-        if oauth_app is not None:
-            if oauth_app.client_secret is None and current is not None and current.client_id == oauth_app.client_id:
-                # A blank secret on an edit keeps the one already stored.
-                oauth_app = oauth_app.model_copy(update={"client_secret": current.client_secret})
-            await store.save_oauth_client(instance_id, oauth_app)
+        if oauth_app is not None and oauth_app.client_secret is None and current is not None and current.client_id == oauth_app.client_id:
+            # A blank secret on an edit keeps the one already stored.
+            oauth_app = oauth_app.model_copy(update={"client_secret": current.client_secret})
     if existing is not None and not service.credentials_still_apply(existing, instance):
-        await store.delete_instance_credentials(instance_id)
+        # Before anything new is saved, so a failed delete changes nothing else.
+        await await_or_503(store.delete_instance_credentials(instance_id))
+    if uses_oauth_app and oauth_app is not None:
+        await store.save_oauth_client(instance_id, oauth_app)
     await store.save_instance(instance)
     return await _admin_view(store, instance, user_id)
 
@@ -263,7 +266,7 @@ async def delete_api_toolset(request: Request, instance_id: str) -> dict[str, An
     store = _store(request)
     instance = await _instance_or_404(store, org_id, instance_id)
     await _assert_not_in_use(request, instance)
-    await store.delete_instance(instance_id)
+    await await_or_503(store.delete_instance(instance_id))
     return {"success": True}
 
 
@@ -326,7 +329,7 @@ async def _save_credentials(store: ApiToolsetStore, instance: ApiToolsetInstance
 
 
 async def _delete_credentials(store: ApiToolsetStore, instance: ApiToolsetInstance, user_id: str) -> dict[str, Any]:
-    await store.delete_credentials(instance.id, service.credential_owner(instance, user_id))
+    await await_or_503(store.delete_credentials(instance.id, service.credential_owner(instance, user_id)))
     return {"success": True, "isConnected": instance.auth_scheme.type is AuthType.NONE}
 
 
