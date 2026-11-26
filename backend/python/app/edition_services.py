@@ -67,6 +67,17 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def kv_cipher(platform: "Callable[[], object]") -> object:
+    """The cipher of the encrypted key-value store's values, given a function that returns the platform cipher.
+
+    OSS: every value under the platform cipher (``InstallKeyCipher``). An edition may return an object with the same
+    ``encrypt(key, text)`` and ``decrypt(key, stored)`` that chooses a key per key; it must read what the default wrote.
+    """
+    from app.config.providers.kv_cipher import InstallKeyCipher
+
+    return InstallKeyCipher(platform)
+
+
 def admission_backlog() -> "AdmissionBacklog":
     """The recorder of records waiting at each admission stage, one per indexing consumer.
 
