@@ -39,6 +39,9 @@ on:
         default: claude-sonnet-5-5
         type: string
 
+# Each job names its own; nothing is granted by default.
+permissions: {}
+
 env:
   DOCS_REPO: pipeshub-ai/documentation
 
@@ -126,6 +129,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
+          # The agent below reads contributor text; the token must not be in .git/config for it to find.
+          persist-credentials: false
 
       # Every release adds to one changelog branch and PR, so releases published
       # before it merges build on each other's CHANGELOG.md edits. The branch is
@@ -169,12 +174,15 @@ jobs:
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,name,publishedAt,isPrerelease,body > "$RUNNER_TEMP/release/release.json"
           mkdir -p tmp-release
           cp "$RUNNER_TEMP/release/release.json" tmp-release/release.json
+          # Every linked pull request's title, body and author, so the agent needs no gh and no shell.
+          python3 -I .github/scripts/changelog-context.py tmp-release/release.json tmp-release/pull-requests.json
 
+      # SEC-D-12: the agent reads release notes and PR text anyone with a merged PR wrote, so it holds no
+      # shell, interpreter, web or MCP tool and no token in its environment. Its only output is the files it
+      # writes; the publish job accepts only regular files under CHANGELOG.md and changelog/ and refuses a
+      # patch that carries a credential.
       - name: Run the release-changelog skill
         uses: anthropics/claude-code-action@16f9f71ab9c490faf367f94dd294897edc25be33 # v1
-        env:
-          # Read-only: this job has only read permissions.
-          GH_TOKEN: ${{ github.token }}
         with:
           # Metered Claude API key (console.anthropic.com) — org-controlled and
           # does not expire with a personal subscription login, unlike the
@@ -201,11 +209,14 @@ jobs:
 
             For Step 1, the output of the gh release view command is already saved at
             tmp-release/release.json: read it with the Read tool instead of running
-            gh release view.
+            gh release view. Every pull request the release links to (number, title,
+            body, author login) is saved at tmp-release/pull-requests.json: read it
+            instead of gh pr view or gh api, and take the Contributors from its
+            author logins. You have no shell; do not try to run commands.
 
             Do NOT run git commit or git push, and do NOT open a PR — a later
             workflow job handles that. Your only output is the edited files.
-          claude_args: '--model ${{ steps.release.outputs.model }} --allowedTools "Read,Write,Edit,Glob,Grep,Skill,Bash(gh release view:*),Bash(gh pr view:*),Bash(ls:*),Bash(cat:*),Bash(wc:*),Bash(grep:*),Bash(mkdir:*),Bash(python3:*)"'
+          claude_args: '--model ${{ steps.release.outputs.model }} --allowedTools "Read,Write,Edit,Glob,Grep,Skill" --disallowedTools "Bash,WebFetch,WebSearch,Read(//proc/**),Read(//sys/**),Read(//etc/**),Read(~/**),Read(//home/runner/work/_temp/**)"'
 
       - name: Save the changelog edits as a patch
         run: |
@@ -332,6 +343,12 @@ jobs:
             echo "::warning::The skill produced no changelog changes for $TAG; nothing to open a PR for."
             exit 0
           fi
+          # An injected instruction could have the agent copy a key it read into a changelog file, which this
+          # job would publish. Refuse anything shaped like a credential (SEC-D-12).
+          if git diff --cached -U0 | grep -E '^\+' | grep -Eq 'sk-ant-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[0-9A-Z]{16}|xox[abpors]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----'; then
+            echo "::error::The changelog patch contains something shaped like a credential. Nothing was pushed; read the patch artifact before re-running."
+            exit 1
+          fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -390,6 +407,8 @@ jobs:
           name: docs-changelog
           path: ${{ runner.temp }}/file
 
+      # The docs repo's own script runs in the next step, so the token is neither written to .git/config nor
+      # in that step's environment (SEC-D-12); the push step hands it to git through gh's credential helper.
       - name: Checkout the docs repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -397,14 +416,13 @@ jobs:
           ref: main
           token: ${{ secrets.DOCS_REPO_TOKEN }}
           path: docs
+          persist-credentials: false
 
-      - name: Open the docs PR
+      - name: Add and validate the docs file
+        id: docs
         working-directory: docs
         env:
-          GH_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
           VERSION: ${{ needs.generate.outputs.version }}
-          TAG: ${{ needs.generate.outputs.tag }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
 
@@ -430,9 +448,22 @@ jobs:
           git add "changelog/platform/${VERSION}.mdx"
           if git diff --cached --quiet; then
             echo "::warning::changelog/platform/${VERSION}.mdx is already on main; nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
+      - name: Open the docs PR
+        if: steps.docs.outputs.changed == 'true'
+        working-directory: docs
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
+          VERSION: ${{ needs.generate.outputs.version }}
+          TAG: ${{ needs.generate.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          git config credential.helper '!gh auth git-credential'
           branch="changelog/platform-${VERSION}"
           # Never overwrite the branch: reviewers may have pushed edits to it.
           if git ls-remote --exit-code --heads origin "$branch" > /dev/null; then

@@ -163,7 +163,7 @@ export function describeSemanticSearchContract(fx: SemanticSearchFixture): void 
       const asc = await repo.listVisible(org, alice, { skip: 0, limit: 10, sort: { field: 'createdAt', direction: 1 } });
       expect(ids(asc.rows)).to.deep.equal(ids(rows));
       const page = await repo.listVisible(org, alice, { skip: 1, limit: 2, sort: { field: 'createdAt', direction: -1 } });
-      expect(ids(page.rows)).to.deep.equal([rows[2]._id, rows[1]._id]);
+      expect(ids(page.rows)).to.deep.equal([rows[2]!._id, rows[1]!._id]);
       expect(page.total).to.equal(4);
     });
 
@@ -241,12 +241,12 @@ export function describeSemanticSearchContract(fx: SemanticSearchFixture): void 
     it('returns rows with string ids and plain records, hits as ids', async () => {
       await make(org, alice);
       const [row] = (await repo.listVisible(org, alice, { skip: 0, limit: 1 })).rows;
-      expect(row._id).to.be.a('string');
-      expect(row.orgId).to.equal(org);
-      expect(row.userId).to.equal(alice);
-      row.citationIds.forEach((c) => expect(c).to.be.a('string'));
-      expect(row.records).to.deep.equal({ r1: '{"a":1}' });
-      expect(row.createdAt).to.be.instanceOf(Date);
+      expect(row!._id).to.be.a('string');
+      expect(row!.orgId).to.equal(org);
+      expect(row!.userId).to.equal(alice);
+      row!.citationIds.forEach((c) => expect(c).to.be.a('string'));
+      expect(row!.records).to.deep.equal({ r1: '{"a":1}' });
+      expect(row!.createdAt).to.be.instanceOf(Date);
     });
   });
 

@@ -1,0 +1,1699 @@
+{
+ "about": "QA-FINAL: the final QA pass. Lanes (where each runs) and the reported cases with the regression tests that hold them, at the level each bug lived. The matrix rows follow. scripts/qa_matrix.py checks both and renders docs/test-plan/QA-FINAL.md; scripts/qa_final.sh runs the local lanes.",
+ "lanes": [
+  {
+   "id": "regressions",
+   "where": "local",
+   "title": "The reported cases: every regression test below that needs no stack (Python, Node, vitest)",
+   "minutes": 6
+  },
+  {
+   "id": "unit",
+   "where": "local",
+   "title": "Python unit and cohesion, Node unit with its coverage floor, Node typecheck",
+   "minutes": 45
+  },
+  {
+   "id": "contracts",
+   "where": "local",
+   "title": "Python contracts (C-5 codegen, goldens, schemas)",
+   "minutes": 8
+  },
+  {
+   "id": "replay",
+   "where": "local",
+   "title": "Harness replay (recorded runs against today's kernel)",
+   "minutes": 5
+  },
+  {
+   "id": "integration",
+   "where": "local",
+   "title": "Python integration with no infrastructure",
+   "minutes": 10
+  },
+  {
+   "id": "frontend",
+   "where": "local",
+   "title": "vitest (app, lib, e2e support), typecheck, lint, locale parity and keys",
+   "minutes": 20
+  },
+  {
+   "id": "stores",
+   "where": "local",
+   "title": "Node itests on MongoDB, Redis and PostgreSQL (with PgBouncer)",
+   "minutes": 25
+  },
+  {
+   "id": "ux",
+   "where": "local",
+   "title": "UX screenshots of the classic interface against baselines (ux-shots)",
+   "minutes": 25
+  },
+  {
+   "id": "latency",
+   "where": "local",
+   "title": "Browser latency budgets on the scripted model (qa-latency)",
+   "minutes": 15
+  },
+  {
+   "id": "e2e",
+   "where": "local",
+   "title": "Playwright harness, authenticated and qa-indexed projects on a run.sh stack",
+   "minutes": 90
+  },
+  {
+   "id": "mcphub",
+   "where": "local",
+   "title": "MCP-E2E modules, each on its own hub-on stack (integration-tests/harness/e2e --mcp-hub)",
+   "minutes": 120
+  },
+  {
+   "id": "matrix",
+   "where": "local",
+   "title": "Options-matrix rows of ST-1 (pairwise and three-way)",
+   "minutes": 90
+  },
+  {
+   "id": "docker",
+   "where": "local",
+   "title": "Sandbox and engines in Docker, then real engine runs in the browser (run.sh durable)",
+   "minutes": 120
+  },
+  {
+   "id": "ops",
+   "where": "local",
+   "title": "The whole flow on the PostgreSQL document store and on networks with no route out (run.sh pg, run.sh airgap)",
+   "minutes": 120
+  },
+  {
+   "id": "fault",
+   "where": "local",
+   "title": "Crash points on real processes, Redis Streams broker (integration-tests/harness/fault)",
+   "minutes": 60
+  },
+  {
+   "id": "perf",
+   "where": "local",
+   "title": "Perf rig profiles (PF-05, latency SLOs) and a short soak",
+   "minutes": 60
+  },
+  {
+   "id": "human-stack",
+   "where": "local",
+   "title": "Smoke on the human-test stack (scripted model pinned)",
+   "minutes": 15
+  },
+  {
+   "id": "ci",
+   "where": "ci",
+   "title": "Only a GitHub workflow runs it (Helm kind smoke, backend matrix, published-hub footprint)"
+  },
+  {
+   "id": "reference-host",
+   "where": "reference-host",
+   "title": "Needs the reference host: gVisor or Kata isolation, the 24 h soak, Kubernetes"
+  },
+  {
+   "id": "live",
+   "where": "live",
+   "title": "Needs a live model call (within the run's spend cap)"
+  }
+ ],
+ "reportedCases": [
+  {
+   "id": "brief-verbosity",
+   "report": "The open job's Brief was the whole prompt the chat composed for the engine (verbose and ugly)",
+   "statusRows": [
+    "BGUI-10 JOB-BRIEF-READABLE"
+   ],
+   "level": "Python (where the task text is made), Node (the brief API), frontend (the Brief)",
+   "tests": [
+    {
+     "path": "backend/python/tests/unit/harness/assembly/test_bgui10_task_parts.py",
+     "contains": [
+      "test_bgui10_parts_1_the_ipl_hand_off"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/nodejs/apps/tests/modules/agent-harness/bgui10-job-task.test.ts",
+     "contains": [
+      "MCPUSE-N1"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/app/(main)/chat/components/activity-panel/__tests__/bgui10-job-brief.test.tsx",
+     "contains": [
+      "opens on the task as prose"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/tests/e2e/harness/classic-jobs-engine.spec.ts",
+     "contains": [
+      "BGUI-10: a hand-off"
+     ],
+     "lane": "docker"
+    }
+   ]
+  },
+  {
+   "id": "raw-artifact-in-report",
+   "report": "A job report printed the engine's reply with a raw ::artifact[...] line, bare citation numbers and process talk",
+   "statusRows": [
+    "BGUI-11 JOB-OUTPUTS"
+   ],
+   "level": "frontend (the report rendered the engine's text raw), Node (one file classification), Python (the hand-back note)",
+   "tests": [
+    {
+     "path": "frontend/app/(main)/chat/components/message-area/job-card/__tests__/bgui11-job-outputs.test.tsx",
+     "contains": [
+      "::artifact"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/nodejs/apps/tests/modules/agent-harness/projection/bgui11-job-files.test.ts",
+     "contains": [
+      "describe("
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/python/tests/unit/harness/assembly/test_bgui11_handback.py",
+     "contains": [
+      "def test_"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/tests/e2e/harness/classic-jobs-engine.spec.ts",
+     "contains": [
+      "BGUI-11: the report under"
+     ],
+     "lane": "docker"
+    }
+   ]
+  },
+  {
+   "id": "citation-chips",
+   "report": "Citation chips with no source behind them, in the job panel's reply and then in the chat's own answer",
+   "statusRows": [
+    "BGUI-12 JOB-REPLY-CITATIONS",
+    "BGUI-13 ANSWER-CITATIONS",
+    "BGUI11-FU-2",
+    "BGUI12-FU-1"
+   ],
+   "level": "Node (the timeline dropped the answer's citations), frontend (one cited-answer rule for chat and job reply)",
+   "tests": [
+    {
+     "path": "backend/nodejs/apps/tests/modules/agent-harness/bgui12-answer-citations.test.ts",
+     "contains": [
+      "BGUI12-N1"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/app/(main)/chat/components/message-area/job-card/__tests__/bgui12-job-reply-citations.test.tsx",
+     "contains": [
+      "BGUI12-V1"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/app/(main)/chat/utils/__tests__/bgui13-cited-answer.test.ts",
+     "contains": [
+      "BGUI13-U1"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/app/(main)/chat/components/message-area/__tests__/bgui13-main-answer-citations.test.tsx",
+     "contains": [
+      "BGUI13-V1"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/tests/e2e/harness/classic-jobs-engine.spec.ts",
+     "contains": [
+      "BGUI-13: the chat"
+     ],
+     "lane": "docker"
+    }
+   ]
+  },
+  {
+   "id": "skip-reasks",
+   "report": "Skipping the question card made the chat ask the same thing again and again",
+   "statusRows": [
+    "ANSWER-CONTRACT-SKIP"
+   ],
+   "level": "Python (the grounding gate read Skip as a picked record; a new message re-asked the subject)",
+   "tests": [
+    {
+     "path": "backend/python/tests/unit/harness/assembly/test_answer_contract_skip.py",
+     "contains": [
+      "test_a_new_message_instead_of_an_answer_is_not_asked_the_same_thing_again"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/tests/e2e/harness/answer-contract-engine.spec.ts",
+     "contains": [
+      "AC-E6",
+      "AC-E7"
+     ],
+     "lane": "docker"
+    }
+   ]
+  },
+  {
+   "id": "not-found-confidence",
+   "report": "A job found nothing about the subject, wrote a report anyway, said nothing of it and showed a model-picked Medium",
+   "statusRows": [
+    "ANSWER-CONTRACT-1",
+    "ANSWER-CONTRACT-FU-2",
+    "ANSWER-CONTRACT-FU-5"
+   ],
+   "level": "Python (grounding as a typed fact, confidence from grounding), Node (the not-found fact carried), frontend (no chip on a question)",
+   "tests": [
+    {
+     "path": "backend/python/tests/unit/harness/assembly/test_answer_contract.py",
+     "contains": [
+      "def test_"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/python/tests/unit/harness/assembly/test_answer_contract_fu.py",
+     "contains": [
+      "def test_"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/nodejs/apps/tests/modules/agent-harness/fu2-not-found-answer.test.ts",
+     "contains": [
+      "describe("
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/app/(main)/chat/__tests__/fu2-answer-contract.test.tsx",
+     "contains": [
+      "describe("
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/app/(main)/chat/components/message-area/__tests__/cardfail-question-card.test.tsx",
+     "contains": [
+      "FU5-1"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/tests/e2e/harness/answer-contract-engine.spec.ts",
+     "contains": [
+      "AC-E1",
+      "AC-E4"
+     ],
+     "lane": "docker"
+    }
+   ]
+  },
+  {
+   "id": "mcp-preapproval-per-call",
+   "report": "A connected MCP server went unused with a bare mcp_unavailable (admin pre-approval by default); a person's Allow still asked on an engine job; an unresolved MCP call ran with no rule read",
+   "statusRows": [
+    "MCPNOTE-1",
+    "MCPNOTE-FU-2",
+    "GATE-FAILOPEN-1"
+   ],
+   "level": "Python (admission seam, the engine's default-ask policy, the approval gate), frontend (the per-server notice)",
+   "tests": [
+    {
+     "path": "backend/python/tests/unit/harness/mcp_hub/test_mcpnote_hub_approval.py",
+     "contains": [
+      "def test_"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/python/tests/unit/agents/test_mcpnote_unlisted_reason.py",
+     "contains": [
+      "def test_"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/python/tests/unit/harness/assembly/test_allow1_engine_tool_allow.py",
+     "contains": [
+      "(\"allow\", \"allow\", None, False, \"allow\", None)"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/python/tests/unit/agents/agent_loop/test_gate_failopen.py",
+     "contains": [
+      "test_the_gate_refuses_an_mcp_call_it_cannot_resolve"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/app/(main)/chat/components/message-area/__tests__/mcpnote-unavailable-notice.test.tsx",
+     "contains": [
+      "describe("
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "integration-tests/harness/e2e/test_mcpnote_unlisted_servers.py",
+     "contains": [
+      "test_a_signed_in_oauth_server_with_nothing_approved_is_used_on_the_default_chat",
+      "test_a_calls_own_rule_decides_it_on_every_surface"
+     ],
+     "lane": "mcphub"
+    },
+    {
+     "path": "frontend/tests/e2e/harness/mcpnote-notice.spec.ts",
+     "contains": [
+      "test("
+     ],
+     "lane": "e2e"
+    }
+   ]
+  },
+  {
+   "id": "connected-sources-lazy",
+   "report": "The chat and the job did not know which MCP servers were connected; every run start listed every server's tools",
+   "statusRows": [
+    "MCPUSE-1",
+    "MCPUSE-FU-2",
+    "ANSWER-CONTRACT-SOURCES",
+    "QAFINAL-FU-GROUNDLAZY"
+   ],
+   "level": "Python (connected sources, first-use listing, grounding sources), Node (admission lists nothing), frontend (the Brief's sources)",
+   "tests": [
+    {
+     "path": "backend/python/tests/unit/harness/assembly/test_grounding_lazy_sources.py",
+     "contains": [
+      "test_gl1_a_lazy_servers_stored_search_is_built_at_first_use_and_finds_the_subject",
+      "test_gl7_a_server_granted_whole_with_nothing_stored_is_listed_once_to_learn_its_search"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/python/tests/unit/harness/assembly/test_mcpuse_connected_sources.py",
+     "contains": [
+      "CS-1"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/python/tests/unit/harness/assembly/test_lazy_first_use.py",
+     "contains": [
+      "def test_"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/python/tests/unit/agents/test_lazy_admission.py",
+     "contains": [
+      "def test_"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/python/tests/unit/harness/assembly/test_bgui10_task_parts.py",
+     "contains": [
+      "test_bgui10_parts_9_a_server_known_only_from_its_metadata"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/python/tests/unit/harness/assembly/test_answer_contract_sources.py",
+     "contains": [
+      "def test_"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/nodejs/apps/tests/modules/agent-harness/mcplazy-first-use.test.ts",
+     "contains": [
+      "describe("
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/app/(main)/chat/components/activity-panel/__tests__/mcpuse-brief-sources.test.tsx",
+     "contains": [
+      "under Connected sources"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "integration-tests/harness/e2e/test_mcpuse_sources.py",
+     "contains": [
+      "test_l1_the_default_chat_finds_a_servers_tool"
+     ],
+     "lane": "mcphub"
+    },
+    {
+     "path": "integration-tests/harness/e2e/test_mcplazy_first_use.py",
+     "contains": [
+      "test_lz1_a_default_chat_turn_lists_only_the_server_it_uses"
+     ],
+     "lane": "mcphub"
+    }
+   ]
+  },
+  {
+   "id": "dark-mode-card-overflow",
+   "report": "Agent cards drew light sections in dark mode, and fields and buttons ran past a card's edge",
+   "statusRows": [
+    "R25UI-FU-1",
+    "R25FIX-FU-1",
+    "R26-DARK CARDS-READABLE-BOTH-THEMES"
+   ],
+   "level": "frontend (React Flow's colour mode under the canvas; rows laid out by the window, not the card)",
+   "tests": [
+    {
+     "path": "frontend/app/(main)/agents/agent-builder/components/__tests__/canvas-color-mode.test.tsx",
+     "contains": [
+      "carries the app appearance"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/tests/e2e/harness/support/card-contrast.test.ts",
+     "contains": [
+      "CONTRAST-1"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/tests/e2e/harness/support/card-fit.test.ts",
+     "contains": [
+      "CARDFIT-1"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/app/(main)/workspace/harness-ui/__tests__/directory-picker-fit.test.tsx",
+     "contains": [
+      "R25UI-DIR-1"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/tests/e2e/harness/wp90-admin-cards.spec.ts",
+     "contains": [
+      "expectCardsReadableInBothThemes"
+     ],
+     "lane": "e2e"
+    }
+   ]
+  },
+  {
+   "id": "failed-card-answers",
+   "report": "Answers to a question card failed with 503 while the app restarted; the card stayed with no reason and no retry",
+   "statusRows": [
+    "CARDFAIL-1"
+   ],
+   "level": "frontend (no one place sent a card's answer), Node (the same answer admitted once)",
+   "tests": [
+    {
+     "path": "frontend/app/(main)/chat/__tests__/cardfail-card-send.test.ts",
+     "contains": [
+      "CF-1",
+      "CF-9"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/app/(main)/chat/components/message-area/__tests__/cardfail-question-card.test.tsx",
+     "contains": [
+      "describe("
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "backend/nodejs/apps/tests/modules/agent-harness/cardfail-idempotent-answer.http.test.ts",
+     "contains": [
+      "CF-N1"
+     ],
+     "lane": "regressions"
+    },
+    {
+     "path": "frontend/tests/e2e/harness/answer-contract-engine.spec.ts",
+     "contains": [
+      "AC-E9"
+     ],
+     "lane": "docker"
+    }
+   ]
+  },
+  {
+   "id": "public-url",
+   "report": "The human-test stack's public URL was edited into its env by hand and a fresh up lost it",
+   "statusRows": [
+    "R25UI-PUBURL"
+   ],
+   "level": "ops scripts (scripts/human-test-stack.sh and deployment/e2e/run.sh)",
+   "tests": [
+    {
+     "path": "backend/python/tests/cohesion/test_r25ui_human_stack_public_url.py",
+     "contains": [
+      "test_pu1_the_option_is_normalised_to_an_origin",
+      "test_pu3_the_hand_edited_env_is_kept_once"
+     ],
+     "lane": "regressions"
+    }
+   ]
+  }
+ ],
+ "rows": [
+  {
+   "surface": "chat",
+   "dimension": "function",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/chat/chat-basic.spec.ts",
+    "frontend/tests/e2e/chat/chat-streaming.spec.ts",
+    "frontend/tests/e2e/harness/em-durable-turn.spec.ts",
+    "backend/python/tests/harness_replay/test_replay_durable.py",
+    "integration-tests/harness/e2e/test_pairwise.py",
+    "integration-tests/harness/fault/test_crash_points.py"
+   ],
+   "evidence": "EM-01, EM-11..14, QA-CLASSIC, WP-89, options matrix (pairwise)",
+   "lanes": [
+    "e2e",
+    "replay",
+    "matrix",
+    "fault"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "chat",
+   "dimension": "performance",
+   "editions": "both",
+   "proof": [
+    "integration-tests/perf/bench_harness.py",
+    "backend/python/tests/unit/harness/perf/test_pf05_tool_gateway_overhead.py",
+    "frontend/tests/e2e/perf/chat-large-run.perf.spec.ts"
+   ],
+   "evidence": "SLO #1-#10, WP-88, QA-22, EV-15/PF-17; WP88-FU-5 (admission p95 under load)",
+   "lanes": [
+    "perf",
+    "unit",
+    "e2e",
+    "reference-host"
+   ],
+   "gap": "reference-host",
+   "gapNote": "The 24 h soak (SLO #19) needs the reference host; the local soak is six minutes. Admission p95 under load is WP88-FU-5",
+   "fu": [
+    "WP88-FU-5",
+    "QAFINAL-FU-REF"
+   ]
+  },
+  {
+   "surface": "chat",
+   "dimension": "ux",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/ux-shots.spec.ts",
+    "frontend/app/(main)/chat/components/message-area/__tests__/cjfixb-a11y.test.tsx",
+    "frontend/lib/i18n/__tests__/locales.test.ts"
+   ],
+   "evidence": "QA-CLASSIC shots (light/dark, phone) with an axe pass on every capture (QA-FINAL), locale parity",
+   "lanes": [
+    "ux",
+    "frontend"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "chat",
+   "dimension": "latency",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/latency.spec.ts",
+    "frontend/tests/e2e/qa/latency-budgets.json",
+    "integration-tests/perf/bench_harness.py"
+   ],
+   "evidence": "QA-LAT-1 (agent chat), QA-LAT-4 (default /chat/, R30-LAT), SLO browser latency table, SLO #2-#5, QA-CLASSIC-FU-7",
+   "lanes": [
+    "latency",
+    "perf"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "chat",
+   "dimension": "accuracy",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/indexed-journey-ask-cite-followup.spec.ts",
+    "backend/python/tests/harness_replay/test_golden_traces.py",
+    "backend/python/tests/cohesion/test_c24_durable_wire_parity.py",
+    "backend/nodejs/apps/tests/contracts/golden"
+   ],
+   "evidence": "QA-CLASSIC indexed journey, golden traces, C-24 wire parity, ANSWER-CONTRACT-1",
+   "lanes": [
+    "e2e",
+    "replay",
+    "unit",
+    "contracts"
+   ],
+   "gap": "live-model",
+   "gapNote": "Citations, grounding and not-found are proved on scripted replies; whether a real model grounds and cites correctly needs a live run (ai project)",
+   "fu": [
+    "ANSWER-CONTRACT-FU-4",
+    "QAFINAL-FU-LIVE"
+   ]
+  },
+  {
+   "surface": "chat",
+   "dimension": "parity",
+   "editions": "both",
+   "proof": [
+    "backend/python/tests/harness_replay/test_golden_traces.py",
+    "backend/python/tests/cohesion/test_c24_durable_wire_parity.py"
+   ],
+   "evidence": "Golden/replay parity of the durable wire",
+   "lanes": [
+    "replay",
+    "unit"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "agents",
+   "dimension": "function",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/journey-agent-build-try.spec.ts",
+    "frontend/tests/e2e/harness/wp21-agent-versions.spec.ts",
+    "frontend/app/(main)/agents/agent-builder/__tests__/agent-builder.test.tsx",
+    "backend/nodejs/apps/tests/modules/agent-harness/owd14-agent-versions.test.ts",
+    "integration-tests/harness/e2e/test_assist1_assistant_agent.py"
+   ],
+   "evidence": "OWD-14, WP-21, R15, QA-CLASSIC J (build and try), QA-CLASSIC-FU-6, ASSIST1",
+   "lanes": [
+    "e2e",
+    "frontend",
+    "unit",
+    "matrix"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "agents",
+   "dimension": "performance",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/perf/volume-lists.perf.spec.ts",
+    "frontend/tests/e2e/perf/volume-budgets.json"
+   ],
+   "evidence": "VOL-1 (agents panel at 500 agents), VOL-2 (builder of an agent with 200 grants), R30-LAT; SLO.md Volume",
+   "lanes": [
+    "e2e"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "agents",
+   "dimension": "ux",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/ux-shots.spec.ts",
+    "frontend/app/(main)/agents/agent-builder/__tests__/agent-builder-mobile.test.tsx",
+    "frontend/tests/e2e/harness/wp21-agent-versions.spec.ts"
+   ],
+   "evidence": "QA-CLASSIC agent-builder, agent-versions and agent-run-settings shots with their axe pass clean (QAFINAL-FU-UX, -AXE), R25FIX-FU-1, R25UI-FU-1",
+   "lanes": [
+    "ux",
+    "frontend",
+    "e2e"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "agents",
+   "dimension": "latency",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/latency-pages.spec.ts",
+    "frontend/tests/e2e/qa/latency-budgets.json"
+   ],
+   "evidence": "QA-LAT-7 builder_load_ms, QA-LAT-8 builder_save_ms (R30-LAT), QA-LAT-1 agent chat",
+   "lanes": [
+    "latency"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "agents",
+   "dimension": "accuracy",
+   "editions": "both",
+   "proof": [
+    "frontend/app/(main)/agents/__tests__/agent-knowledge-nodes.test.ts",
+    "backend/python/tests/harness_replay/test_ga26_p0_journeys.py",
+    "frontend/tests/e2e/qa/journey-agent-build-try.spec.ts"
+   ],
+   "evidence": "GA26 journeys, EM-52..54 (agent's own model), QA-CLASSIC-FU-6 canary watch",
+   "lanes": [
+    "frontend",
+    "replay",
+    "e2e"
+   ],
+   "gap": "live-model",
+   "gapNote": "An agent's answers on its own knowledge and instructions are checked on scripted replies only; real-model correctness needs a live run",
+   "fu": [
+    "QAFINAL-FU-LIVE"
+   ]
+  },
+  {
+   "surface": "agents",
+   "dimension": "parity",
+   "editions": "both",
+   "proof": [],
+   "evidence": "",
+   "lanes": [],
+   "gap": "n/a",
+   "gapNote": "No recorded-parity suite covers this surface; its deterministic tests are the other rows"
+  },
+  {
+   "surface": "engine-jobs",
+   "dimension": "function",
+   "editions": "both",
+   "proof": [
+    "backend/python/tests/unit/harness/engines/test_e2e3_tool_matrix.py",
+    "frontend/tests/e2e/chat/chat-durable-engine-e2e.spec.ts",
+    "frontend/tests/e2e/harness/classic-jobs-engine.spec.ts",
+    "backend/python/tests/unit/harness_engines/acp",
+    "backend/python/tests/unit/harness/engines/test_real_acp_conformance.py"
+   ],
+   "evidence": "E2E3 tool matrix (opencode, codex, claude_code), E2E2 DE-1..6, CJ-5, BGUI8-FU-3, ACP profiles, R30-ENG: classic-jobs-engine on every release engine (docker lane)",
+   "lanes": [
+    "docker",
+    "unit"
+   ],
+   "gap": "partial",
+   "gapNote": "Goose jobs fail on the durable path (engine_unhealthy); FIX-TOOLWORDS reads an older step label",
+   "fu": [
+    "R30ENG-FU-3",
+    "R30ENG-FU-1"
+   ]
+  },
+  {
+   "surface": "engine-jobs",
+   "dimension": "performance",
+   "editions": "both",
+   "proof": [
+    "integration-tests/perf/bench_harness.py",
+    "backend/python/tests/unit/harness/perf/test_wp77_startup_heap_frozen.py",
+    "backend/python/tests/unit/harness/engines/test_dp8_engine_latency.py"
+   ],
+   "evidence": "SLO #16-#17, WP-77, WP-88; perf-harness.yml runs every rig profile",
+   "lanes": [
+    "unit",
+    "perf",
+    "reference-host"
+   ],
+   "gap": "reference-host",
+   "gapNote": "Sandbox start and engine latency run locally (perf lane); the warm pool's tier 2 under gVisor and the 24 h soak need the reference host",
+   "fu": [
+    "QAFINAL-FU-REF"
+   ]
+  },
+  {
+   "surface": "engine-jobs",
+   "dimension": "ux",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/ux-shots-engine.spec.ts",
+    "frontend/tests/e2e/harness/classic-jobs-engine.spec.ts",
+    "frontend/tests/e2e/chat/chat-engine-tool-words.spec.ts",
+    "frontend/app/(main)/chat/components/message-area/job-card/__tests__/job-card.test.tsx"
+   ],
+   "evidence": "QA-CLASSIC engine-job-card and engine-job-panel shots on the durable stack (QAFINAL-FU-UX), CJ-5 axe on the engine path, FIX-TOOLWORDS, BGUI10-FU-1",
+   "lanes": [
+    "ux",
+    "docker",
+    "frontend"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "engine-jobs",
+   "dimension": "latency",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/latency-engine.spec.ts",
+    "frontend/tests/e2e/qa/latency-budgets.json"
+   ],
+   "evidence": "QA-LAT-3 job start (opencode, durable lane), R30-ENG: job start per engine (latency-job-<engine>.json)",
+   "lanes": [
+    "docker"
+   ],
+   "gap": "partial",
+   "gapNote": "Measured on every engine but Goose; the budget is judged only on a quiet machine",
+   "fu": [
+    "QAFINAL-FU-ENG"
+   ]
+  },
+  {
+   "surface": "engine-jobs",
+   "dimension": "accuracy",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/harness/answer-contract-engine.spec.ts",
+    "backend/python/tests/unit/harness/engines/test_bgui11_handback_e2e.py",
+    "frontend/tests/e2e/qa/engine-journey-code-job.spec.ts"
+   ],
+   "evidence": "ANSWER-CONTRACT-1; ANSWER-CONTRACT-FU-4, BGUI11-FU-1 (open)",
+   "lanes": [
+    "docker"
+   ],
+   "gap": "live-model",
+   "gapNote": "Whether real engines ask when offered and hand back a clean answer is unmeasured (ANSWER-CONTRACT-FU-4, BGUI11-FU-1)",
+   "fu": [
+    "ANSWER-CONTRACT-FU-4",
+    "BGUI11-FU-1"
+   ]
+  },
+  {
+   "surface": "engine-jobs",
+   "dimension": "parity",
+   "editions": "both",
+   "proof": [],
+   "evidence": "",
+   "lanes": [],
+   "gap": "n/a",
+   "gapNote": "No recorded-parity suite covers this surface; its deterministic tests are the other rows"
+  },
+  {
+   "surface": "approvals",
+   "dimension": "function",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/harness/em-approvals.spec.ts",
+    "frontend/tests/e2e/chat/chat-approval-card.spec.ts",
+    "frontend/tests/e2e/chat/chat-ask-user-question-flows.spec.ts",
+    "frontend/tests/e2e/chat/chat-grants.spec.ts",
+    "backend/python/tests/unit/harness_core/effects/test_flow.py",
+    "backend/nodejs/apps/tests/modules/agent-harness/approvals-queue.test.ts"
+   ],
+   "evidence": "EM-02..07, EM-15, UXINT, WP-113, WP-115, GATE-FAILOPEN-1, CARDFAIL-1",
+   "lanes": [
+    "e2e",
+    "unit"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "approvals",
+   "dimension": "performance",
+   "editions": "both",
+   "proof": [
+    "integration-tests/perf/bench_harness.py",
+    "frontend/tests/e2e/chat/chat-allow-all-batch.spec.ts"
+   ],
+   "evidence": "Rig approval profile (perf lane), UXINT grouped Allow all",
+   "lanes": [
+    "perf",
+    "e2e"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "approvals",
+   "dimension": "ux",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/ux-shots.spec.ts",
+    "frontend/tests/e2e/harness/ux-int-1-question-then-approvals.spec.ts",
+    "frontend/tests/e2e/harness/ux-int-3-live-batch.spec.ts"
+   ],
+   "evidence": "QA-CLASSIC chat-approval, chat-question and chat-grants shots with their axe pass (QAFINAL-FU-UX), UXINT 0-3, WP115-FU-2",
+   "lanes": [
+    "ux",
+    "e2e"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "approvals",
+   "dimension": "latency",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/latency.spec.ts",
+    "frontend/tests/e2e/qa/latency-budgets.json",
+    "integration-tests/perf/bench_harness.py"
+   ],
+   "evidence": "QA-LAT-2 approval round trip, QA-LAT-6 question round trip (R30-LAT), rig approval profile",
+   "lanes": [
+    "latency",
+    "perf"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "approvals",
+   "dimension": "accuracy",
+   "editions": "both",
+   "proof": [
+    "backend/python/tests/unit/harness_core/policy/test_policy_vectors.py",
+    "backend/nodejs/apps/tests/modules/agent-harness/projection/wp97-approval-explain.test.ts",
+    "backend/python/tests/unit/harness_core/effects/test_ux2_default_ask.py"
+   ],
+   "evidence": "Policy vectors, WP-97 explain, in-sandbox code runs without asking",
+   "lanes": [
+    "unit"
+   ],
+   "gap": "live-model",
+   "gapNote": "Approval-prompt rate on benign live runs (SLO #13) and whether models ask the right questions need a live model",
+   "fu": [
+    "QAFINAL-FU-LIVE"
+   ]
+  },
+  {
+   "surface": "approvals",
+   "dimension": "parity",
+   "editions": "both",
+   "proof": [
+    "backend/python/tests/unit/harness/security/redteam/test_redteam_verdict.py",
+    "backend/python/tests/unit/harness/security/test_qa14_canary_run.py"
+   ],
+   "evidence": "SLO #14 deterministic injection lane (red-team verdicts, canary regression)",
+   "lanes": [
+    "unit"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "mcp",
+   "dimension": "function",
+   "editions": "both",
+   "proof": [
+    "integration-tests/harness/e2e/test_mcp_kinds.py",
+    "integration-tests/harness/e2e/test_mcplazy_first_use.py",
+    "integration-tests/harness/e2e/test_mcpnote_unlisted_servers.py",
+    "backend/python/tests/unit/harness/mcp_hub",
+    "frontend/tests/e2e/harness/mcpnote-notice.spec.ts"
+   ],
+   "evidence": "EM-21..23, MCPNOTE-1, MCPUSE-1, R26-LAZY, MCPNOTE-FU-1 (edition extension, open)",
+   "lanes": [
+    "mcphub",
+    "unit",
+    "e2e"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "mcp",
+   "dimension": "performance",
+   "editions": "both",
+   "proof": [
+    "integration-tests/perf/bench_harness.py",
+    "backend/python/tests/unit/harness/perf/test_pf05_tool_gateway_overhead.py",
+    "integration-tests/harness/e2e/test_tool_grant_size.py"
+   ],
+   "evidence": "PF-05 (40 calls/s), SLO #12 rig profile mcp-5-servers (now in the perf lane), MCPUSE-FU-2",
+   "lanes": [
+    "unit",
+    "mcphub",
+    "perf"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "mcp",
+   "dimension": "ux",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/ux-shots.spec.ts",
+    "frontend/app/(main)/workspace/mcp-servers/__tests__/connection-state.test.tsx",
+    "frontend/tests/e2e/harness/mcpnote-notice.spec.ts"
+   ],
+   "evidence": "QA-CLASSIC mcp-servers, mcp-tool-rules and mcp-sign-in shots with their axe pass (QAFINAL-FU-UX), MCPNOTE notice, connectors shot",
+   "lanes": [
+    "frontend",
+    "e2e",
+    "ux"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "mcp",
+   "dimension": "latency",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/latency.spec.ts",
+    "integration-tests/harness/e2e/test_mcplazy_first_use.py",
+    "integration-tests/perf/bench_harness.py"
+   ],
+   "evidence": "QA-LAT-5 mcp_first_token_ms and mcp_first_token_delta_ms (R30-LAT), R26-LAZY, SLO #12",
+   "lanes": [
+    "latency",
+    "mcphub",
+    "perf"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "mcp",
+   "dimension": "accuracy",
+   "editions": "both",
+   "proof": [
+    "integration-tests/harness/e2e/test_mcpuse_sources.py",
+    "integration-tests/harness/e2e/test_mcp_changes.py"
+   ],
+   "evidence": "MCPUSE-1; MCPUSE-FU-1 (open)",
+   "lanes": [
+    "mcphub"
+   ],
+   "gap": "live-model",
+   "gapNote": "Whether live models use the connected sources on a request that names its sources is unmeasured (MCPUSE-FU-1)",
+   "fu": [
+    "MCPUSE-FU-1"
+   ]
+  },
+  {
+   "surface": "mcp",
+   "dimension": "parity",
+   "editions": "both",
+   "proof": [],
+   "evidence": "",
+   "lanes": [],
+   "gap": "n/a",
+   "gapNote": "No recorded-parity suite covers this surface; its deterministic tests are the other rows"
+  },
+  {
+   "surface": "bg-ui",
+   "dimension": "function",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/harness/bgui8-whole-flow.spec.ts",
+    "frontend/tests/e2e/harness/bgui2-job-card.spec.ts",
+    "frontend/tests/e2e/chat/chat-background-agents.spec.ts",
+    "frontend/tests/e2e/chat/chat-job-panel.spec.ts",
+    "frontend/tests/e2e/chat/chat-job-reports.spec.ts",
+    "frontend/app/(main)/chat/components/background-agents/__tests__/background-agents.test.tsx"
+   ],
+   "evidence": "BGUI-1..13, CJ-1..5, BGUI8-FU-3/4",
+   "lanes": [
+    "e2e",
+    "frontend",
+    "docker"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "bg-ui",
+   "dimension": "performance",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/harness/classic-jobs-a11y-perf.spec.ts",
+    "frontend/tests/e2e/perf/chat-large-run.perf.spec.ts"
+   ],
+   "evidence": "EV-15/PF-17 large-run spec (perf project, now in the e2e lane), CJ-E7 request counts",
+   "lanes": [
+    "e2e"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "bg-ui",
+   "dimension": "ux",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/harness/classic-jobs-a11y-perf.spec.ts",
+    "frontend/tests/e2e/qa/ux-shots.spec.ts",
+    "frontend/tests/e2e/harness/support/card-contrast.test.ts"
+   ],
+   "evidence": "CJ-E7 axe (light/dark, 390 and 1440 px), QA-CLASSIC job-card and job-panel shots, R25UI-AXE-1",
+   "lanes": [
+    "e2e",
+    "ux",
+    "frontend"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "bg-ui",
+   "dimension": "latency",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/harness/classic-jobs-a11y-perf.spec.ts",
+    "frontend/tests/e2e/harness/support/classic-jobs.ts"
+   ],
+   "evidence": "CJ-E7 budgets: card status 500 ms, panel 300 ms",
+   "lanes": [
+    "e2e"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "bg-ui",
+   "dimension": "accuracy",
+   "editions": "both",
+   "proof": [
+    "frontend/app/(main)/chat/components/message-area/job-card/__tests__/bgui12-job-reply-citations.test.tsx",
+    "frontend/app/(main)/chat/components/message-area/__tests__/bgui13-main-answer-citations.test.tsx",
+    "frontend/tests/e2e/chat/chat-job-reports.spec.ts"
+   ],
+   "evidence": "BGUI11-FU-2, BGUI12-FU-1, BGUI-13; BGUI11-FU-1 (open)",
+   "lanes": [
+    "frontend",
+    "e2e"
+   ],
+   "gap": "live-model",
+   "gapNote": "An engine's own prose as the chat answer (BGUI11-FU-1) needs a live A/B",
+   "fu": [
+    "BGUI11-FU-1"
+   ]
+  },
+  {
+   "surface": "bg-ui",
+   "dimension": "parity",
+   "editions": "both",
+   "proof": [],
+   "evidence": "",
+   "lanes": [],
+   "gap": "n/a",
+   "gapNote": "No recorded-parity suite applies: the surface shows or keeps what a run recorded; its deterministic tests are the other rows"
+  },
+  {
+   "surface": "jobs-page",
+   "dimension": "function",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/chat/chat-jobs-page.spec.ts",
+    "frontend/tests/e2e/harness/classic-jobs-navigation.spec.ts",
+    "frontend/tests/e2e/qa/journey-needs-you-decide.spec.ts",
+    "frontend/app/(main)/jobs/__tests__/jobs-page.test.tsx",
+    "frontend/app/(main)/chat/sidebar/__tests__/cj14-fu2-recents-mark.test.tsx"
+   ],
+   "evidence": "CJ-2..14, FIX-RAIL1, QA-CLASSIC-FU-2/4",
+   "lanes": [
+    "e2e",
+    "frontend"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "jobs-page",
+   "dimension": "performance",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/perf/volume-lists.perf.spec.ts",
+    "frontend/tests/e2e/harness/classic-jobs-a11y-perf.spec.ts",
+    "frontend/lib/harness-jobs/__tests__/cj1-data-layer.test.ts"
+   ],
+   "evidence": "VOL-3 Jobs at 500 jobs, VOL-4 Needs you at 300 (R30-LAT), CJ-E7 request counts",
+   "lanes": [
+    "e2e",
+    "frontend"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "jobs-page",
+   "dimension": "ux",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/chat/chat-jobs-page.spec.ts",
+    "frontend/tests/e2e/harness/classic-jobs-a11y-perf.spec.ts",
+    "frontend/tests/e2e/qa/ux-shots.spec.ts"
+   ],
+   "evidence": "CJ-E7 axe, chat-jobs-page axe every look, QA-CLASSIC jobs-list and needs-you shots",
+   "lanes": [
+    "e2e",
+    "ux"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "jobs-page",
+   "dimension": "latency",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/latency-pages.spec.ts",
+    "frontend/tests/e2e/harness/classic-jobs-a11y-perf.spec.ts"
+   ],
+   "evidence": "QA-LAT-7 jobs_load_ms, needs_you_load_ms (R30-LAT); CJ-E7 card and panel budgets",
+   "lanes": [
+    "e2e",
+    "latency"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "jobs-page",
+   "dimension": "accuracy",
+   "editions": "both",
+   "proof": [
+    "frontend/lib/harness-jobs/__tests__/cj1-follow-and-seen.test.ts",
+    "frontend/lib/harness-jobs/__tests__/cj14fu1-working-jobs.test.ts",
+    "frontend/tests/e2e/qa/journey-needs-you-decide.spec.ts"
+   ],
+   "evidence": "QA-CLASSIC-FU-2, QA-CLASSIC-FU-4, CJ14-FU-1",
+   "lanes": [
+    "frontend",
+    "e2e"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "jobs-page",
+   "dimension": "parity",
+   "editions": "both",
+   "proof": [],
+   "evidence": "",
+   "lanes": [],
+   "gap": "n/a",
+   "gapNote": "No recorded-parity suite applies: the surface shows or keeps what a run recorded; its deterministic tests are the other rows"
+  },
+  {
+   "surface": "admin",
+   "dimension": "function",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/workspace/labs.spec.ts",
+    "frontend/tests/e2e/workspace/u4-schedules.spec.ts",
+    "frontend/tests/e2e/workspace/ai-accounts.spec.ts"
+   ],
+   "evidence": "WP-69, WP-90, U4, C411, WP-63, QA-CLASSIC settings and schedule journeys",
+   "lanes": [
+    "e2e",
+    "frontend",
+    "unit"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "admin",
+   "dimension": "performance",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/perf/volume-lists.perf.spec.ts",
+    "backend/nodejs/apps/tests/modules/agent-harness/adr-ui-03-admin-list-names.test.ts"
+   ],
+   "evidence": "VOL-5 Schedules (300), VOL-6 Approval policy (100), VOL-7 AI access (100), ADR-UI-03 (R30-LAT)",
+   "lanes": [
+    "e2e",
+    "unit"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "admin",
+   "dimension": "ux",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/ux-shots.spec.ts",
+    "frontend/tests/e2e/harness/wp90-admin-cards.spec.ts",
+    "frontend/app/(main)/workspace/ai-access/__tests__/ai-access-slots.test.tsx"
+   ],
+   "evidence": "QA-CLASSIC settings shots (run settings, schedules, profile, AI access, Labs, approval policy) with their axe pass clean (QAFINAL-FU-UX, -AXE), R19-FU-3",
+   "lanes": [
+    "ux",
+    "e2e",
+    "frontend"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "admin",
+   "dimension": "latency",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/latency-pages.spec.ts",
+    "frontend/tests/e2e/qa/latency-budgets.json"
+   ],
+   "evidence": "QA-LAT-7 ai_access_load_ms, schedules_load_ms (R30-LAT)",
+   "lanes": [
+    "latency"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "admin",
+   "dimension": "accuracy",
+   "editions": "both",
+   "proof": [
+    "backend/nodejs/apps/tests/modules/configuration_manager/labs-settings-audit.test.ts"
+   ],
+   "evidence": "QA-CLASSIC settings-effect journey, C411",
+   "lanes": [
+    "e2e",
+    "unit"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "admin",
+   "dimension": "parity",
+   "editions": "both",
+   "proof": [],
+   "evidence": "",
+   "lanes": [],
+   "gap": "n/a",
+   "gapNote": "No recorded-parity suite applies: the surface shows or keeps what a run recorded; its deterministic tests are the other rows"
+  },
+  {
+   "surface": "ops",
+   "dimension": "function",
+   "editions": "both",
+   "proof": [
+    "deployment/e2e/pg_world.py",
+    "deployment/e2e/airgap_check.py",
+    "integration-tests/harness/fault/test_upgrades.py",
+    "backend/python/tests/cohesion/test_r25_airgap_install.py",
+    "deployment/helm/tests/kind_smoke.sh",
+    "deployment/docker-compose/tests/installer_test.sh"
+   ],
+   "evidence": "WP114-FU-E2E, C15.04, R25 airgap, EM-33, EM-34 (Helm), OPS01-FU-2 (open)",
+   "lanes": [
+    "ops",
+    "fault",
+    "unit",
+    "stores",
+    "ci"
+   ],
+   "gap": "partial",
+   "gapNote": "Helm kind smoke, installer_test.sh and upgrade_smoke.sh run only in CI; gVisor and Kata isolation need the reference host",
+   "fu": [
+    "OPS01-FU-2",
+    "QAFINAL-FU-CI",
+    "QAFINAL-FU-REF"
+   ]
+  },
+  {
+   "surface": "ops",
+   "dimension": "performance",
+   "editions": "both",
+   "proof": [
+    "deployment/docker-compose/tests/footprint.sh",
+    "backend/python/tests/unit/harness/perf/test_wp77_startup_heap_frozen.py",
+    "integration-tests/perf/bench_harness.py"
+   ],
+   "evidence": "SLO #15-#16, #19, WP-77, WP-88",
+   "lanes": [
+    "unit",
+    "perf",
+    "ci",
+    "reference-host"
+   ],
+   "gap": "reference-host",
+   "gapNote": "Footprint check runs in CI; the 24 h soak and K8s footprint need the reference host",
+   "fu": [
+    "QAFINAL-FU-REF",
+    "QAFINAL-FU-CI"
+   ]
+  },
+  {
+   "surface": "ops",
+   "dimension": "ux",
+   "editions": "both",
+   "proof": [
+    "deployment/docker-compose/tests/installer_test.sh",
+    "deployment/docker-compose/tests/install_checks.py"
+   ],
+   "evidence": "install.sh checks",
+   "lanes": [
+    "ci"
+   ],
+   "gap": "ci-only",
+   "gapNote": "Installer prompts and messages are checked only in CI; no local lane runs installer_test.sh",
+   "fu": [
+    "QAFINAL-FU-CI"
+   ]
+  },
+  {
+   "surface": "ops",
+   "dimension": "latency",
+   "editions": "both",
+   "proof": [
+    "scripts/qa_full.py",
+    "deployment/e2e/run.sh",
+    "integration-tests/harness/fault/test_startup_gate.py",
+    "integration-tests/harness/fault/test_recovery_bound.py"
+   ],
+   "evidence": "stack_ready_ms (run.sh up-seconds), upgrade_ready_ms (run.sh rebuild upgrade-seconds), read by qa_full record_stack_timings (R30-LAT); SLO #6",
+   "lanes": [
+    "latency",
+    "fault"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "ops",
+   "dimension": "accuracy",
+   "editions": "both",
+   "proof": [
+    "integration-tests/harness/fault/test_version_skew.py",
+    "integration-tests/harness/fault/test_history_skew.py",
+    "backend/python/tests/harness_replay/test_replay_legacy_run.py"
+   ],
+   "evidence": "CPD-10 pin skew, release trees, replay compat",
+   "lanes": [
+    "fault",
+    "replay"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "ops",
+   "dimension": "parity",
+   "editions": "both",
+   "proof": [],
+   "evidence": "",
+   "lanes": [],
+   "gap": "n/a",
+   "gapNote": "No recorded-parity suite applies: the surface shows or keeps what a run recorded; its deterministic tests are the other rows"
+  },
+  {
+   "surface": "erasure",
+   "dimension": "function",
+   "editions": "both",
+   "proof": [
+    "backend/nodejs/apps/tests/modules/agent-harness/conversation-erasure.test.ts",
+    "backend/nodejs/apps/tests/modules/agent-harness/conversation-erasure.mongo.itest.ts",
+    "backend/nodejs/apps/tests/modules/agent-harness/org-deletion.pg.itest.ts",
+    "backend/nodejs/apps/tests/modules/agent-harness/principal-erasure.test.ts",
+    "deployment/e2e/pg_world.py",
+    "backend/python/tests/unit/harness_core/workspace/test_sealing.py"
+   ],
+   "evidence": "E7, E7B, EM-29, EM-30, WP114-FU-E2E, ORGDEL-SPLIT",
+   "lanes": [
+    "unit",
+    "stores",
+    "ops"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "erasure",
+   "dimension": "performance",
+   "editions": "both",
+   "proof": [
+    "backend/nodejs/apps/tests/modules/agent-harness/erasure-volume.mongo.itest.ts"
+   ],
+   "evidence": "erasure-volume VOL-1 (person hand-over 4 -> 250 conversations, 0 extra commands), VOL-2 (conversation erase 3 -> 3,000 messages) (R30-LAT)",
+   "lanes": [
+    "stores"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "erasure",
+   "dimension": "ux",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/ux-shots.spec.ts",
+    "frontend/app/(main)/workspace/general/components/__tests__/delete-org-section.test.tsx"
+   ],
+   "evidence": "QA-CLASSIC delete-chat, delete-org and settings-retention shots with their axe pass (QAFINAL-FU-UX), ORGDEL, C411 retention",
+   "lanes": [
+    "ux",
+    "frontend"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "erasure",
+   "dimension": "latency",
+   "editions": "both",
+   "proof": [
+    "frontend/tests/e2e/qa/latency-pages.spec.ts",
+    "backend/nodejs/apps/tests/modules/agent-harness/session-erasure.mongo.itest.ts",
+    "backend/nodejs/apps/tests/modules/agent-harness/r30lat-session-run-stopper.test.ts"
+   ],
+   "evidence": "QA-LAT-9 chat_delete_ms, delete_run_stopped_ms; ER-STOP; ADR-RUN-05 (R30-LAT)",
+   "lanes": [
+    "latency",
+    "stores",
+    "unit"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "erasure",
+   "dimension": "accuracy",
+   "editions": "both",
+   "proof": [
+    "backend/nodejs/apps/tests/cohesion/c14-erasure-coverage.test.ts",
+    "backend/nodejs/apps/tests/modules/agent-harness/erasure-census.mongo.itest.ts",
+    "deployment/e2e/pg_world.py",
+    "deployment/e2e/erase_world.py"
+   ],
+   "evidence": "C-14 erasure coverage census, pg_world erasure rows, erase_world EW-1..EW-6 on the default stores (run.sh durable)",
+   "lanes": [
+    "unit",
+    "stores",
+    "ops"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "erasure",
+   "dimension": "parity",
+   "editions": "both",
+   "proof": [],
+   "evidence": "",
+   "lanes": [],
+   "gap": "n/a",
+   "gapNote": "No recorded-parity suite applies: the surface shows or keeps what a run recorded; its deterministic tests are the other rows"
+  },
+  {
+   "surface": "keys",
+   "dimension": "function",
+   "editions": "both",
+   "proof": [
+    "backend/nodejs/apps/tests/modules/agent-harness/secret-key-rotation.test.ts",
+    "backend/nodejs/apps/tests/modules/agent-harness/secret-key-rotation.mongo.itest.ts",
+    "backend/nodejs/apps/tests/modules/agent-harness/secret-key-rotation-kv.redis.itest.ts",
+    "backend/python/tests/unit/harness/test_keyring_rotation.py",
+    "backend/python/tests/unit/connectors/core/test_sync_point_rekey.py",
+    "deployment/e2e/rotation_check.py"
+   ],
+   "evidence": "KEYRING-FU-1, WP-91, WP87-FU-4b, KEYROT",
+   "lanes": [
+    "unit",
+    "stores",
+    "ops",
+    "ci"
+   ],
+   "gap": "ci-only",
+   "gapNote": "The runbook rotation on a stack (run.sh keyring) now runs in the ops lane; sync-point rekey on Neo4j and ArangoDB runs in CI's backend matrix only",
+   "fu": [
+    "QAFINAL-FU-CI"
+   ]
+  },
+  {
+   "surface": "keys",
+   "dimension": "performance",
+   "editions": "both",
+   "proof": [
+    "backend/nodejs/apps/tests/modules/agent-harness/secret-key-rotation-volume.test.ts",
+    "backend/python/tests/unit/connectors/core/test_sync_point_rekey.py"
+   ],
+   "evidence": "VOL-3 rotation counts, SP-7 sync point pages (R30-LAT)",
+   "lanes": [
+    "unit"
+   ],
+   "gap": "none"
+  },
+  {
+   "surface": "keys",
+   "dimension": "ux",
+   "editions": "both",
+   "proof": [
+    "backend/nodejs/apps/tests/modules/agent-harness/rotate-secret-key-cli.test.ts",
+    "frontend/app/(main)/chat/__tests__/qa14-secret-key-names.test.ts"
+   ],
+   "evidence": "Rotation is an operator CLI; its result lines are tested",
+   "lanes": [
+    "unit",
+    "frontend"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "keys",
+   "dimension": "latency",
+   "editions": "both",
+   "proof": [
+    "backend/python/tests/unit/harness/access/test_wp91_key_rotation.py",
+    "backend/python/tests/unit/harness/engines/test_wp91_real_key_rotation.py"
+   ],
+   "evidence": "WP-91: a key rotated mid-turn needs no sandbox change",
+   "lanes": [
+    "unit",
+    "docker"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "keys",
+   "dimension": "accuracy",
+   "editions": "both",
+   "proof": [
+    "deployment/e2e/rotation_check.py",
+    "backend/python/tests/unit/harness/test_keyring_rotation.py",
+    "backend/python/tests/integration/graph_db/test_sync_point_rekey_real_backends.py"
+   ],
+   "evidence": "KEYRING-FU-1 rotation counts (rotation_check.py, ops lane), WP87-FU-4b",
+   "lanes": [
+    "unit",
+    "ops"
+   ],
+   "gap": "none",
+   "gapNote": ""
+  },
+  {
+   "surface": "keys",
+   "dimension": "parity",
+   "editions": "both",
+   "proof": [],
+   "evidence": "",
+   "lanes": [],
+   "gap": "n/a",
+   "gapNote": "No recorded-parity suite applies: the surface shows or keeps what a run recorded; its deterministic tests are the other rows"
+  }
+ ]
+}

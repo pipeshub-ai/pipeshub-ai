@@ -4,9 +4,11 @@ at the same time."""
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections import Counter
 
+import asyncpg
 import pytest
 
 from app.services.graph_db.postgres import access as access_sql
@@ -168,19 +170,88 @@ async def test_a_connector_with_nodes_before_the_worker_is_backfilled_once_and_a
         assert await bootstrap.bring_to_enforce(pg_db, other, due2) == 0
     assert await _mode(p, other) != "enforce"
     assert "stays on the walk" in caplog.text
-    assert await bootstrap.bring_to_enforce(pg_db, other, due2) == 0         # once: a failed verify is not retried by the worker
+    assert await bootstrap.bring_to_enforce(pg_db, other, due2) == 0         # not at once: the retry waits its backoff
     assert await _mode(p, other) != "enforce"
+
+
+async def test_a_connector_that_differed_is_copied_again_and_promoted_on_a_later_pass_once_it_matches(pg_db, monkeypatch, caplog) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org)
+    real, verifies, restarts = bf.verify_app, [], []
+    real_scope = bf.backfill_scope
+
+    async def differs_once(tx, o, app) -> object:
+        res = await real(tx, o, app)
+        verifies.append(app)
+        if len(verifies) == 1:
+            res.note("extra", "x")
+        return res
+
+    async def scope(db, o, app, **k) -> int:
+        if k.get("restart"):
+            restarts.append(app)
+        return await real_scope(db, o, app, **k)
+    monkeypatch.setattr(bf, "verify_app", differs_once)
+    monkeypatch.setattr(bf, "backfill_scope", scope)
+    due: dict = {}
+    with caplog.at_level("WARNING"):
+        assert await bootstrap.bring_to_enforce(pg_db, org, due) == 0
+    assert await _mode(p, org) != "enforce" and "differs from the graph (1 time(s) in a row)" in caplog.text
+    assert 0 < due[(org, "drv")] - time.monotonic() <= bootstrap.DIFFERS_RETRY_S      # tried again later, not never
+    assert await bootstrap.bring_to_enforce(pg_db, org, due) == 0 and verifies == ["drv"]      # not before its turn: no hot loop
+    due[(org, "drv")] = 0.0                                                     # its turn has come
+    assert await bootstrap.bring_to_enforce(pg_db, org, due) == 1
+    assert restarts == ["drv"] and verifies == ["drv", "drv"]                  # a fresh copy, verified again
+    assert await _mode(p, org) == "enforce"
+
+
+async def test_a_connector_that_keeps_differing_stays_on_the_walk_and_waits_longer_each_time(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org)
+    real, verifies = bf.verify_app, []
+
+    async def differs(tx, o, app) -> object:
+        res = await real(tx, o, app)
+        verifies.append(app)
+        res.note("extra", "x")
+        return res
+    monkeypatch.setattr(bf, "verify_app", differs)
+    due: dict = {}
+    waits = []
+    for _ in range(3):
+        due[(org, "drv")] = 0.0
+        assert await bootstrap.bring_to_enforce(pg_db, org, due) == 0
+        waits.append(due[(org, "drv")] - time.monotonic())
+        assert await _mode(p, org) != "enforce"                                 # never promoted while it differs
+    assert len(verifies) == 3
+    assert waits[0] <= bootstrap.DIFFERS_RETRY_S < waits[1] <= 2 * bootstrap.DIFFERS_RETRY_S < waits[2] <= bootstrap.DIFFERS_RETRY_MAX_S, waits
+
+
+async def test_the_bootstrap_verifies_a_connector_once_and_promotes_it_with_that_verify(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org)
+    real, calls = bf.verify_app, []
+
+    async def counted(tx, o, app) -> object:
+        calls.append(app)
+        return await real(tx, o, app)
+    monkeypatch.setattr(bf, "verify_app", counted)
+    assert await bootstrap.bring_to_enforce(pg_db, org, {}) == 1
+    assert await _mode(p, org) == "enforce"
+    assert calls == ["drv"]                                                  # one full verify of the connector, not a second one at the promotion
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        assert await con.fetchval("SELECT count(*) FROM kg.analyze_requests WHERE org_id = $1", org) == 1      # as a promotion asks for its statistics
+    finally:
+        await con.close()
 
 
 async def test_a_connector_with_changes_still_arriving_is_tried_again_later(pg_db, monkeypatch) -> None:
     p, org = prov(pg_db), new_org()
     await _world(p, org)
-    real = bootstrap.bf.backfill
 
     async def pending(db, o, app, **k) -> object:
-        out = await real(db, o, app, **k)
-        out.flipped, out.pending = False, 3
-        return out
+        return bf.Outcome(False, 0, None, 3, "pending")
     due: dict = {}
     with monkeypatch.context() as m:
         m.setattr(bootstrap.bf, "backfill", pending)
@@ -190,16 +261,15 @@ async def test_a_connector_with_changes_still_arriving_is_tried_again_later(pg_d
     assert await bootstrap.bring_to_enforce(pg_db, org, due) == 1
 
 
-@pytest.mark.parametrize("failure", ["refused", "error"])
-async def test_a_promotion_that_is_refused_or_fails_is_logged_and_tried_again_later(pg_db, monkeypatch, caplog, failure) -> None:
+async def test_a_promotion_that_fails_is_logged_and_tried_again_later(pg_db, monkeypatch, caplog) -> None:
     p, org = prov(pg_db), new_org()
     await _world(p, org)
 
-    async def boom(db, o, app) -> None:
-        raise bootstrap.bf.Refused("changed meanwhile") if failure == "refused" else RuntimeError("database went away")
+    async def boom(db, o, app, **k) -> None:
+        raise RuntimeError("database went away")
     due: dict = {}
     with monkeypatch.context() as m, caplog.at_level("WARNING"):
-        m.setattr(bootstrap.bf, "promote", boom)
+        m.setattr(bootstrap.bf, "backfill", boom)
         assert await bootstrap.bring_to_enforce(pg_db, org, due) == 0
     assert await _mode(p, org) != "enforce" and "kg: connector drv" in caplog.text
     assert 0 < due[(org, "drv")] - time.monotonic() <= bootstrap.RETRY_S
@@ -213,13 +283,13 @@ async def test_two_drains_of_one_org_never_project_at_the_same_time_and_the_log_
     active = {"now": 0, "max": 0, "calls": 0}
     real = drainer.project
 
-    async def slow(tx, o, focus) -> object:
+    async def slow(tx, o, focus, **kw) -> object:
         active["now"] += 1
         active["calls"] += 1
         active["max"] = max(active["max"], active["now"])
         try:
             await asyncio.sleep(0.5)
-            return await real(tx, o, focus)
+            return await real(tx, o, focus, **kw)
         finally:
             active["now"] -= 1
     monkeypatch.setattr(drainer, "project", slow)

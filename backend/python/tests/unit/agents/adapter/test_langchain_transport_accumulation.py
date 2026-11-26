@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import time
+import threading
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -27,6 +27,7 @@ from app.agents.agent_loop.converters import (
     token_usage_from_ai_message,
 )
 from app.agents.agent_loop.langchain_transport import LangChainTransport
+from app.utils import message_chunks
 from tests.unit.agents.adapter.support.recorded_stream_chunks import (
     RECORDED_SCENARIOS,
     add_chunk_by_chunk,
@@ -56,9 +57,9 @@ _EXPECTED_STOP_REASON = {
     "openai_responses_reasoning_text_tool_call": StopReason.TOOL_USE,
 }
 
-# Longest the event loop may go without running anything else. The stream
-# below held it for many seconds before the fix and for milliseconds after.
-_LONGEST_STALL_S = 2.0
+# Only the failure path waits this long: a merge that holds the loop can never
+# see the heartbeat, and the test should fail rather than hang.
+_MERGE_SEES_THE_LOOP_WITHIN_S = 60.0
 
 
 class _ChunkModel:
@@ -203,34 +204,45 @@ class TestLongToolCallIsAssembledInOnePass:
 
 
 class TestEventLoopStaysResponsive:
-    async def test_other_work_keeps_running_through_a_long_stream(self) -> None:
+    async def test_other_work_keeps_running_through_a_long_stream(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """A coroutine that does nothing but yield stands in for `/health` and
-        every other request on the worker: if it stops being scheduled, they do."""
+        every other request on the worker: if it stops being scheduled, they do.
+
+        Held by order, not by a stall bound on a clock: the heartbeat runs
+        between the stream's chunks, and runs again while the final merge is
+        in progress. A loaded host stretches both, so a duration said nothing
+        about the stream (a 3.6 s CPU-time "stall" on a busy gate, 0.4 ms alone)."""
         fragments = 8_000
         transport = LangChainTransport(_ChunkModel(_tool_call_stream(fragments)))
+        loop_thread = threading.get_ident()
         turns = 0
-        longest_stall = 0.0
-        last_turn = time.perf_counter()
+        beat_seen = threading.Event()
+        merge: dict[str, Any] = {}
+        real_merge = message_chunks.merge_message_chunks
 
-        def note_turn() -> None:
-            nonlocal longest_stall, last_turn
-            now = time.perf_counter()
-            longest_stall = max(longest_stall, now - last_turn)
-            last_turn = now
+        def merge_that_waits_for_the_loop(chunks: Any) -> Any:  # noqa: ANN401
+            merge["off_loop"] = threading.get_ident() != loop_thread
+            merge["turns_at_start"] = turns
+            beat_seen.clear()
+            # On the loop's own thread the heartbeat cannot run until this
+            # returns, so waiting would only ever time out.
+            merge["saw_the_loop"] = merge["off_loop"] and beat_seen.wait(_MERGE_SEES_THE_LOOP_WITHIN_S)
+            return real_merge(chunks)
+
+        monkeypatch.setattr(message_chunks, "merge_message_chunks", merge_that_waits_for_the_loop)
 
         async def heartbeat() -> None:
             nonlocal turns
             while True:
                 await asyncio.sleep(0)
-                note_turn()
                 turns += 1
+                beat_seen.set()
 
         beat = asyncio.create_task(heartbeat())
         try:
             response = await _final_response(transport)
-            # The stream can finish without handing the loop back, so the wait
-            # that ended with it is measured here rather than by the heartbeat.
-            note_turn()
         finally:
             beat.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -240,6 +252,8 @@ class TestEventLoopStaysResponsive:
             "answer_markdown": _FRAGMENT * fragments,
         }
         # The loop got a turn for every chunk, even with none of them waiting
-        # on the network, and was never held for long by the final merge.
-        assert turns >= fragments
-        assert longest_stall < _LONGEST_STALL_S
+        # on the network ...
+        assert merge["turns_at_start"] >= fragments
+        # ... and the final merge ran beside it rather than holding it.
+        assert merge["off_loop"] is True
+        assert merge["saw_the_loop"] is True

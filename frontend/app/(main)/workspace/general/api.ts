@@ -107,6 +107,11 @@ export const OrgApi = {
   },
 
   /** DELETE /api/v1/org/logo — remove org logo */
+  /** Deletes the organization; the server checks the typed name too. */
+  async deleteOrg(confirmName: string): Promise<void> {
+    await apiClient.delete(BASE_URL, { data: { confirmName } });
+  },
+
   async deleteLogo(): Promise<void> {
     await apiClient.delete(`${BASE_URL}/logo`);
     void mutate(ORG_KEYS.logo, null, { revalidate: false });

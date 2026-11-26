@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, Button, Flex, Text, IconButton } from '@radix-ui/themes';
+import { Badge, Box, Button, Flex, Text, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import { Spinner } from '@/app/components/ui/spinner';
@@ -68,7 +68,7 @@ export function isArtifactGone(error: unknown): boolean {
  * - Anything else is refused — we never "fall back" to an arbitrary attacker
  *   URL even if the recordId stream fails.
  */
-async function handleDownload(artifact: ChatArtifact): Promise<void> {
+export async function handleDownload(artifact: ChatArtifact): Promise<void> {
   if (artifact.recordId) {
     try {
       await KnowledgeBaseApi.streamDownloadRecord(artifact.recordId, artifact.fileName, {
@@ -143,6 +143,9 @@ export function ArtifactsPanel({
               !!artifact.version && !!latestVersion && latestVersion > artifact.version
                 ? latestVersion
                 : undefined;
+            if (artifact.unavailable) {
+              return <ArtifactUnavailableCard key={artifact.id} />;
+            }
             return (
               <ArtifactCard
                 key={artifact.id}
@@ -156,6 +159,34 @@ export function ArtifactsPanel({
         </Flex>
       )}
     </Box>
+  );
+}
+
+/**
+ * A file in a conversation shared with the viewer that they may not open: the
+ * server sends nothing about it, so nothing is shown or linked.
+ */
+function ArtifactUnavailableCard() {
+  const { t } = useTranslation();
+  return (
+    <Flex
+      align="center"
+      gap="3"
+      data-testid="artifact-unavailable-card"
+      style={{
+        padding: 'var(--space-2) var(--space-3)',
+        borderRadius: 'var(--radius-2)',
+        border: '1px dashed var(--slate-6)',
+        backgroundColor: 'var(--slate-2)',
+      }}
+    >
+      <span className="material-icons-outlined" style={{ fontSize: 20, color: 'var(--slate-11)' }}>
+        lock
+      </span>
+      <Text size="2" style={{ color: 'var(--slate-11)' }}>
+        {t('chat.artifactUnavailable')}
+      </Text>
+    </Flex>
   );
 }
 
@@ -286,18 +317,23 @@ function ArtifactThumbnail({ artifact, onGone }: { artifact: ChatArtifact; onGon
   );
 }
 
-function ArtifactCard({
+/** One file's card, as an answer draws it; a job's report and its Outputs tab draw the same (BGUI-11). */
+export function ArtifactCard({
   artifact,
   onPreview,
   onViewSource,
   newerVersionAvailable,
+  touch = false,
 }: {
   artifact: ChatArtifact;
   onPreview?: (artifact: ChatArtifact) => void | Promise<void>;
   onViewSource?: (codeArtifactId: string) => void | Promise<void>;
   /** Set to the higher version number when a later turn has since produced a newer copy of this same artifact. */
   newerVersionAvailable?: number;
+  /** Phone: 44 px hit areas (frontend/CLAUDE.md). */
+  touch?: boolean;
 }) {
+  const tap: React.CSSProperties | undefined = touch ? { minWidth: 44, minHeight: 44 } : undefined;
   const { t } = useTranslation();
   const icon = getIconForMime(artifact.mimeType);
   const showThumbnail = isPreviewableImage(artifact.mimeType);
@@ -369,13 +405,13 @@ function ArtifactCard({
           justify="center"
           style={{ width: 40, height: 40, borderRadius: 'var(--radius-1)', backgroundColor: 'var(--slate-3)', flexShrink: 0 }}
         >
-          <MaterialIcon name="hide_source" size={20} color="var(--slate-9)" />
+          <MaterialIcon name="hide_source" size={20} color="var(--slate-11)" />
         </Flex>
         <Flex direction="column" style={{ flex: 1, minWidth: 0 }}>
-          <Text size="2" weight="medium" style={{ color: 'var(--slate-10)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <Text size="2" weight="medium" style={{ color: 'var(--slate-11)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {artifact.fileName}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-9)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {t('chat.artifactsPanel.unavailable')}
           </Text>
         </Flex>
@@ -385,6 +421,7 @@ function ArtifactCard({
 
   return (
     <Flex
+      data-testid="artifact-card"
       align="center"
       gap="3"
       style={{
@@ -442,8 +479,13 @@ function ArtifactCard({
               v{artifact.version}
             </Text>
           )}
+          {artifact.lifecycle === 'draft' && (
+            <Badge size="1" color="amber" variant="soft" style={{ flexShrink: 0 }}>
+              {t('codeTaskCard.draft')}
+            </Badge>
+          )}
         </Flex>
-        <Text size="1" style={{ color: 'var(--slate-9)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>
           {t(`artifacts.types.${artifact.artifactType}`, { defaultValue: artifact.artifactType })}{' '}
           {artifact.sizeBytes > 0 ? `· ${formatFileSize(artifact.sizeBytes)}` : ''}
         </Text>
@@ -457,13 +499,13 @@ function ArtifactCard({
       <Flex gap="1">
         {onViewSource && artifact.derivedFromCodeArtifactId && !sourceGone && (
           <IconButton
-            size="1"
+            size={touch ? '3' : '1'}
             variant="ghost"
             onClick={runViewSource}
             disabled={isViewingSource}
             aria-label={isViewingSource ? t('chat.artifactsPanel.loadingSource') : t('chat.artifactsPanel.viewSource')}
             title={t('chat.artifactsPanel.viewSourceTitle')}
-            style={{ cursor: isViewingSource ? 'wait' : 'pointer' }}
+            style={{ cursor: isViewingSource ? 'wait' : 'pointer', ...tap }}
           >
             {isViewingSource ? (
               <Spinner size={16} />
@@ -474,34 +516,39 @@ function ArtifactCard({
         )}
         {onPreview && (
           <IconButton
-            size="1"
+            size={touch ? '3' : '1'}
             variant="ghost"
             onClick={runPreview}
             disabled={isPreviewing}
             aria-label={isPreviewing ? t('chat.artifactsPanel.loadingPreview') : t('chat.artifactsPanel.preview')}
-            style={{ cursor: isPreviewing ? 'wait' : 'pointer' }}
+            style={{ cursor: isPreviewing ? 'wait' : 'pointer', ...tap }}
           >
+            {/* The glyph's name is its text until the icon font has drawn it, and axe then reads it as the button's
+                visible text (label-content-name-mismatch): each icon-only button's glyph is a word of its name. */}
             {isPreviewing ? (
               <Spinner size={16} />
             ) : (
-              <MaterialIcon name="visibility" size={18} />
+              <MaterialIcon name="preview" size={18} />
             )}
           </IconButton>
         )}
-        <IconButton
-          size="1"
-          variant="ghost"
-          onClick={runDownload}
-          disabled={isDownloading}
-          aria-label={isDownloading ? t('chat.artifactsPanel.downloading') : t('chat.artifactsPanel.download')}
-          style={{ cursor: isDownloading ? 'wait' : 'pointer' }}
-        >
-          {isDownloading ? (
-            <Spinner size={16} />
-          ) : (
-            <MaterialIcon name="download" size={18} />
-          )}
-        </IconButton>
+        {/* A file with no record and no link has nothing to download: it is named, never linked. */}
+        {(artifact.recordId || artifact.downloadUrl) && (
+          <IconButton
+            size={touch ? '3' : '1'}
+            variant="ghost"
+            onClick={runDownload}
+            disabled={isDownloading}
+            aria-label={isDownloading ? t('chat.artifactsPanel.downloading') : t('chat.artifactsPanel.download')}
+            style={{ cursor: isDownloading ? 'wait' : 'pointer', ...tap }}
+          >
+            {isDownloading ? (
+              <Spinner size={16} />
+            ) : (
+              <MaterialIcon name="download" size={18} />
+            )}
+          </IconButton>
+        )}
       </Flex>
     </Flex>
   );

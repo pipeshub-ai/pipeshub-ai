@@ -48,8 +48,11 @@ class _Inbox:
     def __init__(self, fresh: bool) -> None:
         self.fresh = fresh
 
-    async def claim(self, topic: str, event_id: str, org_id: str) -> bool:
-        return self.fresh
+    async def seen(self, consumer: str, ctx) -> bool:
+        return not self.fresh
+
+    async def record(self, consumer: str, ctx) -> None:
+        return None
 
 
 @pytest.fixture(autouse=True)
@@ -61,14 +64,14 @@ def _env(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> I
     async def keys() -> tuple[bytes, ...]:
         return (KEY,)
 
-    envelope.configure(keys, _Inbox(fresh=True))
+    envelope.configure(keys)
     yield
     envelope.configure(None)
 
 
-def _consumer(handler=None, retry_manager=None) -> RedisStreamsConsumer:
+def _consumer(handler=None, retry_manager=None, inbox=None) -> RedisStreamsConsumer:
     config = RedisStreamsConfig(host="localhost", port=6379, client_id="c", group_id="g", topics=[TOPIC])
-    c = RedisStreamsConsumer(logging.getLogger(LOGGER), config, retry_manager=retry_manager)
+    c = RedisStreamsConsumer(logging.getLogger(LOGGER), config, retry_manager=retry_manager, inbox=inbox)
     c.redis = AsyncMock()
     c.redis.xpending_range = AsyncMock(return_value=[])
     c.cleanup = AsyncMock()
@@ -153,9 +156,8 @@ class TestNewReads:
         assert len(verified) == 2 and all(log_record_fields(r)["org_id"] == "org_a" for r in verified)
 
     async def test_duplicate_envelope(self, caplog) -> None:
-        envelope.configure(envelope._keys, _Inbox(fresh=False))
         handler = _handler()
-        await _deliver(_consumer(handler), ("1-0", _signed()))
+        await _deliver(_consumer(handler, inbox=_Inbox(fresh=False)), ("1-0", _signed()))
         assert _row(_one_end(caplog)) == ("skipped", "ack", "duplicate", 1, logging.INFO)
         assert handler.calls == []
 
@@ -229,8 +231,7 @@ class TestNewReads:
         c.redis.xack.assert_not_awaited()
 
     async def test_duplicate_whose_ack_fails_is_a_retry(self, caplog) -> None:
-        envelope.configure(envelope._keys, _Inbox(fresh=False))
-        c = _consumer(_handler())
+        c = _consumer(_handler(), inbox=_Inbox(fresh=False))
         c.redis.xack = AsyncMock(side_effect=ConnectionError("redis down"))
         await _deliver(c, ("1-0", _signed()))
         end = _one_end(caplog)

@@ -46,7 +46,7 @@ export function TableFullscreenWrapper({ children, onDownloadCsv }: TableFullscr
           variant="ghost"
           color="gray"
           title={t('chat.expandTable')}
-          style={{ cursor: 'pointer', color: 'var(--slate-9)' }}
+          style={{ cursor: 'pointer', color: 'var(--slate-11)' }}
           onClick={() => setOpen(true)}
         >
           <MaterialIcon name="open_in_full" size={ICON_SIZES.SECONDARY} />
@@ -58,7 +58,7 @@ export function TableFullscreenWrapper({ children, onDownloadCsv }: TableFullscr
             color="gray"
             title={t('chat.downloadCsv')}
             aria-label={t('chat.downloadCsv')}
-            style={{ cursor: 'pointer', color: 'var(--slate-9)', marginLeft: 'var(--space-1)' }}
+            style={{ cursor: 'pointer', color: 'var(--slate-11)', marginLeft: 'var(--space-1)' }}
             onClick={onDownloadCsv}
           >
             <MaterialIcon name="download" size={ICON_SIZES.SECONDARY} />
@@ -132,6 +132,7 @@ export function TableFullscreenWrapper({ children, onDownloadCsv }: TableFullscr
               )}
               <Dialog.Close>
                 <IconButton className="touch-hit"
+                  aria-label={t('common.close')}
                   size="1"
                   variant="ghost"
                   color="gray"

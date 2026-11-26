@@ -1,0 +1,237 @@
+{
+  "description": "CPD-10 R3: which authority a run's catalog items have, as one table read by Node and Python. `migrated` is the org's row in the capability migration's ledger. Node (control-plane-agent-access.test.ts) builds `world` for the case, admits `definition` through a real admission under CONTROL_PLANE_PIN=on, and holds that the pin it stores is `pin` (written by that test under WRITE_AUTHORITY_VECTORS=1) and that the spec a claim resolves grants exactly `expected.toolIds`, `expected.mcpInstances` and `expected.skills`. Python (test_cpd10_effective_items.py) gives the worker `pin` and `spec` (the legacy fields a spec may still carry, whatever admission did) and holds that it offers exactly the same ids, and `expected.items` as its control-plane items. `calculator@default/add` is a platform tool and knowledge is not a control-plane item: neither is touched by any case.",
+  "definition": {
+    "toolsets": [
+      {
+        "name": "jira",
+        "instanceId": "jira-1",
+        "tools": [
+          "search_issues",
+          "create_issue"
+        ]
+      },
+      {
+        "name": "calculator",
+        "instanceId": null,
+        "tools": [
+          "add"
+        ]
+      }
+    ],
+    "mcpServers": [
+      {
+        "instanceId": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+        "tools": [
+          "list_issues"
+        ]
+      },
+      {
+        "instanceId": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002",
+        "tools": [
+          "list_issues"
+        ]
+      }
+    ],
+    "skills": [
+      "notes"
+    ],
+    "knowledge": [
+      {
+        "connectorId": "app-drive",
+        "isKb": false
+      },
+      {
+        "connectorId": "kb-1",
+        "isKb": true
+      }
+    ]
+  },
+  "cases": [
+    {
+      "id": "CPD10-53",
+      "description": "Migrated org, everything revoked (the agent's grant is empty), the definition and the spec's legacy fields still list every toolset, MCP server and skill: nothing of them is offered.",
+      "migrated": true,
+      "world": {
+        "granted": [],
+        "bound": []
+      },
+      "spec": {
+        "toolIds": [
+          "calculator@default/add",
+          "jira@jira-1/create_issue",
+          "jira@jira-1/search_issues",
+          "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001/list_issues",
+          "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002/list_issues"
+        ],
+        "mcpInstances": [
+          "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+          "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002"
+        ],
+        "skills": [
+          "notes"
+        ]
+      },
+      "pin": {
+        "rollout": true,
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      },
+      "expected": {
+        "toolIds": [
+          "calculator@default/add"
+        ],
+        "mcpInstances": [],
+        "skills": [],
+        "items": []
+      }
+    },
+    {
+      "id": "CPD10-54",
+      "description": "Org not recorded as migrated, so its effective set is empty and is no authority: the definition's and the spec's pins are offered as today.",
+      "migrated": false,
+      "world": {
+        "granted": [],
+        "bound": []
+      },
+      "spec": {
+        "toolIds": [
+          "calculator@default/add",
+          "jira@jira-1/create_issue",
+          "jira@jira-1/search_issues",
+          "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001/list_issues",
+          "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002/list_issues"
+        ],
+        "mcpInstances": [
+          "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+          "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002"
+        ],
+        "skills": [
+          "notes"
+        ]
+      },
+      "pin": {
+        "rollout": null,
+        "effectiveSet": {
+          "items": [],
+          "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      },
+      "expected": {
+        "toolIds": [
+          "calculator@default/add",
+          "jira@jira-1/create_issue",
+          "jira@jira-1/search_issues",
+          "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001/list_issues",
+          "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002/list_issues"
+        ],
+        "mcpInstances": [
+          "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+          "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002"
+        ],
+        "skills": [
+          "notes"
+        ],
+        "items": [
+          {
+            "installation": "skill_notes",
+            "binding": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "CPD10-55",
+      "description": "Migrated org: the Jira toolset is granted and the actor's credential is bound (ready), the first MCP server is granted without a binding (credential_missing), the second MCP server and the skill are not granted. Only Jira is offered, with its binding. Admission took the credential_missing server out of the definition, so the spec no longer names it (a spec that still did is refused by the worker: CPD10-50); the spec still names what is not granted.",
+      "migrated": true,
+      "world": {
+        "granted": [
+          "jira-1",
+          "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001"
+        ],
+        "bound": [
+          "jira-1"
+        ]
+      },
+      "spec": {
+        "toolIds": [
+          "calculator@default/add",
+          "jira@jira-1/create_issue",
+          "jira@jira-1/search_issues",
+          "mcp@inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002/list_issues"
+        ],
+        "mcpInstances": [
+          "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0002"
+        ],
+        "skills": [
+          "notes"
+        ]
+      },
+      "pin": {
+        "rollout": true,
+        "effectiveSet": {
+          "items": [
+            {
+              "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+              "item": "mcp:pipeshub/linear@3",
+              "kind": "mcp",
+              "state": "unavailable",
+              "reason": "credential_missing",
+              "tools": [],
+              "binding": null,
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            },
+            {
+              "installation": "jira-1",
+              "item": "toolset:pipeshub/jira@1",
+              "kind": "toolset",
+              "state": "ready",
+              "reason": null,
+              "tools": [
+                {
+                  "toolId": "jira@jira-1/create_issue",
+                  "descriptorDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                },
+                {
+                  "toolId": "jira@jira-1/search_issues",
+                  "descriptorDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                }
+              ],
+              "binding": {
+                "ref": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S0001",
+                "owner": "user:u3",
+                "versionDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+              },
+              "provenance": {
+                "grantedBy": "agent:a7",
+                "visibleVia": "org",
+                "approvedBy": null
+              }
+            }
+          ],
+          "digest": "sha256:b8528078978f2cbe958ba060fd42624bc4caaa6528873070c5e37cfce5e57661"
+        }
+      },
+      "expected": {
+        "toolIds": [
+          "calculator@default/add",
+          "jira@jira-1/create_issue",
+          "jira@jira-1/search_issues"
+        ],
+        "mcpInstances": [],
+        "skills": [],
+        "items": [
+          {
+            "installation": "jira-1",
+            "binding": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S0001"
+          }
+        ]
+      }
+    }
+  ]
+}

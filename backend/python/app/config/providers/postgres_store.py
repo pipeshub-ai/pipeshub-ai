@@ -9,7 +9,7 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import Any, Generic, TypeVar
 
 from app.config.key_value_store import KeyValueStore
@@ -47,8 +47,11 @@ DELETE FROM platform.kv_entries WHERE key = $1 RETURNING (expires_at IS NULL OR 
 _RANGE = """/* pipeshub:kv.range */
 SELECT key FROM platform.kv_entries WHERE key >= $1 AND ($2::text IS NULL OR key < $2) AND (expires_at IS NULL OR expires_at > now())
 ORDER BY key"""
+# The expiry test on the outer scan too: it is leakproof, so it runs before the row policies, and a live row the purge passes over is
+# never judged by them (in PG_KV_ACCESS=shadow each one would be logged as an access outside the role's prefixes).
 _PURGE = """/* pipeshub:kv.purge */
-DELETE FROM platform.kv_entries WHERE key IN (SELECT key FROM platform.kv_entries WHERE expires_at <= now() LIMIT 1000 FOR UPDATE SKIP LOCKED)"""
+DELETE FROM platform.kv_entries WHERE expires_at <= now()
+AND key IN (SELECT key FROM platform.kv_entries WHERE expires_at <= now() LIMIT 1000 FOR UPDATE SKIP LOCKED)"""
 _NOTIFY = (
     "/* pipeshub:kv.notify */ SELECT pg_notify('pipeshub_kv_changed', $1)"  # KV_CHANNEL
 )
@@ -219,7 +222,9 @@ class PostgresKeyValueStore(KeyValueStore[T], Generic[T]):
         else:
             self._watchers.pop(key, None)
 
-    async def subscribe_changes(self, callback: Callable[[str], None]) -> Any | None:  # noqa: ANN401
+    async def subscribe_changes(
+        self, callback: Callable[[str], None], *, keys: Collection[str] | None = None
+    ) -> Any | None:  # noqa: ANN401
         dsn = listen_dsn(self._rt.cfg)
         if dsn is None:
             logger.warning(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from app.agent_loop_lib.agent import observability as obs
 from app.agent_loop_lib.core.exceptions import ToolError
@@ -8,6 +8,9 @@ from app.agent_loop_lib.core.types import ToolCall
 from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.special_route import RouteContext
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 class HandoffTool(Tool):
@@ -20,6 +23,10 @@ class HandoffTool(Tool):
     picks up the full existing conversation on the very next turn
     (horizontal/peer-to-peer) — no child process, no separate AgentResult.
     """
+
+    def time_bound_s(self, arguments: Mapping[str, Any]) -> float | None | Literal["default"]:
+        # Waits on the receiving agent's loop, every step of which is bounded on its own.
+        return None
 
     @property
     def log_kind(self) -> str:

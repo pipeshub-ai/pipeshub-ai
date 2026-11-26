@@ -68,7 +68,7 @@ function ColumnShell({ label, status, thinking, onStop, stopDisabled, onRetry, o
           <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {label}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-10)' }} aria-live="polite">
+          <Text size="1" style={{ color: 'var(--slate-11)' }} aria-live="polite">
             {t(STATUS_KEYS[status])}
           </Text>
         </Flex>

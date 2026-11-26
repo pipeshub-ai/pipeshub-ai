@@ -26,6 +26,7 @@ from app.services.record_content.models import (
 )
 from app.utils.error_class import mark_error
 from tests.support.log_capture import assert_text_free
+from tests.support.record_access import InMemoryRecordAccess
 
 
 def _make_state(**kwargs):
@@ -172,7 +173,10 @@ async def test_total_size_cap_puts_excess_in_failures():
 
 @pytest.mark.asyncio
 async def test_too_many_refs_returns_failure():
-    from app.agents.actions.util.attachments import MAX_ATTACHMENTS_PER_CALL, resolve_attachments
+    from app.agents.actions.util.attachments import (
+        MAX_ATTACHMENTS_PER_CALL,
+        resolve_attachments,
+    )
 
     refs = [f"rec{i}" for i in range(MAX_ATTACHMENTS_PER_CALL + 1)]
 
@@ -296,7 +300,7 @@ async def test_an_access_check_the_graph_could_not_answer_is_safe_for_the_model(
         mark_error(down, "unavailable")  # what db.query.failed stamps on the error it logged
     graph = AsyncMock()
     graph.get_record_by_id = AsyncMock(return_value=_live_record())
-    graph.check_record_access_with_details = AsyncMock(side_effect=down)
+    InMemoryRecordAccess().user("user1", "org1").readable("user1", "org1", "rec1").fail_with(down).serve(graph)
     with patch.object(RecordContentResolver, "_fetch", new=AsyncMock()) as fetch, \
             caplog.at_level(logging.DEBUG):
         bundle = await resolve_attachments(_make_state(graph_provider=graph), ["rec1"])

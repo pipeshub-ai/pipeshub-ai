@@ -194,7 +194,8 @@ class TestFormatMessage:
         transport = _transport()
         msg = SystemMessage(content="be nice")
         formatted = transport._format_message(msg)
-        assert formatted == {"role": "system", "content": "be nice"}
+        # E3c FB-1: the Messages API refuses a system role inside `messages`.
+        assert formatted == {"role": "user", "content": [{"type": "text", "text": "be nice"}]}
 
     def test_empty_string_user_content_defaults(self) -> None:
         transport = _transport()

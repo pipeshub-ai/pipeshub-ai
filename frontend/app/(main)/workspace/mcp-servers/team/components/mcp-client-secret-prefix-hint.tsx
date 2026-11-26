@@ -23,7 +23,7 @@ export function McpClientSecretPrefixHint({ prefix, secret }: { prefix?: string 
       size="1"
       role={missing ? 'alert' : undefined}
       data-testid="mcp-client-secret-prefix-hint"
-      style={{ color: missing ? 'var(--amber-11)' : 'var(--slate-10)' }}
+      style={{ color: missing ? 'var(--amber-11)' : 'var(--slate-11)' }}
     >
       {t(
         missing

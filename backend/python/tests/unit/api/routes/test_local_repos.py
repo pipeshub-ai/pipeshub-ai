@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI, Request
@@ -495,3 +495,20 @@ def test_the_org_is_the_one_bound_for_the_request_not_a_claim_in_the_user_dict_a
     assert r.status_code == 201
     assert store.Repo("org1", "u1", KEY).exists() and not store.Repo("evil-org", "u1", KEY).exists()  # the bound org decided where it went
     assert world.c.get("/api/v1/local-repos", headers={"x-test-unbound": "1"}).status_code == 401
+
+
+def test_a_repository_that_holds_only_credential_files_is_ready_and_counts_them_as_left_out(world):
+    from tests.unit.connectors.sources.local_folder.harness import FilterCollection, mod
+    from tests.unit.connectors.sources.local_repo.test_connector import connector
+
+    world.c.put(f"/api/v1/local-repos/{KEY}", json={"name": "shop"})
+    put_files(world, **{".env": "A=1\n"})
+    commit = world.c.post(f"/api/v1/local-repos/{KEY}/commit").json()
+    sync, records = connector(key=KEY)
+    records.org_id = "org1"  # the org this route stored the files under
+    with patch.object(mod, "load_connector_filters", AsyncMock(return_value=(FilterCollection(), FilterCollection()))):
+        asyncio.run(sync.run_sync())  # the real sync over the mirror the route wrote
+    world.registry.instances["c1"].update(lastSyncStartedAtTimestamp=commit["lastCommitAt"] + 1, lastSyncFinishedAtTimestamp=commit["lastCommitAt"] + 2, lastSyncOutcome="succeeded")
+    world.stats["data"]["stats"] = {"total": len(records.records), "indexingStatus": {"COMPLETED": len(records.records)}}
+    status = world.c.get(f"/api/v1/local-repos/{KEY}").json()
+    assert status["state"] == "ready" and status["indexing"]["excluded"] == {"sensitive": 1}

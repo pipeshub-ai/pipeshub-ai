@@ -15,6 +15,8 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/config', () => ({
   useAuthStore: (fn: (s: { isHydrated: boolean }) => unknown) => fn({ isHydrated: true }),
+  GuestGuard: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  SignInNotices: () => null,
 }));
 
 vi.mock('@/lib/api/org-exists-public', () => ({
@@ -30,9 +32,6 @@ vi.mock('@/lib/electron', () => ({ isElectron: () => false }));
 vi.mock('@/lib/store/auth-store', () => ({ requestElectronServerUrlChange: vi.fn() }));
 vi.mock('@/lib/store/toast-store', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 vi.mock('@/lib/hooks/use-breakpoint', () => ({ useAuthWideLayout: () => false }));
-vi.mock('@/app/components/ui/guest-guard', () => ({
-  GuestGuard: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}));
 vi.mock('@/app/components/ui/auth-guard', () => ({ LoadingScreen: () => <div>loading</div> }));
 vi.mock('../../components/auth-hero', () => ({ default: () => null }));
 vi.mock('../../components/form-panel', () => ({

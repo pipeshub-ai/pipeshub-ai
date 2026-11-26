@@ -15,6 +15,8 @@ import type {
   ConnectorStatsResponse,
   ConnectionCheckResponse,
   PermissionStatus,
+  PermissionFilter,
+  PermissionFilterMode,
   ReindexStage,
   CodeGraphRepo,
   AccessExplanation,
@@ -370,7 +372,9 @@ export const ConnectorsApi = {
   // ── Toggle ──
 
   /**
-   * Toggle sync or agent for a connector instance. Only the Local FS
+   * Turn sync or agent on (`enabled: true`) or off for a connector instance.
+   * Naming the state, rather than flipping, makes a resent request harmless:
+   * the backend changes nothing when the connector is already there. Only the Local FS
    * desktop-offline refusal is suppressed, because callers render that as an
    * info toast; every other failure keeps the generic error toast and its
    * backend message. `device` is the desktop enabling a Local FS connector;
@@ -379,11 +383,12 @@ export const ConnectorsApi = {
   async toggleConnector(
     connectorId: string,
     type: 'sync' | 'agent',
+    enabled: boolean,
     device?: { deviceId: string; deviceName: string }
   ) {
     const { data } = await apiClient.post(
       `${BASE_URL}/${connectorId}/toggle`,
-      { type, ...device },
+      { type, enabled, ...device },
       { suppressErrorToast: isDesktopOfflineError }
     );
     revalidateSwrNamespace(SWR_NS.teamConnectorLists);
@@ -545,6 +550,15 @@ export const ConnectorsApi = {
   async getPermissionStatus(connectorId: string): Promise<PermissionStatus> {
     const { data } = await apiClient.get<PermissionStatus>(
       `${BASE_URL}/${connectorId}/permissions/status`,
+      { suppressErrorToast: true }
+    );
+    return data;
+  },
+
+  async setPermissionFilter(connectorId: string, mode: PermissionFilterMode): Promise<PermissionFilter> {
+    const { data } = await apiClient.patch<PermissionFilter>(
+      `${BASE_URL}/${connectorId}/permissions/filter`,
+      { mode },
       { suppressErrorToast: true }
     );
     return data;

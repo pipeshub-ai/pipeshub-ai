@@ -201,12 +201,11 @@ async def test_browser_like_identity_still_looks_like_a_browser(site: Site) -> N
 
 
 async def test_an_empty_page_returns_its_html_once_the_wait_budget_is_spent(site: Site, fetcher: Crawl4AIFetcher) -> None:
-    started = time.monotonic()
     result = await fetcher.fetch(f"{site.base}/empty", browser_like=False)
 
     assert result.success, result.error
     assert 'id="marker"' in (result.html or "")
-    assert time.monotonic() - started < Crawl4AIFetcher.page_deadline_seconds(fetcher._run_configs[False])
+    assert result.timed_out is False  # the page's own wait ran out, not the fetcher's page deadline
 
 
 async def test_status_and_landing_url_survive_prefetch(site: Site, fetcher: Crawl4AIFetcher) -> None:
@@ -255,6 +254,7 @@ async def test_a_page_stuck_in_a_script_loop_fails_within_its_deadline(site: Sit
     started = time.monotonic()
     busy, fine = await fetcher.fetch_many([f"{site.base}/busy", f"{site.base}/fine"], browser_like=False)
 
+    # wall-clock-ok: the deadline is over 20 s and the regression is a page that never returns (the 240 s timeout)
     assert time.monotonic() - started < deadline + 5
     assert busy.success is False
     assert fine.success, fine.error

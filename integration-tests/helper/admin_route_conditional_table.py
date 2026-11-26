@@ -96,12 +96,19 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
     "service_accounts": ("service_account", "service_account_email", "all_team"),
     # A team the creator made and owns; the other member has no role on it.
     "teams": ("creator_team",),
+    # /commands: the creator's own, and one the admin made and shared with the whole org.
+    "commands": ("member_command", "org_command"),
+    # The creator's knowledge base above, with knowledge publications switched on.
+    "publications": ("published_kb",),
 }
 # Made new each time they are asked for: a connector, or an MCP server (the
 # admin's, or the creator's personal one) for a case that deletes it.
 FRESH_KEYS = frozenset({
     "fresh_team", "fresh_personal", "fresh_mcp", "fresh_personal_mcp",
     "fresh_toolset", "fresh_personal_toolset", "fresh_creator_team", "unique_name",
+    # The admin's own /command, one the admin shared with the org, and a publication of the
+    # creator's knowledge base, for a case that changes or revokes it.
+    "fresh_admin_command", "fresh_org_command", "fresh_publication",
 })
 DERIVED_KEYS = frozenset({"target", "target_name", "target_state"})
 
@@ -139,6 +146,11 @@ class ConditionalRoute:
     # Filled in when the handler asks who is calling but answers everyone the
     # same way. Such a route needs a member case and an admin case that match.
     same_for_everyone: str = ""
+    # The handler's own path, when the gateway serves it under another one and
+    # forwards the call there (the publications routes).
+    forwards_to: str = ""
+    # Served only while the agent harness is switched on; a stack without it skips the row.
+    needs_harness: bool = False
 
     @property
     def id(self) -> str:
@@ -285,6 +297,16 @@ _NO_SUCH_ACCOUNT = "was not found in this organisation"
 _NOT_A_SERVICE_AGENT = "Only a service agent searches as a service account"
 _TOOLSET_DELETED = "Toolset instance deleted successfully"
 _OAUTH = f"/api/v1/oauth/{OAUTH_CONNECTOR_TYPE}"
+# agent-harness/transport/harness-switch.ts: every harness path answers this while the harness is off.
+HARNESS_OFF = "The agent harness is not enabled on this install."
+_SHARED_ORG_COMMAND = "This command is shared; only an organization admin can change it."
+_NOT_YOURS_TO_CHANGE = "You cannot change this skill."
+_NOT_YOUR_CANDIDATE = "Only the person it was learned for or an admin can decide this."
+# A well-formed id no proposal has.
+ABSENT_CANDIDATE = "65f0c0ffee00000000000002"
+_PUBLICATIONS = "/api/v1/agent-harness/publications"
+_KNOWLEDGE_PUBLICATIONS = "/api/v1/knowledge/publications"
+_NOT_THE_OWNER = "only an owner of the container or an org admin"
 
 
 _HIDE_SECRETS = os.getenv("HIDE_SECRET_CONFIG") == "true"
@@ -475,8 +497,8 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
         "GET", "/api/v1/knowledgeBase/knowledge-hub/nodes/app/{target}",
         # The member's own collection: its owner opens it, and being an admin opens nothing.
         cases=(
-            Case("member_kb", CREATOR, True, 200, '"items"'),
-            Case("member_kb", ADMIN, False, 404, "Node not found"),
+            Case("published_kb", CREATOR, True, 200, '"items"'),
+            Case("published_kb", ADMIN, False, 404, "Node not found"),
         ),
         params={"limit": "50"},
     ),
@@ -765,6 +787,157 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
             Case("fresh_creator_team", ADMIN, True, 200, "Team deleted successfully"),
         ),
         service=CONNECTOR_SERVICE,
+    ),
+    # A shared /command is changed by those who govern it: an org command by an org admin only.
+    # The member sees the org command, so a refusal is the rule and not a missing skill. The
+    # admin changes one made for the case; the patch, whose text is not in the body, changes nothing.
+    *(
+        ConditionalRoute(
+            f"api/routes/skills.py::{name}", method, f"{_SKILLS}/{{target}}{suffix}",
+            cases=(
+                Case(target, MEMBER, False, 403, _SHARED_ORG_COMMAND),
+                Case(target, ADMIN, True, status, words, absent=(_SHARED_ORG_COMMAND,)),
+            ),
+            body=body, params=params or {},
+        )
+        for name, method, suffix, target, status, words, body, params in (
+            ("update_skill", "PUT", "", "fresh_org_command", 200, "{target}",
+             {"description": "Changed by the conditional-admin tests.", "body": "Say hello again.",
+              "invocation": {"user": True, "model": False}}, None),
+            ("patch_skill_body", "PATCH", "/body", "org_command", 400, "Patch failed",
+             {"old_string": "it-cond-not-in-the-body", "new_string": "x"}, None),
+            ("rename_skill", "POST", "/rename", "fresh_org_command", 200, "{target}",
+             {"displayName": "{unique_name}"}, None),
+            ("deprecate_skill", "POST", "/deprecate", "fresh_org_command", 200, '"status":"success"',
+             {"reason": "Made by the conditional-admin tests."}, None),
+            ("delete_skill", "DELETE", "", "fresh_org_command", 200, '"status":"success"', None, None),
+            # No such version: past the check the rollback finds nothing to restore.
+            ("rollback_skill", "POST", "/rollback", "org_command", 404, "not found",
+             {"version": "999"}, None),
+            ("write_resource", "PUT", "/resource", "fresh_org_command", 200, '"status":"success"',
+             {"path": "notes.md", "content": "Made by the conditional-admin tests."}, None),
+            ("remove_resource", "DELETE", "/resource", "org_command", 404, "not found for skill",
+             None, {"path": "it-cond-absent.md"}),
+        )
+    ),
+    # Only an org admin shares a /command with the whole org. The creator's own command is
+    # refused; the admin's is shared.
+    ConditionalRoute(
+        "api/routes/skills.py::publish_command", "POST", f"{_SKILLS}/{{target}}/publish",
+        cases=(
+            Case("member_command", CREATOR, False, 403, _NOT_YOURS_TO_CHANGE),
+            Case("fresh_admin_command", ADMIN, True, 200, "{target}", absent=(_NOT_YOURS_TO_CHANGE,)),
+        ),
+        body={"scope": "org"},
+    ),
+    # Where a /command may be shared: the org is offered to an org admin only.
+    ConditionalRoute(
+        "api/routes/skills.py::command_share_targets", "GET", f"{_SKILLS}/commands/share-targets",
+        cases=(
+            Case("org", MEMBER, False, 200, '"org":false', absent=('"org":true',)),
+            Case("org", ADMIN, True, 200, '"org":true', absent=('"org":false',)),
+        ),
+    ),
+    # The editor lists what the caller may change: an org command is left out for a member,
+    # who still finds it in the / menu. (The admin also authored it; the member side is the rule.)
+    ConditionalRoute(
+        "api/routes/skills.py::list_skills", "GET", f"{_SKILLS}/",
+        cases=(
+            Case("org_command", MEMBER, False, 200, "", absent=("{target}",)),
+            Case("org_command", ADMIN, True, 200, "{target}"),
+        ),
+        params={"q": "{target}"},
+    ),
+    # A learned proposal is decided by the person it was learned for or an org admin. A
+    # proposal comes from a run, which the test world cannot make, so these aim at one that
+    # is not there: a member is refused before the lookup, an admin gets past it to the 404.
+    *(
+        ConditionalRoute(
+            f"api/routes/skills.py::{name}", "POST", f"{_SKILLS}/candidates/{ABSENT_CANDIDATE}/{step}",
+            cases=(
+                Case("org", MEMBER, False, 403, _NOT_YOUR_CANDIDATE),
+                Case("org", ADMIN, True, 404, "not found", absent=(_NOT_YOUR_CANDIDATE,)),
+            ),
+            body={},
+        )
+        for name, step in (("approve_candidate", "approve"), ("reject_candidate", "reject"))
+    ),
+    ConditionalRoute(
+        "api/routes/skills.py::get_pending_candidates", "GET", f"{_SKILLS}/candidates/pending",
+        cases=(
+            Case("org", MEMBER, True, 200, '"candidates"'),
+            Case("org", ADMIN, True, 200, '"candidates"'),
+        ),
+        same_for_everyone="an admin also sees others' proposals, which come from runs the test world cannot make",
+    ),
+    # An import never binds a service account (the portable form leaves it out), so nobody
+    # is refused for one; a document that is not an export is refused alike, and nothing is made.
+    ConditionalRoute(
+        "api/routes/agent.py::import_agent", "POST", f"{_AGENTS}/import",
+        cases=(
+            Case("org", MEMBER, True, 400, "not an agent export"),
+            Case("org", ADMIN, True, 400, "not an agent export"),
+        ),
+        body={"agent": {}},
+        same_for_everyone="an import never binds a service account",
+        needs_harness=True,
+    ),
+    # A rollback rewrites the draft, whose binding check needs an admin only for a service
+    # agent, which these tests do not make; an agent that is not there is not found alike.
+    ConditionalRoute(
+        "api/routes/agent.py::rollback_agent_version", "POST", f"{_AGENTS}/{{target}}/versions/1/rollback",
+        cases=(
+            Case("org", MEMBER, True, 404, "not found"),
+            Case("org", ADMIN, True, 404, "not found"),
+        ),
+        body={},
+        same_for_everyone="only a service agent's binding needs an admin, and these tests make none",
+    ),
+    # Never asks who is calling: it is found because it calls the skills manager's
+    # write_resource, which the reader takes for the route of that name. A package with no
+    # name is refused alike, and nothing is made.
+    ConditionalRoute(
+        "api/routes/skills.py::finalize_import", "POST", f"{_SKILLS}/import/finalize",
+        cases=(
+            Case("org", MEMBER, True, 400, "missing a 'name' field"),
+            Case("org", ADMIN, True, 400, "missing a 'name' field"),
+        ),
+        body={"content": "Made by the conditional-admin tests, with no frontmatter."},
+        same_for_everyone="it never asks; the reader matches the manager's write_resource to the route",
+    ),
+    # A knowledge base is published, and its publications listed or revoked, by an owner of
+    # it or an org admin. The gateway serves these under the harness and forwards them to
+    # the query service. The create's expiry is past, so whoever passes the check is
+    # refused for that and nothing is published.
+    ConditionalRoute(
+        "api/routes/knowledge_publications.py::create_publication", "POST", _PUBLICATIONS,
+        cases=(
+            Case("published_kb", MEMBER, False, 403, _NOT_THE_OWNER),
+            Case("published_kb", CREATOR, True, 422, "not in the future", absent=(_NOT_THE_OWNER,)),
+            Case("published_kb", ADMIN, True, 422, "not in the future", absent=(_NOT_THE_OWNER,)),
+        ),
+        body={"containerKind": "kb", "containerId": "{target}", "audience": {"org": True},
+              "mode": "answer_only", "expiresAt": 1},
+        forwards_to=_KNOWLEDGE_PUBLICATIONS, needs_harness=True,
+    ),
+    ConditionalRoute(
+        "api/routes/knowledge_publications.py::list_publications", "GET", _PUBLICATIONS,
+        cases=(
+            Case("published_kb", MEMBER, False, 403, _NOT_THE_OWNER),
+            Case("published_kb", CREATOR, True, 200, '"publications"', absent=(_NOT_THE_OWNER,)),
+            Case("published_kb", ADMIN, True, 200, '"publications"', absent=(_NOT_THE_OWNER,)),
+        ),
+        params={"containerKind": "kb", "containerId": "{target}"},
+        forwards_to=_KNOWLEDGE_PUBLICATIONS, needs_harness=True,
+    ),
+    ConditionalRoute(
+        "api/routes/knowledge_publications.py::revoke_publication", "DELETE", f"{_PUBLICATIONS}/{{target}}",
+        cases=(
+            Case("fresh_publication", MEMBER, False, 403, _NOT_THE_OWNER),
+            Case("fresh_publication", CREATOR, True, 200, "{target}"),
+            Case("fresh_publication", ADMIN, True, 200, "{target}"),
+        ),
+        forwards_to=f"{_KNOWLEDGE_PUBLICATIONS}/{{target}}", needs_harness=True,
     ),
 )
 

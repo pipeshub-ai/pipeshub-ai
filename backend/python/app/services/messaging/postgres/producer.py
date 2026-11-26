@@ -9,7 +9,7 @@ from pydantic import JsonValue
 from app.core.envelope import sign_message
 from app.services.messaging.config import RedisStreamsConfig
 from app.services.messaging.interface.producer import IMessagingProducer
-from app.services.messaging.postgres.queue import PgQueue
+from app.services.messaging.postgres.queue import PgQueue, joined
 from app.utils.request_context import inject_envelope
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -69,6 +69,8 @@ class PgMessagingProducer(IMessagingProducer):
             await self.queue.publish(topic, stamped)  # one transaction: all or none
             return [True] * len(messages)
         except Exception as e:
+            if joined():
+                raise  # the write's transaction is failed: its caller must roll back (or retry a conflict), not commit without them
             self.logger.error(
                 "Failed to publish %d messages to queue topic %s: %s",
                 len(messages),

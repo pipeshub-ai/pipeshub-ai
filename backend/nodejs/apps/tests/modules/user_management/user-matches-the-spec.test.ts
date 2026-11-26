@@ -1,6 +1,6 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
-import { readFileSync } from 'fs'
+import { readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import yaml from 'js-yaml'
 import { userSchema } from '../../../src/modules/user_management/schema/users.schema'
@@ -24,11 +24,34 @@ interface SpecSchema {
   properties?: Record<string, unknown>
 }
 
+type Spec = { components?: { schemas?: Record<string, SpecSchema> } }
+
+/** Overlay specs a build ships next to its api-docs module (`ApiDocsService.registerSpecOverlay`), found rather than listed. */
+function overlayFiles(dir = join(__dirname, '..', '..', '..', 'src')): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) return entry.name === 'node_modules' ? [] : overlayFiles(full)
+    return /api-docs$/.test(dir) && /overlay\.ya?ml$/.test(entry.name) ? [full] : []
+  })
+}
+
+/**
+ * The user schemas of the spec the build publishes: the shared file plus the
+ * fields an edition's overlay adds to them. An edition that extends the stored
+ * user (and declares the fields in its overlay) is held to the same rule.
+ */
 function schemas(): Record<string, SpecSchema> {
-  const spec = yaml.load(readFileSync(SPEC, 'utf8')) as {
-    components: { schemas: Record<string, SpecSchema> }
+  const spec = yaml.load(readFileSync(SPEC, 'utf8')) as Spec
+  const merged = spec.components?.schemas ?? {}
+  for (const file of overlayFiles()) {
+    const overlay = (yaml.load(readFileSync(file, 'utf8')) as Spec | undefined)?.components?.schemas ?? {}
+    for (const [name, schema] of Object.entries(overlay)) {
+      const base = merged[name]
+      if (!base) continue
+      base.properties = { ...(base.properties ?? {}), ...(schema.properties ?? {}) }
+    }
   }
-  return spec.components.schemas
+  return merged
 }
 
 /**
@@ -87,7 +110,7 @@ describe('the user document matches the published spec', () => {
 
     expect(
       missing,
-      'add each one to that schema in modules/api-docs/pipeshub-openapi.yaml before shipping it',
+      'add each one to that schema in modules/api-docs/pipeshub-openapi.yaml (or the edition overlay that adds it) before shipping it',
     ).to.deep.equal([])
   })
 

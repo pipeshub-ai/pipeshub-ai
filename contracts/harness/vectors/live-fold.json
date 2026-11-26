@@ -1,0 +1,33 @@
+{
+  "description": "The live fold (CPD-6, CPD6-4): live layers meet into one answer whatever their order and however often one repeats, and pin ⊓ live only narrows. `values` is what live_fold holds per dimension path; `bottom` lists the paths whose meet is empty (two unrelated values), which no later layer lifts and which pin ⊓ live leaves absent. Python's harness_core.policy is the only live fold (Node meets nothing live); read by backend/python/tests/unit/harness_core/policy/test_live_fold.py.",
+  "cases": [
+    {
+      "id": "LF-1",
+      "behaviour": "two unrelated modes meet to the bottom; a third layer repeating one of them does not lift it (CPD6-4)",
+      "layers": [{"engineProfile": {"mode": "plan"}}, {"engineProfile": {"mode": "review"}}, {"engineProfile": {"mode": "plan"}}],
+      "values": {},
+      "bottom": ["engineProfile.mode"]
+    },
+    {
+      "id": "LF-2",
+      "behaviour": "a mode below another is their meet",
+      "layers": [{"engineProfile": {"mode": "build"}}, {"engineProfile": {"mode": "plan"}}],
+      "values": {"engineProfile.mode": "plan"},
+      "bottom": []
+    },
+    {
+      "id": "LF-3",
+      "behaviour": "numeric ceilings take the minimum; unrelated dimensions do not interact",
+      "layers": [{"budgets": {"maxTurns": 5}}, {"budgets": {"maxTurns": 3}, "engineProfile": {"mode": "review"}}],
+      "values": {"budgets.maxTurns": 3, "engineProfile.mode": "review"},
+      "bottom": []
+    },
+    {
+      "id": "LF-4",
+      "behaviour": "the kill switch, once on in any live layer, stays on",
+      "layers": [{"rollout": {"AGENT_HARNESS_KILL_SWITCH": true}}, {"rollout": {"AGENT_HARNESS_KILL_SWITCH": false}}],
+      "values": {"rollout.AGENT_HARNESS_KILL_SWITCH": true},
+      "bottom": []
+    }
+  ]
+}

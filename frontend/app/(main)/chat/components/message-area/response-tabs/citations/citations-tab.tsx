@@ -3,6 +3,7 @@
 import React from 'react';
 import { Flex, Text, Box } from '@radix-ui/themes';
 import { ReferenceCard } from './citation-card';
+import { CitationUnavailableCard } from './citation-unavailable';
 import type { CitationMaps, CitationCallbacks } from './types';
 
 interface CitationsTabProps {
@@ -36,6 +37,9 @@ export function CitationsTab({ citationMaps, callbacks }: CitationsTabProps) {
       {sortedEntries.map(([_, citationId]) => {
         const citation = citations[citationId];
         if (!citation) return null;
+        if (citation.unavailable) {
+          return <CitationUnavailableCard key={citationId} chunkIndex={citation.chunkIndex} />;
+        }
 
         return (
           <ReferenceCard

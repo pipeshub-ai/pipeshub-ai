@@ -1,0 +1,411 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/inbox-item.schema.json",
+  "title": "InboxItem",
+  "description": "G2 (ADR-INBOX-01): one row of a person's Inbox. A waiting item is an ask (approval, question, skill proposal, artefact review, memory review): it sorts first, has no read state and is never paused. Every other item is a stored notice. `id` is stable across reads (`n:` a notice, `a:` an approval, `q:` a question, `s:` a skill proposal, `r:` an artefact review, `m:` a memory); `at` is epoch ms; `link` is an in-app path. `subject` (subjectVersion 1, UIP3-FU-1) names what the row is about in typed fields, so a client words it in any language; `title` and `description` stay the English fallback.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "kind",
+    "severity",
+    "waiting",
+    "unread",
+    "archived",
+    "title",
+    "description",
+    "at",
+    "pointer",
+    "link",
+    "subjectVersion",
+    "subject"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[naqsrm]:",
+      "maxLength": 602,
+      "minLength": 3
+    },
+    "kind": {
+      "$ref": "#/$defs/InboxItemKind"
+    },
+    "severity": {
+      "enum": [
+        "error",
+        "success",
+        "warning",
+        "info"
+      ]
+    },
+    "waiting": {
+      "type": "boolean"
+    },
+    "unread": {
+      "type": "boolean"
+    },
+    "archived": {
+      "type": "boolean"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 1000
+    },
+    "at": {
+      "$ref": "../../../core/common.schema.json#/$defs/UInt"
+    },
+    "pointer": {
+      "$ref": "#/$defs/InboxPointer"
+    },
+    "link": {
+      "type": "string",
+      "pattern": "^/([^/]|$)",
+      "maxLength": 2048
+    },
+    "muted": {
+      "type": "boolean",
+      "description": "A workflow's notice: whether the person muted that workflow."
+    },
+    "subjectVersion": {
+      "description": "The subject's shape: 1. A client that knows a lower version words the row from `title`.",
+      "const": 1
+    },
+    "subject": {
+      "$ref": "#/$defs/InboxSubject"
+    }
+  },
+  "$defs": {
+    "InboxItemKind": {
+      "description": "What an Inbox item is about.",
+      "x-constant": "INBOX_ITEM_KINDS",
+      "enum": [
+        "approval",
+        "question",
+        "skill_proposal",
+        "artefact_review",
+        "memory_review",
+        "run_finished",
+        "run_not_finished",
+        "schedule_ran",
+        "schedule_failed",
+        "schedule_waiting",
+        "share",
+        "mention",
+        "connector",
+        "system"
+      ]
+    },
+    "InboxPointer": {
+      "description": "What an item opens, by the ids the routes take.",
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "conversationId"
+          ],
+          "properties": {
+            "type": {
+              "const": "conversation"
+            },
+            "conversationId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "agentKey": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "interactionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "callId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "scheduleId"
+          ],
+          "properties": {
+            "type": {
+              "const": "schedule"
+            },
+            "scheduleId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "runId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "conversationId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "agentKey": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "candidateId"
+          ],
+          "properties": {
+            "type": {
+              "const": "skill_candidate"
+            },
+            "candidateId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "itemKind",
+            "name"
+          ],
+          "description": "WP85-FU-1 (ADR-SEC-01 D4): a catalog item whose content waits for an admin's review, by its kind and name (an imported skill: its review panel on the skills page).",
+          "properties": {
+            "type": {
+              "const": "catalog_item"
+            },
+            "itemKind": {
+              "enum": [
+                "skill"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "memoryId"
+          ],
+          "properties": {
+            "type": {
+              "const": "memory"
+            },
+            "memoryId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "agentKey": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "path"
+          ],
+          "properties": {
+            "type": {
+              "const": "link"
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^/([^/]|$)",
+              "maxLength": 2048
+            }
+          }
+        }
+      ]
+    },
+    "InboxSubject": {
+      "description": "What an item is about, by name, never in sentences (UIP3-FU-1). Every kind carries its own fields: approval `action` (or `connect`), question `question`, skill_proposal and artefact_review `skill`, memory_review `memory`, run_finished and run_not_finished `chat` and `outcome`, schedule_* `workflow` and `outcome` (schedule_waiting also `deadlineAt`), share `sharedBy` and `chat`, mention `chat`; connector and system notices `source` (their words stay their writer's English). A notice written before a field existed lacks it.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "app"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "The call as people read it (the tool's display name, else its name)."
+            },
+            "app": {
+              "description": "The app the call acts in (the tool's toolset or MCP server); null when the tool names none.",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tool": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "The tool's id (CJFIX-A, ADR-INBOX-02): a client words the call from it and `name` as its approval card does, so Needs you and the chat name an ask the same way. Absent on a server before it."
+            },
+            "destination": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "Where the call sends things (a channel, an address), masked as the approval card shows it; absent when it names none."
+            }
+          }
+        },
+        "connect": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "What the person must connect for the task to go on."
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "skill": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "memory": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 280
+        },
+        "chat": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "The chat's title."
+        },
+        "workflow": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "The workflow's name."
+        },
+        "sharedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Who shared it, by display name."
+        },
+        "deadlineAt": {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt",
+          "description": "When an ask expires or a paused run stops (epoch ms)."
+        },
+        "outcome": {
+          "enum": [
+            "finished",
+            "cut_short",
+            "not_finished",
+            "ran",
+            "failed",
+            "refused",
+            "waiting"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "workflow_changed",
+            "scheduled_runs_off",
+            "no_agent_access",
+            "model_not_allowed",
+            "engine_not_allowed",
+            "stopped_by_admin",
+            "budget_reached",
+            "too_busy",
+            "not_found",
+            "unavailable"
+          ],
+          "description": "Why a workflow did not run (UIADOPT2-FU-2), from a closed set a client words: its firing's history keeps the exact code. A reason this set does not name reads `unavailable`."
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "The service that wrote a connector or system notice."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "id": "n:65f1a2b3c4d5e6f708192a3b",
+      "kind": "run_finished",
+      "severity": "success",
+      "waiting": false,
+      "unread": true,
+      "archived": false,
+      "title": "Quarterly report",
+      "description": "Finished. The answer is ready.",
+      "at": 1700000000000,
+      "pointer": {
+        "type": "conversation",
+        "conversationId": "c1",
+        "runId": "r1"
+      },
+      "link": "/chat/?conversationId=c1",
+      "subjectVersion": 1,
+      "subject": {
+        "chat": "Quarterly report",
+        "outcome": "finished"
+      }
+    }
+  ]
+}

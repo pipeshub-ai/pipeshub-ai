@@ -398,7 +398,7 @@ class TestConvenienceConsumerConfigs:
     @patch("app.services.messaging.utils.get_message_broker_type",
            return_value=MessageBrokerType.REDIS)
     @patch("app.services.messaging.utils.messaging_env")
-    async def test_aiconfig_redis_config_is_ephemeral(self, mock_env, _mock_broker) -> None:
+    async def test_aiconfig_redis_config_is_broadcast(self, mock_env, _mock_broker) -> None:
         """The Redis twin of the Kafka assertion: a regression that only hit Redis
         Streams would otherwise go green."""
         mock_env.redis_streams_maxlen = 10000
@@ -407,7 +407,7 @@ class TestConvenienceConsumerConfigs:
         container = _make_app_container()
         config = await MessagingUtils.create_aiconfig_consumer_config(container)
         assert isinstance(config, RedisStreamsConfig)
-        assert config.ephemeral_group is True
+        assert config.broadcast is True
         assert config.group_id.startswith("aiconfig_consumer_group-")
 
     @pytest.mark.asyncio

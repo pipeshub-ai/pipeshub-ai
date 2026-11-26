@@ -24,6 +24,7 @@ from tests.integration.graph_db.test_record_graph_write_concurrency import (
     _open_arango,
     _open_neo4j,
 )
+from tests.support import it_backends
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -35,12 +36,18 @@ ORGS = CollectionNames.ORGS.value
 GROUPS = CollectionNames.RECORD_GROUPS.value
 
 
+_ENDPOINTS = {"arango": "ARANGO_IT_URL", "neo4j": "NEO4J_IT_URI"}
+
+
 @pytest.fixture(params=["arango", "neo4j"])
 async def backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[Any, str]]:
     try:
         provider = await (_open_arango() if request.param == "arango" else _open_neo4j(monkeypatch, explicit=False))
+    except pytest.skip.Exception:
+        raise
     except Exception as exc:
-        pytest.skip(f"{request.param} not available: {exc}")
+        # Unset skips (in the opener); set but unreachable fails, so backend-matrix never passes on a skip.
+        it_backends.unavailable(_ENDPOINTS[request.param], exc)
     org = f"org-it-{uuid.uuid4().hex[:10]}"
     try:
         yield provider, org
