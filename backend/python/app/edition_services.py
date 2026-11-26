@@ -125,7 +125,7 @@ def get_data_entities_processor_cls():
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from fastapi import FastAPI
     from langchain_core.embeddings import Embeddings
@@ -177,6 +177,15 @@ def configure_app(app: "FastAPI", service: str) -> None:
 def decorate_chat_model(model: "BaseChatModel", provider: str, model_name: str, config: dict) -> "BaseChatModel":
     """Wrap a chat model with edition extras. OSS: none."""
     return model
+
+
+def ambient_cloud_credentials_allowed(model_config: "Mapping[str, Any]") -> bool:
+    """Whether a model with no saved credentials may use this server's own. OSS: yes."""
+    return True
+
+
+async def bind_request_org_root(config_service: Any) -> None:  # noqa: ANN401
+    """Record the caller's place for a model probe. OSS: nothing to record."""
 
 
 def decorate_embeddings(embeddings: "Embeddings", provider: str, model_name: str, config: dict) -> "Embeddings":

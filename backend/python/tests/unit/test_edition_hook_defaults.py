@@ -20,6 +20,18 @@ def test_model_decorators_return_their_input() -> None:
     assert edition_services.decorate_embeddings(embeddings, "openAI", "embed", {}) is embeddings
 
 
+def test_a_model_with_no_saved_credentials_may_use_the_servers_own() -> None:
+    assert edition_services.ambient_cloud_credentials_allowed({"provider": "openAI", "configuration": {}}) is True
+
+
+@pytest.mark.asyncio
+async def test_binding_a_model_probe_records_nothing() -> None:
+    config_service = MagicMock()
+
+    assert await edition_services.bind_request_org_root(config_service) is None
+    assert config_service.mock_calls == []
+
+
 @pytest.mark.skipif(edition_tree_present(), reason="these hooks are another edition's in this checkout")
 def test_configure_app_and_extra_toolsets_do_nothing() -> None:
     app, registry = MagicMock(), MagicMock()
