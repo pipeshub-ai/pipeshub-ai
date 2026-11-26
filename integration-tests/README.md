@@ -277,11 +277,11 @@ pytest -m "integration and not slow" -v             # exclude slow
 
 **How CI splits this suite.** The nightly run does not run the whole suite in one
 job: `.github/workflows/integration-tests.yml` divides the connector suites across
-five shards (`CONN_SHARD_1` … `CONN_SHARD_5`), and a sixth `core` shard runs
-everything those five do not name, plus the browser tests. A seventh `demo` shard
+six shards (`CONN_SHARD_1` … `CONN_SHARD_6`), and a seventh `core` shard runs
+everything those six do not name, plus the browser tests. An eighth `demo` shard
 runs only the Acme Corp demo questions (`-m demo`) on a stack nothing else has
 indexed into, because the demo's answers are prompted differently once a
-workspace has data of its own; `core` leaves the `demo` marker out. An eighth
+workspace has data of its own; `core` leaves the `demo` marker out. A ninth
 `ai_agents` shard runs `ai_agents/` (AI model settings, Agent Builder agents
 calling tools, MCP, and the agent harness's skills, coding tool and artifacts)
 against a real model. Every test there costs model calls, so that shard runs on
