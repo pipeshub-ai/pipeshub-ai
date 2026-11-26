@@ -80,20 +80,25 @@ It is not needed for the cost: the check is a fixed statement already.
 - **A start held whole:** up to `_KH_SPLIT_START_MAX` (5,000) edges out of it. A wider start (a folder of 50,000 or 500,000 files) lists its
   stubs and chain-tops as above, and reads its other children with the page (`_kh_split_window`): the next ones past the page's boundary in
   the page's order, a window at a time (up to `_KH_UNDECIDED_WINDOW_MAX`, 2,000), each asked of the check, until the page holds its rows or
-  `_KH_UNDECIDED_BUDGET_S` is spent (`_kh_v3_browse_undecided`, the windowing legacy and ArangoDB use). A page then costs its windows, not the
-  folder: one ordered read of the start's edges (top-k, so memory follows the window) and the check on the window. Its total is a lower bound
-  (`totalCapped`), and a page the budget ended carries a sealed resume cursor. Whether a child is hidden by navigation is read for the window
-  alone. A wide start with more than `_KH_SPLIT_MAX_CHILDREN` stubs is answered by legacy. Whether a start is wide is read from its
-  degree (its edges out, of any type), so a narrow start pays nothing for it; a read that finds more children than the count said (a sync
-  added some in between) makes the start wide.
+  `_KH_UNDECIDED_BUDGET_S` is spent (`_kh_v3_browse_undecided`, the windowing legacy and ArangoDB use). Bounded by the window, not the
+  folder, on every path: the memory a page holds (a window of rows), the ids it asks the check about, and whether a child is hidden by
+  navigation (read for the window alone). Whether a start is wide is read from its degree (its edges out, of any type), which reads no
+  edge, so a narrow start pays nothing for it; a read that finds more children than the count said (a sync added some in between) makes
+  the start wide. How many edges a page reads depends on the path. Through the children order index (below: name order, ascending, read
+  forwards, once its migration is done), each window reads about a window of edges in order from the page's boundary, and the stubs read
+  only the start's stubs, so the time a page takes does not grow with the folder. On any other path (other sorts, the name order
+  descending or backwards, or before the migration), each window's read orders all of the start's qualifying edges before its limit and
+  the stub read reads every child, so the time grows with the folder's width, though far more slowly than deciding every child
+  (`_kh_split_listed`), which the page no longer does. Its total is a lower bound (`totalCapped`), and a page the budget ended carries a
+  sealed resume cursor. A wide start with more than `_KH_SPLIT_MAX_CHILDREN` stubs is answered by legacy.
 - **The children order index** (`kh_children_order`, a relationship range index on `NODE_RELATION(khFrom, khOrd, khChild)`): every
   edge into a record or group carries its parent's id, its child's id and the child's place in the name order (`khOrd`: `'0'` + the
   lowercased name, `'1'` with no name, `'2'` for a stub). The node and tree state writers rewrite it in the same statement as the change
   (`_cypher_kh_edge_order`), and the children order migration (`KH_CHILDREN_ORDER_FLAG`) stamps older edges and checks that none is
   stale. Once that flag is set, a wide start sorted by name ascending reads each window from the index in order, from the page's boundary,
-  so a page reads about a window of edges whatever the folder holds, and its stubs from the `'2'` range alone. A window or stub read that
-  meets an edge whose stamp disagrees with its child reads the request again without the index and logs `kh.browse.children_order_stale`.
-  Other sorts, and the name order descending or backwards, read every child as above.
+  and its stubs from the `'2'` range alone. A window or stub read that meets an edge whose stamp disagrees with its child reads the request
+  again without the index and logs `kh.browse.children_order_stale`. What a page still reads in proportion to something other than its
+  window is the viewer's own grants, not the folder.
 - **Children read per row:** `_KH_SPLIT_MAX_CHILDREN` (5,000), first by id. A row's arrow asks about that many children; one admitted among
   them decides it, and with none the page is answered by legacy (below), so an arrow is never off for a child past the bound.
 - **Stubs below stubs:** followed to `_KH_SPLIT_STUB_DEPTH` (50), the walks' hop cap.
