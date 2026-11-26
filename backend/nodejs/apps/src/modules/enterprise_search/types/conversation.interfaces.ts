@@ -306,7 +306,10 @@ export interface IMessage {
   foreignTurn?: boolean;
   /** Copied from another conversation by a fork: it names none of that conversation's runs (FORKFIX). */
   copied?: boolean;
-  /** The durable run that wrote this answer (UX5). */
+  /**
+   * The run that wrote the row: the activity panel finds a durable run after a reload (UX5), the row's archived label
+   * keeps it, and a file the run wrote names it.
+   */
   runId?: string;
   /** With errorCode `mcp_tool_withdrawn`: the servers' labels the web app's words name (WP-84). */
   errorServers?: string[];
@@ -346,8 +349,6 @@ export interface IMessage {
   provenance?: AnswerProvenance;
   /** The labels of earlier versions of this row, newest last. Never returned in a response. */
   labelHistory?: LabelHistoryEntry[];
-  /** The run that wrote the row: its archived label keeps it, and a file the run wrote names it. */
-  runId?: string;
   /** A `bot_response` only: the asker shared this version in place. */
   consent?: AnswerConsent;
   /** A `bot_response` with a share with people only; never selected by default, never returned. */
