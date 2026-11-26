@@ -741,6 +741,24 @@ class TestSelectionAppsUnderAConnectionLimit:
         assert turn["selectionApps"] == ["app-in"]
 
     @pytest.mark.asyncio
+    async def test_a_request_naming_only_apps_records_those_the_folder_limit_reaches(self) -> None:
+        turn = await prepare_turn_scope(
+            self._graph(), "u", "o", {"apps": ["app-in", "app-out"]},
+            connection_sources={"apps": [], "recordGroups": ["g-in"], "records": []},
+        )
+        assert turn["selectionApps"] == ["app-in"] and turn["strictScope"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_request_naming_only_apps_records_nothing_when_the_caller_is_unknown(self) -> None:
+        graph = self._graph()
+        graph.get_user_by_user_id = AsyncMock(return_value=None)
+        turn = await prepare_turn_scope(
+            graph, "u", "o", {"apps": ["app-in"]},
+            connection_sources={"apps": [], "recordGroups": ["g-in"], "records": []},
+        )
+        assert turn["selectionApps"] == []
+
+    @pytest.mark.asyncio
     async def test_without_a_limit_the_selection_apps_are_as_before(self) -> None:
         turn = await prepare_turn_scope(self._graph(), "u", "o", {"recordGroups": ["g-out"]})
         assert turn["selectionApps"] == ["app-out"]

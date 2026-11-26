@@ -1266,8 +1266,12 @@ class TestKnowledgeSearchRoutes:
     async def test_naming_a_connection_the_limit_reaches_only_in_part_is_still_scanned(self) -> None:
         """A limit naming a folder inside app-in reaches app-in, so naming app-in is not dropped."""
         partial = {"apps": [], "recordGroups": ["g-in"], "records": []}
+        from app.modules.retrieval.selection_scope import SelectionScope
+
         with patch("app.api.routes.knowledge_search.connection_apps",
-                   AsyncMock(return_value=(frozenset(), frozenset({"app-in"})))):
+                   AsyncMock(return_value=(frozenset(), frozenset({"app-in"})))), \
+             patch("app.modules.retrieval.selection_scope.connection_bound_scope",
+                   AsyncMock(return_value=SelectionScope(groups={"g-in": "app-in"}))):
             _, seen = await self._grep(partial, filters={"apps": ["app-in", "app-out"]})
         assert seen and seen[0]["apps"] == ["app-in"]
 

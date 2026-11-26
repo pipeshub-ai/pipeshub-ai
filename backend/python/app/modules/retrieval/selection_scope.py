@@ -658,6 +658,13 @@ async def prepare_turn_scope(
     # read a record by id, which no search filter narrows.
     bind(AGENT_BOUND_FILTER_KEYS, agent_sources)
     if not has_selection(turn):
+        named = frozenset(i for key in CONTAINER_SCOPE_FILTER_KEYS for i in _ids(turn, key))
+        if connection_sources is not None and names_below_apps(connection_sources) and named:
+            # Whole apps named under a limit of folders or files: record those the limit
+            # reaches, as a selection would, for the tools that work per app.
+            user_key = await resolve_user_key(graph_provider, user_id)
+            limit = await connection_bound_scope(graph_provider, user_key, org_id, turn) if user_key else None
+            turn[SELECTION_APPS_FILTER_KEY] = sorted(named & limit.connector_ids) if limit is not None else []
         return turn
     # The selection is the whole scope of the turn: where it leaves a tool
     # with no app to work on, that means nothing, never everything.
