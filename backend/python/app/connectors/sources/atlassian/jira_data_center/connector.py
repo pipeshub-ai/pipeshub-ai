@@ -5901,7 +5901,7 @@ class JiraDataCenterConnector(BaseConnector):
             if str(r.external_record_id).startswith("attachment_") and r.external_record_id not in listed_ids
         ]
         if gone:
-            self.logger.info("🗑️ Issue %s no longer holds %d attachment(s) its records still have", issue_id, len(gone))
+            self.logger.info("Issue %s no longer holds %d attachment(s) its records still have", issue_id, len(gone))
             self._stale_attachment_ids.extend(gone)
 
     async def _delete_removed_attachments(self) -> None:
