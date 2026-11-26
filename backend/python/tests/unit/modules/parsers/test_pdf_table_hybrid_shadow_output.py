@@ -151,3 +151,27 @@ async def test_a_failed_parse_removes_the_spool_and_frees_the_slot(tmp_path, mon
         assert coord.admit("r2", "q") is not None
     finally:
         flow.set_coordinator(None)
+
+
+def test_a_parse_that_raises_after_a_table_was_collected_closes_the_collector(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PDF_TABLE_HYBRID_SHADOW", "true")
+    spool = str(tmp_path / "jobs")
+    os.mkdir(spool)
+    closed: list[bool] = []
+    real_close = flow.TableJobCollector.close
+    monkeypatch.setattr(flow.TableJobCollector, "close", lambda self: (closed.append(True), real_close(self))[1])
+    real_extract = ola.extract_layout_regions
+    seen = {"n": 0}
+
+    def fail_on_the_second_page(page, **kwargs):  # noqa: ANN003, ANN202
+        seen["n"] += 1
+        if seen["n"] == 2:
+            raise RuntimeError("layout failed")
+        return real_extract(page, **kwargs)
+
+    from app.modules.parsers.pdf import layout_pages
+
+    monkeypatch.setattr(layout_pages, "extract_layout_regions", fail_on_the_second_page)
+    with pytest.raises(RuntimeError):
+        parse_pdf_layout(PDF, spool)
+    assert closed == [True]
