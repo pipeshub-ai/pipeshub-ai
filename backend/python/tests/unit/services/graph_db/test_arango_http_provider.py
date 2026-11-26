@@ -22,6 +22,7 @@ Tests cover:
 - get_records_by_record_ids: success, empty, exception
 """
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14952,6 +14953,45 @@ class TestHardDeleteAgent:
         begin = connected_provider.http_client.begin_transaction.await_args
         assert begin.kwargs["exclusive"] == [CollectionNames.AGENT_HAS_MCP_SERVER.value]
         assert [c.kwargs["transaction"] for c in connected_provider.execute_query.await_args_list[3:11]] == ["tx1"] * 3 + ["tx2"] * 5
+
+    @pytest.mark.asyncio
+    async def test_a_lock_timeout_taking_the_mcp_transaction_is_run_again(self, connected_provider) -> None:
+        """Another delete holds the agent-to-server links: taking them times out, and the cleanup is tried again. Nothing is
+        aborted for the attempt that never got a transaction."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        timeout = ArangoQueryError("Begin transaction failed", 409, '{"code":409,"error":true,"errorMessage":"timeout waiting to lock","errorNum":18}')
+        connected_provider.http_client.begin_transaction = AsyncMock(side_effect=[timeout, "tx2"])
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [], [], [],                          # no knowledge, toolsets, toolset edges
+            [],                                  # tx2: the agent has no server links
+            [],                                  # no permissions
+            [{"_key": "a1"}],                    # agent deleted
+        ])
+
+        with patch("app.services.graph_db.arango.arango_http_provider.asyncio.sleep", new=AsyncMock()):
+            result = await connected_provider.hard_delete_agent("a1")
+
+        assert result["agents_deleted"] == 1
+        assert connected_provider.http_client.begin_transaction.await_count == 2
+        connected_provider.http_client.abort_transaction.assert_not_awaited()
+        connected_provider.http_client.commit_transaction.assert_awaited_once_with("tx2")
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_mcp_cleanup_aborts_its_transaction(self, connected_provider) -> None:
+        """A cancellation is not an Exception: the transaction holding the links exclusively is still aborted, and the
+        cancellation goes on to the caller."""
+        connected_provider.http_client.begin_transaction = AsyncMock(return_value="tx1")
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [], [], [],                          # no knowledge, toolsets, toolset edges
+            asyncio.CancelledError(),            # cancelled inside the cleanup
+        ])
+
+        with pytest.raises(asyncio.CancelledError):
+            await connected_provider.hard_delete_agent("a1")
+
+        connected_provider.http_client.abort_transaction.assert_awaited_once_with("tx1")
+        connected_provider.http_client.commit_transaction.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_failed_mcp_cleanup_keeps_the_agents_links_for_a_retry(self, connected_provider) -> None:

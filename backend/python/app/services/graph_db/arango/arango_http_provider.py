@@ -29304,18 +29304,24 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  CollectionNames.AGENT_TOOLS.value, CollectionNames.AGENT_MCP_SERVERS.value]
         attempt = 0
         while True:
-            txn = await self.http_client.begin_transaction(read=write, write=write, exclusive=[CollectionNames.AGENT_HAS_MCP_SERVER.value])
+            txn: str | None = None
+            committed = False
             try:
+                # Taking the exclusive links is inside the retry: another delete holding them answers a lock timeout.
+                txn = await self.http_client.begin_transaction(read=write, write=write, exclusive=[CollectionNames.AGENT_HAS_MCP_SERVER.value])
                 result = await work(txn)
                 await self.http_client.commit_transaction(txn)
+                committed = True
                 return result
             except Exception as exc:
-                with contextlib.suppress(Exception):
-                    await self.http_client.abort_transaction(txn)
                 attempt += 1
                 if attempt >= _WRITE_CONFLICT_ATTEMPTS or not (_is_write_conflict(exc) or _is_lock_timeout(exc)):
                     raise
-                await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
+            finally:
+                # On every way out but a commit, a cancellation included: the links stay held exclusively until it ends.
+                if txn is not None and not committed:
+                    await asyncio.shield(self._abort_quietly(txn))
+            await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
 
     async def _delete_agent_mcp_servers(self, agent_doc_id: str, transaction: str) -> tuple[int, int, int]:
         """The agent's server links, then each of those servers no agent is attached to any more: its tool links, the tools no
