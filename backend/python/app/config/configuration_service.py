@@ -655,3 +655,19 @@ async def delete_config_confirmed(config_service: ConfigurationService, key: str
     if await config_service.delete_config(key):
         return True
     return await config_service.get_config(key, use_cache=False, keep_in_cache=False, raise_on_error=True) is None
+
+
+class ConfigKeyNotDeletedError(RuntimeError):
+    """The store kept a key it was asked to delete."""
+
+    # Like an outage: the same delete is worth sending again (503 + Retry-After).
+    log_error_class = "unavailable"
+
+
+async def delete_config_or_raise(config_service: ConfigurationService, key: str) -> None:
+    """Delete ``key``, or raise when it may still be stored (an absent key counts as deleted).
+
+    :class:`ConfigKeyNotDeletedError` when the store kept it; the read's own error when the store can't answer.
+    """
+    if not await delete_config_confirmed(config_service, key):
+        raise ConfigKeyNotDeletedError("A stored value was not deleted")  # no key in the text: it names a user

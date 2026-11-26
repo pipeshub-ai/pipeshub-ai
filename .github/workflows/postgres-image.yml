@@ -17,10 +17,12 @@ on:
       - 'deployment/docker-compose/docker-compose.postgres-backup.yml'
       - 'deployment/docker-compose/pgbackrest.env.example'
       - 'deployment/docker-compose/scripts/pg-restore.sh'
+      - 'deployment/docker-compose/scripts/pg-restore-reach.pl'
       - 'deployment/docker-compose/tests/pg_backup_schedule_test.sh'
       - 'deployment/docker-compose/docker-compose.postgres-only.yml'
       - 'backend/db/**'
       - 'deployment/docker-compose/tests/pg_entrypoint_layout_test.sh'
+      - 'deployment/docker-compose/tests/pg_restore_reach_test.sh'
       - 'deployment/docker-compose/tests/postgres_*_test.sh'
       - 'deployment/docker-compose/tests/pg_roles_script_test.sh'
       - '.github/workflows/postgres-image.yml'
@@ -51,6 +53,9 @@ jobs:
 
       - name: Entrypoint volume-layout guard
         run: bash deployment/docker-compose/tests/pg_entrypoint_layout_test.sh
+
+      - name: Restore refuses a target the archived WAL cannot reach
+        run: bash deployment/docker-compose/tests/pg_restore_reach_test.sh
 
       - name: Default stack is unchanged without the profile
         working-directory: deployment/docker-compose

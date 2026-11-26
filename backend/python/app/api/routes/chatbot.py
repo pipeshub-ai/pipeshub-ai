@@ -148,7 +148,12 @@ from app.utils.llm import (
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import EXCEL_TOO_LARGE
-from app.utils.user_lookup import get_caller_user, get_user_or_503
+from app.utils.user_lookup import (
+    await_or_503,
+    get_caller_user,
+    get_document_or_503,
+    get_user_or_503,
+)
 from app.utils.validation_messages import validation_error_text
 
 DEFAULT_CONTEXT_LENGTH = 128000
@@ -1035,7 +1040,7 @@ async def _resolve_user_keys(
     and skipped rather than failing the whole batch."""
     user_keys: list[str] = []
     for user_id in user_ids:
-        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        user_doc = await _user_doc(graph_provider, user_id)
         if not user_doc:
             logger.warning("User not found for permission grant/revoke, skipping: %s", user_id)
             continue
@@ -1047,22 +1052,35 @@ async def _resolve_user_keys(
     return user_keys
 
 
+async def _user_doc(graph_provider: IGraphDBProvider, user_id: str) -> dict[str, Any] | None:
+    """Another user's graph record (not the caller's, so no ensurer). An outage is a 503, not "not found": a revoke
+    that skipped the user would answer 0 and leave their READER edges."""
+    return await await_or_503(graph_provider.get_user_by_user_id(user_id, raise_on_error=True))
+
+
+async def _permission_edge(
+    graph_provider: IGraphDBProvider, user_key: str, record_id: str
+) -> dict[str, Any] | None:
+    """The `USER -> RECORD` permission edge, or None. An outage is a 503, not "no edge"."""
+    return await await_or_503(
+        graph_provider.get_edge(
+            from_id=user_key,
+            from_collection=CollectionNames.USERS.value,
+            to_id=record_id,
+            to_collection=CollectionNames.RECORDS.value,
+            collection=CollectionNames.PERMISSION.value,
+            raise_on_error=True,
+        )
+    )
+
+
 async def _get_permission_edges(
     graph_provider: IGraphDBProvider, pairs: list[tuple[str, str]]
 ) -> list[dict[str, Any] | None]:
     """`USER -> RECORD` permission edge (or None) for each `(user_key, record_id)`, in order."""
     return await gather_with_concurrency(
         _PERMISSION_EDGE_LOOKUP_CONCURRENCY,
-        *(
-            graph_provider.get_edge(
-                from_id=user_key,
-                from_collection=CollectionNames.USERS.value,
-                to_id=record_id,
-                to_collection=CollectionNames.RECORDS.value,
-                collection=CollectionNames.PERMISSION.value,
-            )
-            for user_key, record_id in pairs
-        ),
+        *(_permission_edge(graph_provider, user_key, record_id) for user_key, record_id in pairs),
     )
 
 
@@ -1217,18 +1235,20 @@ async def _get_artifact_record_ids_for_conversation(
 ) -> list[str]:
     """Every artifact record id (`_key`, shared with its `records` doc) in a
     conversation. Sorted so SKIP/LIMIT pages don't overlap or skip, and raises on
-    graph errors rather than reporting them as "no artifacts"."""
+    graph errors (an outage as a 503) rather than reporting them as "no artifacts"."""
     record_ids: list[str] = []
     skip = 0
     page_size = 200
     while True:
-        docs = await graph_provider.get_documents_paginated(
-            CollectionNames.ARTIFACTS.value,
-            skip=skip,
-            limit=page_size,
-            filters={"orgId": org_id, "conversationId": conversation_id},
-            sort_field="_key",
-            raise_on_error=True,
+        docs = await await_or_503(
+            graph_provider.get_documents_paginated(
+                CollectionNames.ARTIFACTS.value,
+                skip=skip,
+                limit=page_size,
+                filters={"orgId": org_id, "conversationId": conversation_id},
+                sort_field="_key",
+                raise_on_error=True,
+            )
         )
         if not docs:
             break
@@ -1272,16 +1292,10 @@ async def _owned_chat_attachments(
         return []
 
     async def owned(record_id: str) -> bool:
-        record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+        record = await get_document_or_503(graph_provider, record_id, CollectionNames.RECORDS.value)
         if not is_chat_attachment(record, org_id):
             return False
-        edge = await graph_provider.get_edge(
-            from_id=user_key,
-            from_collection=CollectionNames.USERS.value,
-            to_id=record_id,
-            to_collection=CollectionNames.RECORDS.value,
-            collection=CollectionNames.PERMISSION.value,
-        )
+        edge = await _permission_edge(graph_provider, user_key, record_id)
         return (edge or {}).get("role") == "OWNER"
 
     ids = list(dict.fromkeys(r for r in record_ids if r))
@@ -1307,7 +1321,7 @@ async def _org_user_keys(
     """User node keys for the ids that are users of this org; others are skipped."""
     keys: list[str] = []
     for user_id in dict.fromkeys(user_ids):
-        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        user_doc = await _user_doc(graph_provider, user_id)
         user_key = (user_doc or {}).get("_key") or (user_doc or {}).get("id")
         if not user_key or user_doc.get("orgId") != org_id:
             logger.warning("Not a user of this org, skipping: %s", user_id)

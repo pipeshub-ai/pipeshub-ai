@@ -153,6 +153,16 @@ def raise_if_unavailable(cause: BaseException) -> None:
         raise _database_unreachable(cause) from cause
 
 
+async def await_or_503[T](op: Awaitable[T]) -> T:
+    """``op``'s result; a failure the store could not answer just now is :func:`raise_if_unavailable`'s 503, any
+    other is raised as is, for the route's own 500."""
+    try:
+        return await op
+    except Exception as e:
+        raise_if_unavailable(e)
+        raise
+
+
 def _database_unreachable(cause: BaseException) -> HTTPException:
     error_class.mark_error(cause, hide_text=True)  # a driver's text can quote what was sent (an email, a value)
     return HTTPException(
