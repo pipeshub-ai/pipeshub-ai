@@ -1407,9 +1407,16 @@ export const setMicrosoftAuthConfig =
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
-      // Placeholders come back for what the read showed, so they are restored from the record it read.
-      const { path: source } =
-        await readMicrosoftAuthConfig(keyValueStoreService);
+      // Placeholders come back for what the read showed, so they are restored from the record it read. With none,
+      // nothing stored is read: a record that cannot be decrypted can still be replaced.
+      const masked = MICROSOFT_AUTH_SECRET_KEYS.some(
+        (key) =>
+          (req.body as Record<string, unknown> | undefined)?.[key] ===
+          CONFIG_SECRET_PLACEHOLDER,
+      );
+      const source = masked
+        ? (await readMicrosoftAuthConfig(keyValueStoreService)).path
+        : configPaths.auth.microsoft;
       const { clientId, tenantId, enableJit } = await restoreStoredAuthSecrets(
         keyValueStoreService,
         source,

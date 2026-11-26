@@ -187,5 +187,15 @@ describe('sign-in provider secrets', () => {
       await getMicrosoftAuthConfig(storeByPath({}), false)(request(), res, sinon.stub())
       expect(res.json.firstCall.args[0]).to.deep.equal({})
     })
+
+    it('saves typed values without reading the stored record, so one that cannot be decrypted is still replaced', async () => {
+      const kvs = { get: sinon.stub().rejects(new Error('cannot decrypt')), set: sinon.stub().resolves() }
+      const next = sinon.stub()
+      await setMicrosoftAuthConfig(kvs as any)(request({}, { clientId: 'new-id', tenantId: 'new-tenant' }), response(), next)
+      expect(next.called, String(next.firstCall?.args[0])).to.equal(false)
+      expect(kvs.get.called).to.equal(false)
+      expect(kvs.set.firstCall.args[0]).to.equal(configPaths.auth.microsoft)
+      expect(written(kvs)).to.include({ clientId: 'new-id', tenantId: 'new-tenant' })
+    })
   })
 })
