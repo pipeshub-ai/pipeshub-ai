@@ -14910,6 +14910,7 @@ class TestHardDeleteAgent:
             [],                                  # no permissions
             [{"_key": "a1"}],                    # agent deleted
         ])
+        connected_provider.http_client.begin_transaction = AsyncMock(return_value="tx1")
 
         result = await connected_provider.hard_delete_agent("a1")
 
@@ -14919,21 +14920,25 @@ class TestHardDeleteAgent:
         assert (result["mcp_servers_deleted"], result["tools_deleted"], result["edges_deleted"], result["agents_deleted"]) == (1, 1, 2, 1)
 
     @pytest.mark.asyncio
-    async def test_a_conflict_with_a_concurrent_cleanup_of_the_server_is_run_again(self, connected_provider) -> None:
-        """Another delete cleaning up the same orphaned server can win a write-write conflict on its tool links: the step runs
-        again (it is idempotent) instead of failing the delete."""
+    async def test_a_conflict_runs_the_mcp_cleanup_again_in_a_fresh_transaction(self, connected_provider) -> None:
+        """The MCP cleanup runs in a stream transaction of its own that holds the agent-to-server links exclusively; a
+        write-write conflict with another writer aborts it, and it is run again from the start."""
         from app.services.graph_db.arango.arango_http_client import ArangoQueryError
 
         conflict = ArangoQueryError("Query failed", 409, '{"code":409,"error":true,"errorMessage":"write-write conflict","errorNum":1200}')
+        connected_provider.http_client.begin_transaction = AsyncMock(side_effect=["tx1", "tx2"])
         connected_provider.execute_query = AsyncMock(side_effect=[
             [],                                  # no knowledge
             [],                                  # no toolsets
             [],                                  # no toolset edges
-            ["agentMcpServers/s1"],              # the agent's server links, removed
-            ["agentMcpServers/s1"],              # s1 is orphaned
-            conflict,                            # the other delete holds s1's tool links
-            [],                                  # run again: the other delete removed them
-            [None],                              # s1 already removed by the other delete (ignored, nothing returned)
+            ["agentMcpServers/s1"],              # tx1: the agent's server links, removed
+            ["agentMcpServers/s1"],              # tx1: s1 is orphaned
+            conflict,                            # tx1: another writer holds s1's tool links
+            ["agentMcpServers/s1"],              # tx2 (tx1 rolled back): the links, removed again
+            ["agentMcpServers/s1"],              # tx2: s1 is orphaned
+            ["agentTools/t1"],                   # tx2: s1's tool links
+            [{"_key": "t1"}],                    # tx2: t1, held by no other server
+            [{"_key": "s1"}],                    # tx2: s1
             [],                                  # no permissions
             [{"_key": "a1"}],                    # agent deleted
         ])
@@ -14941,8 +14946,28 @@ class TestHardDeleteAgent:
         with patch("app.services.graph_db.arango.arango_http_provider.asyncio.sleep", new=AsyncMock()):
             result = await connected_provider.hard_delete_agent("a1")
 
-        assert (result["agents_deleted"], result["mcp_servers_deleted"], result["tools_deleted"]) == (1, 0, 0)
-        assert "ignoreErrors" in connected_provider.execute_query.await_args_list[7].args[0]
+        assert (result["agents_deleted"], result["mcp_servers_deleted"], result["tools_deleted"]) == (1, 1, 1)
+        connected_provider.http_client.abort_transaction.assert_awaited_once_with("tx1")
+        connected_provider.http_client.commit_transaction.assert_awaited_once_with("tx2")
+        begin = connected_provider.http_client.begin_transaction.await_args
+        assert begin.kwargs["exclusive"] == [CollectionNames.AGENT_HAS_MCP_SERVER.value]
+        assert [c.kwargs["transaction"] for c in connected_provider.execute_query.await_args_list[3:11]] == ["tx1"] * 3 + ["tx2"] * 5
+
+    @pytest.mark.asyncio
+    async def test_a_failed_mcp_cleanup_keeps_the_agents_links_for_a_retry(self, connected_provider) -> None:
+        """A cleanup that fails after the agent's links were removed is rolled back with them: a later delete finds them again."""
+        connected_provider.http_client.begin_transaction = AsyncMock(return_value="tx1")
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [], [], [],                          # no knowledge, toolsets, toolset edges
+            ["agentMcpServers/s1"],              # the agent's server links, removed in tx1
+            RuntimeError("server gone"),         # the cleanup fails
+        ])
+
+        result = await connected_provider.hard_delete_agent("a1")
+
+        assert result["agents_deleted"] == 0     # the delete failed and said so; nothing of it was committed
+        connected_provider.http_client.abort_transaction.assert_awaited_once_with("tx1")
+        connected_provider.http_client.commit_transaction.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_returns_zeros(self, connected_provider):

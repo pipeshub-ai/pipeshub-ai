@@ -140,63 +140,99 @@ async def store(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
 
 
 ROUNDS = 20
+AGENT_DOC = {"description": "d", "startMessage": "s", "systemPrompt": "p", "models": [], "createdBy": "u"}
 
 
-async def test_concurrent_deletes_of_two_agents_sharing_a_server_never_fail_and_leave_nothing(store: IGraphDBProvider) -> None:
-    """Both deletes may find the shared server orphaned at once and remove its tool links, tools and node together: neither may
-    fail on the other's removals (a write-write conflict, a document already gone), and nothing of the server may stay."""
-    graph = store
-    now = get_epoch_timestamp_in_ms()
-    agent = {"description": "d", "startMessage": "s", "systemPrompt": "p", "models": [], "createdBy": "u", "createdAtTimestamp": now,
-             "updatedAtTimestamp": now}
+class Seeded:
+    """Every key a test writes, registered before its first write and removed in the test's ``finally``."""
+
+    def __init__(self, graph: IGraphDBProvider) -> None:
+        self.graph, self.keys = graph, []
+
+    def key(self, name: str, coll: str) -> str:
+        self.keys.append((name, coll))
+        return name
+
+    async def remove(self) -> None:
+        for name, coll in self.keys:
+            with contextlib.suppress(Exception):
+                await self.graph.delete_nodes_and_edges([name], coll)
+
+    async def agents(self, *keys: str) -> None:
+        now = get_epoch_timestamp_in_ms()
+        assert await self.graph.batch_upsert_nodes([{"_key": k, "name": k, **AGENT_DOC, "createdAtTimestamp": now, "updatedAtTimestamp": now}
+                                                    for k in keys], C.AGENT_INSTANCES.value)
+
+    async def servers(self, *keys: str) -> None:
+        now = get_epoch_timestamp_in_ms()
+        assert await self.graph.batch_upsert_nodes([{"_key": k, "name": k, "displayName": k, "instanceId": f"i-{k}", "userId": "u", "createdBy": "u",
+                                                     "createdAtTimestamp": now} for k in keys], C.AGENT_MCP_SERVERS.value)
+
+    async def tools(self, *keys: str) -> None:
+        now = get_epoch_timestamp_in_ms()
+        assert await self.graph.batch_upsert_nodes([{"_key": k, "name": k, "fullName": f"x.{k}", "toolsetName": "x", "createdBy": "u",
+                                                     "createdAtTimestamp": now} for k in keys], C.AGENT_TOOLS.value)
+
+    async def link(self, agent_servers: list[tuple[str, str]], server_tools: list[tuple[str, str]]) -> None:
+        if agent_servers:
+            assert await self.graph.batch_create_edges([_edge(C.AGENT_INSTANCES.value, a, C.AGENT_MCP_SERVERS.value, s) for a, s in agent_servers],
+                                                       C.AGENT_HAS_MCP_SERVER.value)
+        if server_tools:
+            assert await self.graph.batch_create_edges([_edge(C.AGENT_MCP_SERVERS.value, s, C.AGENT_TOOLS.value, t) for s, t in server_tools],
+                                                       C.MCP_SERVER_HAS_TOOL.value)
+
+    async def present(self) -> list[str]:
+        return [name for name, coll in self.keys if await self.graph.get_document(name, coll) is not None]
+
+
+@pytest.mark.parametrize("layout", ["one-shared-server", "two-servers-one-tool"])
+async def test_concurrent_deletes_of_two_agents_never_fail_and_leave_nothing(store: IGraphDBProvider, layout: str) -> None:
+    """Two agents deleted at once, sharing a server (each may find it orphaned and clean it up) or holding two servers that share
+    a tool (each may read the tool as still held by the other's server). Neither delete may fail, and nothing may stay."""
+    seeded = Seeded(store)
     failures, left = [], []
-    for round_ in range(ROUNDS):
-        run = uuid.uuid4().hex[:10]
-        a, b, server = f"a-cc-{run}", f"b-cc-{run}", f"s-cc-{run}"
-        tools = [f"t{i}-cc-{run}" for i in range(5)]
-        assert await graph.batch_upsert_nodes([{"_key": a, "name": "a", **agent}, {"_key": b, "name": "b", **agent}], C.AGENT_INSTANCES.value)
-        assert await graph.batch_upsert_nodes([{"_key": server, "name": "s", "displayName": "s", "instanceId": f"i-{run}", "userId": "u", "createdBy": "u",
-                                                "createdAtTimestamp": now}], C.AGENT_MCP_SERVERS.value)
-        assert await graph.batch_upsert_nodes([{"_key": t, "name": t, "fullName": f"x.{t}", "toolsetName": "x", "createdBy": "u", "createdAtTimestamp": now}
-                                               for t in tools], C.AGENT_TOOLS.value)
-        assert await graph.batch_create_edges([_edge(C.AGENT_INSTANCES.value, x, C.AGENT_MCP_SERVERS.value, server) for x in (a, b)],
-                                              C.AGENT_HAS_MCP_SERVER.value)
-        assert await graph.batch_create_edges([_edge(C.AGENT_MCP_SERVERS.value, server, C.AGENT_TOOLS.value, t) for t in tools],
-                                              C.MCP_SERVER_HAS_TOOL.value)
-        results = await asyncio.gather(graph.hard_delete_agent(a), graph.hard_delete_agent(b))
-        # a failed delete answers zero counts (it never raises): each must have deleted its own agent
-        failures += [round_ for r in results if r["agents_deleted"] != 1]
-        left += [k for k, coll in ((server, C.AGENT_MCP_SERVERS.value), *((t, C.AGENT_TOOLS.value) for t in tools), (a, C.AGENT_INSTANCES.value),
-                                   (b, C.AGENT_INSTANCES.value)) if await graph.get_document(k, coll) is not None]
-    assert failures == [], f"a delete failed in rounds {failures}"
-    assert left == [], f"left behind: {left}"
+    try:
+        for round_ in range(ROUNDS):
+            run = uuid.uuid4().hex[:10]
+            a, b = seeded.key(f"a-cc-{run}", C.AGENT_INSTANCES.value), seeded.key(f"b-cc-{run}", C.AGENT_INSTANCES.value)
+            if layout == "one-shared-server":
+                servers = [seeded.key(f"s-cc-{run}", C.AGENT_MCP_SERVERS.value)]
+                tools = [seeded.key(f"t{i}-cc-{run}", C.AGENT_TOOLS.value) for i in range(5)]
+                agent_servers, server_tools = [(a, servers[0]), (b, servers[0])], [(servers[0], t) for t in tools]
+            else:
+                servers = [seeded.key(f"s{i}-cc-{run}", C.AGENT_MCP_SERVERS.value) for i in (1, 2)]
+                tools = [seeded.key(f"t-cc-{run}", C.AGENT_TOOLS.value)]
+                agent_servers, server_tools = [(a, servers[0]), (b, servers[1])], [(s, tools[0]) for s in servers]
+            await seeded.agents(a, b)
+            await seeded.servers(*servers)
+            await seeded.tools(*tools)
+            await seeded.link(agent_servers, server_tools)
+            results = await asyncio.gather(store.hard_delete_agent(a), store.hard_delete_agent(b))
+            # a failed delete answers zero counts (it never raises): each must have deleted its own agent
+            failures += [round_ for r in results if r["agents_deleted"] != 1]
+            left += await seeded.present()
+        assert failures == [], f"a delete failed in rounds {failures}"
+        assert left == [], f"left behind: {left}"
+    finally:
+        await seeded.remove()
 
 
 @pytest.mark.parametrize("other_keeps_one", [False, True], ids=["both-servers-go", "one-server-kept"])
 async def test_a_tool_two_servers_of_one_agent_share(store: IGraphDBProvider, other_keeps_one: bool) -> None:
     """Two MCP servers of one agent hold the same tool. Deleting the agent takes both servers and the tool; when another agent
     still links one of the servers, that server keeps the tool."""
-    graph = store
-    now = get_epoch_timestamp_in_ms()
+    seeded = Seeded(store)
     run = uuid.uuid4().hex[:10]
-    agent_key, other_key, s1, s2, tool = (f"{k}-two-{run}" for k in ("agent", "other", "s1", "s2", "tool"))
-    agent = {"description": "d", "startMessage": "s", "systemPrompt": "p", "models": [], "createdBy": "u", "createdAtTimestamp": now,
-             "updatedAtTimestamp": now}
-    assert await graph.batch_upsert_nodes([{"_key": agent_key, "name": "a", **agent}, {"_key": other_key, "name": "b", **agent}], C.AGENT_INSTANCES.value)
-    assert await graph.batch_upsert_nodes([{"_key": s, "name": s, "displayName": s, "instanceId": f"i-{s}", "userId": "u", "createdBy": "u",
-                                            "createdAtTimestamp": now} for s in (s1, s2)], C.AGENT_MCP_SERVERS.value)
-    assert await graph.batch_upsert_nodes([{"_key": tool, "name": "t", "fullName": "x.t", "toolsetName": "x", "createdBy": "u", "createdAtTimestamp": now}],
-                                          C.AGENT_TOOLS.value)
-    links = [(agent_key, s1), (agent_key, s2), *([(other_key, s2)] if other_keeps_one else [])]
-    assert await graph.batch_create_edges([_edge(C.AGENT_INSTANCES.value, a, C.AGENT_MCP_SERVERS.value, s) for a, s in links], C.AGENT_HAS_MCP_SERVER.value)
-    assert await graph.batch_create_edges([_edge(C.AGENT_MCP_SERVERS.value, s, C.AGENT_TOOLS.value, tool) for s in (s1, s2)], C.MCP_SERVER_HAS_TOOL.value)
+    agent_key, other_key = (seeded.key(f"{k}-two-{run}", C.AGENT_INSTANCES.value) for k in ("agent", "other"))
+    s1, s2 = (seeded.key(f"{k}-two-{run}", C.AGENT_MCP_SERVERS.value) for k in ("s1", "s2"))
+    tool = seeded.key(f"tool-two-{run}", C.AGENT_TOOLS.value)
     try:
-        result = await graph.hard_delete_agent(agent_key)
+        await seeded.agents(agent_key, other_key)
+        await seeded.servers(s1, s2)
+        await seeded.tools(tool)
+        await seeded.link([(agent_key, s1), (agent_key, s2), *([(other_key, s2)] if other_keeps_one else [])], [(s1, tool), (s2, tool)])
+        result = await store.hard_delete_agent(agent_key)
         assert result["agents_deleted"] == 1
-        present = {k for k, coll in ((s1, C.AGENT_MCP_SERVERS.value), (s2, C.AGENT_MCP_SERVERS.value), (tool, C.AGENT_TOOLS.value))
-                   if await graph.get_document(k, coll) is not None}
-        assert present == ({s2, tool} if other_keeps_one else set())
+        assert set(await seeded.present()) == ({other_key, s2, tool} if other_keeps_one else {other_key})
     finally:
-        for k, coll in ((other_key, C.AGENT_INSTANCES.value), (s1, C.AGENT_MCP_SERVERS.value), (s2, C.AGENT_MCP_SERVERS.value), (tool, C.AGENT_TOOLS.value)):
-            with contextlib.suppress(Exception):
-                await graph.delete_nodes_and_edges([k], coll)
+        await seeded.remove()

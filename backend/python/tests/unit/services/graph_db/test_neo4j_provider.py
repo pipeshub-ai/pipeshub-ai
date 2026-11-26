@@ -987,9 +987,8 @@ class TestHardDeleteAgent:
                 [{"deleted_count": 2}],  # step 5 tool delete
                 [{"rel_count": 2}],  # step 6 agent->toolset rel delete
                 [{"deleted_count": 2}],  # step 7 toolset delete
-                [{"sid_list": ["m1"], "rel_count": 1}],  # step 7b agent->MCP server rel delete
-                # step 7b orphaned MCP server, under its lock: 1 server, 1 tool only it held, its 2 server->tool rels
-                [{"deleted_count": 1, "tool_count": 1, "rel_count": 2}],
+                # step 7b, one statement: 1 agent->MCP server rel, 1 orphaned server, 1 tool only it held, its 2 server->tool rels
+                [{"agent_rels": 1, "deleted_count": 1, "tool_count": 1, "rel_count": 2}],
                 [{"deleted_count": 1}],  # step 8 delete agent
             ]
         )
@@ -1004,7 +1003,10 @@ class TestHardDeleteAgent:
             "edges_deleted": 10,  # 2 + 3 + 2 + 1 agent->server + 2 server->tool
             "mcp_servers_deleted": 1,
         }
-        assert neo4j_provider.client.execute_query.await_count == 10
+        assert neo4j_provider.client.execute_query.await_count == 9
+        # the agent's server links and the cleanup they lead to are one statement: a failed cleanup keeps the links for a retry
+        step_7b = neo4j_provider.client.execute_query.await_args_list[7].args[0]
+        assert "DELETE x" in step_7b and "DETACH DELETE tool" in step_7b and "DETACH DELETE server" in step_7b
 
     @pytest.mark.asyncio
     async def test_skips_knowledge_and_toolset_branches_when_lists_empty(
@@ -1073,10 +1075,9 @@ class TestHardDeleteAllAgents:
                 [{"tool_count": 2}],  # step 7
                 [{"rel_count": 1}],  # step 8
                 [{"toolset_count": 1}],  # step 9
-                [{"server_ids": ["m1"]}],  # step 9b MCP servers of agents
-                [{"rel_count": 1, "tool_count": 1}],  # step 9b MCP server -> tool rels and tools
-                [{"rel_count": 1}],  # step 9b agent -> MCP server rels
-                [{"server_count": 1, "rel_count": 1}],  # step 9b MCP servers, with a rel to a tool a server outside the set holds
+                # step 9b, one statement: 1 MCP tool with its link, 1 agent -> server link, 1 server with a link to a tool a
+                # server outside the set holds
+                [{"tool_count": 1, "server_count": 1, "rel_count": 3}],
                 [{"perm_count": 4}],  # step 10
                 [{"agent_count": 5}],  # step 11 count
                 [],  # step 11 detach delete
@@ -1102,7 +1103,7 @@ class TestHardDeleteAllAgents:
                 [{"rel_count": 0}],  # step 2
                 [{"toolset_ids": []}],  # step 4
                 [{"rel_count": 0}],  # step 8
-                [{"server_ids": []}],  # step 9b: no MCP server
+                [{"tool_count": 0, "server_count": 0, "rel_count": 0}],  # step 9b: no MCP server
                 [{"perm_count": 0}],  # step 10
                 [{"agent_count": 0}],  # step 11 count
                 [],  # detach delete
