@@ -103,6 +103,16 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.slack.common.apps import SlackWorkspaceApp
+from app.connectors.sources.slack.common.bursts import (
+    SlackRegroupMixin,
+    bursts_to_write,
+    channel_burst_id,
+    channel_record_ids,
+    regrouped_record_ids,
+    thread_burst_id,
+    thread_group_id,
+    thread_record_ids,
+)
 from app.connectors.sources.slack.common.full_sync_keep import SlackFullSyncKeepMixin
 from app.connectors.sources.slack.common.people import file_uploader
 from app.connectors.sources.slack.common.rate_limits import Tier
@@ -462,7 +472,7 @@ class RateLimiter:
             description="Enable indexing of links shared in messages", default_value=True))
     )\
     .build_decorator()
-class SlackConnector(SlackFullSyncKeepMixin, BaseConnector):
+class SlackConnector(SlackFullSyncKeepMixin, SlackRegroupMixin, BaseConnector):
     """
     Slack Connector — full graph-aware implementation.
 
@@ -1860,6 +1870,10 @@ class SlackConnector(SlackFullSyncKeepMixin, BaseConnector):
             await self._enrich_link_records_linked_id(records)
             if records:
                 await self.data_entities_processor.on_new_records(records)
+                await self._delete_regrouped_records(regrouped_record_ids(
+                    msgs, (r for r, _ in records),
+                    lambda ts: channel_record_ids(channel_id, ts),
+                ), channel_id)
 
                 total_msgs += sum(
                     1 for r, _ in records if r.record_type == RecordType.MESSAGE
@@ -2214,9 +2228,7 @@ class SlackConnector(SlackFullSyncKeepMixin, BaseConnector):
         src_ts_ms  = int(float(first_ts) * 1000)
         last_ts_ms = int(float(last_ts) * 1000) if last_ts else src_ts_ms
 
-        all_ts_str = "|".join(sorted(m.get("ts", "") for m in burst.messages))
-        burst_hash = hashlib.md5(all_ts_str.encode()).hexdigest()[:8]
-        burst_id   = f"thread_burst_{ctx.channel_id}_{thread_ts}_{burst_hash}"
+        burst_id = thread_burst_id(ctx.channel_id, thread_ts, first_ts)
 
         bc = self._build_burst_block_containers(
             burst.messages, burst_id, ctx,
@@ -2372,7 +2384,7 @@ class SlackConnector(SlackFullSyncKeepMixin, BaseConnector):
                     file_children_by_ts.setdefault(mts, []).append(cr)
 
         # -- Thread-burst MessageRecords (5-min windows, indexed) ---------------
-        bursts = self._detect_bursts(all_msgs)
+        bursts = bursts_to_write(self._detect_bursts(all_msgs), replies_complete=replies_complete)
         burst_recs_batch: list[tuple[Record, list[Permission]]] = []
 
         for burst in bursts:
@@ -2441,6 +2453,11 @@ class SlackConnector(SlackFullSyncKeepMixin, BaseConnector):
                 f"{burst_file_count} file records for thread ts={ts}"
             )
             await self.data_entities_processor.on_new_records(burst_recs_batch)
+            if replies_complete:
+                await self._delete_regrouped_records(regrouped_record_ids(
+                    all_msgs, (r for r, _ in burst_recs_batch),
+                    lambda mts: thread_record_ids(ctx.channel_id, ts, mts),
+                ), thread_group_id(ctx.channel_id, ts))
 
         self.logger.info(
             f"[ThreadProcess] Completed thread processing for ts={ts}, "
@@ -2559,6 +2576,11 @@ class SlackConnector(SlackFullSyncKeepMixin, BaseConnector):
 
             await self._enrich_link_records_linked_id(burst_recs_batch)
             await self.data_entities_processor.on_new_records(burst_recs_batch)
+            if replies_complete:
+                await self._delete_regrouped_records(regrouped_record_ids(
+                    new_replies, (r for r, _ in burst_recs_batch),
+                    lambda mts: thread_record_ids(ctx.channel_id, thread_ts, mts),
+                ), thread_group_id(ctx.channel_id, thread_ts))
 
         return replies_complete
 
@@ -2630,9 +2652,7 @@ class SlackConnector(SlackFullSyncKeepMixin, BaseConnector):
                     file_children_by_ts.setdefault(ts, []).append(cr)
 
         # ── Generate burst id ─────────────────────────────────────────────────
-        all_ts_str = "|".join(sorted([m.get("ts", "") for m in burst.messages]))
-        ts_hash = hashlib.md5(all_ts_str.encode()).hexdigest()[:8]
-        burst_id = f"burst_{ctx.channel_id}_{ts_hash}"
+        burst_id = channel_burst_id(ctx.channel_id, first_ts)
 
         # ── Build block_containers ────────────────────────────────────────────
         bc = self._build_burst_block_containers(

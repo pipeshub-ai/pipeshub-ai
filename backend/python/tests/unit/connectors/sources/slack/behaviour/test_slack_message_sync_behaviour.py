@@ -227,6 +227,72 @@ class TestThreads:
         assert store.message_ts_count().get(answer) == 1
 
 
+class TestRegroupedMessages:
+    """A re-read groups messages into 5-minute records again; a message is never left
+    in an earlier record beside the one that now holds it."""
+
+    async def test_a_message_read_again_with_a_newer_one_minutes_later_is_stored_once(self, workspace, store, checkpoints) -> None:
+        first, reply, second = ts_minutes_ago(10), ts_minutes_ago(9.5), ts_minutes_ago(8)
+        workspace.post(GENERAL, first, ALICE, "deploying")
+        workspace.reply(GENERAL, first, reply, BOB, "ok")
+        # An unread thread holds the channel checkpoint back, so the next sync reads `first` again.
+        workspace.fail("conversations.replies", SlackError("internal_error"), times=None)
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        assert block_ts(channel_records(store, GENERAL)) == [first]
+
+        workspace._faults.clear()
+        workspace.post(GENERAL, second, BOB, "done")
+        await connector.run_sync()
+
+        (record,) = channel_records(store, GENERAL)
+        assert block_ts([record]) == [first, second]
+
+    async def test_a_thread_read_in_full_again_keeps_each_reply_once(self, workspace, store, checkpoints) -> None:
+        parent, early, late = ts_minutes_ago(30), ts_minutes_ago(29), ts_minutes_ago(28)
+        workspace.post(GENERAL, parent, ALICE, "question")
+        workspace.reply(GENERAL, parent, early, BOB, "answer")
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        workspace.reply(GENERAL, parent, late, ALICE, "thanks")
+        await connector.run_sync()
+        assert len(thread_records(store, GENERAL, parent)) == 2
+
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        (record,) = thread_records(store, GENERAL, parent)
+        assert block_ts([record]) == [parent, early, late]
+        counts = store.message_ts_count()
+        assert [counts[ts] for ts in (early, late)] == [1, 1]
+
+    @pytest.mark.parametrize("read_first", [3, 4], ids=["cut_inside_a_burst", "cut_after_its_first_reply"])
+    async def test_a_thread_read_only_in_part_keeps_the_replies_it_did_not_read(
+        self, workspace, store, checkpoints, read_first,
+    ) -> None:
+        """The stored burst of the thread's last replies is not rewritten or deleted from a
+        read that stopped part way through it."""
+        parent, answer, before, follow, last = (ts_minutes_ago(m) for m in (60, 59, 12, 10, 9))
+        workspace.post(GENERAL, parent, ALICE, "question")
+        workspace.reply(GENERAL, parent, answer, BOB, "answer")
+        workspace.reply(GENERAL, parent, follow, BOB, "follow-up")
+        workspace.reply(GENERAL, parent, last, ALICE, "last word")
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        assert block_ts(thread_records(store, GENERAL, parent)) == [parent, answer, follow, last]
+
+        if read_first == 4:
+            # Joins the follow-up's burst, so the read below ends one reply into it.
+            workspace.reply(GENERAL, parent, before, ALICE, "one more")
+        workspace.page_size["conversations.replies"] = read_first
+        workspace.fail("conversations.replies", SlackError("internal_error"), times=None,
+                       when=lambda p: bool(p.get("cursor")))
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        assert store.message_ts_count().get(last) == 1
+
+
 class TestCheckpoints:
     async def test_a_failed_later_page_does_not_move_the_checkpoint_past_unread_messages(self, workspace, store, checkpoints) -> None:
         stamps = [ts_minutes_ago(m) for m in (400, 300, 200, 100)]

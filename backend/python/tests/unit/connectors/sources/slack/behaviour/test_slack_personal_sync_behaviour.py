@@ -234,6 +234,109 @@ class TestAccountAndTokens:
 CHANNELS_ONLY_SCOPES = {"channels:history", "channels:read", "groups:history", "groups:read", "users:read"}
 
 
+class TestRegroupedMessages:
+    """A re-read groups messages into 5-minute records again; a message is never left
+    in an earlier record beside the one that now holds it."""
+
+    async def test_a_message_read_again_with_a_newer_one_minutes_later_is_stored_once(self, workspace, store, checkpoints) -> None:
+        first, reply, second = ts_minutes_ago(10), ts_minutes_ago(9.5), ts_minutes_ago(8)
+        workspace.post(GENERAL, first, BOB, "deploying")
+        workspace.reply(GENERAL, first, reply, ALICE, "ok")
+        # An unread thread holds the channel checkpoint back, so the next sync reads `first` again.
+        workspace.fail("conversations.replies", SlackError("internal_error"), times=None)
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        assert block_ts(store, GENERAL) == [first]
+
+        workspace._faults.clear()
+        workspace.post(GENERAL, second, ALICE, "done")
+        await connector.run_sync()
+
+        assert [r.start_ts for r in store.messages() if r.external_record_group_id == GENERAL] == [first]
+        assert block_ts(store, GENERAL) == [first, second]
+
+    async def test_a_thread_read_in_full_again_keeps_each_reply_once(self, workspace, store, checkpoints) -> None:
+        parent, early, late = ts_minutes_ago(30), ts_minutes_ago(29), ts_minutes_ago(28)
+        thread = f"thread_{GENERAL}_{parent}"
+        workspace.post(GENERAL, parent, BOB, "question")
+        workspace.reply(GENERAL, parent, early, ALICE, "answer")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        (before,) = [r for r in store.messages() if r.external_record_group_id == thread]
+        workspace.reply(GENERAL, parent, late, BOB, "thanks")
+        await connector.run_sync()
+
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        (after,) = [r for r in store.messages() if r.external_record_group_id == thread]
+        assert block_ts(store, thread) == [parent, early, late]
+        # Same record, new messages: its revision changes so it is indexed again.
+        assert after.external_record_id == before.external_record_id
+        assert after.external_revision_id != before.external_revision_id
+
+    async def test_a_burst_read_again_with_a_newer_message_keeps_its_record(self, workspace, store, checkpoints) -> None:
+        first, reply, second, third = (ts_minutes_ago(m) for m in (10, 9.8, 9.5, 8))
+        workspace.post(GENERAL, first, BOB, "deploying")
+        workspace.reply(GENERAL, first, reply, ALICE, "ok")
+        workspace.post(GENERAL, second, ALICE, "watching")
+        # An unread thread holds the channel checkpoint back, so the next sync reads the burst again.
+        workspace.fail("conversations.replies", SlackError("internal_error"), times=None)
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        (before,) = [r for r in store.messages() if r.external_record_group_id == GENERAL]
+
+        workspace._faults.clear()
+        workspace.post(GENERAL, third, BOB, "done")
+        await connector.run_sync()
+
+        (after,) = [r for r in store.messages() if r.external_record_group_id == GENERAL]
+        assert block_ts(store, GENERAL) == [first, second, third]
+        assert after.external_record_id == before.external_record_id
+
+    async def test_a_reply_regrouped_into_an_earlier_burst_is_stored_once(self, workspace, store, checkpoints) -> None:
+        parent, answer, late, between = (ts_minutes_ago(m) for m in (30, 29, 20, 24))
+        thread = f"thread_{GENERAL}_{parent}"
+        workspace.post(GENERAL, parent, BOB, "question")
+        workspace.reply(GENERAL, parent, answer, ALICE, "answer")
+        workspace.reply(GENERAL, parent, late, BOB, "later")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        assert len([r for r in store.messages() if r.external_record_group_id == thread]) == 2
+
+        # Fills the gap, so the thread is now one burst.
+        workspace.reply(GENERAL, parent, between, ALICE, "in between")
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        assert block_ts(store, thread) == [parent, answer, between, late]
+
+    @pytest.mark.parametrize("read_first", [3, 4], ids=["cut_inside_a_burst", "cut_after_its_first_reply"])
+    async def test_a_thread_read_only_in_part_keeps_the_replies_it_did_not_read(
+        self, workspace, store, checkpoints, read_first,
+    ) -> None:
+        parent, answer, before, follow, last = (ts_minutes_ago(m) for m in (60, 59, 12, 10, 9))
+        thread = f"thread_{GENERAL}_{parent}"
+        workspace.post(GENERAL, parent, BOB, "question")
+        workspace.reply(GENERAL, parent, answer, ALICE, "answer")
+        workspace.reply(GENERAL, parent, follow, ALICE, "follow-up")
+        workspace.reply(GENERAL, parent, last, BOB, "last word")
+        connector, _ = await personal_connector(store, checkpoints)
+        await connector.run_sync()
+        assert block_ts(store, thread) == [parent, answer, follow, last]
+
+        if read_first == 4:
+            # Joins the follow-up's burst, so the read below ends one reply into it.
+            workspace.reply(GENERAL, parent, before, BOB, "one more")
+        workspace.page_size["conversations.replies"] = read_first
+        workspace.fail("conversations.replies", SlackError("internal_error"), times=None,
+                       when=lambda p: bool(p.get("cursor")))
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        assert block_ts(store, thread).count(last) == 1
+
+
 class TestTokenScopes:
     async def test_a_token_without_dm_scopes_still_syncs_its_channels(self, workspace, store, checkpoints, caplog) -> None:
         workspace.granted_scopes = set(CHANNELS_ONLY_SCOPES)

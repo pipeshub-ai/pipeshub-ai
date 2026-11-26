@@ -578,7 +578,8 @@ class TestUnreadableChannels:
         self, workspace, store, checkpoints,
     ) -> None:
         """A and B were one burst; now B ends page 1 and A starts page 2, both read, and page
-        3 is refused. Each is rewritten on its own, so the stored A+B burst is obsolete."""
+        3 is refused. Each is rewritten on its own, so the stored A+B burst is obsolete and
+        is deleted by the same sync."""
         older, q, a, b, e = (ts_minutes_ago(m) for m in (150, 80, 60, 59, 10))
         workspace.post(GENERAL, older, BOB, "long ago")
         workspace.post(GENERAL, q, BOB, "earlier")
@@ -599,7 +600,9 @@ class TestUnreadableChannels:
         result = await full_sync(connector, store, checkpoints)
 
         assert result.complete
-        assert result.unlinked == {gone, a_and_b}
+        assert result.unlinked == {gone}
+        assert a_and_b in store.deleted
+        assert a_and_b not in store.records
         assert {a, b, older} <= set(store.records)
 
     async def test_an_unreadable_channel_with_nothing_stored_keeps_nothing_of_other_channels(

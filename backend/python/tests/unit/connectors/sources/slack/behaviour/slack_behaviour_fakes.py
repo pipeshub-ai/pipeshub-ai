@@ -442,6 +442,8 @@ class FakeSlackStore:
         self.record_batches: list[list[Record]] = []
         self.content_updates: list[Record] = []
         self.reindexed: list[Record] = []
+        # External ids of the records the connector deleted.
+        self.deleted: list[str] = []
         # Whether a full sync of the connector is in progress, as the processor tracks it.
         self.full_sync_in_progress = False
 
@@ -567,6 +569,11 @@ class FakeSlackStore:
             key=lambda r: r.id,
         )[offset:]
         return found if limit is None else found[:limit]
+
+    async def on_record_deleted(self, record_id: str) -> bool:
+        self.deleted.extend(k for k, r in self.records.items() if r.id == record_id)
+        self.records = {k: r for k, r in self.records.items() if r.id != record_id}
+        return False
 
     async def on_record_content_update(self, record: Record) -> None:
         self.content_updates.append(record)
