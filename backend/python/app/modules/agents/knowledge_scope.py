@@ -402,6 +402,18 @@ async def hide_names_the_viewer_cannot_open(
     return {str(k.get("connectorId")) for k in refused}
 
 
+async def with_current_limits(graph_provider: IGraphDBProvider, knowledge: Sequence[object]) -> None:
+    """Set, in place, each source's ``accessLimit`` to its connector's as it is now. A published version (and so an export
+    of one) froze the limit its sources had then; a connector limited since must be weighed as it is. A failed read
+    raises, rather than reading as no limit."""
+    for k in knowledge or []:
+        if isinstance(k, dict) and k.get("connectorId"):
+            app = await graph_provider.get_document(
+                str(k["connectorId"]), CollectionNames.APPS.value, raise_on_error=True,
+            ) or {}
+            k["accessLimit"] = app.get("accessLimit")
+
+
 async def _refused_sources(
     graph_provider: IGraphDBProvider, knowledge_lists: Iterable[Sequence[object]], user_id: str, org_id: str, *, is_admin: bool,
 ) -> list[dict[str, Any]]:

@@ -726,6 +726,17 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
             Case("limited_agent", ADMIN, True, 200, "{limited_connector_name}"),
         ),
     ),
+    # An export names each source by its connector: one the limit refuses the member is
+    # left out, as a source that is gone. The draft is exported, so no version is needed.
+    ConditionalRoute(
+        "api/routes/agent.py::export_agent", "GET", f"{_AGENTS}/{{target}}/export",
+        cases=(
+            Case("limited_agent", MEMBER, False, 200, "{limited_agent_name}",
+                 absent=("{limited_connector_name}",)),
+            Case("limited_agent", ADMIN, True, 200, "{limited_connector_name}"),
+        ),
+        params={"version": "draft"},
+    ),
     ConditionalRoute(
         "api/routes/agent.py::get_agents", "GET", f"{_AGENTS}/",
         cases=(

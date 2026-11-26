@@ -425,6 +425,7 @@ PYTHON_CONDITIONAL_ADMIN = {
     # name. Nobody is refused the agent itself.
     "api/routes/agent.py::get_agent": "a limited source's name is hidden from members it refuses",
     "api/routes/agent.py::get_agents": "a limited source's name is hidden from members it refuses",
+    "api/routes/agent.py::export_agent": "a limited source is left out for members it refuses",
     # Every team connector is listed for a member, except one whose access limit
     # refuses them; an admin is shown every one.
     "connectors/api/router.py::get_inactive_connector_instances":
@@ -489,6 +490,14 @@ PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY: dict[str, tuple[str, str, str]] = {
         "a limited source's name is hidden from members it refuses",
         _CHAT_IS_A_PROMPT,
         f"{_AGENT_NAMES_TEST}::test_a_chat_turn_without_streaming_names_to_the_model_only_the_sources_the_caller_may_open",
+    ),
+    # A published version's limited source a member cannot open is named by its id,
+    # weighed by its connector's limit as it is now; an admin sees its name.
+    "api/routes/agent.py::get_agent_version": (
+        "a limited source's name is hidden from members it refuses",
+        "a version exists only once the agent is published or its versions are first read, "
+        "which the world does neither",
+        f"{_AGENT_NAMES_TEST}::test_a_published_version_names_only_the_sources_the_viewer_may_open",
     ),
     # A member is not shown a per-user connector whose access limit refuses them;
     # an admin is shown every one.
