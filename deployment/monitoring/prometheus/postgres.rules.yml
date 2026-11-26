@@ -1,7 +1,7 @@
 # Alert rules for PostgreSQL and PgBouncer, read from the two exporters of the Compose `postgres-metrics` profile
 # (postgres-exporter v0.20.1 with --collector.long_running_transactions, --collector.database_wraparound and
 # --collector.stat_activity_autovacuum; pgbouncer-exporter v0.12.1) or the chart's postgresExporter. Prometheus loads
-# them with docker-compose.monitoring-postgres.yml. Thresholds are starting points an operator tunes for their install.
+# them with docker-compose.monitoring-postgres.yml. The last group reads the pg-backup service's own metrics. Thresholds are starting points an operator tunes for their install.
 groups:
   - name: pipeshub-postgres-availability
     rules:
@@ -261,3 +261,98 @@ groups:
           description: >-
             {{ $labels.datname }} on {{ $labels.instance }} is {{ $value | humanize1024 }}B and grew over 50% in
             24 hours. Check the free space of the data volume.
+
+  - name: pipeshub-postgres-backups
+    # From the pg-backup service's own metrics (postgres/pg-backup-metrics.pl, docker-compose.postgres-backup.yml). The backup times are
+    # timestamps, so a scheduler that stopped still ages them. The schedule is PG_BACKUP_FULL_DAYS for a full backup and
+    # PG_BACKUP_INCR_HOURS for any backup (pg-backup.sh takes no differential ones).
+    rules:
+      - alert: PgBackupMetricsMissing
+        # Also fires when docker-compose.postgres-backup.yml is not in use: then no backup is taken at all.
+        expr: up{job="pg-backup"} == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: The backup service's metrics cannot be scraped
+          description: >-
+            pg-backup on {{ $labels.instance }} has not answered a scrape for 15 minutes, so no backup alert can fire.
+            The service is down, or docker-compose.postgres-backup.yml is not in use and no backups are taken.
+      - alert: PgBackupTooOld
+        expr: >-
+          (time() - pipeshub_pg_backup_last_success_timestamp_seconds{type="full"})
+          / on (instance, job) group_left pipeshub_pg_backup_schedule_seconds{type="full"} > 1.5
+        labels:
+          severity: warning
+          schedule: full
+        annotations:
+          summary: The newest full backup is older than its schedule allows
+          description: >-
+            The newest full backup of {{ $labels.stanza }} in repository {{ $labels.repo }} is {{ $value | humanize }}
+            times PG_BACKUP_FULL_DAYS old. Read the pg-backup service's log; a restore must replay more WAL the older it is.
+      - alert: PgBackupTooOld
+        expr: >-
+          (time() - pipeshub_pg_backup_last_success_timestamp_seconds{type="full"})
+          / on (instance, job) group_left pipeshub_pg_backup_schedule_seconds{type="full"} > 3
+        labels:
+          severity: critical
+          schedule: full
+        annotations:
+          summary: No full backup for three times its schedule
+          description: >-
+            The newest full backup of {{ $labels.stanza }} in repository {{ $labels.repo }} is {{ $value | humanize }}
+            times PG_BACKUP_FULL_DAYS old. Backups have stopped.
+      - alert: PgBackupTooOld
+        expr: >-
+          (time() - max by (instance, job, stanza, repo) (pipeshub_pg_backup_last_success_timestamp_seconds))
+          / on (instance, job) group_left pipeshub_pg_backup_schedule_seconds{type="incr"} > 1.5
+        labels:
+          severity: warning
+          schedule: any
+        annotations:
+          summary: The newest backup is older than its schedule allows
+          description: >-
+            The newest backup of any type of {{ $labels.stanza }} in repository {{ $labels.repo }} is
+            {{ $value | humanize }} times PG_BACKUP_INCR_HOURS old. Read the pg-backup service's log.
+      - alert: PgBackupTooOld
+        expr: >-
+          (time() - max by (instance, job, stanza, repo) (pipeshub_pg_backup_last_success_timestamp_seconds))
+          / on (instance, job) group_left pipeshub_pg_backup_schedule_seconds{type="incr"} > 3
+        labels:
+          severity: critical
+          schedule: any
+        annotations:
+          summary: No backup for three times its schedule
+          description: >-
+            The newest backup of any type of {{ $labels.stanza }} in repository {{ $labels.repo }} is
+            {{ $value | humanize }} times PG_BACKUP_INCR_HOURS old. Backups have stopped.
+      - alert: PgBackupFailing
+        # The scheduler retries every PG_BACKUP_RETRY_SECS (300 by default): 15 minutes is about three failed tries.
+        expr: pipeshub_pg_backup_last_attempt_success == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Backups are failing
+          description: >-
+            The last backup attempt on {{ $labels.instance }} failed and none has succeeded for 15 minutes. Read the
+            pg-backup service's log for pgBackRest's error (repository unreachable or full, or the server down).
+      - alert: PgBackupRepositoryUnreadable
+        expr: pipeshub_pg_backup_repository_up == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: The backup repository cannot be read
+          description: >-
+            pgbackrest info has not read the repository on {{ $labels.instance }} for 15 minutes (unreachable, wrong
+            credentials, or the stanza in error), so no backup is scheduled. The backup times shown are the last known.
+      - alert: PgBackupWalGap
+        expr: pipeshub_pg_backup_wal_gap_segments > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: The server dropped WAL that no backup covers
+          description: >-
+            {{ $value }} WAL segments were dropped because the archive queue exceeded PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX.
+            Point-in-time restore cannot cross the gap until the full backup pg-backup has started succeeds.

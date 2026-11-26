@@ -30,6 +30,11 @@ holds="${PG_WAL_GAP_HOLDS:-/var/run/postgresql/pgbackrest-gap-hold.d}"   # one f
 held() { ls -A "$holds" 2>/dev/null; }
 hold_s=$(( ${PG_BACKUP_GAP_HOLD_DAYS:-14} * 86400 ))   # a hold's age is its file's modification time
 lock="${PG_BACKUP_LOCK:-/tmp/pg-backup.lock}"   # taken around each backup and its expire, and by clear-gap-hold
+# Prometheus metrics (pg-backup-metrics.pl): written after every repository read and backup attempt, served on PG_BACKUP_METRICS_PORT
+# when it is set. The backup times are exported as timestamps, so their age keeps growing in Prometheus even if this loop stops.
+metrics="${PG_BACKUP_METRICS_FILE:-/tmp/pg-backup.prom}"
+state="${PG_BACKUP_STATE_DIR:-/tmp/pg-backup.d}"   # the last readable `pgbackrest info` and the last attempt
+metrics_pl="$(dirname "${BASH_SOURCE[0]}")/pg-backup-metrics.pl"
 
 if [ "${1:-}" = clear-gap-hold ]; then
   # the lock first: drops and holds are read, and expire runs, all under it
@@ -96,9 +101,21 @@ gap_report() {
   echo "pg-backup: taking a full backup now."
 }
 
+refresh_metrics() {
+  "$metrics_pl" write "$state/info.new" "$state" "$gaps" "$full_s" "$incr_s" "$metrics" || echo "pg-backup: could not write the metrics" >&2
+}
+attempted() { echo "$(date +%s) $1" > "$state/attempt"; refresh_metrics; }   # 1: the backup succeeded, 0: it failed
+srv=""
+serve_metrics() {   # (re)started when it is not running, so a crashed server comes back within a minute
+  [ -n "${PG_BACKUP_METRICS_PORT:-}" ] || return 0
+  if [ -z "$srv" ] || ! kill -0 "$srv" 2>/dev/null; then "$metrics_pl" serve "$PG_BACKUP_METRICS_PORT" "$metrics" 9>&- & srv=$!; fi
+}
+
 # "<seconds since newest full> <seconds since newest backup>" from the repository; a missing backup counts as infinitely old.
 ages() {
-  pgbackrest --log-level-console=warn --output=json info | perl -MJSON::PP -e '
+  pgbackrest --log-level-console=warn --output=json info > "$state/info.new" || : > "$state/info.new"
+  refresh_metrics
+  perl -MJSON::PP -e '
     my $now = time; my ($full, $any) = (0, 0);
     for my $s (@{ decode_json(join "", <STDIN>) }) {
       for my $b (@{ $s->{backup} || [] }) {
@@ -107,13 +124,16 @@ ages() {
         $full = $t if $b->{type} eq "full" && $t > $full;
       }
     }
-    printf "%d %d\n", $full ? $now - $full : 1e15, $any ? $now - $any : 1e15;'
+    printf "%d %d\n", $full ? $now - $full : 1e15, $any ? $now - $any : 1e15;' < "$state/info.new"
 }
 
+mkdir -p "$state"; : > "$state/info.new"; refresh_metrics; serve_metrics
 until pgbackrest stanza-create && pgbackrest check; do
+  : > "$state/info.new"; refresh_metrics
   rm -f "$ok"; echo "pg-backup: the stanza could not be created or checked; retrying in ${retry_s}s" >&2; sleep "$retry_s"
 done
 while :; do
+  serve_metrics
   for g in $(held); do
     if [ $(( $(date +%s) - $(stat -c %Y "$holds/$g") )) -ge "$hold_s" ]; then
       echo "pg-backup: RELEASING THE GAP HOLD on gap $g (backup $(cat "$holds/$g")) after PG_BACKUP_GAP_HOLD_DAYS=$(( hold_s / 86400 ))" \
@@ -152,6 +172,7 @@ while :; do
       fi
     fi
     if [ -n "$(drops)" ]; then rm -f "$ok"; else touch "$ok"; fi
+    attempted 1
     echo "pg-backup: $type backup done"
     # checked again now: a drop during the backup, or a held gap, keeps every backup
     if [ -z "$(drops)" ] && [ -z "$(held)" ]; then
@@ -160,7 +181,7 @@ while :; do
       echo "pg-backup: keeping every backup (no expire) while a WAL gap is held: $(held | tr '\n' ' ')"
     fi
   else
-    failed=1; rm -f "$ok"; echo "pg-backup: the $type backup failed; retrying in ${retry_s}s" >&2
+    failed=1; rm -f "$ok"; attempted 0; echo "pg-backup: the $type backup failed; retrying in ${retry_s}s" >&2
   fi
   flock -u 9
   if [ "${failed:-0}" = 1 ]; then failed=0; sleep "$retry_s"; fi

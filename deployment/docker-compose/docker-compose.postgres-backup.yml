@@ -19,6 +19,7 @@
 #   - pg-backup: a full backup every PG_BACKUP_FULL_DAYS (default 7) and an incremental one every PG_BACKUP_INCR_HOURS (default 6); the
 #     first full backup starts as soon as the service does. It is healthy once the last attempt succeeded. After dropped WAL it is
 #     unhealthy and takes a full backup at once: until that succeeds, point-in-time restore cannot cross the gap.
+#     It serves Prometheus metrics on pg-backup:9188 (postgres/pg-backup-metrics.pl), which docker-compose.monitoring-postgres.yml scrapes.
 # Restore to a point in time: scripts/pg-restore.sh (postgres/README.md, "Backups and point-in-time restore").
 #
 # pgBackRest connects as the server's `postgres` user over the Unix socket, shared through the pg_backup_socket volume, and reads the data
@@ -62,6 +63,8 @@ services:
       - PG_BACKUP_FULL_DAYS=${PG_BACKUP_FULL_DAYS:-7}
       - PG_BACKUP_INCR_HOURS=${PG_BACKUP_INCR_HOURS:-6}
       - PG_BACKUP_RETRY_SECS=${PG_BACKUP_RETRY_SECS:-300}
+      # Prometheus metrics (backup times, the last attempt, dropped WAL) on the compose network only; no port is published
+      - PG_BACKUP_METRICS_PORT=9188
     # as in the postgres service: keeps the 18 image from creating an anonymous volume
     tmpfs:
       - /var/lib/postgresql:size=16m

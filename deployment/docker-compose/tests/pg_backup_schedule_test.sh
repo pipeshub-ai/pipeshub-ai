@@ -19,6 +19,7 @@ case "$*" in
   *backup*) # the first STUB_BACKUPS backups (default none) return; the next one ends the script
     echo "$*" >> "$STUB_LOG"; n=$(grep -c backup "$STUB_LOG")
     if [ -e "$PG_BACKUP_OK_FILE" ]; then echo "healthy during backup" >> "$STUB_LOG.health"; else echo "unhealthy during backup" >> "$STUB_LOG.health"; fi
+    [ -z "${STUB_BACKUP_RC:-}" ] || exit "$STUB_BACKUP_RC"   # fails and lets the script go on (to its retry sleep)
     if [ "$n" -gt "${STUB_BACKUPS:-0}" ]; then kill -TERM "$PPID"; exit 1; fi
     [ -z "${STUB_DROP_DURING_BACKUP:-}" ] || : > "$STUB_DROP_DURING_BACKUP" ;;
   *expire*) echo "$*" >> "$STUB_LOG"; exit "${STUB_EXPIRE_RC:-0}" ;;
@@ -40,7 +41,7 @@ chmod +x "$work/pgbackrest" "$work/sleep"
 decide() { # info JSON -> what the loop did first
   printf '%s' "$1" > "$work/info.json"; : > "$work/log"
   PATH="$work:$PATH" PG_BACKUP_OK_FILE="$work/ok" PG_WAL_GAP_DIR="$work/gaps" PG_WAL_GAP_HOLDS="$work/holds" PG_BACKUP_LOCK="$work/lock" STUB_INFO="$work/info.json" STUB_LOG="$work/log" \
-    PG_BACKUP_FULL_DAYS="${FULL_DAYS:-7}" PG_BACKUP_INCR_HOURS=6 timeout 10 bash "$here/postgres/pg-backup.sh" >"$work/out" 2>&1 || true
+    PG_BACKUP_METRICS_FILE="$work/metrics.prom" PG_BACKUP_STATE_DIR="$work/state" PG_BACKUP_FULL_DAYS="${FULL_DAYS:-7}" PG_BACKUP_INCR_HOURS=6 timeout 10 bash "$here/postgres/pg-backup.sh" >"$work/out" 2>&1 || true
   head -1 "$work/log"
 }
 now=$(date +%s)
@@ -61,6 +62,22 @@ rm -f "$work/ok"; decide "$recent" >/dev/null 2>&1
 check "restarted with backups inside both intervals: healthy without a new backup" "$([ -e "$work/ok" ] && echo healthy || echo unhealthy)" healthy
 rm -f "$work/ok"; decide 'not json' >/dev/null 2>&1
 check "restarted with an unreadable repository: not healthy" "$([ -e "$work/ok" ] && echo healthy || echo unhealthy)" unhealthy
+
+# the metrics (pg-backup-metrics.pl): written on every repository read, keeping the last readable backup times; each attempt recorded
+metric() { grep -E "^$1( |\{)" "$work/metrics.prom" | sed -E 's/.* //'; }
+rm -rf "$work/state"; decide "$recent" >/dev/null 2>&1
+check "metrics: the repository is up" "$(metric pipeshub_pg_backup_repository_up)" 1
+check "metrics: the newest full backup's stop time" "$(metric 'pipeshub_pg_backup_last_success_timestamp_seconds\{stanza="",repo="",type="full"\}')" $((now - 86400))
+decide 'not json' >/dev/null 2>&1
+check "metrics: an unreadable repository is down" "$(metric pipeshub_pg_backup_repository_up)" 0
+check "metrics: and the last readable backup times stay, so they keep ageing" \
+  "$(metric 'pipeshub_pg_backup_last_success_timestamp_seconds\{stanza="",repo="",type="incr"\}')" $((now - 3600))
+check "metrics: no attempt yet, no attempt metric" "$(metric pipeshub_pg_backup_last_attempt_success)" ""
+STUB_BACKUPS=1 decide "[{\"status\":{\"code\":0},\"backup\":[$(backup full 691200),$(backup incr 3600)]}]" >/dev/null 2>&1
+check "metrics: a backup that succeeded" "$(metric pipeshub_pg_backup_last_attempt_success)" 1
+STUB_BACKUP_RC=1 decide "[{\"status\":{\"code\":0},\"backup\":[$(backup full 691200),$(backup incr 3600)]}]" >/dev/null 2>&1
+check "metrics: a backup that failed" "$(metric pipeshub_pg_backup_last_attempt_success)" 0
+rm -rf "$work/state"
 
 # WAL dropped by the queue cap: unhealthy at once, says so, and a full backup now even though one is not due. A drop file is named by
 # the dropped segment and holds the commit time of its first transaction (empty when it has none). Backups never expire by themselves.

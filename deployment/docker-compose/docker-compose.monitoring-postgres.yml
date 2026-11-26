@@ -1,5 +1,5 @@
-# PostgreSQL and PgBouncer alerts for the monitoring overlay: Prometheus scrapes the `postgres-metrics` exporters and
-# loads deployment/monitoring/prometheus/postgres.rules.yml. Name it after docker-compose.monitoring.yml, with the
+# PostgreSQL, PgBouncer and backup alerts for the monitoring overlay: Prometheus scrapes the `postgres-metrics` exporters and
+# the pg-backup service (docker-compose.postgres-backup.yml), and loads deployment/monitoring/prometheus/postgres.rules.yml. Name it after docker-compose.monitoring.yml, with the
 # `postgres` and `postgres-metrics` profiles on:
 #
 #   COMPOSE_PROFILES=...,postgres,postgres-metrics GRAFANA_ADMIN_PASSWORD=... docker compose -f docker-compose.yml \

@@ -9,3 +9,7 @@ scrape_configs:
   - job_name: pgbouncer-exporter
     static_configs:
       - targets: ["pgbouncer-exporter:9127"]
+  # The pg-backup service of docker-compose.postgres-backup.yml (PG_BACKUP_METRICS_PORT); its absence is PgBackupMetricsMissing.
+  - job_name: pg-backup
+    static_configs:
+      - targets: ["pg-backup:9188"]

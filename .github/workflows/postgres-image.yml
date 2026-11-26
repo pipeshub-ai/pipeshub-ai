@@ -19,6 +19,8 @@ on:
       - 'deployment/docker-compose/scripts/pg-restore.sh'
       - 'deployment/docker-compose/scripts/pg-restore-reach.pl'
       - 'deployment/docker-compose/tests/pg_backup_schedule_test.sh'
+      - 'deployment/docker-compose/tests/pg_backup_metrics_test.sh'
+      - 'deployment/docker-compose/tests/fixtures/pgbackrest-info.json'
       - 'deployment/docker-compose/docker-compose.postgres-only.yml'
       - 'backend/db/**'
       - 'deployment/docker-compose/tests/pg_entrypoint_layout_test.sh'
@@ -53,6 +55,9 @@ jobs:
 
       - name: Backup schedule picks full and incremental backups from the repository
         run: bash deployment/docker-compose/tests/pg_backup_schedule_test.sh
+
+      - name: Backup metrics report the newest backup of each type and serve them
+        run: bash deployment/docker-compose/tests/pg_backup_metrics_test.sh
 
       - name: Entrypoint volume-layout guard
         run: bash deployment/docker-compose/tests/pg_entrypoint_layout_test.sh
