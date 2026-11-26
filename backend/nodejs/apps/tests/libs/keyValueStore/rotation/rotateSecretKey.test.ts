@@ -13,8 +13,9 @@ import {
 import { platformCipherKey } from '../../../../src/libs/encryptor/secret-key-ring';
 import { rotateEncryptedValues } from '../../../../src/libs/keyValueStore/rotation/rotateSecretKey';
 
-const OLD = 'old-secret-key-for-tests-0001';
-const NEW = 'new-secret-key-for-tests-0002';
+// Both pass the key ring's strength rule: each is a write target in some test.
+const OLD = 'old-secret-key-for-tests-0001-Rk7!';
+const NEW = 'new-secret-key-for-tests-0002-Zq8!';
 const hex = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
 // getInstance is a process-wide singleton, so build independent ciphers directly.
 const cipher = (s: string) =>
@@ -286,6 +287,26 @@ describe('rotateEncryptedValues', () => {
     expect(cipher(NEW).decrypt(m.b)).to.equal('B');
   });
 
+  it('refuses, before any write, a new secret the key ring refuses on the hardened profile, naming why', async () => {
+    const before = await store.getKey('/services/aiModels');
+    for (const [n, reason] of [
+      ['k3P9vQ2mX7tL1wZ8', 'shorter than 32 characters'],
+      [
+        'abcdefghijklmnopqrstuvwxyzABCDEFGHIJ',
+        'repeated or sequential pattern',
+      ],
+      ['aaaaaaaaaaaaaaaaaaaaaaaaaaabcdefgh', 'repeats too few characters'],
+    ] as const) {
+      let err: Error | undefined;
+      await rotateEncryptedValues(store, OLD, n, { dryRun: false }).catch(
+        (e) => (err = e),
+      );
+      expect(err?.message, n).to.contain(reason);
+      expect(err?.message, n).to.not.contain(n);
+    }
+    expect(await store.getKey('/services/aiModels')).to.equal(before);
+  });
+
   it('rejects empty and placeholder secrets', async () => {
     for (const [o, n] of [
       ['', NEW],
@@ -401,6 +422,14 @@ describe('rotateEncryptedValues', () => {
       expect(code).to.equal(1);
       expect(out).to.contain('INCOMPLETE');
       expect(out).to.not.contain('APPLIED');
+    });
+
+    it('exits 1 on a new secret the key ring would refuse', async () => {
+      const { code } = await run({
+        env: { OLD_SECRET_KEY: OLD, NEW_SECRET_KEY: 'k3P9vQ2mX7tL1wZ8' },
+        argv: ['n', 'c', '--apply'],
+      });
+      expect(code).to.equal(1);
     });
 
     it('exits 1 on a placeholder new secret', async () => {

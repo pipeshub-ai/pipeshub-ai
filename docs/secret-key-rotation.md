@@ -22,7 +22,7 @@ Every value in the key-value store (Redis, etcd or Postgres) that is either encr
 ## Before you start
 
 1. Choose the lowest global traffic window and announce a maintenance period.
-2. Generate the new key (at least 16 characters, ideally 32 or more random characters) and store it in your secret manager. The tool refuses placeholders, short keys and repetitive keys (fewer than 8 different characters).
+2. Generate the new key with `openssl rand -base64 32` and store it in your secret manager. The tool refuses, before writing anything, a key the services refuse on the hardened profile (`PIPESHUB_HARDENED=true`), whichever profile you run: a placeholder, a key shorter than 32 characters, a key with leading or trailing whitespace, a low-entropy or patterned key, or readable text encoded as hex or base64. The error names the reason.
 3. Stop everything that can write configuration, in every region: the Node API, the query, connectors, indexing, docling and embedding services (all Python and Node services), and any other process using the store. A process left running on the old key would fail to read rotated values or write new ones under the old key.
 4. Only then take a verified backup of the store (Redis snapshot, etcd snapshot or Postgres dump) and confirm it restores. Backing up first would miss writes made before the services stopped. Keep the old `SECRET_KEY` until the new one is confirmed.
 

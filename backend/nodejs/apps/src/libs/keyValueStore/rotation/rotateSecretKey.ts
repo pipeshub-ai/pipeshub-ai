@@ -1,5 +1,9 @@
 import { EncryptionService } from '../../encryptor/encryptor';
-import { cipherRing } from '../../encryptor/secret-key-ring';
+import {
+  cipherRing,
+  weakSecretMessage,
+  weakSecretReason,
+} from '../../encryptor/secret-key-ring';
 import { isPlaceholderSecretKey } from '../../../modules/configuration_manager/config/config';
 import type { DistributedKeyValueStore } from '../keyValueStore';
 
@@ -126,6 +130,11 @@ export async function rotateEncryptedValues(
     throw new Error(
       'The new secret is a placeholder, shorter than 16 characters or too repetitive',
     );
+  }
+  // Whatever profile this tool runs under: the services on the hardened profile refuse to start with such a key.
+  const weak = weakSecretReason(newSecret);
+  if (weak !== null) {
+    throw new Error(weakSecretMessage('NEW_SECRET_KEY', weak));
   }
   const oldCipher = cipherFor(oldSecret);
   const newCipher = cipherFor(newSecret);
