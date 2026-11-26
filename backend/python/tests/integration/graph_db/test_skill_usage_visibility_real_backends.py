@@ -24,12 +24,15 @@ import uuid
 import httpx
 import pytest
 
+from app.agent_loop_lib.modules.providers.skills.base import SkillStatus
 from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY
 from app.api.routes import agent as agent_routes
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import OrgContext, bind
 from tests.integration.graph_db.test_skills_rest_permissions_real_backends import (  # noqa: F401 (fixtures)
     FM,
     _app,
+    log,
     md,
     node,
     provider,
@@ -232,3 +235,30 @@ async def test_an_agent_shows_a_skill_the_caller_cannot_see_by_name_description_
     assert {"version", "category"} <= set(owned["a-private"])
     assert [(r.status_code, r.text.replace("a-private", "<n>")) for r in hidden] == \
         [(r.status_code, r.text.replace("no-such-skill", "<n>")) for r in missing]
+
+
+async def test_the_agent_builder_links_only_skills_the_caller_may_see_inside_the_agents_write(provider, node) -> None:  # noqa: F811
+    """`_create_skill_edges` inside a real transaction, in the bound org: a's own skill and the
+    org's builtin are linked; b's skill, a's disabled skill and a missing name are not."""
+    org = f"it-usage-{uuid.uuid4().hex[:10]}"
+    await _world(provider, org)
+    a = skill_store(provider, org, "user-a")
+    await a.create_skill("a-off", md("a-off", "disabled of a"))
+    assert await a.set_skill_status("a-off", SkillStatus.DISABLED)
+    agent = await _agent(provider, org, "BuilderAgentOfA", "user-a")
+    names = ["a-private", "it-pack", "b-wrapper", "a-off", "no-such-skill"]
+    # The route begins the agent's write and links inside it under the request's binding.
+    with bind(OrgContext(org_id=org, user_id="user-a", kind="user", source="jwt", request_id="-")):
+        t = await provider.begin_transaction(read=[_SKILLS], write=[_HAS_SKILL])
+        try:
+            linked = await agent_routes._create_skill_edges(agent, names, "user-a", provider, log, transaction=t)
+            await provider.commit_transaction(t)
+        except BaseException:
+            await provider.rollback_transaction(t)
+            raise
+    assert linked == ["a-private", "it-pack"]
+    edges = await provider.get_edges_from_node(f"{_AGENTS}/{agent}", _HAS_SKILL)
+    assert sorted(e.get("skillName") for e in edges) == ["a-private", "it-pack"]
+    for skill in ("a-private", "it-pack"):
+        usage = await skill_store(provider, org, "user-a", visibility_scope="user-a").get_referential_usage(skill)
+        assert agent in {u["id"] for u in usage.used_by_agents}, skill
