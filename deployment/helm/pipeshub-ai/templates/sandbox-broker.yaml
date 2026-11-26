@@ -1,0 +1,246 @@
+{{- if eq (include "pipeshub-ai.sandboxMode" .) "broker" }}
+{{- $name := printf "%s-sandbox-broker" (include "pipeshub-ai.fullname" .) }}
+# The sandbox broker: the only pod with a Docker daemon. The app pods reach it
+# at {{ include "pipeshub-ai.sandboxBrokerUrl" . }} with the worker credential (SEC-C-10: the broker admits it, and
+# the scraper's on /metrics, by digest).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox-broker
+# It needs no Kubernetes API access.
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox-broker
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8095
+      targetPort: broker
+      protocol: TCP
+      name: broker
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox-broker
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox-broker
+spec:
+  # One broker per daemon: its acquire ledger is per process, and a second
+  # replica would race the first for the same sandboxes.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: sandbox-broker
+  template:
+    metadata:
+      {{- with include "pipeshub-ai.etcdTls.podAnnotation" . }}
+      annotations:
+        {{- . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "pipeshub-ai.labels" . | nindent 8 }}
+        app.kubernetes.io/component: sandbox-broker
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      {{- with .Values.sandbox.runtimeClassName }}
+      # The pod holds the privileged DinD sidecar: an escape lands in this
+      # RuntimeClass rather than on the node (see sandbox.runtimeClassName).
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: sandbox-broker
+          image: {{ include "pipeshub-ai.appImage" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default .Values.global.imagePullPolicy }}
+          command: ["python", "-m", "app.sandbox_broker_main"]
+          workingDir: /app/python
+          securityContext:
+            {{- include "pipeshub-ai.appSecurityContext" . | nindent 12 }}
+          ports:
+            - name: broker
+              containerPort: 8095
+              protocol: TCP
+          env:
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: HOME
+              value: /home/user
+            # ADR-KEY-02 (SEC-D-03): beside a privileged DinD, this pod holds no SECRET_KEY and no Redis password. Its own
+            # key opens only the document the app seals for it and gives it its own Redis ACL login.
+            - name: PIPESHUB_COMPONENT
+              value: sandbox-broker
+            - name: PIPESHUB_COMPONENT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.secretName" . }}
+                  key: sandbox-broker-component-key
+                  # An existing or external secret without it still renders; the broker then says what to set.
+                  optional: true
+            - name: KV_STORE_TYPE
+              value: {{ .Values.config.kvStoreType | quote }}
+            {{- include "pipeshub-ai.etcdEnv" . | nindent 12 }}
+            {{- include "pipeshub-ai.redisEnvComponent" . | nindent 12 }}
+            - name: DOCKER_HOST
+              # pipeshub-ai.validateSandbox refuses the install when this is empty.
+              value: {{ include "pipeshub-ai.brokerDockerHost" . | quote }}
+            # R38IDENT-FU-1: the broker's own credential at the docker-proxy sidecar, the only container here with the
+            # daemon's socket.
+            - name: DOCKER_PROXY_BROKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.secretName" . }}
+                  key: docker-proxy-broker-token
+                  optional: true
+            - name: SANDBOX_DOCKER_IMAGE
+              value: {{ include "pipeshub-ai.sandboxImage" . | quote }}
+            - name: HARNESS_ENGINE_IMAGE_REGISTRY
+              value: {{ include "pipeshub-ai.engineImageRegistry" . | quote }}
+            - name: SANDBOX_EGRESS_NETWORK
+              value: {{ .Values.config.sandboxEgressNetwork | quote }}
+            - name: SANDBOX_EGRESS_ALLOW_CIDRS
+              value: {{ .Values.config.sandboxEgressAllowCidrs | default "" | quote }}
+            # This install's folders on the daemon's shared data volume (E1).
+            - name: SANDBOX_INSTALL_ID
+              value: {{ printf "%s-%s" .Release.Namespace .Release.Name | quote }}
+            # The daemon volume for workspaces and other persistent sandbox folders.
+            - name: SANDBOX_DATA_VOLUME
+              value: {{ .Values.sandboxBroker.dataVolume | default "pipeshub_sandbox_data" | quote }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: broker
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: broker
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          resources:
+            {{- toYaml .Values.sandboxBroker.resources | nindent 12 }}
+          volumeMounts:
+            - name: logs
+              mountPath: /app/python/logs
+            - name: home
+              mountPath: /home/user
+            - name: tmp
+              mountPath: /tmp
+            {{- include "pipeshub-ai.etcdTlsMount" . | nindent 12 }}
+        {{- if .Values.sandbox.dind.enabled }}
+        {{- include "pipeshub-ai.dindContainer" . | nindent 8 }}
+        {{- if not .Values.config.dockerHost }}
+        {{- include "pipeshub-ai.dockerProxyContainer" (dict "root" . "profile" "broker") | nindent 8 }}
+        {{- end }}
+        {{- end }}
+      {{- /* sandbox.nodePool: a dedicated (tainted) pool for the privileged DinD pod, else the app's nodes. */}}
+      {{- $pool := .Values.sandbox.nodePool }}
+      {{- with ($pool.nodeSelector | default .Values.nodeSelector) }}
+      {{- $selector := include "pipeshub-ai.compactMap" . }}
+      {{- if $selector }}
+      nodeSelector:
+        {{- $selector | nindent 8 }}
+      {{- end }}
+      {{- end }}
+      {{- with ($pool.tolerations | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $pool.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: home
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        {{- include "pipeshub-ai.etcdTlsVolume" (dict "root" . "client" "sandbox-broker") | nindent 8 }}
+        {{- if .Values.sandbox.dind.enabled }}
+        {{- include "pipeshub-ai.dindVolume" . | nindent 8 }}
+        {{- end }}
+{{- if include "pipeshub-ai.networkPolicyEnabled" . }}
+{{- $np := .Values.networkPolicy.sandboxBroker }}
+---
+# ADR-OPS-04 (SEC-D-09): the privileged DinD pod. Only the application pods may
+# call the broker. Sandboxes on the legacy egress network leave through this
+# pod's address (DinD masquerades them), so its egress is theirs too: DNS, its
+# KV login, image pulls from public addresses, and nothing private, link-local
+# (cloud metadata, the EKS Pod Identity agent) or inside networkPolicy.clusterCidrs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox-broker
+spec:
+  podSelector:
+    {{- include "pipeshub-ai.np.component" (dict "root" . "component" "sandbox-broker") | nindent 4 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            {{- include "pipeshub-ai.np.component" (dict "root" . "component" "main") | nindent 12 }}
+      ports:
+        - protocol: TCP
+          port: 8095
+  egress:
+    {{- include "pipeshub-ai.np.dnsEgress" . | nindent 4 }}
+    {{- include "pipeshub-ai.np.storeEgress" (dict "root" . "component" "sandbox-broker") | nindent 4 }}
+    {{- with $np.registryEgress }}
+    {{- if .enabled }}
+    - to:
+        {{- include "pipeshub-ai.np.ipBlocks" (dict "blocks" .blocks "cluster" $.Values.networkPolicy.clusterCidrs) | nindent 8 }}
+      ports:
+        {{- range .ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- with .Values.config.sandboxEgressAllowCidrs }}
+    # config.sandboxEgressAllowCidrs: the private ranges open-egress sandboxes may reach (a package mirror).
+    - to:
+        {{- range splitList "," . }}
+        {{- if trim . }}
+        - ipBlock:
+            cidr: {{ trim . }}
+        {{- end }}
+        {{- end }}
+    {{- end }}
+    {{- with $np.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}

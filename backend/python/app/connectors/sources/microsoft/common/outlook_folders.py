@@ -13,7 +13,7 @@ from kiota_abstractions.request_information import RequestInformation
 from msgraph.generated.models.mail_folder import MailFolder  # type: ignore
 from msgraph.generated.models.message import Message  # type: ignore
 
-from app.config.constants.arangodb import ProgressStatus
+from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import (
     map_source_status,
@@ -35,6 +35,7 @@ from app.connectors.sources.microsoft.common.sign_in_errors import (
     describe_sign_in_error,
 )
 from app.models.entities import AppUser, FileRecord, RecordType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.client.resilience import ResiliencePolicy
@@ -42,6 +43,7 @@ from app.sources.client.resilience import ResiliencePolicy
 IMMUTABLE_ID_TYPE = "ImmutableId"
 _PREFER_IMMUTABLE_IDS = f'IdType="{IMMUTABLE_ID_TYPE}"'
 _RECORD_SCAN_PAGE_SIZE = 500
+_KEPT_RECORDS_PAGE_SIZE = 1000
 _DAY_MS = 24 * 60 * 60 * 1000
 
 
@@ -312,6 +314,8 @@ class OutlookFolderInventoryMixin:
     The folder listing reports through two attributes, reset before each listing:
     ``_folder_listing_complete`` (False when a child-folder listing was not proven complete)
     and ``_folders_maybe_present`` (folder ids the listing left out that may still exist).
+    ``_hold_folders_maybe_present`` says a full sync keeps the stored ones: true when Graph
+    did not resolve a standard folder every mailbox has, not just one this mailbox lacks.
     Mail removals and full folder reads are collected per mailbox and applied once all its
     folders were read; ``_full_sync_incomplete`` tells the full-sync sweep to unlink nothing.
     """
@@ -321,6 +325,7 @@ class OutlookFolderInventoryMixin:
 
     _folder_listing_complete: bool = True
     _folders_maybe_present: frozenset[str] | set[str] = frozenset()
+    _hold_folders_maybe_present: bool = False
     _pending_removals: list[Any] | None = None
     _pending_full_reads: list[Any] | None = None
     _full_sync_incomplete: bool = False
@@ -349,7 +354,8 @@ class OutlookFolderInventoryMixin:
         absence. The inventory is a sync point, which a full sync clears: a filter change
         therefore never reads as a deletion. A listing not proven complete drops nothing.
         On a mailbox's first inventory outside a full sync (an upgrade), the stored folders
-        an earlier version synced and this one no longer lists are dropped.
+        an earlier version synced and this one no longer lists are dropped. On a full sync that
+        holds the folders that may still exist, the stored ones keep their stored subtree.
         """
         if not self._folder_listing_complete:
             self.logger.warning(f"The folder listing of {user.email} was not complete; no folder is removed this run")
@@ -361,6 +367,7 @@ class OutlookFolderInventoryMixin:
         fingerprint = self._filter_fingerprint(*self.FOLDER_FILTER_KEYS)
         previous = await self.email_delta_sync_point.read_sync_point(key) or {}
         kept: set[str] = set()
+        held: set[str] = set()
         gone: set[str] = set()
         if previous.get(OutlookSyncPointKeys.FILTER_FINGERPRINT) == fingerprint:
             previous_ids = set(previous.get(OutlookSyncPointKeys.FOLDER_IDS) or [])
@@ -376,6 +383,14 @@ class OutlookFolderInventoryMixin:
             for folder_id in candidates - current_folder_ids:
                 if await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, folder_id):
                     gone.add(folder_id)
+        elif not previous and self._folders_maybe_present and self._hold_folders_maybe_present:
+            # Only a full sync gets here (its prep cleared the inventory). Its sweep would unlink
+            # the stored mail of these folders, which an incremental run keeps.
+            try:
+                held = {fid for fid in sorted(self._folders_maybe_present) if await self._keep_stored_folder_tree(fid)}
+            except Exception as e:
+                self.logger.warning(f"Could not keep the stored folders Graph did not return for {user.source_user_id}: {e}")
+                kept = set(self._folders_maybe_present)
         if kept:
             # Their mail was not read this run, so a full sync did not see it.
             self.logger.warning(f"Keeping folders {sorted(kept)} of {user.email}: Graph did not return them this run")
@@ -392,10 +407,48 @@ class OutlookFolderInventoryMixin:
         await self.email_delta_sync_point.update_sync_point(
             key,
             {
-                OutlookSyncPointKeys.FOLDER_IDS: sorted(current_folder_ids | kept | failed),
+                OutlookSyncPointKeys.FOLDER_IDS: sorted(current_folder_ids | kept | held | failed),
                 OutlookSyncPointKeys.FILTER_FINGERPRINT: fingerprint,
             },
         )
+
+    async def _keep_stored_folder_tree(self, external_group_id: str) -> bool:
+        """Note a stored folder, every folder below it, their records and the group it sits in
+        as seen by the full sync in progress, so the unlink after it keeps them as stored.
+        Soft-deleted records too. False when the folder is not stored; a lookup that fails raises."""
+        processor = self.data_entities_processor
+        group = await processor.get_record_group_by_external_id(self.connector_id, external_group_id)
+        if group is None:
+            return False
+        if group.parent_external_group_id:
+            # Its records inherit the mailbox grant through it.
+            await processor.note_kept_record_group(self.connector_id, group.parent_external_group_id)
+        visited = {external_group_id}
+        pending = [external_group_id]
+        while pending:
+            group_id = pending.pop()
+            await processor.note_kept_record_group(self.connector_id, group_id)
+            after_key: str | None = None
+            while True:
+                page = await processor.get_records_in_record_group(
+                    self.connector_id, group_id, _KEPT_RECORDS_PAGE_SIZE, after_key, visibility=RecordVisibility.ALL,
+                )
+                processor.note_kept_records(self.connector_id, [record.id for record in page])
+                if len(page) < _KEPT_RECORDS_PAGE_SIZE:
+                    break
+                after_key = page[-1].id
+            children = await processor.get_nodes_by_filters(
+                CollectionNames.RECORD_GROUPS.value,
+                {"connectorId": self.connector_id, "parentExternalGroupId": group_id},
+                return_fields=["externalGroupId"],
+                raise_on_error=True,
+            )
+            for child in children:
+                child_id = child.get("externalGroupId")
+                if child_id and child_id not in visited:
+                    visited.add(child_id)
+                    pending.append(child_id)
+        return True
 
     async def _delete_record_group(self, external_group_id: str) -> bool:
         """Delete a record group with everything below it. True once it is gone, also when an

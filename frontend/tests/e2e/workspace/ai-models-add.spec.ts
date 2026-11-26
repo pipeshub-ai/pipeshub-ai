@@ -26,6 +26,8 @@ async function listLlms(apiContext: import('@playwright/test').APIRequestContext
 }
 
 test.describe('Set up an AI model', () => {
+  // The stand-in lives in the integration stack's `web-fixtures` service, which only that stack runs (CI sets this).
+  test.skip(!process.env.WEB_FIXTURES_CONNECTOR_URL, "needs the integration stack's web-fixtures service (WEB_FIXTURES_CONNECTOR_URL unset)");
   let modelKey: string | undefined;
   let priorDefault: string | undefined;
 

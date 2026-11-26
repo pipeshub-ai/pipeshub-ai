@@ -1,0 +1,261 @@
+{
+  "description": "RFC 8785 (JCS) golden vectors shared by harness_core/contracts/canonical_json.py and agent-harness/contracts/canonical-json.ts. Each input is JSON text; each language parses it with its native parser and must produce exactly `expected` (UTF-8).",
+  "notes": [
+    "JCS does not normalize Unicode. NFC and NFD spellings are different strings and canonicalize (and hash) differently; normalize first if equivalence matters.",
+    "Every JSON number is an IEEE-754 double. JavaScript's JSON.parse silently rounds integers beyond 2^53; Python keeps them exact, so canonical_json rejects integers that no double represents exactly. `errors[].languages` lists where the rejection is observable.",
+    "Object keys sort by UTF-16 code units (not locale, not code points).",
+    "The object key \"__proto__\" is reserved and rejected everywhere: JavaScript object assignment turns it into a prototype change and would silently drop it."
+  ],
+  "vectors": [
+    {
+      "name": "integer one",
+      "input": "1",
+      "expected": "1",
+      "sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "float one drops the fraction",
+      "input": "1.0",
+      "expected": "1",
+      "sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "1e21 switches to exponent form",
+      "input": "1e21",
+      "expected": "1e+21",
+      "sha256": "241c4643fa70b1dcde1205b71be4e3bebb17e9f880c8e1a33d0ead6c27271d3c"
+    },
+    {
+      "name": "1e20 stays positional",
+      "input": "1e20",
+      "expected": "100000000000000000000",
+      "sha256": "c344e9487bfbd5c4e03c9fb90d62a5dde5e00b54d55c46e9f4a803aea162b80c"
+    },
+    {
+      "name": "upper-case exponent with sign",
+      "input": "1E+21",
+      "expected": "1e+21",
+      "sha256": "241c4643fa70b1dcde1205b71be4e3bebb17e9f880c8e1a33d0ead6c27271d3c"
+    },
+    {
+      "name": "negative zero is zero",
+      "input": "-0",
+      "expected": "0",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "negative zero float is zero",
+      "input": "-0.0",
+      "expected": "0",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "0.1",
+      "input": "0.1",
+      "expected": "0.1",
+      "sha256": "14be4b45f18e0d8c67b4f719b5144eee88497e413709d11d85b096d8e2346310"
+    },
+    {
+      "name": "0.1 + 0.2 keeps the shortest round-trip digits",
+      "input": "0.30000000000000004",
+      "expected": "0.30000000000000004",
+      "sha256": "06bad31060c1212ae832de4c031f7b31e3b48aed57858294478cb19450cf34ca"
+    },
+    {
+      "name": "1e-6 stays positional",
+      "input": "0.000001",
+      "expected": "0.000001",
+      "sha256": "159fb29a827ad04b260aa6c8ab6d8637f8f2b38af5c4f3cb49d6a21205e040f8"
+    },
+    {
+      "name": "1e-7 switches to exponent form",
+      "input": "1e-7",
+      "expected": "1e-7",
+      "sha256": "5b33e02f2c5103a05d32f6ba9cb058294452bfbf393967f68bb30c1bdcbbab22"
+    },
+    {
+      "name": "small positional",
+      "input": "0.000001234",
+      "expected": "0.000001234",
+      "sha256": "4561f092ec62c175d58d17f136412e713559fd0e0a51fadd8d4085cc3511b4e1"
+    },
+    {
+      "name": "small exponent",
+      "input": "1.234e-7",
+      "expected": "1.234e-7",
+      "sha256": "6ff5c8c6e16f583b1f31911c5e7140065ed7de649c33f53e5f587d3acc01f543"
+    },
+    {
+      "name": "trailing zeros drop",
+      "input": "4.50",
+      "expected": "4.5",
+      "sha256": "32209ccbf8a8e509b9027698cc173343a2695e8ecdbe899bf5335a3100c956fc"
+    },
+    {
+      "name": "rounding to 17 significant digits",
+      "input": "333333333.33333329",
+      "expected": "333333333.3333333",
+      "sha256": "6bd9be1c141028789cc35db62f1b43e80d5d4ee24d6d542e775deb16799ff4c7"
+    },
+    {
+      "name": "largest safe integer",
+      "input": "9007199254740991",
+      "expected": "9007199254740991",
+      "sha256": "f40b423c2dd95ff2b2f027e22208f438cf7242862e5e746860e697308c9add26"
+    },
+    {
+      "name": "2^53",
+      "input": "9007199254740992",
+      "expected": "9007199254740992",
+      "sha256": "c681da39d7273a6a24c15c9cac3a75526ff2ecf8ba4ee60346a0c70c8163bdb2"
+    },
+    {
+      "name": "negative largest safe integer",
+      "input": "-9007199254740991",
+      "expected": "-9007199254740991",
+      "sha256": "4c933a456bb8f2e9894b2d0b26480439cd72d52fb8a27cbf8fd7f323f22c7815"
+    },
+    {
+      "name": "2^68 written as a float",
+      "input": "295147905179352830000.0",
+      "expected": "295147905179352830000",
+      "sha256": "7933ef1b34c194c7a327ef424e54282dd2872bc7bda27812f9edf7882ca340c0"
+    },
+    {
+      "name": "largest double",
+      "input": "1.7976931348623157e308",
+      "expected": "1.7976931348623157e+308",
+      "sha256": "c2784e1abd6317452708f3fbf9641c16b959561bc621a1d408c23a20aa2cb585"
+    },
+    {
+      "name": "smallest subnormal",
+      "input": "5e-324",
+      "expected": "5e-324",
+      "sha256": "c46e7ca1be4c8734f373a56530787288fa2058d73d07855e9247e949f811a42a"
+    },
+    {
+      "name": "negative with exponent",
+      "input": "-1.5e-10",
+      "expected": "-1.5e-10",
+      "sha256": "19ca303844b8cb9af4ec4dbd2d619c3be9c7c3cfa82c4e90c2b04821ad4f07f9"
+    },
+    {
+      "name": "control characters use short escapes or lower-case \\u00XX",
+      "input": "\"\\u0000\\u001f\\b\\f\\n\\r\\t\"",
+      "expected": "\"\\u0000\\u001f\\b\\f\\n\\r\\t\"",
+      "sha256": "540eeab4d1f6637443e8ac3b810adfdb83d9c447eac66327ab9c418809758e32"
+    },
+    {
+      "name": "quote, backslash; solidus is not escaped",
+      "input": "\"\\\"\\\\\\/\"",
+      "expected": "\"\\\"\\\\/\"",
+      "sha256": "106814b96b4576ad5efb709458f6a5e1d0b0653cf234738e0ccc6c435bdef084"
+    },
+    {
+      "name": "DEL and U+2028/U+2029 are literal",
+      "input": "\"\\u007f\\u2028\\u2029\"",
+      "expected": "\"\u007f\u2028\u2029\"",
+      "sha256": "95df0b63167be5cce73c768a4dd6b0005aa196870fdc24ca85e0a03c1dd7a6c0"
+    },
+    {
+      "name": "non-ASCII is literal UTF-8",
+      "input": "\"\\u00e9\\u20ac\"",
+      "expected": "\"\u00e9\u20ac\"",
+      "sha256": "79193dd8f4f0994b1c0c0fad2229f4dc43951abebeb6f923745f5d01cfae5be4"
+    },
+    {
+      "name": "astral character is literal UTF-8",
+      "input": "\"\\ud83d\\ude00\"",
+      "expected": "\"\ud83d\ude00\"",
+      "sha256": "7a0c50b92434b015545fe93ab723db2d4b2cdd14a441405624a9ce8be29f1d5a"
+    },
+    {
+      "name": "NFC e-acute (not normalized)",
+      "input": "\"caf\\u00e9\"",
+      "expected": "\"caf\u00e9\"",
+      "sha256": "28380feb8724d669bc8d4cf5b5a5bb1adbdc61b81ebd06f3fabc567b4f3b0fc5"
+    },
+    {
+      "name": "NFD e + combining acute (not normalized, differs from NFC)",
+      "input": "\"cafe\\u0301\"",
+      "expected": "\"cafe\u0301\"",
+      "sha256": "c7d7e72b8ad0dd91beb4044a4bb17c6c8a9672cc620c4c76e6584f3525d400d1"
+    },
+    {
+      "name": "key order is UTF-16 code units, not locale",
+      "input": "{\"b\":1,\"a\":2,\"B\":3,\"aa\":4,\"A\":5,\"\":6}",
+      "expected": "{\"\":6,\"A\":5,\"B\":3,\"a\":2,\"aa\":4,\"b\":1}",
+      "sha256": "de7770f332b4c7b2ed24f6ddb88192134b0a990c58728828e398622c88bdac8b"
+    },
+    {
+      "name": "RFC 8785 3.2.3 key sorting",
+      "input": "{\"\\u20ac\":\"Euro Sign\",\"\\r\":\"Carriage Return\",\"\\ufb33\":\"Hebrew Letter Dalet With Dagesh\",\"1\":\"One\",\"\\ud83d\\ude00\":\"Emoji: Grinning Face\",\"\\u0080\":\"Control\",\"\\u00f6\":\"Latin Small Letter O With Diaeresis\"}",
+      "expected": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\u0080\":\"Control\",\"\u00f6\":\"Latin Small Letter O With Diaeresis\",\"\u20ac\":\"Euro Sign\",\"\ud83d\ude00\":\"Emoji: Grinning Face\",\"\ufb33\":\"Hebrew Letter Dalet With Dagesh\"}",
+      "sha256": "5e321556d22018a9656991a9e94f77ec175fa193e52a2429d312f8419ec8b08c"
+    },
+    {
+      "name": "RFC 8785 3.2.2 example",
+      "input": "{\"numbers\":[333333333.33333329,1E30,4.50,2e-3,0.000000000000000000000000001],\"string\":\"\\u20ac$\\u000F\\u000aA'\\u0042\\u0022\\u005c\\\\\\\"\\/\",\"literals\":[null,true,false]}",
+      "expected": "{\"literals\":[null,true,false],\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27],\"string\":\"\u20ac$\\u000f\\nA'B\\\"\\\\\\\\\\\"/\"}",
+      "sha256": "2d5e01a318d0f0879ab568c4be289c8b1f64ef8921a53c6277d5e069978baacb"
+    },
+    {
+      "name": "nested objects and arrays, whitespace ignored",
+      "input": "{ \"z\": [ {\"y\": 2, \"x\": [1, {\"b\": null, \"a\": false}]} ], \"a\": {} , \"m\": [] }",
+      "expected": "{\"a\":{},\"m\":[],\"z\":[{\"x\":[1,{\"a\":false,\"b\":null}],\"y\":2}]}",
+      "sha256": "5b46f0deea28dacabbb550bb47f1464ba034141293af308a751399960704a8a6"
+    },
+    {
+      "name": "literals",
+      "input": "[true,false,null]",
+      "expected": "[true,false,null]",
+      "sha256": "4d0f18de2133118249c26acc481838d4f6bb6bc1de882d99abbd19ae9397e8df"
+    },
+    {
+      "name": "empty string key and value",
+      "input": "{\"\":\"\"}",
+      "expected": "{\"\":\"\"}",
+      "sha256": "86cfeee6df382a203f626305afbca44d228cac67acd151ccf2db29530c548fea"
+    }
+  ],
+  "errors": [
+    {
+      "name": "lone high surrogate",
+      "input": "\"\\ud800\"",
+      "languages": [
+        "python",
+        "typescript"
+      ]
+    },
+    {
+      "name": "lone low surrogate in a key",
+      "input": "{\"\\udc00\":1}",
+      "languages": [
+        "python",
+        "typescript"
+      ]
+    },
+    {
+      "name": "integer not representable as a double (2^53+1)",
+      "input": "9007199254740993",
+      "languages": [
+        "python"
+      ]
+    },
+    {
+      "name": "huge integer literal",
+      "input": "123456789012345678901234567890",
+      "languages": [
+        "python"
+      ]
+    },
+    {
+      "name": "reserved __proto__ key",
+      "input": "{\"a\":{\"__proto__\":1}}",
+      "languages": [
+        "python",
+        "typescript"
+      ]
+    }
+  ]
+}

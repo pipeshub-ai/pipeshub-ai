@@ -89,11 +89,7 @@ class ProjectsSync(GitLabProjectsPermissionsMixin):
                 # that is never linked, and it is not indexed again until it changes.
                 (
                     "code",
-                    lambda: self.c.repos.run(
-                        project_id,
-                        project_path,
-                        project.default_branch or "main",
-                    ),
+                    lambda: self.c.repos.run(project_id, project_path, project.default_branch),
                 ),
                 ("merge_requests", lambda: self.c.merge_requests.fetch_prs_batched(project_id)),
             ):

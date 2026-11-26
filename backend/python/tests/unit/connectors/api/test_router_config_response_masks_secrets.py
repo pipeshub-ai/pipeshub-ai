@@ -252,10 +252,11 @@ async def test_config_save_with_a_new_secret_replaces_the_stored_one() -> None:
 async def test_oauth_auth_save_that_sends_the_mask_keeps_the_oauth_apps_secret() -> None:
     config_service = _config_service("OAUTH")
     body = {"auth": {"clientId": "stored-client-id", "clientSecret": REDACTED_PLACEHOLDER, "oauthConfigId": "app-1"}}
+    # A team connector: an admin changes an org app only there.
     request = _request(config_service, body, role="admin")
 
     with (
-        patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock, return_value=_instance("OAUTH")),
+        patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock, return_value={**_instance("OAUTH"), "scope": "team"}),
         patch(f"{_ROUTER}._get_oauth_field_names_from_registry", return_value=["clientId", "clientSecret"]),
         patch(f"{_ROUTER}._get_oauth_config_path", return_value=_OAUTH_APPS_PATH),
         patch(f"{_ROUTER}._update_oauth_infrastructure_fields", new_callable=AsyncMock),

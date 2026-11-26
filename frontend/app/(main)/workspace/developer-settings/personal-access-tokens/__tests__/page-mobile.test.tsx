@@ -43,5 +43,9 @@ describe('personal access tokens page on a phone', () => {
     expect(screen.getByText(/Expires/)).toBeTruthy();
     expect(screen.getByText(/Last used/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Revoke t5-phone token' })).toBeTruthy();
+    // A labelled button, not an icon alone, and big enough to tap.
+    const change = screen.getByRole('button', { name: 'Change what t5-phone token can see' });
+    expect(change.textContent).toBe('Change access');
+    expect(change.style.minHeight).toBe('44px');
   });
 });

@@ -5,7 +5,8 @@ The legacy loop built every tool message through `ToolHandlerRegistry.
 format_message` (`app/utils/streaming.py`), which is load-bearing for two
 reasons: it registers each per-block URL into the shared `CitationRefMapper`
 (via `display_url_for_llm`), and it emits the `url/Citation ID:` marker the
-model needs in order to cite anything. `PipesHubStructuredToolAdapter.
+model needs in order to cite anything (an engine run's `url:` and `Citation ID:`
+fields instead, see `WebCitationStyle`). `PipesHubStructuredToolAdapter.
 execute()` hands the tool's raw JSON straight to the model instead, so
 neither of those happen — see the "Web citation restore" plan for the full
 trace.
@@ -28,10 +29,20 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.core.messages import ImagePart, TextPart
 from app.agent_loop_lib.core.types import Source
 from app.agent_loop_lib.tools.base import ToolOutput
+from app.agent_loop_lib.tools.tags import (
+    TAG_EFFECT_READ,
+    TAG_FLOW_OPENS_ADDRESS,
+    TAG_FLOW_PLATFORM_WEB,
+    TAG_PROVIDER_PLATFORM,
+    TAG_SINK_EXTERNAL,
+)
 from app.agents.actions.util.tool_summaries import parse_json_maybe
 from app.agents.agent_loop.image_parts import admitted_image_parts
 from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter
+from app.utils.citations import WEB_CITATION_STYLE, WebCitationStyle
 from app.utils.tool_handlers import ToolHandlerRegistry
+from app.web.addresses import web_addresses
+from app.web.budget import WEB_BUDGET_KEY, WebBudget
 from app.web.tools.views import web_view
 
 if TYPE_CHECKING:
@@ -48,6 +59,7 @@ __all__ = ["WebToolAdapter", "accumulate_web_records", "is_web_payload"]
 # `result_type` values the tools in `app/web/tools/` stamp onto a
 # successful envelope — see `ToolResultType` in `app/utils/tool_handlers.py`.
 WEB_RESULT_TYPES: frozenset[str] = frozenset({"web_search", "url_content"})
+FETCH_URL = "fetch_url"
 
 
 def is_web_payload(payload: object) -> bool:
@@ -118,7 +130,19 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
     ) -> None:
         """``image_loader`` (``fetch_url`` only, when an admin has web images turned on) reads
         up to ``max_images`` of a page's images as ``data:`` URIs; each failed one is None."""
-        super().__init__(structured_tool, app_name, tool_name)
+        # Search and fetch change nothing anywhere; their requests carry what the model chose (a query, a URL) to a host
+        # outside the organization (FG2). The flow guard never holds them: a query goes only to the search provider, and
+        # after a private read a fetch opens only an address the run was given (`app.web.addresses`).
+        opens = (TAG_FLOW_OPENS_ADDRESS,) if tool_name == FETCH_URL else ()
+        super().__init__(
+            structured_tool,
+            app_name,
+            tool_name,
+            effect=TAG_EFFECT_READ,
+            sink=TAG_SINK_EXTERNAL,
+            provider=TAG_PROVIDER_PLATFORM,
+            flow=(TAG_FLOW_PLATFORM_WEB, *opens),
+        )
         self._context = context
         self._image_loader = image_loader
         self._max_images = max_images
@@ -152,9 +176,12 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
             return output
 
         tool_state = self._context.tool_state
+        web_addresses(tool_state).note_result(payload)
         handler = ToolHandlerRegistry.get_handler(payload)
         handler_context = {
             "ref_mapper": tool_state.get("citation_ref_mapper"),
+            # An engine run reads the real link and the Citation ID as two fields (`WebCitationStyle`).
+            WEB_CITATION_STYLE: tool_state.get(WEB_CITATION_STYLE, WebCitationStyle.ALIAS),
             "config_service": self._context.config_service,
             "is_multimodal_llm": self._context.is_multimodal_llm,
         }
@@ -176,7 +203,7 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
             return output
 
         sources = [Source(url=rec.get("url"), title=rec.get("title")) for rec in records if rec.get("url")]
-        text = "\n".join(text_parts)
+        text = "\n".join([*text_parts, *_footer(payload, tool_state)])
         images = await self._page_images(payload)
         if any(isinstance(part, ImagePart) for part in images):
             data: str | list[Part] = [TextPart(text=text), *images]
@@ -208,3 +235,17 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
             return []
         # Already decoded in full as they were read (`fetch_image_data_uri`).
         return await admitted_image_parts(uris, self._context, source="on the page", verified=True) if uris else []
+
+
+def _footer(payload: dict[str, Any], tool_state: dict[str, Any]) -> list[str]:
+    """What the model must know about the result beyond its blocks (WP-62): that a large page was cut and how to read
+    the rest, and, on a long run, the web allowance still left."""
+    lines: list[str] = []
+    truncated = payload.get("truncated")
+    if isinstance(truncated, str) and truncated:
+        lines.append(f"[{truncated}]")
+    budget = tool_state.get(WEB_BUDGET_KEY)
+    allowance = budget.allowance_line() if isinstance(budget, WebBudget) else None
+    if allowance is not None:
+        lines.append(allowance)
+    return lines

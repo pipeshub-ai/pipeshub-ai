@@ -16,6 +16,8 @@ const thread = vi.hoisted(() => ({
 }));
 const loadOlder = vi.hoisted(() => vi.fn<(slotId: string) => Promise<void>>());
 
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }));
+
 vi.mock('@assistant-ui/react', () => ({
   useAuiState: (select: (state: unknown) => unknown) => select({ thread: { messages: thread.messages } }),
   useAui: () => ({ thread: () => ({ append: thread.append }) }),
@@ -79,6 +81,7 @@ vi.mock('../chat-response', () => ({
 import { MessageList } from '../message-list';
 import { useChatStore } from '../../../store';
 import { useInlineCitationPopoverStore } from '../response-tabs/citations/citation-popover-store';
+import { useBuiltinResults } from '../../../builtin-results';
 
 const initialChatState = useChatStore.getState();
 
@@ -89,6 +92,8 @@ const geometry = {
   contentHeight: 2000,
   rowTop: {} as Record<string, number>,
   rowHeight: {} as Record<string, number>,
+  /** A built-in result row's top and height in content coordinates, by its row id. */
+  builtinRow: {} as Record<string, { top: number; height: number }>,
 };
 
 let frames: FrameRequestCallback[] = [];
@@ -133,6 +138,8 @@ beforeEach(() => {
   geometry.contentHeight = 2000;
   geometry.rowTop = {};
   geometry.rowHeight = {};
+  geometry.builtinRow = {};
+  useBuiltinResults.setState({ rows: {}, reveal: null });
   frames = [];
   resizeCallbacks.length = 0;
 
@@ -154,6 +161,11 @@ beforeEach(() => {
     const question = rowQuestion(this);
     const scroller = this.closest('.chat-message-scroll');
     const offset = scroller instanceof HTMLElement ? scroller.scrollTop : 0;
+    const builtin = geometry.builtinRow[this.dataset.builtinRowId ?? ''];
+    if (builtin) {
+      const top = builtin.top - offset;
+      return { top, bottom: top + builtin.height, height: builtin.height, left: 0, right: 0, width: 0, x: 0, y: top, toJSON: () => ({}) };
+    }
     if (question !== null && question in geometry.rowTop) {
       const top = geometry.rowTop[question] - offset;
       const height = geometry.rowHeight[question] ?? 200;
@@ -343,6 +355,49 @@ describe('MessageList — what the reader sees', () => {
     rerender(<MessageList />);
 
     expect(useInlineCitationPopoverStore.getState().activeKey).toBeNull();
+  });
+});
+
+describe('MessageList — a built-in command result (CMDUI)', () => {
+  it('brings the row just typed into view, above the composer, and again when its result settles', () => {
+    thread.messages = TWO_TURNS;
+    geometry.rowTop = { 'What is our refund policy?': 0, 'Who approves exceptions?': 600 };
+    const slotId = openConversation('conv-1');
+    render(<MessageList />);
+    settle();
+    expect(scroller().scrollTop).toBe(600);
+
+    let id = '';
+    act(() => {
+      id = useBuiltinResults.getState().add(slotId, { typed: '/status', afterPairs: 2, result: { kind: 'loading' } });
+    });
+    geometry.builtinRow[id] = { top: 1400, height: 40 };
+    settle();
+    // Its end sits 16px above the bottom of the view (500 tall), where it had been 940px below it.
+    expect(scroller().scrollTop).toBe(1400 + 40 - 500 + 16);
+
+    act(() => useBuiltinResults.getState().update(slotId, id, { kind: 'note', text: 'Model e2e-llm' }));
+    geometry.builtinRow[id] = { top: 1400, height: 200 };
+    settle();
+    expect(scroller().scrollTop).toBe(1400 + 200 - 500 + 16);
+    expect(screen.getByText('Model e2e-llm')).toBeTruthy();
+  });
+
+  it('leaves the view alone for a row typed in another chat, or one already shown before the chat opened', () => {
+    thread.messages = TWO_TURNS;
+    geometry.rowTop = { 'What is our refund policy?': 0, 'Who approves exceptions?': 600 };
+    const slotId = openConversation('conv-1');
+    const before = useBuiltinResults.getState().add(slotId, { typed: '/help', afterPairs: 2, result: { kind: 'help' } });
+    geometry.builtinRow[before] = { top: 1400, height: 200 };
+    render(<MessageList />);
+    settle();
+    expect(scroller().scrollTop).toBe(600);
+
+    act(() => {
+      useBuiltinResults.getState().add('another-slot', { typed: '/status', afterPairs: 0, result: { kind: 'loading' } });
+    });
+    settle();
+    expect(scroller().scrollTop).toBe(600);
   });
 });
 
@@ -639,6 +694,26 @@ describe('MessageList — jump to newest', () => {
     } finally {
       if (original) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', original);
     }
+  });
+
+  it('JUMPPOS-1: sits at the right edge on a phone, off the controls of a full-width card, and centred on desktop', () => {
+    viewport.isMobile = true;
+    try {
+      openTwoTurns();
+      scrollTo(100);
+      const phone = (jumpButton() as HTMLElement).parentElement as HTMLElement;
+      expect(phone.style.right).toBe('var(--space-4)');
+      expect(phone.style.left).toBe('');
+      expect(phone.style.transform).toBe('');
+    } finally {
+      viewport.isMobile = false;
+    }
+    cleanup();
+    openTwoTurns();
+    scrollTo(100);
+    const desktop = (jumpButton() as HTMLElement).parentElement as HTMLElement;
+    expect(desktop.style.left).toBe('50%');
+    expect(desktop.style.transform).toBe('translateX(-50%)');
   });
 
   it('does not force a minimum size on desktop', () => {

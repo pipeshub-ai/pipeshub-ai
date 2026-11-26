@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/turn-label.schema.json",
+  "title": "PipeshubTurnLabel",
+  "description": "A turn's confidentiality label (P2.5a, REPORT 6.5.1): the records and live items whose content reached the turn's answer, as the typed sources a viewer's access is decided on (C-18). complete is false when some content of unknown provenance reached it; such a turn is shown to nobody but its actor. A web page is public and never named. More than 2000 sources is recorded as unknown (complete false, no sources). Who may read each source is never copied here: it is decided from the platform's permissions when a viewer asks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "complete",
+    "sources"
+  ],
+  "properties": {
+    "complete": {
+      "type": "boolean"
+    },
+    "sources": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "$ref": "record-access-query.schema.json#/$defs/CheckedSource"
+      }
+    },
+    "integrity": {
+      "description": "SEC-B-05 (ADR-MEM-01): who could have written what reached the turn, besides whether a viewer may read it. external: content an outsider can write (a web page, an outsider's email or chat, an MCP result, a fetched repository) reached it; first_party: only the organization's own content did. A join is external when any part is, first_party only when every part says so. Absent: the writer predates it, or a part of the join did not say; a memory the turn proposed then waits for its owner's review, as for external.",
+      "enum": [
+        "first_party",
+        "external"
+      ]
+    }
+  },
+  "examples": [
+    {
+      "complete": true,
+      "sources": [
+        {
+          "kind": "indexed",
+          "recordId": "r1"
+        },
+        {
+          "kind": "attachment",
+          "recordId": "r2"
+        },
+        {
+          "kind": "live",
+          "connector": "SHAREPOINT ONLINE",
+          "connectorId": "c1",
+          "externalRecordId": "01ABCDEF"
+        }
+      ]
+    },
+    {
+      "complete": true,
+      "sources": []
+    },
+    {
+      "complete": false,
+      "sources": []
+    }
+  ],
+  "x-extensible": true
+}

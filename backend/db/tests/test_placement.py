@@ -7,7 +7,7 @@ import psycopg
 import pytest
 from psycopg import errors as pg
 
-from db import maintain
+from db import maintain, vetted_harness
 from db.lib import placement
 from db.migrate import RunnerError, locked
 
@@ -94,6 +94,34 @@ def test_the_points_leaf_gets_the_vector_index_of_each_registered_space_and_the_
         assert indexes == ([] if major >= 18 and ver < (0, 8, 3) else [f"points_o_{ORG_A}_bq_s1"])
         opts = c.execute("SELECT coalesce(reloptions, '{}') FROM pg_class WHERE oid = %s::regclass", (f"retrieval.points_o_{ORG_A}",)).fetchone()[0]
         assert ("vacuum_index_cleanup=off" in opts) == (ver < placement.SAFE_BELOW)
+
+
+def test_the_membership_keys_of_a_new_orgs_leaf_are_read_by_the_primary_key_before_the_leaf_is_analysed(rdb, monkeypatch):
+    """An org's own group_members leaf that ANALYZE has not seen (its first large load, before autovacuum reaches it): the triggers that copy a
+    group's members onto its points read them through the primary key, not group_members_member (org, collection, kind, member_id, group_key),
+    which walked the org's whole membership once per point. Seven writes each: the plpgsql plan cache goes generic after five."""
+    cluster, name = rdb
+    ask(cluster, name, ORG_A)
+    env(monkeypatch, cluster, name)
+    assert maintain.main(["placement"]) == 0
+    adopt(cluster, name, ORG_A)
+    leaf = f"retrieval.group_members_o_{ORG_A}"
+    with cluster.admin(name) as c:
+        c.execute(f"ALTER TABLE {leaf} SET (autovacuum_enabled = false)")
+        c.execute("INSERT INTO retrieval.point_groups (org_id, collection_id, group_key, computed_at) VALUES (%s, 1, 'g77', clock_timestamp())", (ORG_A,))
+        c.execute("INSERT INTO retrieval.group_members SELECT %s, 1, 'g' || g, 1 + m %% 3, 'm' || (g * 7 + m * 131) %% 2771 "
+                  "FROM generate_series(1, 4000) g, generate_series(1, 25) m ON CONFLICT DO NOTHING", (ORG_A,))
+        assert c.execute(f"SELECT reltuples FROM pg_class WHERE oid = '{leaf}'::regclass").fetchone()[0] == -1
+        point = vetted_harness.plans_auto_explain(c, "pipeshub_indexing", ORG_A, "INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, "
+                                                  "group_key, embedding, embedding_dim) VALUES (%s, 1, 1, gen_random_uuid(), 'g77', %s::ext.halfvec, 4) RETURNING member_keys",
+                                                  (ORG_A, VEC))
+        member = vetted_harness.plans_auto_explain(c, "pipeshub_indexing", ORG_A, "INSERT INTO retrieval.group_members VALUES (%s, 1, 'g77', 1, gen_random_uuid()::text) "
+                                                   "RETURNING member_id", (ORG_A,))
+        assert len(c.execute("SELECT member_keys FROM retrieval.points WHERE org_id = %s ORDER BY point_sk LIMIT 1", (ORG_A,)).fetchone()[0]) == 25 + 7
+    for which, plans in (("points_member_keys", point), ("group_members_keys", member)):
+        for i, plan in enumerate(plans):
+            reads = [line.strip() for line in plan.splitlines() if "Scan" in line and " on group_members_o_" in line]
+            assert reads and all(f"using group_members_o_{ORG_A}_pkey " in r for r in reads), (which, i, plan)
 
 
 def test_a_refused_request_is_closed_with_its_reason_and_nothing_is_made(rdb, monkeypatch):

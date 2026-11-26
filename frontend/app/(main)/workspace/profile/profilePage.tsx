@@ -91,7 +91,7 @@ export default function ProfilePage() {
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.profile.title')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--gray-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--gray-11)', marginTop: 'var(--space-1)', display: 'block' }}>
             {t('workspace.profile.subtitle')}
           </Text>
         </Box>

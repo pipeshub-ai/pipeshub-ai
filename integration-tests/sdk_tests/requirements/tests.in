@@ -1,0 +1,7 @@
+# The Python SDK suite's test tools (run_sdk_tests.sh). Resolved into tests.lock by
+# `python3 scripts/supply_chain.py lock`; the suite installs only that lock, and the SDK under test from its own
+# pyproject, as its users install it.
+pytest
+pytest-asyncio
+pytest-xdist
+pytest-timeout

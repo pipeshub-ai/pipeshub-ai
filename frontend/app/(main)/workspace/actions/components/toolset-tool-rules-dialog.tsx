@@ -104,11 +104,11 @@ export function ToolsetToolRulesDialog({
               {t('workspace.actions.toolRules.toolsError')}
             </Text>
           ) : tools === null ? (
-            <Text as="p" size="2" style={{ color: 'var(--slate-10)' }}>
+            <Text as="p" size="2" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.mcpServers.toolRules.loading')}
             </Text>
           ) : tools.length === 0 ? (
-            <Text as="p" size="2" style={{ color: 'var(--slate-10)' }}>
+            <Text as="p" size="2" style={{ color: 'var(--slate-11)' }}>
               {t('workspace.mcpServers.toolRules.noTools')}
             </Text>
           ) : (

@@ -319,6 +319,7 @@ def test_a_client_that_sends_nothing_is_dropped_after_the_timeout(tmp_path: Path
             s.settimeout(5)
             started = time.time()
             assert s.recv(1) == b""  # the server closed it
+            # wall-clock-ok: the server closes the connection at once; the failure is the socket's own 5 s timeout
             assert time.time() - started < 4
     finally:
         exporter._server.shutdown()

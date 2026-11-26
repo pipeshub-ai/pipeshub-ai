@@ -1,16 +1,42 @@
-# etcd for the KeyValueStore integration tests (KV_STORE_TYPE=etcd).
+# etcd and Redis for the KeyValueStore integration tests (KV_STORE_TYPE=etcd, KV_STORE_TYPE=redis).
 #
 #   docker compose -f deployment/docker-compose/docker-compose.integration.kv.yml up -d --wait
 #   cd backend/python && pytest tests/integration/kv -m integration
 #
 # The port is non-standard so this can run beside a dev stack.
+
+# Every service that runs an image the base file runs keeps the base file's
+# baseline (ADR-OPS-02): no capability but those its image proves it needs, with
+# the reason beside each, no privilege gain, and memory and process limits.
+# tests/unit/harness/security/test_container_baseline.py checks it.
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+# A service whose image writes only to its volumes also gets a read-only root.
+x-read-only-root: &read-only-root
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+
 services:
   etcd-kv-it:
-    image: quay.io/coreos/etcd:v3.5.17
+    <<: [*hardened, *read-only-root]
+    image: quay.io/coreos/etcd:v3.5.17@sha256:a055da833a7c013b836ed0822e8ec1f99b059658be255ad8d0fcd31b635ae3d6
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     ports:
       - "2389:2379"
+    # The root is read-only, so the data goes to a tmpfs: the suite needs no store that outlives the container.
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /etcd-data:size=256m,mode=0700
     command:
       - etcd
+      - --data-dir=/etcd-data
       - --listen-client-urls=http://0.0.0.0:2379
       - --advertise-client-urls=http://127.0.0.1:2379
     healthcheck:
@@ -18,3 +44,34 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          pids: 4096
+
+  # The Redis KeyValueStore's suite (KV_STORE_TYPE=redis, OPS01-FU-1): REDIS_IT_HOST=localhost REDIS_IT_PORT=6390.
+  redis-kv-it:
+    <<: [*hardened, *read-only-root]
+    # The image entrypoint drops to the redis user (SETUID, SETGID) and empties its
+    # bounding set (SETPCAP: Redis 8's entrypoint stops without it); with no volume
+    # an earlier redis wrote, there is nothing to hand over.
+    cap_add: [SETUID, SETGID, SETPCAP]
+    image: redis:8.4@sha256:319f54e668c14f68cee51d1fdf9dba699deecac048fc0e52962433a3ef5562c0
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "127.0.0.1:6390:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          pids: 4096

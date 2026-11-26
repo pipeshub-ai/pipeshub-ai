@@ -8,7 +8,7 @@ uses the native GCS API with service account authentication.
 import asyncio
 import mimetypes
 import uuid
-from collections.abc import Container
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from itertools import accumulate
 from logging import Logger
@@ -51,7 +51,7 @@ from app.connectors.core.registry.folder_scope import (
     clean_up_scope,
     listed_record_ids,
     path_in_container,
-    recorded_ids,
+    recorded_record_ids,
     remove_deselected_containers,
     remove_records_not_listed,
 )
@@ -80,6 +80,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
     name_passes_filter,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.google_cloud_storage.common.apps import GCSApp
 from app.models.entities import (
     AppUser,
@@ -427,10 +428,18 @@ class GCSConnector(BaseConnector):
         self._moved_record_ids: dict[str, str] = {}
         self.bucket_name: str | None = None
         self.project_id: str | None = None
+        # Part of the source was not read (a bucket, a listing, a bucket group, or a folder or batch write failed).
+        self._sync_incomplete = False
 
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A sync that skipped a bucket, a listing or a bucket group after an error, or failed to
+        write a parent folder or a batch, did not read everything, so a full sync then unlinks
+        nothing it did not see."""
+        return FullSyncCoverage(complete=not self._sync_incomplete)
 
     def get_app_users(self, users: list[User]) -> list[AppUser]:
         """Convert User objects to AppUser objects for GCS connector."""
@@ -502,6 +511,7 @@ class GCSConnector(BaseConnector):
 
             if not self.data_source:
                 raise ConnectionError("GCS connector is not initialized.")
+            self._sync_incomplete = False
 
             # Reload sync and indexing filters to pick up configuration changes
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -553,6 +563,7 @@ class GCSConnector(BaseConnector):
                 buckets_response = await self.data_source.list_buckets()
                 if not buckets_response.success:
                     self.logger.error(f"Failed to list buckets: {buckets_response.error}")
+                    self._sync_incomplete = True
                     return
 
                 buckets_data = buckets_response.data
@@ -618,6 +629,7 @@ class GCSConnector(BaseConnector):
                     self.logger.error(
                         f"Error syncing bucket {bucket_name}: {e}", exc_info=True
                     )
+                    self._sync_incomplete = True
                     continue
 
             self.logger.info("GCS full sync completed.")
@@ -698,6 +710,7 @@ class GCSConnector(BaseConnector):
                             f"after {attempt + 1} attempts: {e}"
                         )
                         failed_buckets.append(bucket_name)
+                        self._sync_incomplete = True
                         break
 
         if successful_count > 0:
@@ -840,7 +853,7 @@ class GCSConnector(BaseConnector):
         scope = FolderScope.from_filters(sync_filters)
         if not scope.is_everything:
             self.logger.info(f"Folder filter for bucket {bucket_name}: {scope.describe()}")
-        recorded = await recorded_ids(self.data_entities_processor, self.connector_id, bucket_name)
+        recorded = await recorded_record_ids(self.data_entities_processor, self.connector_id, bucket_name)
         listed: set[str] = set()
         unrecorded: list[dict] = []
         complete = True
@@ -857,6 +870,7 @@ class GCSConnector(BaseConnector):
             )
         else:
             self.logger.info(f"Not removing records in bucket {bucket_name}: a listing did not cover every object")
+            self._sync_incomplete = True
         await clean_up_scope(
             self.data_entities_processor, self.record_sync_point, self.connector_id, bucket_name, scope, self.logger
         )
@@ -899,7 +913,7 @@ class GCSConnector(BaseConnector):
                     listed.add(holder.external_record_id or "")
 
     async def _sync_bucket_prefix(
-        self, bucket_name: str, prefix: str, scope: FolderScope, recorded: Container[str], unrecorded: list[dict],
+        self, bucket_name: str, prefix: str, scope: FolderScope, recorded: Mapping[str, str], unrecorded: list[dict],
     ) -> tuple[set[str], bool]:
         """Sync objects under one prefix of a bucket ("" for all of it), with pagination and incremental sync.
 
@@ -993,7 +1007,7 @@ class GCSConnector(BaseConnector):
 
                     for obj in objects:
                         obj_ts = cutoff_ts = None
-                        judged = False
+                        judged = own_processing = False
                         try:
                             key = obj.get("Key", "")
 
@@ -1036,9 +1050,11 @@ class GCSConnector(BaseConnector):
                                 if path_segments:
                                     await self._ensure_parent_folders_exist(bucket_name, path_segments)
 
+                            own_processing = True
                             record, permissions = await self._process_gcs_object(
                                 obj, bucket_name
                             )
+                            own_processing = False
                             if record:
                                 batch_records.append((record, permissions))
 
@@ -1048,6 +1064,7 @@ class GCSConnector(BaseConnector):
                             elif key.lstrip("/"):
                                 # The processor returns no record for a real key only on an error.
                                 failed.add(cutoff_ts)
+                                self._keep_stored_record(recorded, bucket_name, key)
                         except Exception as e:
                             self.logger.error(
                                 f"Error processing object {obj.get('Key', 'unknown')}: {e}",
@@ -1056,6 +1073,11 @@ class GCSConnector(BaseConnector):
                             failed.add(cutoff_ts)
                             # An object that errored before it was judged may still be kept.
                             unjudged = unjudged or not judged
+                            if own_processing:
+                                self._keep_stored_record(recorded, bucket_name, obj.get("Key", ""))
+                            else:
+                                # A folder or batch write failed: other stored records may be unwritten.
+                                self._sync_incomplete = True
                             continue
 
                     has_more = objects_data.get("IsTruncated", False)
@@ -1107,6 +1129,13 @@ class GCSConnector(BaseConnector):
         await self.record_sync_point.update_sync_point(sync_point_key, done)
 
         return listed, not (resumed or unjudged)
+
+    def _keep_stored_record(self, recorded: Mapping[str, str], bucket_name: str, key: str) -> None:
+        """Keep the stored record of an object that failed to process, so the unlink after a
+        full sync leaves it alone; an object never stored leaves nothing to keep."""
+        record_id = recorded.get(f"{bucket_name}/{key.lstrip('/')}")
+        if record_id:
+            self.data_entities_processor.note_kept_records(self.connector_id, [record_id])
 
     async def _ensure_parent_folders_exist(
         self, bucket_name: str, path_segments: list[str]

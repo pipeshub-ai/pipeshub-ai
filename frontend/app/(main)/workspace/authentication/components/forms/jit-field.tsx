@@ -25,7 +25,7 @@ export function JitField({ providerName, checked, onCheckedChange }: JitFieldPro
           <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
             {t('workspace.authentication.jit.title')}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2 }}>
+          <Text size="1" style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2 }}>
             {t('workspace.authentication.jit.description', { providerName })}
           </Text>
         </Box>

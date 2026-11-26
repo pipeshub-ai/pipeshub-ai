@@ -1,5 +1,6 @@
 import { request, type APIRequestContext } from '@playwright/test';
 import { test as base } from './base.fixture';
+import { cancelLeftRuns, hasLeftTurns } from '../harness/support/lane';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -7,34 +8,24 @@ import * as path from 'path';
 // works when Playwright is started from outside `frontend/`.
 const AUTH_FILE = path.resolve(__dirname, '../../../.auth/user.json');
 
+const API_TOKEN_FILE = path.resolve(__dirname, '../../../.auth/api-token.json');
+
 /**
- * Extracts the access token from the saved auth storage state.
- * The auth store persists each token as a plain string under localStorage key
- * "jwt_access_token" / "jwt_refresh_token"; a store that keeps its token
- * pairs in a JSON map persists them under "pipeshub_org_tokens".
+ * The access token the setup project minted from its session cookie
+ * (`.auth/api-token.json`). The page itself keeps its token in memory only
+ * (ADR-WEB-02); a state saved by an older build still has it in localStorage.
  */
 export function getAccessToken(): string {
-  const raw = fs.readFileSync(AUTH_FILE, 'utf-8');
-  const storageState = JSON.parse(raw);
-
+  if (fs.existsSync(API_TOKEN_FILE)) {
+    const saved = JSON.parse(fs.readFileSync(API_TOKEN_FILE, 'utf-8')) as { accessToken?: string };
+    if (saved.accessToken) return saved.accessToken;
+  }
+  const storageState = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf-8'));
   const items: { name: string; value: string }[] =
     storageState.origins?.flatMap((o: { localStorage: { name: string; value: string }[] }) => o.localStorage) ?? [];
-  const tokenEntry = items.find((item) => item.name === 'jwt_access_token');
-  if (tokenEntry?.value) {
-    return tokenEntry.value;
-  }
-
-  const orgTokens = items.find((item) => item.name === 'pipeshub_org_tokens');
-  if (orgTokens?.value) {
-    const pairs = Object.values(JSON.parse(orgTokens.value) as Record<string, { accessToken?: string }>);
-    // The active entry lives in sessionStorage, which storage state does not keep.
-    if (pairs.length !== 1 || !pairs[0].accessToken) {
-      throw new Error(`.auth/user.json holds ${pairs.length} token pairs; the e2e user must have exactly one.`);
-    }
-    return pairs[0].accessToken;
-  }
-
-  throw new Error('jwt_access_token not found in .auth/user.json — run the setup project first.');
+  const legacy = items.find((item) => item.name === 'jwt_access_token');
+  if (legacy?.value) return legacy.value;
+  throw new Error('No API token in .auth/ — run the setup project first.');
 }
 
 export function apiBaseURL(): string {
@@ -43,6 +34,7 @@ export function apiBaseURL(): string {
 
 type ApiFixtures = {
   apiContext: APIRequestContext;
+  leftRunsCancelled: void;
 };
 
 export const test = base.extend<ApiFixtures>({
@@ -60,6 +52,19 @@ export const test = base.extend<ApiFixtures>({
     await use(ctx);
     await ctx.dispose();
   },
+  leftRunsCancelled: [
+    async ({}, use) => {
+      await use();
+      if (!hasLeftTurns()) return;
+      const ctx = await request.newContext({ baseURL: apiBaseURL(), extraHTTPHeaders: { Authorization: `Bearer ${getAccessToken()}` } });
+      try {
+        await cancelLeftRuns(ctx);
+      } finally {
+        await ctx.dispose();
+      }
+    },
+    { auto: true },
+  ],
 });
 
 export { expect } from './base.fixture';

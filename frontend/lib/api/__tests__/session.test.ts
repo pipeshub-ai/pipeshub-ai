@@ -15,7 +15,6 @@ vi.mock('@/config', async () => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
   return {
     useAuthStore: auth.useAuthStore,
-    readStoredRefreshToken: auth.readStoredRefreshToken,
     logoutAndRedirect: () => {
       logoutAndRedirect();
       auth.useAuthStore.getState().logout();
@@ -23,7 +22,8 @@ vi.mock('@/config', async () => {
   };
 });
 
-const { useAuthStore, ACCESS_TOKEN_STORAGE_KEY, REFRESH_TOKEN_STORAGE_KEY } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/lib/store/auth-store');
+const { SESSION_HINT_KEY } = await import('@/lib/auth/session-credential');
 const { apiClient } = await import('../axios-instance');
 const { ErrorType } = await import('../api-error');
 const { refreshAccessToken, isTokenExpired, decodeJwtPayload, REFRESH_TOKEN_ENDPOINT } = await import('../token-refresh');
@@ -83,7 +83,7 @@ beforeEach(() => {
   fetchMock.mockReset();
   logoutAndRedirect.mockReset();
   vi.stubGlobal('fetch', fetchMock);
-  useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'refresh-1', isAuthenticated: true });
+  useAuthStore.setState({ accessToken: jwtExpiringIn(3600), isAuthenticated: true });
   useToastStore.setState({ toasts: [] });
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -125,19 +125,20 @@ describe('the shared refresh lock', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe(REFRESH_TOKEN_ENDPOINT);
     expect(useAuthStore.getState().accessToken).toBe(fresh);
-    expect(storage.get(ACCESS_TOKEN_STORAGE_KEY)).toBe(fresh);
+    // ADR-WEB-02: the new token stays in memory; storage keeps only which account is signed in.
+    expect([...storage.values()].join('\n')).not.toContain(fresh);
   });
 
-  it('falls back to the stored refresh token after a reload', async () => {
-    useAuthStore.setState({ refreshToken: null });
-    storage.set(REFRESH_TOKEN_STORAGE_KEY, 'from-storage');
+  it('asks with the HttpOnly session cookie, never with a token the page holds', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: jwtExpiringIn(3600) }));
     expect(await refreshAccessToken()).toBe(true);
-    expect((fetchMock.mock.calls[0][1]?.headers as Record<string, string>).Authorization).toBe('Bearer from-storage');
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.credentials).toBe('include');
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
   });
 
   it.each([
-    ['no refresh token at all', () => useAuthStore.setState({ refreshToken: null }), undefined],
+    ['the session cookie is gone', () => {}, jsonResponse(401, {})],
     ['the server refuses', () => {}, jsonResponse(401, {})],
     ['the reply has no token', () => {}, jsonResponse(200, {})],
     ['the network is down', () => {}, new TypeError('Failed to fetch')],
@@ -147,7 +148,6 @@ describe('the shared refresh lock', () => {
     else if (reply) fetchMock.mockResolvedValueOnce(reply);
     expect(await refreshAccessToken()).toBe(false);
 
-    useAuthStore.setState({ refreshToken: 'refresh-1' });
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: 'next' }));
     expect(await refreshAccessToken()).toBe(true);
   });
@@ -364,12 +364,8 @@ describe('the proactive refresh timer', () => {
       scheduler.initTokenRefreshScheduler();
     });
 
-    it('adopts a token another tab refreshed, without refreshing itself', () => {
-      const fromOtherTab = jwtExpiringIn(3600);
-      window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: fromOtherTab }));
-      expect(useAuthStore.getState().accessToken).toBe(fromOtherTab);
-      expect(fetchMock).not.toHaveBeenCalled();
-    });
+    const hintEvent = (newValue: string | null, oldValue: string | null = 'user-a:o1') =>
+      window.dispatchEvent(new StorageEvent('storage', { key: SESSION_HINT_KEY, newValue, oldValue }));
 
     it('starts over on a fresh chat page when another tab signs in as someone else', () => {
       const originalLocation = window.location;
@@ -378,22 +374,32 @@ describe('the proactive refresh timer', () => {
       try {
         useAuthStore.setState({ accessToken: tokenFor('user-a') });
 
-        window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-a', 3000) }));
+        hintEvent('user-a:o1', null);
         expect(assign).not.toHaveBeenCalled();
 
-        window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-b') }));
+        hintEvent('user-b:o1');
         // A page load drops every cache and store of the previous account, and the
         // chat it had open, which belongs to that account.
         expect(assign).toHaveBeenCalledWith('/chat/');
-        expect(useAuthStore.getState().accessToken).toBe(tokenFor('user-b'));
+        expect(fetchMock).not.toHaveBeenCalled();
       } finally {
         Object.defineProperty(window, 'location', { value: originalLocation, configurable: true });
       }
     });
 
     it('signs out here when another tab signs out', () => {
-      window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: null }));
+      hintEvent(null);
       expect(useAuthStore.getState().accessToken).toBeNull();
+    });
+
+    it('signs in here from the session when another tab signs in', async () => {
+      useAuthStore.getState().logout();
+      const fresh = tokenFor('user-a');
+      storage.set(SESSION_HINT_KEY, 'user-a:o1');
+      fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: fresh }));
+      hintEvent('user-a:o1', null);
+      await vi.waitFor(() => expect(useAuthStore.getState().accessToken).toBe(fresh));
+      expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe('include');
     });
 
     it('ignores storage changes to other keys', () => {

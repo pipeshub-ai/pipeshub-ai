@@ -127,6 +127,12 @@ class RetrievalContextLedger:
         self._seq += 1
         return self._seq
 
+    def resume(self, tool_state: Mapping[str, Any], reported: int) -> None:
+        """A resumed durable run: earlier attempts' frames are journaled, so what
+        `tool_state` was restored with is already reported and numbering continues."""
+        _ = self.take_delta(tool_state)
+        self._seq = reported
+
     @property
     def frames_exhausted(self) -> bool:
         """The run already sent `MAX_FRAMES_PER_RUN` frames (the last one

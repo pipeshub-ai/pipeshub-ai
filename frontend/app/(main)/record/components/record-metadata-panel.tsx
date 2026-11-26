@@ -40,7 +40,7 @@ const ROW_LAST_STYLE: CSSProperties = {
 };
 
 const LABEL_STYLE: CSSProperties = {
-  color: 'var(--olive-10)',
+  color: 'var(--olive-11)',
   minWidth: '38%',
   flexShrink: 0,
 };
@@ -226,7 +226,7 @@ function StageStep({
       <Text
         size="1"
         weight="medium"
-        style={{ color: 'var(--olive-10)', whiteSpace: 'nowrap' }}
+        style={{ color: 'var(--olive-11)', whiteSpace: 'nowrap' }}
       >
         {label}
       </Text>
@@ -407,7 +407,7 @@ function MetadataSection({
         size="2"
         weight="medium"
         style={{
-          color: 'var(--olive-10)',
+          color: 'var(--olive-11)',
         }}
       >
         {title}
@@ -436,7 +436,7 @@ function StageTrack({
       <Flex align="center" gap="2" wrap="wrap" style={{ minWidth: 0, flex: '1 1 12rem' }}>
         {steps.map((step, i) => (
           <Flex key={step.key} align="center" gap="2" style={{ minWidth: 0 }}>
-            {i > 0 ? <MaterialIcon name="chevron_right" size={16} color="var(--olive-8)" /> : null}
+            {i > 0 ? <MaterialIcon name="chevron_right" size={16} color="var(--olive-11)" /> : null}
             <StageStep
               label={step.label}
               status={step.status}
@@ -631,7 +631,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                       />
                       {shortConnectorId ? (
                         <Tooltip content={record.connectorId} delayDuration={200}>
-                          <Text size="2" style={{ color: 'var(--olive-10)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <Text size="2" style={{ color: 'var(--olive-11)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {t('recordView.labels.connectorId')}: {shortConnectorId}
                           </Text>
                         </Tooltip>
@@ -640,14 +640,14 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                   </Flex>
                 ) : isAttachment ? (
                   <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
-                    <MaterialIcon name="attach_file" size={20} color="var(--accent-9)" />
+                    <MaterialIcon name="attach_file" size={20} color="var(--accent-11)" />
                     <Text size="2" style={{ color: 'var(--olive-12)' }}>
                       Chat Attachment
                     </Text>
                   </Flex>
                 ) : (
                   <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
-                    <MaterialIcon name="folder" size={20} color="var(--accent-9)" />
+                    <MaterialIcon name="folder" size={20} color="var(--accent-11)" />
                     <Text size="2" style={{ color: 'var(--olive-12)' }}>
                       {t('recordView.collectionUpload')}
                     </Text>
@@ -675,7 +675,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                 {mailCc ? <DetailRow label={t('recordView.mail.cc')} value={mailCc} /> : null}
                 {mailLabels?.length ? (
                   <Box style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', minWidth: 0 }}>
-                    <Text size="2" weight="medium" style={{ color: 'var(--olive-10)' }}>
+                    <Text size="2" weight="medium" style={{ color: 'var(--olive-11)' }}>
                       {t('recordView.mail.labels')}
                     </Text>
                     <MetadataChipRow

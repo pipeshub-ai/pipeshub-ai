@@ -17,6 +17,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -183,7 +184,7 @@ _STRIP_FIELDS = {"global_dial_in_numbers", "global_dial_in_countries", "dial_in_
 # Toolset registration
 # ---------------------------------------------------------------------------
 
-@ToolsetBuilder("Zoom")\
+@ToolsetBuilder("Zoom", provider=ToolProvider.CONNECTOR)\
     .in_group("Video & Meetings")\
     .with_description("Zoom integration for meetings, webinars, and collaboration")\
     .with_category(ToolsetCategory.APP)\
@@ -395,7 +396,7 @@ class Zoom:
         parameters=[
             ToolParameter(name="user_id", type=ParameterType.STRING, description="Zoom user ID or email. Use 'me' for the authenticated user.", required=False, default="me"),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_my_profile(self, user_id: str = "me") -> Tuple[bool, str]:
         """Get Zoom user profile."""
@@ -424,7 +425,7 @@ class Zoom:
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of meetings to return.", required=False, default=10),
             ToolParameter(name="search", type=ParameterType.STRING, description="Search keyword to filter meetings by topic/name.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_meetings(
         self,
@@ -593,7 +594,7 @@ class Zoom:
             ToolParameter(name="meeting_id", type=ParameterType.STRING, description="Zoom meeting ID.", required=True),
             ToolParameter(name="occurrence_id", type=ParameterType.STRING, description="Occurrence ID for recurring meetings.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_meeting(
         self,
@@ -634,7 +635,7 @@ class Zoom:
             ToolParameter(name="invitees", type=ParameterType.ARRAY, description="List of email addresses to invite to the meeting.", required=False, items={"type": "string"}),
             ToolParameter(name="recurrence", type=ParameterType.OBJECT, description="Recurrence configuration for type 8 meetings.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_meeting(
         self,
@@ -701,7 +702,7 @@ class Zoom:
             ToolParameter(name="invitees", type=ParameterType.ARRAY, description="List of email addresses to invite to the meeting.", required=False, items={"type": "string"}),
             ToolParameter(name="recurrence", type=ParameterType.OBJECT, description="New recurrence configuration. Only set to change the recurrence pattern of the entire series.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def update_meeting(
         self,
@@ -764,7 +765,7 @@ class Zoom:
             ToolParameter(name="occurrence_id", type=ParameterType.STRING, description="To delete a single occurrence of a recurring meeting, provide the occurrence_id. To delete the entire series, leave this blank.", required=False),
             ToolParameter(name="cancel_meeting_reminder", type=ParameterType.BOOLEAN, description="Send cancellation email to registrants.", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def delete_meeting(
         self,
@@ -792,7 +793,7 @@ class Zoom:
         parameters=[
             ToolParameter(name="user_id", type=ParameterType.STRING, description="Zoom user ID or email. Use 'me' for the authenticated user.", required=False, default="me"),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_upcoming_meetings(self, user_id: str = "me") -> Tuple[bool, str]:
         """List upcoming meetings for a user."""
@@ -811,7 +812,7 @@ class Zoom:
         parameters=[
             ToolParameter(name="meeting_id", type=ParameterType.STRING, description="Zoom meeting ID.", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_meeting_invitation(self, meeting_id: str) -> Tuple[bool, str]:
         """Get meeting invitation text."""
@@ -836,7 +837,7 @@ class Zoom:
             ToolParameter(name="to_", type=ParameterType.STRING, description="Range end in ISO 8601 UTC (e.g. '2026-03-31T23:59:59Z').", required=True),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Max results to return.", required=False, default=10),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_recurring_meetings_ending_in_range(
         self,
@@ -1004,7 +1005,7 @@ class Zoom:
         parameters=[
             ToolParameter(name="meeting_id", type=ParameterType.STRING, description="Meeting ID or UUID of the recorded meeting.", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_meeting_transcript(self, meeting_id: str) -> Tuple[bool, str]:
         try:
@@ -1091,7 +1092,7 @@ class Zoom:
             ToolParameter(name="type_", type=ParameterType.STRING, description="Filter contacts by type: 'company' (same org), 'external' (outside contacts), or 'personal' (your contacts). Omit to return all.", required=False, enum=["company", "external", "personal"]),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Maximum number of contacts to return.", required=False, default=10),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_contacts(
         self,
@@ -1161,7 +1162,7 @@ class Zoom:
         parameters=[
             ToolParameter(name="identifier", type=ParameterType.STRING, description="Contact's user ID, email address, or member ID.", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_contact(
         self,
@@ -1195,7 +1196,7 @@ class Zoom:
             ToolParameter(name="folder_id", type=ParameterType.STRING, description="The file/folder ID whose children to list. Use 'root' (default) to list the contents of the authenticated user's root 'My Docs' folder. Pass a specific folder ID to drill into a sub-folder.", required=False, default="root"),
             ToolParameter(name="page_size", type=ParameterType.INTEGER, description="Results per page (max 50).", required=False, default=50),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_folder_children(
         self,

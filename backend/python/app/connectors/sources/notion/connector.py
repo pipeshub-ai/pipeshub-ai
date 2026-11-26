@@ -121,6 +121,7 @@ from app.connectors.core.base.user_access import (
     ACCESS_MODE_FIELD,
     ACCESS_MODE_PER_USER,
     ACCESS_MODE_WORKSPACE,
+    METHOD_CONNECTOR,
     STATUS_REVOKED,
     UserConnection,
     is_per_user,
@@ -134,13 +135,16 @@ from app.connectors.core.base.user_access import (
     save_connection,
     save_invite,
     save_members,
+    was_removed,
 )
 from app.connectors.core.base.user_access_invites import ConnectRequest, send_connect_request
 from app.connectors.core.registry.types import CustomField
 from app.connectors.sources.notion.per_user import (
     GRANTED_TYPES,
+    NotionAccessError,
     acting_as,
     active_connection,
+    parse_identity,
     refresh_connection,
     refresh_lock,
 )
@@ -309,6 +313,10 @@ RECORD_GONE = _RecordGone()
 
 class _DatabaseGone(Exception):
     """Notion returned a definitive 404/trash for a database container."""
+
+
+class _DatabaseArchived(_DatabaseGone):
+    """The database reads, and Notion says it is archived or in the trash."""
 
 
 class _DatabaseUnavailable(RuntimeError):
@@ -764,6 +772,10 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
         if connection is not None:
             # Reading as a connected user: refresh their sign-in, never the connector's own.
             return await self._refresh_user_token(connection) is True
+        return await self._refresh_connector_token()
+
+    async def _refresh_connector_token(self) -> bool:
+        """Refresh the connector's own OAuth token once; False for an API token or nothing to refresh with."""
         client = self.notion_client.get_client() if self.notion_client else None
         if not isinstance(client, NotionRESTClientViaOAuth):
             return False
@@ -1001,19 +1013,25 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
 
     async def _run_per_user_sync(self) -> None:
         """One pass per connected user, in turn, each with that user's own credential."""
-        datasource = await self._get_fresh_datasource()
-        await self._assert_required_capabilities(datasource)
-        await self._ensure_workspace_from_bot(refresh=True)
-        if not self.workspace_id:
-            raise ConnectorInitError("Could not read the Notion workspace of this connector's integration.")
-        await self._prepare_per_user_workspace()
-        await self._load_bot_user_ids()
-        await self._save_member_list()
-        self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "notion", self.connector_id, self.logger
-        )
-
         now = get_epoch_timestamp_in_ms()
+        try:
+            datasource = await self._get_fresh_datasource()
+            await self._assert_required_capabilities(datasource)
+            await self._ensure_workspace_from_bot(refresh=True)
+            if not self.workspace_id:
+                raise ConnectorInitError("Could not read the Notion workspace of this connector's integration.")
+            await self._prepare_per_user_workspace()
+            await self._load_bot_user_ids()
+            await self._save_member_list()
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "notion", self.connector_id, self.logger
+            )
+            # Unverified: whom the connector's token acts as is unknown, so no pass reads with it for anyone.
+            sign_in_verified = await self._connect_through_connector_sign_in(now)
+        except Exception:
+            # No pass runs this time (a refused connector token, say): stale views still lose access.
+            await self._withdraw_stale_connections()
+            raise
         connected: list[tuple[UserConnection, User]] = []
         for connection in await list_connections(self.config_service, self.connector_id):
             user = await self.data_entities_processor.get_user_by_user_id(connection.user_id, raise_on_error=True)
@@ -1046,7 +1064,10 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
         # They are closed with the connector (_close_client).
         all_complete = True
         for connection, user in connected:
-            complete = await self._run_user_pass(connection, user)
+            if connection.method == METHOD_CONNECTOR and not sign_in_verified:
+                complete = False
+            else:
+                complete = await self._run_user_pass(connection, user)
             if complete:
                 connection.last_complete_listing_at = now
                 connection.last_error = None
@@ -1066,6 +1087,104 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
             await self._delete_records_nobody_sees([user for _, user in connected])
         else:
             self._sync_incomplete = True
+
+    async def _withdraw_stale_connections(self) -> None:
+        """A connection with no complete listing for ``STALE_AFTER_MS`` loses access, also when the sync
+        stops before any pass. Best effort: the sync is failing already."""
+        now = get_epoch_timestamp_in_ms()
+        try:
+            connections = await list_connections(self.config_service, self.connector_id)
+        except Exception as e:
+            self.logger.error("Notion per-user sync: could not list connections to withdraw stale ones: %s", e, exc_info=True)
+            return
+        for connection in connections:
+            if not (connection.active and connection.stale(now)):
+                continue
+            try:
+                user = await self.data_entities_processor.get_user_by_user_id(connection.user_id, raise_on_error=True)
+                if user is not None and user.id:
+                    await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
+            except Exception as e:
+                self.logger.error("Notion per-user sync: could not withdraw user %s: %s", connection.user_id, e, exc_info=True)
+
+    async def _connect_through_connector_sign_in(self, now: int) -> bool:
+        """Whoever signed the connector in to Notion (OAuth) is connected through that sign-in, so they need
+        not sign in again: the token is theirs, for the pages they picked. Dropped once it no longer names them
+        (another sign-in, an API token, another workspace); not made again for someone who disconnected.
+        Only a clear answer changes anything: a failed read keeps what is there, and returns False.
+        True when every remaining connection through it names whom the connector's token acts as."""
+        config = await self.config_service.get_config(
+            f"/services/connectors/{self.connector_id}/config", use_cache=False, raise_on_error=True
+        )
+        owner = None
+        if (((config or {}).get("auth") or {}).get("authType")) == "OAUTH":
+            me = await (await self._get_fresh_datasource()).retrieve_bot_user()
+            if not me.success or not me.data:
+                self.logger.warning("Notion per-user sync: could not read who signed the connector in: %s", me.error)
+                return False
+            body = me.data.json()
+            try:
+                owner = parse_identity(body)
+            except NotionAccessError:
+                if (((body or {}).get("bot") or {}).get("owner") or {}).get("type") != "workspace":
+                    self.logger.warning("Notion per-user sync: Notion did not say who signed the connector in")
+                    return False
+                owner = None  # a workspace-owned integration: nobody's own sign-in
+            if owner is not None and owner.workspace_id and owner.workspace_id != self.workspace_id:
+                self.logger.warning("Notion per-user sync: the connector's sign-in reports another workspace")
+                return False
+        authenticator = (
+            await self.data_entities_processor.get_app_authenticator_user(self.connector_id, self.created_by)
+            if owner else {}
+        )
+        user_id, email = str(authenticator.get("userId") or ""), str(authenticator.get("email") or "")
+        if owner is not None and not owner.email:
+            # As when connecting: an account whose email Notion does not share cannot be checked
+            # against other users, so it names nobody here.
+            user_id = ""
+        elif owner is not None and email and owner.email.casefold() != email.casefold():
+            # As when connecting: an account under another PipesHub user's email is that user's, so it
+            # names nobody here; a connection already made through it is dropped below.
+            other = await self.data_entities_processor.get_user_by_email(owner.email, raise_on_error=True)
+            if other is not None and other.id and other.is_active is not False:
+                user_id = ""
+
+        def names_them(c: UserConnection) -> bool:
+            return bool(owner) and (c.user_id, c.source_user_id, c.workspace_id) == (
+                user_id, owner.user_id if owner else "", self.workspace_id
+            )
+
+        for connection in await list_connections(self.config_service, self.connector_id):
+            if connection.method != METHOD_CONNECTOR or names_them(connection):
+                continue
+            async with refresh_lock(self.connector_id, connection.user_id):
+                # Re-read under the lock: a connection of their own made meanwhile stays.
+                current = await get_connection(self.config_service, self.connector_id, connection.user_id)
+                if current is None or current.method != METHOD_CONNECTOR or current.connected_at != connection.connected_at:
+                    continue
+                if not await delete_connection(self.config_service, self.connector_id, connection.user_id):
+                    # Still stored: no pass may read with the connector's token for them.
+                    self.logger.warning("Notion per-user sync: could not drop the sign-in connection of %s", connection.user_id)
+                    return False
+            user = await self.data_entities_processor.get_user_by_user_id(connection.user_id, raise_on_error=True)
+            if user is not None and user.id:
+                await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
+
+        if owner is None or not user_id or not email:
+            return True
+        async with refresh_lock(self.connector_id, user_id):
+            if await get_connection(self.config_service, self.connector_id, user_id) is not None:
+                return True  # connected already, through it or with their own
+            if await was_removed(self.config_service, self.connector_id, user_id):
+                return True  # they or an admin disconnected it; Connect is theirs to press
+            if any(c.source_user_id == owner.user_id for c in await list_connections(self.config_service, self.connector_id)):
+                return True  # someone else holds this Notion account
+            await save_connection(self.config_service, self.connector_id, UserConnection(
+                user_id=user_id, email=email, token="", source_user_id=owner.user_id, source_email=owner.email or "",
+                workspace_id=self.workspace_id, method=METHOD_CONNECTOR, connected_at=now,
+            ))
+        self.logger.info("Notion per-user sync: user %s is connected through the connector's sign-in", user_id)
+        return True
 
     async def _still_connected(self, connection: UserConnection) -> bool:
         """The stored connection is still this one: the user did not disconnect or connect again."""
@@ -1088,6 +1207,10 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
 
     async def _refresh_user_token(self, connection: UserConnection) -> bool | None:
         """After Notion refused a user's token: see refresh_connection (True, False or None)."""
+        if connection.method == METHOD_CONNECTOR:
+            # The connector's token: refreshed as the connector's, and never revoked here (it is the
+            # connector's to fix). Failing, the pass is incomplete and access ends once it goes stale.
+            return True if await self._refresh_connector_token() else None
         return await refresh_connection(
             connection, connector_id=self.connector_id, config_service=self.config_service,
             org_id=self.data_entities_processor.org_id, logger=self.logger,
@@ -1219,7 +1342,9 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
             if complete is not None:
                 return complete
             refreshed = await self._refresh_user_token(connection) if attempt == 1 else False
-            if refreshed is None:
+            if refreshed is None or (not refreshed and connection.method == METHOD_CONNECTOR):
+                # The connector's own token is the connector's to fix: never revoked here; access
+                # ends only once the last complete listing goes stale.
                 self._sync_incomplete = True
                 return False
             if not refreshed:
@@ -1810,6 +1935,8 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
             self.logger.error(
                 "Could not load leftover Notion database containers: %s", e, exc_info=True
             )
+            # The stored containers are unknown, so they cannot be noted kept.
+            self._sync_incomplete = True
             return
 
         if not leftovers:
@@ -1825,6 +1952,7 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
                     "Leaving Notion database container %s for the next sync: %s",
                     record.external_record_id, e,
                 )
+                self.data_entities_processor.note_kept_records(self.connector_id, [record.id])
         self.logger.info(
             "Leftover database pass: retired %d of %d container(s)",
             retired, len(leftovers),
@@ -3152,11 +3280,12 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
         attachment and comment-attachment files.
 
         None: nothing to sync (its database is gone, or a rechecked page whose comments did not
-        change). ``[]``: it failed this run (transform, its
-        database, attachments or comments) and is not saved, so its stored revision stays old and
-        the next sync reads it again. A page whose last_edited_time is unchanged keeps its stored
-        revision and skips the block walk, unless ``recheck_comments``. ``rows_changed``: a data
-        source whose rows changed gets a new revision, so its table is indexed again.
+        change); a data source whose database answers 404 is noted kept. ``[]``: it failed this
+        run (transform, its database, attachments or comments) and is not saved, so its stored
+        revision stays old and the next sync reads it again. A page whose last_edited_time is
+        unchanged keeps its stored revision and skips the block walk, unless ``recheck_comments``.
+        ``rows_changed``: a data source whose rows changed gets a new revision, so its table is
+        indexed again.
         """
         obj_id = obj_data.get("id")
         database_parent_id = None
@@ -3170,10 +3299,14 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
                         await self._get_database_parent_ref(database_id)
                     )
                     # None is valid when database parent is workspace
-                except _DatabaseGone:
+                except _DatabaseGone as e:
                     self.logger.info(
                         "Skipping data source %s: parent database %s is gone", obj_id, database_id,
                     )
+                    # Notion also answers 404 for a database not shared with the integration, so
+                    # it is unreadable, not known deleted; archived/trashed is a deletion.
+                    if not isinstance(e, _DatabaseArchived):
+                        await self._note_stored_record_kept(obj_id)
                     return None
                 except Exception as e:
                     if self._is_unauthorized(e):
@@ -3310,6 +3443,16 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
         if existing is not None:
             await self._prune_removed_files(obj_id, {f.external_record_id for f in files})
         return out
+
+    async def _note_stored_record_kept(self, external_id: Optional[str]) -> None:
+        """During a full sync, note a stored record this run leaves unwritten as kept."""
+        if not external_id or not self.data_entities_processor.full_sync_running(self.connector_id):
+            return
+        stored = await self.data_entities_processor.get_record_by_external_id(
+            self.connector_id, external_id,
+        )
+        if stored is not None:
+            self.data_entities_processor.note_kept_records(self.connector_id, [stored.id])
 
     async def _note_stored_files_kept(self, page_id: str) -> None:
         """During a full sync, note a page's stored file records as kept: a page whose blocks are
@@ -4268,7 +4411,7 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
                     # Convert SVG to base64, then to PNG base64
                     svg_base64 = base64.b64encode(image_bytes).decode('utf-8')
                     try:
-                        png_base64 = image_parser.svg_base64_to_png_base64(svg_base64)
+                        png_base64 = await image_parser.svg_base64_to_png_base64_async(svg_base64)
                     except Exception as svg_error:
                         # A missing cairosvg or a malformed SVG: fetching
                         # the same bytes again cannot change the outcome.
@@ -5410,7 +5553,7 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
                 f"Invalid database payload for {database_id}: expected object"
             )
         if database_data.get("archived") or database_data.get("in_trash"):
-            raise _DatabaseGone(f"database {database_id} is archived")
+            raise _DatabaseArchived(f"database {database_id} is archived")
         return database_data
 
     async def _parent_ref_from_database_payload(
@@ -6211,7 +6354,7 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
             raise connector_not_ready(self.display_name)
 
         connection = active_connection()
-        if connection is not None:
+        if connection is not None and connection.method != METHOD_CONNECTOR:
             return NotionDataSource(self._client_for(connection.token))
 
         config = await self.config_service.get_config(

@@ -30,7 +30,9 @@ async def test_gated_meeting_grants_are_empty_and_participants_unread() -> None:
     connector = _connector(gated=True)
 
     # Empty, not an error: the meeting record is still written, and the processor keeps its stored grants.
-    assert await connector._build_meeting_permissions(DETAIL, "uuid", "host@example.com") == []
+    # Unpacked as the connector's meeting step unpacks it.
+    grants, participants_read = await connector._build_meeting_permissions(DETAIL, "uuid", "host@example.com")
+    assert (grants, participants_read) == ([], False)
 
     connector._list_meeting_participants.assert_not_awaited()
     connector.data_entities_processor.skips_permission_writes.assert_awaited_once_with("connector-1")
@@ -40,7 +42,7 @@ async def test_gated_meeting_grants_are_empty_and_participants_unread() -> None:
 async def test_licensed_meeting_grants_are_unchanged() -> None:
     connector = _connector(gated=False)
 
-    grants = await connector._build_meeting_permissions(DETAIL, "uuid", "host@example.com")
+    grants, _participants_read = await connector._build_meeting_permissions(DETAIL, "uuid", "host@example.com")
 
     assert [(g.email, g.type) for g in grants] == [
         ("host@example.com", PermissionType.OWNER),
@@ -48,7 +50,8 @@ async def test_licensed_meeting_grants_are_unchanged() -> None:
         ("pat@example.com", PermissionType.READ),
         ("inv@example.com", PermissionType.READ),
     ]
-    connector._list_meeting_participants.assert_awaited_once_with("uuid")
+    connector._list_meeting_participants.assert_awaited_once()
+    assert connector._list_meeting_participants.await_args.args[0] == "uuid"
 
 
 def test_the_owner_grant_on_a_users_meetings_group_stays_free() -> None:

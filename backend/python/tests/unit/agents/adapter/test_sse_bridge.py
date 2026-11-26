@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any, Never
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,6 +23,7 @@ from app.agents.agent_loop.stream_bridge import (
     sse_queue_maxsize,
     _heartbeat
 )
+from tests.support.settle import settle
 
 _RUN_CTX = RunContext(role_name="pipeshub-agent", model="gpt-4")
 
@@ -155,7 +157,7 @@ class TestQueueEventSinkCoalescing:
         # Flushed in arrival order, unmerged.
         assert await queue.get() == {"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m1", "delta": "A"}}
         assert await queue.get() == {"event": "TEXT_MESSAGE_CONTENT", "data": {"messageId": "m2", "delta": "B"}}
-        await asyncio.wait_for(flush_task, timeout=1)
+        await settle(flush_task)
 
     async def test_non_coalescable_event_flushes_pending_delta_first_then_blocks(self) -> None:
         """A tool/lifecycle event must never be silently dropped or
@@ -177,7 +179,7 @@ class TestQueueEventSinkCoalescing:
         # pending-then-put-new) can finish.
         await queue.get()  # drain filler -> pending delta flushes into the freed slot
         await queue.get()  # drain the flushed delta -> tool_call_start itself flushes
-        await asyncio.wait_for(write_task, timeout=1)
+        await settle(write_task)
         assert await queue.get() == {"event": "tool_call_start", "data": {"tool": "web_search"}}
 
     async def test_flush_is_a_noop_with_nothing_pending(self) -> None:
@@ -227,7 +229,7 @@ class TestQueueEventSinkCoalescing:
         # non-coalescable-event test above.
         await queue.get()  # drain filler -> pending answer-delta snapshot flushes
         flushed_snapshot = await queue.get()  # drain it -> artifact_add itself flushes
-        await asyncio.wait_for(write_task, timeout=1)
+        await settle(write_task)
 
         assert flushed_snapshot == answer_delta
         assert await queue.get() == artifact_add
@@ -252,7 +254,7 @@ class TestQueueEventSinkCoalescing:
         assert not cleared_write.done(), "a marked snapshot waits for a slot instead of pending"
 
         await queue.get()
-        await asyncio.wait_for(cleared_write, timeout=1)
+        await settle(cleared_write)
         await sink.write(error)
 
         assert await queue.get() == cleared
@@ -609,6 +611,42 @@ class TestRunAgentLoopStream:
         assert payload["type"] == "unknown"
         assert "boom" not in payload["message"]
 
+    @pytest.mark.parametrize("keeps_raw_text", [True, False])
+    async def test_a_failed_run_is_answered_from_its_raw_error(self, keeps_raw_text: bool) -> None:
+        """The answer's code comes from the provider's own text (`error_detail`): `error` holds only why, for the
+        frames and the parent model, and would read as an unknown failure. A result that keeps no raw text (a
+        duck-typed one) is answered from its `error`."""
+        from app.agent_loop_lib.core.types import AgentResult, Goal
+
+        raw = "LLM call failed: LangChain transport error (complete): RateLimitError: Error code: 429 - slow down"
+        failed: Any = (
+            AgentResult(goal=Goal(description="q"), success=False,
+                        error="LLM call failed: rate_limited (RateLimitError, HTTP 429)").with_error_detail(raw)
+            if keeps_raw_text else SimpleNamespace(success=False, error=raw, cancelled=False, confidence=None,
+                                                   output=None, needs_input=None, end_event="llm_call_failed",
+                                                   error_class="rate_limited")
+        )
+        seen: dict[str, Any] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None) -> tuple[Any, ...]:
+            return _stream_agent(failed), MagicMock(), MagicMock(), []
+
+        async def _fake_finalizer_run(self, **kwargs: object) -> dict[str, str]:
+            seen.update(kwargs)
+            return {"answer": "x"}
+
+        with (
+            patch("app.modules.agents.qna.chat_state.build_initial_state",
+                  return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"}),
+            patch("app.utils.execute_query.has_sql_connector_configured", new=AsyncMock(return_value=False)),
+            patch("app.utils.fetch_slack_thread.has_slack_connector_configured", new=AsyncMock(return_value=False)),
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_agent_loop_stream(**self._base_kwargs())]
+
+        assert (seen["agent_success"], seen["agent_error"]) == (False, raw)
+
     async def test_successful_run_streams_events_then_completes(self) -> None:
         async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
             await context.event_sink.write({"event": "status", "data": {"status": "planning", "message": "..."}})
@@ -821,7 +859,7 @@ class TestRunAgentLoopStream:
 
     async def test_confidence_trailer_hidden_on_the_agent_api_path(self) -> None:
         """The agent API (`run_agent_loop_stream`) and the chat API
-        (`chat_modes/bridge.py::run_chat_stream`) drive the SAME
+        (`stream_bridge.run_chat_stream`) drive the SAME
         `TerminalAnswerStreamer`/`AnswerFinalizer` pair off the same
         `PipesHubAgentFactory`, so the `---\\nConfidence:` trailer that
         `prompt_builder.py`'s `_ANSWER_CONFIDENCE` asks for must be hidden from

@@ -59,12 +59,12 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import (
     ARANGO_PASSWORD,
-    ARANGO_URL,
     backend_unavailable,
     connect_arango,
     connect_neo4j,
 )
 from tests.integration.test_revision_retention_e2e import _World
+from tests.support import it_backends
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -662,7 +662,7 @@ async def test_stage_state_queries_use_indexes(life: _Lifecycle) -> None:
             await g.get_revision_pointers(life.prefix, 10)
         async with aiohttp.ClientSession(auth=aiohttp.BasicAuth("root", ARANGO_PASSWORD)) as session:
             for query, bind_vars in queries:
-                async with session.post(f"{ARANGO_URL}/_db/{ARANGO_DB}/_api/explain",
+                async with session.post(f"{it_backends.endpoint('ARANGO_IT_URL')}/_db/{ARANGO_DB}/_api/explain",
                                         json={"query": query, "bindVars": bind_vars}) as r:
                     plan = await r.json()
                 assert r.status == 200, plan

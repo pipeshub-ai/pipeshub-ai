@@ -164,7 +164,7 @@ function SearchField({ query, onChange }: { query: string; onChange: (value: str
   return (
     <TextField.Root size="2" placeholder={t('workspace.mcpServers.toolRules.search')} value={query} onChange={(e) => onChange(e.target.value)}>
       <TextField.Slot>
-        <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+        <MaterialIcon name="search" size={16} color="var(--gray-11)" />
       </TextField.Slot>
     </TextField.Root>
   );
@@ -174,7 +174,7 @@ function NoMatch({ onClear }: { onClear: () => void }) {
   const { t } = useTranslation();
   return (
     <Flex direction="column" align="center" gap="2" style={{ padding: 'var(--space-4)' }}>
-      <Text size="2" style={{ color: 'var(--gray-10)' }}>
+      <Text size="2" style={{ color: 'var(--gray-11)' }}>
         {t('workspace.mcpServers.toolRules.noMatch')}
       </Text>
       <Button type="button" size="1" variant="ghost" onClick={onClear}>
@@ -214,7 +214,7 @@ function Groups({
                 · {members.length}
               </Text>
               {group.hint && (
-                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)' }}>
                   {t(group.hint)}
                 </Text>
               )}
@@ -242,7 +242,7 @@ function ToolSummary({ row }: { row: McpRuleTool }) {
         {guessed && (
           <Tooltip content={t(`workspace.mcpServers.toolRules.kindSource.${row.kindSource}`)}>
             <span role="img" aria-label={t(`workspace.mcpServers.toolRules.kindSource.${row.kindSource}`)} style={{ display: 'inline-flex' }}>
-              <MaterialIcon name="info" size={14} color="var(--gray-9)" />
+              <MaterialIcon name="info" size={14} color="var(--gray-11)" />
             </span>
           </Tooltip>
         )}
@@ -284,7 +284,7 @@ export function McpToolRulesList({ editor, maxListHeight, toolsUnknown = false }
 
   if (editor.loading) {
     return (
-      <Text as="p" size="2" style={{ color: 'var(--slate-10)' }}>
+      <Text as="p" size="2" style={{ color: 'var(--slate-11)' }}>
         {t('workspace.mcpServers.toolRules.loading')}
       </Text>
     );
@@ -298,7 +298,7 @@ export function McpToolRulesList({ editor, maxListHeight, toolsUnknown = false }
   }
   if (editor.rows.length === 0) {
     return (
-      <Text size="2" style={{ color: 'var(--slate-10)' }}>
+      <Text size="2" style={{ color: 'var(--slate-11)' }}>
         {t('workspace.mcpServers.toolRules.empty')}
       </Text>
     );
@@ -359,7 +359,7 @@ export function McpToolList({ tools, maxListHeight }: { tools: McpRuleTool[]; ma
   const { query, setQuery, shown, searchable } = useSearch(tools);
   if (tools.length === 0) {
     return (
-      <Text size="2" style={{ color: 'var(--slate-10)' }}>
+      <Text size="2" style={{ color: 'var(--slate-11)' }}>
         {t('workspace.mcpServers.toolRules.noTools')}
       </Text>
     );

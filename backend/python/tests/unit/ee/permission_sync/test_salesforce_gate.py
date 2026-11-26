@@ -14,6 +14,7 @@ import pytest
 
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.salesforce.connector import SalesforceConnector
+from app.connectors.sources.salesforce.eligibility import READERS_SOQL
 from app.ee.permission_sync.salesforce import SalesforcePermissionsMixin
 
 SALESFORCE = Path(__file__).resolve().parents[4] / "app" / "connectors" / "sources" / "salesforce"
@@ -122,7 +123,7 @@ async def test_licensed_permission_edges_still_read_salesforce() -> None:
     with pytest.raises(RuntimeError, match="stop after the read"):
         await connector._sync_permissions_edges("59.0")
 
-    assert connector._soql_query_paginated.read[0] == "SELECT Id, Email FROM User WHERE IsActive = true"
+    assert connector._soql_query_paginated.read[0] == READERS_SOQL
 
 
 @pytest.mark.asyncio

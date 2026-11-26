@@ -1154,14 +1154,14 @@ class TestBatchUpsertNodes:
     @pytest.mark.asyncio
     async def test_with_errors(self, connected_provider):
         connected_provider.http_client.batch_insert_documents = AsyncMock(return_value={"errors": 2})
-        result = await connected_provider.batch_upsert_nodes([{"id": "k1"}], "records")
+        result = await connected_provider.batch_upsert_nodes([{"id": "k1"}], "files")
         assert result is False
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.http_client.batch_insert_documents = AsyncMock(side_effect=Exception("fail"))
         with pytest.raises(Exception, match="fail"):
-            await connected_provider.batch_upsert_nodes([{"id": "k1"}], "records")
+            await connected_provider.batch_upsert_nodes([{"id": "k1"}], "files")
 
 
 class TestDeleteNodes:

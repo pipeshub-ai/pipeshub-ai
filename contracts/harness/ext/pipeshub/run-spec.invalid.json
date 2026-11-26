@@ -1,0 +1,834 @@
+[
+  {
+    "description": "unknown mount",
+    "instance": {
+      "agent": {
+        "agentKey": "a1",
+        "definitionVersion": 7,
+        "mode": "react"
+      },
+      "knowledge": {
+        "apps": [
+          "app_drive"
+        ],
+        "kb": [
+          "kb_1"
+        ],
+        "strictScope": true
+      },
+      "mcp": [
+        {
+          "instanceId": "mcp_9",
+          "manifestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "skills": [
+        {
+          "name": "xlsx",
+          "bundleDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "mounts": [
+        "/etc"
+      ],
+      "via": "session"
+    }
+  },
+  {
+    "description": "unknown via",
+    "instance": {
+      "agent": {
+        "agentKey": "a1",
+        "definitionVersion": 7,
+        "mode": "react"
+      },
+      "knowledge": {
+        "apps": [
+          "app_drive"
+        ],
+        "kb": [
+          "kb_1"
+        ],
+        "strictScope": true
+      },
+      "mcp": [
+        {
+          "instanceId": "mcp_9",
+          "manifestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "skills": [
+        {
+          "name": "xlsx",
+          "bundleDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "mounts": [
+        "/workspace",
+        "/session",
+        "/inputs",
+        "/knowledge",
+        "/skills",
+        "/artifacts",
+        "/tool-results"
+      ],
+      "via": "cookie"
+    }
+  },
+  {
+    "description": "agent needs definitionVersion",
+    "instance": {
+      "agent": {
+        "agentKey": "a1",
+        "mode": "react"
+      },
+      "knowledge": {
+        "apps": [
+          "app_drive"
+        ],
+        "kb": [
+          "kb_1"
+        ],
+        "strictScope": true
+      },
+      "mcp": [
+        {
+          "instanceId": "mcp_9",
+          "manifestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "skills": [
+        {
+          "name": "xlsx",
+          "bundleDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "mounts": [
+        "/workspace",
+        "/session",
+        "/inputs",
+        "/knowledge",
+        "/skills",
+        "/artifacts",
+        "/tool-results"
+      ],
+      "via": "session"
+    }
+  },
+  {
+    "description": "skill digest grammar",
+    "instance": {
+      "agent": {
+        "agentKey": "a1",
+        "definitionVersion": 7,
+        "mode": "react"
+      },
+      "knowledge": {
+        "apps": [
+          "app_drive"
+        ],
+        "kb": [
+          "kb_1"
+        ],
+        "strictScope": true
+      },
+      "mcp": [
+        {
+          "instanceId": "mcp_9",
+          "manifestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "skills": [
+        {
+          "name": "xlsx",
+          "bundleDigest": "latest"
+        }
+      ],
+      "mounts": [
+        "/workspace",
+        "/session",
+        "/inputs",
+        "/knowledge",
+        "/skills",
+        "/artifacts",
+        "/tool-results"
+      ],
+      "via": "session"
+    }
+  },
+  {
+    "description": "knowledge required",
+    "instance": {
+      "agent": {
+        "agentKey": "a1",
+        "definitionVersion": 7,
+        "mode": "react"
+      },
+      "mcp": [
+        {
+          "instanceId": "mcp_9",
+          "manifestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "skills": [
+        {
+          "name": "xlsx",
+          "bundleDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "mounts": [
+        "/workspace",
+        "/session",
+        "/inputs",
+        "/knowledge",
+        "/skills",
+        "/artifacts",
+        "/tool-results"
+      ],
+      "via": "session"
+    }
+  },
+  {
+    "description": "unknown assistant chat mode",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [],
+      "via": "session",
+      "chat": {
+        "mode": "deep",
+        "internalSearch": true
+      }
+    }
+  },
+  {
+    "description": "assistant chat grant without internalSearch",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [],
+      "via": "session",
+      "chat": {
+        "mode": "internal_search"
+      }
+    }
+  },
+  {
+    "description": "Universal Agent Mode is not an assistant chat grant",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [],
+      "via": "session",
+      "chat": {
+        "mode": "agent",
+        "internalSearch": true
+      }
+    }
+  },
+  {
+    "description": "subAgent without a role",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "subAgent": {
+        "toolNames": []
+      }
+    }
+  },
+  {
+    "description": "subAgent with an unknown field",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "subAgent": {
+        "role": "jira",
+        "toolNames": [],
+        "model": "gpt-x"
+      }
+    }
+  },
+  {
+    "description": "subAgent role too long",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "subAgent": {
+        "role": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "toolNames": []
+      }
+    }
+  },
+  {
+    "description": "workspace pinned to the session's own workspace, not a fork",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "workspace": {
+        "workspaceId": "ws:session-1",
+        "forkOf": {
+          "workspaceId": "ws:session-1",
+          "revision": 0
+        }
+      }
+    }
+  },
+  {
+    "description": "workspace fork without its origin revision",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "workspace": {
+        "workspaceId": "ws:session-1:fork:c1",
+        "forkOf": {
+          "workspaceId": "ws:session-1"
+        }
+      }
+    }
+  },
+  {
+    "description": "audience with an unknown role",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "audience": {
+        "sessionRole": "viewer",
+        "ownerRef": "p_u42",
+        "ownRuns": []
+      }
+    }
+  },
+  {
+    "description": "audience owner that is not a principal ref",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "audience": {
+        "sessionRole": "owner",
+        "ownerRef": "u42",
+        "ownRuns": []
+      }
+    }
+  },
+  {
+    "description": "audience without its own runs",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "audience": {
+        "sessionRole": "owner",
+        "ownerRef": "p_u42"
+      }
+    }
+  },
+  {
+    "description": "audience with an unknown field",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "audience": {
+        "sessionRole": "owner",
+        "ownerRef": "p_u42",
+        "ownRuns": [],
+        "readers": [
+          "p_u9"
+        ]
+      }
+    }
+  },
+  {
+    "description": "audience listing an empty set of visible runs (absent when none passed)",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "audience": {
+        "sessionRole": "owner",
+        "ownerRef": "p_u42",
+        "ownRuns": [],
+        "visibleRuns": []
+      }
+    }
+  },
+  {
+    "description": "memory with an unknown write scope",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [],
+      "via": "session",
+      "memory": {
+        "recalled": [],
+        "writeScopes": [
+          "org"
+        ]
+      }
+    }
+  },
+  {
+    "description": "memory recalling more than 20",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [],
+      "via": "session",
+      "memory": {
+        "recalled": [
+          "mem_0",
+          "mem_1",
+          "mem_2",
+          "mem_3",
+          "mem_4",
+          "mem_5",
+          "mem_6",
+          "mem_7",
+          "mem_8",
+          "mem_9",
+          "mem_10",
+          "mem_11",
+          "mem_12",
+          "mem_13",
+          "mem_14",
+          "mem_15",
+          "mem_16",
+          "mem_17",
+          "mem_18",
+          "mem_19",
+          "mem_20"
+        ],
+        "writeScopes": []
+      }
+    }
+  },
+  {
+    "description": "memory with an unknown field",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [],
+      "via": "session",
+      "memory": {
+        "recalled": [],
+        "writeScopes": [],
+        "content": "x"
+      }
+    }
+  },
+  {
+    "description": "memory without writeScopes",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [],
+      "via": "session",
+      "memory": {
+        "recalled": [
+          "mem_1"
+        ]
+      }
+    }
+  },
+  {
+    "description": "inheritedLabel without its completeness",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "inheritedLabel": {
+        "sources": []
+      }
+    }
+  },
+  {
+    "description": "inheritedLabel naming a source of an unknown kind",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "inheritedLabel": {
+        "complete": true,
+        "sources": [
+          {
+            "kind": "web",
+            "recordId": "r1"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "description": "engineCarry without its checkpoint",
+    "instance": {
+      "agent": {
+        "agentKey": "a1",
+        "definitionVersion": 7,
+        "mode": "react"
+      },
+      "knowledge": {
+        "apps": [
+          "app_drive"
+        ],
+        "kb": [
+          "kb_1"
+        ],
+        "strictScope": true
+      },
+      "mcp": [
+        {
+          "instanceId": "mcp_9",
+          "manifestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "skills": [
+        {
+          "name": "xlsx",
+          "bundleDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "mounts": [
+        "/workspace",
+        "/session",
+        "/inputs",
+        "/knowledge",
+        "/skills",
+        "/artifacts",
+        "/tool-results"
+      ],
+      "via": "session",
+      "model": {
+        "modelKey": "m_1",
+        "modelName": "claude-x"
+      },
+      "engineCarry": {
+        "runId": "run_1"
+      }
+    }
+  },
+  {
+    "description": "inheritedGrants naming a grant without its key",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "inheritedGrants": [
+        {
+          "toolId": "web@duckduckgo/fetch_url"
+        }
+      ]
+    }
+  },
+  {
+    "description": "inheritedGrants keyed by a host rather than a digest",
+    "instance": {
+      "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": false
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [
+        "/workspace"
+      ],
+      "via": "pat",
+      "inheritedGrants": [
+        {
+          "toolId": "web@duckduckgo/fetch_url",
+          "key": "pipeshub.com"
+        }
+      ]
+    }
+  },
+  {
+    "description": "an answer names no file",
+    "instance": {
+      "knowledge": {
+        "apps": [
+          "app-drive"
+        ],
+        "kb": [
+          "kb-1"
+        ],
+        "strictScope": true
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [],
+      "via": "pat",
+      "deliverable": {
+        "kind": "answer",
+        "name": "report.md"
+      }
+    }
+  },
+  {
+    "description": "a deliverable name is a file name, not a path",
+    "instance": {
+      "knowledge": {
+        "apps": [
+          "app-drive"
+        ],
+        "kb": [
+          "kb-1"
+        ],
+        "strictScope": true
+      },
+      "mcp": [],
+      "skills": [],
+      "mounts": [],
+      "via": "pat",
+      "deliverable": {
+        "kind": "file",
+        "name": "../etc/passwd.md"
+      }
+    }
+  },
+  {
+    "description": "WP100-ENV: an environment level other than agent or repository",
+    "instance": {
+      "agent": {
+        "agentKey": "a1",
+        "definitionVersion": 7,
+        "mode": "react"
+      },
+      "knowledge": {
+        "apps": [
+          "app_drive"
+        ],
+        "kb": [
+          "kb_1"
+        ],
+        "strictScope": true
+      },
+      "mcp": [
+        {
+          "instanceId": "mcp_9",
+          "manifestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "skills": [
+        {
+          "name": "xlsx",
+          "bundleDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "mounts": [
+        "/workspace",
+        "/session",
+        "/inputs",
+        "/knowledge",
+        "/skills",
+        "/artifacts",
+        "/tool-results"
+      ],
+      "via": "session",
+      "model": {
+        "modelKey": "m_1",
+        "modelName": "claude-x"
+      },
+      "environment": {
+        "environmentId": "py",
+        "level": "image",
+        "setup": "pip install -r requirements.txt"
+      }
+    }
+  },
+  {
+    "description": "WP100-ENV: an environment never names a base image (the engine release image is the base)",
+    "instance": {
+      "agent": {
+        "agentKey": "a1",
+        "definitionVersion": 7,
+        "mode": "react"
+      },
+      "knowledge": {
+        "apps": [
+          "app_drive"
+        ],
+        "kb": [
+          "kb_1"
+        ],
+        "strictScope": true
+      },
+      "mcp": [
+        {
+          "instanceId": "mcp_9",
+          "manifestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "skills": [
+        {
+          "name": "xlsx",
+          "bundleDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "mounts": [
+        "/workspace",
+        "/session",
+        "/inputs",
+        "/knowledge",
+        "/skills",
+        "/artifacts",
+        "/tool-results"
+      ],
+      "via": "session",
+      "model": {
+        "modelKey": "m_1",
+        "modelName": "claude-x"
+      },
+      "environment": {
+        "environmentId": "py",
+        "level": "agent",
+        "image": "python:3.12"
+      }
+    }
+  }
+]

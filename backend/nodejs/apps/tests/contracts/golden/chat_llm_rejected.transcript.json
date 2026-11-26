@@ -1,0 +1,102 @@
+{
+  "conversation": {
+    "sessionType": "chat",
+    "nextSeq": 2,
+    "userId": "oid-1",
+    "orgId": "oid-2",
+    "title": "What is the refund policy?",
+    "initiator": "oid-1",
+    "isShared": false,
+    "isDeleted": false,
+    "isArchived": false,
+    "lastActivityAt": "<clock>",
+    "status": "Failed",
+    "modelInfo": {
+      "chatMode": "internal_search"
+    },
+    "_id": "oid-3",
+    "sharedWith": [],
+    "conversationErrors": [
+      {
+        "message": "The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models.",
+        "errorType": "auth_error",
+        "timestamp": "<timestamp>",
+        "metadata": {},
+        "_id": "oid-4"
+      }
+    ],
+    "createdAt": "<timestamp>",
+    "updatedAt": "<timestamp>",
+    "__v": 1,
+    "failReason": "The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models."
+  },
+  "messages": [
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 1,
+      "messageType": "user_query",
+      "content": "What is the refund policy?",
+      "contentFormat": "MARKDOWN",
+      "modelInfo": {
+        "chatMode": "internal_search"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [],
+      "_id": "oid-5",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "citations": [],
+      "followUpQuestions": [],
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    },
+    {
+      "sessionId": "oid-3",
+      "orgId": "oid-2",
+      "seq": 2,
+      "messageType": "error",
+      "content": "The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models.",
+      "contentFormat": "MARKDOWN",
+      "errorCode": "auth_error",
+      "citations": [],
+      "confidence": "Low",
+      "followUpQuestions": [],
+      "modelInfo": {
+        "chatMode": "internal_search"
+      },
+      "appliedFilters": {
+        "apps": [],
+        "kb": [],
+        "recordGroups": [],
+        "records": [],
+        "recordsExact": []
+      },
+      "parts": [
+        {
+          "type": "text",
+          "content": "The AI model's provider rejected its API key. Ask a workspace admin to check the key in Workspace → AI Models.",
+          "runId": "uuid-1",
+          "isFinal": true
+        }
+      ],
+      "_id": "oid-6",
+      "createdAt": "<timestamp>",
+      "updatedAt": "<timestamp>",
+      "feedback": [],
+      "attachments": [],
+      "referenceData": [],
+      "tools": [],
+      "reasoning": []
+    }
+  ]
+}

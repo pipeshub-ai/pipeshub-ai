@@ -1,0 +1,65 @@
+[
+  {
+    "description": "written by Node",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-02T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "node",
+      "type": "x.pipeshub.repository.unavailable",
+      "data": {
+        "host": "github.com",
+        "path": "/onyx-dot-app/onyx",
+        "reason": "host_not_allowed"
+      }
+    }
+  },
+  {
+    "description": "a URL, not a path",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-02T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.repository.unavailable",
+      "data": {
+        "host": "github.com",
+        "path": "https://github.com/a/b",
+        "reason": "host_not_allowed"
+      }
+    }
+  },
+  {
+    "description": "another reason",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-02T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.repository.unavailable",
+      "data": {
+        "host": "github.com",
+        "path": "/onyx-dot-app/onyx",
+        "reason": "private"
+      }
+    }
+  }
+]

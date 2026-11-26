@@ -169,7 +169,9 @@ export class AgentRegistrationService {
       purgeAt: expiresAt,
     });
     const registrationId = REGISTRATION_ID_PREFIX + reg._id;
-    this.logger.info('registration.created', { registrationId });
+    this.logger.info('registration.created', {
+      registration_id: registrationId,
+    });
 
     return {
       registration_id: registrationId,
@@ -268,6 +270,7 @@ export class AgentRegistrationService {
     userCode: string | undefined,
     action: 'approve' | 'deny',
     user: SessionUser,
+    shownScopes?: string[],
   ): Promise<'claimed' | 'revoked'> {
     const reg = await this.pendingAttempt(attemptToken, user);
     const repo = getOAuthTokenRepository();
@@ -280,7 +283,7 @@ export class AgentRegistrationService {
         throw fail('invalid_request', 'this claim link is no longer valid');
       }
       this.logger.info('claim.denied', {
-        registrationId: REGISTRATION_ID_PREFIX + reg._id,
+        registration_id: REGISTRATION_ID_PREFIX + reg._id,
       });
       return 'revoked';
     }
@@ -299,20 +302,34 @@ export class AgentRegistrationService {
         'service_auth registration is not enabled',
       );
     }
-    // The person and org come from the session, never from the request. The scopes are the list the claim page showed.
+    // The scopes are the list the claim page showed. What the app grants now may differ (MCP_SCOPES changed and the server
+    // restarted while the page was open): the person must see the new list before approving it, so the approval is refused.
+    const scopes = this.scopesOf(app);
+    const shown = new Set(shownScopes ?? []);
+    if (
+      !shownScopes ||
+      shown.size !== scopes.length ||
+      !scopes.every((s) => shown.has(s))
+    ) {
+      throw fail(
+        'invalid_request',
+        'the access this agent would get has changed since the page was shown; reload the page',
+      );
+    }
+    // The person and org come from the session, never from the request.
     const decided = await repo.decideAgentRegistration(reg._id, {
       status: AgentRegistrationStatus.CLAIMED,
       userId: user.userId,
       orgId: user.orgId,
-      scopes: this.scopesOf(app),
+      scopes,
     });
     if (!decided) {
       throw fail('invalid_request', 'this claim link is no longer valid');
     }
     this.logger.info('claim.confirmed', {
-      registrationId: REGISTRATION_ID_PREFIX + reg._id,
-      userId: user.userId,
-      orgId: user.orgId,
+      registration_id: REGISTRATION_ID_PREFIX + reg._id,
+      user_id: user.userId,
+      org_id: user.orgId,
     });
     return 'claimed';
   }
@@ -366,7 +383,10 @@ export class AgentRegistrationService {
     const tokens = await this.issue(taken, 'access_denied');
     const { assertion, expiresAt } =
       this.oauthTokenService.signAgentAssertion(registrationId);
-    this.logger.info('token.issued', { registrationId, grant: 'claim' });
+    this.logger.info('token.issued', {
+      registration_id: registrationId,
+      grant: 'claim',
+    });
     return {
       ...tokens,
       identity_assertion: assertion,
@@ -386,7 +406,10 @@ export class AgentRegistrationService {
       );
     }
     const tokens = await this.issue(reg, 'invalid_grant');
-    this.logger.info('token.issued', { registrationId, grant: 'jwt-bearer' });
+    this.logger.info('token.issued', {
+      registration_id: registrationId,
+      grant: 'jwt-bearer',
+    });
     return tokens;
   }
 
@@ -421,8 +444,8 @@ export class AgentRegistrationService {
     );
     if (!revoked) throw new NotFoundError('Registration not found');
     this.logger.info('registration.revoked', {
-      registrationId: id,
-      userId: user.userId,
+      registration_id: id,
+      user_id: user.userId,
     });
     return { ok: true };
   }
@@ -436,10 +459,14 @@ export class AgentRegistrationService {
     return this.oauthAppService.getAppByClientId(FIRST_PARTY_DEVICE_CLIENT_ID);
   }
 
-  /** What a device sign-in by the agent app grants, less offline_access: these grants never issue a refresh token. */
+  /**
+   * What a device sign-in by the agent app grants under the current MCP_SCOPES (`capScopes`), less offline_access: these
+   * grants never issue a refresh token.
+   */
   private scopesOf(app: OAuthAppDto): string[] {
+    const allowed = this.firstPartyDeviceAppService.capScopes(app);
     return this.scopeValidatorService
-      .resolveGrantedScopes(app.allowedScopes, app.allowedScopes)
+      .resolveGrantedScopes(allowed, allowed)
       .granted.filter((scope) => scope !== 'offline_access');
   }
 

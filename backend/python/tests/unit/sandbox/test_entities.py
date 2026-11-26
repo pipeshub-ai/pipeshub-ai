@@ -1,6 +1,5 @@
 """Tests for sandbox-related entity updates in app.models.entities."""
 
-import pytest
 
 
 class TestArtifactType:

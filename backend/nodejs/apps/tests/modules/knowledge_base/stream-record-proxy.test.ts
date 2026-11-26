@@ -154,16 +154,83 @@ describe('stream record proxy: validators', () => {
     expect(res.headers['etag']).to.equal(undefined)
   })
 
-  it('a 416 is logged below error level, a 500 is an error', async () => {
-    const errorLog = sinon.spy(Logger.prototype, 'error')
-    for (const [status, expected] of [[416, 0], [500, 1]] as const) {
-      errorLog.resetHistory()
+  it('a status the connector service answered (416, 404, 500) is relayed with no line of its own', async () => {
+    const logged = (['error', 'warn', 'info'] as const).map((level) => sinon.spy(Logger.prototype, level))
+    for (const status of [416, 404, 500]) {
       const body = new PassThrough()
-      body.end(JSON.stringify({ detail: 'x' }))
+      // A body that is not JSON (a proxy's page): reading it fails, and that is not a line either.
+      body.end(status === 404 ? '<html>Not Found</html>' : JSON.stringify({ detail: 'x' }))
       get.rejects({ response: { status, headers: {}, data: body }, message: `status ${status}` })
-      await getRecordBuffer('http://c:8088')(makeReq({ range: 'bytes=500-600' }), makeRes(), sinon.stub())
-      const fromGateway = errorLog.getCalls().filter((c) => c.args[0] === 'Error fetching record buffer')
-      expect(fromGateway, `status ${status}`).to.have.length(expected)
+      const res = makeRes()
+      await getRecordBuffer('http://c:8088')(makeReq({ range: 'bytes=500-600' }), res, sinon.stub())
+      expect(res.status.calledWith(status), `status ${status}`).to.equal(true)
     }
+    expect(logged.flatMap((spy) => spy.getCalls().map((c) => c.args[0]))).to.deep.equal([])
+  })
+})
+
+describe('stream record proxy: failures it answers itself', () => {
+  let get: sinon.SinonStub
+  beforeEach(() => {
+    get = sinon.stub(axios, 'get')
+  })
+  afterEach(() => sinon.restore())
+
+  const lines = (spy: sinon.SinonSpy): unknown[] => spy.getCalls().map((c) => c.args[0])
+  const noAnswer = (code: string) =>
+    Object.assign(new Error(`no answer: ${code}`), { code, request: {}, isAxiosError: true })
+
+  for (const [code, status] of [
+    ['ECONNREFUSED', 503],
+    ['ECONNRESET', 503],
+    ['ECONNABORTED', 504],
+    ['ETIMEDOUT', 504],
+  ] as const) {
+    it(`no answer (${code}) is ${status}, as the error middleware answers it, with no ERROR`, async () => {
+      const errorLog = sinon.spy(Logger.prototype, 'error')
+      get.rejects(noAnswer(code))
+      const res = makeRes()
+      await getRecordBuffer('http://c:8088')(makeReq(), res, sinon.stub())
+      expect(res.status.calledWith(status)).to.equal(true)
+      expect(res.headers['cache-control']).to.equal('no-store')
+      expect(lines(errorLog)).to.deep.equal([])
+    })
+  }
+
+  it('our own failure before an answer is 500 and one ERROR', async () => {
+    const errorLog = sinon.spy(Logger.prototype, 'error')
+    get.rejects(new TypeError('Cannot read properties of undefined'))
+    const res = makeRes()
+    await getRecordBuffer('http://c:8088')(makeReq(), res, sinon.stub())
+    expect(res.status.calledWith(500)).to.equal(true)
+    expect(lines(errorLog)).to.deep.equal(['Error fetching record buffer'])
+  })
+
+  it('a failure after the headers are out goes to the error middleware, with no line of its own', async () => {
+    const logged = (['error', 'warn', 'info'] as const).map((level) => sinon.spy(Logger.prototype, level))
+    get.rejects(new Error('late failure'))
+    const res = makeRes()
+    res.headersSent = true
+    const next = sinon.stub()
+    await getRecordBuffer('http://c:8088')(makeReq(), res, next)
+    expect(next.calledOnce).to.equal(true)
+    expect(logged.flatMap((spy) => lines(spy))).to.deep.equal([])
+  })
+
+  it('a stream that breaks midway is one WARN, not an ERROR', async () => {
+    const warnLog = sinon.spy(Logger.prototype, 'warn')
+    const errorLog = sinon.spy(Logger.prototype, 'error')
+    const data = new PassThrough()
+    get.resolves({ status: 200, headers: { 'content-type': 'application/pdf' }, data })
+    const res = makeRes()
+    res.headersSent = true
+    res.destroy = sinon.stub()
+    await getRecordBuffer('http://c:8088')(makeReq(), res, sinon.stub())
+    const broken = new Error('upstream socket closed')
+    data.emit('error', broken)
+    expect(lines(warnLog)).to.deep.equal(['Stream error while proxying record buffer'])
+    expect(warnLog.firstCall.args[1]).to.deep.equal({ error: broken })
+    expect(lines(errorLog)).to.deep.equal([])
+    expect(res.destroy.calledWith(broken)).to.equal(true)
   })
 })

@@ -1,22 +1,11 @@
 """Which Drive grants belong on an item, and whether the item inherits its parent."""
 
+from collections.abc import Callable
 
-def permission_is_direct(permission: dict) -> bool | None:
-    """True when this grant was written on the item, False when every detail is inherited.
-
-    None when ``permissionDetails`` is absent. My Drive omits it, so a missing
-    list is not evidence that the grant was inherited.
-    """
-    details = permission.get("permissionDetails") or []
-    if not isinstance(details, list) or not details:
-        return None
-    for detail in details:
-        if not isinstance(detail, dict):
-            continue
-        # A "file" entry can still be inherited from a parent folder.
-        if detail.get("inherited") is False:
-            return True
-    return False
+# Lives with the other share rules in common/; kept importable from here for existing callers.
+from app.connectors.sources.google.common.drive_people import (
+    permission_is_direct as permission_is_direct,
+)
 
 
 def is_drive_organizer(permission: dict) -> bool:
@@ -30,9 +19,22 @@ def is_drive_organizer(permission: dict) -> bool:
 class DrivePermissionBatch(list):
     """The grants to store. ``saw_permission_details`` is false for My Drive and for a drive root."""
 
-    def __init__(self, permissions: list, *, saw_permission_details: bool) -> None:
+    def __init__(
+        self,
+        permissions: list,
+        *,
+        saw_permission_details: bool,
+        user_grants: list[dict] | None = None,
+        grant_details_seen: bool = False,
+        allowed_email: Callable[[str], bool] | None = None,
+    ) -> None:
         super().__init__(permissions)
         self.saw_permission_details = saw_permission_details
+        # The item's raw Drive entries, for who it was shared with; None when the list was not read whole.
+        self.user_grants = user_grants
+        self.grant_details_seen = grant_details_seen
+        # The shared drive's restrictions: who of those entries can actually open the item.
+        self.allowed_email = allowed_email
 
 
 def grants_to_store(
