@@ -815,7 +815,8 @@ class TestACreateWhoseEdgesFailIsUndone:
         assert not [e for edges in graph._edges.values() for e in edges if e.get("to_id") == _KEY]
         await owner.create_skill(_NAME, _OWNER_MD)
         assert graph._col("agentSkills")[_KEY]["createdBy"] == "user-a"
-        assert {e["type"] for e in graph._edges["agentSkillRelation"]} == {"requires", "related"}
+        # The required skill is not held by anyone, so no requires edge is written for it.
+        assert {e["type"] for e in graph._edges["agentSkillRelation"]} == {"related"}
 
 
 class _OthersWriteBeforeTheSnapshot(FakeGraphProvider):
