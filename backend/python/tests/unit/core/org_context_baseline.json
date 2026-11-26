@@ -145,7 +145,7 @@
   "app/api/routes/toolsets.py": 50,
   "app/connectors/api/artifacts_router.py": 1,
   "app/connectors/api/connector_resolvers.py": 2,
-  "app/connectors/api/router.py": 74,
+  "app/connectors/api/router.py": 75,
   "app/connectors/api/user_access_router.py": 1,
   "app/connectors/core/base/data_processor/data_source_entities_processor.py": 2,
   "app/connectors/core/base/data_processor/storage_cleanup.py": 1,

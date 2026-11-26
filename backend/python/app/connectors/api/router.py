@@ -4833,6 +4833,20 @@ async def _full_save_oauth_app(
             )
         # Values the request did not change come from the linked app, when it still exists.
         unchanged = app_values if current_app else stored
+        if current_app and (
+            current_app.get("orgId") not in (None, org_id)
+            or current_app.get("_resolved_from") not in (None, "own")
+        ):
+            # An app this caller does not own keeps its client ID and secret: the
+            # new app takes the ones this request sends.
+            own_fields = {AuthFieldKeys.CLIENT_ID, *secret_fields}
+            if AuthFieldKeys.CLIENT_ID not in sent or not any(name in sent for name in secret_fields):
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail="This OAuth app is not yours. Enter your own client ID and client secret.",
+                )
+            changed = {**changed, **{name: value for name, value in sent.items() if name in own_fields}}
+            unchanged = {name: value for name, value in unchanged.items() if name not in own_fields}
     else:
         if not sent:
             return None

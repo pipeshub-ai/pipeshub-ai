@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 import pytest
 from fastapi import HTTPException
 
+from app.connectors.api import connector_resolvers as oss_resolvers
 from app.connectors.api import router as router_module
 from app.connectors.api.router import update_connector_instance_config
 from app.connectors.sources.google.drive.individual.connector import (
@@ -717,3 +718,85 @@ class TestNewProviderUrlsForTheNamedServiceNowApp:
         await _save(store, {"auth": sent["auth"]}, connector_type="ServiceNow")
 
         check()
+
+
+FOREIGN_APP = {
+    **SHARED_APP,
+    "_id": "app-other",
+    "orgId": "other-org",
+    "connectorType": "ServiceNow",
+    "config": {**SHARED_APP["config"], **SN_URLS},
+}
+
+
+@pytest.mark.asyncio
+class TestAnAppTheCallerDoesNotOwnKeepsItsClientIdAndSecret:
+    """A linked app can resolve from a place the caller does not own; its client ID and secret stay there."""
+
+    async def _save_linked_to_foreign_app(
+        self, auth: dict[str, Any], app: dict[str, Any], stored_auth: dict[str, Any] | None = None
+    ) -> InMemoryConfigService:
+        store = InMemoryConfigService(
+            {
+                CONFIG_PATH: {
+                    "auth": {"connectorScope": "team", "oauthConfigId": "app-other", **(stored_auth or {})},
+                    "credentials": dict(TOKENS),
+                },
+            }
+        )
+        request = _request({"auth": auth}, connector_type="ServiceNow")
+
+        async def resolve(
+            container: object, path: str, org_id: str, app_id: str, config_service: object
+        ) -> dict[str, Any] | None:
+            if app_id == "app-other":
+                return copy.deepcopy(app)
+            return await oss_resolvers.resolve_oauth_config(container, path, org_id, app_id, config_service)
+
+        with (
+            patch.object(router_module, "get_validated_connector_instance", AsyncMock(return_value=_instance("ServiceNow"))),
+            patch.object(router_module, "resolve_config_service", return_value=store),
+            # Only the app the connector was linked to resolves from elsewhere; the saved one is read from `store`.
+            patch.object(router_module, "resolve_oauth_config", resolve),
+            patch.object(router_module, "resolve_oauth_configs", oss_resolvers.resolve_oauth_configs),
+        ):
+            await update_connector_instance_config(CONNECTOR_ID, request)
+        return store
+
+    NEW_URL = {"instanceUrl": "https://mine.service-now.com", "authorizeUrl": "https://mine.service-now.com/oauth_auth.do", "tokenUrl": "https://mine.service-now.com/oauth_token.do"}
+    # The same app with no orgId, found outside the caller's organization.
+    UNOWNED_APP = {k: v for k, v in FOREIGN_APP.items() if k != "orgId"} | {"_resolved_from": "other"}
+
+    @pytest.mark.parametrize("app", [FOREIGN_APP, UNOWNED_APP], ids=["other-org-id", "resolved-elsewhere-no-org-id"])
+    @pytest.mark.parametrize("auth", [
+        NEW_URL,
+        {**NEW_URL, "clientId": "my-client"},
+        {**NEW_URL, "clientSecret": "my-secret"},
+    ], ids=["no-client", "no-secret", "no-client-id"])
+    async def test_a_change_without_its_own_client_id_and_secret_is_refused(self, app: dict[str, Any], auth: dict[str, Any]) -> None:
+        with pytest.raises(HTTPException) as caught:
+            await self._save_linked_to_foreign_app(auth, app)
+
+        assert caught.value.status_code == 400
+        assert "client secret" in caught.value.detail
+
+    @pytest.mark.parametrize("app", [FOREIGN_APP, UNOWNED_APP], ids=["other-org-id", "resolved-elsewhere-no-org-id"])
+    async def test_the_new_app_holds_only_the_client_the_admin_sent(self, app: dict[str, Any]) -> None:
+        # The connector already stores the admin's own client; the request repeats it and
+        # changes a URL, so only the other app's values could fill the rest.
+        mine = {"clientId": "my-client", "clientSecret": "my-own-secret"}
+        store = await self._save_linked_to_foreign_app({**mine, **self.NEW_URL}, app, stored_auth=mine)
+
+        (new_app,) = store.values[SERVICENOW_APPS_PATH]
+        assert new_app["orgId"] == ORG_ID
+        assert new_app["config"]["clientId"] == "my-client"
+        assert new_app["config"]["clientSecret"] == "my-own-secret"
+        assert "app-secret" not in json.dumps(store.values)
+        assert "app-client" not in json.dumps(store.values)
+
+    async def test_an_app_the_caller_owns_is_unaffected(self) -> None:
+        owned = {**FOREIGN_APP, "orgId": ORG_ID, "_resolved_from": "own"}
+        store = await self._save_linked_to_foreign_app({**self.NEW_URL}, owned)
+
+        (new_app,) = store.values[SERVICENOW_APPS_PATH]
+        assert new_app["config"]["clientSecret"] == "app-secret"
