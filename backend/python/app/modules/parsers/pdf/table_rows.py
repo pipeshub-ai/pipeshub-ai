@@ -252,13 +252,15 @@ def split_band_records(
             if annotated:
                 start = False
             # A key line that continues the one above is never a record: the typesetter broke
-            # the line after a comma (an operand list), or in the middle of a token (the line
-            # above fills its cell and has no separator at its end, or this one opens with "_"
-            # right below it; after a blank line it is a key of its own).
-            if prev_key_text.endswith(",") or (key_text(ln).startswith("_") and not blank_above) or (
+            # the line after a comma (an operand list), or in the middle of a token right below
+            # it (the line above fills its cell and has no separator at its end, or this one
+            # opens with "_"). A token never breaks across a blank line: after one the line is a
+            # key of its own.
+            broken_token = not blank_above and (key_text(ln).startswith("_") or (
                 prev_key_text and " " not in prev_key_text and prev_key_width >= TOKEN_FILL * (key_w - 2)
                 and prev_key_text[-1].isalnum() and broken_tokens(prev) >= 2
-            ):
+            ))
+            if prev_key_text.endswith(",") or broken_token:
                 start = False
                 continues = True
             # fresh_upper: another column starts at its own left text edge with a capital or a digit

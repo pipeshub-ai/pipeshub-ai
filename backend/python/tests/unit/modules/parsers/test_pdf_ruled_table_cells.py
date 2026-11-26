@@ -1805,3 +1805,14 @@ def test_a_box_starting_inside_the_ruled_table_keeps_the_edge_text_of_the_table_
         assert "7" in " ".join(c or "" for r in grid for c in r)
     finally:
         pdf.close()
+
+
+def test_long_identifiers_on_one_line_do_not_join_the_record_after_a_blank_line() -> None:
+    # Three columns of long identifiers that fill their cells, then a blank line and a record of short values.
+    cols = [(0.0, 60.0), (60.0, 120.0), (120.0, 180.0)]
+    specs = [("ABCDEFGHIJKLMN", 1.0, 10.0), ("OPQRSTUVWXYZAB", 61.0, 10.0), ("CDEFGHIJKLMNOP", 121.0, 10.0),
+             ("Next", 1.0, 30.0), ("One", 61.0, 30.0), ("Two", 121.0, 30.0)]
+    assert _groups(specs, cols) == [1, 1]
+    # right below, the same lines are one record: the identifiers broke across the lines
+    tight = [*specs[:3], ("Next", 1.0, 19.0), ("One", 61.0, 19.0), ("Two", 121.0, 19.0)]
+    assert _groups(tight, cols) == [2]
