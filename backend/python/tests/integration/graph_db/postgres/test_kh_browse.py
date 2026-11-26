@@ -1268,7 +1268,7 @@ async def test_a_wide_folder_with_more_undecided_children_than_the_classes_count
     p, org = prov(pg_db), new_org()
     kids = [f"c{i:04d}" for i in range(30)]
     await seed_folder(p, pg_db, org, 30, readable_kids=kids)
-    await _admin("UPDATE kg.records SET path = NULL WHERE org_id = $1 AND id = ANY($2::text[])", org, kids[:10])
+    await _admin("UPDATE kg.records SET path = NULL WHERE org_id = $1 AND id = ANY($2::text[])", org, kids[:20])      # 20 undecided: the fourth is within any 14 read
 
     def shown(page: dict) -> tuple:
         return [(r["id"], r["hasChildren"]) for r in page["rows"]], page.get("total"), page.get("totalCapped"), page.get("nRecord"), page.get("nFolder")
@@ -1292,5 +1292,9 @@ async def test_a_wide_folder_with_more_undecided_children_than_the_classes_count
         assert len((await con.fetch(sql, *base.values))[0]["undecided"]) == 4
     finally:
         await con.close()
+    # the children the CTE's own read produced (its body: what was read of the folder, before any scan of it filters), and every scan of it with the rows its filter removed:
+    # all stop by the fourth undecided child (at most 14 read, whatever the order), not at the folder's 30
+    body = [n for n in _nodes(plan) if n.get("Subplan Name") == "CTE r"]
+    assert len(body) == 1 and body[0].get("Actual Rows", 0) * max(1, body[0].get("Actual Loops", 1)) <= 14, body
     read = [n for n in _nodes(plan) if n.get("Node Type") == "CTE Scan"]
-    assert read and max(n.get("Actual Rows", 0) * max(1, n.get("Actual Loops", 1)) for n in read) <= 10, read      # every read of the children (the undecided, the count, the window) stops by the fourth undecided child, not at the folder's 30
+    assert read and max((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0)) * max(1, n.get("Actual Loops", 1)) for n in read) <= 14, read
