@@ -157,8 +157,7 @@ function filterRootParts(parts: MessagePart[], isStreaming: boolean): MessagePar
     if (part.type === 'mcp_sign_in') return false;
     // Someone else's approval card, drawn as its line (`ToolApprovalCard`, `ToolApprovalStubNotice`).
     if (part.stub) return false;
-    // A question is a row once it is answered; a refused or failed ask showed nothing, and a waiting one is its card.
-    if (part.type === 'tool_call' && isAskUserQuestionTool(part.toolName)) return shownQuestionOf(part) !== null;
+    // A question call stays a row: its card, or once answered its receipt, is the interaction anchored on it.
     if (part.type !== 'text') return true;
     if (!part.content?.trim()) return false;
     if (part.isFinal) return false;
