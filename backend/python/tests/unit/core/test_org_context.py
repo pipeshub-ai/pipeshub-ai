@@ -128,7 +128,7 @@ async def test_lazy_client_created_in_request_never_captures_that_orgs_context()
 def test_shadow_mode_logs_counts_and_lets_missing_and_mismatched_access_through(monkeypatch, caplog) -> None:
     from app.core import org_context as oc
 
-    monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
     from app.utils import logging_fields
 
     monkeypatch.setattr(logging_fields, "_log_once_last", {})
@@ -171,7 +171,7 @@ async def test_graph_provider_methods_are_checked_at_the_org_id_argument(monkeyp
 
     Fake.__abstractmethods__ = frozenset()  # only the wrapping is under test
     assert getattr(Fake.get_users, "_org_checked", False) and not getattr(Fake.no_org, "_org_checked", False)
-    monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
     with bind(_ctx("org_a")):
         assert await Fake().get_users("org_b") == ["org_b"]  # shadow: mismatch passes
         assert await Fake().get_users(org_id="org_a") == ["org_a"]
@@ -195,8 +195,23 @@ def test_unknown_org_context_mode_is_rejected(monkeypatch) -> None:
             oc.ambient_org("org_x", site="s")
     monkeypatch.setenv("ORG_CONTEXT_MODE", " Enforce ")
     assert oc.validate_mode() is True
-    monkeypatch.delenv("ORG_CONTEXT_MODE")
-    assert oc.validate_mode() is False
+
+
+def test_enforce_is_the_default_and_shadow_warns_once(monkeypatch, caplog) -> None:
+    from app.core import org_context as oc
+    from app.utils import logging_fields
+
+    monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
+    assert oc.validate_mode() is True
+    with pytest.raises(MissingOrgContext):
+        oc.ambient_org("org_x", site="s")
+    monkeypatch.setenv("ORG_CONTEXT_MODE", " ")  # an empty value, as compose passes an unset one
+    assert oc.validate_mode() is True
+    monkeypatch.setattr(logging_fields, "_log_once_last", {})
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
+    with caplog.at_level("WARNING"):
+        assert oc.validate_mode() is False and oc.validate_mode() is False
+    assert caplog.text.count("ORG_CONTEXT_MODE=shadow") == 1
 
 
 def test_for_org_without_an_org_is_a_typed_error() -> None:

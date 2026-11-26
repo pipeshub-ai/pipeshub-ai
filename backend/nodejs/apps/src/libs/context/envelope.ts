@@ -554,6 +554,46 @@ export function signMessage<T extends Record<string, unknown>>(
   };
 }
 
+/**
+ * The same event signed again with a fresh `issuedAt`, for a delivery the PostgreSQL queue hands back without an attempt (a
+ * database outage), so a message that waits through many hand-backs does not outlive `ENVELOPE_MAX_AGE_SECONDS` and get rejected
+ * as stale. Every field but `issuedAt` and `sig` is kept, the event id too, so the inbox still recognises a redelivery. Only a
+ * message that verifies with the signing key and is still within the accepted age is renewed (a stale or forged one never turns
+ * into a fresh signature); null otherwise, and the hand-back keeps the stored value.
+ */
+export function renewEnvelope(
+  topic: string,
+  message: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const c = message.ctx as EnvelopeCtx | undefined | null;
+  const payload = message.payload;
+  if (
+    !signKey ||
+    c === undefined ||
+    c === null ||
+    typeof c !== 'object' ||
+    (c.v as number) !== 2 ||
+    typeof payload !== 'string' ||
+    !Number.isInteger(c.issuedAt)
+  )
+    return null;
+  const eventType =
+    typeof message.eventType === 'string' ? message.eventType : '';
+  const now = Math.floor(Date.now() / 1000);
+  const age = now - c.issuedAt;
+  // the window openEnvelope accepts: neither stale nor dated further ahead than the clock skew it allows
+  if (
+    !sigOk(signKey, topic, c, payload, eventType) ||
+    age > maxAgeSeconds() ||
+    -age > MAX_FUTURE_SKEW_SECONDS
+  )
+    return null;
+  const { sig: _sig, ...fields } = c;
+  const fresh: EnvelopeCtx = { ...fields, issuedAt: now };
+  fresh.sig = computeSig(signKey, topic, fresh, payload, eventType);
+  return { ...message, ctx: fresh };
+}
+
 export async function openConfigured(
   topic: string,
   message: Record<string, unknown>,

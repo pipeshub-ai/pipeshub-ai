@@ -470,10 +470,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Admin alerts when code runs keep waiting for a sandbox; one worker of
     # the container evaluates, the others wait to take over.
-    from app.services.sandbox_alerts.loop import run_sandbox_alert_loop
+    from app.services.sandbox_alerts.loop import graph_org_ids, run_sandbox_alert_loop
 
     app.state.sandbox_alert_task = spawn_detached(
-        run_sandbox_alert_loop(app_container.config_service(), logger),
+        run_sandbox_alert_loop(app_container.config_service(), logger, org_ids=graph_org_ids(graph_provider)),
     )
 
     # Initialize toolset registry for agent tool execution.

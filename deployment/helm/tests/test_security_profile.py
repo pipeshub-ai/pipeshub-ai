@@ -18,6 +18,8 @@ The checks render the chart (skipped when helm is not on PATH).
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -171,19 +173,35 @@ class HelmSecurityProfile(unittest.TestCase):
         self.assertNotIn("COMPATIBILITY security profile", notes(*DIND, *HARDENED))
 
 
+# The release to upgrade from, named by whoever fetched it (helm-chart.yml sets it to the newest remote tag). Unset,
+# the newest tag in this checkout is used, which can be older than the newest release when local tags are stale.
+ENV_UPGRADE_BASELINE = "HELM_UPGRADE_BASELINE"
+STABLE_RELEASE = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+
+
 def _upstream_base() -> str | None:
-    """The commit this branch left origin/main at, when git and that ref are there."""
+    """The newest release: what an operator upgrades from. Not the merge base with main, which already has the
+    change once it is merged, so the comparison would test nothing."""
     if not shutil.which("git"):
         return None
-    out = subprocess.run(["git", "merge-base", "HEAD", "origin/main"], cwd=REPO, capture_output=True, text=True)
-    return out.stdout.strip() or None
+    named = os.environ.get(ENV_UPGRADE_BASELINE, "").strip()
+    if named:
+        return named
+    out = subprocess.run(["git", "tag", "--list", "v[0-9]*", "--sort=-v:refname"],
+                         cwd=REPO, capture_output=True, text=True)
+    # Stable releases only: a vX.Y.Z-rc.N prerelease sorts above the release before it.
+    tags = [tag for tag in out.stdout.split() if STABLE_RELEASE.fullmatch(tag)]
+    return tags[0] if tags else None
 
 
-@unittest.skipUnless(shutil.which("helm") and _upstream_base(), "helm, git or origin/main is not available")
+@unittest.skipUnless(shutil.which("helm") and _upstream_base(), "helm, git or a release tag is not available")
 class HelmUpgradeFromUpstream(unittest.TestCase):
     def test_pr5_the_compatibility_render_keeps_what_an_upgrade_would_change(self) -> None:
         base = _upstream_base()
         assert base is not None
+        found = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{base}"], cwd=REPO,
+                               capture_output=True, text=True)
+        self.assertEqual(found.returncode, 0, f"{ENV_UPGRADE_BASELINE}={base} is not a tag in this checkout")
         with tempfile.TemporaryDirectory() as tmp:
             archive = subprocess.run(["git", "archive", base, "deployment/helm"], cwd=REPO, check=True,
                                      capture_output=True, timeout=120).stdout
@@ -197,8 +215,9 @@ class HelmUpgradeFromUpstream(unittest.TestCase):
         for field in ("policies", "app_read_only_root", "sandbox_mode", "app_kafka_sasl", "kafka_protocols",
                       "kafka_init", "mongo_pod", "mongo_keyfile", "mongo_server"):
             self.assertEqual(after[field], upstream[field], field)
-        # The earlier image ran Qdrant as root with no runAsUser; the -unprivileged image needs it said.
-        self.assertIsNone(upstream["qdrant_user"])
+        # Qdrant keeps running as root across the upgrade. Releases before the -unprivileged image ran it as root
+        # with no runAsUser; that image needs runAsUser 0 said, and later releases say it.
+        self.assertIn(upstream["qdrant_user"], (None, 0))
         self.assertEqual(after["qdrant_user"], 0)
 
 

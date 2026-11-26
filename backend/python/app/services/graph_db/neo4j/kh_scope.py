@@ -156,6 +156,21 @@ async def _q(client: Neo4jClient, cypher: str, params: dict | None = None) -> li
 LISTS = "kh_lists"
 
 
+def by_id(v: str, labels: str, key: str) -> str:
+    """``MATCH (v:labels {id: key})`` alone in a subquery, so its only seek is the labels' unique id index. The statement tests ``v``'s
+    org or App after it: Neo4j moves a test written beside the match, or after a plain ``WITH``, into the seek, and a plan could then seek
+    the org or App index and test the id after, reading every node of the org or App once per id. ``key`` is a variable or a
+    ``$parameter``."""
+    imports = "" if key.startswith("$") else key
+    return f"CALL ({imports}) {{ MATCH ({v}:{labels} {{id: {key}}}) RETURN {v} }}"
+
+
+def by_ids(v: str, labels: str, ids: str) -> str:
+    """``MATCH (v:labels) WHERE v.id IN ids`` as `by_id`, each id once."""
+    key = f"kh_bid_{v}"
+    return f"UNWIND {ids} AS {key} WITH DISTINCT * {by_id(v, labels, key)}"
+
+
 @lru_cache(maxsize=512)
 def lists_in_map(query: str, names: tuple[str, ...]) -> str:
     """``query`` with each ``$name`` of ``names`` read from the one map parameter ``$kh_lists``. Neo4j keys a

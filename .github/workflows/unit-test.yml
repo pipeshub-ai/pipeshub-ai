@@ -300,7 +300,8 @@ jobs:
 
       # -n logical: one worker per vCPU (`auto` counts physical cores). --dist
       # loadfile keeps each file's tests on one worker, so tests in a file that
-      # share module state still run together and in order. pytest-cov merges
+      # share module state still run together and in order (except the files in
+      # backend/python/tests/xdist_scopes.py, too slow for one). pytest-cov merges
       # the workers' data into COVERAGE_FILE. GitHub's 4 vCPUs are 2 cores, so
       # each of the 4 workers runs a test at about half serial speed:
       # --timeout=60 keeps pytest.ini's 30s hang guard at the same CPU budget.

@@ -6611,14 +6611,21 @@ class TestReplaceEdgesToStatementShape:
 
     def test_shape_rules(self, neo4j_provider: Neo4jProvider) -> None:
         statement, _ = self._build(neo4j_provider, [self._edge("u1")])
-        # Optional scan and lock, each folded back to one row; no top-level UNWIND; no collect over old edges.
-        assert statement.index("OPTIONAL MATCH (target:Group") < statement.index("OPTIONAL MATCH (source)")
+        # The target and every member, old and new, are locked in one order before the old edges are
+        # scanned: a target locked first could wait on a member another replace holds while it waits
+        # for this target.
+        lock = statement.index("ORDER BY elementId(member)")
+        assert statement.index("OPTIONAL MATCH (member:Group {id: $to_id})") < lock
+        assert lock < statement.index("OPTIONAL MATCH (source)")
         assert "matchLock" in statement
-        assert statement.count("WITH count(*) AS _") == 2
+        # Each step folds back to one row; no top-level UNWIND; no collect over old edges.
+        assert statement.count("WITH count(*) AS locked") == 1
+        assert statement.count("WITH count(*) AS _") == 1
         assert "collect(" not in statement.lower()
         first_unwind = statement.index("UNWIND")
-        assert statement.rindex("CALL {", 0, first_unwind) < first_unwind  # inside a unit subquery
-        assert "RETURN" not in statement
+        assert statement.rindex("CALL {", 0, first_unwind) < first_unwind  # inside a subquery
+        # No RETURN but the lock subquery's own: the caller appends the statement's.
+        assert statement.count("RETURN") == statement.count("RETURN member")
         assert "IN $keep" in statement
 
     @pytest.mark.asyncio

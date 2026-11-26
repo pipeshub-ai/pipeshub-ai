@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
@@ -547,8 +547,11 @@ class TestLifespan:
         started = asyncio.Event()
         cancelled: list[bool] = []
 
-        async def _loop(config_service: object, _logger: object) -> None:
+        org_lists: list[list[str]] = []
+
+        async def _loop(config_service: object, _logger: object, *, org_ids: Callable[[], Awaitable[list[str]]]) -> None:
             assert config_service is mock_config_service
+            org_lists.append(await org_ids())       # the recipients of a signed alert: the graph's orgs
             started.set()
             try:
                 await asyncio.Event().wait()
@@ -564,10 +567,9 @@ class TestLifespan:
             patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.query_main.container", mock_container),
             patch("app.services.sandbox_alerts.loop.run_sandbox_alert_loop", _loop),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=MagicMock()),
-            }),
+            # The attribute the lifespan reads, not a module swapped in sys.modules: the lifespan imports modules of its own while
+            # it runs, and replacing sys.modules around that drops them again (the guard fails a test that does).
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_registry),
         ):
             async with lifespan(app):
                 await asyncio.wait_for(started.wait(), 5)
@@ -575,6 +577,7 @@ class TestLifespan:
 
         assert task.done()
         assert cancelled == [True]
+        assert org_lists == [[]]
 
     async def test_startup_graph_provider_fallback(self):
         """When _graph_provider is not set, lifespan falls back to await graph_provider()."""

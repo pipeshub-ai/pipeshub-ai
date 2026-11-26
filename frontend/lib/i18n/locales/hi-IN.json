@@ -3330,10 +3330,7 @@
         "createError": "Failed to create connector",
         "createSuccess": "कनेक्टर इंस्टेंस '{{name}}' सफलतापूर्वक बनाया गया",
         "authSaveError": "Failed to save auth configuration",
-        "configSaveError": "Failed to save configuration",
-        "oauthAppUnavailableTitle": "इस कनेक्टर के लिए कोई OAuth ऐप उपलब्ध नहीं है",
-        "oauthAppUnavailableDescription": "अपने वर्कस्पेस एडमिनिस्ट्रेटर से कहें कि पहले {{name}} के लिए OAuth ऐप बनाएं, फिर दोबारा प्रयास करें।",
-        "thisConnectorFallback": "इस कनेक्टर"
+        "configSaveError": "Failed to save configuration"
       },
       "tabs": {
         "authenticate": "प्रमाणित करें",
@@ -3469,6 +3466,8 @@
         "oauthAppNameLabel": "OAuth app name",
         "oauthAppNamePlaceholder": "e.g., {{name}} OAuth",
         "oauthAppNameHelper": "This name is stored with the OAuth registration and appears when users pick a saved app for other instances.",
+        "oauthAppNameHelperPersonal": "केवल आप इस OAuth ऐप को देख और उपयोग कर सकते हैं। आप इसे इस प्रकार के अपने अन्य कनेक्टर के लिए फिर से चुन सकते हैं।",
+        "oauthAppYours": "{{name}} · आपकी",
         "oauthAppNameRequired": "Enter a name for the new OAuth app.",
         "oauthAppChangeReauthWarning": "Changing the OAuth app or its credentials will require you to authenticate your connector again."
       },
@@ -4064,6 +4063,10 @@
           "other": "इस कनेक्टर की अनुमतियों के बारे में किसी को देखना होगा।",
           "unreadable": "अपडेट की प्रतीक्षा कर रहे फ़ोल्डरों की सूची पढ़ी नहीं जा सकती। PipesHub चलाने वाले से इस कनेक्टर का अनुमति इंडेक्स फिर से बनाने को कहें। इस बीच खोज हर परिणाम की जाँच करती है।"
         }
+      },
+      "enterprise": {
+        "userOAuthAppsTitle": "लोगों के अपने OAuth ऐप",
+        "userOAuthAppsDescription": "आपके संगठन के लोग अपने कनेक्टर के लिए जो OAuth ऐप जोड़ते हैं, उन्हें देखें और हटाएँ।"
       },
       "userAccess": {
         "connect": "कनेक्ट करें",

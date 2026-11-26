@@ -57,17 +57,17 @@ DURATIONS = Path(__file__).resolve().parent / "unit_shard_durations.json"
 MAX_OVER_MEAN = 1.35
 
 SHARDS: dict[str, tuple[str, ...]] = {
-    # The connector test files directly under sources/, microsoft, and services/messaging (the record consumer's
-    # replay and sweep suites), which held services over the balance bound.
+    # The connector test files directly under sources/ and microsoft, whose full-sync behaviour suites grew it past
+    # the bound.
     "connectors-a": (
         "tests/unit/connectors/sources/test_*.py",
         "tests/unit/connectors/sources/microsoft",
-        "tests/unit/services/messaging",
     ),
-    # web, localKB and the smaller connector directories, and the parser engine's and graph modules' suites.
+    # web, localKB and the smaller connector directories, services/messaging (the record consumer's replay and sweep
+    # suites, which held services and then connectors-a over the bound), and the graph modules' suites.
     "connectors-b": (
         "tests/unit/connectors/sources",
-        "tests/unit/modules/parse_engine",
+        "tests/unit/services/messaging",
         "tests/unit/modules/named_entities",
         "tests/unit/modules/code_graph",
         "tests/unit/modules/graph_view",
@@ -111,8 +111,9 @@ SHARDS: dict[str, tuple[str, ...]] = {
         "tests/unit/contracts_harness",
         "tests/unit/control_plane",
     ),
-    # Top-level test files, sources, models and the rest.
-    "core": (UNIT_ROOT,),
+    # Top-level test files, sources, models and the rest, and the parser engine's suite, which makes room for
+    # services/messaging in connectors-b.
+    "core": (UNIT_ROOT, "tests/unit/modules/parse_engine"),
 }
 
 # A marker expression a shard adds. The harness's `slow` modules are gate runs (quiet-host benchmarks, crash and
