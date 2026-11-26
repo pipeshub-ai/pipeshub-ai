@@ -492,9 +492,10 @@ export const withoutOwnerOnlyFields = <T extends object>(
 
 /**
  * The conversation the stream of a run ends with, as the person watching it may
- * read it: whole for someone whose own turns are all there is, else with the
- * hiding a fetch applies and, for anyone but the conversation's owner, without
- * the owner-only fields. `ownAnswer`: the watcher's own run just produced it.
+ * read it: with the hiding a fetch applies (the watcher's own earlier answers are
+ * checked too) and, for anyone but the conversation's owner, without the
+ * owner-only fields. `ownAnswer`: the watcher's own run just produced it, so it
+ * is not withheld.
  */
 export const redactRunConversationFor = async (
   appConfig: AppConfig,
@@ -509,7 +510,6 @@ export const redactRunConversationFor = async (
   const owner = String(conversation.initiator);
   const messages = (conversation.messages ?? []) as ViewerMessage[];
   const ownerOf = (m: ViewerMessage): string => messageActor(m, owner);
-  if (messages.every((m) => ownerOf(m) === viewer.userId)) return conversation;
   return {
     ...(owner === viewer.userId
       ? conversation

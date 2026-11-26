@@ -933,13 +933,29 @@ describe('agent-harness projection: RunStreamService', () => {
       for (const leaked of [OTHER, FILE, 'SUMMARY-of-everything', 'user-3']) expect(last, leaked).to.not.include(leaked);
     });
 
-    it('someone whose own turns are all there is gets the conversation as stored, and no check is made', async () => {
+    it('the owner whose own turns are all there is keeps their run whole; their earlier answers are checked as a fetch does', async () => {
       const world = new World('agent_quick_tool_call');
-      const execute = sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('asked'));
-      const sink = await watch(world, conversation(world, { question: { attachments: [{ recordId: FILE }] } }), { audience: 'owner' });
-      sinon.assert.notCalled(execute);
+      readable([]);
+      const sink = await watch(world, conversation(world, {
+        before: [
+          { messageType: 'user_query', content: 'before' },
+          { messageType: 'bot_response', content: OTHER, citations: [{ citationId: 'c', citationData: { content: OTHER, metadata: { recordId: FILE } } }] },
+        ],
+      }), { audience: 'owner' });
       const last = JSON.stringify(sink.frames().at(-1));
       for (const kept of ['STORED answer', TOOL, 'SUMMARY-of-everything']) expect(last).to.include(kept);
+      expect(last).to.not.include(OTHER);
+    });
+
+    it('a collaborator whose own turns are all there is still gets none of the owner-only fields', async () => {
+      const world = new World('agent_quick_tool_call');
+      readable([]);
+      world.run.actorId = 'user-2';
+      const stored = conversation(world, { question: { senderId: 'user-2' }, answer: { senderId: 'user-2', content: 'MY answer' } });
+      const sink = await watch(world, stored, { audience: 'owner' });
+      const last = JSON.stringify(sink.frames().at(-1));
+      expect(last).to.include('MY answer');
+      for (const leaked of ['SUMMARY-of-everything', 'user-3']) expect(last, leaked).to.not.include(leaked);
     });
   });
 
