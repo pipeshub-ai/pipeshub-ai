@@ -6705,6 +6705,9 @@ describe('ConfigurationManager Controller', () => {
         body: {
           access_token: CONFIG_SECRET_PLACEHOLDER,
           refresh_token: 'rt-new',
+          // The read merges the OAuth config's client fields in and masks them; this record does not store them.
+          clientId: CONFIG_SECRET_PLACEHOLDER,
+          clientSecret: CONFIG_SECRET_PLACEHOLDER,
           access_token_expiry_time: 9999,
           refresh_token_expiry_time: 9999,
           enableRealTimeUpdates: false,
