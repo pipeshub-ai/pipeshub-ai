@@ -41,7 +41,8 @@ class ZoomPermissionsMixin:
         Returns (permissions, whether the participants were read in full).
         """
         if await self.data_entities_processor.skips_permission_writes(self.connector_id):
-            return []
+            # Nothing read: added to, never replacing, the stored grants (which the processor keeps anyway).
+            return [], False
         perms: list[Permission] = []
         seen_emails: set[str] = set()
 
