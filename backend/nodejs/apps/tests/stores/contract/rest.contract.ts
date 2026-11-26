@@ -484,7 +484,9 @@ export function describeMetricsContract(fx: OrgFixture): void {
       const counts = await metrics.countUsersByOrg();
       expect(counts.find((c) => c._id === org._id)?.count).to.equal(2);
       const live = await metrics.listLiveOrgs();
-      expect(live.find((o) => o._id === org._id)).to.include({ accountType: 'business', domain: 'acme.example.com' });
+      const listed = live.find((o) => o._id === org._id);
+      expect(listed).to.include({ accountType: 'business' });
+      expect(listed).to.not.have.property('domain');
       const cfgs = await metrics.listLiveAuthConfigs();
       const mine = cfgs.find((c) => c.orgId === org._id);
       expect(mine?.authSteps?.[0]!.allowedMethods?.[0]!.type).to.equal('password');
