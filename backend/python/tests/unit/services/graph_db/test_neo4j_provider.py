@@ -987,6 +987,9 @@ class TestHardDeleteAgent:
                 [{"deleted_count": 2}],  # step 5 tool delete
                 [{"rel_count": 2}],  # step 6 agent->toolset rel delete
                 [{"deleted_count": 2}],  # step 7 toolset delete
+                [{"sid_list": ["m1"], "rel_count": 1}],  # step 7b agent->MCP server rel delete
+                [{"deleted_count": 1}],  # step 7b orphaned MCP tool delete
+                [{"deleted_count": 1}],  # step 7b orphaned MCP server delete
                 [{"deleted_count": 1}],  # step 8 delete agent
             ]
         )
@@ -996,11 +999,12 @@ class TestHardDeleteAgent:
         assert result == {
             "agents_deleted": 1,
             "toolsets_deleted": 2,
-            "tools_deleted": 2,
+            "tools_deleted": 3,  # 2 toolset tools + 1 MCP tool
             "knowledge_deleted": 2,
-            "edges_deleted": 7,  # 2 + 3 + 2
+            "edges_deleted": 8,  # 2 + 3 + 2 + 1
+            "mcp_servers_deleted": 1,
         }
-        assert neo4j_provider.client.execute_query.await_count == 8
+        assert neo4j_provider.client.execute_query.await_count == 11
 
     @pytest.mark.asyncio
     async def test_skips_knowledge_and_toolset_branches_when_lists_empty(
@@ -1011,6 +1015,7 @@ class TestHardDeleteAgent:
                 [{"kid_list": [], "rel_count": 0}],  # step 1
                 [{"toolset_ids": []}],  # step 3
                 [{"rel_count": 0}],  # step 6
+                [],  # step 7b: no MCP server
                 [{"deleted_count": 1}],  # step 8
             ]
         )
@@ -1023,9 +1028,10 @@ class TestHardDeleteAgent:
             "tools_deleted": 0,
             "knowledge_deleted": 0,
             "edges_deleted": 0,
+            "mcp_servers_deleted": 0,
         }
-        # Only steps 1, 3, 6, 8 should execute in this branch
-        assert neo4j_provider.client.execute_query.await_count == 4
+        # Only steps 1, 3, 6, 7b (the MCP server lookup), 8 should execute in this branch
+        assert neo4j_provider.client.execute_query.await_count == 5
 
     @pytest.mark.asyncio
     async def test_handles_none_results_without_crashing(self, neo4j_provider: Neo4jProvider):
@@ -1034,6 +1040,7 @@ class TestHardDeleteAgent:
                 None,  # step 1
                 None,  # step 3
                 None,  # step 6
+                None,  # step 7b
                 None,  # step 8
             ]
         )
@@ -1046,6 +1053,7 @@ class TestHardDeleteAgent:
             "tools_deleted": 0,
             "knowledge_deleted": 0,
             "edges_deleted": 0,
+            "mcp_servers_deleted": 0,
         }
 
 
@@ -2586,6 +2594,7 @@ class TestUserAndOrganizationLookups:
             "tools_deleted": 0,
             "knowledge_deleted": 0,
             "edges_deleted": 0,
+            "mcp_servers_deleted": 0,
         }
 
     @pytest.mark.asyncio

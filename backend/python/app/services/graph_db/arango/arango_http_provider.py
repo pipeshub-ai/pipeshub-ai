@@ -29481,9 +29481,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # since a given tool node is created uniquely per attachment, same as toolset tools).
             mcp_servers_deleted = 0
 
+            # Only the servers no other agent is attached to: a shared server keeps its tools.
             find_mcp_server_ids_query = f"""
             FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
                 FILTER edge._from == @agent_doc_id
+                FILTER LENGTH(
+                    FOR other IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                        FILTER other._to == edge._to AND other._from != @agent_doc_id
+                        LIMIT 1 RETURN 1
+                ) == 0
                 RETURN edge._to
             """
 
