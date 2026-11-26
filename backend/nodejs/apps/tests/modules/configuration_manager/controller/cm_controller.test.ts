@@ -4758,6 +4758,24 @@ describe('ConfigurationManager Controller', () => {
       expect(parsed.authority).to.include('ms-tid')
     })
 
+    it('restores the placeholders a read served from the Azure AD settings from those settings', async () => {
+      const azureAd = `encrypted:${JSON.stringify({ clientId: 'az-cid', tenantId: 'az-tid' })}`
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().callsFake(async (path: string) => (path === '/services/auth/azureAd' ? azureAd : null)),
+      })
+      const next = createMockNext()
+
+      await setMicrosoftAuthConfig(kvs)(
+        createMockRequest({ body: { clientId: CONFIG_SECRET_PLACEHOLDER, tenantId: CONFIG_SECRET_PLACEHOLDER } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.called).to.be.false
+      const saved = JSON.parse(mockEncService.encrypt.lastCall.args[0])
+      expect(saved).to.include({ clientId: 'az-cid', tenantId: 'az-tid' })
+    })
+
     it('should call next on error', async () => {
       const kvs = createMockKeyValueStore({
         set: sinon.stub().rejects(new Error('store failed')),

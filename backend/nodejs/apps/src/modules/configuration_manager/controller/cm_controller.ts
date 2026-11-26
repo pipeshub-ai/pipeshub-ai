@@ -1354,31 +1354,41 @@ async function restoreStoredAuthSecrets<T extends Record<string, unknown>>(
   return config;
 }
 
+/**
+ * The Microsoft sign-in settings and the record they come from. Azure AD sign-in became Microsoft sign-in; until the
+ * startup migration copies its settings over, those are served, and a save restores its placeholders from them too.
+ */
+async function readMicrosoftAuthConfig(
+  keyValueStoreService: KeyValueStoreService,
+): Promise<{ path: string; config: Record<string, unknown> | null }> {
+  const configManagerConfig = loadConfigurationManagerConfig();
+  const read = async (
+    path: string,
+  ): Promise<Record<string, unknown> | null> => {
+    const encrypted = await keyValueStoreService.get<string>(path);
+    if (!encrypted) return null;
+    return JSON.parse(
+      EncryptionService.getInstance(
+        configManagerConfig.algorithm,
+        configManagerConfig.secretKey,
+      ).decrypt(encrypted),
+    ) as Record<string, unknown>;
+  };
+  const microsoft = await read(configPaths.auth.microsoft);
+  if (!microsoft?.clientId && RENAMED_SIGN_IN_METHODS.azureAd === 'microsoft') {
+    const azureAd = await read(configPaths.auth.azureAD);
+    if (azureAd?.clientId)
+      return { path: configPaths.auth.azureAD, config: azureAd };
+  }
+  return { path: configPaths.auth.microsoft, config: microsoft };
+}
+
 export const getMicrosoftAuthConfig =
   (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const readAuthConfig = async (
-        path: string,
-      ): Promise<Record<string, unknown> | null> => {
-        const encrypted = await keyValueStoreService.get<string>(path);
-        if (!encrypted) return null;
-        return JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encrypted),
-        ) as Record<string, unknown>;
-      };
-
-      let authConfig = await readAuthConfig(configPaths.auth.microsoft);
-      // Azure AD sign-in became Microsoft sign-in; until the startup migration
-      // copies its settings over, serve those.
-      if (!authConfig?.clientId && RENAMED_SIGN_IN_METHODS.azureAd === 'microsoft') {
-        const azureAd = await readAuthConfig(configPaths.auth.azureAD);
-        if (azureAd?.clientId) authConfig = azureAd;
-      }
+      const { config: authConfig } =
+        await readMicrosoftAuthConfig(keyValueStoreService);
 
       if (authConfig) {
         const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
@@ -1397,9 +1407,12 @@ export const setMicrosoftAuthConfig =
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
+      // Placeholders come back for what the read showed, so they are restored from the record it read.
+      const { path: source } =
+        await readMicrosoftAuthConfig(keyValueStoreService);
       const { clientId, tenantId, enableJit } = await restoreStoredAuthSecrets(
         keyValueStoreService,
-        configPaths.auth.microsoft,
+        source,
         req.body,
         MICROSOFT_AUTH_SECRET_KEYS,
       );
