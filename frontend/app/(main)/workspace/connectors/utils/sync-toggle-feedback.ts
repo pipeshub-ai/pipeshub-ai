@@ -25,7 +25,9 @@ export async function runSyncToggleWithFeedback(args: {
   direction: SyncToggleDirection;
   action: () => Promise<SyncToggleResult>;
   t: TFunction;
+  /** Replaces the default copy when the user's action had its own name ("Start syncing now"). */
   successToast?: { title: string; description?: string };
+  failureTitle?: string;
   delayMs?: number;
 }): Promise<SyncToggleResult | 'failed' | 'skipped'> {
   const {
@@ -36,6 +38,7 @@ export async function runSyncToggleWithFeedback(args: {
     action,
     t,
     successToast,
+    failureTitle,
     delayMs = SYNC_TOGGLE_PROGRESS_DELAY_MS,
   } = args;
   const connectors = useConnectorsStore.getState();
@@ -91,7 +94,7 @@ export async function runSyncToggleWithFeedback(args: {
     } else {
       show({
         variant: 'error',
-        title: t('workspace.connectors.toasts.syncToggleFailed', name),
+        title: failureTitle ?? t('workspace.connectors.toasts.syncToggleFailed', name),
         description: getUserFacingErrorMessage(error, t('workspace.connectors.toasts.syncToggleFailedDescription')),
       });
     }

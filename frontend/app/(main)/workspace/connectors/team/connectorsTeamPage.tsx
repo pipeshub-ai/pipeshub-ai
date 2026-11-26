@@ -478,42 +478,54 @@ function TeamConnectorsPageContent() {
   );
 
   // ── Success dialog handlers ─────────────────────────────────
-  const handleStartSyncingFromDialog = useCallback(async () => {
-    setShowConfigSuccessDialog(false);
-    const instanceId = newlyConfiguredConnectorId;
-    setNewlyConfiguredConnectorId(null);
-    if (!instanceId) return;
+  const isStartingSyncFromDialog = useConnectorsStore((s) =>
+    newlyConfiguredConnectorId ? s.syncTogglePending[newlyConfiguredConnectorId] === 'on' : false
+  );
 
-    try {
-      const outcome = await startConnectorSync({
-        _key: instanceId,
-        type: connectorTypeInfo?.type,
-      });
-      if (outcome?.kind === 'requires-desktop') {
-        addToast(localFsDesktopToast(outcome));
-        await refreshConnectorRowQuiet(instanceId);
-        return;
-      }
-      addToast({
-        variant: 'success',
-        title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),
+  // The dialog stays open (and closable) while the sync starts; the card shows it either way.
+  const handleStartSyncingFromDialog = useCallback(async () => {
+    const instanceId = newlyConfiguredConnectorId;
+    if (!instanceId) return;
+    const typeName = connectorTypeInfo?.name ?? '';
+    const instance = instances.find((i) => i._key === instanceId);
+
+    const result = await runSyncToggleWithFeedback({
+      connectorId: instanceId,
+      connectorName: instance?.name?.trim() || typeName,
+      sourceName: typeName,
+      direction: 'on',
+      t,
+      successToast: {
+        title: t('workspace.connectors.toasts.syncStarted', { name: typeName }),
         description: t('workspace.connectors.toasts.syncStartedLongDescription'),
-        duration: 3000,
-      });
-      await refreshConnectorRowQuiet(instanceId);
-    } catch {
-      addToast({
-        variant: 'error',
-        title: t('workspace.connectors.toasts.syncError'),
-      });
+      },
+      failureTitle: t('workspace.connectors.toasts.syncError'),
+      action: async () => {
+        const outcome = await startConnectorSync({ _key: instanceId, type: connectorTypeInfo?.type });
+        if (outcome?.kind === 'requires-desktop') {
+          addToast(localFsDesktopToast(outcome));
+          await refreshConnectorRowQuiet(instanceId);
+          return 'handled';
+        }
+        await refreshConnectorRowQuiet(instanceId);
+        return 'done';
+      },
+    });
+    if (result === 'failed') await refreshConnectorRowQuiet(instanceId).catch(() => {});
+
+    if (useConnectorsStore.getState().newlyConfiguredConnectorId === instanceId) {
+      setShowConfigSuccessDialog(false);
+      setNewlyConfiguredConnectorId(null);
     }
   }, [
     newlyConfiguredConnectorId,
     connectorTypeInfo,
+    instances,
     addToast,
     refreshConnectorRowQuiet,
     setShowConfigSuccessDialog,
     setNewlyConfiguredConnectorId,
+    t,
   ]);
 
   const handleDoLater = useCallback(() => {
@@ -553,6 +565,7 @@ function TeamConnectorsPageContent() {
           connectorName={connectorTypeInfo?.name ?? ''}
           onStartSyncing={handleStartSyncingFromDialog}
           onDoLater={handleDoLater}
+          isStarting={isStartingSyncFromDialog}
         />
         <AdminAccessRequiredDialog
           open={adminAccessDialogOpen}

@@ -138,3 +138,26 @@ describe('runSyncToggleWithFeedback', () => {
     expect(toasts()[0].description).toBe('Records appear as they sync.');
   });
 });
+
+describe('runSyncToggleWithFeedback: failure title override', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    useConnectorsStore.getState().reset();
+    useToastStore.setState({ toasts: [] });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('names the action the user took', async () => {
+    const run = runSyncToggleWithFeedback({
+      ...base,
+      direction: 'on',
+      failureTitle: 'Failed to start sync',
+      action: () => failAfter(2000, new Error('Check the API token.')),
+    });
+    await vi.advanceTimersByTimeAsync(2000);
+    await run;
+    expect(toasts()[0].variant).toBe('error');
+    expect(toasts()[0].title).toBe('Failed to start sync');
+    expect(toasts()[0].description).toBe('Check the API token.');
+  });
+});

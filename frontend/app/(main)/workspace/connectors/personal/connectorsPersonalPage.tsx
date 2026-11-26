@@ -522,51 +522,58 @@ function PersonalConnectorsPageContent() {
   );
 
   // ── Success dialog handlers ─────────────────────────────────
-  const handleStartSyncingFromDialog = useCallback(async () => {
-    setShowConfigSuccessDialog(false);
-    const instanceId = newlyConfiguredConnectorId;
-    setNewlyConfiguredConnectorId(null);
-    if (!instanceId) return;
+  const isStartingSyncFromDialog = useConnectorsStore((s) =>
+    newlyConfiguredConnectorId ? s.syncTogglePending[newlyConfiguredConnectorId] === 'on' : false
+  );
 
-    try {
-      const outcome = await startConnectorSync({
-        _key: instanceId,
-        type: connectorTypeInfo?.type,
-      });
-      if (outcome?.kind === 'requires-desktop') {
-        addToast(localFsDesktopToast(outcome));
-        return;
-      }
-      if (isLocalFsConnectorType(connectorTypeInfo?.type ?? '')) {
-        const fresh = await refreshConnectorRowQuiet(instanceId);
-        let config = instanceConfigs[instanceId];
-        if (!config) {
-          config = await ConnectorsApi.getConnectorConfig(instanceId);
-          setInstanceConfig(instanceId, config);
-        }
-        await ensureLocalWatcherForInstance(fresh, config);
-      } else {
-        await refreshConnectorRowQuiet(instanceId);
-      }
-      addToast({
-        variant: 'success',
-        title: t('workspace.connectors.toasts.syncStarted', { name: connectorTypeInfo?.name ?? 'connector' }),
+  // The dialog stays open (and closable) while the sync starts; the card shows it either way.
+  const handleStartSyncingFromDialog = useCallback(async () => {
+    const instanceId = newlyConfiguredConnectorId;
+    if (!instanceId) return;
+    const typeName = connectorTypeInfo?.name ?? '';
+    const instance = instances.find((i) => i._key === instanceId);
+
+    const result = await runSyncToggleWithFeedback({
+      connectorId: instanceId,
+      connectorName: instance?.name?.trim() || typeName,
+      sourceName: typeName,
+      direction: 'on',
+      t,
+      successToast: {
+        title: t('workspace.connectors.toasts.syncStarted', { name: typeName }),
         description: t('workspace.connectors.toasts.syncStartedLongDescription'),
-        duration: 3000,
-      });
-    } catch (error) {
-      addToast({
-        variant: 'error',
-        title: t('workspace.connectors.toasts.syncError'),
-        description:
-          error instanceof Error && error.message.trim()
-            ? error.message.trim()
-            : undefined,
-      });
+      },
+      failureTitle: t('workspace.connectors.toasts.syncError'),
+      action: async () => {
+        const outcome = await startConnectorSync({ _key: instanceId, type: connectorTypeInfo?.type });
+        if (outcome?.kind === 'requires-desktop') {
+          addToast(localFsDesktopToast(outcome));
+          return 'handled';
+        }
+        if (isLocalFsConnectorType(connectorTypeInfo?.type ?? '')) {
+          const fresh = await refreshConnectorRowQuiet(instanceId);
+          let config = instanceConfigs[instanceId];
+          if (!config) {
+            config = await ConnectorsApi.getConnectorConfig(instanceId);
+            setInstanceConfig(instanceId, config);
+          }
+          await ensureLocalWatcherForInstance(fresh, config);
+        } else {
+          await refreshConnectorRowQuiet(instanceId);
+        }
+        return 'done';
+      },
+    });
+    if (result === 'failed') await refreshConnectorRowQuiet(instanceId).catch(() => {});
+
+    if (useConnectorsStore.getState().newlyConfiguredConnectorId === instanceId) {
+      setShowConfigSuccessDialog(false);
+      setNewlyConfiguredConnectorId(null);
     }
   }, [
     newlyConfiguredConnectorId,
     connectorTypeInfo,
+    instances,
     addToast,
     refreshConnectorRowQuiet,
     setInstanceConfig,
@@ -613,6 +620,7 @@ function PersonalConnectorsPageContent() {
           connectorName={connectorTypeInfo?.name ?? ''}
           onStartSyncing={handleStartSyncingFromDialog}
           onDoLater={handleDoLater}
+          isStarting={isStartingSyncFromDialog}
         />
       </>
     );
