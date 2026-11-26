@@ -19,7 +19,7 @@ from app.utils.aimodels import (
     get_stt_model,
     get_tts_model,
     openai_async_client_kwargs,
-    require_explicit_api_key,
+    vetted_model_configuration,
 )
 
 if TYPE_CHECKING:
@@ -42,31 +42,31 @@ def server_credentials_refused(monkeypatch) -> None:
 @pytest.mark.parametrize("blank", BLANKS)
 def test_api_key_provider_with_blank_key_is_refused(blank) -> None:
     with pytest.raises(ValueError, match="Save an API key"):
-        require_explicit_api_key("gemini", {"apiKey": blank})
+        vetted_model_configuration("gemini", {"apiKey": blank})
 
 
 def test_missing_key_is_refused_and_saved_key_kept_on_a_copy() -> None:
     with pytest.raises(ValueError):
-        require_explicit_api_key("openAI", {})
+        vetted_model_configuration("openAI", {})
     original = {"apiKey": "sk-saved", "model": "m"}
-    result = require_explicit_api_key("openAI", original)
+    result = vetted_model_configuration("openAI", original)
     assert result == original and result is not original
 
 
 @pytest.mark.parametrize("provider", sorted(KEYLESS_PROVIDERS))
 @pytest.mark.parametrize("blank", BLANKS)
 def test_keyless_provider_gets_placeholder_never_none(provider, blank) -> None:
-    assert require_explicit_api_key(provider, {"apiKey": blank})["apiKey"] == "not-needed"
-    assert require_explicit_api_key(provider, {})["apiKey"] == "not-needed"
+    assert vetted_model_configuration(provider, {"apiKey": blank})["apiKey"] == "not-needed"
+    assert vetted_model_configuration(provider, {})["apiKey"] == "not-needed"
 
 
 def test_keyless_provider_keeps_a_saved_key() -> None:
-    assert require_explicit_api_key("ollama", {"apiKey": "k"})["apiKey"] == "k"
+    assert vetted_model_configuration("ollama", {"apiKey": "k"})["apiKey"] == "k"
 
 
 @pytest.mark.parametrize("provider", sorted(NON_KEY_PROVIDERS))
 def test_non_key_provider_passes_through_unchanged(provider) -> None:
-    assert require_explicit_api_key(provider, {"region": "x"}) == {"region": "x"}
+    assert vetted_model_configuration(provider, {"region": "x"}) == {"region": "x"}
 
 
 def test_keyless_sets_match_provider_registry() -> None:
@@ -229,22 +229,22 @@ def _allow_recorder(monkeypatch: pytest.MonkeyPatch) -> list:
 def test_allowed_blank_key_is_passed_through_unchanged(monkeypatch) -> None:
     seen = _allow_recorder(monkeypatch)
     entry = {"configuration": {"apiKey": None}}
-    assert require_explicit_api_key("gemini", {"apiKey": None}, entry) == {"apiKey": None}
-    assert require_explicit_api_key("ollama", {}, entry) == {}
+    assert vetted_model_configuration("gemini", {"apiKey": None}, entry) == {"apiKey": None}
+    assert vetted_model_configuration("ollama", {}, entry) == {}
     assert seen == [entry, entry]
 
 
 def test_refused_entry_raises_and_fills_placeholders(server_credentials_refused) -> None:
     entry = {"configuration": {}}
     with pytest.raises(ValueError, match="Save an API key"):
-        require_explicit_api_key("openAI", {}, entry)
-    assert require_explicit_api_key("lmStudio", {}, entry)["apiKey"] == "not-needed"
+        vetted_model_configuration("openAI", {}, entry)
+    assert vetted_model_configuration("lmStudio", {}, entry)["apiKey"] == "not-needed"
 
 
 def test_decision_is_only_asked_for_a_blank_key_on_a_key_provider(monkeypatch) -> None:
     seen = _allow_recorder(monkeypatch)
-    require_explicit_api_key("openAI", {"apiKey": "saved"}, {"configuration": {}})
-    require_explicit_api_key("bedrock", {}, {"configuration": {}})
+    vetted_model_configuration("openAI", {"apiKey": "saved"}, {"configuration": {}})
+    vetted_model_configuration("bedrock", {}, {"configuration": {}})
     assert seen == []
 
 
@@ -403,7 +403,7 @@ ATTACKER = "https://attacker.example/v1"
 def test_allowed_blank_key_off_the_providers_host_gets_the_placeholder(monkeypatch, provider, blank) -> None:
     _allow_recorder(monkeypatch)
     entry = {"configuration": {}}
-    out = require_explicit_api_key(provider, {"apiKey": blank, "endpoint": ATTACKER}, entry)
+    out = vetted_model_configuration(provider, {"apiKey": blank, "endpoint": ATTACKER}, entry)
     assert out["apiKey"] == "not-needed"
 
 
@@ -411,7 +411,7 @@ def test_allowed_blank_key_off_the_providers_host_gets_the_placeholder(monkeypat
 def test_allowed_blank_key_off_the_providers_host_is_refused(monkeypatch, provider) -> None:
     _allow_recorder(monkeypatch)
     with pytest.raises(ValueError, match="Save an API key"):
-        require_explicit_api_key(provider, {"apiKey": None, "endpoint": ATTACKER}, {"configuration": {}})
+        vetted_model_configuration(provider, {"apiKey": None, "endpoint": ATTACKER}, {"configuration": {}})
 
 
 @pytest.mark.parametrize("provider,endpoint", [
@@ -426,7 +426,7 @@ def test_allowed_blank_key_off_the_providers_host_is_refused(monkeypatch, provid
 def test_allowed_blank_key_on_the_providers_own_host_keeps_the_fallback(monkeypatch, provider, endpoint) -> None:
     _allow_recorder(monkeypatch)
     configuration = {"apiKey": None, "endpoint": endpoint}
-    assert require_explicit_api_key(provider, configuration, {"configuration": configuration}) == configuration
+    assert vetted_model_configuration(provider, configuration, {"configuration": configuration}) == configuration
 
 
 @pytest.mark.parametrize("endpoint", [
@@ -438,7 +438,7 @@ def test_allowed_blank_key_on_the_providers_own_host_keeps_the_fallback(monkeypa
 ])
 def test_openai_host_check_needs_https_on_openais_own_host(monkeypatch, endpoint) -> None:
     _allow_recorder(monkeypatch)
-    out = require_explicit_api_key("openAI", {"apiKey": None, "endpoint": endpoint}, {"configuration": {}})
+    out = vetted_model_configuration("openAI", {"apiKey": None, "endpoint": endpoint}, {"configuration": {}})
     assert out["apiKey"] == "not-needed"
 
 
@@ -486,12 +486,12 @@ def test_official_openai_media_builders_treat_lookalikes_as_another_host(fn, end
 
 def test_refused_openai_off_openai_gets_the_placeholder(server_credentials_refused) -> None:
     entry = {"configuration": {}}
-    out = require_explicit_api_key("openAI", {"apiKey": None, "endpoint": _PROXY}, entry)
+    out = vetted_model_configuration("openAI", {"apiKey": None, "endpoint": _PROXY}, entry)
     assert out["apiKey"] == "not-needed"
-    out = require_explicit_api_key("openAI", {"apiKey": None, "endpoint": "http://[::1"}, entry)
+    out = vetted_model_configuration("openAI", {"apiKey": None, "endpoint": "http://[::1"}, entry)
     assert out["apiKey"] == "not-needed"
     with pytest.raises(ValueError, match="Save an API key"):
-        require_explicit_api_key("openAI", {"apiKey": None, "endpoint": "https://api.openai.com/v1"}, entry)
+        vetted_model_configuration("openAI", {"apiKey": None, "endpoint": "https://api.openai.com/v1"}, entry)
 
 
 def test_refused_openai_chat_and_embedding_off_openai_never_get_none(server_credentials_refused, monkeypatch) -> None:

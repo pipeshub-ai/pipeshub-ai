@@ -24,7 +24,7 @@ from app.services.llm_gateway.embedding_gateway import (
     get_embedding_gateway,
 )
 from app.services.llm_gateway.wire import refused_by_allowance
-from app.utils.aimodels import require_explicit_api_key
+from app.utils.aimodels import vetted_model_configuration
 from app.utils.image_utils import get_mime_type_from_base64
 
 _CONCURRENCY_LIMIT = 5
@@ -54,7 +54,7 @@ class GeminiMultimodalProvider(IMultimodalEmbeddingProvider):
     ) -> None:
         self.sdk_retries = sdk_retries
         # When refused, the SDK must not read a key from the server environment.
-        self.api_key = api_key if allow_ambient else require_explicit_api_key("gemini", {"apiKey": api_key})["apiKey"]
+        self.api_key = api_key if allow_ambient else vetted_model_configuration("gemini", {"apiKey": api_key})["apiKey"]
         self.model_name = self._normalize_model_name(model_name)
         # Consumed by IMultimodalEmbeddingProvider.normalize().
         self._normalize_fn = normalize_fn
