@@ -292,7 +292,7 @@ describe('rotateEncryptedValues', () => {
       [OLD, ''],
       [OLD, 'my-secret'],
       [OLD, 'short'],
-    ]) {
+    ] as const) {
       let err: Error | undefined;
       await rotateEncryptedValues(store, o, n, { dryRun: false }).catch(
         (e) => (err = e),
