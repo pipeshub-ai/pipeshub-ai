@@ -104,7 +104,7 @@ class RunTriggerWebhook(WireModel):
 class RunTrigger(WireModel):
     """What fired a scheduled run (TR-03): ids and times only. An engine run finds it at ``in/trigger.json``."""
 
-    kind: Literal["cron", "manual", "webhook", "connector"]
+    kind: Literal["cron", "once", "manual", "webhook", "connector"]
     schedule_id: str = Field(alias="scheduleId", pattern=_ID)
     firing_id: str = Field(alias="firingId", pattern=_ID)
     slot_at: str = Field(alias="slotAt", pattern=_ISO)
