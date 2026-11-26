@@ -53,6 +53,7 @@ def _deps() -> tuple[logging.Logger, MagicMock, MagicMock, MagicMock]:
     dep = MagicMock()
     dep.org_id = "org-1"
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_records_by_parent = AsyncMock(return_value=[])
     dep.get_all_app_users = AsyncMock(return_value=[])
     cs = MagicMock()
     cs.get_config = AsyncMock()

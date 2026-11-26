@@ -1108,6 +1108,20 @@ class TestNeo4jProvider(Neo4jProvider):
         )
         return [rec["uid"] for rec in result if rec.get("uid")] if result else []
 
+    async def get_record_link_targets(self, connector_id: str, external_record_id: str) -> List[str]:
+        """External ids of the records this record links to, whatever the kind of link (an issue link of any type, a
+        mentioned issue key or address): every outbound RECORD_LINK edge, once per target."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (r {connectorId: $cid, externalRecordId: $eid})-[:RECORD_LINK]->(t)
+            RETURN DISTINCT t.externalRecordId AS ext_id
+            """,
+            {"cid": connector_id, "eid": external_record_id},
+        )
+        return [str(r["ext_id"]) for r in result if r.get("ext_id")] if result else []
+
     async def get_record_parent_external_id(
         self, connector_id: str, external_record_id: str
     ) -> Optional[str]:

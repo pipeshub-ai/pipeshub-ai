@@ -1,0 +1,35 @@
+# Jira Data Center simulator for the jira_dc_sim suite (integration-tests/connectors/jira_data_center/jira_dc_sim_*_test.py).
+# An override, used after the stack's own file:
+#
+#   docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.jira-dc-sim.yml up -d
+#
+# The Jira Data Center connector takes its base URL from its configuration, so it reaches the simulator by the network
+# alias jira-dc-sim.internal (a private address, which PipesHub accepts for a source an admin configures unless
+# PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on). The world is the simulator's generated Jira: small, with a pinned seed, so every
+# run starts from the same projects, people, groups, schemes and issues, and the tests change it through the control API
+# (POST /_sim/jiradc/mutate, POST /_sim/jiradc/clock/advance) on the published port
+# (integration-tests/connectors/jira_dc_sim.env). The image is pipeshub-ai/connectors-simulator.
+services:
+  jira-dc-sim:
+    image: ${JIRA_DC_SIM_IMAGE:-pipeshub/connectors-simulator:it}
+    restart: always
+    command: ["jiradc"]
+    environment:
+      CONNSIM_SOURCES: jiradc
+      # The world lives in one process's memory.
+      CONNSIM_WORKERS: "1"
+      CONNSIM_JIRA_ISSUES: "60"
+      CONNSIM_PEOPLE: "20"
+      CONNSIM_SEED: "7"
+      CONNSIM_JIRADC_PASSWORD: "jira-dc-sim-password"
+    networks:
+      default:
+        aliases:
+          - jira-dc-sim.internal
+          # A second name for the same container: the file host of a redirected attachment download (switch
+          # attachment_redirect), so a test sees whether the connector sent its credential to a host that is not the site.
+          - jira-dc-sim-files.internal
+    # 8111, the simulator's own port.
+    ports:
+      - "127.0.0.1:8111:80"
+    mem_limit: 1g
