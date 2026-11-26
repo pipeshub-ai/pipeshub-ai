@@ -104,10 +104,11 @@ def _effect(entry: object) -> str | None:
 
 
 def _same_creation(read: Document, now: Document | None) -> bool:
-    """Whether ``now`` is still the creation ``read`` saw (a skill stored before generations has none yet)."""
+    """Whether ``now`` is still the creation ``read`` saw. Any change of generation counts as another creation, a
+    legacy skill given its first generation meanwhile too: that fact is left out of this read only, never mixed."""
     if now is None or (read.get("createdBy"), read.get("createdAtTimestamp")) != (now.get("createdBy"), now.get("createdAtTimestamp")):
         return False
-    return not read.get("generation") or read.get("generation") == now.get("generation")
+    return read.get("generation") == now.get("generation")
 
 
 class LegacyCapabilityReader:
