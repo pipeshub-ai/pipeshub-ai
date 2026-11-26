@@ -41,6 +41,9 @@ Some folders have their own `AGENTS.md`: what the code does, the rules it must k
 
 - **Same PR.** A change that makes a guide wrong (a rule, a decision, a file or symbol it names, a checklist step) updates the guide in the same PR. Reviewers treat a stale guide as a defect.
 - **Write one** for a folder whose rules an agent cannot see from the code: invariants, failure modes, decisions that look odd until you know why. Add it to the table above.
+- **No guide where one is needed: ask, then write it.** If the folder you are working in fits the line above and neither it nor a parent below the root has a guide, ask the user whether to add one. If they agree, write it in the same PR.
+- **A guide disagrees with the code: find out which is wrong.** If the code is right, correct the guide in your PR, even when your change did not cause the drift, and say so in the PR description. If the code breaks a rule or decision the guide records, tell the user before you change either.
+- **A guide misses something important: add it.** A rule, failure mode or decision you had to learn the hard way (from a bug, a failing test or a review comment) goes into the guide, so the next agent does not learn it the same way.
 - **Shape.** Content in `AGENTS.md`; a `CLAUDE.md` beside it that holds only `@AGENTS.md`. Sections: what it is and when to read it, how it fits, files, rules, decisions (with the PR), changing this code (adding / editing / removing), tests, keeping this file true. [`backend/python/app/agents/mcp/AGENTS.md`](./backend/python/app/agents/mcp/AGENTS.md) is a full example.
 - **Only what holds on main**, checked in the code. Cite files and symbols, never line numbers. Link this file and `docs/` instead of repeating them.
 
