@@ -254,3 +254,19 @@ async def test_every_write_keeps_the_state_current(state_graph, neo4j_provider, 
 
     plain, labelled = await _pages(p)
     assert labelled == plain
+
+
+async def test_the_legacy_relation_migration_stamps_edges_an_earlier_run_moved(state_graph, neo4j_provider, neo4j_settings) -> None:
+    """An earlier run moved the legacy edges onto the hierarchy type and stopped before stamping them: the retry finds nothing left to
+    move, and must still stamp those edges, or the children order the wide browse reads lacks them."""
+    p = neo4j_provider
+    await _cypher(neo4j_settings, """
+        CREATE (a:Record {id: 'lm-p', orgId: $org, connectorId: $app, recordName: 'parent'})
+        CREATE (b:Record {id: 'lm-c', orgId: $org, connectorId: $app, recordName: 'child'})
+        CREATE (a)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(b)""", org=ORG, app=APP)
+    try:
+        assert await p.count_stale_kh_children_order() > 0
+        assert await p.migrate_legacy_relation_edge("recordRelations", "RECORD_RELATION") == {"migrated": 0, "already_current": True}
+        assert await p.count_stale_kh_children_order() == 0
+    finally:
+        await _cypher(neo4j_settings, "MATCH (n) WHERE n.id IN ['lm-p', 'lm-c'] DETACH DELETE n")

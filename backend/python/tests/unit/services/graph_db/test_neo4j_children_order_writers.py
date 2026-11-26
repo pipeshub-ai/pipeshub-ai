@@ -22,6 +22,14 @@ from tests.unit.schema.test_writer_payload_audit import _AUDITED_CYPHER_WRITERS
 KEEPS = ("_cypher_kh_node_state", "_cypher_kh_state_for", "_cypher_kh_tree_refresh", "_cypher_kh_tree_state", "_cypher_kh_edge_order",
          "_cypher_kh_child_ord", "cypher_kh_stamp_all", "_kh_stamp_unstamped_children_order", "_KH_STATE_INPUTS", "_KH_TREE_TYPES")
 
+# A statement of its own that stamps the edges a writer left unstamped: a writer that keeps the stamps with it must reach it on every way out.
+STAMPS_APART = "_kh_stamp_unstamped_children_order"
+
+# Writers that change a stamp's inputs and leave the stamps to their only caller, which reaches STAMPS_APART on every way out.
+KEPT_BY_CALLER = {
+    "_move_legacy_relation_edges": "migrate_legacy_relation_edge",
+}
+
 # Writers that cannot change a stamp's inputs, and why.
 UNTOUCHED = {
     "_delete_unlinked_taxonomy_nodes": "taxonomy nodes",
@@ -89,9 +97,30 @@ def _keeping(sources: dict[str, str]) -> set[str]:
     return {w for w in _AUDITED_CYPHER_WRITERS if any(k in sources.get(w, "") for k in KEEPS)}
 
 
+def _functions() -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    tree = ast.parse(inspect.getsource(neo4j_provider))
+    return {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def _own(fn: ast.AST) -> list[ast.AST]:
+    """The nodes of ``fn``'s body, less those of a function defined inside it."""
+    out, todo = [], list(ast.iter_child_nodes(fn))
+    while todo:
+        node = todo.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        out.append(node)
+        todo.extend(ast.iter_child_nodes(node))
+    return out
+
+
+def _calls(fn: ast.AST, name: str) -> list[int]:
+    return [n.lineno for n in _own(fn) if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == name]
+
+
 def test_every_cypher_writer_keeps_the_children_order_or_cannot_change_it() -> None:
     sources = _sources()
-    unclassified = sorted(set(_AUDITED_CYPHER_WRITERS) - _keeping(sources) - set(UNTOUCHED))
+    unclassified = sorted(set(_AUDITED_CYPHER_WRITERS) - _keeping(sources) - set(UNTOUCHED) - set(KEPT_BY_CALLER))
     assert unclassified == [], f"writers that neither keep the children order stamps nor are listed with why they cannot change them: {unclassified}"
 
 
@@ -99,3 +128,20 @@ def test_no_writer_is_listed_as_untouched_once_it_keeps_the_stamps_or_is_gone() 
     sources = _sources()
     assert sorted(set(UNTOUCHED) & _keeping(sources)) == []
     assert sorted(set(UNTOUCHED) - set(_AUDITED_CYPHER_WRITERS)) == []
+
+
+def test_a_writer_that_stamps_apart_does_so_on_every_way_out() -> None:
+    """A return before the stamp statement leaves what the writer moved unstamped on that path (a migration that found nothing left to move
+    after an earlier run moved the edges and stopped before its stamp)."""
+    functions = _functions()
+    early = {name: [r for r in (n.lineno for n in _own(fn) if isinstance(n, ast.Return)) if r < min(_calls(fn, STAMPS_APART))]
+             for name, fn in functions.items() if name != STAMPS_APART and _calls(fn, STAMPS_APART)}
+    assert {name: lines for name, lines in early.items() if lines} == {}
+
+
+def test_a_writer_kept_by_its_caller_has_that_caller_alone_and_the_caller_stamps() -> None:
+    functions = _functions()
+    for writer, caller in KEPT_BY_CALLER.items():
+        callers = [name for name, fn in functions.items() if _calls(fn, writer)]
+        assert callers == [caller], (writer, callers)
+        assert _calls(functions[caller], STAMPS_APART), caller

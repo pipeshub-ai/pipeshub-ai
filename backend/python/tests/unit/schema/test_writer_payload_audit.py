@@ -687,7 +687,7 @@ _AUDITED_CYPHER_WRITERS = frozenset({
     'create_edges_if_absent', 'create_node_if_absent', 'create_organization_if_absent', 'create_taxonomy_node_if_absent',
     'delete_node_if_match', 'delete_records_recursive', 'drop_redundant_group_edges', 'ensure_app_membership', 'ensure_nodes',
     'ensure_taxonomy_hierarchy_edge', 'ensure_team_app_edge', 'heal_taxonomy_alias_nodes', 'increment_node_field',
-    'link_record_to_group', 'migrate_legacy_kb_to_app', 'migrate_legacy_relation_edge', 'migrate_person_to_user',
+    'link_record_to_group', 'migrate_legacy_kb_to_app', '_move_legacy_relation_edges', 'migrate_person_to_user',
     'move_taxonomy_edges', 'normalize_folder_mime_types', 'purge_trash_kept_record_groups',
     'purge_trashed_records', 'record_purge_failure', 'reset_indexing_status_for_connector', 'restore_records', 'stamp_kh_children_order', '_kh_stamp_unstamped_children_order',
     'retag_push_record', 'soft_delete_records', 'split_link_edges', 'stage_state_compare_and_set',

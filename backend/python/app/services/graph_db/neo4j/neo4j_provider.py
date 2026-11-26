@@ -7818,11 +7818,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Both paths preserve edge properties; without that, `relationshipType`
         would be lost and every edge would stop counting as hierarchy.
         """
-        current = Neo4jRelationshipType.NODE_RELATIONS.value
         # Interpolated, never parameterised: a relationship type is syntax in
         # Cypher, not a value. Both names are module constants, never input.
         if not legacy_relationship_type.replace("_", "").isalnum():
             raise ValueError(f"Unsafe relationship type: {legacy_relationship_type!r}")
+        result = await self._move_legacy_relation_edges(legacy_relationship_type)
+        # Whatever the move found, also when nothing was left to move: an earlier run may have moved the edges and stopped before stamping them.
+        await self._kh_stamp_unstamped_children_order(Neo4jRelationshipType.NODE_RELATIONS.value)
+        return result
+
+    async def _move_legacy_relation_edges(self, legacy_relationship_type: str) -> dict:
+        """`migrate_legacy_relation_edge`'s move, with no children order stamp: its only caller stamps the edges after it."""
+        current = Neo4jRelationshipType.NODE_RELATIONS.value
 
         try:
             remaining = await self.client.execute_query(
@@ -7865,7 +7872,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         f"{still_legacy} still carry '{legacy_relationship_type}'"
                     )
                 self.logger.info(f"Renamed {migrated} edge(s) to '{current}' via APOC")
-                await self._kh_stamp_unstamped_children_order(current)
                 return {"migrated": migrated, "already_current": False}
 
             migrated = 0
@@ -7886,7 +7892,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if not done:
                     break
             self.logger.info(f"Recreated {migrated} edge(s) as '{current}'")
-            await self._kh_stamp_unstamped_children_order(current)
             return {"migrated": migrated, "already_current": False}
 
         except Exception:

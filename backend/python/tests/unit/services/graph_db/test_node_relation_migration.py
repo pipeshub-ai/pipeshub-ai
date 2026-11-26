@@ -43,7 +43,9 @@ class TestNeo4jLegacyRelationMigration:
         )
 
         assert result == {"migrated": 0, "already_current": True}
-        neo4j.client.execute_query.assert_awaited_once()
+        # The count, then the stamp of any edge an earlier run moved and did not stamp.
+        assert neo4j.client.execute_query.await_count == 2
+        assert "e.khFrom IS NULL" in neo4j.client.execute_query.await_args_list[-1].args[0]
 
     @pytest.mark.asyncio
     async def test_apoc_partial_failure_is_not_reported_as_success(
