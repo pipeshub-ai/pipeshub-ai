@@ -1632,19 +1632,11 @@ export class UserAccountController {
     if (!userId || !orgId) {
       return;
     }
-    let activity: { activityType?: string; createdAt?: Date } | null = null;
-    try {
-      activity = await getActivityRepository().latestSessionEnding(
-        userId,
-        orgId,
-      );
-    } catch (activityError) {
-      this.logger.error(
-        'Failed to fetch session-invalidating activity on refresh',
-        { error: activityError },
-      );
-      return;
-    }
+    // A failed read propagates (the route answers with a server error and mints
+    // nothing): treating it as no logout would hand a new access token to a
+    // refresh token issued before the logout.
+    const activity: { activityType?: string; createdAt?: Date } | null =
+      await getActivityRepository().latestSessionEnding(userId, orgId);
     if (activity && activityEndsSession(activity, issuedAtSeconds)) {
       const deleted = activity.activityType === ACCOUNT_DELETED;
       throw authRefusal(

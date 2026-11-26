@@ -90,7 +90,7 @@ function sessionRefusal(
  */
 export async function findSessionRefusal(
   claims: SessionClaims,
-  logger: Logger,
+  _logger: Logger,
 ): Promise<string | null> {
   // User session JWTs must carry role (admin|member). Legacy tokens without
   // role are rejected so the client re-logins and receives a new token.
@@ -102,17 +102,13 @@ export async function findSessionRefusal(
   const orgId = claims.orgId as string;
   // The account and its latest session-invalidating activity are independent
   // reads: asked together they cost one round trip to the database on every
-  // authenticated request instead of two.
+  // authenticated request instead of two. A failed read propagates (callers
+  // refuse the request): treating it as no logout would revive ended sessions.
   const [user, latestActivity] = await asVerified(orgId, userId, () =>
     Promise.all([
       getUserRepository().getLiveById(userId),
       userId && orgId
-        ? getActivityRepository()
-            .latestSessionEnding(userId, orgId)
-            .catch((activityError: unknown): null => {
-              logger.error('Failed to fetch user activity', activityError);
-              return null;
-            })
+        ? getActivityRepository().latestSessionEnding(userId, orgId)
         : Promise.resolve(null),
     ]),
   );
