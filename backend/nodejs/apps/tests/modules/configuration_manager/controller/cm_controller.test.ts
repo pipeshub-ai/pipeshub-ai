@@ -181,15 +181,20 @@ const fakeConfigManagerConfig = {
 describe('ConfigurationManager Controller', () => {
   let mockEncService: any
   let loadConfigStub: sinon.SinonStub
+  const hideSecretConfig = process.env.HIDE_SECRET_CONFIG
 
   beforeEach(() => {
     mockEncService = createMockEncryptionService()
     loadConfigStub = sinon.stub(cmConfig, 'loadConfigurationManagerConfig').returns(fakeConfigManagerConfig as any)
     sinon.stub(encryptorModule.EncryptionService, 'getInstance').returns(mockEncService)
+    // These cases read stored values back; masking is the default and has its own tests.
+    process.env.HIDE_SECRET_CONFIG = 'false'
   })
 
   afterEach(() => {
     sinon.restore()
+    if (hideSecretConfig === undefined) delete process.env.HIDE_SECRET_CONFIG
+    else process.env.HIDE_SECRET_CONFIG = hideSecretConfig
   })
 
   // -----------------------------------------------------------------------

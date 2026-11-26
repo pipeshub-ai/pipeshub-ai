@@ -123,6 +123,11 @@ import { localStorageReplicaProblem } from '../../storage/utils/replicas';
 import {
   CONFIG_SECRET_PLACEHOLDER,
   SMTP_SECRET_KEYS,
+  ATLASSIAN_CONNECTOR_SECRET_KEYS,
+  GOOGLE_WORKSPACE_CONNECTOR_SECRET_KEYS,
+  GOOGLE_WORKSPACE_CREDENTIAL_SECRET_KEYS,
+  MICROSOFT_CONNECTOR_SECRET_KEYS,
+  maskConnectorSecrets,
   maskSmtpConfig,
   mergeSmtpConfigPlaceholders,
   stripAiModelsStoredConfig,
@@ -178,9 +183,9 @@ type SlackBotStore = {
 };
 
 
-/** Returns true when the HIDE_SECRET_CONFIG env var is set to "true". */
+/** Hides secrets unless HIDE_SECRET_CONFIG is explicitly "false", so an install that never sets it fails closed. */
 function shouldHideSecrets(): boolean {
-  return process.env.HIDE_SECRET_CONFIG === 'true';
+  return process.env.HIDE_SECRET_CONFIG !== 'false';
 }
 
 async function requesterIsOrgAdmin(
@@ -1946,8 +1951,19 @@ export const createGoogleWorkspaceCredentials =
   };
 
 export const getGoogleWorkspaceCredentials =
-  (keyValueStoreService: KeyValueStoreService, userId: string, orgId: string) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  (
+    keyValueStoreService: KeyValueStoreService,
+    userId: string,
+    orgId: string,
+    applyMasking = true,
+  ) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const hideSecrets =
+      applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+    const shown = (config: Record<string, unknown>): Record<string, unknown> =>
+      hideSecrets
+        ? maskConnectorSecrets(config, GOOGLE_WORKSPACE_CREDENTIAL_SECRET_KEYS)
+        : config;
     try {
       const org = await findActiveOrgById(orgId);
       if (!org) {
@@ -1988,7 +2004,13 @@ export const getGoogleWorkspaceCredentials =
                 ...googleWorkspaceOauthConfig,
               };
 
-              res.status(200).json(combinedResponse).end();
+              res
+
+                .status(200)
+
+                .json(shown(combinedResponse as Record<string, unknown>))
+
+                .end();
             } else {
               res.status(200).json({}).end();
             }
@@ -2009,7 +2031,12 @@ export const getGoogleWorkspaceCredentials =
                 configManagerConfig.secretKey,
               ).decrypt(encryptedGoogleWorkspaceCredentials),
             );
-            res.status(200).json(googleWorkspaceCredentials).end();
+            res
+              .status(200)
+              .json(
+                shown(googleWorkspaceCredentials as Record<string, unknown>),
+              )
+              .end();
           } else {
             res.status(200).json({}).end();
           }
@@ -2092,7 +2119,14 @@ export const setGoogleWorkspaceOauthConfig =
   ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { clientId, clientSecret, enableRealTimeUpdates } = req.body;
+      // A client that read the masked config may send the placeholder back.
+      const { clientId, clientSecret, enableRealTimeUpdates } =
+        await restoreStoredAuthSecrets(
+          keyValueStoreService,
+          configPaths.connectors.googleWorkspace.config,
+          req.body,
+          GOOGLE_WORKSPACE_CONNECTOR_SECRET_KEYS,
+        );
       let topicName = '';
       const realTimeUpdatesEnabled =
         enableRealTimeUpdates === undefined
@@ -2191,8 +2225,8 @@ export const setGoogleWorkspaceOauthConfig =
   };
 
 export const getGoogleWorkspaceOauthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedGoogleWorkSpaceConfig =
@@ -2206,7 +2240,19 @@ export const getGoogleWorkspaceOauthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedGoogleWorkSpaceConfig),
         );
-        res.status(200).json(googleWorkSpaceConfig).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  googleWorkSpaceConfig,
+                  GOOGLE_WORKSPACE_CONNECTOR_SECRET_KEYS,
+                )
+              : googleWorkSpaceConfig,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -2216,7 +2262,7 @@ export const getGoogleWorkspaceOauthConfig =
   };
 
 export const getAtlassianOauthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -2238,7 +2284,19 @@ export const getAtlassianOauthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAtlassianConfig),
         );
-        res.status(200).json(atlassianConfig).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  atlassianConfig,
+                  ATLASSIAN_CONNECTOR_SECRET_KEYS,
+                )
+              : atlassianConfig,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -2255,11 +2313,17 @@ export const setAtlassianOauthConfig =
     next: NextFunction,
   ) => {
     try {
-      const oauthConfig = req.body;
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
+      // A client that read the masked config may send the placeholder back.
+      const oauthConfig = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        `${configPaths.connectors.atlassian.config}/${orgId}`,
+        req.body,
+        ATLASSIAN_CONNECTOR_SECRET_KEYS,
+      );
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedAtlassianConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -2278,7 +2342,7 @@ export const setAtlassianOauthConfig =
   };
 
 export const getAtlassianCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -2301,7 +2365,19 @@ export const getAtlassianCredentials =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAtlassianCredentials),
         );
-        res.status(200).json(atlassianCredentials).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  atlassianCredentials,
+                  ATLASSIAN_CONNECTOR_SECRET_KEYS,
+                )
+              : atlassianCredentials,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -2318,12 +2394,18 @@ export const setAtlassianCredentials =
     next: NextFunction,
   ) => {
     try {
-      const credentials = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
+      // A client that read the masked config may send the placeholder back.
+      const credentials = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        `${configPaths.connectors.atlassian.credentials}/${orgId}`,
+        req.body,
+        ATLASSIAN_CONNECTOR_SECRET_KEYS,
+      );
       // Todo: Do a health check for the credentials
       const encryptedAtlassianCredentials = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -2342,7 +2424,7 @@ export const setAtlassianCredentials =
   };
 
 export const getOneDriveCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -2365,7 +2447,19 @@ export const getOneDriveCredentials =
             configManagerConfig.secretKey,
           ).decrypt(encryptedOneDriveCredentials),
         );
-        res.status(200).json(oneDriveCredentials).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  oneDriveCredentials,
+                  MICROSOFT_CONNECTOR_SECRET_KEYS,
+                )
+              : oneDriveCredentials,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -2382,12 +2476,18 @@ export const setOneDriveCredentials =
     next: NextFunction,
   ) => {
     try {
-      const credentials = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
+      // A client that read the masked config may send the placeholder back.
+      const credentials = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        `${configPaths.connectors.onedrive.config}/${orgId}`,
+        req.body,
+        MICROSOFT_CONNECTOR_SECRET_KEYS,
+      );
       // Todo: Do a health check for the credentials
       const encryptedOneDriveCredentials = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -2406,7 +2506,7 @@ export const setOneDriveCredentials =
   };
 
 export const getSharePointCredentials =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
@@ -2429,7 +2529,19 @@ export const getSharePointCredentials =
             configManagerConfig.secretKey,
           ).decrypt(encryptedSharePointCredentials),
         );
-        res.status(200).json(sharePointCredentials).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(
+            hideSecrets
+              ? maskConnectorSecrets(
+                  sharePointCredentials,
+                  MICROSOFT_CONNECTOR_SECRET_KEYS,
+                )
+              : sharePointCredentials,
+          )
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -2446,12 +2558,18 @@ export const setSharePointCredentials =
     next: NextFunction,
   ) => {
     try {
-      const credentials = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
       const orgId = getOrgIdFromRequest(req);
       if (!orgId) {
         throw new BadRequestError('Organisation not found');
       }
+      // A client that read the masked config may send the placeholder back.
+      const credentials = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        `${configPaths.connectors.sharepoint.config}/${orgId}`,
+        req.body,
+        MICROSOFT_CONNECTOR_SECRET_KEYS,
+      );
       // Todo: Do a health check for the credentials
       const encryptedSharePointCredentials = EncryptionService.getInstance(
         configManagerConfig.algorithm,
