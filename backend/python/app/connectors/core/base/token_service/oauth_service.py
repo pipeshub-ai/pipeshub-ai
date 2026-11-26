@@ -175,10 +175,24 @@ def _is_servicenow_refresh_rejection(error: OAuthTokenRequestError, token_url: s
     return "server_error" in lowered and "access_denied" in lowered
 
 
+_ZOOM_TOKEN_ENDPOINT = "zoom.us/oauth/token"
+
+
+def _is_zoom_refresh_rejection(error: OAuthTokenRequestError, token_url: str) -> bool:
+    """Zoom replaces the refresh token at each refresh and refuses a replaced, revoked or removed-app one with
+    401 and ``invalid_request`` ("Invalid Token!"), a code RFC 6749 gives to a malformed request."""
+    return (
+        _ZOOM_TOKEN_ENDPOINT in token_url.lower()
+        and error.status == HttpStatusCode.UNAUTHORIZED.value
+        and error.error_code == "invalid_request"
+    )
+
+
 def _is_permanent_refresh_rejection(error: OAuthTokenRequestError, token_url: str) -> bool:
     return (
         is_permanent_grant_rejection(str(error), error.error_code, status=error.status)
         or _is_servicenow_refresh_rejection(error, token_url)
+        or _is_zoom_refresh_rejection(error, token_url)
     )
 
 

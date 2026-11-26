@@ -1,0 +1,81 @@
+# Zoom simulator for the zoom_sim suite (integration-tests/connectors/zoom/zoom_sim_*_test.py). An override, used
+# after the stack's own file:
+#
+#   deployment/docker-compose/sim-tls/make-certs.sh "$SIM_TLS_DIR"
+#   docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.zoom-sim.yml up -d
+#
+# The connector calls fixed hosts over HTTPS: https://api.zoom.us/v2 and https://zoom.us/oauth/token (also the
+# transcript download URLs Zoom returns, which may redirect to ssrweb.zoom.us). Nothing in the product moves them. So zoom-tls takes both names as network
+# aliases and answers them with a certificate from a CA made for the run, and pipeshub-ai trusts that CA through
+# SSL_CERT_FILE (httpx and OpenSSL, so aiohttp, both read it). zoom-sim tells the API, sign-in and downloads apart by
+# path. The test process drives the simulator's control API on the published port
+# (integration-tests/connectors/zoom_sim.env).
+#
+# Fail closed: without the aliases the names resolve to the real Zoom. zoom-guard sits on the stack's network and is
+# healthy only while both names resolve to zoom-tls's own address there, and pipeshub-ai starts only after it is. The
+# suite checks it again inside the pipeshub-ai container before any sync (integration-tests/connectors/zoom/
+# sim_world.py, `zoom_front`). Never stop or recreate zoom-tls while a connector syncs: without the alias the names
+# resolve to Zoom again. Every Zoom call from this stack goes to the simulator, so no suite that needs the real Zoom
+# can run on it. nginx resolves zoom-sim once, when it starts: restart zoom-tls after recreating zoom-sim.
+services:
+  zoom-sim:
+    image: ${ZOOM_SIM_IMAGE:-pipeshub/connectors-simulator:it}
+    restart: always
+    command: ["zoom"]
+    environment:
+      CONNSIM_SOURCES: zoom
+      # The account lives in one process's memory.
+      CONNSIM_WORKERS: "1"
+    # 8117, the simulator's own port: 8101-8103, 8106-8112 and 8118 are the other simulators' in the same stack.
+    ports:
+      - "127.0.0.1:8117:80"
+    mem_limit: 512m
+
+  zoom-tls:
+    image: nginx:1.27.5-alpine
+    restart: always
+    depends_on:
+      zoom-sim:
+        condition: service_healthy
+    volumes:
+      - ./zoom-sim/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${SIM_TLS_DIR:?run sim-tls/make-certs.sh and set SIM_TLS_DIR}/tls.pem:/etc/nginx/tls/tls.pem:ro
+      - ${SIM_TLS_DIR}/tls.key:/etc/nginx/tls/tls.key:ro
+    networks:
+      default:
+        aliases:
+          - api.zoom.us
+          - zoom.us
+          - ssrweb.zoom.us
+    mem_limit: 128m
+
+  # Healthy only while both Zoom names resolve, on this network, to the TLS front and to nothing else.
+  zoom-guard:
+    image: nginx:1.27.5-alpine
+    restart: always
+    depends_on:
+      zoom-tls:
+        condition: service_started
+    command: ["sleep", "infinity"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          front=$$(getent hosts zoom-tls | cut -d' ' -f1) && [ -n "$$front" ] &&
+          [ "$$(getent hosts api.zoom.us | cut -d' ' -f1)" = "$$front" ] &&
+          [ "$$(getent hosts zoom.us | cut -d' ' -f1)" = "$$front" ] &&
+          [ "$$(getent hosts ssrweb.zoom.us | cut -d' ' -f1)" = "$$front" ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    mem_limit: 32m
+
+  pipeshub-ai:
+    environment:
+      - SSL_CERT_FILE=/etc/pipeshub-it/ca-bundle.pem
+    volumes:
+      - ${SIM_TLS_DIR}/ca-bundle.pem:/etc/pipeshub-it/ca-bundle.pem:ro
+    depends_on:
+      zoom-guard:
+        condition: service_healthy
