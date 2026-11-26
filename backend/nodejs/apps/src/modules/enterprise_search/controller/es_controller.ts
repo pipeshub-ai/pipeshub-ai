@@ -65,6 +65,11 @@ import {
   handleBackendError,
   SERVICE_UNAVAILABLE_MESSAGE,
 } from '../../../libs/errors/backend-error';
+import { withCause } from '../../../libs/errors/base.error';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import {
   AICommandOptions,
   AIServiceCommand,
@@ -2135,45 +2140,53 @@ interface ConversationPermissionSyncOptions {
   maxAttempts?: number;
 }
 
-// Best-effort: a failure is logged and never fails the share/unshare/view.
-const syncConversationRecordPermissions = async ({
+/** One call to the query service's record-permission route: resolves on any status, rejects on a transport failure. */
+const requestConversationRecordPermissions = async ({
   appConfig,
   records,
   method,
   grantorUserId,
   orgId,
   body,
-  requestId,
-  conversationId,
   timeoutMs = CONVERSATION_PERMISSION_SYNC_TIMEOUT_MS,
   maxAttempts,
-}: ConversationPermissionSyncOptions): Promise<void> => {
+}: ConversationPermissionSyncOptions): Promise<AIServiceResponse<unknown>> => {
+  const serviceToken = new AuthTokenService(
+    appConfig.jwtSecret,
+    appConfig.scopedJwtSecret,
+  ).generateScopedToken(
+    {
+      userId: grantorUserId,
+      orgId,
+      scopes: [TokenScopes.CONVERSATION_PERMISSIONS],
+    },
+    '5m',
+  );
+  return new AIServiceCommand<unknown>({
+    uri: `${appConfig.aiBackend}/api/v1/chat/${records}/permissions`,
+    method,
+    headers: {
+      Authorization: `Bearer ${serviceToken}`,
+      'Content-Type': 'application/json',
+    },
+    body,
+    timeoutMs,
+    maxAttempts,
+  }).execute();
+};
+
+const isSuccess = (statusCode: number): boolean =>
+  statusCode >= 200 && statusCode < 300;
+
+// Best-effort: a failure is logged and never fails the share or the view.
+const syncConversationRecordPermissions = async (
+  options: ConversationPermissionSyncOptions,
+): Promise<void> => {
+  const { requestId, conversationId, records, method } = options;
   const logContext = { requestId, conversationId, records, method };
   try {
-    const serviceToken = new AuthTokenService(
-      appConfig.jwtSecret,
-      appConfig.scopedJwtSecret,
-    ).generateScopedToken(
-      {
-        userId: grantorUserId,
-        orgId,
-        scopes: [TokenScopes.CONVERSATION_PERMISSIONS],
-      },
-      '5m',
-    );
-    const response = await new AIServiceCommand({
-      uri: `${appConfig.aiBackend}/api/v1/chat/${records}/permissions`,
-      method,
-      headers: {
-        Authorization: `Bearer ${serviceToken}`,
-        'Content-Type': 'application/json',
-      },
-      body,
-      timeoutMs,
-      maxAttempts,
-    }).execute();
-    // execute() resolves on 4xx/5xx; only transport errors reject.
-    if (response.statusCode < 200 || response.statusCode >= 300) {
+    const response = await requestConversationRecordPermissions(options);
+    if (!isSuccess(response.statusCode)) {
       logger.warn('Conversation record permission sync rejected', {
         ...logContext,
         statusCode: response.statusCode,
@@ -2186,6 +2199,31 @@ const syncConversationRecordPermissions = async ({
       error: error.message,
     });
   }
+};
+
+const UNSHARE_OPERATION = 'Unshare conversation';
+
+/** An unshare's revoke: anything but a 2xx fails the unshare (an outage keeps its Retry-After). */
+const requireRecordPermissionsRevoked = async (
+  options: ConversationPermissionSyncOptions,
+): Promise<void> => {
+  let response: AIServiceResponse<unknown>;
+  try {
+    response = await requestConversationRecordPermissions(options);
+  } catch (error) {
+    throw handleBackendError(error, UNSHARE_OPERATION);
+  }
+  if (isSuccess(response.statusCode)) return;
+  // Node writes this request's body and token, so a 4xx is our fault, not the owner's:
+  // relaying a 401 would send the owner's browser to re-login.
+  throw response.statusCode < 500
+    ? withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage(UNSHARE_OPERATION)),
+        ),
+        { status: response.statusCode },
+      )
+    : handleBackendError(response, UNSHARE_OPERATION);
 };
 
 export const getConversationById =
@@ -2871,14 +2909,17 @@ const createUnshareConversationHandler =
         String(id).toLowerCase(),
       );
 
-      async function performUnshareConversation(
-        tx?: Tx,
-      ): Promise<ParticipantChange> {
-        const conversation = await convRepo().findForUnshare(
+      const findOwnedConversation = (): Promise<ChatSessionDto | null> =>
+        convRepo().findForUnshare(
           conversationId as string,
           actorOf(orgId, userId),
           scope,
         );
+
+      async function performUnshareConversation(
+        tx?: Tx,
+      ): Promise<ParticipantChange> {
+        const conversation = await findOwnedConversation();
 
         if (!conversation) {
           throw new NotFoundError('Conversation not found or unauthorized');
@@ -2923,16 +2964,14 @@ const createUnshareConversationHandler =
         };
       }
 
-      const updatedConversation = await withParticipantRecord(
-        recorder,
-        performUnshareConversation,
-      );
-
+      // Revoke before the list changes: a refused revoke leaves the user listed, so the owner can retry.
+      if (!(await findOwnedConversation())) {
+        throw new NotFoundError('Conversation not found or unauthorized');
+      }
       // Revoke READER on chat attachments (message chips and ATTACHMENTS citations).
       const attachmentRecordIds = await loadConversationChatAttachmentRecordIds(
         String(conversationId),
       );
-
       const grantor = {
         appConfig,
         method: HttpMethod.DELETE,
@@ -2941,18 +2980,57 @@ const createUnshareConversationHandler =
         requestId,
         conversationId,
       } as const;
-      if (attachmentRecordIds.length > 0) {
-        await syncConversationRecordPermissions({
+      const revokesFor = (
+        recordIds: string[],
+      ): ConversationPermissionSyncOptions[] => [
+        ...(recordIds.length > 0
+          ? [
+              {
+                ...grantor,
+                records: 'attachments' as const,
+                body: { userIds: removedIds, recordIds },
+              },
+            ]
+          : []),
+        {
           ...grantor,
-          records: 'attachments',
-          body: { userIds: removedIds, recordIds: attachmentRecordIds },
+          records: 'artifacts',
+          body: { conversationId, userIds: removedIds },
+        },
+      ];
+      for (const revoke of revokesFor(attachmentRecordIds)) {
+        await requireRecordPermissionsRevoked(revoke);
+      }
+
+      const updatedConversation = await withParticipantRecord(
+        recorder,
+        performUnshareConversation,
+      );
+
+      // Again after the commit: a view that read the old list may have re-granted in between, also on an
+      // attachment added while the revokes ran, so the attachments are read again. It only has to beat that
+      // view's grant, so it gets the view's budget; the unshare is committed, so a failed read is only logged.
+      const latestAttachmentRecordIds =
+        await loadConversationChatAttachmentRecordIds(
+          String(conversationId),
+        ).catch((error: unknown) => {
+          logger.warn(
+            'Could not re-read chat attachments after unshare; repeating the revoke on the earlier list',
+            {
+              requestId,
+              conversationId,
+              errorType: error instanceof Error ? error.name : typeof error,
+            },
+          );
+          return attachmentRecordIds;
+        });
+      for (const revoke of revokesFor(latestAttachmentRecordIds)) {
+        await syncConversationRecordPermissions({
+          ...revoke,
+          timeoutMs: CONVERSATION_VIEW_PERMISSION_SYNC_TIMEOUT_MS,
+          maxAttempts: 1,
         });
       }
-      await syncConversationRecordPermissions({
-        ...grantor,
-        records: 'artifacts',
-        body: { conversationId, userIds: removedIds },
-      });
 
       logger.debug('Conversation unshared successfully', {
         requestId,
