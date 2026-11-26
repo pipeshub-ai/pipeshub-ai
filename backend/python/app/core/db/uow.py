@@ -102,16 +102,19 @@ ABORT_TIMEOUT_S = 5.0
 _PROLOGUE = """
 WITH pre AS MATERIALIZED (SELECT current_setting('role') AS r)
 SELECT pre.r, now() AS started{fence_out} FROM pre, LATERAL (
-  SELECT set_config('role', $1, true), set_config('app.org_id', $2, true), set_config('app.request_id', $3, true),
+  SELECT set_config('role', $1, true), set_config('app.org_id', $2, true) AS org, set_config('app.request_id', $3, true),
          set_config('statement_timeout', $4, true), set_config('lock_timeout', $5, true),
          set_config('plan_cache_mode', $6, true), set_config('jit', 'off', true),
-         CASE WHEN $7 <> '' THEN set_config('work_mem', $7, true) END{fence}
-  WHERE pre.r IS NOT NULL) s
+         CASE WHEN $7 <> '' THEN set_config('work_mem', $7, true) END
+  WHERE pre.r IS NOT NULL) s{fence}
 """
 PROLOGUE_READ = _PROLOGUE.format(fence="", fence_out="")
 # The fence is VOLATILE (a STABLE one with an unused result would be dropped by the planner) and asserts READ COMMITTED; its
-# output column is also referenced by the outer SELECT, so the call stays whatever the planner does with an unused column.
-PROLOGUE_WRITE = _PROLOGUE.format(fence=",\n         kernel.assert_profile_epoch($8) AS fence", fence_out=", s.fence")
+# output column is also referenced by the outer SELECT, so the call stays whatever the planner does with an unused column. It
+# runs in a LATERAL subquery that reads s.org, so it runs after s has set app.org_id (the fence reads the unit's org from it):
+# an order given by that dependency, not by the order of the expressions in one select list, which PostgreSQL does not define.
+PROLOGUE_WRITE = _PROLOGUE.format(fence=", LATERAL (\n  SELECT kernel.assert_profile_epoch($8) AS fence WHERE s.org IS NOT NULL) f",
+                                  fence_out=", f.fence")
 
 
 def safe_request_id(rid: str | None) -> str:

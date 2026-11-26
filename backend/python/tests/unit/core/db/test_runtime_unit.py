@@ -89,7 +89,10 @@ def test_write_prologue_references_the_fence_output_in_the_outer_select() -> Non
     from app.core.db import uow
 
     outer = uow.PROLOGUE_WRITE.split("FROM pre")[0]
-    assert "s.fence" in outer and "kernel.assert_profile_epoch($8) AS fence" in uow.PROLOGUE_WRITE
+    assert "f.fence" in outer and "kernel.assert_profile_epoch($8) AS fence" in uow.PROLOGUE_WRITE
+    # the fence's subquery reads the org the first one set, so it runs after app.org_id is set (the fence reads the org from it)
+    assert "set_config('app.org_id', $2, true) AS org" in uow.PROLOGUE_WRITE
+    assert "kernel.assert_profile_epoch($8) AS fence WHERE s.org IS NOT NULL) f" in uow.PROLOGUE_WRITE
     assert "fence" not in uow.PROLOGUE_READ
 
 

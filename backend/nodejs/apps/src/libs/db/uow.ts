@@ -145,15 +145,17 @@ const BEGIN: Record<Isolation, string> = {
  * where compiling costs 100-400 ms for a read of a few ms. Set here, it holds on any server (a managed one's configuration is not ours).
  */
 function prologueSql(fence: string | undefined): string {
+  // The fence reads the unit's org from app.org_id: it runs in a LATERAL that reads s.org, so after s has set it (an order given
+  // by that dependency, not by the order of expressions in one select list, which PostgreSQL does not define).
   return `WITH pre AS MATERIALIZED (SELECT current_setting('role') AS r)
-SELECT pre.r, s.fence, s.ts FROM pre, LATERAL (
-  SELECT set_config('role', $1, true), set_config('app.org_id', $2, true), set_config('app.request_id', $3, true),
+SELECT pre.r, f.fence, s.ts FROM pre, LATERAL (
+  SELECT set_config('role', $1, true), set_config('app.org_id', $2, true) AS org, set_config('app.request_id', $3, true),
          set_config('app.user_id', $4, true), set_config('statement_timeout', $5, true),
          set_config('lock_timeout', $6, true), set_config('plan_cache_mode', $7, true),
          set_config('work_mem', $8, true), set_config('jit', 'off', true),
-         now()::text AS ts,
-         ${fence ? `CASE WHEN $9::boolean THEN ${fence}($10::int) END` : 'NULL::int'} AS fence
-  WHERE pre.r IS NOT NULL) s`;
+         now()::text AS ts
+  WHERE pre.r IS NOT NULL) s, LATERAL (
+  SELECT ${fence ? `CASE WHEN $9::boolean THEN ${fence}($10::int) END` : 'NULL::int'} AS fence WHERE s.org IS NOT NULL) f`;
 }
 
 interface Binding {

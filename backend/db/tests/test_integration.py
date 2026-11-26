@@ -493,6 +493,12 @@ def test_profile_fence_is_volatile_read_committed_and_callable_by_the_login(db):
         assert {("pipeshub_query_login", "USAGE"), ("pipeshub_node_login", "USAGE")} <= grants
 
 
+def _prologue(fence: str) -> str:
+    """The units' shape (app/core/db/uow.py, src/libs/db/uow.ts): the fence runs in a LATERAL that reads the org the first one set."""
+    return ("SELECT f.fence FROM (SELECT set_config('role', %s, true), set_config('app.org_id', %s, true) AS org) s, "
+            f"LATERAL (SELECT {fence}(1) AS fence WHERE s.org IS NOT NULL) f")
+
+
 def test_the_write_fences_refuse_only_an_org_whose_writes_are_held(db):
     """kernel.org_writes_held holds no org here, so both fences answer as before; a body that holds one org (as an extra migration
     location would plant) refuses that org's write units with 25006, and only them."""
@@ -503,8 +509,8 @@ def test_the_write_fences_refuse_only_an_org_whose_writes_are_held(db):
     def prologue(login: str, role: str, fence: str, org: str) -> None:
         with connect(cluster, name, login) as c:
             c.autocommit = False
-            try:      # the units' shape: the org is set in the statement that calls the fence
-                c.execute(f"SELECT set_config('role', %s, true), set_config('app.org_id', %s, true), {fence}(1) AS fence", (role, org))
+            try:
+                c.execute(_prologue(fence), (role, org))
             finally:
                 c.rollback()
 
@@ -535,6 +541,37 @@ def test_the_write_fences_refuse_only_an_org_whose_writes_are_held(db):
     with connect(cluster, name) as c:      # nobody but the fences' owner can call the hook
         for role in ("pipeshub_node", "pipeshub_jobs"):
             assert c.execute("SELECT has_function_privilege(%s, 'kernel.org_writes_held(text)', 'EXECUTE')", (role,)).fetchone()[0] is False
+
+
+def test_a_hold_waits_for_the_orgs_writers_in_flight_and_refuses_those_that_start_meanwhile(db):
+    """The fences take the org's barrier (7342, hashtext(org)) shared, to commit: whoever records a hold takes it exclusively first,
+    so it cannot start while one of that org's writers is past its fence, and while it is open that org's new writers are refused."""
+    cluster, name = db
+    assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
+    org, other = "a" * 24, "b" * 24
+    take = "SELECT pg_try_advisory_xact_lock(7342, hashtext(%s))"
+
+    def unit(fence: str, who: str) -> psycopg.Connection:
+        c = connect(cluster, name, "pipeshub_node_login")
+        c.autocommit = False
+        c.execute(_prologue(fence), ("pipeshub_node", who))
+        return c
+
+    with connect(cluster, name) as k:
+        assert k.execute("SELECT name FROM kernel.lock_keys WHERE class_id = 7342").fetchone() == ("org_write_hold",)
+    for fence in ("kernel.assert_profile_epoch", "kernel.assert_store_epoch"):
+        with unit(fence, org) as writer, connect(cluster, name) as opener:      # a writer of the org is past its fence
+            opener.autocommit = False
+            assert opener.execute(take, (org,)).fetchone()[0] is False
+            opener.rollback()
+            writer.rollback()                                                  # it ends
+            assert opener.execute(take, (org,)).fetchone()[0] is True          # now the hold can be recorded
+            with pytest.raises(psycopg.errors.ReadOnlySqlTransaction, match="being held"):
+                unit(fence, org).close()
+            for who in (other, ""):                                            # another org, and a unit with no org, still write
+                unit(fence, who).close()
+            opener.rollback()
+        unit(fence, org).close()
 
 
 def test_a_downgrade_to_the_previous_revision_leaves_a_clean_catalog_and_upgrades_again(db):

@@ -1,4 +1,4 @@
-"""kernel: the write fences also refuse the writes of an org that kernel.org_writes_held holds (an extension point; none here)"""
+"""kernel: the write fences take a per-org barrier and refuse the writes of an org that kernel.org_writes_held holds (an extension point; none here)"""
 from alembic import op
 from db.lib.vetted import run_vetted
 
@@ -43,4 +43,5 @@ def downgrade():
     op.execute("REVOKE CREATE ON SCHEMA kernel FROM pipeshub_vetted_kernel")
     op.execute("REVOKE pipeshub_vetted_kernel FROM pipeshub_owner")
     op.execute("DROP FUNCTION kernel.org_writes_held(text)")
+    op.execute("DELETE FROM kernel.lock_keys WHERE class_id = 7342")
     op.execute("DELETE FROM kernel.function_registry WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")
