@@ -356,8 +356,10 @@ class TableJobCollector:
         return out
 
     def _append(self, rec: dict[str, Any]) -> None:
+        line = json.dumps(rec, separators=(",", ":")) + "\n"
         with open(os.path.join(self._dir, INDEX_FILE), "a") as f:
-            f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+            f.write(line)
+        self.bytes += len(line.encode())
 
     def collect_page(
         self,
@@ -437,6 +439,11 @@ class TableJobCollector:
         if abs(pw - page_w) > 1.0 or abs(ph - page_h) > 1.0:
             raise ValueError("page size differs between renderers")
         png, sf, tb, _size = build_request(img, (box[0] - dx, box[1] - dy, box[2] - dx, box[3] - dy))
+        word_rows = [[x["text"], x["x0"], x["top"], x["x1"], x["bottom"]] for x in words]
+        # the crop and its word list must fit; a spool_full line is a few hundred bytes past the cap at most
+        if self.bytes + len(png) + len(json.dumps(word_rows, separators=(",", ":")).encode()) > self._byte_cap:
+            rec["reason"] = "spool_full"
+            return
         name = f"p{page_index + 1}-b{rec['bi']}.png"
         tmp = os.path.join(self._dir, name + ".part")
         with open(tmp, "wb") as f:
@@ -447,7 +454,7 @@ class TableJobCollector:
         rec.update(
             png=name, png_bytes=len(png), scale_factor=sf, page_w=w * RENDER_SCALE, page_h=h * RENDER_SCALE, table_bbox=tb, dx=dx, dy=dy,
             long_words=sum(1 for x in words if len(x["text"]) > MAX_WORD_CHARS),
-            words=[[x["text"], x["x0"], x["top"], x["x1"], x["bottom"]] for x in words],
+            words=word_rows,
         )
 
     @staticmethod
