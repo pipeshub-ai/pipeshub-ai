@@ -40,10 +40,13 @@ from tests.integration.test_chat_stream_agent_loop_e2e import (  # noqa: F401  (
     _mock_request,
     _mock_retrieval_service,
 )
+from tests.support.loop_caller import loop_caller_verified  # noqa: F401 - a fixture, used by name
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+# These call the route handlers directly, below the route guard.
+pytestmark = pytest.mark.usefixtures("loop_caller_verified")
 _QUESTION = "List the full names of the Student_Club members that grew up in Illinois state."
 _NARRATION = (
     "I'll join the club member directory to the ZIP-code reference and return "

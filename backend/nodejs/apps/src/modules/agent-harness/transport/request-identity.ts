@@ -1,8 +1,10 @@
-import { Request } from 'express';
+import { NextFunction, Request, Response } from 'express';
 import { isNativeId } from '../../../libs/repositories/ids';
 import { PAT_APP_CLIENT_ID_PREFIX } from '../../oauth_provider/constants/constants';
+import { HarnessForbiddenError } from '../domain/errors';
 import type { PrincipalKind } from '../domain/principal';
 import { RunVia } from '../domain/run-spec';
+import { transportError } from './errors';
 
 export const identityString = (value: unknown): string | null => {
   if (typeof value === 'string' && value.length > 0) return value;
@@ -57,13 +59,50 @@ export function requestVia(req: Request): RunVia {
     : 'oauth_app';
 }
 
+export const UNIDENTIFIED_CALLER_MESSAGE =
+  "This agent can't answer unidentified users. Sign in to PipesHub with your own account to use it. " +
+  'Integrations should use a personal access token, which acts as its user.';
+
 /**
- * Who a run acts as (OWD-2), read only from what the auth middleware
- * verified: a service-account identity (an agent whose service account
- * answers people who reach it, such as through Slack) is that agent's
- * service account; anyone else, the person. The body is never consulted.
+ * Throws unless a person is behind the verified credential. A run does its
+ * work later, without the request, so this is the one place that can tell: an
+ * app's client_credentials token carries a person's id (its creator's) and a
+ * service account's own token carries the account's, and neither is that
+ * person asking (see `oauth_provider/utils/principal-kind.ts`). A session and
+ * a linked Slack person carry no kind; any other kind is refused.
+ */
+export function refuseUnidentifiedCaller(req: Request): void {
+  const user = (req as Request & { user?: Record<string, unknown> }).user;
+  const kind = user?.['principalKind'];
+  if (
+    (kind !== undefined && kind !== 'human') ||
+    user?.['isServiceAccount'] === true
+  ) {
+    throw new HarnessForbiddenError(UNIDENTIFIED_CALLER_MESSAGE);
+  }
+}
+
+/** Route form of `refuseUnidentifiedCaller`, for every route that starts or continues a run. */
+export function requireIdentifiedCaller(
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): void {
+  try {
+    refuseUnidentifiedCaller(req);
+  } catch (error) {
+    next(transportError(error));
+    return;
+  }
+  next();
+}
+
+/**
+ * Who a run acts as (OWD-2): the person the auth middleware verified, never
+ * the body. Read by everything that admits a run, so it refuses a caller with
+ * no person behind it even on a route without `requireIdentifiedCaller`.
  */
 export function requestPrincipalKind(req: Request): PrincipalKind {
-  const user = (req as Request & { user?: Record<string, unknown> }).user;
-  return user?.['isServiceAccount'] === true ? 'agent_service' : 'user';
+  refuseUnidentifiedCaller(req);
+  return 'user';
 }

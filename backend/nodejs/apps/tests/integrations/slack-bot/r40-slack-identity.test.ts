@@ -198,11 +198,11 @@ describe('R40-SLACK: the seams take the organisation from their caller', () => {
         tokenPayload: { configId: 'cfg-a', slackTeamId: HOME, slackUserId: 'U0ALICE', email: 'cfo@a.test' },
       })
       const inA = req()
-      await scopedRequest.bindScopedRequestToSlackAccount(inA as never, appConfig, ORG_A, [], links)
+      await scopedRequest.bindScopedRequestToSlackAccount(inA as never, appConfig, ORG_A, links)
       expect(inA.user).to.include({ userId: ALICE, email: 'alice@a.test' })
       const inB = req()
       const err = await scopedRequest
-        .bindScopedRequestToSlackAccount(inB as never, appConfig, ORG_B, [], links)
+        .bindScopedRequestToSlackAccount(inB as never, appConfig, ORG_B, links)
         .catch((e: Error) => e)
       expect((err as Error).message).to.equal(scopedRequest.SLACK_LINK_REQUIRED_MESSAGE)
       expect(inB.user).to.equal(undefined)

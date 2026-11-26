@@ -49,10 +49,6 @@ _ROUTERS = {
 
 # Every route that admits a service token, with the scopes it admits.
 _SERVICE_TOKEN_ROUTES = {
-    ("agent", "POST", "/{agent_id}/chat/stream"): {"conversation:create"},
-    ("agent", "GET", "/{agent_id}/internal/service-account"): {"conversation:create"},
-    # The Slack bot's durable admission of a service-account agent (P1b C-5).
-    ("agent", "GET", "/{agent_id}/run-definition"): {"conversation:create"},
     # Node's agent-erasure sweeper (H5): an agent's tombstone, before it erases the agent's memories.
     ("agent", "GET", "/{agent_id}/internal/deletion"): {"agent:erase"},
     # WP-51: the usage report and budget notices name agents by key, for the token's org only.

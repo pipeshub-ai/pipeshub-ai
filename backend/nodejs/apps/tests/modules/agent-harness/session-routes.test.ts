@@ -188,12 +188,20 @@ describe('agent harness session routes', () => {
       session: { orgId: 'org-1', userId: 'user-1' },
       pat: { orgId: 'org-1', userId: 'user-1', isOAuth: true, oauthClientId: 'pat-system:org-1', oauthScopes: ['conversation:chat'] },
       oauth: { orgId: 'org-1', userId: 'user-1', isOAuth: true, oauthClientId: 'client-9', oauthScopes: ['conversation:chat'] },
+    };
+    // No person is behind these: an app's client_credentials token, a service account's own token.
+    const unidentified: Record<string, Record<string, unknown>> = {
       service: { orgId: 'org-1', userId: 'user-1', isServiceAccount: true },
+      app: { ...tokens['oauth'], principalKind: 'app' },
+      serviceAccount: { ...tokens['oauth'], principalKind: 'service_account' },
+      unknown: { ...tokens['oauth'], principalKind: 'unknown' },
     };
     const container = new Container();
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue({
       authenticate: (req: any, _res: unknown, next: () => void) => {
-        req.user = tokens[String(req.headers['x-test-token'])];
+        req.user = { ...tokens, ...unidentified }[
+          String(req.headers['x-test-token'])
+        ];
         next();
       },
     } as never);
@@ -225,6 +233,35 @@ describe('agent harness session routes', () => {
         expect((await post('session', forged)).status, JSON.stringify(forged)).to.equal(400);
       }
       expect(submit.callCount, 'nothing forged reaches admission').to.equal(0);
+      for (const token of Object.keys(unidentified)) {
+        for (const path of [
+          'runs',
+          's1/runs',
+          's1/runs/r1/resume',
+          's1/compact',
+          's1/commands/run',
+          's1/runs/r1/interactions/i1/decision',
+          's1/runs/r1/interactions/decisions',
+        ]) {
+          const refused = await fetch(`${base}/conversations/${path}`, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-test-token': token,
+            },
+            body: JSON.stringify({
+              idempotencyKey: `k-${token}`,
+              query: 'hello',
+              chatMode: 'internal_search',
+            }),
+          });
+          expect(refused.status, `${token} ${path}`).to.equal(403);
+          expect(await refused.text(), `${token} ${path}`).to.contain(
+            'unidentified users',
+          );
+        }
+      }
+      expect(submit.callCount, 'no run without a person behind it').to.equal(0);
       for (const token of Object.keys(tokens)) {
         expect((await post(token, {})).status, token).to.equal(200);
       }
@@ -232,7 +269,11 @@ describe('agent harness session routes', () => {
       (ErrorMiddleware as any).logger = originalLogger;
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-    expect(submitted.map((request) => request['via'])).to.deep.equal(['session', 'pat', 'oauth_app', 'service']);
+    expect(submitted.map((request) => request['via'])).to.deep.equal([
+      'session',
+      'pat',
+      'oauth_app',
+    ]);
     for (const request of submitted) {
       expect(request).to.include({ orgId: 'org-1', actorId: 'user-1' });
     }

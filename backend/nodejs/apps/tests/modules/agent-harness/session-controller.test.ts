@@ -447,8 +447,6 @@ describe('AgentHarnessSessionController', () => {
       [{ orgId: 'o', userId: 'u', isOAuth: true, oauthClientId: 'client-1' }, undefined],
       // The Slack bot's scoped token, hydrated to a user with an account.
       [{ orgId: 'o', userId: 'u' }, { email: 'a@example.com', scopes: ['conversation:create'] }],
-      // ... and to a service account (no PipesHub account).
-      [{ orgId: 'o', userId: 'u', isServiceAccount: true }, { email: 'b@example.com' }],
       // An OAuth claim cannot turn a service credential into anything else.
       [{ orgId: 'o', userId: 'u', isOAuth: true, oauthClientId: 'client-1' }, { email: 'c@example.com' }],
     ] as const) {
@@ -471,6 +469,12 @@ describe('AgentHarnessSessionController', () => {
         sinon.stub<unknown[]>(),
       );
     }
-    expect(vias).to.deep.equal(['session', 'pat', 'oauth_app', 'service', 'service', 'service']);
+    expect(vias).to.deep.equal([
+      'session',
+      'pat',
+      'oauth_app',
+      'service',
+      'service',
+    ]);
   });
 });

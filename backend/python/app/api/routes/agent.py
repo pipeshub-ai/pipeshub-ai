@@ -23,7 +23,6 @@ from app.agents.agent_gates import (
     agent_gates,
     stored_agent_gates,
 )
-from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import resolve_protocol
@@ -70,6 +69,11 @@ from app.api.middlewares.auth import (
     require_service_token,
 )
 from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
+from app.api.middlewares.identified_caller import (
+    UNIDENTIFIED_CALLER_DETAIL,
+    refuse_unidentified_caller,
+    require_identified_caller,
+)
 from app.api.middlewares.request_log import (
     add_request_log_fields,
     bind_request_log_fields,
@@ -105,7 +109,6 @@ from app.core.org_context import bound_org_id, current_org_id
 from app.harness.agent_deletion import agent_deletion_state
 from app.harness.agent_names import MAX_AGENT_KEYS, agent_names, latest_versions
 from app.harness.credentials.sources import configured_llm_entries
-from app.harness.knowledge.caller import UNRESOLVED_CALLER
 from app.harness.legacy.resolved_request import (
     bind_resolved_stages,
     bound_installations,
@@ -271,8 +274,8 @@ class ChatQuery(BaseModel):
     # own prompt section, never merged into the agent's system_prompt/
     # instructions, so a real Agent Builder agent's identity is untouched.
     projectInstructions: str | None = Field(default=None, max_length=8000)
-    # End-user display name when JWT userId is synthetic (e.g. Slack) — see
-    # _merge_end_user_into_service_account_user_info.
+    # Accepted so existing clients keep working, and ignored: a run's identity
+    # is the authenticated caller's own record, never a name or email in the body.
     callerDisplayName: str | None = None
     callerEmail: str | None = None
     attachments: list[dict[str, Any]] = []
@@ -315,9 +318,7 @@ class ChatQuery(BaseModel):
     # groups, folders and records must lie in. Node builds it from the project and
     # never copies it from the client's request. It only narrows the turn: a body
     # that names other sources, or leaves it out, reaches no record beyond the
-    # identity the turn retrieves as, as in a chat outside any project. That is the
-    # caller, except for a service-account agent, which retrieves as its creator
-    # or bound account.
+    # identity the turn retrieves as, as in a chat outside any project: the caller.
     allowedFilters: dict[str, Any] | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
@@ -463,8 +464,20 @@ def _get_user_context(request: Request) -> dict[str, Any]:
         "email": user.get("email"),
         "domain": domain_from_email(user.get("email")),
         "isServiceAccount": bool(user.get("isServiceAccount", False)),
+        "isScopedToken": is_service_token(user),
+        "principalKind": user.get("principalKind"),
         "sendUserInfo": request.query_params.get("sendUserInfo", True),
     }
+
+
+def _require_live_person(user_doc: dict[str, Any]) -> None:
+    """403 unless the caller's own record is a live human account.
+
+    A service account is not a person, and a removed or switched-off account
+    must not keep answering through a session that has not expired yet.
+    """
+    if user_doc.get("kind") == "service" or not _is_live_identity(user_doc):
+        raise HTTPException(status_code=403, detail=UNIDENTIFIED_CALLER_DETAIL)
 
 
 def _apply_user_context_gate(user_info: dict[str, Any], *, enabled: bool) -> None:
@@ -472,98 +485,6 @@ def _apply_user_context_gate(user_info: dict[str, Any], *, enabled: bool) -> Non
     if not enabled:
         user_info["sendUserInfo"] = False
 
-
-
-def _merge_end_user_into_service_account_user_info(
-    creator_enriched: dict[str, Any],
-    caller_display_name: str | None,
-    caller_email_override: str | None = None,
-) -> dict[str, Any]:
-    """Overlay end-user name/email for LLM context; keep creator userId/orgId for retrieval ACL.
-
-    ``caller_*`` values are expected pre-validated (e.g. via ``ChatQuery``). Empty strings
-    after strip are treated as absent.
-    """
-    out = creator_enriched.copy()
-    caller_email = (caller_email_override or "").strip()
-    caller_name = (caller_display_name or "").strip()
-    if caller_email:
-        out["userEmail"] = caller_email
-        out["email"] = caller_email
-    if caller_name:
-        for k in ("fullName", "displayName", "firstName", "lastName", "name"):
-            out.pop(k, None)
-        out["fullName"] = caller_name
-        out["displayName"] = caller_name
-
-    return out
-
-
-async def _resolve_service_account_caller_identity(
-    enriched_user_info: dict[str, Any],
-    chat_query: ChatQuery,
-    user_context: dict[str, Any],
-    graph_provider: IGraphDBProvider,
-    logger: Logger,
-) -> dict[str, Any]:
-    """Resolve the actual caller's name/email for a service-account agent chat.
-
-    Priority:
-      1. Explicit callerDisplayName / callerEmail from the request (e.g. Slack sends these).
-      2. Fall back to the requesting user's document (platform-UI users have a real userId
-         in the JWT, so we can look them up).
-
-    Retrieval ACL stays on the agent creator — only the LLM-visible name/email changes. The requesting user is
-    kept as ``callerUserId``: with knowledge publications on it bounds the creator's scope (D21, P2.13).
-    """
-    requesting_user = user_context.get("userId")
-    enriched_user_info["callerUserId"] = (
-        requesting_user if isinstance(requesting_user, str) and requesting_user else UNRESOLVED_CALLER
-    )
-    caller_name = chat_query.callerDisplayName
-    caller_email = chat_query.callerEmail
-
-    if not caller_name and not caller_email:
-        requesting_user_id = user_context.get("userId")
-        if requesting_user_id:
-            try:
-                requesting_user_doc = await _get_user_document(requesting_user_id, graph_provider, logger)
-                if requesting_user_doc and isinstance(requesting_user_doc, dict):
-                    raw_name = requesting_user_doc.get("fullName") or requesting_user_doc.get("displayName") or ""
-                    raw_email = requesting_user_doc.get("email") or ""
-                    caller_name = raw_name if isinstance(raw_name, str) else None
-                    caller_email = raw_email if isinstance(raw_email, str) else None
-            except Exception:
-                logger.debug(
-                    "Could not look up requesting user %s for service-account caller context"
-                    " (expected for Slack/synthetic callers)",
-                    requesting_user_id,
-                )
-
-    if caller_name or caller_email:
-        return _merge_end_user_into_service_account_user_info(
-            enriched_user_info, caller_name, caller_email,
-        )
-    return enriched_user_info
-
-
-async def _service_account_artifact_owner(
-    user_context: dict[str, Any], graph_provider: IGraphDBProvider, org_id: str,
-) -> str | None:
-    """The caller who owns what a service-account agent makes in their chat.
-
-    The agent runs as its creator, but the conversation is the caller's, and so
-    are the files made in it. Only a signed-in user of the agent's org can own
-    them: a service JWT (the Slack bot's) has no user to grant them to, so
-    they stay the creator's, as do those of a caller who is not found.
-    """
-    if user_context.get("isServiceAccount"):
-        return None
-    caller_id = user_context.get("userId")
-    caller = await get_user_or_503(graph_provider, caller_id)
-    if not caller or str(caller.get("orgId") or "") != str(org_id or ""):
-        return None
-    return caller_id
 
 
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
@@ -792,159 +713,33 @@ async def _checked_service_account_binding(
     )
 
 
-async def _enrich_user_info_for_service_account_agent_chat(
-    agent: dict[str, Any],
-    graph_provider: IGraphDBProvider,
-    logger: Logger,
-    caller_org_id: str,
-) -> dict[str, Any]:
-    """
-    The identity a service agent searches knowledge as.
-
-    A service agent is invoked with a synthetic JWT (e.g. the Slack bot), which
-    is not a principal the permission graph knows, so retrieval has to run as
-    someone. Which someone is what this decides.
-
-    A bound service account, when the agent names one. Its reach is whatever an
-    administrator has shared with it, usually through group membership, so what
-    the agent can see is something granted rather than inherited.
-
-    Otherwise the agent's creator, which is where every agent made before
-    binding existed still stands. A service agent is shared with the whole
-    organisation, so what it may search is limited to what is shared with the
-    whole organisation: the org's team connectors, never its creator's personal
-    ones, and collections only when it is bound (``service_account_knowledge``,
-    applied on every run and when the agent is saved).
-
-    Either way the identity must belong to the caller's own organisation. This
-    path skips check_agent_permission, so that is checked here instead.
-    """
-    binding_user_id = agent.get("serviceAccountUserId")
-    bound = bool(binding_user_id)
-    what = "service account" if bound else "creator"
-    identity_key = binding_user_id or agent.get("createdBy")
-
-    if not identity_key:
-        raise HTTPException(
-            status_code=500,
-            detail="Service account agent is missing createdBy; cannot resolve knowledge permissions.",
-        )
-    # A binding stores the account's `userId`, which is what the
-    # service-accounts API speaks; `createdBy` stores the graph node's own key.
-    # Two different identifiers, so two different lookups.
-    identity_doc = (
-        await graph_provider.get_user_by_user_id(str(identity_key), raise_on_error=True)
-        if bound
-        else await graph_provider.get_document(
-            str(identity_key), CollectionNames.USERS.value
-        )
-    )
-    if not identity_doc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Agent {what} user not found; cannot resolve knowledge permissions.",
-        )
-    identity_user_id = identity_doc.get("userId")
-    if not identity_user_id:
-        logger.error(
-            "Service account agent %s %s %s has no userId field",
-            agent.get("_key"),
-            what,
-            identity_key,
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=f"Agent {what} is missing userId; cannot resolve knowledge permissions.",
-        )
-    identity_org = str(identity_doc.get("orgId") or "").strip()
-    caller_org = str(caller_org_id or "").strip()
-    # Empty or mismatched org must not let a caller run retrieval as another
-    # tenant's identity. A binding is validated when it is set, but an account
-    # can be moved or removed afterwards, so it is checked again on every run.
-    if not identity_org or not caller_org or identity_org != caller_org:
-        raise AgentNotFoundError(str(agent.get("_key") or identity_key))
-    # A binding that is no longer a service account is refused rather than
-    # quietly used: whatever it has become, it was not what an administrator
-    # chose. Falling back to the creator here would be worse — it would widen
-    # the agent's reach at the moment the narrower identity stopped working.
-    if bound and identity_doc.get("kind") != "service":
-        logger.error(
-            "Agent %s is bound to %s, which is no longer a service account",
-            agent.get("_key"),
-            identity_key,
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "This agent is bound to something that is no longer a service "
-                "account. An administrator needs to point it at one again."
-            ),
-        )
-    # Checked on every run, not only when the binding was set: an account can
-    # be removed or switched off long after an administrator bound it, and
-    # neither reaches here any other way. Falling back to the creator would be
-    # worse for the same reason as above — it widens the agent's reach at the
-    # moment the narrower identity stopped being allowed.
-    if bound and not _is_live_identity(identity_doc):
-        # Deleted wins when both are set. Soft-delete only merges `isActive`
-        # and leaves `isDisabled` as it found it, so an account switched off
-        # and then removed still carries the flag — and telling an
-        # administrator to switch it back on would send them after something
-        # that cannot work, since the account is gone from the list too.
-        switched_off = (
-            identity_doc.get("isDisabled") is True
-            and identity_doc.get("isActive") is not False
-        )
-        logger.error(
-            "Agent %s is bound to %s, which has been %s",
-            agent.get("_key"),
-            identity_key,
-            "switched off" if switched_off else "deleted",
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                # Said separately, because what an administrator should do
-                # differs: a switched-off account can be switched back on and
-                # this agent works again, a deleted one cannot.
-                "This agent is bound to a service account that has been "
-                "switched off. Switch it back on, or point the agent at "
-                "another one."
-                if switched_off
-                else "This agent is bound to a service account that has been "
-                "deleted. An administrator needs to point it at another one."
-            ),
-        )
-    synthetic = {
-        "userId": str(identity_user_id),
-        "orgId": identity_org,
-        "email": (identity_doc.get("email") or "").strip(),
-    }
-    return await _enrich_user_info(synthetic, identity_doc)
-
-
 async def _assert_agent_belongs_to_caller_org(
     agent: dict[str, Any],
     graph_provider: IGraphDBProvider,
     caller_org_id: str,
     agent_id: str,
 ) -> None:
-    """404 unless the agent's creator org matches the caller. Used before any
+    """404 unless the agent belongs to the caller's org. Used before any
     exists-vs-type distinction so other orgs cannot probe agent keys.
 
-    TODO: persist orgId on the agent instance and backfill existing docs.
-    Creator org is the only proxy today; a deleted or moved creator makes
-    the agent unreachable to its own org, and each SA chat pays a USERS lookup.
+    The org is the one the agent document names, else its creator's. A creator
+    who was removed or switched off still names their org, so that is no reason
+    to refuse; only an agent that cannot be placed in an org is refused.
+
+    TODO: persist orgId on the agent instance and backfill existing docs. The
+    creator's org is the only proxy for older agents, and costs a USERS lookup.
     """
-    creator_key = agent.get("createdBy")
     caller_org = str(caller_org_id or "").strip()
-    if not creator_key or not caller_org:
-        raise AgentNotFoundError(agent_id)
-    creator_doc = await graph_provider.get_document(
-        str(creator_key), CollectionNames.USERS.value
-    )
-    creator_org = str((creator_doc or {}).get("orgId") or "").strip()
-    if not creator_org or creator_org != caller_org:
+    agent_org = str(agent.get("orgId") or "").strip()
+    if not agent_org:
+        creator_key = agent.get("createdBy")
+        if not creator_key or not caller_org:
+            raise AgentNotFoundError(agent_id)
+        creator_doc = await graph_provider.get_document(
+            str(creator_key), CollectionNames.USERS.value
+        )
+        agent_org = str((creator_doc or {}).get("orgId") or "").strip()
+    if not agent_org or not caller_org or agent_org != caller_org:
         raise AgentNotFoundError(agent_id)
 
 
@@ -1607,7 +1402,7 @@ def _has_control_chars(text: str) -> bool:
 
 
 async def _checked_api_toolset_tools(
-    raw: object, services: dict[str, Any], org_id: str, *, service_account: bool,
+    raw: object, services: dict[str, Any], org_id: str,
 ) -> list[str]:
     """The API toolset operations to store on an agent, each one checked to exist in the org."""
     if raw == []:
@@ -1615,7 +1410,7 @@ async def _checked_api_toolset_tools(
     config_service: ConfigurationService = services["config_service"]
     try:
         return await api_toolset_attachments.checked_attachments(
-            ApiToolsetStore(config_service), org_id, raw, service_account=service_account,
+            ApiToolsetStore(config_service), org_id, raw,
         )
     except ApiToolsetError as e:
         raise InvalidRequestError(str(e)) from e
@@ -1870,11 +1665,11 @@ def _mcp_attachments_unreadable() -> AgentError:
 
 
 def _assert_no_personal_mcp_servers(
-    instances: dict[str, dict[str, Any]], *, shared_with_org: bool, service_account: bool,
+    instances: dict[str, dict[str, Any]], *, shared_with_org: bool,
 ) -> None:
     """A personal MCP server holds one user's credentials and is visible to that user only;
     an agent other people run could never load it."""
-    if not (shared_with_org or service_account):
+    if not shared_with_org:
         return
     from app.agents.mcp.service import is_personal
 
@@ -1882,7 +1677,7 @@ def _assert_no_personal_mcp_servers(
     if personal:
         raise InvalidRequestError(
             f"Personal MCP servers ({', '.join(personal)}) can't be attached to an agent that is shared "
-            "with the organization or runs as a service account."
+            "with the organization."
         )
 
 
@@ -1936,11 +1731,11 @@ def _toolset_attachments_unreadable() -> AgentError:
 
 
 def _assert_no_personal_toolsets(
-    instances: dict[str, dict[str, Any]], *, shared_with_org: bool, service_account: bool,
+    instances: dict[str, dict[str, Any]], *, shared_with_org: bool,
 ) -> None:
     """A personal action holds one user's sign-in and is visible to that user only; an agent other
     people run could never use it."""
-    if not (shared_with_org or service_account):
+    if not shared_with_org:
         return
     from app.agents.toolset_store import is_personal
 
@@ -1948,17 +1743,17 @@ def _assert_no_personal_toolsets(
     if personal:
         raise InvalidRequestError(
             f"Personal actions ({', '.join(personal)}) can't be attached to an agent that is shared "
-            "with the organization or runs as a service account."
+            "with the organization."
         )
 
 
 async def _assert_service_account_knowledge(
     connector_ids: Iterable[str], graph_provider: IGraphDBProvider, org_id: str, user_id: str, *, bound: bool,
 ) -> None:
-    """A service-account agent is run by anyone in the organisation on one identity, so it may
-    only be given sources shared with the whole organisation: no personal connector, and a
-    collection only when it runs as a bound service account. A source that is not the
-    organisation's (or no longer exists) is refused too. The run applies the same rule."""
+    """A service-account agent may be used by anyone in the organisation, so it may only be
+    given sources shared with the whole organisation: no personal connector, and a collection
+    only when it is bound to a service account. A source that is not the organisation's (or no
+    longer exists) is refused too. The run applies the same rule."""
     ids = list(dict.fromkeys(connector_ids))
     if not ids:
         return
@@ -3114,16 +2909,16 @@ async def _create_agent(request: Request, planned: dict[str, Any] | None) -> dic
         else:
             share_with_org = bool(body.get("shareWithOrg", False))
         _assert_no_personal_mcp_servers(
-            attached_mcp_instances, shared_with_org=share_with_org, service_account=is_service_account,
+            attached_mcp_instances, shared_with_org=share_with_org,
         )
-        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org, service_account=is_service_account)
+        _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org)
         if is_service_account:
             await _assert_service_account_knowledge(
                 knowledge_sources, services["graph_provider"], org_key, user_context["userId"],
                 bound=bool(service_account_binding),
             )
         api_toolset_tools = await _checked_api_toolset_tools(
-            body.get("apiToolsetTools", []), services, org_key, service_account=is_service_account,
+            body.get("apiToolsetTools", []), services, org_key,
         )
 
         # Create agent document
@@ -3464,65 +3259,6 @@ async def _create_agent(request: Request, planned: dict[str, Any] | None) -> dic
         raise
     except Exception as e:
         raise _route_failure(request, e, "create this agent", writes_body=True) from e
-
-@router.get(
-    "/{agent_id}/internal/service-account",
-    dependencies=[
-        _AGENT_ID_LOG,
-        Depends(
-            require_scopes(
-                OAuthScopes.AGENT_READ,
-                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
-            )
-        )
-    ],
-)
-async def get_agent_internal(request: Request, agent_id: str) -> JSONResponse:
-    """
-    Internal route: verify that an agent is a service account and return its
-    data.  Called by the Node.js gateway after hydrating a Slack scoped token
-    into a regular user JWT (the hydrated user is the org admin, who always has
-    access to any org-shared agent).
-
-    Returns 403 if the agent exists in the caller's org but is NOT a service
-    account, 404 if the agent is missing or belongs to another org (same 404
-    so other orgs cannot probe keys).  Service account agents are always
-    org-wide by invariant, so the standard get_agent() permission check will
-    pass for the hydrated admin user.
-    """
-    try:
-        services = await get_services(request)
-
-        agent = await services["graph_provider"].get_agent(agent_id)
-        if not agent:
-            raise AgentNotFoundError(agent_id)
-
-        org_key = _get_user_context(request)["orgId"]
-        await _assert_agent_belongs_to_caller_org(
-            agent, services["graph_provider"], org_key, agent_id
-        )
-
-        # Guard: this internal route is exclusively for service account agents.
-        if not agent.get("isServiceAccount"):
-            raise HTTPException(
-                status_code=403,
-                detail="This endpoint is only accessible for service account agents.",
-            )
-
-        await _enrich_agent_models(agent, services["config_service"], services["logger"])
-        agent.pop("modelsEnriched", None)
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": "Agent retrieved successfully",
-                "isServiceAccount": True,
-            },
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise _route_failure(request, e, "load this agent") from e
 
 
 @router.get("/web-search-usage/{provider}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -4064,14 +3800,9 @@ async def require_agent_execute_for_named_agents(request: Request, agent_id: str
     "/{agent_id}/run-definition",
     # The stream's own rule (main #4220): the universal agent with conversation:chat, a named one with agent:execute.
     dependencies=[
-        Depends(
-            require_scopes(
-                OAuthScopes.AGENT_EXECUTE,
-                OAuthScopes.CONVERSATION_CHAT,
-                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
-            )
-        ),
+        Depends(require_scopes(OAuthScopes.AGENT_EXECUTE, OAuthScopes.CONVERSATION_CHAT)),
         Depends(require_agent_execute_for_named_agents),
+        Depends(require_identified_caller),
     ],
 )
 async def get_agent_run_definition(
@@ -4092,9 +3823,8 @@ async def get_agent_run_definition(
 
     Execute-scoped: an ``agent:execute``-only token may run an agent without
     being able to read its full definition (prompts, sharing). Access is the
-    chat route's: a service-account agent may be run by anyone of its creator's
-    org (the Slack bot's service token included), any other agent needs
-    ``check_agent_permission``; no access is a 404.
+    chat route's: an identified, live person whom ``check_agent_permission``
+    admits; no access is a 404.
     """
     from app.agents.agent_loop.skills.bundle_source import GraphSkillSource
     from app.agents.mcp.service import is_mcp_enabled
@@ -4113,6 +3843,7 @@ async def get_agent_run_definition(
         graph_provider = services["graph_provider"]
         config_service = services["config_service"]
         user_context = _get_user_context(request)
+        refuse_unidentified_caller(user_context)
         org_key = current_org_id()
 
         if agent_id == ASSISTANT_AGENT_KEY:
@@ -4125,18 +3856,13 @@ async def get_agent_run_definition(
         agent = await graph_provider.get_agent(agent_id, org_key)
         if not agent:
             raise AgentNotFoundError(agent_id)
-        user_doc: dict[str, Any] = {}
-        # Whose own skills the run is offered when the agent assigns none (FIX-SKILLS): a service account has none.
-        viewers: tuple[str | None, ...] = ()
-        if agent.get("isServiceAccount", False):
-            await _assert_agent_belongs_to_caller_org(agent, graph_provider, org_key, agent_id)
-        elif is_service_token(getattr(request.state, "user", None)) or user_context["isServiceAccount"]:
+        await _assert_agent_belongs_to_caller_org(agent, graph_provider, org_key, agent_id)
+        user_doc = await _get_user_document(user_context["userId"], graph_provider, services["logger"])
+        _require_live_person(user_doc)
+        if not await graph_provider.check_agent_permission(agent_id, user_doc["_key"], org_key):
             raise AgentNotFoundError(agent_id)
-        else:
-            user_doc = await _get_user_document(user_context["userId"], graph_provider, services["logger"])
-            if not await graph_provider.check_agent_permission(agent_id, user_doc["_key"], org_key):
-                raise AgentNotFoundError(agent_id)
-            viewers = (user_context["userId"], user_doc.get("_key"))
+        # Whose own skills the run is offered when the agent assigns none (FIX-SKILLS).
+        viewers = (user_context["userId"], user_doc.get("_key"))
 
         store = AgentVersionStore(graph_provider)
         pinned = await store.get(org_key, agent_id, version) if version is not None else None
@@ -4170,8 +3896,7 @@ async def get_agent_run_definition(
             failures: list[dict[str, Any]] = []
             live, answered = await _live_mcp_listing(
                 servers, config_service, user_context, user_doc, services["logger"],
-                agent_id=agent_id, is_service_account=bool(agent.get("isServiceAccount", False)),
-                failures=failures,
+                agent_id=agent_id, failures=failures,
             )
             return McpListing(live, answered, failures)
 
@@ -4277,7 +4002,6 @@ async def _live_mcp_listing(
     logger: Logger,
     *,
     agent_id: str = ASSISTANT_AGENT_KEY,
-    is_service_account: bool = False,
     failures: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, dict[str, str]], frozenset[str]]:
     """The assistant's MCP tools as a durable run's claim will discover them for this caller now, and the servers
@@ -4289,17 +4013,14 @@ async def _live_mcp_listing(
     from app.agents.mcp.failure import MCPFailureReason
 
     user_id = user_context["userId"]
-    # The chat route's credential owner: a service-account agent's own records, else the caller's.
-    owner = agent_id if is_service_account else user_id
     blocked: list[dict[str, Any]] = []
     configs, configured, _, _ = await _resolve_mcp_server_configs(
         config_service,
         servers,
         org_id=current_org_id(),
-        credential_lookup_id=owner,
+        credential_lookup_id=user_id,
         executing_user_id=user_id,
         agent_id=agent_id,
-        is_service_account=is_service_account,
         logger=logger,
         blocked=blocked,
     )
@@ -4320,7 +4041,7 @@ async def _live_mcp_listing(
         org_id=current_org_id(),
         user_id=user_id,
         user_email=user_doc.get("email") or "",
-        credential_owner=owner,
+        credential_owner=user_id,
         config_service=config_service,
         logger=logger,
         mcp_servers=configured,
@@ -4601,7 +4322,7 @@ async def _write_draft(
             mark_request_failure(request, unreadable, include_error_text=False)
             raise unreadable from e
     _assert_no_personal_mcp_servers(
-        attached_mcp_instances, shared_with_org=final_shared, service_account=final_service_account,
+        attached_mcp_instances, shared_with_org=final_shared,
     )
     if sharing_turned_on and "toolsets" not in body:
         existing_toolset_ids = {ts["instanceId"] for ts in agent.get("toolsets") or [] if ts.get("instanceId")}
@@ -4613,7 +4334,7 @@ async def _write_draft(
             unreadable = _toolset_attachments_unreadable()
             mark_request_failure(request, unreadable, include_error_text=False)
             raise unreadable from e
-    _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared, service_account=final_service_account)
+    _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared)
     if final_service_account and ("knowledge" in body or converting or "serviceAccountUserId" in body):
         await _assert_service_account_knowledge(
             _parse_knowledge_sources(body.get("knowledge")) if "knowledge" in body
@@ -4623,11 +4344,9 @@ async def _write_draft(
             user_context["userId"],
             bound=bool(body.get("serviceAccountUserId", agent.get("serviceAccountUserId"))),
         )
-    if "apiToolsetTools" in body or (final_service_account and not agent.get("isServiceAccount")):
-        # Becoming a service account re-checks what is already attached.
+    if "apiToolsetTools" in body:
         body["apiToolsetTools"] = await _checked_api_toolset_tools(
-            body.get("apiToolsetTools", agent.get("apiToolsetTools") or []), services,
-            org_key, service_account=final_service_account,
+            body.get("apiToolsetTools", agent.get("apiToolsetTools") or []), services, org_key,
         )
 
     # Handle shareWithOrg flag changes
@@ -5247,6 +4966,7 @@ UNIVERSAL_AGENT_ID = "agentIdPlaceholder"
     dependencies=[
         Depends(require_scopes(OAuthScopes.AGENT_EXECUTE, OAuthScopes.CONVERSATION_CHAT)),
         Depends(require_agent_execute_for_named_agents),
+        Depends(require_identified_caller),
     ],
 )
 async def chat(request: Request, agent_id: str) -> JSONResponse:
@@ -5282,7 +5002,6 @@ async def _resolve_toolset_configs(
     executing_user_id: str,
     prefetched: dict[str, dict[str, Any]],
     agent_id: str,
-    is_service_account: bool,
     logger: Logger,
     bound: frozenset[str] = frozenset(),
 ) -> ToolsetConfigResolution:
@@ -5304,7 +5023,6 @@ async def _resolve_toolset_configs(
 
         Uses instanceId (admin-created instance) if available, otherwise falls
         back to the legacy toolset name for backward compatibility.
-        For service account agents, uses agentKey as the credential owner.
         """
         instance_id = toolset.get("instanceId")
         toolset_name = toolset.get("name", "")
@@ -5353,7 +5071,7 @@ async def _resolve_toolset_configs(
         elif config:
             # Config saved but authentication not completed (e.g. OAuth flow pending)
             unauthenticated_toolset_display_names.append(display_name)
-            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
+            cred_owner = f"user '{executing_user_id}'"
             logger.warning(
                 f"Toolset '{toolset_name}' (instance='{instance_id}') is configured but not "
                 f"authenticated for {cred_owner}. Auth flow needs to be completed."
@@ -5361,7 +5079,7 @@ async def _resolve_toolset_configs(
         else:
             # No config found at all
             missing_toolset_display_names.append(display_name)
-            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
+            cred_owner = f"user '{executing_user_id}'"
             logger.warning(
                 f"Toolset config not found for {cred_owner} / "
                 f"toolset '{toolset_name}' (instance='{instance_id}'). "
@@ -5384,7 +5102,6 @@ async def _resolve_mcp_server_configs(
     credential_lookup_id: str,
     executing_user_id: str,
     agent_id: str,
-    is_service_account: bool,
     logger: Logger,
     bound: frozenset[str] = frozenset(),
     prefetched: dict[str, dict[str, Any]] | None = None,
@@ -5414,9 +5131,8 @@ async def _resolve_mcp_server_configs(
             instance = prefetched_entry["instance"]
             return mcp_server, instance, {} if instance_id in bound else prefetched_entry["auth"]
         try:
-            # A service account's agent never reaches a user's personal server.
             instance = await get_instance_for_org(
-                instance_id, config_service, org_id, None if is_service_account else executing_user_id,
+                instance_id, config_service, org_id, executing_user_id,
             )
             if not instance:
                 return mcp_server, None, None
@@ -5466,7 +5182,7 @@ async def _resolve_mcp_server_configs(
                     "authMode": instance.get("authMode"),
                     "sharedCredential": mcp_service.uses_shared_credential(instance),
                 })
-            cred_owner = f"agent '{agent_id}'" if is_service_account else f"user '{executing_user_id}'"
+            cred_owner = f"user '{executing_user_id}'"
             logger.warning(
                 f"MCP server '{display_name}' (instance='{instance_id}') is not authenticated "
                 f"for {cred_owner}."
@@ -5484,13 +5200,10 @@ async def _resolve_mcp_server_configs(
     "/{agent_id}/chat/stream",
     dependencies=[
         Depends(
-            require_scopes(
-                OAuthScopes.AGENT_EXECUTE,
-                OAuthScopes.CONVERSATION_CHAT,
-                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
-            )
+            require_scopes(OAuthScopes.AGENT_EXECUTE, OAuthScopes.CONVERSATION_CHAT)
         ),
         Depends(require_agent_execute_for_named_agents),
+        Depends(require_identified_caller),
     ],
 )
 async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
@@ -5508,6 +5221,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         reranker_service = None  # reranking is not wired; the slot is kept for call signatures
         config_service = services["config_service"]
         user_context = _get_user_context(request)
+        refuse_unidentified_caller(user_context)
         org_key = user_context["orgId"]
         body = _parse_request_body(await request.body())
         try:
@@ -5600,8 +5314,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             enriched_user_info = await _enrich_user_info(user_context, user_doc)
             _apply_user_context_gate(enriched_user_info, enabled=user_context_enabled)
             perm = {"can_edit": False, "can_share": False, "role": "viewer"}
-            is_service_account = False
-            artifact_owner_user_id = None
 
         else:
             actions_enabled = mcp_enabled = None
@@ -5613,36 +5325,22 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             )
             if not agent:
                 raise AgentNotFoundError(agent_id)
-            is_service_account = agent.get("isServiceAccount", False)
-            artifact_owner_user_id = None
-
-            if is_service_account:
-                enriched_user_info = await _enrich_user_info_for_service_account_agent_chat(
-                    agent, graph_provider, logger, org_key
-                )
-                enriched_user_info = await _resolve_service_account_caller_identity(
-                    enriched_user_info, chat_query, user_context, graph_provider, logger,
-                )
-                artifact_owner_user_id = await _service_account_artifact_owner(
-                    user_context, graph_provider, org_key,
-                )
+            # Every agent runs as the person asking: their reads, their tools,
+            # their credentials, narrowed by the agent's own sources and tools.
+            # Nothing here depends on what the agent document or the request
+            # says the agent is, so there is no creator or agent identity to
+            # fall back on.
+            await _assert_agent_belongs_to_caller_org(agent, graph_provider, org_key, agent_id)
+            user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
+            _require_live_person(user_doc)
+            enriched_user_info = await _enrich_user_info(user_context, user_doc)
+            if resolved is not None and resolved.access_run:
+                # Node's agent directory holds a current "may run" for this caller (CPD-10).
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
-                logger.debug(
-                    "Loaded service account agent %s (retrieval runs as user %s)",
-                    agent_id,
-                    enriched_user_info.get("userId"),
-                )
             else:
-                # Standard user path: look up the user document and verify permissions.
-                user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
-                enriched_user_info = await _enrich_user_info(user_context, user_doc)
-                if resolved is not None and resolved.access_run:
-                    # Node's agent directory holds a current "may run" for this caller (CPD-10).
-                    perm = {"can_edit": False, "can_share": False, "role": "viewer"}
-                else:
-                    perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
-                    if not perm:
-                        raise AgentNotFoundError(agent_id)
+                perm = await services["graph_provider"].check_agent_permission(agent_id, user_doc["_key"], org_key)
+                if not perm:
+                    raise AgentNotFoundError(agent_id)
             agent = await agent_for_chat(
                 agent, graph_provider, org_key, agent_id, config_service, resolved=resolved is not None,
             )
@@ -5672,7 +5370,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             Failures in here surface as a terminal SSE error frame rather than
             an HTTP status — the status line is long gone by then. Genuine
             auth/not-found errors are raised before this, in `chat_stream`."""
-            nonlocal agent, prefetched_toolset_auth, actions_enabled, mcp_enabled, is_service_account
+            nonlocal agent, prefetched_toolset_auth, actions_enabled, mcp_enabled
             try:
                 if agent is None:
                     agent, prefetched_toolset_auth = await get_assistant_agent(
@@ -5780,28 +5478,22 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # ============================================================================
                 # LOAD TOOLSET CONFIGS (SECURITY-CRITICAL)
                 # ============================================================================
-                # For normal agents: load toolset configs using the EXECUTING user's ID.
+                # Load toolset configs using the EXECUTING user's ID, for every agent.
                 # This ensures that when a shared agent is executed, the credentials of the
-                # user making the request are used — not the agent creator's credentials.
-                #
-                # For service account agents: load toolset configs using the AGENT KEY.
-                # The agent has its own credentials stored at /services/toolsets/{instanceId}/{agentKey}
-                # These credentials are shared across all users who use this agent.
+                # user making the request are used: never the agent creator's, and never
+                # a credential stored against the agent key.
                 #
                 # SECURITY MODEL:
                 # 1. Toolset nodes in graph DB contain ONLY: instanceId, name, displayName, tools
                 # 2. NO userId is stored in toolset nodes (prevents credential leakage)
                 # 3. User credentials: /services/toolsets/{instanceId}/{userId}
-                # 4. Agent credentials: /services/toolsets/{instanceId}/{agentKey}
-                # 5. The lookup key comes from authenticated request context (user) or agent key
+                # 4. The lookup key comes from the authenticated request context only
                 # ============================================================================
 
-                is_service_account = bool(agent.get("isServiceAccount", False))
                 executing_user_id = user_context["userId"]
-                # For service account agents, credentials are keyed by agentKey not userId
-                credential_lookup_id = agent_id if is_service_account else executing_user_id
+                credential_lookup_id = executing_user_id
                 toolset_configs: dict = {}  # SENSITIVE: Contains user/agent credentials
-                bound = bound_installations(resolved, credential_lookup_id, service_account=is_service_account)
+                bound = bound_installations(resolved, credential_lookup_id, service_account=False)
 
                 # Filter to toolsets that actually have a name or instanceId before the concurrent fetch
                 named_toolsets = [t for t in agent_toolsets if t.get("instanceId") or t.get("name")]
@@ -5819,7 +5511,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         executing_user_id=executing_user_id,
                         prefetched=prefetched_toolset_auth,
                         agent_id=agent_id,
-                        is_service_account=is_service_account,
                         logger=logger,
                         bound=bound,
                     )
@@ -5834,18 +5525,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                             unauth_list = ", ".join(f"'{n}'" for n in unauthenticated_toolset_display_names)
                             problem_parts.append(f"not authenticated: {unauth_list}")
 
-                        if is_service_account:
-                            error_message = (
-                                f"This service account agent requires the following actions to be configured — "
-                                f"{'; '.join(problem_parts)}. "
-                                "Please configure the agent's action credentials in Agent Builder (key icon next to each action)."
-                            )
-                        else:
-                            error_message = (
-                                f"This agent requires the following actions to be set up — "
-                                f"{'; '.join(problem_parts)}. "
-                                "Please connect your actions in Workspace → Actions before using this agent."
-                            )
+                        error_message = (
+                            f"This agent requires the following actions to be set up — "
+                            f"{'; '.join(problem_parts)}. "
+                            "Please connect your actions in Workspace → Actions before using this agent."
+                        )
                         log_turn_end(
                             logger, "error", error_class="bad_request", code="toolset_config_missing",
                             run_id=chat_query.runId, duration_ms=round(timer.total_ms),
@@ -5863,8 +5547,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 # LOAD MCP SERVER CONFIGS (SECURITY-CRITICAL)
                 # ============================================================================
                 # Mirrors the toolset config loading immediately above: same
-                # `credential_lookup_id` (agentKey for service accounts, executing user
-                # otherwise), same hard-block-on-unauthenticated policy. Unlike toolset
+                # `credential_lookup_id` (always the executing user), same
+                # hard-block-on-unauthenticated policy. Unlike toolset
                 # configs, an MCP server also needs its org-level instance definition
                 # (transport/url/authMode) — never stored on the graph node
                 # (`_create_mcp_server_edges` avoids secrets there) — so each fetch is a
@@ -5888,7 +5572,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         credential_lookup_id=credential_lookup_id,
                         executing_user_id=executing_user_id,
                         agent_id=agent_id,
-                        is_service_account=is_service_account,
                         logger=logger,
                         bound=bound,
                         prefetched=prefetched_mcp,
@@ -5904,18 +5587,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                             unauth_list = ", ".join(f"'{n}'" for n in unauthenticated_mcp_server_display_names)
                             problem_parts.append(f"not authenticated: {unauth_list}")
 
-                        if is_service_account:
-                            error_message = (
-                                f"This service account agent requires the following MCP servers to be configured — "
-                                f"{'; '.join(problem_parts)}. "
-                                "Please configure the agent's MCP server credentials in Agent Builder."
-                            )
-                        else:
-                            error_message = (
-                                f"This agent requires the following MCP servers to be set up — "
-                                f"{'; '.join(problem_parts)}. "
-                                "Please connect them in Workspace → MCP Servers before using this agent."
-                            )
+                        error_message = (
+                            f"This agent requires the following MCP servers to be set up — "
+                            f"{'; '.join(problem_parts)}. "
+                            "Please connect them in Workspace → MCP Servers before using this agent."
+                        )
                         log_turn_end(
                             logger, "error", error_class="bad_request", code="mcp_server_config_missing",
                             run_id=chat_query.runId, duration_ms=round(timer.total_ms),
@@ -5926,7 +5602,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                             protocol, error_message, code="mcp_server_config_missing",
                             details={
                                 "agentId": agent_id,
-                                "serviceAccount": bool(is_service_account),
+                                "serviceAccount": False,
                                 "servers": blocked_mcp_servers,
                             },
                         )
@@ -5937,12 +5613,15 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 timer.mark("mcp_cfg")
 
                 agent_knowledge = agent.get("knowledge", [])
-                # An unbound service agent would read a collection as its creator, so it reads none,
-                # the caller's project collection included (project_files_knowledge reads it from filters).
-                collections_allowed = not is_service_account or bool(agent.get("serviceAccountUserId"))
-                if is_service_account:
+                # Anyone in the org may use a service agent, so it keeps only the sources shared with the
+                # org, and a collection (the caller's project collection included) only when it is bound.
+                # Both flags are the agent record's own, never the request's, and the lookup runs as the
+                # caller: this only removes sources.
+                service_agent = bool(agent.get("isServiceAccount", False))
+                collections_allowed = not service_agent or bool(agent.get("serviceAccountUserId"))
+                if service_agent:
                     agent_knowledge = await service_account_knowledge(
-                        graph_provider, agent_knowledge, enriched_user_info.get("userId", ""), org_key, logger,
+                        graph_provider, agent_knowledge, user_context["userId"], org_key, logger,
                         bound=collections_allowed,
                     )
                 caps = _parse_agent_capabilities(chat_query.agentCapabilities)
@@ -6094,9 +5773,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     graph_provider,
                     org_id=user_context["orgId"],
                     user_id=user_context["userId"],
-                    is_service_account=bool(
-                        (getattr(request.state, "user", None) or {}).get("isServiceAccount"),
-                    ),
+                    is_service_account=False,
                     attachments=chat_query.attachments,
                     previous_conversations=chat_query.previousConversations,
                     logger=logger,
@@ -6139,9 +5816,10 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "harnessVirtualFileSystem": getattr(
                         request.state, "harness_virtual_filesystem", None
                     ),
-                    "is_service_account": is_service_account,
+                    "is_service_account": False,
+                    "service_agent_shared_databases_only": service_agent,
                     "credentialOwner": credential_lookup_id,
-                    "artifact_owner_user_id": artifact_owner_user_id,
+                    "artifact_owner_user_id": None,
                     "isPlaceholderAgent": is_placeholder,
                     "modelName": model_name,
                     "modelKey": model_key,
@@ -6185,18 +5863,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     is_reasoning_model=bool(llm_config.get("isReasoning", False)),
                     stage_timer=timer,
                     cancellation_registry=cancellation_registry,
-                    # Service-account agents run retrieval as the agent
-                    # creator (enriched_user_info.userId), but the RUN is
-                    # owned by the authenticated caller — without this,
-                    # cancel() compares the creator's userId against the
-                    # caller's and returns 403.
-                    cancellation_owner=(
-                        RunOwner(
-                            user_id=user_context.get("userId", ""),
-                            org_id=user_context.get("orgId", ""),
-                            conversation_id=chat_query.conversationId,
-                        ) if is_service_account else None
-                    ),
                     entity_vector_store=entity_vector_store,
                 )
 

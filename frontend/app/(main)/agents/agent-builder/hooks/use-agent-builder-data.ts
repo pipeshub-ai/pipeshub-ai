@@ -125,29 +125,15 @@ async function fetchStaticBuilderResources() {
   };
 }
 
-/** Whose actions the palette lists: a service-account agent's own credentials, otherwise the person's. */
-interface ToolsetScope {
-  agentKey: string | null;
-  isServiceAccount: boolean;
-}
-
-function toolsetScopeOf(agentDetails: AgentDetail | null, editingAgentKey: string | null): ToolsetScope {
-  const agentKey = agentDetails?._key || editingAgentKey || null;
-  return { agentKey, isServiceAccount: agentDetails?.isServiceAccount === true && agentKey !== null };
-}
-
+/** Every agent, service agents included, is built from and runs with the person's own connections. */
 async function readToolsetPage(
-  scope: ToolsetScope,
   page: number | null,
   query: string,
 ): Promise<CatalogPage<BuilderSidebarToolset, number>> {
   if (!isActionsEnabledNow()) return { items: [], next: null };
   const at = page ?? 1;
   const params = { page: at, limit: TOOLSETS_PAGE, search: query || undefined, includeRegistry: true };
-  const { toolsets, hasNext, pagination } =
-    scope.isServiceAccount && scope.agentKey
-      ? await ToolsetsApi.getAgentToolsets(scope.agentKey, params)
-      : await ToolsetsApi.getMyToolsets(params);
+  const { toolsets, hasNext, pagination } = await ToolsetsApi.getMyToolsets(params);
   return { items: toolsets, next: hasNext ? at + 1 : null, total: pagination?.total ?? null };
 }
 
@@ -170,17 +156,9 @@ const pagingOf = <T,>(catalog: PagedCatalog<T>): BuilderCatalogPaging => ({
   more: catalog.more,
 });
 
-async function loadMcpServersForAgentContext(
-  agentDetails: AgentDetail | null,
-  editingAgentKey: string | null
-): Promise<McpMyServerEntry[]> {
+async function loadMcpServersForAgentContext(): Promise<McpMyServerEntry[]> {
   if (!isMcpEnabledNow()) return [];
-  const isSvc = agentDetails?.isServiceAccount === true;
-  const keyForMcp = agentDetails?._key || editingAgentKey || undefined;
-  const { instances } =
-    isSvc && keyForMcp
-      ? await McpServersApi.getAgentMcpServers(keyForMcp, true)
-      : await McpServersApi.getMyMcpServers(true);
+  const { instances } = await McpServersApi.getMyMcpServers(true);
   return instances;
 }
 
@@ -199,12 +177,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
   // R30-LAT-FU-1: the org's catalogs a page at a time; the agent's own grants come named in its answer.
   const knowledgeBases = usePagedCatalog(AgentsApi.knowledgeBasePage, kbKey, 'collections');
   const apps = usePagedCatalog(AgentsApi.knowledgeHubAppPage, appKey, 'connected apps');
-  const toolsetScopeRef = useRef<ToolsetScope>({ agentKey: null, isServiceAccount: false });
-  const readToolsets = useCallback(
-    (page: number | null, query: string) => readToolsetPage(toolsetScopeRef.current, page, query),
-    []
-  );
-  const toolsetCatalog = usePagedCatalog(readToolsets, toolsetKey, 'actions');
+  const toolsetCatalog = usePagedCatalog(readToolsetPage, toolsetKey, 'actions');
   const availableKnowledgeBases = knowledgeBases.items;
   const configuredConnectors = useMemo(() => mapNodesToConnectors(apps.items), [apps.items]);
   const toolsets = toolsetCatalog.items;
@@ -226,14 +199,12 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
   const { first: firstToolsets, clear: clearToolsets } = toolsetCatalog;
   /** The first page of the actions for this agent, narrowed to `search` when given. */
   const refreshToolsets = useCallback(
-    async (agentKey?: string | null, isServiceAccount?: boolean, search?: string) => {
+    async (_agentKey?: string | null, _isServiceAccount?: boolean, search?: string) => {
       toolsetsSearchRef.current = search ?? '';
       if (!isActionsEnabledNow()) {
         clearToolsets();
         return;
       }
-      const key = agentKey ?? null;
-      toolsetScopeRef.current = { agentKey: key, isServiceAccount: Boolean(isServiceAccount) && key !== null };
       await firstToolsets(toolsetsSearchRef.current);
     },
     [clearToolsets, firstToolsets]
@@ -255,16 +226,13 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
   }, [restApps, restKnowledgeBases]);
 
   const refreshMcpServers = useCallback(
-    async (agentKey?: string | null, isServiceAccount?: boolean) => {
+    async (_agentKey?: string | null, _isServiceAccount?: boolean) => {
       if (!isMcpEnabledNow()) {
         setMcpServers([]);
         return;
       }
-      const svc = Boolean(isServiceAccount) && Boolean(agentKey);
       try {
-        const { instances } = svc
-          ? await McpServersApi.getAgentMcpServers(agentKey!, true)
-          : await McpServersApi.getMyMcpServers(true);
+        const { instances } = await McpServersApi.getMyMcpServers(true);
         setMcpServers(instances);
         setMcpServersLoaded(true);
       } catch (err) {
@@ -299,13 +267,12 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
   useEffect(() => {
     let cancelled = false;
 
-    /** The agent's actions and MCP servers, scoped to whose credentials it runs with. */
+    /** The person's actions and MCP servers, whatever kind of agent it is. */
     const loadAgentContext = async (agentDetails: AgentDetail | null) => {
-      const scope = toolsetScopeOf(agentDetails, editingAgentKey);
       toolsetsSearchRef.current = '';
       const [, mcpServerEntries] = await Promise.all([
-        refreshToolsets(scope.agentKey, scope.isServiceAccount, ''),
-        loadMcpServersForAgentContext(agentDetails, editingAgentKey).catch((err) => {
+        refreshToolsets(null, false, ''),
+        loadMcpServersForAgentContext().catch((err) => {
           console.error('Failed to fetch MCP servers:', err);
           return null;
         }),

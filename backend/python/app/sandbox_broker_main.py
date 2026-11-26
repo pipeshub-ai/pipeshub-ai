@@ -474,5 +474,8 @@ async def run_broker(port: int = SANDBOX_BROKER_PORT) -> None:
             await shutdown
 
 
+# Read by the agent-loop route checks: this main serves no FastAPI routes.
+NO_HTTP_APP = "the sandbox broker API, not a FastAPI app"
+
 if __name__ == "__main__":
     asyncio.run(run_broker())

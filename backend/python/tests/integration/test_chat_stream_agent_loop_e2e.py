@@ -28,9 +28,13 @@ from app.api.routes.chatbot import askAIStream
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.web.models import WebResult
 from tests.support.bound_org import bound_like_auth
+from tests.support.loop_caller import loop_caller_verified  # noqa: F401 - a fixture, used by name
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+# These call the route handlers directly, below the route guard.
+pytestmark = pytest.mark.usefixtures("loop_caller_verified")
 
 _USER = {"orgId": "org-1", "userId": "user-1", "email": "user@corp.example"}
 

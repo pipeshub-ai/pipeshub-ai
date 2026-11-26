@@ -125,6 +125,36 @@ describe('P8a schedule routes (RT)', () => {
     expect(cron.json.error.code).to.equal('HTTP_AGENT_HARNESS_SCHEDULE_INVALID');
   });
 
+  for (const principalKind of ['app', 'service_account', 'unknown']) {
+    it(`a token with no person behind it (${principalKind}) creates, resumes, repins and runs no schedule; it may pause one`, async () => {
+      const scheduleId = (await call('POST', SCHEDULES_PREFIX, BODY)).json
+        .schedule.id;
+      caller = {
+        userId: ALICE,
+        orgId: ORG,
+        isOAuth: true,
+        oauthScopes: ['agent:execute'],
+        principalKind,
+      };
+      const one = `${SCHEDULES_PREFIX}/${scheduleId}`;
+      for (const [method, path, body] of [
+        ['POST', SCHEDULES_PREFIX, BODY],
+        ['POST', `${one}/resume`, {}],
+        ['PUT', `${one}/agent-version`, { agentVersion: 'latest' }],
+        ['POST', `${one}/run`, {}],
+      ] as const) {
+        const refused = await call(method, path, body, {
+          'idempotency-key': 'k-1',
+        });
+        expect(refused.status, path).to.equal(403);
+        expect(refused.json.error.message, path).to.contain(
+          'unidentified users',
+        );
+      }
+      expect((await call('POST', `${one}/pause`, {})).status).to.equal(200);
+    });
+  }
+
   it('SYNCMAIN2: a token limited to some knowledge (main #4451) cannot schedule a run', async () => {
     caller = {
       userId: ALICE, orgId: ORG, isOAuth: true, oauthScopes: ['agent:execute'],

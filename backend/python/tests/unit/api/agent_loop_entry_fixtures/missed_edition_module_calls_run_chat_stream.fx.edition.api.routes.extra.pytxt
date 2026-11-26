@@ -1,0 +1,9 @@
+from fastapi import APIRouter
+from fx.agents.chat_modes import run_chat_stream
+
+router = APIRouter()
+
+
+@router.post("/qa/edition-chat")
+async def qa_chat(request):
+    return run_chat_stream(request)

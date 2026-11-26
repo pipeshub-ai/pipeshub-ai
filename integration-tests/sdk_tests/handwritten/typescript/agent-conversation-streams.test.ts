@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { createClient } from "./client.js";
+import { createSessionClient } from "./client.js";
 import { expectStatus } from "./errors.js";
 import {
   createdConversationId,
@@ -11,7 +11,7 @@ import {
 const CHAT_MODE = "quick";
 
 test("Handwritten Agent Conversation Streams", async () => {
-  const pipeshub = createClient();
+  const pipeshub = createSessionClient();
 
   const created = await pipeshub.agents.createAgent({
     name: "sdk-test-agent-streams",

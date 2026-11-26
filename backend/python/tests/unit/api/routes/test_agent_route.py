@@ -810,6 +810,7 @@ class TestChatStreamWithPlaceholder:
             "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "my-agent",
             "knowledge": [],
             "toolsets": [],
@@ -852,6 +853,7 @@ class TestChatStreamWithPlaceholder:
             "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "my-agent",
             "knowledge": [],
             "toolsets": [],
@@ -892,6 +894,7 @@ class TestChatStreamWithPlaceholder:
             "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "my-agent",
             "knowledge": [],
             "toolsets": [],
@@ -1046,6 +1049,7 @@ class TestReasoningModelValidation:
             "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1",
             "knowledge": [],
             "toolsets": [],
@@ -1095,6 +1099,7 @@ class TestKBFilterHandling:
             "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1",
             "knowledge": [],
             "toolsets": [],

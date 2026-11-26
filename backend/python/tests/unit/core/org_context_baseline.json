@@ -131,6 +131,7 @@
   "app/agents/toolset_store.py": 6,
   "app/api/connection_limit.py": 1,
   "app/api/middlewares/admin_gate.py": 1,
+  "app/api/middlewares/identified_caller.py": 1,
   "app/api/routes/agent.py": 22,
   "app/api/routes/ai_models_registry.py": 2,
   "app/api/routes/api_toolsets.py": 1,

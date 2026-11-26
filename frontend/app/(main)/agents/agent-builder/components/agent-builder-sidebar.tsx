@@ -550,12 +550,11 @@ export function AgentBuilderSidebar(props: {
                     refreshToolsets={refreshToolsets}
                     activeToolsetTypeKeys={activeToolsetTypeKeys}
                     toolsetMergeCheckNodes={toolsetMergeCheckNodes}
-                    isServiceAccount={isServiceAccount}
+                    isServiceAccount={false}
                     agentKey={agentKey}
-                    onManageAgentToolsetCredentials={onManageAgentToolsetCredentials}
                     onNotify={onNotify}
                     structureLocked={paletteStructureLocked}
-                    orgCredentialUiLocked={toolsetsOrgCredentialLocked}
+                    orgCredentialUiLocked={false}
                     onPaletteStructureDragBlocked={onPaletteDragBlocked}
                     webSearchAttached={webSearchAttached}
                     grantable={grantable}
@@ -583,7 +582,7 @@ export function AgentBuilderSidebar(props: {
                     loading={loading}
                     refreshMcpServers={refreshMcpServers}
                     mcpMergeCheckNodes={mcpMergeCheckNodes}
-                    isServiceAccount={isServiceAccount}
+                    isServiceAccount={false}
                     agentShared={isServiceAccount || shareWithOrg}
                     isAdmin={Boolean(isAdmin)}
                     agentKey={agentKey}

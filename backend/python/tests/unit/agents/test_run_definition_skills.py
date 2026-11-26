@@ -110,7 +110,7 @@ async def test_the_route_answers_with_the_digests() -> None:
 
     # A fresh graph: this process must seed its builtins again, whatever an earlier test reconciled.
     reset_builtin_reconcile_state()
-    graph = _AgentGraph({"_key": "agent-1", "skills": [{"name": "deploy"}, {"name": "missing"}]})
+    graph = _AgentGraph({"_key": "agent-1", "orgId": ORG, "skills": [{"name": "deploy"}, {"name": "missing"}]})
     _ = await _skill(graph, "deploy", "one")
     request = MagicMock()
     request.state.user = {"orgId": ORG, "userId": "u1", "scopes": ["agent:execute"]}

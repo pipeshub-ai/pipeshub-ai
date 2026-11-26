@@ -65,7 +65,7 @@ export function AgentBuilderHeader(props: {
   /** Any other reason save is blocked, shown as the save button's tooltip. */
   saveBlockedReason?: string;
   isServiceAccount: boolean;
-  /** The service account this agent searches as, by `userId`; null means its creator. */
+  /** The service account an administrator bound this agent to, by `userId`; null means none. It does not change what anyone sees. */
   serviceAccountUserId?: string | null;
   onServiceAccountUserIdChange?: (next: string | null) => void;
   editing: boolean;

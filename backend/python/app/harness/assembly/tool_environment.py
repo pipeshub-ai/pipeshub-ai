@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from app.agents.run_definition import ASSISTANT_AGENT_KEY
@@ -374,34 +373,24 @@ async def _identity(
     logger: Any,  # noqa: ANN401
     *,
     user_context_enabled: bool | None = None,
-) -> tuple[dict[str, Any], bool]:
-    """The user info the tools act as, and whether it is the agent's service account. ``user_context_enabled``:
-    the Labs switch the built-in assistant honours (the system assistant definition); an agent has its own."""
+) -> dict[str, Any]:
+    """The user info the tools act as: the person the run was admitted for, whatever kind of agent it runs. The
+    actor must still be a live person's account. ``user_context_enabled``: the Labs switch the built-in assistant
+    honours (the system assistant definition); an agent has its own."""
     from fastapi import HTTPException
 
     from app.api.routes.agent import (
         AgentNotFoundError,
         _apply_user_context_gate,
         _enrich_user_info,
-        _enrich_user_info_for_service_account_agent_chat,
         _get_user_document,
-        _resolve_service_account_caller_identity,
+        _require_live_person,
     )
 
     user_context = {"userId": run.actor_id, "orgId": run.org_id}
     try:
-        if agent is not None and agent.get("isServiceAccount", False):
-            enriched = await _enrich_user_info_for_service_account_agent_chat(
-                agent, graph, logger, run.org_id
-            )
-            caller = SimpleNamespace(
-                callerDisplayName=run.caller_display_name, callerEmail=run.caller_email
-            )
-            enriched = await _resolve_service_account_caller_identity(
-                enriched, caller, user_context, graph, logger  # type: ignore[arg-type]
-            )
-            return enriched, True
         user_doc = await _get_user_document(run.actor_id, graph, logger)
+        _require_live_person(user_doc)
         enriched = await _enrich_user_info(user_context, user_doc)
         if agent is not None and run.agent is not None and not is_system_assistant(run):
             permitted = await graph.check_agent_permission(
@@ -416,21 +405,7 @@ async def _identity(
         raise RunRefused("agent_not_found", str(exc)) from exc
     except HTTPException as exc:
         raise _refused("identity_unavailable", exc) from exc
-    return enriched, False
-
-
-async def _artifact_owner(run: RunContext, graph: Any) -> str | None:  # noqa: ANN401
-    """Who owns what a service-account agent makes in this run: the person chatting (main #4433), as the agent
-    route decides it; a service identity (``via`` service: the Slack bot) leaves it the agent creator's."""
-    from fastapi import HTTPException
-
-    from app.api.routes.agent import _service_account_artifact_owner
-
-    caller = {"userId": run.actor_id, "orgId": run.org_id, "isServiceAccount": run.via == "service"}
-    try:
-        return await _service_account_artifact_owner(caller, graph, run.org_id)
-    except HTTPException as exc:
-        raise _refused("identity_unavailable", exc) from exc
+    return enriched
 
 
 async def _turn_scope(
@@ -452,6 +427,7 @@ async def _turn_scope(
         requested_filters,
         selection_refused,
     )
+    from app.modules.agents.knowledge_scope import service_account_knowledge
     from app.modules.retrieval.selection_scope import (
         SelectionNotReadyError,
         SelectionTooLargeError,
@@ -463,6 +439,12 @@ async def _turn_scope(
     knowledge = list((agent or {}).get("knowledge") or [])
     if not universal:
         knowledge = await bounded_agent_knowledge(knowledge, run.knowledge.source_limits, graph, run.org_id)
+    if agent is not None and agent.get("isServiceAccount", False):
+        # Anyone in the org may use a service agent, so it keeps only the sources shared with the org, and a
+        # collection only when it is bound, as main's agent route does. Looked up as the person asking.
+        knowledge = await service_account_knowledge(
+            graph, knowledge, run.actor_id, run.org_id, logger, bound=bool(agent.get("serviceAccountUserId")),
+        )
     requested = requested_filters(run.knowledge)
     try:
         filters = await _resolve_turn_filters(
@@ -544,7 +526,7 @@ async def _agent_environment(
         if not agent:
             raise RunRefused("agent_not_found", f"agent {run.agent.agent_key} is gone")
         agent = await pinned_agent_version(graph, run, run.agent, agent)
-    user_info, is_service_account = await _identity(
+    user_info = await _identity(
         run, agent, graph, logger,
         user_context_enabled=await is_user_context_enabled(config_service) if system_assistant else None,
     )
@@ -561,9 +543,8 @@ async def _agent_environment(
     mcp_servers = _narrow_mcp(
         list((agent or {}).get("mcpServers") or []), granted_mcp, frozenset(run.mcp_at_first_use)
     )
-    credential_owner = (
-        run.agent.agent_key if is_service_account and run.agent is not None else run.actor_id
-    )
+    # Every run, whatever kind of agent, uses the credentials of the person it was admitted for.
+    credential_owner = run.actor_id
     # An installation whose record is its pinned binding's (CPD-10) is leased when its item loads: its old
     # record is neither read nor required here.
     bound = bound_installations(pinned_items(run))
@@ -579,7 +560,6 @@ async def _agent_environment(
             executing_user_id=run.actor_id,
             prefetched={},
             agent_id=agent_label,
-            is_service_account=is_service_account,
             logger=logger,
             bound=bound,
         )
@@ -601,7 +581,6 @@ async def _agent_environment(
             credential_lookup_id=credential_owner,
             executing_user_id=run.actor_id,
             agent_id=agent_label,
-            is_service_account=is_service_account,
             logger=logger,
             bound=bound,
         )
@@ -627,7 +606,6 @@ async def _agent_environment(
         if web_provider
         else None
     )
-    artifact_owner = await _artifact_owner(run, graph) if is_service_account else None
     query_info: dict[str, Any] = {
         "query": run.query,
         "messages": [],
@@ -655,9 +633,8 @@ async def _agent_environment(
         "connector_configs": await fetch_connector_configs(config_service, connector_ids),
         "toolsetConfigs": toolset_configs,
         "conversationId": run.session_id,
-        "is_service_account": is_service_account,
+        "is_service_account": False,
         "credentialOwner": credential_owner,
-        "artifact_owner_user_id": artifact_owner,
         "isPlaceholderAgent": agent is None or system_assistant,
         "modelName": run.model.model_name,
         "modelKey": run.model.model_key,
@@ -719,7 +696,7 @@ async def _agent_environment(
         mcpServers=len(mcp_servers),
         knowledgeSources=len(agent_knowledge),
         webSearch=web_search_config is not None,
-        serviceAccount=is_service_account,
+        serviceAccount=bool((agent or {}).get("isServiceAccount", False)),
     )
     return ToolEnvironment(
         context=context,

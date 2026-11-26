@@ -94,7 +94,6 @@ async def test_create_without_attachments_stores_an_empty_list() -> None:
     ("body_extra", "message"),
     [
         ({"apiToolsetTools": [f"{'c' * 32}:list_tickets"]}, "doesn't exist"),
-        ({"apiToolsetTools": [f"{PER_MEMBER}:list_tickets"], "isServiceAccount": True}, "shared credential"),
     ],
 )
 async def test_create_refuses_what_it_cannot_use(body_extra: dict[str, Any], message: str) -> None:
@@ -116,15 +115,18 @@ async def test_update_checks_and_passes_the_attachments_on() -> None:
 
 
 @pytest.mark.asyncio
-async def test_becoming_a_service_account_rechecks_what_is_attached() -> None:
+async def test_a_per_member_action_is_fine_on_a_service_agent() -> None:
+    """The action runs with the credential of whoever is chatting, so the agent kind does not limit it."""
     services = await _services()
     services["graph_provider"].get_agent = AsyncMock(return_value={
         "name": "A1", "can_edit": True, "apiToolsetTools": [f"{PER_MEMBER}:list_tickets"],
     })
-    with pytest.raises(HTTPException) as raised:
-        await _call(update_agent, services, _request({"isServiceAccount": True}), "a1")
-    assert raised.value.status_code == 400 and "shared credential" in str(raised.value.detail)
-    services["graph_provider"].update_agent.assert_not_awaited()
+    result = await _call(update_agent, services, _request({"isServiceAccount": True}), "a1")
+    assert result.status_code == 200
+    created = await _call(create_agent, services, _request({
+        "name": "A2", "models": [MODEL], "apiToolsetTools": [f"{PER_MEMBER}:list_tickets"], "isServiceAccount": True,
+    }))
+    assert created.status_code == 200
 
 
 @pytest.mark.parametrize(

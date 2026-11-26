@@ -110,7 +110,7 @@ describe('agent-harness: external surfaces on the durable route (C-5) over HTTP'
     }
   });
 
-  it('SF-5: a Slack service account runs as the hydrated identity, via service, with the caller from the token', async () => {
+  it('SF-5: a Slack turn runs as the hydrated identity, via service, with the caller from the token', async () => {
     http = await start({ conversation, scenario: 'agent_quick_tool_call' });
     const reply = await http.post('/agents/agent-1/conversations/internal/stream', 'service', {
       query: 'How much paid leave do I get?',

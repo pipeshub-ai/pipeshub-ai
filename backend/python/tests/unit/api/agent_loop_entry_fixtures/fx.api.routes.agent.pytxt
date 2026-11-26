@@ -1,0 +1,5 @@
+from fx.agents.stream_bridge import run_agent_loop_stream
+
+
+async def chat_stream(request, agent_id):
+    return run_agent_loop_stream(request, agent_id)

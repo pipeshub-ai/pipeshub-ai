@@ -1,0 +1,2 @@
+def run_agent_loop_stream(*args):
+    return iter(())

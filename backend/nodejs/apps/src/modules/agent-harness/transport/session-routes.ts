@@ -52,6 +52,7 @@ import { RunStreamController } from './stream-controller';
 import type { RunWatchRegistry } from '../application/run-end-notices';
 import { RunActivityController } from './activity-controller';
 import { RunFollowupsController } from './followups-controller';
+import { requireIdentifiedCaller } from './request-identity';
 import { RunFollowupsService } from '../application/run-followups-service';
 import { AgentHarnessSessionController } from './session-controller';
 import {
@@ -308,6 +309,7 @@ function createHarnessSessionRouter(
     createPath,
     auth.authenticate,
     requireScopes(executeScope),
+    requireIdentifiedCaller,
     ValidationMiddleware.validate(
       isAgent ? createSessionRunSchema : createChatSessionRunSchema,
       {
@@ -320,6 +322,7 @@ function createHarnessSessionRouter(
     `${sessionPath}/runs`,
     auth.authenticate,
     requireScopes(executeScope),
+    requireIdentifiedCaller,
     ValidationMiddleware.validate(
       isAgent ? submitSessionRunSchema : submitChatSessionRunSchema,
       {
@@ -384,6 +387,7 @@ function createHarnessSessionRouter(
     `${sessionPath}/runs/:runId/resume`,
     auth.authenticate,
     requireScopes(executeScope),
+    requireIdentifiedCaller,
     ValidationMiddleware.validate(
       isAgent ? controlSessionRunSchema : controlChatSessionRunSchema,
       { stripUnknown: true },
@@ -468,6 +472,7 @@ function createHarnessSessionRouter(
     `${sessionPath}/compact`,
     auth.authenticate,
     requireScopes(executeScope),
+    requireIdentifiedCaller,
     ValidationMiddleware.validate(
       isAgent ? compactSessionSchema : compactChatSessionSchema,
       { stripUnknown: true },
@@ -554,6 +559,7 @@ function createHarnessSessionRouter(
     `${sessionPath}/commands/run`,
     auth.authenticate,
     requireScopes(executeScope),
+    requireIdentifiedCaller,
     controller.requireOwner,
     ...commandRateLimit(container),
     ValidationMiddleware.validate(
@@ -645,6 +651,7 @@ function createHarnessSessionRouter(
     `${sessionPath}/runs/:runId/interactions/:interactionId/decision`,
     auth.authenticate,
     requireScopes(executeScope),
+    requireIdentifiedCaller,
     ValidationMiddleware.validate(
       isAgent
         ? decideSessionInteractionSchema
@@ -657,6 +664,7 @@ function createHarnessSessionRouter(
     `${sessionPath}/runs/:runId/interactions/decisions`,
     auth.authenticate,
     requireScopes(executeScope),
+    requireIdentifiedCaller,
     ValidationMiddleware.validate(
       isAgent
         ? decideSessionInteractionsSchema

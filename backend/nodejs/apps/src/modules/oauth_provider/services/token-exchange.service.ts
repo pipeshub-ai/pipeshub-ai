@@ -12,6 +12,7 @@ import {
   SERVICE_TOKEN_PREFIX,
 } from '../constants/constants';
 import { TokenResponse } from '../types/oauth.types';
+import { oauthPrincipalKind } from '../utils/principal-kind';
 
 /**
  * How long a delegated token lives.
@@ -252,24 +253,23 @@ export class TokenExchangeService {
       );
     }
 
-    // Only a service token may be exchanged. A personal access token must not
-    // be, because a PAT already speaks as its owner and exchanging one would
-    // let any employee act as a colleague.
-    if (!payload.client_id.startsWith(SERVICE_TOKEN_APP_CLIENT_ID_PREFIX)) {
+    // Only a service account's own token may be exchanged, read the same way
+    // every service reads who is behind a token (principal-kind.ts).
+    //
+    // Not a personal access token, because a PAT already speaks as its owner
+    // and exchanging one would let any employee act as a colleague. And not a
+    // token that is itself delegated: it is minted against this same client,
+    // and without this a service account allowed to act as one person could
+    // hop from there to anyone that person's own delegations reached.
+    if (oauthPrincipalKind(payload) !== 'service_account') {
+      const delegated =
+        payload.act !== undefined &&
+        payload.client_id.startsWith(SERVICE_TOKEN_APP_CLIENT_ID_PREFIX);
       throw new TokenExchangeError(
         'invalid_grant',
-        'Only a service token can be exchanged.',
-      );
-    }
-
-    // And not a token that is itself delegated. A delegated token is minted
-    // against this same client, so the check above does not separate them;
-    // without this, a service account allowed to act as one person could hop
-    // from there to anyone that person's own delegations reached.
-    if (payload.act !== undefined) {
-      throw new TokenExchangeError(
-        'invalid_grant',
-        'A delegated token cannot be exchanged again.',
+        delegated
+          ? 'A delegated token cannot be exchanged again.'
+          : 'Only a service token can be exchanged.',
       );
     }
 

@@ -59,9 +59,26 @@ describe('OWD-2 run attribution: principal, initiator and on whose behalf', () =
       );
     });
 
-    it('OWD-2: only the verified identity makes a service account; the body never does', () => {
-      expect(requestPrincipalKind(verified({ userId: 'u1', isServiceAccount: true }))).to.equal('agent_service');
-      expect(requestVia(verified({ userId: 'u1', isServiceAccount: true }))).to.equal('service');
+    it('OWD-2: a run acts as a verified person; a service account, an app or an unknown kind admits nothing', () => {
+      for (const refused of [
+        { userId: 'u1', isServiceAccount: true },
+        { userId: 'u1', principalKind: 'app' },
+        { userId: 'u1', principalKind: 'service_account' },
+        { userId: 'u1', principalKind: 'anything-new' },
+      ]) {
+        expect(() => requestPrincipalKind(verified(refused))).to.throw(
+          HarnessForbiddenError,
+          'unidentified users',
+        );
+      }
+      expect(
+        requestPrincipalKind(
+          verified({ userId: 'u1', principalKind: 'human' }),
+        ),
+      ).to.equal('user');
+      expect(
+        requestVia(verified({ userId: 'u1', isServiceAccount: true })),
+      ).to.equal('service');
       const claimed = verified(
         { userId: 'u1' },
         { isServiceAccount: true, principalKind: 'agent_service', onBehalfOf: 'agent:x' },

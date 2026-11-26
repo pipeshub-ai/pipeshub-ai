@@ -1,0 +1,6 @@
+from fx.api.routes import agent as _oss
+
+
+@router.post("/{agent_id}/new")
+async def new_route(request, agent_id):
+    return await _oss.chat_stream(request, agent_id)

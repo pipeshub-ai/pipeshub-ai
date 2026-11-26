@@ -23,8 +23,8 @@ async def store() -> ApiToolsetStore:
     return store
 
 
-async def _check(store: ApiToolsetStore, raw: object, *, service_account: bool = False, org: str = "org-1") -> list[str]:
-    return await attachments.checked_attachments(store, org, raw, service_account=service_account)
+async def _check(store: ApiToolsetStore, raw: object, *, org: str = "org-1") -> list[str]:
+    return await attachments.checked_attachments(store, org, raw)
 
 
 async def test_valid_attachments_are_kept_once_in_order(store: ApiToolsetStore) -> None:
@@ -58,10 +58,9 @@ async def test_too_many(store: ApiToolsetStore) -> None:
         await _check(store, [f"{PER_MEMBER}:t{i}" for i in range(501)])
 
 
-async def test_service_accounts_need_a_shared_or_no_credential(store: ApiToolsetStore) -> None:
-    assert await _check(store, [f"{SHARED}:list_tickets", f"{OPEN}:list_tickets"], service_account=True)
-    with pytest.raises(service.ApiToolsetError, match="shared credential"):
-        await _check(store, [f"{PER_MEMBER}:list_tickets"], service_account=True)
+async def test_a_per_member_credential_is_fine_on_any_agent(store: ApiToolsetStore) -> None:
+    """Whatever credential an action needs is the credential of the person running the agent."""
+    assert await _check(store, [f"{PER_MEMBER}:list_tickets", f"{SHARED}:list_tickets", f"{OPEN}:list_tickets"])
 
 
 def test_by_instance_groups_and_skips_malformed() -> None:

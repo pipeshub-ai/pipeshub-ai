@@ -1,0 +1,5 @@
+from fx.api.routes.agent import chat_stream
+
+
+async def nightly(request):
+    return await chat_stream(request, "agentIdPlaceholder")

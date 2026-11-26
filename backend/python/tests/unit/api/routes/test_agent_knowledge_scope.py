@@ -135,6 +135,7 @@ def _agent(*, service_account: bool) -> dict:
         "toolsets": [],
         "models": [],
         "createdBy": "creator-key",
+        "orgId": ORG,
         "isServiceAccount": service_account,
         **({"serviceAccountUserId": "svc"} if service_account else {}),
     }
@@ -251,9 +252,8 @@ class TestSourceLimitedToSomeNodes:
         assert filters["strictScope"] is True and filters["selectionApps"] == ["jira-1"]
         # The source stays enabled for the tools that work per app.
         assert [k["connectorId"] for k in query_info["knowledge"]] == ["jira-1", "kb-1"]
-        # Resolved as the identity the search runs as.
-        searcher = "svc-key" if service_account else "caller-key"
-        assert graphs[0].check_access.await_args.args[0] == searcher
+        # Resolved as the person asking, whatever kind of agent it is.
+        assert graphs[0].check_access.await_args.args[0] == "caller-key"
 
     async def test_a_callers_selection_is_bounded_by_the_agent_and_by_the_project(self, service_account) -> None:
         query_info = await _run(

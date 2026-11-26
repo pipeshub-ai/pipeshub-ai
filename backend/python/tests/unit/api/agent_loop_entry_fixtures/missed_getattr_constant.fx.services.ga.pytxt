@@ -1,0 +1,5 @@
+from fx.api.routes import chatbot
+
+
+async def job(request):
+    return await getattr(chatbot, "askAIStream")(request)

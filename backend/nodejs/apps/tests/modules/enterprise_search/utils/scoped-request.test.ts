@@ -5,11 +5,10 @@ import jwt from 'jsonwebtoken'
 import mongoose from 'mongoose'
 import * as scopedRequest from '../../../../src/modules/enterprise_search/utils/scoped-request'
 import {
+  SLACK_LINK_REQUIRED_MESSAGE,
   STAND_IN_TOKEN_TTL_SECONDS,
   hydrateScopedRequestAsUser,
-  stableObjectIdHexForExternalEmail,
 } from '../../../../src/modules/enterprise_search/utils/scoped-request'
-import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import * as cmController from '../../../../src/modules/configuration_manager/controller/cm_controller'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { setUserRepository } from '../../../../src/libs/repositories/user'
@@ -64,28 +63,37 @@ describe('hydrateScopedRequestAsUser', () => {
     expect(STAND_IN_TOKEN_TTL_SECONDS).to.be.at.most(60)
   })
 
-  it('QA15G-10: a person without an account, answered by a service-account agent, gets a token naming them and the agent', async () => {
-    // With the configuration store at hand the links are read from the org's link rows: none here.
+  it('refuses a link that names a service account and mints nothing', async () => {
+    setSlackIdentityLinksForTests(links(PERSON))
+    setUserRepository({ ...people, getAccountState: async () => ({ kind: 'service' as const }) } as never)
+    const req: any = { headers: { authorization: 'Bearer slack-service-token' }, params: {}, tokenPayload: { ...SLACK } }
+
+    const error = await hydrateScopedRequestAsUser(req, APP_CONFIG).then(() => null, (e: any) => e)
+
+    expect(error?.message).to.equal(SLACK_LINK_REQUIRED_MESSAGE)
+    expect(req.user).to.equal(undefined)
+    expect(req.headers.authorization).to.equal('Bearer slack-service-token')
+  })
+
+  // An agent answers as the person asking, so without a linked account there is no one to answer as, and no stand-in
+  // is made up, whatever kind of agent it is.
+  it('refuses a person without an account on an agent set up for Slack, and mints nothing', async () => {
     setSlackUserLinkRepository(new InMemorySlackUserLinks())
-    sinon.stub(Org, 'findOne').resolves({ _id: ORG } as any)
     sinon.stub(cmController, 'getSlackBotStore').resolves({ configs: [{ agentId: 'agent-7' }] } as any)
-    // The query service's answer to "is this agent a service account".
-    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { isServiceAccount: true } } as any)
+    const execute = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { isServiceAccount: true } } as any)
     const req: any = {
       headers: { authorization: 'Bearer slack-service-token' },
       params: { agentKey: 'agent-7' },
       tokenPayload: { ...SLACK, email: 'Guest@Partner.example' },
     }
 
-    await hydrateScopedRequestAsUser(req, APP_CONFIG, {} as any)
+    const error = await hydrateScopedRequestAsUser(req, APP_CONFIG, {} as any).then(() => null, (e: any) => e)
 
-    const claims = jwt.verify(req.headers.authorization.replace('Bearer ', ''), 'scoped-secret') as Record<string, unknown>
-    expect(claims).to.include({
-      userId: stableObjectIdHexForExternalEmail('slack-t0home-u0person@slack.invalid'),
-      isServiceAccount: true,
-      agentKey: 'agent-7',
-    })
-    expect(String(claims.orgId)).to.equal(ORG)
+    expect(error?.statusCode).to.equal(401)
+    expect(error?.message).to.equal(SLACK_LINK_REQUIRED_MESSAGE)
+    expect(req.user).to.equal(undefined)
+    expect(req.headers.authorization).to.equal('Bearer slack-service-token')
+    expect(execute.called).to.equal(false)
   })
 
   // BOTTOKEN-1: the bot's tokens always name their configuration, so no route binds a person by a token's email.

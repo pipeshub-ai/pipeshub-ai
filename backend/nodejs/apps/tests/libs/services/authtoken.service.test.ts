@@ -261,6 +261,31 @@ describe('AuthTokenService', () => {
         expect(error).to.be.instanceOf(UnauthorizedError);
       }
     });
+
+    // The internal conversation routes (the Slack bot's) take only a scoped
+    // service token. A service account's OAuth token never passes them: not
+    // when signed as the OAuth service signs it, and not even signed with the
+    // scoped secret, because its grant is a `scope` string, not `scopes`.
+    it("refuses a service account's OAuth token on the internal conversation routes", async () => {
+      const claims = {
+        userId: 'the-service-account',
+        orgId: 'org1',
+        client_id: 'svc-system:org1',
+        tokenType: 'oauth',
+        scope: 'conversation:chat conversation:create',
+      };
+      for (const secret of [jwtSecret, scopedJwtSecret]) {
+        try {
+          await service.verifyScopedToken(
+            jwt.sign(claims, secret),
+            TokenScopes.CONVERSATION_CREATE,
+          );
+          expect.fail('Should have thrown');
+        } catch (error) {
+          expect(error).to.be.instanceOf(UnauthorizedError);
+        }
+      }
+    });
   });
   // User-held tokens are signed with a key derived from the scoped secret so
   // services holding only the raw secret cannot accept them.

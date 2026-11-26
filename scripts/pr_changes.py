@@ -73,6 +73,8 @@ PYTHON_APP = (
     f"{PYTHON}/.coveragerc",
     # Generated from app/config/file_types.py: the Python parity test is what catches a hand edit.
     "backend/nodejs/apps/src/modules/storage/mimetypes/file-types.generated.ts",
+    # The token shapes Node mints: the Python principal-kind tests read them.
+    "backend/nodejs/apps/tests/modules/oauth_provider/fixtures/minted-token-shapes.json",
 )
 
 PYTHON_PACKAGING = (f"{PYTHON}/pyproject.toml", f"{PYTHON}/pytest.ini", f"{PYTHON}/requirements/**")

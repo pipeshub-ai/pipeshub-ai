@@ -29,7 +29,10 @@ export function createAdminClient(): Pipeshub {
   return createSessionClient();
 }
 
-/** The OAuth app and personal access token routes accept only an interactive session. */
+/**
+ * The OAuth app and personal access token routes accept only an interactive session, and a chat
+ * turn needs a person, which the OAuth app's own tokens have not.
+ */
 export function createSessionClient(): Pipeshub {
   return createBearerClient(process.env["PIPESHUB_SESSION_TOKEN"] ?? "");
 }

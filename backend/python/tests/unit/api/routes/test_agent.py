@@ -106,57 +106,6 @@ class TestChatQueryModel:
             ChatQuery(query="q", projectInstructions="x" * 8001)
 
 
-class TestMergeEndUserServiceAccountUserInfo:
-    def _creator_like(self) -> dict:
-        return {
-            "userId": "creator-uid",
-            "orgId": "org-1",
-            "userEmail": "creator@example.com",
-            "email": "creator@example.com",
-            "fullName": "Creator Person",
-            "firstName": "Creator",
-        }
-
-    def test_both_overlay(self) -> None:
-        from app.api.routes.agent import _merge_end_user_into_service_account_user_info
-
-        out = _merge_end_user_into_service_account_user_info(
-            self._creator_like(), "Slack User", "slack@example.com"
-        )
-        assert out["userId"] == "creator-uid"
-        assert out["orgId"] == "org-1"
-        assert out["userEmail"] == "slack@example.com"
-        assert out["email"] == "slack@example.com"
-        assert out["fullName"] == "Slack User"
-        assert out["displayName"] == "Slack User"
-        assert "firstName" not in out
-
-    def test_name_only(self) -> None:
-        from app.api.routes.agent import _merge_end_user_into_service_account_user_info
-
-        out = _merge_end_user_into_service_account_user_info(
-            self._creator_like(), "Only Name", None
-        )
-        assert out["userEmail"] == "creator@example.com"
-        assert out["fullName"] == "Only Name"
-
-    def test_email_only(self) -> None:
-        from app.api.routes.agent import _merge_end_user_into_service_account_user_info
-
-        out = _merge_end_user_into_service_account_user_info(
-            self._creator_like(), None, "only@mail.com"
-        )
-        assert out["userEmail"] == "only@mail.com"
-        assert out["fullName"] == "Creator Person"
-
-    def test_neither_overlay(self) -> None:
-        from app.api.routes.agent import _merge_end_user_into_service_account_user_info
-
-        base = self._creator_like()
-        out = _merge_end_user_into_service_account_user_info(base, None, None)
-        assert out == base
-
-
 class TestRouteDecision:
     def test_valid(self) -> None:
         from app.api.routes.agent import RouteDecision
@@ -3538,6 +3487,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1", "knowledge": [], "toolsets": [],
             "models": ["mk1_mn1"],
         })
@@ -3582,6 +3532,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1", "knowledge": [], "toolsets": [],
             "models": [],
         })
@@ -3626,6 +3577,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1",
             "knowledge": [
                 {"connectorId": "google_drive", "filters": {}},
@@ -3681,6 +3633,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1",
             "knowledge": [],
             "toolsets": [
@@ -3733,6 +3686,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1",
             "knowledge": [{"connectorId": "google_drive", "filters": {}}],
             "toolsets": [],
@@ -3775,6 +3729,7 @@ class TestChatStream:
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
+            "orgId": "o1",
             "name": "A1", "knowledge": [], "toolsets": [], "models": ["mk1_mn1"],
         })
         services["config_service"].get_config = AsyncMock(return_value={"llm": []})
@@ -4325,24 +4280,6 @@ class TestServiceAccountAgentRoutes:
         permission_edges = services["graph_provider"].batch_create_edges.await_args_list[0].args[0]
         assert any(edge.get("type") == "ORG" for edge in permission_edges)
 
-    @pytest.mark.asyncio
-    async def test_get_agent_internal_requires_service_account_agent(self) -> None:
-        from app.api.routes.agent import get_agent_internal
-
-        services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": AsyncMock()}
-        services["graph_provider"].get_agent = AsyncMock(
-            return_value={"_key": "a1", "isServiceAccount": False, "createdBy": "ck1"}
-        )
-        services["graph_provider"].get_document = AsyncMock(
-            return_value={"userId": "u1", "orgId": "o1"}
-        )
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
-            with pytest.raises(HTTPException) as exc:
-                await get_agent_internal(MagicMock(), "a1")
-        assert exc.value.status_code == 403
-
     @pytest.mark.usefixtures("_caller_org_bound")
     @pytest.mark.asyncio
     async def test_update_agent_rejects_disabling_org_sharing_for_service_account(self) -> None:
@@ -4363,68 +4300,6 @@ class TestServiceAccountAgentRoutes:
             with pytest.raises(InvalidRequestError, match="Cannot disable org-wide sharing"):
                 await update_agent(request, "a1")
 
-    @pytest.mark.asyncio
-    async def test_chat_stream_service_account_uses_agent_credentials_lookup(self) -> None:
-        from fastapi.responses import StreamingResponse
-
-        from app.api.routes.agent import chat_stream
-
-        services = {
-            "graph_provider": AsyncMock(),
-            "retrieval_service": MagicMock(),
-            "reranker_service": MagicMock(),
-            "config_service": AsyncMock(),
-            "logger": MagicMock(),
-            "llm": MagicMock(),
-            "entity_vector_store": None,
-        }
-        services["graph_provider"].get_agent = AsyncMock(return_value={
-            "name": "A1",
-            "isServiceAccount": True,
-            "createdBy": "creator-key-1",
-            "knowledge": [],
-            "toolsets": [{"name": "jira", "instanceId": "inst-1", "displayName": "Jira", "tools": []}],
-            "models": ["mk1_mn1"],
-        })
-        services["graph_provider"].get_document = AsyncMock(return_value={
-            "_key": "creator-key-1",
-            "userId": "creator-user-1",
-            "orgId": "o1",
-            "email": "creator@example.com",
-        })
-
-        async def mock_config(path, *args, **kwargs):
-            if "toolsets" in str(path):
-                return {"isAuthenticated": True}
-            return {"llm": []}
-
-        services["config_service"].get_config = mock_config
-
-        request = MagicMock()
-        request.body = AsyncMock(return_value=b'{"query":"hello"}')
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch(
-                 "app.api.routes.agent._get_user_context",
-                 return_value={"userId": "slack-bot@x", "orgId": "o1", "isServiceAccount": True, "email": "slack-bot@x"},
-             ), \
-             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
-             patch(
-                 "app.api.routes.agent.get_llm_for_chat",
-                 new_callable=AsyncMock,
-                 return_value=(MagicMock(), {"isReasoning": True}, {}),
-             ), \
-             patch("app.agents.constants.toolset_constants.get_toolset_config_path", return_value="/services/toolsets/inst-1/a1") as mock_cfg_path, \
-             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, side_effect=HTTPException(status_code=404, detail="User not found")) as mock_user_doc:
-            with _stub_agent_loop():
-                result = await chat_stream(request, "a1")
-                assert isinstance(result, StreamingResponse)
-                # The credential lookup happens inside the stream now.
-                await _drain(result)
-
-        mock_user_doc.assert_awaited_once()
-        services["graph_provider"].get_document.assert_awaited_once()
-        mock_cfg_path.assert_called_with("inst-1", "a1")
 
     @pytest.mark.asyncio
     async def test_chat_stream_service_account_rejects_other_org_caller(self) -> None:
@@ -4478,87 +4353,6 @@ class TestServiceAccountAgentRoutes:
                 await chat_stream(request, "sa-org-a")
 
         services["graph_provider"].check_agent_permission.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_get_agent_internal_success(self) -> None:
-        """get_agent_internal returns 200 with isServiceAccount=True for a SA agent."""
-        from app.api.routes.agent import get_agent_internal
-
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value={"llm": []})
-        services = {
-            "graph_provider": AsyncMock(),
-            "logger": MagicMock(),
-            "config_service": config_service,
-        }
-        services["graph_provider"].get_agent = AsyncMock(
-            return_value={"_key": "a1", "isServiceAccount": True, "models": [], "createdBy": "ck1"}
-        )
-        services["graph_provider"].get_document = AsyncMock(
-            return_value={"userId": "u1", "orgId": "o1"}
-        )
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}):
-            result = await get_agent_internal(MagicMock(), "a1")
-
-        assert result.status_code == 200
-        body = json.loads(result.body)
-        assert body["isServiceAccount"] is True
-        assert body["status"] == "success"
-
-    @pytest.mark.asyncio
-    async def test_get_agent_internal_agent_not_found(self) -> None:
-        """get_agent_internal raises when agent does not exist."""
-        from app.api.routes.agent import get_agent_internal
-
-        services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": AsyncMock()}
-        services["graph_provider"].get_agent = AsyncMock(return_value=None)
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services):
-            with pytest.raises(HTTPException) as exc:
-                await get_agent_internal(MagicMock(), "missing-agent")
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_get_agent_internal_other_org_service_account_is_404(self) -> None:
-        from app.api.routes.agent import AgentNotFoundError, get_agent_internal
-
-        services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": AsyncMock()}
-        services["graph_provider"].get_agent = AsyncMock(
-            return_value={"_key": "sa-org-a", "isServiceAccount": True, "createdBy": "ck1"}
-        )
-        services["graph_provider"].get_document = AsyncMock(
-            return_value={"userId": "creator", "orgId": "org-a"}
-        )
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch(
-                 "app.api.routes.agent._get_user_context",
-                 return_value={"userId": "org-b-user", "orgId": "org-b"},
-             ):
-            with pytest.raises(AgentNotFoundError):
-                await get_agent_internal(MagicMock(), "sa-org-a")
-
-    @pytest.mark.asyncio
-    async def test_get_agent_internal_other_org_user_agent_is_404_not_403(self) -> None:
-        from app.api.routes.agent import AgentNotFoundError, get_agent_internal
-
-        services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": AsyncMock()}
-        services["graph_provider"].get_agent = AsyncMock(
-            return_value={"_key": "user-org-a", "isServiceAccount": False, "createdBy": "ck1"}
-        )
-        services["graph_provider"].get_document = AsyncMock(
-            return_value={"userId": "creator", "orgId": "org-a"}
-        )
-
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
-             patch(
-                 "app.api.routes.agent._get_user_context",
-                 return_value={"userId": "org-b-user", "orgId": "org-b"},
-             ):
-            with pytest.raises(AgentNotFoundError):
-                await get_agent_internal(MagicMock(), "user-org-a")
 
     @pytest.mark.asyncio
     async def test_get_agent_no_permission_raises_404(self) -> None:

@@ -1,9 +1,9 @@
 import { expect, test } from "vitest";
-import { createClient } from "./client.js";
+import { createSessionClient } from "./client.js";
 import { createdConversationId, expectFinishedRun, readAll } from "./streams.js";
 
 test("Handwritten Conversation Lifecycle", async () => {
-  const pipeshub = createClient();
+  const pipeshub = createSessionClient();
 
   const events = await readAll(
     await pipeshub.conversations.streamChat({

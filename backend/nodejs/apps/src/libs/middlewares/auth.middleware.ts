@@ -34,6 +34,7 @@ import {
   recordAuthAttempt,
   refusalOutcome,
 } from '../services/telemetry/modules/auth-metrics';
+import { oauthPrincipalKind } from '../../modules/oauth_provider/utils/principal-kind';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 import { setContextIdentity } from '../context/request-context';
 import { recordAgentCall } from './agent-call-recorder';
@@ -240,7 +241,13 @@ export class AuthMiddleware {
     // current one — pointing an app at a different service account revokes
     // the tokens it has already issued, so a disagreeing claim should not
     // arrive at all.
-    const isClientCredentials = userId === payload.client_id;
+    // Read from how the token was minted (see principal-kind.ts), the same
+    // way the Python services read it.
+    const principalKind = oauthPrincipalKind(payload);
+    if (principalKind === 'unknown') {
+      throw new UnauthorizedError('Token not recognised');
+    }
+    const isClientCredentials = principalKind === 'app';
     if (isClientCredentials) {
       try {
         const app = await getOAuthAppRepository().findLiveIdentity(
@@ -381,6 +388,7 @@ export class AuthMiddleware {
       accountType,
       role,
       isOAuth: true,
+      principalKind,
       tokenId: payload.tokenRowId,
       delegatedBy,
       oauthClientId: payload.client_id,

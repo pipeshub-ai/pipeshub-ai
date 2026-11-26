@@ -90,10 +90,6 @@ export function kindCounts(operations: Pick<ApiOperationSummary, 'kind'>[]): Rec
   return counts;
 }
 
-/** A service-account agent runs as nobody, so it can only use toolsets that don't need a member's credential. */
-export const usableByServiceAccount = (toolset: Pick<ApiToolset, 'authType' | 'useSharedCredential'>) =>
-  toolset.authType === 'none' || toolset.useSharedCredential;
-
 /** Selected operations the spec says need credentials, which fail when the toolset sends none. */
 export const operationsNeedingAuth = (
   operations: ApiOperationSummary[],

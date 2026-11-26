@@ -93,7 +93,6 @@ async def _chat_path(org_id: str, user_id: str) -> tuple[dict[str, Any], list[st
         credential_lookup_id=user_id,
         executing_user_id=user_id,
         agent_id=f"agent-{org_id}",
-        is_service_account=False,
         logger=LOG,  # type: ignore[arg-type]
     )
     return configs, missing

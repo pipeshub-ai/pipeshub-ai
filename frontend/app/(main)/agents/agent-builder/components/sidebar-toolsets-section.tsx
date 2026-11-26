@@ -29,7 +29,6 @@ import { filterToolsetTools } from '../sidebar-utils';
 import { PaletteShowMore } from './palette-show-more';
 import type { BuilderCatalogPaging } from '../hooks/use-agent-builder-data';
 import { isApiToolsetRow } from '../api-toolset-attachments';
-import { usableByServiceAccount } from '../../../workspace/api-toolsets/toolset-form';
 import type { AgentWebSearchAttachment } from '../types';
 
 /** Toolset type row (e.g. Slack): expanded by default so instance rows are listed. */
@@ -442,15 +441,10 @@ export function AgentBuilderToolsetsSection(props: {
                         const ui = buildUiState(ts);
                         // A personal action holds one user's sign-in: others running the agent couldn't use it.
                         const personalBlocked = agentShared && isPersonalToolset(ts);
-                        // A service account runs as nobody: it can't use an API toolset that needs a member's credential.
-                        const serviceAccountBlocked =
-                          isServiceAccount && isApiToolsetRow(ts) && !usableByServiceAccount(ts.apiToolset);
-                        const rowLocked = structureLocked || personalBlocked || serviceAccountBlocked;
+                        const rowLocked = structureLocked || personalBlocked;
                         const notifyRowLocked = personalBlocked
                           ? () => notifyPersonalOnSharedAgent(ts)
-                          : serviceAccountBlocked
-                            ? () => onNotify(t('agentBuilder.apiToolsets.serviceAccountBlocked'))
-                            : notifyStructureDragBlocked;
+                          : notifyStructureDragBlocked;
                         const {
                           needsConfiguration,
                           dragPayload,

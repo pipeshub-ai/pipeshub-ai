@@ -48,12 +48,15 @@ class ChatTurn:
 async def build_chat_environment(
     run: RunContext, services: RunServices, model: ResolvedModel
 ) -> ToolEnvironment:
+    from fastapi import HTTPException
+
     from app.agents.agent_loop.context import AgentContext
     from app.agents.chat_modes.setup import (
         TurnScopeRefused,
         enrich_chat_identity,
         prepare_chat_state,
     )
+    from app.api.routes.agent import _require_live_person
     from app.api.routes.chatbot import (
         DEFAULT_CONTEXT_LENGTH,
         _load_org_doc,
@@ -80,6 +83,11 @@ async def build_chat_environment(
         services.entity_vector_store(run.org_id),
         return_exceptions=True,
     )
+    if isinstance(user_doc, dict):
+        try:
+            _require_live_person(user_doc)
+        except HTTPException as exc:
+            raise RunRefused("identity_unavailable", str(exc.detail)) from exc
     email = user_doc.get("email") if isinstance(user_doc, dict) else None
     user_info: dict[str, Any] = {
         "userId": run.actor_id,

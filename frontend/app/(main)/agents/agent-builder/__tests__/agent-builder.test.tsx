@@ -388,15 +388,17 @@ describe('service agents', () => {
     expect(await screen.findByText('Enter a name to continue.')).toBeTruthy();
   });
 
-  it('explains that toolset nodes must go before the agent can become a service agent', async () => {
+  it('does not stop a service agent from keeping toolset nodes: each person connects their own', async () => {
     await renderNewAgent();
     fireEvent.change(nameField(), { target: { value: 'Ops bot' } });
     dragPaletteItemToCanvas('Team Jira');
 
     fireEvent.click(screen.getByRole('button', { name: 'Create as service agent' }));
 
-    await waitFor(() => expect(toastMessages()[0]).toMatch(/^Remove toolset nodes from the canvas first — /));
-    expect(screen.queryByRole('dialog')).toBeNull();
+    const dialog = await screen.findByRole('dialog', { name: /create service agent/i });
+    expect(toastMessages().join(' ')).not.toMatch(/Remove toolset nodes/);
+    expect(dialog.textContent).toContain('Workspace → Actions');
+    expect(dialog.textContent).not.toMatch(/key icon|stored for this agent|creator/i);
   });
 
   it('creates a service agent once every acknowledgement is ticked', async () => {
@@ -434,9 +436,8 @@ describe('service agents', () => {
     expect(within(button).getByText('Locked')).toBeTruthy();
   });
 
-  it("opens the agent's own credentials for a toolset on a service agent", async () => {
-    toolsetsApi.getAgentToolsets.mockResolvedValue({ toolsets: [toolset({ isAuthenticated: false })] });
-    toolsetsApi.getToolsetRegistrySchema.mockResolvedValue({ toolset: { config: { auth: { schemas: {} } } } });
+  it("builds a service agent's toolsets from the person's own connections, with no agent credentials to set", async () => {
+    toolsetsApi.getMyToolsets.mockResolvedValue({ toolsets: [toolset({ isAuthenticated: false })] });
     await renderExistingAgent({ isServiceAccount: true, shareWithOrg: true });
 
     expect(screen.getByText('Service agent')).toBeTruthy();
@@ -444,10 +445,9 @@ describe('service agents', () => {
     expect(shareSwitch.getAttribute('aria-checked')).toBe('true');
     expect(shareSwitch).toHaveProperty('disabled', true);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Set agent credentials for this toolset' }));
-
-    expect(await screen.findByRole('dialog', { name: /agent toolset credentials/i })).toBeTruthy();
-    expect(toolsetsApi.getAgentToolsets).toHaveBeenCalledWith('agent-1', expect.anything());
+    expect(toolsetsApi.getMyToolsets).toHaveBeenCalled();
+    expect(toolsetsApi.getAgentToolsets).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Set agent credentials for this toolset' })).toBeNull();
   });
 });
 
@@ -741,7 +741,7 @@ describe('sharing and permissions', () => {
     await renderExistingAgent({ can_edit: false, can_delete: false, isServiceAccount: true, shareWithOrg: true });
 
     expect(screen.getByText(/this organization service agent is locked/)).toBeTruthy();
-    expect(screen.getByText('View only. Palette and toolset setup are locked for this org service agent.')).toBeTruthy();
+    expect(screen.getByText('View only. Canvas drag is off; sign in to toolsets under Tools.')).toBeTruthy();
   });
 });
 

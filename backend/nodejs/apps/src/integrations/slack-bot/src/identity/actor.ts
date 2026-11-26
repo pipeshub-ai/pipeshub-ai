@@ -27,7 +27,7 @@ export interface SlackActor {
   orgId: string;
   teamId: string;
   slackUserId: string;
-  /** The linked person's PipesHub email, or the account's reserved stand-in address (thread key and token label). */
+  /** The linked person's PipesHub email (thread key and token label). */
   email: string;
   linked: boolean;
   /** Slack's record of the sender, for the display name and time zone. */
@@ -44,10 +44,6 @@ export interface ResolveSlackActorInput {
   eventTeamId?: string;
   botUserId?: string;
 }
-
-/** A link is sent again at most this often to a person an agent bot keeps answering through its service account. */
-const LINK_PROMPT_REPEAT_MS = 10 * 60 * 1000;
-const lastLinkPromptAt = new Map<string, number>();
 
 /** Tells one person, and only them (an ephemeral message); a failure to tell is logged, never retried. */
 export async function tellPrivately(
@@ -106,21 +102,14 @@ export async function resolveSlackActor(
     return null;
   }
 
-  const promptKey = `${orgId}:${bot.botId}:${eventTeamId}:${slackUserId}`;
-  const promptedAt = lastLinkPromptAt.get(promptKey);
-  const promptedRecently =
-    promptedAt !== undefined && Date.now() - promptedAt < LINK_PROMPT_REPEAT_MS;
   const caller = await askWhoIsSlackCaller({
     orgId,
     configId: bot.botId,
     teamId: eventTeamId,
     slackUserId,
     slackName: slackCallerDisplayName(person) || undefined,
-    // An agent bot keeps answering through its service account, so its last link stays the one that works.
-    issueLink: !(bot.agentId && promptedRecently),
   });
   if (caller.linked) {
-    lastLinkPromptAt.delete(promptKey);
     return {
       orgId,
       teamId: eventTeamId,
@@ -131,21 +120,8 @@ export async function resolveSlackActor(
     };
   }
   if (caller.linkUrl) {
-    lastLinkPromptAt.set(promptKey, Date.now());
     await tellPrivately(client, message, slackLinkPromptText(caller.linkUrl));
   }
-  if (!bot.agentId) return null;
-  return {
-    orgId,
-    teamId: eventTeamId,
-    slackUserId,
-    email: slackStandInEmail(eventTeamId, slackUserId),
-    linked: false,
-    person,
-  };
-}
-
-/** The address an unlinked Slack account is known by: reserved (`.invalid`), so it can never be a person's. */
-export function slackStandInEmail(teamId: string, slackUserId: string): string {
-  return `slack-${teamId}-${slackUserId}@slack.invalid`.toLowerCase();
+  // Every bot, an agent's included, answers as the person asking: without a link there is no one to answer as.
+  return null;
 }

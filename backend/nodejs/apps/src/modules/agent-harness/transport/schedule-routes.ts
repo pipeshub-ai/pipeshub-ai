@@ -45,6 +45,7 @@ import {
   KNOWLEDGE_LIMITED_MESSAGE,
   knowledgeLimited,
   requestVia,
+  requireIdentifiedCaller,
 } from './request-identity';
 
 export const SCHEDULES_PREFIX = '/api/v1/agent-harness/schedules';
@@ -293,6 +294,7 @@ export function createScheduleRouter(container: Container): Router {
     '/',
     auth.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    requireIdentifiedCaller,
     ValidationMiddleware.validate(createScheduleSchema),
     handle(async (req, res) => {
       const body = req.body as z.infer<typeof createScheduleSchema>['body'];
@@ -385,6 +387,7 @@ export function createScheduleRouter(container: Container): Router {
       `/:scheduleId/${action}`,
       auth.authenticate,
       requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+      ...(action === 'resume' ? [requireIdentifiedCaller] : []),
       ValidationMiddleware.validate(scheduleParamsSchema),
       handle(async (req, res) => {
         res
@@ -400,6 +403,7 @@ export function createScheduleRouter(container: Container): Router {
     '/:scheduleId/agent-version',
     auth.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    requireIdentifiedCaller,
     ValidationMiddleware.validate(scheduleAgentVersionSchema),
     handle(async (req, res) => {
       const body = req.body as z.infer<
@@ -421,6 +425,7 @@ export function createScheduleRouter(container: Container): Router {
     '/:scheduleId/run',
     auth.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    requireIdentifiedCaller,
     ValidationMiddleware.validate(runScheduleSchema),
     handle(async (req, res) => {
       const key = String(req.headers['idempotency-key']);

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { createClient } from "./client.js";
+import { createSessionClient } from "./client.js";
 import {
   createdConversationId,
   expectFinishedRun,
@@ -10,7 +10,7 @@ import {
 const CHAT_MODE = "internal_search";
 
 test("Handwritten Conversation Streams", async () => {
-  const pipeshub = createClient();
+  const pipeshub = createSessionClient();
 
   const events = await readAll(
     await pipeshub.conversations.streamChat({

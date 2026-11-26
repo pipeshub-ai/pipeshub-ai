@@ -62,15 +62,14 @@ class TestTheEditorCanSeeWhatTheyAttach:
 
 
 class TestAPersonalActionStaysOnTheOwnersAgent:
-    @pytest.mark.parametrize("shared,service_account", [(True, False), (False, True)])
-    async def test_not_on_one_others_run(self, shared: bool, service_account: bool) -> None:
+    async def test_not_on_one_others_run(self) -> None:
         instances = {"alice-jira": _record("alice-jira", "u-alice", "personal")}
         with pytest.raises(InvalidRequestError, match="Personal actions"):
-            _assert_no_personal_toolsets(instances, shared_with_org=shared, service_account=service_account)
+            _assert_no_personal_toolsets(instances, shared_with_org=True)
 
     def test_fine_on_their_own_agent_and_an_org_instance_anywhere(self) -> None:
-        _assert_no_personal_toolsets({"alice-jira": _record("alice-jira", "u-alice", "personal")}, shared_with_org=False, service_account=False)
-        _assert_no_personal_toolsets({"org-jira": _record("org-jira", "admin-1")}, shared_with_org=True, service_account=True)
+        _assert_no_personal_toolsets({"alice-jira": _record("alice-jira", "u-alice", "personal")}, shared_with_org=False)
+        _assert_no_personal_toolsets({"org-jira": _record("org-jira", "admin-1")}, shared_with_org=True)
 
     async def test_sharing_finds_the_owners_personal_actions_whoever_shares(self) -> None:
         """A co-editor can't see the owner's personal action; the check looks across users."""

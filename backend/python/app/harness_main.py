@@ -319,5 +319,8 @@ async def run_worker(
             await shutdown
 
 
+# Read by the agent-loop route checks: this main serves no FastAPI routes.
+NO_HTTP_APP = "a queue worker; its runs are admitted by Node for a verified person"
+
 if __name__ == "__main__":
     asyncio.run(run_worker())

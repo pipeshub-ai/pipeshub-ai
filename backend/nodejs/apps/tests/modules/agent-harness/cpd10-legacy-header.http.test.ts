@@ -171,9 +171,7 @@ async function startQueryService(proxied: Proxied[]): Promise<Server> {
         headers: req.headers,
         body: raw === '' ? {} : (JSON.parse(raw) as Record<string, unknown>),
       });
-      if (path.endsWith('/internal/service-account')) {
-        res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ isServiceAccount: true }));
-      } else if (path.endsWith('/stream')) {
+      if (path.endsWith('/stream')) {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         res.end(`event: complete\ndata: ${JSON.stringify({ answer: 'ok', citations: [], confidence: 'High' })}\n\n`);
       } else {
@@ -583,12 +581,6 @@ describe('CPD-10: X-PipesHub-Resolved on the legacy chat proxies (the real app c
         sub: USER,
       },
       {
-        name: 'an OAuth client-credentials token: the identity is the one the token acts as',
-        request: () => ({ path: `/api/v1/agents/${AGENT}/conversations/stream`, token: clientCredentialsToken(), body: AGENT_TURN }),
-        proxiedTo: `/api/v1/agent/${AGENT}/chat/stream`,
-        sub: SERVICE_IDENTITY,
-      },
-      {
         name: 'Slack internal, the assistant, a workspace member with an account: the stand-in session Node mints',
         request: () => ({ path: '/api/v1/conversations/internal/stream', token: slackToken(SLACK_EMAIL, 'U0SAM'), body: { query: 'q', chatMode: 'agent' } }),
         proxiedTo: `/api/v1/agent/${PLACEHOLDER}/chat/stream`,
@@ -607,12 +599,6 @@ describe('CPD-10: X-PipesHub-Resolved on the legacy chat proxies (the real app c
         proxiedTo: `/api/v1/agent/${AGENT}/chat/stream`,
         sub: USER,
       },
-      {
-        name: 'Slack internal, a service-account agent and a member without an account: the scoped token Node mints',
-        request: () => ({ path: `/api/v1/agents/${AGENT}/conversations/internal/stream`, token: slackToken(SERVICE_EMAIL, 'U0BOTUSER'), body: AGENT_TURN }),
-        proxiedTo: `/api/v1/agent/${AGENT}/chat/stream`,
-        sub: '',
-      },
     ];
 
     for (const site of sites) {
@@ -626,10 +612,38 @@ describe('CPD-10: X-PipesHub-Resolved on the legacy chat proxies (the real app c
         expect(calls.map((call) => call.path)).to.deep.equal([site.proxiedTo]);
         const turn = await verifiedAsTheQueryServiceWould(rig, calls[0]!);
         expect(turn.org).to.equal(ORG);
-        if (site.sub !== '') expect(turn.sub).to.equal(site.sub);
-        else expect(turn.sub, 'the scoped token’s own user, not the bot’s').to.match(/^[0-9a-f]{24}$/).and.not.equal(USER);
+        expect(turn.sub).to.equal(site.sub);
         expect(turn.cid).to.equal(calls[0]!.body['conversationId']);
         expect(calls[0]!.headers[RESOLVED_TURN_HEADER]).to.not.equal(FOREIGN_HEADER[RESOLVED_TURN_HEADER]);
+      });
+    }
+
+    // An agent answers as the person asking: with no person there is no turn, and nothing is proxied or written.
+    for (const refused of [
+      {
+        name: 'an OAuth client-credentials token',
+        path: 'stream',
+        token: () => clientCredentialsToken(),
+        status: 403,
+      },
+      {
+        name: 'a Slack member without an account, a service-account agent',
+        path: 'internal/stream',
+        token: () => slackToken(SERVICE_EMAIL, 'U0BOTUSER'),
+        status: 401,
+      },
+    ]) {
+      it(`${refused.name} is refused before anything is proxied`, async () => {
+        rig = await startRig('on');
+        const reply = await rig.send(
+          `/api/v1/agents/${AGENT}/conversations/${refused.path}`,
+          refused.token(),
+          AGENT_TURN,
+          FOREIGN_HEADER,
+        );
+        expect(reply.status, await reply.text()).to.equal(refused.status);
+        expect(rig.proxied).to.deep.equal([]);
+        expect(rig.store.sessions).to.deep.equal([]);
       });
     }
 

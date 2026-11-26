@@ -1,0 +1,9 @@
+from fx.api.routes import chatbot
+
+try:
+    import fastapi  # noqa: F401
+
+    async def job(request):
+        return await chatbot.askAIStream(request)
+except ImportError:
+    pass

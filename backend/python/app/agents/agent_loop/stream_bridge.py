@@ -61,6 +61,7 @@ from app.agents.chat_modes.setup import (
     prepare_chat_state,
     start_prefetch,
 )
+from app.api.middlewares.identified_caller import loop_caller_refusal
 from app.core.org_context import spawn_in_request
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
@@ -647,6 +648,11 @@ async def run_agent_loop_stream(
     (which formats `Agent.run()`'s own final answer rather than making a
     second LLM call — see `respond.py`) through one shared `QueueEventSink`.
     """
+    # Before anything else: only a person the route guard verified for this request runs.
+    refusal = loop_caller_refusal(user_info)
+    if refusal:
+        yield _pre_stream_error_frame(protocol, refusal, "unidentified_caller")
+        return
     from app.connectors.core.registry.connector_builder import ConnectorScope
     from app.modules.agents.qna.chat_state import build_initial_state
     from app.modules.code_graph.connectors import connector_instances_have_code
@@ -682,8 +688,9 @@ async def run_agent_loop_stream(
             graph_provider, user_info["userId"], user_info["orgId"], log,
         )
         sql_instances = connector_instances
-        if query_info.get("is_service_account"):
-            # Anyone in the org runs this agent on one identity, so only the org's databases.
+        if query_info.get("is_service_account") or query_info.get("service_agent_shared_databases_only"):
+            # A service agent (the agent record's flag, set by the route) may be used by anyone in the
+            # org, so it runs on the org's databases only.
             sql_instances = [c for c in connector_instances if c.get("scope") == ConnectorScope.TEAM.value]
         has_sql_connector = connector_instances_have_sql(sql_instances)
         has_slack_connector = connector_instances_have_slack(connector_instances)
@@ -802,6 +809,11 @@ async def run_chat_stream(
     ``search_entities``/``find_records_by_entity`` tools; with ``None`` they
     are not granted (see ``factory._initial_entity_tool_grant``).
     """
+    # Before anything else: only a person the route guard verified for this request runs.
+    refusal = loop_caller_refusal(user_info)
+    if refusal:
+        yield _pre_stream_error_frame(protocol, refusal, "unidentified_caller")
+        return
     policy = policy or resolve_chat_mode_policy(query_info.get("chatMode"))
     # Stop Generation (Phase 3a): registered BEFORE the state is built so the
     # "Thinking" phase is cancellable too.
