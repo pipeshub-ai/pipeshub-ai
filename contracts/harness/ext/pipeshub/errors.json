@@ -1565,6 +1565,28 @@
       }
     },
     {
+      "code": "SCHEDULE_RAN_ONCE",
+      "status": 409,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "A one-time schedule already had its run (or its time passed): it never runs again.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This one-time schedule already ran. Delete it or make a new one."
+      }
+    },
+    {
+      "code": "SCHEDULE_NOT_APPROVED",
+      "status": 403,
+      "retryable": false,
+      "group": "schedule",
+      "meaning": "A run asked for a schedule its person did not approve as asked: no approval of that call in the run's journal, or other arguments than the approved ones.",
+      "nextAction": {
+        "kind": "change_request",
+        "text": "This schedule was not approved as asked. Ask again and confirm the schedule."
+      }
+    },
+    {
       "code": "SCHEDULE_TRIGGER_TOKEN_INVALID",
       "status": 401,
       "retryable": false,
