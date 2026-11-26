@@ -35,9 +35,10 @@ NO_STATS = """DELETE FROM pg_statistic WHERE starelid IN (SELECT oid FROM pg_cla
 # Back to what the session's other tests plan with: every kg table analysed again (an index's pages and rows with its table's).
 RESTORE = """DO $$ DECLARE t regclass; BEGIN
     FOR t IN SELECT c.oid::regclass FROM pg_class c WHERE c.relnamespace = 'kg'::regnamespace AND c.relkind IN ('r', 'p') LOOP EXECUTE format('ANALYZE %s', t); END LOOP; END $$"""
-# A kg table never analysed, or kg.records without its column statistics.
+# A kg table never analysed, or kg.records holding rows without its column statistics (ANALYZE of an empty table writes none).
 UNANALYSED = """SELECT array_agg(c.relname::text ORDER BY c.relname) FILTER (WHERE c.reltuples < 0)
-      || CASE WHEN EXISTS (SELECT 1 FROM pg_statistic WHERE starelid = 'kg.records'::regclass) THEN '{}'::text[] ELSE '{records: no column statistics}' END
+      || CASE WHEN EXISTS (SELECT 1 FROM pg_statistic WHERE starelid = 'kg.records'::regclass) OR NOT EXISTS (SELECT 1 FROM kg.records) THEN '{}'::text[]
+              ELSE '{records: no column statistics}' END
     FROM pg_class c WHERE c.relnamespace = 'kg'::regnamespace AND c.relkind = 'r'"""
 
 
