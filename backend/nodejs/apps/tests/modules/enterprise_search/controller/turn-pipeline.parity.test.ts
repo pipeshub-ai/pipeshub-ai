@@ -1,7 +1,7 @@
-import { historyLabel } from '../../../../src/libs/repositories/agent-harness/history-source/mongo'
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { historyLabel } from '../../../../src/libs/repositories/agent-harness/history-source/mongo'
 import { formatPreviousConversations } from '../../../../src/modules/enterprise_search/utils/utils'
 import { ACTORS } from '../helpers/conversation-world'
 import { Kind, turnWorld, worldAppConfig } from '../helpers/turn-world'
@@ -12,8 +12,7 @@ const SOLO = { projectId: undefined, projectVisibility: undefined, isShared: fal
 const BODY = { query: 'And the roadmap?', runId: 'client-run-1', clientMessageId: 'k-1', baseSeq: 0, filesShared: true }
 const chatPath = (kind: Kind): RegExp => (kind === 'chat' ? /\/api\/v1\/chat$/ : /\/agent\/agent-1\/chat$/)
 
-/** The payload Python got before the turn pipeline, with the client's run id forwarded. */
-// As main sends a follow-up: its history, and what that history read (FG2).
+/** The payload Python got before the turn pipeline, with the client's run id forwarded, and the label of what the history read (FG2). */
 const legacyPayload = (kind: Kind, conversationId: string, history: unknown[], label: unknown) => ({
   query: 'And the roadmap?',
   previousConversations: history,
