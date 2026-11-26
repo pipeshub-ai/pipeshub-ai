@@ -26,6 +26,9 @@ export function resolveModelConfigSaveError(err: unknown, t: TFunction): string 
     if (code === 'outbound_connectivity') {
       return t('workspace.aiModels.configSaveOutboundError');
     }
+    if (code === 'credential_reentry_required') {
+      return t('workspace.aiModels.configSaveCredentialReentry');
+    }
     if (code === 'health_check_timeout' || err.type === ErrorType.TIMEOUT_ERROR) {
       return t('workspace.aiModels.configSaveTimeoutError');
     }
@@ -35,4 +38,17 @@ export function resolveModelConfigSaveError(err: unknown, t: TFunction): string 
   }
 
   return t('workspace.aiModels.configSaveErrorFallback');
+}
+
+/** A connection-wide key or forwarding save; names the models that block it when the connection spans endpoints. */
+export function resolveConnectionSecretError(err: unknown, t: TFunction, fallbackKey: string): string {
+  if (!isProcessedError(err)) return t(fallbackKey);
+  const body = (err.originalError as { response?: { data?: unknown } } | undefined)?.response?.data;
+  if (extractErrorCode(body) === 'credential_reentry_required') {
+    const models = (body as { models?: { name?: unknown }[] }).models ?? [];
+    return t('workspace.aiModels.connectionEndpointsDiffer', {
+      models: models.map((model) => String(model.name ?? '')).filter(Boolean).join(', '),
+    });
+  }
+  return err.message.trim() || t(fallbackKey);
 }

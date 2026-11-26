@@ -24,12 +24,17 @@ import {
 } from '../services/kafka_events.service';
 import {
   AiModelsConfigRepository,
+  AiModelsWriteAborted,
   findModelEntry,
 } from '../services/aiModelsConfig.repository';
 import { AIModelConfiguration } from '../types/ai-models.types';
 import {
   AI_PUBLIC_CONFIG_KEYS,
   mergeAiModelCredentials,
+  AI_MODEL_DESTINATION_KEYS,
+  aiModelDestinationsDiffer,
+  connectionEndpointsDifferBody,
+  CREDENTIAL_REENTRY_REQUIRED,
   pickAiModelCredentials,
 } from '../utils/maskConfigSecrets';
 import {
@@ -161,13 +166,14 @@ export function discoverAIModels(
           return;
         }
         if (provider && provider !== found.model.provider) {
-          res.status(400).json({ status: 'error', message: 'provider does not match saved model' });
+          res.status(400).json({ status: 'error', message: 'Provider does not match saved model' });
           return;
         }
         provider = found.model.provider;
         // Stored credentials must stay on the saved connection. A request
         // endpoint here would send the saved API key to a different host.
-        delete configuration.endpoint;
+        for (const key of AI_MODEL_DESTINATION_KEYS)
+          Reflect.deleteProperty(configuration, key);
         configuration = mergeAiModelCredentials(configuration, found.model.configuration);
       }
       const options: AICommandOptions = {
@@ -227,16 +233,29 @@ export function batchAddAIModels(
       );
       if (requestedConnectionId) {
         const stored = await repo.read();
-        const joinable = AI_MODEL_TYPES.some((type) =>
-          (stored?.[type] ?? []).some(
-            (entry) => entry.connectionId === requestedConnectionId && entry.provider === provider,
+        const members = AI_MODEL_TYPES.flatMap((type) =>
+          (stored?.[type] ?? []).filter(
+            (entry) => entry.connectionId === requestedConnectionId,
           ),
         );
-        if (!joinable) {
+        if (!members.some((entry) => entry.provider === provider)) {
           res.status(400).json({
             status: 'error',
             message: 'connectionId does not match a saved connection for this provider',
           });
+          return;
+        }
+        // A connection shares one key, so a later rotation would send it to this endpoint too.
+        if (
+          members.some((entry) =>
+            aiModelDestinationsDiffer(
+              configuration,
+              entry.configuration,
+              provider,
+            ),
+          )
+        ) {
+          res.status(400).json(CREDENTIAL_REENTRY_REQUIRED);
           return;
         }
       }
@@ -416,6 +435,12 @@ export function rotateConnectionCredentials(
         res.status(404).json({ status: 'error', message: 'Connection not found' });
         return;
       }
+      // One key for every member, checked against one endpoint: refuse before it is sent anywhere.
+      const spansEndpoints = connectionEndpointsDifferBody(members);
+      if (spansEndpoints) {
+        res.status(400).json(spansEndpoints);
+        return;
+      }
       const merged = mergeAiModelCredentials(incoming, sample.entry.configuration);
       const health = await healthCheckModel(
         appConfig,
@@ -436,17 +461,34 @@ export function rotateConnectionCredentials(
         return;
       }
       let updated = 0;
-      await repo.mutate((aiModels) => {
-        for (const modelType of AI_MODEL_TYPES) {
-          for (const entry of aiModels[modelType] ?? []) {
-            if (entry.connectionId !== connectionId) {
-              continue;
+      // Typed by assertion: it is set inside the callback, so TS must not narrow it to null.
+      let refusal = null as Record<string, unknown> | null;
+      try {
+        await repo.mutate((aiModels) => {
+          updated = 0;
+          const current: { modelType: string; entry: AIModelConfiguration }[] =
+            [{ modelType: sample.modelType, entry: sample.entry }];
+          for (const modelType of AI_MODEL_TYPES) {
+            for (const entry of aiModels[modelType] ?? []) {
+              if (entry.connectionId === connectionId)
+                current.push({ modelType, entry });
             }
+          }
+          // A member moved between the read and this write.
+          refusal = connectionEndpointsDifferBody(current);
+          if (refusal) throw new AiModelsWriteAborted();
+          for (const { entry } of current.slice(1)) {
             entry.configuration = mergeAiModelCredentials(incoming, entry.configuration);
             updated += 1;
           }
+        });
+      } catch (error) {
+        if (refusal && error instanceof AiModelsWriteAborted) {
+          res.status(400).json(refusal);
+          return;
         }
-      });
+        throw error;
+      }
       res.status(200).json({ status: 'success', connectionId, updated });
     } catch (error) {
       next(error);

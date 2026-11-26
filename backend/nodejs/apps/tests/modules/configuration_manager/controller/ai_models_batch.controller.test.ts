@@ -198,6 +198,44 @@ describe('ai model discover, batch, and rotate', () => {
     expect(res.statusCode).to.equal(200);
   });
 
+  it('keeps the saved baseUrl when stored credentials are merged', async () => {
+    const initial = seedConfig();
+    const first = initial.llm?.[0];
+    if (!first) throw new Error('seed missing');
+    first.configuration = {
+      model: 'gpt-4o',
+      apiKey: 'sk-stored',
+      baseUrl: 'https://api.openai.com/v1',
+    };
+    const store = memoryStore(initial);
+    let sentBody = '';
+    execute.callsFake(async function (this: { body: string }) {
+      sentBody = this.body;
+      return { statusCode: 200, data: { success: true, models: [] } };
+    });
+    const { res } = sseResponse();
+    await discoverAIModels(store as any, appConfig)(
+      {
+        body: {
+          provider: 'openAI',
+          modelKey: 'llm-1',
+          configuration: {
+            baseUrl: 'https://attacker.example/v1',
+            model: 'gpt-4o',
+          },
+        },
+        headers: {},
+      } as any,
+      res as any,
+      () => undefined,
+    );
+    const sent = JSON.parse(sentBody);
+    expect(sent.provider).to.equal('openAI');
+    expect(sent.configuration.apiKey).to.equal('sk-stored');
+    expect(sent.configuration.baseUrl).to.equal('https://api.openai.com/v1');
+    expect(res.statusCode).to.equal(200);
+  });
+
   it('returns 404 when the model key is unknown', async () => {
     const store = memoryStore(seedConfig());
     const { res } = sseResponse();
@@ -589,6 +627,120 @@ describe('ai model discover, batch, and rotate', () => {
     const sent = JSON.parse(sentBody);
     expect(sent.becomesActive).to.equal(false);
     expect(sent.configuration.endpoint).to.equal('https://api.openai.com/v1');
+  });
+
+  it('refuses to join a connection with a different endpoint, without checking or saving', async () => {
+    const store = memoryStore(seedConfig());
+    const before = JSON.stringify(store.snapshot());
+
+    const { res } = await runBatch(store, {
+      connectionId: 'conn-1',
+      configuration: {
+        apiKey: 'sk-other',
+        endpoint: 'https://attacker.example/v1',
+      },
+      models: [{ model: 'gpt-4.1', isMultimodal: false, isReasoning: false }],
+    });
+
+    expect(res.statusCode).to.equal(400);
+    expect((res.body as { error_code?: string }).error_code).to.equal(
+      'credential_reentry_required',
+    );
+    expect(execute.called).to.equal(false);
+    expect(JSON.stringify(store.snapshot())).to.equal(before);
+  });
+
+  it('joins a connection whose endpoint matches apart from case and a trailing slash', async () => {
+    const initial = seedConfig();
+    for (const entry of initial.llm ?? []) {
+      entry.configuration = {
+        ...entry.configuration,
+        endpoint: 'https://gw.example.com/v1',
+      };
+    }
+    const store = memoryStore(initial);
+    execute.callsFake(healthyUnless('none'));
+
+    const { res } = await runBatch(store, {
+      connectionId: 'conn-1',
+      configuration: {
+        apiKey: 'sk-stored',
+        endpoint: 'https://GW.example.com/v1/',
+      },
+      models: [{ model: 'gpt-4.1', isMultimodal: false, isReasoning: false }],
+    });
+
+    expect(res.statusCode).to.equal(200);
+    expect(
+      (store.snapshot()?.llm ?? []).some(
+        (entry) => entry.configuration.model === 'gpt-4.1',
+      ),
+    ).to.equal(true);
+  });
+
+  it('refuses to rotate a connection whose first model moved to another endpoint, before any check or save', async () => {
+    const initial = seedConfig();
+    initial.llm![0]!.configuration = {
+      ...initial.llm![0]!.configuration,
+      endpoint: 'https://elsewhere.example/v1',
+      apiKey: 'sk-elsewhere',
+    };
+    initial.llm![1]!.configuration = {
+      ...initial.llm![1]!.configuration,
+      endpoint: 'https://gw.example.com/v1',
+    };
+    const store = memoryStore(initial);
+    const before = JSON.stringify(store.snapshot());
+    const sent: string[] = [];
+    execute.callsFake(async function (this: { body: string }) {
+      sent.push(this.body);
+      return { statusCode: 200, data: {} };
+    });
+    const { res } = sseResponse();
+    await rotateConnectionCredentials(store as any, appConfig)(
+      {
+        params: { connectionId: 'conn-1' },
+        body: { configuration: { apiKey: 'sk-rotated' } },
+        headers: {},
+      } as any,
+      res as any,
+      () => undefined,
+    );
+
+    expect(res.statusCode).to.equal(400);
+    const body = res.body as {
+      error_code?: string;
+      message?: string;
+      models?: { modelKey: string }[];
+    };
+    expect(body.error_code).to.equal('credential_reentry_required');
+    expect(body.models?.map((model) => model.modelKey)).to.deep.equal([
+      'llm-2',
+    ]);
+    expect(body.message).to.contain('gpt-4o-mini');
+    expect(sent.some((text) => text.includes('sk-rotated'))).to.equal(false);
+    expect(JSON.stringify(store.snapshot())).to.equal(before);
+  });
+
+  it('rotates every member of a connection that stays on one endpoint', async () => {
+    const store = memoryStore(seedConfig());
+    execute.callsFake(async () => ({ statusCode: 200, data: {} }));
+    const { res } = sseResponse();
+    await rotateConnectionCredentials(store as any, appConfig)(
+      {
+        params: { connectionId: 'conn-1' },
+        body: { configuration: { apiKey: 'sk-rotated' } },
+        headers: {},
+      } as any,
+      res as any,
+      () => undefined,
+    );
+
+    expect(res.statusCode).to.equal(200);
+    expect(res.body).to.deep.include({ updated: 2 });
+    expect(
+      (store.snapshot()?.llm ?? []).map((entry) => entry.configuration.apiKey),
+    ).to.deep.equal(['sk-rotated', 'sk-rotated']);
   });
 
   it('registers the literal routes before the model type param', () => {

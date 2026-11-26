@@ -41,8 +41,13 @@ export const AI_PUBLIC_CONFIG_KEYS = [
   'identityForwardingServiceAuth',
 ] as const;
 
-const CREDENTIAL_HEADER_HINT =
-  /auth|cookie|(api|access|subscription|functions|private)[-_]?key|token|secret|password|credential|signature|assertion/i;
+/**
+ * Header names that may carry a credential. The Python preview redacts by the
+ * same pattern (app/services/model_identity/preview.py); a shared contract
+ * fixture (tests/contract/credential-header-hints.fixture.json) keeps the two equal.
+ */
+export const CREDENTIAL_HEADER_HINT =
+  /auth|cookie|key|token|secret|password|credential|signature|assertion/i;
 
 /**
  * A header template may carry a literal credential (e.g. a static bearer token
@@ -193,6 +198,177 @@ export function pickAiModelCredentials(
     out[key] = value;
   }
   return out;
+}
+
+/** Fields that choose where a model's credentials are sent. */
+export const AI_MODEL_DESTINATION_KEYS = ['endpoint', 'baseUrl'] as const;
+
+function normalizeDestination(value: unknown): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  try {
+    const url = new URL(text);
+    // origin is the string "null" for non-special schemes, so use protocol and host.
+    // URL lower-cases both and drops a default port. Userinfo and the query can
+    // route a request elsewhere (a proxy's target parameter), so they count too.
+    const userinfo =
+      url.username || url.password ? `${url.username}:${url.password}@` : '';
+    return `${url.protocol}//${userinfo}${url.host}${url.pathname.replace(/\/+$/, '')}${url.search}`;
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * True when two model configurations send their credentials to different
+ * places. The one definition of "same endpoint": every check uses it.
+ * A blank endpoint matches only a blank one: the runtime does not fill in the
+ * provider form's default (it falls back to its own environment), so a blank
+ * endpoint and an explicit default can reach different hosts. The provider
+ * argument is kept for callers and does not change the answer.
+ */
+export function aiModelDestinationsDiffer(
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+  _provider?: unknown,
+  keys: readonly string[] = AI_MODEL_DESTINATION_KEYS,
+): boolean {
+  return keys.some(
+    (key) => normalizeDestination(a[key]) !== normalizeDestination(b[key]),
+  );
+}
+
+/** True for a header template a forwarding secret may live in. */
+export function isCredentialHeaderName(name: string): boolean {
+  return CREDENTIAL_HEADER_HINT.test(name);
+}
+
+/** The 400 body for a save that would send a saved secret to a different destination. */
+export const CREDENTIAL_REENTRY_REQUIRED = {
+  status: 'error',
+  error_code: 'credential_reentry_required',
+  message: 'Enter the credentials again to use this new endpoint.',
+} as const;
+
+type ConnectionMember = { modelType: string; entry: AIModelConfiguration };
+
+/**
+ * The 400 body for a new connection-wide secret when the connection's models
+ * use more than one endpoint, or null when they all share the first one's.
+ * Nothing is checked or saved: the secret would reach a host it was not meant for.
+ */
+export function connectionEndpointsDifferBody(
+  members: ConnectionMember[],
+): Record<string, unknown> | null {
+  const home = members[0]?.entry.configuration ?? {};
+  const away = members
+    .filter(({ entry }) =>
+      aiModelDestinationsDiffer(
+        entry.configuration,
+        home,
+        members[0]?.entry.provider,
+      ),
+    )
+    .map(({ modelType, entry }) => ({
+      modelKey: entry.modelKey,
+      modelType,
+      name: String(
+        entry.modelFriendlyName || entry.configuration.model || entry.modelKey,
+      ),
+    }));
+  if (away.length === 0) return null;
+  return {
+    status: 'error',
+    error_code: CREDENTIAL_REENTRY_REQUIRED.error_code,
+    message: `These models use a different endpoint from the rest of the connection: ${away
+      .map((model) => model.name)
+      .join(
+        ', ',
+      )}. Move them back to the connection's endpoint or delete them, then save again.`,
+    models: away,
+  };
+}
+
+/** Like `aiModelDestinationsDiffer`, but a key absent from `incoming` is unchanged. */
+export function aiModelDestinationChanged(
+  incoming: Record<string, unknown>,
+  existing: Record<string, unknown>,
+  provider?: unknown,
+): boolean {
+  return aiModelDestinationsDiffer(
+    incoming,
+    existing,
+    provider,
+    AI_MODEL_DESTINATION_KEYS.filter((key) => key in incoming),
+  );
+}
+
+/**
+ * A copy of the saved settings without the identity forwarding credentials: the
+ * service API key and any header template that holds one. The dialog never sends
+ * these back, so they are dropped instead of retyped when the destination moves.
+ */
+export function withoutForwardingCredentials(
+  existing: Record<string, unknown>,
+): Record<string, unknown> {
+  const dropFrom = (
+    settings: Record<string, unknown>,
+    keys: { serviceApiKey: string; headerTemplates: string },
+  ): Record<string, unknown> => {
+    const out = { ...settings };
+    Reflect.deleteProperty(out, keys.serviceApiKey);
+    const templates = out[keys.headerTemplates];
+    if (
+      templates &&
+      typeof templates === 'object' &&
+      !Array.isArray(templates)
+    ) {
+      out[keys.headerTemplates] = Object.fromEntries(
+        Object.entries(templates).filter(
+          ([name]) => !CREDENTIAL_HEADER_HINT.test(name),
+        ),
+      );
+    }
+    return out;
+  };
+  const out = dropFrom(existing, IDENTITY_FORWARDING_KEYS);
+  // The nested form of the same settings wins at runtime, so it is cleaned too.
+  const nested = out.identityForwarding;
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+    out.identityForwarding = dropFrom(nested as Record<string, unknown>, {
+      serviceApiKey: 'serviceApiKey',
+      headerTemplates: 'headerTemplates',
+    });
+  }
+  return out;
+}
+
+/** True when the saved settings hold a forwarding secret that `withoutForwardingCredentials` would drop. */
+export function hasForwardingCredentials(
+  existing: Record<string, unknown>,
+): boolean {
+  return (
+    JSON.stringify(withoutForwardingCredentials(existing)) !==
+    JSON.stringify(existing)
+  );
+}
+
+/**
+ * True when a saved secret would be restored into this update: it has a saved
+ * value and the key is absent. A present key, even blank, replaces or clears it.
+ */
+export function reusesSavedAiModelCredentials(
+  incoming: Record<string, unknown>,
+  existing: Record<string, unknown>,
+): boolean {
+  const filled = (value: unknown): boolean =>
+    typeof value === 'string'
+      ? value.trim() !== ''
+      : typeof value === 'object' &&
+        value !== null &&
+        Object.keys(value).length > 0;
+  return AI_MODEL_CREDENTIAL_KEYS.some(
+    (key) => filled(existing[key]) && !(key in incoming),
+  );
 }
 
 export function mergeAiModelCredentials<T extends Record<string, unknown>>(

@@ -2750,6 +2750,8 @@
       "configSaveErrorFallback": "Nepodařilo se uložit konfiguraci modelu",
       "configSaveOutboundError": "PipesHub se k tomuto poskytovateli modelů nedostane zevnitř kontejneru. Cloudoví poskytovatelé vyžadují odchozí připojení k internetu — viz deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
       "configSaveTimeoutError": "Během ověřování modelu vypršel časový limit požadavku. Cloudoví poskytovatelé vyžadují odchozí připojení k internetu z kontejneru PipesHub — viz deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity.",
+      "configSaveCredentialReentry": "Zadejte přihlašovací údaje znovu, abyste mohli použít tento nový koncový bod.",
+      "configForwardingCredentialsCleared": "Přihlašovací údaje pro přeposílání byly odstraněny, protože se změnil koncový bod. Znovu je přidejte v části Předávání identity.",
       "configNoConfigRequired": "Tento poskytovatel nevyžaduje žádnou konfiguraci.",
       "configDefaultModelNotice": "Systém bude ve výchozím nastavení používat \"{{modelName}}\".",
       "configSectionModelConfiguration": "Konfigurace modelu",
@@ -2865,6 +2867,7 @@
       "rotateCredentialsPlaceholder": "Nový API klíč",
       "rotateCredentialsSave": "Aktualizovat klíč",
       "rotateCredentialsFailed": "Klíč se nepodařilo aktualizovat",
+      "connectionEndpointsDiffer": "Některé modely v tomto připojení používají jiný koncový bod: {{models}}. Vraťte je na koncový bod připojení nebo je odstraňte a zkuste to znovu.",
       "batchStatus": {
         "pending": "Čeká",
         "checking": "Kontrola",

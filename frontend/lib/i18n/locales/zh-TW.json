@@ -2607,6 +2607,8 @@
       "configSaveErrorFallback": "無法儲存模型設定",
       "configSaveOutboundError": "PipesHub 無法從容器內部連線到此模型供應商。雲端供應商需要對外網路連線 — 請參閱 deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity。",
       "configSaveTimeoutError": "驗證模型時要求逾時。雲端供應商需要 PipesHub 容器具備對外網路連線 — 請參閱 deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity。",
+      "configSaveCredentialReentry": "請重新輸入憑證，以使用此新端點。",
+      "configForwardingCredentialsCleared": "由於端點已變更，轉發憑證已被移除。請在身分轉送中重新新增。",
       "configNoConfigRequired": "此供應商不需要任何設定。",
       "configDefaultModelNotice": "系統將預設使用「{{modelName}}」。",
       "configSectionModelConfiguration": "模型設定",
@@ -2722,6 +2724,7 @@
       "rotateCredentialsPlaceholder": "新的 API 金鑰",
       "rotateCredentialsSave": "更新金鑰",
       "rotateCredentialsFailed": "無法更新金鑰",
+      "connectionEndpointsDiffer": "此連線中的部分模型使用了不同的端點：{{models}}。請將它們改回此連線的端點或將其刪除，然後再試一次。",
       "identity": {
         "menuItem": "身分轉送",
         "title": "身分轉送",
