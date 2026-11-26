@@ -5,7 +5,12 @@ import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-bu
 
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), delete: vi.fn() }));
 const addToast = vi.hoisted(() => vi.fn());
+const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), prefetch: vi.fn(), back: vi.fn(), refresh: vi.fn() }));
 vi.mock('@/lib/api', () => ({ apiClient: api, streamSSERequest: vi.fn() }));
+vi.mock('next/navigation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('next/navigation')>()),
+  useRouter: () => router,
+}));
 vi.mock('@/lib/store/toast-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/store/toast-store')>()),
   useToastStore: (select: (s: { addToast: typeof addToast }) => unknown) => select({ addToast }),
@@ -255,5 +260,50 @@ describe('General settings page', () => {
 
     expect(form().displayName).toBe('Acme');
     expect(screen.getByTestId('logo').getAttribute('data-src')).toBe('');
+  });
+
+  describe('the Edition link, with the form edited', () => {
+    const editionLink = () => screen.getByRole('link', { name: 'workspace.enterprise.seeWhatsInEnterprise' });
+
+    it('asks before leaving, and goes on to the Enterprise page once the edits are discarded', async () => {
+      await renderPage();
+      await screen.findByDisplayValue('Acme Inc');
+      act(() => useGeneralStore.getState().setField('city', 'Shelbyville'));
+
+      fireEvent.click(editionLink());
+
+      expect(router.push).not.toHaveBeenCalled();
+      fireEvent.click(await screen.findByRole('button', { name: 'workspace.general.discardDialog.confirm' }));
+      expect(form().city).toBe('Springfield');
+      expect(router.push.mock.calls[0][0].replace(/\/$/, '')).toBe('/workspace/enterprise');
+    });
+
+    it('stays, with the edits kept, when the admin continues editing', async () => {
+      await renderPage();
+      await screen.findByDisplayValue('Acme Inc');
+      act(() => useGeneralStore.getState().setField('city', 'Shelbyville'));
+
+      fireEvent.click(editionLink());
+      fireEvent.click(await screen.findByRole('button', { name: 'workspace.general.discardDialog.cancel' }));
+
+      expect(form().city).toBe('Shelbyville');
+      expect(router.push).not.toHaveBeenCalled();
+      // A later Discard from the save bar only discards: the link it was opened for is forgotten.
+      act(() => useGeneralStore.getState().setDiscardDialogOpen(true));
+      fireEvent.click(await screen.findByRole('button', { name: 'workspace.general.discardDialog.confirm' }));
+      expect(router.push).not.toHaveBeenCalled();
+    });
+
+    it('leaves without asking when nothing is edited', async () => {
+      await renderPage();
+      await screen.findByDisplayValue('Acme Inc');
+
+      const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+      editionLink().dispatchEvent(event);
+
+      expect(screen.queryByRole('button', { name: 'workspace.general.discardDialog.confirm' })).toBeNull();
+      // next/link handles the click itself; the page did not stop it.
+      expect(router.push).not.toHaveBeenCalled();
+    });
   });
 });

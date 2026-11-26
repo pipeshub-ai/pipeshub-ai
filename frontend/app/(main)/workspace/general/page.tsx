@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef, useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import {
   Box,
@@ -139,6 +140,9 @@ export default function GeneralPage() {
   const hasServerLogo = Boolean(savedLogoUrl);
   // Until the form holds the server's values, Save stays hidden: it would send blanks over them.
   const [formSeeded, setFormSeeded] = useState(false);
+  const router = useRouter();
+  // Where a link in the form was headed when the discard dialog opened for it.
+  const leavingHrefRef = useRef<string | null>(null);
   const loadErrorShownRef = useRef(false);
   const cachedErrorRetriedRef = useRef(false);
 
@@ -265,7 +269,30 @@ export default function GeneralPage() {
       title: t('workspace.general.toasts.discardSuccess'),
       description: t('workspace.general.toasts.discardSuccessDescription'),
     });
-  }, [discardChanges, addToast]);
+    const href = leavingHrefRef.current;
+    leavingHrefRef.current = null;
+    if (href) router.push(href);
+  }, [discardChanges, addToast, router]);
+
+  // A link inside the form (the Edition section) would drop unsaved edits, so it asks first.
+  const confirmLeavingWithEdits = useCallback(
+    (e: React.MouseEvent) => {
+      const link = (e.target as HTMLElement).closest('a');
+      if (!link || !isDirty() || link.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      leavingHrefRef.current = link.getAttribute('href');
+      setDiscardDialogOpen(true);
+    },
+    [isDirty, setDiscardDialogOpen]
+  );
+
+  const handleDiscardDialogOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) leavingHrefRef.current = null;
+      setDiscardDialogOpen(open);
+    },
+    [setDiscardDialogOpen]
+  );
 
   const handleFileChange = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -488,7 +515,9 @@ export default function GeneralPage() {
           </SettingsSection>
         </Box>
 
-        <WorkspaceEditionSection />
+        <Box onClickCapture={confirmLeavingWithEdits}>
+          <WorkspaceEditionSection />
+        </Box>
 
         {/* ── Data Collection Settings Section ── */}
         <Box style={{ marginBottom: 'var(--space-5)' }}>
@@ -569,7 +598,7 @@ export default function GeneralPage() {
       {/* ── Discard Confirmation Dialog ── */}
       <ConfirmationDialog
         open={discardDialogOpen}
-        onOpenChange={setDiscardDialogOpen}
+        onOpenChange={handleDiscardDialogOpenChange}
         title={t('workspace.general.discardDialog.title')}
         message={t('workspace.general.discardDialog.message')}
         confirmLabel={t('workspace.general.discardDialog.confirm')}
