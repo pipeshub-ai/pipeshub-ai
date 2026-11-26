@@ -25,6 +25,8 @@ def _alive(pid: int) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
+    if not os.path.isdir("/proc/self"):  # no procfs (macOS): kill(0) is all we can know
+        return True
     # A zombie still answers signal 0; it is gone for this purpose.
     try:
         with open(f"/proc/{pid}/stat") as fh:
