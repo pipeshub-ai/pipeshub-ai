@@ -151,7 +151,11 @@ class BrokerCodingSandbox(DockerCodingSandbox):
 
         try:
             # A full install (engine sandboxes count too) waits out the call's slot wait, as a full governor does.
-            handle = await retry_while_full(attempt, lambda exc: isinstance(exc, SandboxCapacityReached))
+            handle = await retry_while_full(
+                attempt,
+                lambda exc: isinstance(exc, SandboxCapacityReached),
+                release=lambda acquired: release_quietly(broker, acquired),
+            )
         except SandboxCapacityReached as exc:
             raise CodingSandboxBusy(f"no sandbox came free in time: {exc}") from exc
         except SandboxError as exc:

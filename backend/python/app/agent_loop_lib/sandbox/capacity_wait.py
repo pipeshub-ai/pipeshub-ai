@@ -27,17 +27,19 @@ _MAX_POLL_S = 5.0
 
 @dataclass(frozen=True)
 class CapacityWait:
-    # time.monotonic(); None waits as long as it takes (a negative SANDBOX_SLOT_WAIT_S).
+    # On `clock`; None waits as long as it takes (a negative SANDBOX_SLOT_WAIT_S).
     deadline: float | None
     # Shows (True) or clears (False) the call's queued note.
     note: Callable[[bool], Awaitable[None]]
+    clock: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
 
 _current: ContextVar[CapacityWait | None] = ContextVar("sandbox_capacity_wait", default=None)
 
 
 def _left(wait: CapacityWait) -> float:
-    return math.inf if wait.deadline is None else wait.deadline - time.monotonic()
+    return math.inf if wait.deadline is None else wait.deadline - wait.clock()
 
 
 @contextlib.contextmanager
@@ -49,16 +51,26 @@ def capacity_wait(wait: CapacityWait) -> Iterator[None]:
         _current.reset(token)
 
 
-async def retry_while_full(attempt: Callable[[], Awaitable[T]], is_full: Callable[[BaseException], bool]) -> T:
+async def retry_while_full(
+    attempt: Callable[[], Awaitable[T]],
+    is_full: Callable[[BaseException], bool],
+    *,
+    release: Callable[[T], Awaitable[None]] | None = None,
+) -> T:
     """``attempt()``, tried again while it fails with a "full" refusal and the call's wait lasts; then that
-    refusal. Outside a slot (no wait set) the first refusal is the answer, as before."""
+    refusal. Outside a slot (no wait set) the first refusal is the answer, as before.
+
+    *release* gives back what an attempt got when a cancel lands while the queued note is cleared, after the
+    attempt succeeded and before the caller holds the result: otherwise nothing would ever release it."""
     wait = _current.get()
     delay = _FIRST_POLL_S
     shown = False
+    got: list[T] = []
     try:
         while True:
             try:
-                return await attempt()
+                got.append(await attempt())
+                return got[0]
             except Exception as exc:
                 if wait is None or not is_full(exc) or _left(wait) <= 0:
                     raise
@@ -69,10 +81,15 @@ async def retry_while_full(attempt: Callable[[], Awaitable[T]], is_full: Callabl
                 left = _left(wait)
                 if left <= 0:
                     raise
-                await asyncio.sleep(min(delay, left))
+                await wait.sleep(min(delay, left))
                 if _left(wait) <= 0:
                     raise
                 delay = min(delay * 2, _MAX_POLL_S)
     finally:
         if shown:
-            await asyncio.shield(wait.note(False))
+            try:
+                await asyncio.shield(wait.note(False))
+            except asyncio.CancelledError:
+                if got and release is not None:
+                    await asyncio.shield(release(got[0]))
+                raise

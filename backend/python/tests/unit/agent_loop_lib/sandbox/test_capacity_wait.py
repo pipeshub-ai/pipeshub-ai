@@ -52,13 +52,78 @@ async def test_a_full_broker_is_waited_out_with_the_queued_note() -> None:
     assert notes == [True, False]
 
 
+class _Clock:
+    """A monotonic clock that only the test's sleeps move."""
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+        self.slept: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
 async def test_past_the_wait_the_refusal_is_the_answer() -> None:
-    broker, notes = _Broker(full=1_000), []
-    with capacity_wait(_wait(0.6, notes)), pytest.raises(SandboxCapacityReached):
+    clock, broker, notes = _Clock(), _Broker(full=1_000), []
+
+    async def note(waiting: bool) -> None:
+        notes.append(waiting)
+
+    wait = CapacityWait(deadline=clock.now + 0.6, note=note, clock=clock, sleep=clock.sleep)
+    with capacity_wait(wait), pytest.raises(SandboxCapacityReached):
         await retry_while_full(broker.acquire, _full)
-    # Polled at 0.5 s, then cut short at the deadline: tried more than once, never until the broker gave in.
-    assert 2 <= broker.attempts < 1_000
+    # 0.5 s, then the 0.1 s left: two attempts, and none once the deadline passed.
+    assert clock.slept == [0.5, pytest.approx(0.1)]
+    assert broker.attempts == 2
     assert notes == [True, False]
+
+
+async def test_a_retry_that_lands_after_the_deadline_is_not_made() -> None:
+    clock, broker = _Clock(), _Broker(full=1_000)
+
+    async def late(seconds: float) -> None:
+        # The scheduler resumed the task well after the sleep it asked for.
+        await clock.sleep(seconds + 0.2)
+
+    async def note(_waiting: bool) -> None:
+        return None
+
+    wait = CapacityWait(deadline=clock.now + 0.6, note=note, clock=clock, sleep=late)
+    with capacity_wait(wait), pytest.raises(SandboxCapacityReached):
+        await retry_while_full(broker.acquire, _full)
+    assert broker.attempts == 1
+
+
+async def test_a_cancel_while_the_note_clears_releases_what_the_retry_got() -> None:
+    import asyncio
+
+    broker, released = _Broker(full=1), []
+    clearing, cleared = asyncio.Event(), asyncio.Event()
+
+    async def note(waiting: bool) -> None:
+        if not waiting:
+            clearing.set()
+            await cleared.wait()
+
+    async def release(handle: str) -> None:
+        released.append(handle)
+
+    async def call() -> str:
+        with capacity_wait(CapacityWait(deadline=None, note=note)):
+            return await retry_while_full(broker.acquire, _full, release=release)
+
+    task = asyncio.create_task(call())
+    await asyncio.wait_for(clearing.wait(), 5)
+    _ = task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert released == ["sandbox"]
+    cleared.set()
+    await asyncio.sleep(0)
 
 
 async def test_outside_a_slot_the_first_refusal_is_the_answer() -> None:
