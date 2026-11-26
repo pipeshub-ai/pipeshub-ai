@@ -279,3 +279,25 @@ def test_a_good_model_timeout_is_the_same_in_the_service_and_the_client(monkeypa
     ts.set_supervisor(None)
     assert ts.get_supervisor().model_timeout_ceiling == 45.5 == flow.model_timeout_s()
     ts.set_supervisor(None)
+
+
+def test_an_image_whose_header_is_too_large_is_refused_before_it_is_decoded(monkeypatch) -> None:
+    import struct
+    import zlib
+
+    from app.services.docling import table_structure_child as child
+
+    def png_header(w: int, h: int) -> bytes:
+        ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+        return b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + ihdr + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr))
+
+    def no_decode(*_a, **_k) -> None:
+        raise AssertionError("decoded")
+
+    monkeypatch.setattr(cv2, "imdecode", no_decode)
+    for blob in (png_header(32000, 32000), png_header(16000, 16000), b"GIF89a" + b"\0" * 40):
+        with pytest.raises(ValueError, match="bad image"):
+            child._decode_png(blob)
+    monkeypatch.undo()
+    small = cv2.imencode(".png", np.zeros((8, 6, 3), np.uint8))[1].tobytes()
+    assert child._decode_png(small).shape == (8, 6, 3)
