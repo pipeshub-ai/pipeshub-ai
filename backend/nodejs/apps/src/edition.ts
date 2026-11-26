@@ -41,6 +41,14 @@ export function structuredLoggingProvider(): unknown {
 }
 
 /**
+ * Whether the PostgreSQL key-value store binds the ambient org (`app.org_id`) while it reads or writes `key` (for a
+ * listing, the prefix it lists). This build's keys belong to the whole install, so it binds none.
+ */
+export function kvKeyBindsOrg(_key: string): boolean {
+  return false;
+}
+
+/**
  * Keys inside an AI model's `configuration`, besides the built-in public ones,
  * that hold settings rather than secrets, so reads return them as stored.
  */

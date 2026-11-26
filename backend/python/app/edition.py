@@ -37,6 +37,12 @@ def sandbox_org_share() -> float | None:
     return None
 
 
+def kv_key_binds_org(key: str) -> bool:
+    """Whether the PostgreSQL key-value store binds the ambient org (``app.org_id``) while it reads or writes ``key`` (for a
+    listing, the prefix it lists). This build's keys belong to the whole install, so it binds none."""
+    return False
+
+
 def check_runtime_settings() -> None:
     """Raise to refuse, at service start, a combination of settings this build does not run.
 
