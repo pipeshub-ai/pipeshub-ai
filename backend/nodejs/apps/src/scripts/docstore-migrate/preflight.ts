@@ -293,6 +293,21 @@ export async function preflight(
         message: why,
         data: { name, n: counts.get(name) },
       });
+  // A create that failed partway on a single MongoDB server (repositories/org/mongo.ts createWithAdmin) can leave its hidden
+  // organisation row: never copy it as an organisation.
+  const orgMapping = MAPPINGS.find((m) => m.collection === 'org');
+  const failedCreates =
+    orgMapping && (counts.get('org') ?? 0) > 0
+      ? await sourceDb(rt, orgMapping)
+          .collection('org')
+          .countDocuments({ pendingCreate: true })
+      : 0;
+  if (failedCreates > 0)
+    red.push({
+      check: 'failed_org_create',
+      message: `${String(failedCreates)} org documents are organisations whose create failed partway (pendingCreate): remove each one and the rows that carry its id, then run preflight again`,
+      data: { n: failedCreates },
+    });
   const heldFields = new Map<string, number>();
   for (const m of MAPPINGS)
     for (const h of m.held ?? [])

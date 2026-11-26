@@ -143,7 +143,8 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
     it('an organisation insert that applies after the cleanup never shows a live organisation', async () => {
       // The bytes already sent: the server inserts the document as it was when save was called.
       sinon.stub(Org.prototype, 'save').callsFake(async function (this: InstanceType<typeof Org>) {
-        const sent = this.toObject();
+        // The stub skips the save hook that numbers the slug; a unique one keeps the late insert from failing on the index.
+        const sent = { ...this.toObject(), slug: `org-late-${randomUUID()}` };
         return appliesLate(() => Org.collection.insertOne(sent))();
       });
       const ids = orgs.allocateIds();
@@ -153,6 +154,27 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
       expect(message).to.equal('reply lost');
       expect(await orgs.getLive(ids.orgId)).to.equal(null);
       expect({ ...(await leftOf(ids)), orgs: 0 }).to.deep.equal(none);
+    });
+
+    it('a half-made organisation left by a late insert is no organisation: setup still sees none and a retry succeeds', async () => {
+      const before = { count: await orgs.count(), summary: await orgs.liveSummary() };
+      sinon.stub(Org.prototype, 'save').callsFake(async function (this: InstanceType<typeof Org>) {
+        // The stub skips the save hook that numbers the slug; a unique one keeps the late insert from failing on the index.
+        const sent = { ...this.toObject(), slug: `org-late-${randomUUID()}` };
+        return appliesLate(() => Org.collection.insertOne(sent))();
+      });
+      const ids = orgs.allocateIds();
+      await create(ids).catch(() => undefined);
+      await settle();
+      sinon.restore();
+      expect(await Org.countDocuments({ _id: ids.orgId }), 'the late insert left its hidden row').to.equal(1);
+      expect(await orgs.count(), 'setup and signup count no organisation for it').to.equal(before.count);
+      expect(await orgs.liveSummary()).to.deep.equal(before.summary);
+      expect(await new MongoIdentityPort().orgCount(false)).to.equal(before.count);
+      const retry = orgs.allocateIds();
+      const created = await create(retry);
+      expect(created.org.isDeleted).to.equal(false);
+      expect((await orgs.getLive(retry.orgId))?.slug).to.match(/^org-\d+$/);
     });
 
     it('the final write that applies after the cleanup never shows a live organisation', async () => {

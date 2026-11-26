@@ -30,8 +30,9 @@ const dto = (row: unknown): OrgDto => {
 const logoDto = (row: unknown): OrgLogoDto => toPlain<OrgLogoDto>(row);
 
 export class MongoOrgRepository implements OrgRepository {
+  /** Every organisation the install has had, removed ones too; never one whose create failed. */
   async count(): Promise<number> {
-    return Org.countDocuments();
+    return Org.countDocuments({ pendingCreate: { $ne: true } });
   }
 
   async getLive(orgId: string): Promise<OrgDto | null> {
@@ -144,6 +145,7 @@ export class MongoOrgRepository implements OrgRepository {
       ...input.org,
       _id: input.ids.orgId,
       isDeleted: true,
+      pendingCreate: true,
     });
     const adminUser = new Users({
       _id: input.ids.adminUserId,
@@ -200,11 +202,12 @@ export class MongoOrgRepository implements OrgRepository {
       }
       // Matches only the hidden row: applied after the cleanup removed it, it changes nothing.
       await Org.updateOne(
-        { _id: org._id, isDeleted: true },
-        { $set: { isDeleted: false } },
+        { _id: org._id, pendingCreate: true },
+        { $set: { isDeleted: false }, $unset: { pendingCreate: 1 } },
         opts,
       );
       org.isDeleted = false;
+      org.pendingCreate = undefined;
     } catch (error) {
       // Without a transaction nothing undoes the rows already written, so remove them: the organisation is created whole or not at all.
       if (!session) {
