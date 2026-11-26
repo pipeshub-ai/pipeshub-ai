@@ -13,6 +13,8 @@ PUSH_IT_SEEDS="a,b" (default 0) and PUSH_IT_RUNS_PER_SEED (default 3) scale the 
 - a delete that failed, then pushes (before and after the cascade started), and the create-only fallback;
 - the finisher completes a delete the owner can no longer retry;
 - two deleters at once (the finisher and an owner retry, and two owner retries);
+- a delete the store could not confirm for a KB that is gone (a rival finished it first, the store's answer was lost),
+  and the same for an admin connector delete and the connector finisher: the vector cleanup still goes out;
 - KB rename while pushes are open.
 """
 from __future__ import annotations
@@ -30,7 +32,9 @@ from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     PushClaimRefused,
 )
+from app.connectors.services import event_service as es_module
 from app.connectors.services import storage_release
+from app.connectors.services.event_service import EventService
 from app.connectors.services.storage_release import GRACE_MS, StorageReleaseReconciler
 from app.connectors.sources.localKB.handlers import kb_service as kb_module
 from app.connectors.sources.localKB.push import contract as C
@@ -120,6 +124,21 @@ async def push_outcome(env_: IT.Env, **kw: object) -> tuple:
 
 def arango(env_: IT.Env) -> bool:
     return env_.graph.__class__.__name__.startswith("Arango")
+
+
+VECTOR_CLEANUP = ("deleteConnectorEmbeddings", "bulkDeleteRecords", "deleteConnectorEntities")
+
+
+def vector_cleanup(events: list[dict], connector_id: str) -> list[tuple[str, dict]]:
+    return [(e["eventType"], e["payload"]) for e in events
+            if e["eventType"] in VECTOR_CLEANUP and e["payload"]["connectorId"] == connector_id]
+
+
+def gone_cleanup(env_: IT.Env, connector_name: str | None) -> list[tuple[str, dict]]:
+    """What a delete whose answer was lost publishes: the connector-scoped events, the groups left to the entity store."""
+    ids = {"orgId": env_.org_id, "connectorId": env_.kb_id, "connectorName": connector_name}
+    return [("deleteConnectorEmbeddings", {**ids, "recordGroupIds": []}),
+            ("deleteConnectorEntities", {**ids, "recordGroupIds": None})]
 
 
 def untagged_leaks(env_: IT.Env) -> set[str]:
@@ -481,6 +500,7 @@ async def test_failed_kb_delete_after_the_cascade_started_keeps_the_kb_deleting(
     failed = await deleting.delete()
 
     assert failed["code"] == 500
+    assert vector_cleanup(deleting.events, env.kb_id) == [], "a KB still there owes no vector cleanup yet"
     assert (await kb_doc(env))["status"] == "DELETING"
     for ext, version in (("new-1", 1), ("kept-1", 2)):
         with pytest.raises(PushRefusal) as e:
@@ -641,6 +661,21 @@ async def _two_deleters(env, deleting, kind: str, *, stagger: bool = False) -> t
         return result
 
     env.graph.delete_connector_instance = meet
+    # Each cascade's first call is its read of the app: neither goes on until both have read it, or the
+    # later read could miss an app the other cascade already removed ("not found", success False).
+    reads, both_read = {"n": 0}, asyncio.Event()
+    read_app = env.graph.get_document
+
+    async def read_together(*a: object, **kw: object) -> dict | None:
+        result = await read_app(*a, **kw)
+        if both.is_set() and reads["n"] < 2:
+            reads["n"] += 1
+            if reads["n"] == 2:
+                both_read.set()
+            await asyncio.wait_for(both_read.wait(), 30)
+        return result
+
+    env.graph.get_document = read_together
     if stagger:
         steps = {"n": 0}
         step = env.graph._delete_isoftype_targets_from_collected
@@ -677,6 +712,8 @@ async def test_concurrent_deleters(env, deleting, kind, seed, run) -> None:
     finally:
         undo()
     assert (a["success"], b["success"]) == (True, True), (a, b)
+    # the service answers 200 for a KB that is gone, so a cascade that failed would not show in its answers
+    assert len(deleting.cascade_results) == 2 and all(r["success"] for r in deleting.cascade_results), deleting.cascade_results
     assert keys and keys[RECORDS], keys
     for collection, ids in keys.items():
         assert await env.graph.get_existing_keys(collection, ids) == set(), f"{collection} nodes remain"
@@ -687,7 +724,7 @@ async def test_concurrent_deleters(env, deleting, kind, seed, run) -> None:
 
 
 async def test_concurrent_deleters_with_the_count_rule_on_the_type_docs_fail(env, deleting) -> None:
-    """Negative control: the isOfType step measured by a count makes the second deleter 500."""
+    """Negative control: the isOfType step measured by a count makes the second deleter's cascade fail."""
     graph = env.graph
 
     async def count_rule(transaction: str, targets: list[dict], *args: object, **kw: object) -> tuple:
@@ -704,15 +741,196 @@ async def test_concurrent_deleters_with_the_count_rule_on_the_type_docs_fail(env
         return (total, [])
 
     graph._delete_isoftype_targets_from_collected = count_rule
-    a, b = await _two_deleters(env, deleting, "two_owner_retries", stagger=True)
-    assert (a["success"], b["success"]) != (True, True), "the count rule must break the second deleter"
+    await _two_deleters(env, deleting, "two_owner_retries", stagger=True)
+    assert [r["success"] for r in deleting.cascade_results] == [True, False], deleting.cascade_results
 
 
 async def test_a_second_deleter_that_meets_the_type_documents_already_gone_succeeds(env, deleting) -> None:
     """The same schedule as the control above, with the real rule: none of the keys remain, so it is done."""
     a, b = await _two_deleters(env, deleting, "two_owner_retries", stagger=True)
     assert (a["success"], b["success"]) == (True, True), (a, b)
+    assert [r["success"] for r in deleting.cascade_results] == [True, True], deleting.cascade_results
     assert await kb_doc(env) is None and await survivors(env) == []
+
+
+# ---- a delete the store could not confirm, of a KB that is gone ------------------------------------------------
+
+async def _seed(env_: IT.Env) -> None:
+    IT.record_keys(env_, "r-1", "r-2")
+    for ext in ("r-1", "r-2"):
+        await env_.push(env_.body(ext=ext, name=ext, text=f"content {ext}"))
+
+
+async def one_after_the_other(deleting: Deleting, first: Callable[[], Awaitable[dict]],
+                               second: Callable[[], Awaitable[dict]]) -> tuple[dict, dict]:
+    """Both deleters are past their marker; the second one's cascade starts only once the first one's has returned."""
+    real = deleting.real_cascade
+    first_in, second_in, first_done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def gated(**kw: object) -> dict:
+        if not first_in.is_set():
+            first_in.set()
+            await asyncio.wait_for(second_in.wait(), 60)
+            result = await real(**kw)
+            first_done.set()
+        else:
+            second_in.set()
+            await asyncio.wait_for(first_done.wait(), 120)
+            result = await real(**kw)
+        deleting.cascade_results.append(result)
+        return result
+
+    deleting.env.graph.delete_connector_instance = gated
+    first_task = asyncio.ensure_future(first())
+    await asyncio.wait_for(first_in.wait(), 60)
+    second_result = await second()
+    first_result = await first_task
+    deleting.env.graph.delete_connector_instance = real
+    return first_result, second_result
+
+
+@pytest.mark.parametrize("first,second", [("owner", "owner"), ("finisher", "owner"), ("owner", "finisher")])
+async def test_a_delete_whose_kb_a_rival_delete_removed_first_succeeds(env, deleting, first, second) -> None:
+    """The rival runs the whole cascade between this delete's marker and its own: the store answers "not found"."""
+    await _seed(env)
+    if "finisher" in (first, second):
+        await env.kb_service._mark_deleting(env.kb_id)  # the finisher only acts on a KB that is DELETING
+    run = {"owner": deleting.delete, "finisher": deleting.finish}
+    a, b = await one_after_the_other(deleting, run[first], run[second])
+
+    assert [r["success"] for r in deleting.cascade_results] == [True, False], deleting.cascade_results
+    assert await kb_doc(env) is None and await survivors(env) == []
+    assert a["success"] is True, a
+    assert [t for t, _ in vector_cleanup(deleting.events, env.kb_id)] == 2 * ["deleteConnectorEmbeddings", "deleteConnectorEntities"]
+    retry = await deleting.delete()
+    assert b["success"] is True and b.get("code", 200) == 200, (f"a 500 for a KB that is gone; a retry got {retry.get('code')}", b)
+
+
+async def _lost_answer(env, deleting) -> None:
+    """The fault is armed (after seeding: the pushes commit too); the owner deletes, then retries."""
+    owner = await deleting.delete()
+    retry = await deleting.delete()
+    assert await kb_doc(env) is None and await survivors(env) == [], "the store applied the delete"
+    assert deleting.cascade_results[0]["success"] is False, deleting.cascade_results
+    assert (owner["success"], owner["code"]) == (True, 200), (f"a 500 for a KB that is gone; a retry got {retry.get('code')}", owner)
+    assert vector_cleanup(deleting.events, env.kb_id) == gone_cleanup(env, "KB"), deleting.events
+
+
+def lose_commit_reply(env_: IT.Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The store commits the delete's transaction, and its reply is lost."""
+    client = env_.graph.http_client if arango(env_) else env_.graph.client
+    real_commit = client.commit_transaction
+
+    async def reply_lost(txn: object) -> None:
+        await real_commit(txn)
+        raise ConnectionError("connection reset before the commit reply")
+
+    monkeypatch.setattr(client, "commit_transaction", reply_lost)
+
+
+@pytest.mark.neo4j_only  # each node batch and then the app go in auto-committed statements; the app is read back, the session closed
+@pytest.mark.parametrize("fault", ["app_read_back", "session_close", "commit_fails"])
+async def test_a_neo4j_delete_whose_answer_was_lost_after_the_app_went_succeeds(env, deleting, monkeypatch, fault) -> None:
+    await _seed(env)
+    graph = env.graph
+    if fault == "commit_fails":
+        # Nothing is left to commit: the records went before the app, so a gone app means gone records.
+        async def commit_fails(txn: object) -> None:
+            raise ConnectionError("connection reset during the commit")
+
+        monkeypatch.setattr(graph.client, "commit_transaction", commit_fails)
+    elif fault == "app_read_back":
+        real_assert = graph._assert_none_remain
+
+        async def read_fails(transaction: object, collection: str, keys: list[str]) -> None:
+            if collection == APPS:
+                raise ConnectionError("connection reset while reading the app back")
+            await real_assert(transaction, collection, keys)
+
+        monkeypatch.setattr(graph, "_assert_none_remain", read_fails)
+    else:
+        lose_commit_reply(env, monkeypatch)
+    await _lost_answer(env, deleting)
+
+
+@pytest.mark.arango_only  # one stream transaction, committed over HTTP
+async def test_an_arango_delete_whose_commit_reply_was_lost_succeeds(env, deleting, monkeypatch) -> None:
+    await _seed(env)
+    lose_commit_reply(env, monkeypatch)
+    await _lost_answer(env, deleting)
+
+
+# ---- an admin connector delete the store could not confirm ---------------------------------------------------
+
+async def _as_drive_connector(env_: IT.Env) -> None:
+    await _seed(env_)
+    await env_.graph.update_node(env_.kb_id, APPS, {"type": "Drive", "status": "DELETING"})
+
+
+async def test_an_admin_connector_delete_whose_answer_was_lost_cleans_its_vectors(env, deleting, monkeypatch) -> None:
+    await _as_drive_connector(env)
+    sent: list[dict] = []
+    container = MagicMock()
+    container.config_service.return_value = deleting.config
+
+    async def send_message(topic: str, message: dict, **_kw: object) -> bool:
+        sent.append(message)
+        return True
+
+    container.messaging_producer.send_message = send_message
+    logger = MagicMock()
+    service = EventService(logger, container, env.graph)
+    monkeypatch.setattr(service, "_await_remote_sync_stop", AsyncMock(return_value=True))
+    freed = AsyncMock()
+    monkeypatch.setattr(es_module, "free_lane_of_deleted_connector", freed)
+    lose_commit_reply(env, monkeypatch)
+
+    handled = await service._handle_delete("drive", {"orgId": env.org_id, "connectorId": env.kb_id})
+
+    assert handled is True and await kb_doc(env) is None and await survivors(env) == []
+    assert vector_cleanup(sent, env.kb_id) == gone_cleanup(env, "Drive")
+    freed.assert_awaited_once()
+    # A tagged app: the real read returns the stored membership flags, so no untagged ERROR.
+    assert not [c for c in logger.error.call_args_list if "membership arrays" in c.args[0]], logger.error.call_args_list
+
+
+def rival_delete_first(env_: IT.Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A redelivered delete event finishes the connector between the finisher's read and its own cascade."""
+    real = env_.graph.delete_connector_instance
+
+    async def rival_then_own(**kw: object) -> dict:
+        assert (await real(**kw))["success"] is True
+        return await real(**kw)
+
+    monkeypatch.setattr(env_.graph, "delete_connector_instance", rival_then_own)
+
+
+@pytest.mark.parametrize("fault", [lose_commit_reply, rival_delete_first], ids=["lost_reply", "rival_first"])
+async def test_the_connector_finisher_of_a_connector_that_is_gone_cleans_its_vectors(env, deleting, monkeypatch, fault) -> None:
+    await _as_drive_connector(env)
+    await storage_release.record_pending_storage_release(deleting.config, org_id=env.org_id, connector_id=env.kb_id)
+    (intent,) = await storage_release.list_pending_storage_releases(deleting.config)
+    sent: list[dict] = []
+
+    async def publish_event(_topic: str, event: dict) -> bool:
+        sent.append(event)
+        return True
+
+    freed = AsyncMock()
+    monkeypatch.setattr(storage_release, "free_lane_of_deleted_connector", freed)
+    reconciler = StorageReleaseReconciler(
+        logger=MagicMock(), graph_provider=env.graph, config_service=deleting.config, lock=FakeLock(),
+        now_ms=lambda: intent["requestedAt"] + GRACE_MS + 1,
+        finish_connector_delete=storage_release._connector_finisher(MagicMock(), env.graph, SimpleNamespace(publish_event=publish_event)),
+        lease_held=AsyncMock(return_value=False),
+    )
+    fault(env, monkeypatch)
+
+    assert await reconciler.tick() == "deleted"
+
+    assert await kb_doc(env) is None and await survivors(env) == []
+    assert vector_cleanup(sent, env.kb_id) == gone_cleanup(env, None)
+    freed.assert_awaited_once()
 
 
 # ---- KB rename while pushes are open -------------------------------------------------------------------------

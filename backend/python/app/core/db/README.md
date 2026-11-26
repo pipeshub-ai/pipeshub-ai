@@ -42,7 +42,9 @@ result = await db.run(fn, write=True)            # re-runs fn on 40001 / 40P01 a
 * **Prepared statements:** `statement_cache_size` is 0 for every pooler profile; only `PG_POOLER=none` (direct) caches.
 * **Errors** (`errors.py`): `SerializationConflict`, `DeadlockDetected` (retried), `DbTimeout`/`LockTimeout`/`PoolTimeout`
   (not retried), `ConnectionLost(retry_safe)`, `CommitOutcomeUnknown`, `SessionRoleLeak`, `ProfileEpochMismatch`,
-  `PrologueFailed`, `CapabilityError`. Other asyncpg errors pass through unchanged.
+  `PrologueFailed`, `CapabilityError`. Other asyncpg errors pass through unchanged. A connection that cannot be opened
+  (`pool.acquire`, `create_pool`) is `ConnectionLost("cannot connect")` for the OS, 08xxx, 57P01-57P03 and 53300 (`pool.connect_failure`);
+  only 53300 (`TooManyConnections`) is not retried, by `run` or by the vector search.
 * **Timeouts by class** (`config.py`): query 5 s, api 15 s, indexing 60 s, jobs 15 min; an `org_limits` hook
   (`KernelDB(cfg, org_limits=async fn(org) -> OrgLimits | None)`) can only lower them.
 * **Capabilities** (`capabilities.py`, `backend/db/capabilities.yaml`): floors and tested-up-to versions as data.

@@ -44,10 +44,10 @@ export class AuthorizationCodeService {
     });
 
     this.logger.info('Authorization code generated', {
-      clientId,
-      userId,
+      client_id: clientId,
+      user_id: userId,
       scopes,
-      hasPKCE: !!codeChallenge,
+      has_pkce: !!codeChallenge,
     });
 
     return code;
@@ -135,8 +135,8 @@ export class AuthorizationCodeService {
     }
 
     this.logger.info('Authorization code exchanged', {
-      clientId,
-      userId: authCode.userId,
+      client_id: clientId,
+      user_id: authCode.userId,
     });
 
     return {
@@ -156,9 +156,9 @@ export class AuthorizationCodeService {
     this.logger.warn(
       'Authorization code reuse detected! Revoking all associated tokens',
       {
-        clientId,
-        userId: authCode.userId,
-        codeId: authCode._id,
+        client_id: clientId,
+        user_id: authCode.userId,
+        code_id: authCode._id,
       },
     );
     // Flag first, revoke second; the winner mints, then reads the flag. Either it
@@ -190,8 +190,8 @@ export class AuthorizationCodeService {
     );
 
     this.logger.warn('All tokens revoked due to code reuse', {
-      clientId,
-      userId,
+      client_id: clientId,
+      user_id: userId,
     });
   }
 
@@ -216,7 +216,9 @@ export class AuthorizationCodeService {
   async revokeCodesForUser(userId: string): Promise<void> {
     await getOAuthTokenRepository().deleteUnusedCodesForUser(userId);
 
-    this.logger.info('Revoked authorization codes for user', { userId });
+    this.logger.info('Revoked authorization codes for user', {
+      target_user_id: userId,
+    });
   }
 
   /**
@@ -225,7 +227,9 @@ export class AuthorizationCodeService {
   async revokeCodesForApp(clientId: string): Promise<void> {
     await getOAuthTokenRepository().deleteUnusedCodesForClient(clientId);
 
-    this.logger.info('Revoked authorization codes for app', { clientId });
+    this.logger.info('Revoked authorization codes for app', {
+      client_id: clientId,
+    });
   }
 
   /**

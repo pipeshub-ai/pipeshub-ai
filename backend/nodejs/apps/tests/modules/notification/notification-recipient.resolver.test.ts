@@ -92,7 +92,7 @@ describe('notification/notification-recipient.resolver', () => {
         stubUserGroupsFind([{ users: [user] }]);
         const result = await resolveRoleRecipientUserIds(orgId, [role]);
         expect(result).to.have.length(1);
-        expect(result[0].toString()).to.equal(user.toString());
+        expect(result[0]).to.equal(user.toString());
       }
     });
 
@@ -103,7 +103,7 @@ describe('notification/notification-recipient.resolver', () => {
 
       const result = await resolveRoleRecipientUserIds(orgId, ['admin', 'standard']);
       expect(result).to.have.length(1);
-      expect(result[0].toString()).to.equal(shared.toString());
+      expect(result[0]).to.equal(shared.toString());
     });
 
     it('normalizes role casing and trims whitespace for admin', async () => {
@@ -122,7 +122,7 @@ describe('notification/notification-recipient.resolver', () => {
 
       const result = await resolveRoleRecipientUserIds(orgId, ['standard']);
       expect(result).to.have.length(1);
-      expect(result[0].toString()).to.equal(valid.toString());
+      expect(result[0]).to.equal(valid.toString());
     });
 
     it('returns empty array when admin users and groups are empty', async () => {
@@ -190,7 +190,7 @@ describe('notification/notification-recipient.resolver', () => {
         [],
       );
       expect(result).to.have.length(1);
-      expect(result[0].toString()).to.equal(valid);
+      expect(result[0]).to.equal(valid);
     });
 
     it('handles non-array recipientUserIds (single string)', async () => {
@@ -199,7 +199,7 @@ describe('notification/notification-recipient.resolver', () => {
 
       const result = await resolveNotificationRecipientUserIds(orgId, user, []);
       expect(result).to.have.length(1);
-      expect(result[0].toString()).to.equal(user);
+      expect(result[0]).to.equal(user);
     });
 
     it('handles non-array recipientRoles (ignores non-array value)', async () => {

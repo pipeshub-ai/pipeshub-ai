@@ -7,6 +7,7 @@ from slack_sdk import WebClient  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
+from app.sources.client.slack.send_safe_retry import send_safe_retry_handlers
 
 
 @dataclass
@@ -83,7 +84,7 @@ class SlackRESTClientViaToken:
     """
     def __init__(self, token: str) -> None:
         _check_token(token)
-        self.client = WebClient(token=token)
+        self.client = WebClient(token=token, retry_handlers=send_safe_retry_handlers())
 
     def get_web_client(self) -> WebClient:
         return self.client
@@ -93,7 +94,7 @@ class SlackRESTClientViaToken:
 
     def set_token(self, token: str) -> None:
         _check_token(token)
-        self.client = WebClient(token=token)
+        self.client = WebClient(token=token, retry_handlers=send_safe_retry_handlers())
 
 @dataclass
 class SlackUsernamePasswordConfig:

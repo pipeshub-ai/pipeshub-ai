@@ -77,9 +77,11 @@ from app.connectors.core.sql.record_moves import Moves
 from app.connectors.core.sql.sync_lifecycle import (
     LOOKUP_ATTEMPTS,
     SqlSyncLifecycleMixin,
+    note_tables_kept,
     restructured_fqns,
 )
 from app.connectors.core.sql.sync_outcome import SyncOutcome
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.mariadb.apps import MariaDBApp
 from app.connectors.sources.mariadb.catalog_state import (
     MariaDBTableState,
@@ -360,6 +362,7 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
         # What the last sync changed, for whatever runs after it.
         self.sync_outcome: SyncOutcome = SyncOutcome()
         self._written_tables: set[str] = set()
+        self._skipped_part = False
         self.profiler: MariaDBProfiler | None = None
         self._profiling_budget = ProfilingBudget()
         # Tables whose column records were written with a profile this sync.
@@ -490,6 +493,7 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
             self._profiling_budget = ProfilingBudget()
             self._profiled = set()
             self._written_tables = set()
+            self._skipped_part = False
 
             if not self.data_source:
                 raise ConnectionError("MariaDB connector not initialized")
@@ -512,6 +516,14 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ [Sync] Error: {e}", exc_info=True)
             raise
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """Incomplete only when the stored records of a table left as stored could not be looked up.
+
+        A table that could not be read or written is still at the source: its
+        stored records are noted kept, so a full sync unlinks the rest.
+        """
+        return FullSyncCoverage(complete=not self._skipped_part)
 
     async def run_incremental_sync(self) -> None:
         """Every sync compares the catalog with the saved state; there is one path."""
@@ -575,6 +587,17 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
         written = await self._write_tables([by_fqn[fqn] for fqn in sorted(changed | relinked)])
         self._written_tables = written
         self.sync_stats.tables_new += len(written & set(diff.added))
+        unwritten = unread | ((changed | relinked) - written)
+        if not await note_tables_kept(
+            self.data_entities_processor, self.data_store_provider, self.connector_id, unwritten,
+            logger=self.logger,
+        ):
+            self._skipped_part = True
+            self.sync_stats.errors += 1
+            self.logger.warning(
+                f"Could not look up the stored records of {len(unwritten)} table(s) not written; "
+                "a full sync unlinks nothing this sync"
+            )
 
         # Unchanged tables whose column records are behind: not profiled, or
         # holding values that are no longer allowed (or not those now allowed).
@@ -792,7 +815,7 @@ class MariaDBConnector(SqlSyncLifecycleMixin, BaseConnector):
         """Top values and extremes are row data: stored only while table indexing is on."""
         return not self.indexing_filters or self.indexing_filters.is_enabled(IndexingFilterKey.TABLES.value)
 
-    async def _get_permissions(self) -> list[Permission]:
+    async def _get_permissions(self) -> list[Permission] | None:
         return await database_permissions(self)
 
     async def _build_record(self, table: MariaDBTable) -> tuple[SQLTableRecord, Record | None]:

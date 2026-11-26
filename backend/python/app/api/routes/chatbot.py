@@ -1,20 +1,26 @@
 import asyncio
 import base64
-import inspect
 import json
 import logging
 from collections.abc import AsyncGenerator, Mapping
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import aclosing
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import Annotated, Any, Literal, TypeVar
 from uuid import uuid4
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from app.agents.agent_loop.cancellation.registry import (
     RunCancellationRegistry,
@@ -24,9 +30,15 @@ from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
 from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
+from app.agents.agent_loop.skills.graph_store import (
+    erase_session_learned_skills,
+    erase_session_skill_candidates,
+)
+from app.agents.agent_loop.stream_bridge import run_chat_stream
 from app.agents.agent_loop.turn_log import log_turn_end
-from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
+from app.agents.chat_modes import resolve_chat_mode_policy
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
+from app.agents.chat_modes.setup import enrich_chat_identity
 from app.api.middlewares.auth import (
     connection_limit,
     require_scopes,
@@ -37,7 +49,11 @@ from app.config.constants.ai_models import validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.containers.query import QueryAppContainer
+from app.core.org_context import bound_org_id
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.harness.legacy.errors import ResolvedTurnRefused
+from app.harness.legacy.resolved_request import resolved_turn_for, with_resolved_stages
+from app.harness.legacy.resolved_turn import ResolvedTurn
 from app.models.blocks import (
     Block,
     BlocksContainer,
@@ -66,7 +82,32 @@ from app.modules.transformers.transformer import (
     TransformContext,
 )
 from app.services.artifact_registry.access import is_direct_share, reader_edge
+from app.services.artifact_registry.copies import (
+    COPY_LIMIT,
+    ArtifactCopier,
+    CopyRequest,
+)
+from app.services.artifact_registry.erasure import ArtifactEraser
+from app.services.artifact_registry.models import Actor
+from app.services.artifact_registry.registry import ArtifactRegistryService
+from app.services.artifact_registry.viewer_access import artifact_viewer_access
 from app.services.cache.invalidation_hooks import notify_principals_changed
+from app.services.chat_attachments.erasure import ERASE_PAGE as ATTACHMENT_ERASE_PAGE
+from app.services.chat_attachments.erasure import (
+    AttachmentEraser,
+    AttachmentRef,
+    list_unsent,
+)
+from app.services.chat_attachments.uploads import (
+    AttachmentFile,
+    Uploader,
+    UploaderKind,
+    attachment_documents,
+    attachment_record_doc,  # noqa: F401 - the upload route's record, read by its tests here
+    mark_sent,
+    uploads_tracked,
+    write_attachment_graph,
+)
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.model_identity.boundary import (
@@ -76,11 +117,13 @@ from app.services.model_identity.boundary import (
 from app.services.model_identity.principal import Principal, service_principal
 from app.services.model_identity.runtime import assert_identity_allowed, call_scope
 from app.services.model_identity.workload import Workload
+from app.services.opik_traces import SAFE_ID_PATTERN as OPIK_SAFE_ID_PATTERN
+from app.services.opik_traces import erase_conversation_traces, opik_trace_store
+from app.services.org_erasure import ORG_ERASE_PAGE, erase_org_page
 from app.services.parsing.interface import ParseError
 from app.services.resource_governor.kinds import ParseKind
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
-from app.utils.aimodels import get_generator_model_async
 from app.utils.attachment_mime_types import (
     DELIMITED_MIME_TYPES,
     DOCX_MIME_TYPES,
@@ -91,9 +134,17 @@ from app.utils.attachment_mime_types import (
 from app.utils.attachment_utils import is_chat_attachment, keep_accessible_attachments
 from app.utils.chat_helpers import accessible_node_ids
 from app.utils.concurrency import gather_with_concurrency
+from app.utils.entity_vector_store import (  # noqa: F401 - warm_up is imported from here by query_main
+    load_entity_vector_store,
+    warm_up_entity_vector_store,
+)
 from app.utils.image_utils import downscale_to_limits
-from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
-from app.utils.record_access import service_account_upload_permission_edges
+from app.utils.llm import (
+    LLM_MISSING_FOR_CHAT,
+    LLMNotConfiguredError,
+    LLMUnavailableError,
+    build_chat_model,
+)
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import EXCEL_TOO_LARGE
@@ -116,6 +167,8 @@ class ChatQuery(BaseModel):
     query: str
     limit: int | None = 50
     previousConversations: list[dict] = []
+    # What the conversation so far read (FG2): its messages' labels joined by Node; absent, nobody vouches for it.
+    historyLabel: dict[str, Any] | None = None
     filters: dict[str, Any] | None = None
     retrievalMode: str | None = "HYBRID"
     quickMode: bool | None = False
@@ -160,7 +213,7 @@ class ChatQuery(BaseModel):
     # Stop Generation: client-generated UUID identifying this run, so a
     # later `POST /chat/cancel {runId}` can target it. Absent for callers
     # that predate this field or don't need cancellation (the agent loop
-    # generates one itself — see `stream_bridge.py`/`bridge.py`).
+    # generates one itself — see `stream_bridge.py`).
     runId: str | None = None
     # Set by Node for a project-scoped chat (see `applyProjectScope`,
     # project-context.ts). When true and the effective `filters` carry no
@@ -412,6 +465,16 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
 
     return llm_configs, ai_models
 
+def chat_model_name(llm_config: dict[str, Any], model_key: str | None, model_name: str | None) -> str:
+    """The model name a chat request runs on: the one asked for when the selected entry is that
+    key and lists it, otherwise the entry's first name."""
+    model_string = llm_config.get("configuration", {}).get("model")
+    model_names = [name.strip() for name in model_string.split(",") if name.strip()]
+    if model_key and model_name and llm_config.get("modelKey") == model_key and model_name in model_names:
+        return model_name
+    return model_names[0]
+
+
 async def get_llm_for_chat(
     config_service: ConfigurationService,
     model_key: str = None,
@@ -436,38 +499,13 @@ async def get_llm_for_chat(
         if isinstance(llm_config, list):
             llm_config = llm_config[0]
 
-        # If user specified a model, try to find it
-        if model_key and model_name:
-            model_string = llm_config.get("configuration", {}).get("model")
-            model_names = [name.strip() for name in model_string.split(",") if name.strip()]
-            if (llm_config.get("modelKey") == model_key and model_name in model_names):
-                model_provider = llm_config.get("provider")
-                llm = await get_generator_model_async(
-                    model_provider, llm_config, model_name, reasoning_effort
-                )
-                return llm, llm_config, ai_models_config
-
-        # If user specified only provider, find first matching model
-        if model_key:
-            model_string = llm_config.get("configuration", {}).get("model")
-            model_names = [name.strip() for name in model_string.split(",") if name.strip()]
-            default_model_name = model_names[0]
-            model_provider = llm_config.get("provider")
-            llm = await get_generator_model_async(
-                model_provider, llm_config, default_model_name, reasoning_effort
-            )
-            return llm, llm_config, ai_models_config
-
-        # Fallback to first available model
-        model_string = llm_config.get("configuration", {}).get("model")
-        model_names = [name.strip() for name in model_string.split(",") if name.strip()]
-        default_model_name = model_names[0]
         model_provider = llm_config.get("provider")
-        llm = await get_generator_model_async(
-            model_provider, llm_config, default_model_name, reasoning_effort
+        llm = await build_chat_model(
+            config_service, model_provider, llm_config, chat_model_name(llm_config, model_key, model_name),
+            reasoning_effort,
         )
         return llm, llm_config, ai_models_config
-    except LLMNotConfiguredError:
+    except (LLMNotConfiguredError, LLMUnavailableError):
         # Already says what to do; the "Failed to initialize" prefix would only bury it.
         raise
     except Exception as e:
@@ -596,6 +634,20 @@ class _AttachmentSinkNoopVectorStore:
         return True
 
 
+async def _purge_stored_attachments(
+    blob_storage: BlobStorage, org_id: str, stored: list[tuple[str, str]],
+) -> None:
+    """A failed upload's stored file and parsed-block documents. Each upload has its own new virtual record, so
+    no other record reads them. Best-effort: a failure here must not replace the error that triggered it."""
+    for document_id, virtual_record_id in stored:
+        try:
+            if document_id:
+                await blob_storage.purge_document(org_id, document_id)
+            await blob_storage.purge_virtual_record_documents(org_id, virtual_record_id)
+        except Exception:
+            logger.warning("attachments.upload_purge_failed", exc_info=True)
+
+
 async def _rollback_attachment_records(
     graph_provider: IGraphDBProvider,
     record_ids: list[str],
@@ -604,8 +656,7 @@ async def _rollback_attachment_records(
 
     Mirrors `delete_chat_attachment`: dropping the RECORDS node takes its
     IS_OF_TYPE and PERMISSION edges with it, and the FILES node shares the key.
-    Blobs are not reachable from here -- `BlobStorage` exposes no delete, so the
-    normal delete path leaks them too.
+    The stored bytes are purged by the caller (`_purge_stored_attachments`).
 
     Each collection is attempted independently so a failure on one still cleans
     the other. Both go through `delete_nodes_and_edges` rather than the cheaper
@@ -657,34 +708,6 @@ async def upload_chat_attachments(
 
 
 
-def attachment_record_doc(*, record_id: str, org_id: str, item: Any, external_record_id: str, virtual_record_id: str, now: int) -> dict[str, Any]:  # noqa: ANN401
-    """The record written for an uploaded chat attachment: a new record, so it starts its indexing run at ``now``."""
-    return {
-        "_key": record_id,
-        "id": record_id,
-        "orgId": org_id,
-        "recordName": item.fileName,
-        "externalRecordId": external_record_id,
-        "recordType": "FILE",
-        "origin": "UPLOAD",
-        "connectorId": f"attachments_{org_id}",
-        "connectorName": Connectors.ATTACHMENTS.value,
-        "createdAtTimestamp": now,
-        "updatedAtTimestamp": now,
-        "sourceCreatedAtTimestamp": now,
-        "sourceLastModifiedTimestamp": now,
-        "isDeleted": False,
-        "isArchived": False,
-        "indexingStatus": "NOT_STARTED",
-        "extractionStatus": "NOT_STARTED",
-        "firstQueuedAt": now,
-        "indexingAttempts": 0,
-        "version": 1,
-        "mimeType": item.mimeType,
-        "sizeInBytes": item.size,
-        "virtualRecordId": virtual_record_id,
-    }
-
 async def _upload_chat_attachments(
     request: Request,
     graph_provider: IGraphDBProvider,
@@ -695,12 +718,13 @@ async def _upload_chat_attachments(
     user = request.state.user or {}
     org_id = user.get("orgId")
     user_id = user.get("userId")
-    is_service_account = user.get("isServiceAccount")
 
     if not org_id:
         raise HTTPException(status_code=400, detail="Missing org context for attachment upload")
     if not user_id:
         raise HTTPException(status_code=400, detail="Missing user context for attachment upload")
+    uploader = Uploader.from_claims(user)
+    is_service_account = uploader.kind is UploaderKind.SERVICE_ACCOUNT
 
     if not payload.attachments:
         raise HTTPException(status_code=400, detail="No attachments provided")
@@ -719,6 +743,7 @@ async def _upload_chat_attachments(
             raise HTTPException(status_code=500, detail="Resolved user is missing key/id")
 
     now = get_epoch_timestamp_in_ms()
+    tracked = await uploads_tracked(config_service)
     uploaded_refs: list[dict[str, Any]] = []
     record_docs: list[dict[str, Any]] = []
     file_docs: list[dict[str, Any]] = []
@@ -733,265 +758,243 @@ async def _upload_chat_attachments(
     blob_storage = BlobStorage(logger=service_logger, config_service=config_service, graph_provider=graph_provider)
     pdf_processor = PDFPlumberOpenCVProcessor(logger=logger, config=config_service)
 
-    for item in payload.attachments:
-        if not _is_supported_attachment_mime(item.mimeType):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"{item.fileName} can't be attached because that file type isn't supported. "
-                    "You can attach PDF, Word (DOCX), Excel (XLSX), CSV, TSV, text, Markdown, "
-                    "JPEG and PNG files."
-                ),
-            )
-        if item.size <= 0:
-            raise HTTPException(status_code=400, detail=f"{item.fileName} is empty. Attach a file that has content.")
-
-        record_id = str(uuid4())
-        virtual_record_id = str(uuid4())
-        extension = _attachment_extension(item.fileName, item.mimeType)
-        is_image = _is_image_attachment(item.mimeType)
-        is_text = _is_text_attachment(item.mimeType)
-        is_docx = _is_docx_attachment(item.mimeType)
-        is_spreadsheet = _is_spreadsheet_attachment(item.mimeType)
-        is_delimited = _is_delimited_attachment(item.mimeType)
-
-        try:
-            file_binary = base64.b64decode(item.contentBase64, validate=True)
-        except Exception:
-            raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "upload"))
-
-        storage_doc_id, _ = await blob_storage.save_binary_to_storage(
-            org_id=org_id,
-            record_id=record_id,
-            file_name=item.fileName,
-            extension=extension,
-            content_type=item.mimeType,
-            binary_data=file_binary,
-        )
-        external_record_id = storage_doc_id if storage_doc_id else record_id
-
-        record_doc = attachment_record_doc(
-            record_id=record_id, org_id=org_id, item=item, external_record_id=external_record_id,
-            virtual_record_id=virtual_record_id, now=now,
-        )
-
-        needs_ocr = False
-        parse_mode = "pdfplumber"
-        if is_image:
-            try:
-                block_containers = await asyncio.to_thread(_build_image_blocks, file_binary, item.mimeType)
-                parsed_blocks_by_record[record_id] = block_containers
-                parse_mode = "image_direct"
-            except Exception as e:
-                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
-                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "image"))
-        elif is_text:
-            try:
-                block_containers = await _build_text_blocks(file_binary)
-                parsed_blocks_by_record[record_id] = block_containers
-                parse_mode = "text"
-            except Exception as e:
-                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
-                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "text"))
-        elif is_docx:
-            try:
-                block_containers = await _build_docx_blocks(file_binary, item.fileName, config_service)
-                parsed_blocks_by_record[record_id] = block_containers
-                parse_mode = "docling"
-            except Exception as e:
-                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
-                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "docx"))
-        elif is_spreadsheet:
-            try:
-                block_containers = await _build_excel_blocks(file_binary, item.fileName, config_service)
-                parsed_blocks_by_record[record_id] = block_containers
-                parse_mode = "excel_lightweight"
-            except (ParseWorkerError, TimeoutError, BrokenProcessPool, MemoryError) as e:
-                # Same as the PDF branch: a worker that overran or died is most likely out of
-                # memory, not a damaged file. ParseWorkerError is a ParseError, so it goes first.
-                logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
-                raise HTTPException(status_code=422, detail=_attachment_too_heavy(item.fileName)) from e
-            except ParseError as e:
-                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
-                if e.message == EXCEL_TOO_LARGE:
-                    raise HTTPException(status_code=400, detail=EXCEL_TOO_LARGE) from e
-                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "spreadsheet")) from e
-            except Exception as e:
-                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
-                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "spreadsheet"))
-        elif is_delimited:
-            try:
-                block_containers = await _build_csv_blocks(
-                    file_binary, item.fileName, config_service, item.mimeType
+    # Bytes are stored before the request can fail (an unreadable file, a graph write): a failed upload purges
+    # what it stored, or nothing would ever name those documents again (CLEANUP-G5).
+    stored: list[tuple[str, str]] = []
+    try:
+        for item in payload.attachments:
+            if not _is_supported_attachment_mime(item.mimeType):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"{item.fileName} can't be attached because that file type isn't supported. "
+                        "You can attach PDF, Word (DOCX), Excel (XLSX), CSV, TSV, text, Markdown, "
+                        "JPEG and PNG files."
+                    ),
                 )
-                parsed_blocks_by_record[record_id] = block_containers
-                parse_mode = "csv_lightweight"
-            except Exception as e:
-                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
-                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "csv"))
-        else:
+            if item.size <= 0:
+                raise HTTPException(status_code=400, detail=f"{item.fileName} is empty. Attach a file that has content.")
+
+            record_id = str(uuid4())
+            virtual_record_id = str(uuid4())
+            extension = _attachment_extension(item.fileName, item.mimeType)
+            is_image = _is_image_attachment(item.mimeType)
+            is_text = _is_text_attachment(item.mimeType)
+            is_docx = _is_docx_attachment(item.mimeType)
+            is_spreadsheet = _is_spreadsheet_attachment(item.mimeType)
+            is_delimited = _is_delimited_attachment(item.mimeType)
+
             try:
-                # pdfplumber and the layout parser are pure Python and hold the GIL,
-                # so they run in parse workers: a slow or hostile file then costs
-                # its own upload only, never this loop or this process's memory.
-                async with asyncio.timeout_at(upload_deadline):
-                    needs_ocr, page_count = await parse_pool.submit(
-                        needs_ocr_and_page_count,
-                        file_binary,
-                        CHAT_PDF_PAGE_CAP,
-                        label=item.fileName,
-                        size=len(file_binary),
-                        kind=ParseKind.INSPECT,
+                file_binary = base64.b64decode(item.contentBase64, validate=True)
+            except Exception:
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "upload"))
+
+            storage_doc_id, _ = await blob_storage.save_binary_to_storage(
+                org_id=org_id,
+                record_id=record_id,
+                file_name=item.fileName,
+                extension=extension,
+                content_type=item.mimeType,
+                binary_data=file_binary,
+            )
+            stored.append((storage_doc_id or "", virtual_record_id))
+            external_record_id = storage_doc_id if storage_doc_id else record_id
+
+            record_doc, file_doc = attachment_documents(
+                org_id,
+                AttachmentFile(
+                    record_id=record_id,
+                    virtual_record_id=virtual_record_id,
+                    file_name=item.fileName,
+                    extension=extension,
+                    mime_type=item.mimeType,
+                    size=item.size,
+                    external_record_id=external_record_id,
+                ),
+                uploader,
+                now,
+                tracked=tracked,
+                conversation_id=payload.conversationId,
+            )
+
+            needs_ocr = False
+            parse_mode = "pdfplumber"
+            if is_image:
+                try:
+                    block_containers = await asyncio.to_thread(_build_image_blocks, file_binary, item.mimeType)
+                    parsed_blocks_by_record[record_id] = block_containers
+                    parse_mode = "image_direct"
+                except Exception as e:
+                    logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                    raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "image"))
+            elif is_text:
+                try:
+                    block_containers = await _build_text_blocks(file_binary)
+                    parsed_blocks_by_record[record_id] = block_containers
+                    parse_mode = "text"
+                except Exception as e:
+                    logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                    raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "text"))
+            elif is_docx:
+                try:
+                    block_containers = await _build_docx_blocks(file_binary, item.fileName, config_service)
+                    parsed_blocks_by_record[record_id] = block_containers
+                    parse_mode = "docling"
+                except Exception as e:
+                    logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                    raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "docx"))
+            elif is_spreadsheet:
+                try:
+                    block_containers = await _build_excel_blocks(file_binary, item.fileName, config_service)
+                    parsed_blocks_by_record[record_id] = block_containers
+                    parse_mode = "excel_lightweight"
+                except (ParseWorkerError, TimeoutError, BrokenProcessPool, MemoryError) as e:
+                    # Same as the PDF branch: a worker that overran or died is most likely out of
+                    # memory, not a damaged file. ParseWorkerError is a ParseError, so it goes first.
+                    logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
+                    raise HTTPException(status_code=422, detail=_attachment_too_heavy(item.fileName)) from e
+                except ParseError as e:
+                    logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                    if e.message == EXCEL_TOO_LARGE:
+                        raise HTTPException(status_code=400, detail=EXCEL_TOO_LARGE) from e
+                    raise HTTPException(
+                        status_code=400, detail=_attachment_unreadable(item.fileName, "spreadsheet"),
+                    ) from e
+                except Exception as e:
+                    logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                    raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "spreadsheet"))
+            elif is_delimited:
+                try:
+                    block_containers = await _build_csv_blocks(
+                        file_binary, item.fileName, config_service, item.mimeType
                     )
-                    if page_count > CHAT_PDF_PAGE_CAP:
-                        raise HTTPException(status_code=400, detail=_attachment_too_long(item.fileName, page_count))
-                    if needs_ocr:
-                        if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=(
-                                    f"{item.fileName} has too many scanned pages to attach: the limit is "
-                                    f"{OCR_IMAGE_PAGE_CAP} scanned pages per message. Attach fewer pages "
-                                    "or split the document."
-                                ),
-                            )
-                        png_pages = await parse_pool.submit(
-                            render_all_pages_as_png,
+                    parsed_blocks_by_record[record_id] = block_containers
+                    parse_mode = "csv_lightweight"
+                except Exception as e:
+                    logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                    raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "csv"))
+            else:
+                try:
+                    # pdfplumber and the layout parser are pure Python and hold the GIL,
+                    # so they run in parse workers: a slow or hostile file then costs
+                    # its own upload only, never this loop or this process's memory.
+                    async with asyncio.timeout_at(upload_deadline):
+                        needs_ocr, page_count = await parse_pool.submit(
+                            needs_ocr_and_page_count,
                             file_binary,
-                            144,
+                            CHAT_PDF_PAGE_CAP,
                             label=item.fileName,
                             size=len(file_binary),
-                            kind=ParseKind.RENDER,
+                            kind=ParseKind.INSPECT,
                         )
-                        block_containers = _build_pdf_image_blocks(png_pages)
-                        ocr_image_pages_used += page_count
-                        parse_mode = "image_direct"
-                    else:
-                        parsed_data = await pdf_processor.parse_document(item.fileName, file_binary)
-                        block_containers = await pdf_processor.create_blocks(parsed_data, skip_llm_enrichment=True)
-                        parse_mode = "pdfplumber"
-                parsed_blocks_by_record[record_id] = block_containers
-            except HTTPException:
-                raise
-            except TimeoutError as e:
-                # The upload deadline fired: the file was being read, just not fast enough.
-                logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
-                raise HTTPException(status_code=422, detail=_attachment_too_slow(item.fileName)) from e
-            except (ParseWorkerError, BrokenProcessPool, MemoryError) as e:
-                # A worker that died, or a renderer it started that
-                # died: most likely out of memory, not a damaged file.
-                logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
-                raise HTTPException(status_code=422, detail=_attachment_too_heavy(item.fileName)) from e
-            except Exception as e:
-                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
-                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "pdf"))
-        record_doc["isVLMOcrProcessed"] = needs_ocr
-        file_doc = {
-            "_key": record_id,
-            "id": record_id,
-            "orgId": org_id,
-            "name": item.fileName,
-            "isFile": True,
-            "extension": extension,
-            "mimeType": item.mimeType,
-            "sizeInBytes": item.size,
-        }
-        record_docs.append(record_doc)
-        file_docs.append(file_doc)
-        uploaded_refs.append(
-            {
-                "recordId": record_id,
-                "recordName": item.fileName,
-                "mimeType": item.mimeType,
-                "extension": extension,
-                "virtualRecordId": record_doc.get("virtualRecordId", virtual_record_id),
-                "parseMode": parse_mode,
-                # Deprecated: kept for backward compatibility with clients still
-                # reading `ocrMode`. `parse_mode` covers non-OCR parse paths too
-                # (e.g. csv_lightweight, docling) so `parseMode` is the canonical field.
-                "ocrMode": parse_mode,
-            }
-        )
-
-    # Records, files, edges and the sink's blob write are five separate round
-    # trips with no shared transaction, so a failure partway leaves a record the
-    # user can neither see nor delete. Undo the graph writes before surfacing it.
-    try:
-        await graph_provider.batch_upsert_nodes(record_docs, CollectionNames.RECORDS.value)
-        await graph_provider.batch_upsert_nodes(file_docs, CollectionNames.FILES.value)
-
-        ts = get_epoch_timestamp_in_ms()
-        is_of_type_edges = [
-            {
-                "_from": f"{CollectionNames.RECORDS.value}/{rd['_key']}",
-                "_to": f"{CollectionNames.FILES.value}/{rd['_key']}",
-                "createdAtTimestamp": ts,
-                "updatedAtTimestamp": ts,
-            }
-            for rd in record_docs
-        ]
-        await graph_provider.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value)
-        if is_service_account:
-            # Service accounts have no user graph node, so no USER -> RECORD edge
-            # can be created. Grant an org-scoped permission edge instead so the
-            # uploaded file is readable org-wide through the standard ACL path
-            # (orgAccessPermissionEdge in check_record_access_with_details).
-            permission_edges = service_account_upload_permission_edges(
-                org_id, [rd["_key"] for rd in record_docs], ts,
-            )
-            await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
-        else:
-            permission_edges = [
+                        if page_count > CHAT_PDF_PAGE_CAP:
+                            raise HTTPException(status_code=400, detail=_attachment_too_long(item.fileName, page_count))
+                        if needs_ocr:
+                            if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail=(
+                                        f"{item.fileName} has too many scanned pages to attach: the limit is "
+                                        f"{OCR_IMAGE_PAGE_CAP} scanned pages per message. Attach fewer pages "
+                                        "or split the document."
+                                    ),
+                                )
+                            png_pages = await parse_pool.submit(
+                                render_all_pages_as_png,
+                                file_binary,
+                                144,
+                                label=item.fileName,
+                                size=len(file_binary),
+                                kind=ParseKind.RENDER,
+                            )
+                            block_containers = _build_pdf_image_blocks(png_pages)
+                            ocr_image_pages_used += page_count
+                            parse_mode = "image_direct"
+                        else:
+                            parsed_data = await pdf_processor.parse_document(item.fileName, file_binary)
+                            block_containers = await pdf_processor.create_blocks(parsed_data, skip_llm_enrichment=True)
+                            parse_mode = "pdfplumber"
+                    parsed_blocks_by_record[record_id] = block_containers
+                except HTTPException:
+                    raise
+                except TimeoutError as e:
+                    # The upload deadline fired: the file was being read, just not fast enough.
+                    logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
+                    raise HTTPException(status_code=422, detail=_attachment_too_slow(item.fileName)) from e
+                except (ParseWorkerError, BrokenProcessPool, MemoryError) as e:
+                    # A worker that died, or a renderer it started that
+                    # died: most likely out of memory, not a damaged file.
+                    logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
+                    raise HTTPException(status_code=422, detail=_attachment_too_heavy(item.fileName)) from e
+                except Exception as e:
+                    logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                    raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "pdf"))
+            record_doc["isVLMOcrProcessed"] = needs_ocr
+            record_docs.append(record_doc)
+            file_docs.append(file_doc)
+            uploaded_refs.append(
                 {
-                    "from_id": user_key,
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_id": rd["_key"],
-                    "to_collection": CollectionNames.RECORDS.value,
-                    "type": "USER",
-                    "role": "OWNER",
-                    "createdAtTimestamp": ts,
-                    "updatedAtTimestamp": ts,
+                    "recordId": record_id,
+                    "recordName": item.fileName,
+                    "mimeType": item.mimeType,
+                    "extension": extension,
+                    "virtualRecordId": record_doc.get("virtualRecordId", virtual_record_id),
+                    "parseMode": parse_mode,
+                    # Deprecated: kept for backward compatibility with clients still
+                    # reading `ocrMode`. `parse_mode` covers non-OCR parse paths too
+                    # (e.g. csv_lightweight, docling) so `parseMode` is the canonical field.
+                    "ocrMode": parse_mode,
                 }
-                for rd in record_docs
-            ]
-            await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
-
-        sink_orchestrator = SinkOrchestrator(
-            graphdb=graphdb,
-            blob_storage=blob_storage,
-            vector_store=_AttachmentSinkNoopVectorStore(),
-            graph_provider=graph_provider,
-            logger=service_logger,
-            config_service=config_service,
-        )
-
-        # One budget for the whole request: its records are indexed one after
-        # another, and the Slack bot and API send up to 10 files in one upload.
-        describe_deadline = min(
-            loop.time() + _CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S, upload_deadline
-        )
-        for record_doc in record_docs:
-            record_id = record_doc.get("_key") or record_doc.get("id")
-            block_containers = parsed_blocks_by_record.get(record_id)
-            if block_containers is None:
-                continue
-
-            record = convert_record_dict_to_record(record_doc)
-            record.block_containers = block_containers
-            record.virtual_record_id = record_doc.get("virtualRecordId")
-            ctx = TransformContext(
-                record=record,
-                settings={
-                    "sink_only": True,
-                    "skip_vector_store": True,
-                    IMAGE_DESCRIPTION_BUDGET_S: max(describe_deadline - loop.time(), 0.0),
-                },
             )
-            await sink_orchestrator.index(ctx)
-    except Exception:
-        await _rollback_attachment_records(
-            graph_provider, [rd["_key"] for rd in record_docs]
-        )
+
+        # Records, files, edges and the sink's blob write are five separate round
+        # trips with no shared transaction, so a failure partway leaves a record the
+        # user can neither see nor delete. Undo the graph writes before surfacing it.
+        try:
+            await write_attachment_graph(
+                graph_provider, org_id, record_docs, file_docs, uploader, user_key, get_epoch_timestamp_in_ms()
+            )
+
+            sink_orchestrator = SinkOrchestrator(
+                graphdb=graphdb,
+                blob_storage=blob_storage,
+                vector_store=_AttachmentSinkNoopVectorStore(),
+                graph_provider=graph_provider,
+                logger=service_logger,
+                config_service=config_service,
+            )
+
+            # One budget for the whole request: its records are indexed one after
+            # another, and the Slack bot and API send up to 10 files in one upload.
+            describe_deadline = min(
+                loop.time() + _CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S, upload_deadline
+            )
+            for record_doc in record_docs:
+                record_id = record_doc.get("_key") or record_doc.get("id")
+                block_containers = parsed_blocks_by_record.get(record_id)
+                if block_containers is None:
+                    continue
+
+                record = convert_record_dict_to_record(record_doc)
+                record.block_containers = block_containers
+                record.virtual_record_id = record_doc.get("virtualRecordId")
+                ctx = TransformContext(
+                    record=record,
+                    settings={
+                        "sink_only": True,
+                        "skip_vector_store": True,
+                        IMAGE_DESCRIPTION_BUDGET_S: max(describe_deadline - loop.time(), 0.0),
+                    },
+                )
+                await sink_orchestrator.index(ctx)
+        except Exception:
+            await _rollback_attachment_records(
+                graph_provider, [rd["_key"] for rd in record_docs]
+            )
+            raise
+
+    except BaseException:
+        await _purge_stored_attachments(blob_storage, org_id, stored)
         raise
 
     return {
@@ -1414,21 +1417,38 @@ async def grant_artifact_permissions(
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
 ) -> dict[str, Any]:
-    """Grant READER on a conversation's artifacts. Node calls this on share, and on
-    each shared viewer's first-page load so artifacts created after the share
-    become readable."""
+    """Reconcile READER on a conversation's artifacts for the users it is shared
+    with. Node calls this on share, and on each non-owner's first-page load so
+    artifacts created after the share are caught up. A user gets READER only on
+    the artifacts `ArtifactViewerAccess` finds readable for them (SS0); READER
+    on every other artifact is revoked, which also removes edges granted before
+    the check existed. OWNER edges are never touched."""
     org_id, grantor_user_id = _permission_grantor(claims)
     payload = await _parse_body(request, ArtifactPermissionRequest, "Invalid request payload")
     if not payload.userIds:
-        return {"granted": 0}
+        return {"granted": 0, "revoked": 0}
 
     record_ids = await _get_artifact_record_ids_for_conversation(
         graph_provider, org_id, payload.conversationId
     )
-    granted = await _grant_reader_permissions(
-        graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
+    if not record_ids:
+        return {"granted": 0, "revoked": 0}
+    viewer_access = artifact_viewer_access(graph_provider)
+    granted = revoked = 0
+    for user_id in dict.fromkeys(payload.userIds):
+        statuses = await viewer_access.decide(Actor(org_id=org_id, user_id=user_id), record_ids)
+        readable = [rid for rid in record_ids if statuses.get(rid) == "readable"]
+        hidden = [rid for rid in record_ids if statuses.get(rid) != "readable"]
+        granted += await _grant_reader_permissions(graph_provider, org_id, grantor_user_id, [user_id], readable)
+        revoked += await _revoke_reader_permissions(graph_provider, org_id, grantor_user_id, [user_id], hidden)
+    logger.info(
+        "artifacts.permissions_reconciled users=%d artifacts=%d granted=%d revoked=%d",
+        len(dict.fromkeys(payload.userIds)),
+        len(record_ids),
+        granted,
+        revoked,
     )
-    return {"granted": granted}
+    return {"granted": granted, "revoked": revoked}
 
 
 @router.delete("/chat/artifacts/permissions")
@@ -1453,6 +1473,360 @@ async def revoke_artifact_permissions(
     return {"revoked": revoked}
 
 
+class ArtifactEraseRequest(BaseModel):
+    """What to erase: one conversation's artifacts, or drafts discarded before a time. Never the org."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conversationId: str | None = Field(default=None, min_length=1, max_length=128)
+    discardedBefore: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _one_selector(self) -> "ArtifactEraseRequest":
+        if (self.conversationId is None) == (self.discardedBefore is None):
+            raise ValueError("exactly one of conversationId and discardedBefore")
+        return self
+
+
+@router.post("/chat/artifacts/erase")
+@inject
+async def erase_artifacts(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(get_config_service),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_ERASE)),
+) -> dict[str, Any]:
+    """Erase a deleted conversation's artifacts, or collect discarded drafts (E7, T5).
+
+    Node signs the org into the service token after the conversation's delete
+    committed; the body names only what to erase. Repeatable: Node calls again
+    while `remaining`, and after a crash.
+    """
+    org_id = bound_org_id()
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Service token must carry orgId")
+    payload = await _parse_body(request, ArtifactEraseRequest, "Invalid request payload")
+    container: QueryAppContainer = request.app.container
+    eraser = ArtifactEraser(
+        graph_provider,
+        BlobStorage(logger=container.logger(), config_service=config_service, graph_provider=graph_provider),
+    )
+    uploads = candidates = learned = 0
+    if payload.conversationId is not None:
+        report = await eraser.erase_conversation(org_id, payload.conversationId)
+        remaining = report.remaining
+        if not remaining:
+            # Uploads into the conversation no message carried (and those it did), and skill candidates learned
+            # from it (CLEANUP-G5, CLEANUP-G7): Node's artifacts step repeats this call while `remaining`.
+            blob_storage = BlobStorage(
+                logger=container.logger(), config_service=config_service, graph_provider=graph_provider,
+            )
+            swept = await AttachmentEraser(
+                graph_provider,
+                blob_storage,
+                lambda user_id, record_ids: _records_owned_by(graph_provider, user_id, record_ids),
+            ).erase_conversation_uploads(org_id, payload.conversationId)
+            candidates, more_candidates = await erase_session_skill_candidates(
+                graph_provider, org_id, payload.conversationId,
+            )
+            # Skills its runs wrote go with it, as its memories do (FOLLOWUPS1-1).
+            learned, more_learned = await erase_session_learned_skills(
+                graph_provider, org_id, payload.conversationId,
+            )
+            uploads = swept.attachments
+            remaining = swept.remaining or more_candidates or more_learned
+    else:
+        report = await eraser.collect_discarded(org_id, payload.discardedBefore or 0)
+        remaining = report.remaining
+    logger.info(
+        "artifacts.erased selector=%s artifacts=%d blobs=%d uploads=%d skillCandidates=%d learnedSkills=%d "
+        "remaining=%s",
+        "conversation" if payload.conversationId is not None else "discarded",
+        report.artifacts,
+        report.blobs,
+        uploads,
+        candidates,
+        learned,
+        remaining,
+    )
+    return {
+        "artifacts": report.artifacts,
+        "blobs": report.blobs,
+        "uploads": uploads,
+        "skillCandidates": candidates,
+        "learnedSkills": learned,
+        "remaining": remaining,
+    }
+
+
+class OrgEraseRequest(BaseModel):
+    """One page of a deleted org's erasure (CLEANUP-G1). Never the org: that is the token's."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    pageLimit: int = Field(default=ORG_ERASE_PAGE, ge=1, le=200)
+
+
+@router.post("/chat/org/erase")
+@inject
+async def erase_org(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(get_config_service),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_ERASE)),
+) -> dict[str, Any]:
+    """Erase one page of what the query service holds for a deleted org (CLEANUP-G1).
+
+    Node calls it when the org is deleted and from the org's erasure job once every session's erasure completed, again while
+    `remaining` and after a crash: artifacts, then chat attachments (sent or not), then skill candidates,
+    then agent versions.
+    """
+    org_id = bound_org_id()
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Service token must carry orgId")
+    payload = await _parse_body(request, OrgEraseRequest, "Invalid request payload")
+    container: QueryAppContainer = request.app.container
+    report = await erase_org_page(
+        graph_provider,
+        BlobStorage(logger=container.logger(), config_service=config_service, graph_provider=graph_provider),
+        org_id,
+        page=payload.pageLimit,
+    )
+    logger.info(
+        "org.erased_page artifacts=%d attachments=%d blobs=%d skillCandidates=%d agentVersions=%d remaining=%s",
+        report.artifacts, report.attachments, report.blobs, report.skill_candidates, report.agent_versions,
+        report.remaining,
+    )
+    return {
+        "attachments": report.attachments,
+        "artifacts": report.artifacts,
+        "blobs": report.blobs,
+        "skillCandidates": report.skill_candidates,
+        "agentVersions": report.agent_versions,
+        "remaining": report.remaining,
+    }
+
+
+class TraceEraseRequest(BaseModel):
+    """A conversation being erased and its runs, whose Opik traces go (cleanup audit, Opik item)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conversationId: str = Field(pattern=OPIK_SAFE_ID_PATTERN)
+    runIds: list[Annotated[str, Field(pattern=OPIK_SAFE_ID_PATTERN)]] = Field(default_factory=list, max_length=50)
+
+
+@router.post("/chat/traces/erase")
+@inject
+async def erase_traces(
+    request: Request,
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_ERASE)),
+) -> dict[str, Any]:
+    """Delete a conversation's Opik traces, by its thread and its runs. Repeatable.
+
+    Opik off: nothing was sent, nothing to ask. Opik failing: 503, and Node's erasure step retries.
+    """
+    org_id = bound_org_id()
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Service token must carry orgId")
+    payload = await _parse_body(request, TraceEraseRequest, "Invalid request payload")
+    store = opik_trace_store()
+    if store is None:
+        return {"traces": 0, "configured": False}
+    try:
+        traces = await erase_conversation_traces(store, org_id, payload.conversationId, payload.runIds)
+    except Exception as exc:
+        logger.warning("traces.erase_failed errorType=%s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Opik could not be asked to delete the traces") from exc
+    logger.info("traces.erased traces=%d", traces)
+    return {"traces": traces, "configured": True}
+
+
+class AttachmentSentRequest(BaseModel):
+    """Uploads a committed message carries, and its conversation (CLEANUP-G5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conversationId: str | None = Field(default=None, min_length=1, max_length=128)
+    recordIds: list[str] = Field(min_length=1, max_length=ATTACHMENT_ERASE_PAGE)
+
+
+@router.post("/chat/attachments/sent")
+@inject
+async def mark_attachments_sent(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_ERASE)),
+) -> dict[str, Any]:
+    """Node's unsent-upload collector marks the listed uploads it found a message naming, so they are never listed
+    again or erased with a conversation as unsent (CLEANUP-G5).
+
+    Repeatable; ids that are not this org's chat attachments are ignored.
+    """
+    org_id = bound_org_id()
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Service token must carry orgId")
+    payload = await _parse_body(request, AttachmentSentRequest, "Invalid request payload")
+    marked = await mark_sent(graph_provider, org_id, payload.recordIds, payload.conversationId)
+    return {"marked": marked}
+
+
+class UnsentUploadsRequest(BaseModel):
+    """A page of the token's org's uploads no message has been found carrying, uploaded before ``before``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    before: int = Field(ge=0)
+    limit: int = Field(ge=1, le=ATTACHMENT_ERASE_PAGE)
+    after: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+@router.post("/chat/attachments/unsent")
+@inject
+async def list_unsent_attachments(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_ERASE)),
+) -> dict[str, Any]:
+    """Node's unsent-upload collector (CLEANUP-G5) reads uploads still awaiting a message, decides which no message
+    names, and erases those through ``/chat/attachments/erase`` with the ``ownerId`` given here. ``next`` is the
+    cursor to pass as ``after`` while ``remaining``.
+    """
+    org_id = bound_org_id()
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Service token must carry orgId")
+    payload = await _parse_body(request, UnsentUploadsRequest, "Invalid request payload")
+    page = await list_unsent(graph_provider, org_id, payload.before, payload.limit, after=payload.after)
+    return {
+        "uploads": [
+            {"recordId": u.record_id, "ownerId": u.owner_id, "conversationId": u.conversation_id} for u in page.uploads
+        ],
+        "remaining": page.remaining,
+        "next": page.next,
+    }
+
+
+class AttachmentEraseItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recordId: str = Field(min_length=1, max_length=128)
+    ownerId: str = Field(min_length=1, max_length=128)
+
+
+class AttachmentEraseRequest(BaseModel):
+    """The chat attachments a deleted conversation's messages carried, each with the message's sender. Never the org."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    attachments: list[AttachmentEraseItem] = Field(min_length=1, max_length=ATTACHMENT_ERASE_PAGE)
+
+
+@router.post("/chat/attachments/erase")
+@inject
+async def erase_attachments(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(get_config_service),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_ERASE)),
+) -> dict[str, Any]:
+    """Erase a deleted conversation's chat attachments (QA15-F4): records, files, edges and stored bytes.
+
+    Node's conversation erasure step calls it before it deletes the messages
+    that name them, again after a crash. An attachment another user uploaded,
+    or a record that is not an upload, is refused and counted, never deleted.
+    ``removed`` names what is gone, so Node can mark it in other conversations.
+    """
+    org_id = bound_org_id()
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Service token must carry orgId")
+    payload = await _parse_body(request, AttachmentEraseRequest, "Invalid request payload")
+    container: QueryAppContainer = request.app.container
+    eraser = AttachmentEraser(
+        graph_provider,
+        BlobStorage(logger=container.logger(), config_service=config_service, graph_provider=graph_provider),
+        lambda user_id, record_ids: _records_owned_by(graph_provider, user_id, record_ids),
+    )
+    report = await eraser.erase(
+        org_id, [AttachmentRef(record_id=item.recordId, owner_id=item.ownerId) for item in payload.attachments]
+    )
+    logger.info(
+        "attachments.erased attachments=%d blobs=%d refused=%d unrecorded=%d",
+        report.attachments, report.blobs, report.refused, report.unrecorded,
+    )
+    return {
+        "attachments": report.attachments,
+        "blobs": report.blobs,
+        "refused": report.refused,
+        "unrecorded": report.unrecorded,
+        "removed": list(report.removed),
+    }
+
+
+class ArtifactCopyItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifactId: str = Field(min_length=1, max_length=128)
+    version: int | None = Field(default=None, ge=1)
+
+
+class ArtifactCopyBody(BaseModel):
+    """Which artifact versions of one conversation to copy into another. Never the org or the user."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fromConversationId: str = Field(min_length=1, max_length=128)
+    toConversationId: str = Field(min_length=1, max_length=128)
+    artifacts: list[ArtifactCopyItem] = Field(min_length=1, max_length=COPY_LIMIT)
+
+    @model_validator(mode="after")
+    def _distinct_conversations(self) -> "ArtifactCopyBody":
+        if self.fromConversationId == self.toConversationId:
+            raise ValueError("an artifact is copied into another conversation")
+        return self
+
+
+@router.post("/chat/artifacts/copy")
+@inject
+async def copy_artifacts(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(get_config_service),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_FORK)),
+) -> dict[str, Any]:
+    """Copy artifact versions into a private fork of their conversation (SS3).
+
+    Node signs the forker's `userId` and `orgId` into the service token after
+    deciding which versions the forker may see; the registry still copies only
+    what that user may read. Repeatable: a retry answers the copies already made.
+    """
+    org_id, user_id = _permission_grantor(claims)
+    payload = await _parse_body(request, ArtifactCopyBody, "Invalid request payload")
+    container: QueryAppContainer = request.app.container
+    blob_store = BlobStorage(logger=container.logger(), config_service=config_service, graph_provider=graph_provider)
+    copier = ArtifactCopier(ArtifactRegistryService(graph_provider, blob_store), graph_provider)
+    outcomes = await copier.copy(
+        actor=Actor(org_id=org_id, user_id=user_id),
+        from_conversation_id=payload.fromConversationId,
+        to_conversation_id=payload.toConversationId,
+        refs=[CopyRequest(item.artifactId, item.version) for item in payload.artifacts],
+    )
+    return {
+        "copies": [
+            {
+                "artifactId": outcome.artifact_id,
+                "version": outcome.version,
+                "copy": (
+                    {"artifactId": outcome.copy_id, "documentId": outcome.document_id, "version": outcome.copy_version}
+                    if outcome.copy_id is not None
+                    else None
+                ),
+                **({"reason": outcome.reason} if outcome.reason is not None else {}),
+            }
+            for outcome in outcomes
+        ]
+    }
+
+
 # Node's conversation routes (conversation:chat) and agent conversation routes
 # (agent:execute) both forward here with the caller's token.
 @router.delete(
@@ -1465,6 +1839,7 @@ async def delete_chat_attachment(
     record_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(get_config_service),
 ) -> None:
     """Delete a previously uploaded chat attachment.
 
@@ -1479,8 +1854,8 @@ async def delete_chat_attachment(
     - IS_OF_TYPE edge  RECORDS/record_id -> FILES/record_id
     - PERMISSION edge(s)  USERS/… -> RECORDS/record_id
 
-    ``delete_nodes_and_edges`` removes the RECORDS node plus all edges that
-    reference it; a separate ``delete_nodes`` call removes the FILES node.
+    The stored file and parsed-block documents go first (CLEANUP-G5), then the
+    FILES node and the RECORDS node with every edge touching it.
     """
     org_id, caller_key, _ = await _attachment_caller(request, graph_provider)
 
@@ -1497,16 +1872,13 @@ async def delete_chat_attachment(
     ):
         raise HTTPException(status_code=404, detail="Attachment not found")
 
-    # Remove the RECORDS node and all its incident edges
-    # (IS_OF_TYPE to FILES, PERMISSION edges to the record).
-    await graph_provider.delete_nodes_and_edges(
-        [record_id], CollectionNames.RECORDS.value
+    container: QueryAppContainer = request.app.container
+    eraser = AttachmentEraser(
+        graph_provider,
+        BlobStorage(logger=container.logger(), config_service=config_service, graph_provider=graph_provider),
+        lambda user_id, record_ids: _records_owned_by(graph_provider, user_id, record_ids),
     )
-
-    # Remove the associated FILES node (same key, independent collection).
-    await graph_provider.delete_nodes(
-        [record_id], CollectionNames.FILES.value
-    )
+    await eraser.erase_record(org_id, record_id, record)
 
 
 async def _load_user_doc(graph_provider: IGraphDBProvider, user_id: str | None) -> dict | None:
@@ -1523,50 +1895,6 @@ async def _load_org_doc(graph_provider: IGraphDBProvider, org_id: str | None) ->
     if not org_id:
         return None
     return await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
-
-
-async def load_entity_vector_store(
-    container: Any, logger_: Any, org_id: str | None,  # noqa: ANN401
-) -> Any | None:  # noqa: ANN401
-    """The entity store backing the knowledge-graph entity tools, or None.
-
-    None hides the tools and their prompt paragraph: when the provider is
-    missing or fails, and when *org_id*'s entities collection does not
-    exist yet, so a deployment with nothing indexed does not pay for tools
-    that can only come back empty. Never raises; chat must not fail over an
-    optional dependency.
-    """
-    provider = getattr(container, "entity_vector_store", None)
-    if provider is None:
-        return None
-    try:
-        store = provider()
-        if inspect.isawaitable(store):
-            store = await store
-        if store is None or not await store.collection_exists(org_id):
-            return None
-        return store
-    except Exception as exc:
-        logger_.warning("entity_vector_store unavailable: %s", exc)
-        return None
-
-
-async def warm_up_entity_vector_store(container: Any, logger_: Any) -> None:  # noqa: ANN401
-    """Load the entity store's embedding models at startup. Loaded lazily,
-    they used up the first entity search's deadline, which then dropped every
-    match unchecked. Skipped without an entities collection: initialising
-    would create one, and chat hides the tools until there is one. Never
-    raises; a failed load is retried after the store's back-off, as a failed
-    first search would be."""
-    store = await load_entity_vector_store(container, logger_, None)
-    if store is None:
-        return
-    try:
-        logger_.info("Warming up entity vector store in background")
-        await store.embedding_fingerprint()
-        logger_.info("Entity vector store warmup complete")
-    except Exception as exc:
-        logger_.warning("Entity vector store warmup failed (a later search retries): %s", exc)
 
 
 async def load_system_prompts(
@@ -1609,6 +1937,7 @@ async def _generate_chat_stream_via_agent_loop(
     graph_provider: IGraphDBProvider,
     config_service: ConfigurationService,
     cancellation_registry: RunCancellationRegistry | None = None,
+    resolved: ResolvedTurn | None = None,
 ) -> AsyncGenerator[str, None]:
     """Run the chat stream with the caller bound as the identity for model calls.
 
@@ -1633,6 +1962,7 @@ async def _generate_chat_stream_via_agent_loop(
                     graph_provider=graph_provider,
                     config_service=config_service,
                     cancellation_registry=cancellation_registry,
+                    resolved=resolved,
                 )
             ) as inner:
                 async for event in inner:
@@ -1651,6 +1981,7 @@ async def _stream_chat_via_agent_loop(
     graph_provider: IGraphDBProvider,
     config_service: ConfigurationService,
     cancellation_registry: RunCancellationRegistry | None = None,
+    resolved: ResolvedTurn | None = None,
 ) -> AsyncGenerator[str, None]:
     """Adapts a validated `ChatQuery` + the authenticated request into the
     plain-dict `query_info`/`user_info` contract `chat_modes.run_chat_stream()`
@@ -1755,6 +2086,7 @@ async def _stream_chat_via_agent_loop(
         "query": query_info.query,
         "limit": query_info.limit,
         "previous_conversations": previous_conversations,
+        "historyLabel": query_info.historyLabel,
         "filters": effective_filters,
         "allowedFilters": query_info.allowedFilters,
         "connectionLimit": connection_limit(user),
@@ -1771,6 +2103,7 @@ async def _stream_chat_via_agent_loop(
         "keywordSearchBudget": query_info.keywordSearchBudget,
         "runId": query_info.runId,
         "is_service_account": bool(user.get("isServiceAccount")),
+        "resolvedFlowRules": resolved.flow if resolved is not None else None,
     }
     user_info = {
         "userId": user_id,
@@ -1780,41 +2113,12 @@ async def _stream_chat_via_agent_loop(
         "isServiceAccount": bool(user.get("isServiceAccount")),
     }
 
-    org_info: dict[str, Any] | None = None
     user_doc, org_doc, user_context_flag = await asyncio.gather(
         user_doc_task, org_doc_task, user_context_flag_task, return_exceptions=True,
     )
-    if isinstance(user_doc, BaseException):
-        logger_.debug("Failed to load user doc for prompt enrichment", exc_info=user_doc)
-    elif user_doc and isinstance(user_doc, dict):
-        for field in ("fullName", "firstName", "lastName", "displayName"):
-            if user_doc.get(field):
-                user_info[field] = user_doc[field]
-        # Reused by `_fetch_available_connectors` (chat_modes/bridge.py) so
-        # the same user lookup is not repeated further down the request.
-        user_key = user_doc.get("_key") or user_doc.get("id")
-        if user_key:
-            user_info["userKey"] = user_key
-    if isinstance(org_doc, BaseException):
-        logger_.debug("Failed to load org doc for prompt enrichment", exc_info=org_doc)
-    elif org_doc and isinstance(org_doc, dict):
-        raw_account_type = str(org_doc.get("accountType", "")).lower()
-        org_info = {
-            "orgId": org_id,
-            "accountType": raw_account_type if raw_account_type in ("enterprise", "individual") else "",
-            "name": org_doc.get("name") or "",
-        }
-
-    if isinstance(user_context_flag, BaseException):
-        logger_.debug(
-            "Failed to read ENABLE_USER_CONTEXT; defaulting to enabled",
-            exc_info=user_context_flag,
-        )
-        user_context_enabled = True
-    else:
-        user_context_enabled = bool(user_context_flag)
-    if not user_context_enabled:
-        user_info["sendUserInfo"] = False
+    org_info = enrich_chat_identity(
+        user_info, org_id, user_doc, org_doc, user_context_flag, logger_,
+    )
 
     entity_vector_store = await entity_vector_store_task
 
@@ -1840,15 +2144,30 @@ async def _stream_chat_via_agent_loop(
             yield event
 
 
+async def resolved_turn_or_401(
+    request: Request, *, agent_id: str | None, conversation_id: str | None
+) -> ResolvedTurn | None:
+    """The turn Node resolved for this legacy chat request (`X-PipesHub-Resolved`), or None when it sent none
+    and today's reads apply. A header that does not verify, or none while the policy store is `on`, is 401
+    `RESOLVED_TURN_REFUSED` with its reason; the request is never served from the reads instead."""
+    try:
+        return await resolved_turn_for(request, agent_id=agent_id, conversation_id=conversation_id)
+    except ResolvedTurnRefused as refused:
+        raise HTTPException(status_code=refused.http_status, detail=refused.detail()) from None
+
+
 async def _parse_chat_query(
     request: Request,
     cancellation_registry: RunCancellationRegistry,
     *,
     streaming: bool,
-) -> "ChatQuery":
+) -> tuple["ChatQuery", ResolvedTurn | None]:
     """Request prelude shared by `/chat` and `/chat/stream`: parse, validate,
-    reject a `runId` that is already running, and record the session."""
+    verify the turn Node resolved, reject a `runId` that is already running,
+    and record the session."""
     query_info = await _parse_body(request, ChatQuery, "Invalid request parameters")
+
+    resolved = await resolved_turn_or_401(request, agent_id=None, conversation_id=query_info.conversationId)
 
     # A real HTTP 409 is only possible HERE, before `StreamingResponse` is
     # returned — once the SSE generator below starts, Starlette has already
@@ -1868,7 +2187,7 @@ async def _parse_chat_query(
         "search_type": _search_type,
         "streaming": streaming,
     })
-    return query_info
+    return query_info, resolved
 
 
 @router.post("/chat", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
@@ -1886,21 +2205,22 @@ async def askAI(
     Called by Node's `POST /api/v1/conversations/create` and
     `POST /api/v1/conversations/:id/messages`.
     """
-    query_info = await _parse_chat_query(request, cancellation_registry, streaming=False)
+    query_info, resolved = await _parse_chat_query(request, cancellation_registry, streaming=False)
     await assert_identity_allowed(
         _chat_principal(request),
         Workload.CHAT,
         config_service=config_service,
         container=getattr(request.app, "container", None),
     )
-    stream = _generate_chat_stream_via_agent_loop(
+    stream = with_resolved_stages(resolved, _generate_chat_stream_via_agent_loop(
         request=request,
         query_info=query_info,
         retrieval_service=retrieval_service,
         graph_provider=graph_provider,
         config_service=config_service,
         cancellation_registry=cancellation_registry,
-    )
+        resolved=resolved,
+    ))
     outcome = await collect_stream_outcome(stream, request.is_disconnected)
     return outcome.to_response()
 
@@ -1920,7 +2240,7 @@ async def askAIStream(
     agent loop (`app.agents.chat_modes.run_chat_stream`) — see that package
     for the mode → tool/prefetch behavior.
     """
-    query_info = await _parse_chat_query(request, cancellation_registry, streaming=True)
+    query_info, resolved = await _parse_chat_query(request, cancellation_registry, streaming=True)
     await assert_identity_allowed(
         _chat_principal(request),
         Workload.CHAT,
@@ -1928,14 +2248,15 @@ async def askAIStream(
         container=getattr(request.app, "container", None),
     )
 
-    stream = _generate_chat_stream_via_agent_loop(
+    stream = with_resolved_stages(resolved, _generate_chat_stream_via_agent_loop(
         request=request,
         query_info=query_info,
         retrieval_service=retrieval_service,
         graph_provider=graph_provider,
         config_service=config_service,
         cancellation_registry=cancellation_registry,
-    )
+        resolved=resolved,
+    ))
 
     return StreamingResponse(
         stream,

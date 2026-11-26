@@ -1,0 +1,21 @@
+{
+  "name": "pipeshub-sandbox-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@types/node": "22.20.2",
+    "csv-stringify": "6.8.3",
+    "docx": "9.7.1",
+    "exceljs": "4.4.0",
+    "fs-extra": "11.4.0",
+    "json2csv": "6.0.0-alpha.2",
+    "papaparse": "5.7.0",
+    "pdf-lib": "1.17.1",
+    "pdfkit": "0.20.2",
+    "pptxgenjs": "4.0.1",
+    "sharp": "0.35.4"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
+  }
+}

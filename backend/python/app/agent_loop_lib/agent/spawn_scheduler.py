@@ -97,6 +97,9 @@ class SpawnDependencyError(Exception):
     and turns into an error `ToolResult` — no new exception-handling path
     needed at the call site."""
 
+    # `spawn_refusal`'s `tool_call.end` reason: a failed prerequisite, or one of the batch's validation errors.
+    spawn_refusal_reason = "dependency_failed"
+
 
 @dataclass
 class _CompletedSpawn:

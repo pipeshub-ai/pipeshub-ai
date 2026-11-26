@@ -27,7 +27,11 @@ spec:
       pipeshub.ai/workload: parsing
   template:
     metadata:
-      {{- with .Values.parsing.podAnnotations }}
+      {{- $podAnnotations := deepCopy (.Values.parsing.podAnnotations | default dict) }}
+      {{- with include "pipeshub-ai.etcdTls.podAnnotation" . | fromYaml }}
+      {{- $podAnnotations = merge $podAnnotations . }}
+      {{- end }}
+      {{- with $podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -51,7 +55,7 @@ spec:
         - name: parsing
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: {{ include "pipeshub-ai.image" (dict "image" .Values.image "global" .Values.global) | quote }}
+          image: {{ include "pipeshub-ai.appImage" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy | default .Values.global.imagePullPolicy }}
           ports:
             - name: parsing
@@ -88,6 +92,9 @@ spec:
               mountPath: /home/user
             - name: app-rootlocal
               mountPath: /root/.local
+            {{- /* appEnv names the etcd client certificate and the root-key file; both live here as on the app pods. */}}
+            {{- include "pipeshub-ai.etcdTlsMount" . | nindent 12 }}
+            {{- include "pipeshub-ai.secretKeyMount" . | nindent 12 }}
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -148,6 +155,8 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- include "pipeshub-ai.etcdTlsVolume" (dict "root" . "client" "pipeshub-ai") | nindent 8 }}
+        {{- include "pipeshub-ai.secretKeyVolume" . | nindent 8 }}
         - name: app-logs
           emptyDir: {}
         - name: app-home
@@ -199,13 +208,15 @@ spec:
       {{- include "pipeshub-ai.parsingSelectorLabels" . | nindent 6 }}
       pipeshub.ai/workload: parsing
 {{- end }}
-{{- if .Values.networkPolicy.enabled }}
+{{- if include "pipeshub-ai.networkPolicyEnabled" . }}
 ---
 {{- /*
 The parsing pods are a different application name from the main pods, so the main policy does not
 select them. They take parse requests only from the application pods, on the parsing port; anything
 else that needs them (a metrics scraper, for example) is admitted by parsing.networkPolicy.extraIngress.
-Egress is the application policy's own rules.
+Egress is the application policy's own rules (ADR-OPS-04): DNS, the configuration stores they read
+(pipeshub-ai.np.stores lists them as a client), the external model APIs an OCR provider calls, and
+networkPolicy.egress / extraEgress.
 */}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -216,31 +227,38 @@ metadata:
     pipeshub.ai/workload: parsing
 spec:
   podSelector:
-    matchLabels:
-      {{- include "pipeshub-ai.parsingSelectorLabels" . | nindent 6 }}
-      pipeshub.ai/workload: parsing
+    {{- include "pipeshub-ai.np.component" (dict "root" . "component" "parsing") | nindent 4 }}
   policyTypes:
     - Ingress
     - Egress
   ingress:
     - from:
         - podSelector:
-            matchLabels:
-              {{- include "pipeshub-ai.selectorLabels" . | nindent 14 }}
+            {{- include "pipeshub-ai.np.component" (dict "root" . "component" "main") | nindent 12 }}
       ports:
         - protocol: TCP
           port: {{ .Values.parsing.port }}
     {{- with .Values.parsing.networkPolicy.extraIngress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-  {{- if or .Values.networkPolicy.egress .Values.networkPolicy.extraEgress }}
   egress:
+    {{- include "pipeshub-ai.np.dnsEgress" . | nindent 4 }}
+    {{- include "pipeshub-ai.np.storeEgress" (dict "root" . "component" "parsing") | nindent 4 }}
+    {{- with .Values.networkPolicy.appExternalEgress }}
+    {{- if .enabled }}
+    - to:
+        {{- include "pipeshub-ai.np.ipBlocks" (dict "blocks" .blocks "cluster" $.Values.networkPolicy.clusterCidrs) | nindent 8 }}
+      {{- with .ports }}
+      ports:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+    {{- end }}
     {{- with .Values.networkPolicy.egress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
     {{- with .Values.networkPolicy.extraEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-  {{- end }}
 {{- end }}
 {{- end }}

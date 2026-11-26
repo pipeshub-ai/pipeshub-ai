@@ -3,11 +3,13 @@ Unit tests for Neo4jProvider.get_documents_paginated
 (app/services/graph_db/neo4j/neo4j_provider.py).
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support.log_capture import failure_line
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +193,8 @@ class TestNeo4jGetDocumentsPaginatedTransaction:
 
 class TestNeo4jGetDocumentsPaginatedErrorHandling:
     @pytest.mark.asyncio
-    async def test_exception_returns_empty_list(self, provider):
+    async def test_exception_returns_empty_list(self, provider, caplog):
+        provider.logger = logging.getLogger("tests.get_documents_paginated")
         provider.client.execute_query = AsyncMock(
             side_effect=RuntimeError("Neo4j unreachable")
         )
@@ -199,15 +202,16 @@ class TestNeo4jGetDocumentsPaginatedErrorHandling:
         result = await provider.get_documents_paginated("Apps")
 
         assert result == []
-        provider.logger.error.assert_called_once()
+        failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "Neo4j unreachable")
 
     @pytest.mark.asyncio
-    async def test_error_logged_with_collection_name(self, provider):
+    async def test_error_logged_with_collection_name(self, provider, caplog):
+        provider.logger = logging.getLogger("tests.get_documents_paginated")
         provider.client.execute_query = AsyncMock(
             side_effect=RuntimeError("bolt error")
         )
 
         await provider.get_documents_paginated("MyCollection")
 
-        log_call = provider.logger.error.call_args
-        assert "MyCollection" in str(log_call)
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "bolt error")
+        assert (fields["op"], fields["collection"]) == ("get_documents_paginated", "MyCollection")

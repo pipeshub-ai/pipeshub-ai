@@ -10,6 +10,7 @@ failure mode asymmetric — returning too few types would hide data, so every
 uncertain case widens instead.
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -18,6 +19,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,
     _distinct_connector_types,
 )
+from tests.support.log_capture import failure_line
 
 pytestmark = pytest.mark.asyncio
 
@@ -101,12 +103,14 @@ class TestBothBackendsAgree:
         )
         assert await provider.get_accessible_connector_types("u", "org") == ["JIRA"]
 
-    async def test_a_graph_failure_widens_rather_than_raising(self, make_provider):
+    async def test_a_graph_failure_widens_rather_than_raising(self, make_provider, caplog):
         """Narrowing is an optimization: a failure must cost a wider search,
         never the search itself."""
         provider = make_provider([], raises=ConnectionError("graph down"))
+        provider.logger = logging.getLogger("tests.accessible_connector_types")
         assert await provider.get_accessible_connector_types("u", "org") == []
-        provider.logger.warning.assert_called()
+        fields = failure_line(caplog.records, "graph.provider.failed", "unavailable", logging.WARNING, "graph down")
+        assert fields["op"] == "get_accessible_connector_types"
 
     async def test_result_order_is_stable(self, make_provider):
         provider = make_provider(

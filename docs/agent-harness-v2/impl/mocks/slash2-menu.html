@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slash Command Menu</title>
+<style>
+:root {
+  --bg: #f7f8fa; --panel: #ffffff; --text: #1c2024; --muted: #60646c; --faint: #8b8d98;
+  --line: #e0e1e6; --hover: #eef1ff; --accent: #3e63dd; --badge: #f0f0f3; --jade: #e6f6eb; --jade-text: #208368;
+  --add: #2a7e3b; --del: #ce2c31; --code: #f0f0f3;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111113; --panel: #18191b; --text: #edeef0; --muted: #b0b4ba; --faint: #777b84;
+    --line: #2e3135; --hover: #1d2340; --accent: #9eb1ff; --badge: #232529; --jade: #0f2e22; --jade-text: #1fd8a4;
+    --add: #3dd68c; --del: #ff9592; --code: #212225;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111113; --panel: #18191b; --text: #edeef0; --muted: #b0b4ba; --faint: #777b84;
+  --line: #2e3135; --hover: #1d2340; --accent: #9eb1ff; --badge: #232529; --jade: #0f2e22; --jade-text: #1fd8a4;
+  --add: #3dd68c; --del: #ff9592; --code: #212225;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 18px; margin: 0 0 4px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 32px 0 8px; }
+p.note { color: var(--muted); margin: 0 0 16px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.menu { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 4px; width: min(420px, 100%);
+  box-shadow: 0 8px 24px rgba(0,0,0,.08); }
+.group { font-size: 11px; font-weight: 600; letter-spacing: .05em; color: var(--faint); padding: 8px 8px 4px; text-transform: uppercase; }
+.opt { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 8px; align-items: baseline; padding: 6px 8px; border-radius: 6px; }
+.opt[aria-selected="true"] { background: var(--hover); }
+.opt[aria-disabled="true"] .name, .opt[aria-disabled="true"] .desc { color: var(--faint); }
+.name { font-weight: 600; }
+.desc { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sub { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--badge); color: var(--muted); white-space: nowrap; }
+.badge.jade { background: var(--jade); color: var(--jade-text); }
+.foot { display: flex; justify-content: flex-end; gap: 12px; font-size: 11px; color: var(--faint); padding: 6px 8px 4px; border-top: 1px solid var(--line); margin-top: 4px; }
+.composer { margin-top: 8px; width: min(560px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.composer .caret { border-left: 2px solid var(--accent); margin-left: 1px; }
+.row { border-left: 2px solid var(--line); padding: 6px 0 6px 12px; margin: 12px 0; }
+.row .head { font-size: 12px; color: var(--muted); }
+.row .head .mono { color: var(--text); }
+.row .body { margin-top: 4px; }
+.row .saved { font-size: 11px; color: var(--faint); margin-left: 6px; }
+.btn { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+.link { color: var(--accent); text-decoration: none; font-size: 12px; }
+.select { display: inline-block; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--code); }
+table.files { border-collapse: collapse; width: 100%; font-size: 13px; }
+table.files td { padding: 2px 6px 2px 0; }
+.add { color: var(--add); } .del { color: var(--del); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; }
+.muted { color: var(--muted); }
+.toggle { position: fixed; top: 8px; right: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <button class="btn toggle" type="button" id="theme">Toggle theme</button>
+  <h1>SLASH2: the / menu and command results</h1>
+  <p class="note">A static mock of the slash command menu. It has no product code and no live data.</p>
+
+  <h2>The menu after typing “/”</h2>
+  <div class="menu" role="listbox" aria-label="Commands" aria-activedescendant="opt-new">
+    <div role="group" aria-labelledby="g-builtin">
+      <div class="group" id="g-builtin">Built-in</div>
+      <div class="opt" role="option" id="opt-new" aria-selected="true"><span class="name mono">/new</span><span class="desc">Start a new chat</span><span class="badge">also /clear</span></div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/model</span><span class="desc">Choose the model for your next message</span><span></span></div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/compact</span><span class="desc">Summarise this chat to free up context</span><span></span></div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/usage</span><span class="desc">Tokens and cost of this chat</span><span class="badge">also /cost</span></div>
+      <div class="opt" role="option" aria-selected="false" aria-disabled="true"><span class="name mono">/diff</span><span class="desc">Files this chat changed</span><span></span><span class="sub">ⓘ This chat has no workspace yet</span></div>
+      <div class="opt" role="option" aria-selected="false" aria-disabled="true"><span class="name mono">/stop</span><span class="desc">Stop the running reply</span><span></span><span class="sub">ⓘ Nothing is running</span></div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/summarize</span><span class="desc">Summarise a document</span><span class="badge jade">PipesHub</span></div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">More built-ins…</span><span class="desc">18 more</span><span></span></div>
+    </div>
+    <div role="group" aria-labelledby="g-you">
+      <div class="group" id="g-you">Your commands</div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/triage</span><span class="desc">Triage an incident</span><span class="badge">You</span></div>
+    </div>
+    <div role="group" aria-labelledby="g-team">
+      <div class="group" id="g-team">Team</div>
+      <div class="opt" role="option" aria-selected="false"><span class="name mono">/weekly</span><span class="desc">Weekly status draft</span><span class="badge">Team</span><span class="sub">by Asha · team Ops</span></div>
+    </div>
+    <div class="foot"><span>↑↓ move</span><span>Enter choose</span><span>Esc close</span></div>
+  </div>
+  <div class="composer mono">/<span class="caret"></span></div>
+
+  <h2>Results, inline in the timeline</h2>
+
+  <div class="row">
+    <div class="head"><span class="mono">/model</span></div>
+    <div class="body">Model for your next message: <span class="select">GPT-5.2 ▾</span> <span class="muted">was Claude Sonnet 4.7</span><br>
+      <span class="muted">The reply in progress keeps its model.</span></div>
+  </div>
+
+  <div class="row">
+    <div class="head"><span class="mono">/compact</span><span class="saved">saved</span></div>
+    <div class="body">⟲ Context compacted · 148k → 19k tokens · your messages kept<br>
+      <span class="muted">Takes effect on your next message.</span> <a class="link" href="#activity">View activity</a></div>
+  </div>
+
+  <div class="row">
+    <div class="head"><span class="mono">/usage</span></div>
+    <div class="body kv">
+      <span>This chat</span><span>312k tokens · $0.84 <span class="muted">(9 replies)</span></span>
+      <span>Last reply</span><span>41k tokens · $0.11 <span class="muted">· cap left $4.89</span></span>
+    </div>
+    <a class="link" href="#activity">View activity for the last reply</a>
+  </div>
+
+  <div class="row">
+    <div class="head"><span class="mono">/diff</span></div>
+    <div class="body">3 files changed since this chat began · <span class="add">+48</span> <span class="del">−12</span>
+      <table class="files mono">
+        <tr><td>M</td><td>out/travel_policy.md</td><td class="add">+31</td><td class="del">−4</td><td>▸</td></tr>
+        <tr><td>A</td><td>out/summary.csv</td><td class="add">+17</td><td></td><td>▸</td></tr>
+        <tr><td>D</td><td>notes/draft.md</td><td></td><td class="del">−8</td><td>▸</td></tr>
+      </table>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px">
+        <button class="btn" type="button">Undo last turn</button>
+        <button class="btn" type="button">Review these changes</button>
+      </div>
+    </div>
+  </div>
+  <p class="note" id="activity">“View activity” opens the existing Activity drawer for that run (CHAT-TL §3). It is not linked in this mock.</p>
+</main>
+<script>
+document.getElementById('theme').addEventListener('click', () => {
+  const root = document.documentElement;
+  const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  root.dataset.theme = dark ? 'light' : 'dark';
+});
+</script>
+</body>
+</html>

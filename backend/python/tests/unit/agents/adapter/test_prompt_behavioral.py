@@ -161,3 +161,49 @@ class TestRoutingTablesStayRemoved:
         assert "Dual-Source Apps" not in section
         assert "SERVICE NOUN" not in section
         assert "When to use ONLY" not in section
+
+
+class TestAttachedServerCheckedInTheFirstStep:
+    """R47LIVE-FU-1, both kinds of question. Asked for "our team's private
+    tracker note" with an attached server whose tools read notes, a real model
+    searched knowledge 9 times before the server: the source line must tie a
+    server that fits, by its own description or tool names, to the first step
+    alongside knowledge. Asked "what's our travel policy?", knowledge must
+    stay the first source: the rule is conditional on the server's own words,
+    never a ranking of servers ahead of knowledge."""
+
+    _FIRST_STEP = "check it in your first step alongside internal knowledge"
+
+    @staticmethod
+    def _finding(*, has_knowledge: bool, servers: bool) -> str:
+        from app.agents.agent_loop.connected_sources import SOURCES_STATE_KEY
+
+        context = make_context(has_knowledge=has_knowledge)
+        if servers:
+            context.tool_state[SOURCES_STATE_KEY] = {
+                "mcp_e2esaas": {"name": "e2esaas", "summary": "Tools: create ticket, lookup note."},
+            }
+        tools = ["knowledgegraph__search"] if has_knowledge else []
+        result = _build(context, tool_names=[*tools, "search_tools", "fetch_tools", "call_tool"])
+        return result.split("## Finding Information", 1)[1].split("\n## ", 1)[0]
+
+    def test_a_note_in_an_app_question_reaches_a_fitting_server_in_the_first_step(self) -> None:
+        finding = self._finding(has_knowledge=True, servers=True)
+        item = next(line for line in finding.splitlines() if "Attached MCP servers (e2esaas)" in line)
+        assert self._FIRST_STEP in item
+        assert "own description or tool names fit the question" in item
+        assert "IN PARALLEL" in finding
+
+    def test_a_knowledge_question_still_goes_to_knowledge_first(self) -> None:
+        with_server = self._finding(has_knowledge=True, servers=True)
+        numbered = [line for line in with_server.splitlines() if line[:2] in ("1.", "2.")]
+        assert numbered[0].startswith("1. Internal knowledge")
+        assert numbered[1].startswith("2. Attached MCP servers")
+        without = self._finding(has_knowledge=True, servers=False)
+        assert self._FIRST_STEP not in without
+        assert "1. Internal knowledge" in without
+
+    def test_no_knowledge_no_sentence_about_it(self) -> None:
+        finding = self._finding(has_knowledge=False, servers=True)
+        assert "Attached MCP servers (e2esaas)" in finding
+        assert "internal knowledge, not after" not in finding

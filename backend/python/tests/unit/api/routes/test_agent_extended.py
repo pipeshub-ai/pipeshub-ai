@@ -378,7 +378,7 @@ class TestEnrichAgentModelsExtended:
         logger = MagicMock()
         await _enrich_agent_models(agent, config_service, logger)
         assert agent["models"][0]["provider"] == "unknown"
-        logger.warning.assert_called()
+        assert [c.args[:2] for c in logger.log.call_args_list] == [(logging.DEBUG, "agent.model.unknown")]
 
     @pytest.mark.asyncio
     async def test_no_models_in_agent(self):
@@ -399,15 +399,16 @@ class TestEnrichAgentModelsExtended:
         # Should return early
 
     @pytest.mark.asyncio
-    async def test_exception_handled(self):
+    async def test_exception_handled(self, caplog):
         from app.api.routes.agent import _enrich_agent_models
 
         agent = {"models": ["mk1_m1"]}
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(side_effect=Exception("etcd down"))
-        logger = MagicMock()
-        await _enrich_agent_models(agent, config_service, logger)
-        logger.warning.assert_called()
+        await _enrich_agent_models(agent, config_service, logging.getLogger("test.enrich"))
+        (record,) = [r for r in caplog.records if r.getMessage() == "agent.route.failed"]
+        assert record.op == "enrich_models"
+        assert "etcd down" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_model_entry_with_underscore_format(self):
@@ -698,11 +699,10 @@ class TestCreateToolsetEdges:
                 "instanceName": None,
             }
         }
-        created, failed = await _create_toolset_edges(
-            "agent-key", toolsets, {"userId": "u1"}, "user-key", graph_provider, MagicMock()
-        )
-        assert created == []
-        assert len(failed) == 1
+        with pytest.raises(Exception, match="DB error"):
+            await _create_toolset_edges(
+                "agent-key", toolsets, {"userId": "u1"}, "user-key", graph_provider, MagicMock()
+            )
 
 
 # ============================================================================

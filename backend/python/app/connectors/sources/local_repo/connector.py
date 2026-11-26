@@ -48,7 +48,7 @@ from app.connectors.sources.local_repo.store import LOCAL_REPO_CONNECTOR_NAME, R
                         description="Set by pipeshub index. Do not change.")
         )
         .add_sync_custom_field(CommonFields.batch_size_field())
-        .add_filter_field(CommonFields.file_extension_filter())
+        .add_filter_field(CommonFields.file_extension_filter(repository=True))
     )
     .build_decorator()
 )
@@ -107,6 +107,9 @@ class LocalRepoConnector(FolderConnector):
         if why:
             self._excluded[entry.rel] = why
         return ok, role
+
+    def _left_out(self, rel: str, why: str) -> None:
+        self._excluded[rel] = why
 
     def _head(self, entry: scan.Entry) -> bytes | None:
         try:

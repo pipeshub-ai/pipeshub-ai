@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/request-jobs.schema.json",
+  "title": "RequestJobs",
+  "description": "UI-B5 (UIP2-FU-4, ADR-UI-01 D6): `GET …/conversations/{conversationId}/runs/{runId}/jobs`: one request (a chat answer that handed out work) and its jobs, oldest first, with how many are back (`N of M back`), for its conversation's owner only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "request",
+    "jobs",
+    "total",
+    "back"
+  ],
+  "properties": {
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "sessionId",
+        "state",
+        "status",
+        "ask"
+      ],
+      "properties": {
+        "runId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "sessionId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "state": {
+          "enum": [
+            "working",
+            "needs_you",
+            "finished",
+            "failed",
+            "stopped"
+          ]
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "running",
+            "waiting_approval",
+            "paused",
+            "recovering",
+            "needs_reconciliation",
+            "cancelling",
+            "completed",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "ask": {
+          "description": "What the person asked, as the chat shows it; null once erased.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 10000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "jobs": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "runId",
+          "title",
+          "state",
+          "status",
+          "engine",
+          "createdAt",
+          "endedAt",
+          "continuesRunId"
+        ],
+        "properties": {
+          "runId": {
+            "$ref": "../../../core/common.schema.json#/$defs/Id"
+          },
+          "title": {
+            "description": "The first line of its goal; null once erased.",
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "working",
+              "needs_you",
+              "finished",
+              "failed",
+              "stopped"
+            ]
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "waiting_approval",
+              "paused",
+              "recovering",
+              "needs_reconciliation",
+              "cancelling",
+              "completed",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "engine": {
+            "description": "The coding engine it runs on; null: a sub-agent on the native loop.",
+            "anyOf": [
+              {
+                "$ref": "../../../core/common.schema.json#/$defs/Name"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "$ref": "../../../core/common.schema.json#/$defs/UInt"
+          },
+          "endedAt": {
+            "anyOf": [
+              {
+                "$ref": "../../../core/common.schema.json#/$defs/UInt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "continuesRunId": {
+            "description": "The earlier job it continues (a replacement under the job it replaced); null: it started fresh.",
+            "anyOf": [
+              {
+                "$ref": "../../../core/common.schema.json#/$defs/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "total": {
+      "$ref": "../../../core/common.schema.json#/$defs/UInt",
+      "description": "How many jobs the request handed out (M)."
+    },
+    "back": {
+      "$ref": "../../../core/common.schema.json#/$defs/UInt",
+      "description": "How many of them ended: finished, failed or stopped (N)."
+    }
+  },
+  "examples": [
+    {
+      "request": {
+        "runId": "run_1",
+        "sessionId": "ses_1",
+        "state": "working",
+        "status": "running",
+        "ask": "Compare four competitors' pricing"
+      },
+      "jobs": [
+        {
+          "runId": "run_2",
+          "title": "Fix the failing payment test",
+          "state": "finished",
+          "status": "completed",
+          "engine": "claude_code",
+          "createdAt": 1762678800000,
+          "endedAt": 1762679400000,
+          "continuesRunId": null
+        },
+        {
+          "runId": "run_3",
+          "title": null,
+          "state": "working",
+          "status": "running",
+          "engine": "claude_code",
+          "createdAt": 1762678800000,
+          "endedAt": null,
+          "continuesRunId": "run_2"
+        }
+      ],
+      "total": 2,
+      "back": 1
+    }
+  ]
+}

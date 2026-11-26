@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/run.failed.schema.json",
+  "title": "RunFailedEvent",
+  "description": "Terminal: run failed.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "run.failed"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/RunFailedData"
+    }
+  },
+  "$defs": {
+    "RunFailedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "errorType"
+      ],
+      "properties": {
+        "errorType": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "message": {
+          "$ref": "../common.schema.json#/$defs/Text"
+        },
+        "servers": {
+          "description": "With errorType mcp_tool_withdrawn: the labels of the MCP servers whose listing answered without a tool the run was using (WP-79 D3), so a client words the failure in the reader's language and names them (WP-84). Labels as the org named its servers, never ids.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "../common.schema.json#/$defs/Text"
+          }
+        },
+        "memoryLimitMb": {
+          "description": "With errorType out_of_memory: the memory limit, in MB, of the sandbox whose limit ended the run's work (R31GVISO-FU-3: under gVisor the whole sandbox ends; under runc the engine's process), so a client words the failure in the reader's language with the limit named.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.failed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "errorType": "journal_payload_missing"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.failed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "errorType": "calendar_deadline",
+        "message": "deadline passed while suspended"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.failed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "errorType": "mcp_tool_withdrawn",
+        "message": "Atlassian no longer offers a tool this task was using, so the task stopped.",
+        "servers": [
+          "Atlassian"
+        ]
+      }
+    }
+  ]
+}

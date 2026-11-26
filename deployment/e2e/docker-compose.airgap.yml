@@ -1,0 +1,52 @@
+# DEV-ONLY overlay for deployment/e2e/run.sh with E2E_AIRGAP=1 (C15.04, guides/air-gapped-install.md): the stack on
+# Docker networks with no route out. `pipeshub` becomes internal like the base file's other networks, so no PipesHub
+# container, store or sandbox can reach anything outside the stack; nothing is pulled (the lane uses only images
+# already on the host, as an install loads its mirrored ones), and the models are in the network (the scripted model
+# serves chat, engines and embeddings). Published ports move to `pxh-ingress` (ingress.py), the one container also on
+# a routed network, which forwards inbound connections only. run.sh checks the result (airgap_check.py).
+
+x-e2e-labels: &e2e-labels
+  pipeshub.harness.owner: x-lead
+  io.pipeshub.e2e.run: ${E2E_RUN:?set E2E_RUN}
+
+networks:
+  pipeshub:
+    internal: true
+  # The web readers' way out (web search, which needs the internet anyway); the lane starts none of them.
+  web-readers:
+    internal: true
+  ingress:
+    driver: bridge
+
+services:
+  pipeshub-ai:
+    ports: !reset []
+    environment:
+      - TELEMETRY_COLLECTION_FLAG=false
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+  pxh-fake-llm:
+    ports: !reset []
+  pxh-fake-saas:
+    ports: !reset []
+
+  pxh-ingress:
+    image: python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+    labels: *e2e-labels
+    restart: "no"
+    user: "${E2E_UID:?}:${E2E_GID:?}"
+    entrypoint: ["python", "/e2e/ingress.py", "3000=pipeshub-ai:3000", "8080=pxh-fake-llm:8080", "8090=pxh-fake-saas:8090"]
+    ports:
+      - "127.0.0.1:${E2E_APP_PORT:?}:3000"
+      - "127.0.0.1:${E2E_LLM_PORT:?}:8080"
+      - "127.0.0.1:${E2E_SAAS_PORT:?}:8090"
+    volumes:
+      - ${E2E_SRC:?}/deployment/e2e:/e2e:ro
+    networks:
+      - ingress
+      - pipeshub
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 3000), 3)"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

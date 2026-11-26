@@ -266,7 +266,8 @@ async def test_the_entity_points_of_the_unreached_go_and_the_rest_stay(env: _Env
 
 async def test_the_trash_purge_names_the_purged_records_entities(env: _Env) -> None:
     seeded = await _seed(env)
-    await env.graph.batch_upsert_nodes(
+    # a targeted update trashes the record: an upsert no longer changes a stored record's trash state
+    await env.graph.batch_update_nodes(
         [{"id": seeded.deleted, "isDeleted": True, "deletedAtTimestamp": 1}], collection=RECORDS,
     )
 

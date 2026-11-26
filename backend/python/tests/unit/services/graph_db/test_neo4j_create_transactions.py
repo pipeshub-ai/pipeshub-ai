@@ -448,8 +448,9 @@ class TestAgentMcpServers:
         assert [w["name"] for w in body["warnings"]] == ["github"]
         assert body["warnings"][0]["error"].startswith("We couldn't add GitHub to the agent.")
         assert [m["name"] for m in body["agent"]["mcpServers"]] == ["linear"]
-        # The check for a leftover link, which a real rollback leaves nothing for.
-        assert len(server.reads) == 1
+        # The check for a leftover link, which a real rollback leaves nothing for (the other read is the agent's
+        # definition, for its first version: OWD-14).
+        assert len([q for q in server.reads if "(source:AgentInstance {id: $key})-[r:AGENT_HAS_MCP_SERVER]" in q]) == 1
         agent_tx, github_tx, linear_tx = server.transactions
         assert agent_tx.committed and linear_tx.committed
         assert github_tx.rolled_back and not github_tx.committed

@@ -1,0 +1,25 @@
+{
+  "description": "G-45 / GA-24: the priority class a run gets from its runKind at admission, the order the classes are served in, and the vendor rate-budget priority (WP-37/38 RatePriority) each class draws at. One table for Node (domain/priority-class.ts) and the worker (app/services/rate_budget/families.py); both are tested against it. A child run is not in runKinds: it takes its parent's class. A lower-class run a person answered rises to approval_resume and never falls back.",
+  "order": ["interactive", "approval_resume", "background", "batch"],
+  "runKinds": {
+    "interactive": "interactive",
+    "authoring": "interactive",
+    "command": "interactive",
+    "scheduled": "background",
+    "workflow_code": "background"
+  },
+  "unknownRunKind": "interactive",
+  "afterApproval": {
+    "interactive": "interactive",
+    "approval_resume": "approval_resume",
+    "background": "approval_resume",
+    "batch": "approval_resume"
+  },
+  "ratePriority": {
+    "interactive": "interactive",
+    "approval_resume": "interactive",
+    "background": "background",
+    "batch": "background"
+  },
+  "preemptible": ["background", "batch"]
+}

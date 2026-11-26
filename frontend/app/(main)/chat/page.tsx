@@ -3,7 +3,7 @@
 import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useAui } from '@assistant-ui/react';
-import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
+import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView, ContinuePrivately, forkMode } from './components';
 import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
 import { AgentChatHeader } from '@/config';
@@ -19,6 +19,7 @@ import {
 import { ChatSuggestion, type AppliedFilters } from '@/chat/types';
 import { appliedFiltersFromNodes, restoreAppliedFilters } from '@/chat/utils/restore-applied-filters';
 import { ChatApi } from '@/chat/api';
+import { resumeActiveDurableRunForSlot } from '@/chat/streaming';
 import { buildChatHref } from '@/chat/build-chat-url';
 import {
   AgentsApi,
@@ -47,6 +48,9 @@ import { ShareSidebar, ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createChatShareAdapter, toChatSharedMembers } from './share-adapter';
 import { ChatSearch } from './components/search';
+import { ActivityPanelHost, useActivityPanelLayout, useActivityPanelStore, useJobPanelUrl } from './components/activity-panel';
+import { BackgroundAgentsButton, BackgroundAgentsHost, useBackgroundAgentsOpen } from './components/background-agents';
+import { ChatGrantsButton } from './components/chat-grants';
 import { isCommandKey } from '@/lib/utils/platform';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github-stars';
@@ -65,6 +69,8 @@ import {
   useFeatureFlagsStore,
   selectProjectsEnabled,
   selectApiToolsetsEnabled,
+  selectAgentHarnessResumeEnabled,
+  selectContinuePrivatelyEnabled,
 } from '@/lib/store/feature-flags-store';
 import { ApiToolsetsApi } from '@/app/(main)/workspace/api-toolsets/api';
 import { buildApiActionGroups } from '@/chat/tool-groups';
@@ -72,6 +78,9 @@ import { useProjectDetail } from '@/chat/hooks/use-project-detail';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
 import { useRemoteRunPoll } from '@/chat/hooks/use-remote-run-poll';
 import { useHydrateUnreadConversations } from '@/chat/hooks/use-hydrate-unread-conversations';
+import { engineKinds } from '@/chat/sandbox-commands';
+import { agentGatesOf } from '@/app/(main)/agents/agent-gates';
+import { chatPreviewProps } from './preview-props';
 
 /** Empties the agent fields the chat page fills from the agent detail. */
 function clearAgentContext(): void {
@@ -131,18 +140,18 @@ function ChatFooterLinks() {
           alt=""
           style={{ flexShrink: 0 }}
         />
-        <span style={{ fontSize: 12, color: 'var(--olive-9)', whiteSpace: 'nowrap' }}>
+        <span style={{ fontSize: 12, color: 'var(--olive-11)', whiteSpace: 'nowrap' }}>
           GitHub
         </span>
         {stars && (
           <>
-            <Text style={{ color: 'var(--olive-6)', fontSize: 12 }}>·</Text>
-            <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--slate-10)', whiteSpace: 'nowrap' }}>
+            <Text style={{ color: 'var(--olive-11)', fontSize: 12 }}>·</Text>
+            <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--slate-11)', whiteSpace: 'nowrap' }}>
               {stars}
               <MaterialIcon
                 name="star"
                 size={11}
-                color="var(--slate-10)"
+                color="var(--slate-11)"
                 style={{ marginLeft: 1, verticalAlign: 'middle' }}
               />
             </span>
@@ -152,7 +161,7 @@ function ChatFooterLinks() {
       ) : null}
 
       {githubUrl && docsUrl ? (
-      <Text style={{ color: 'var(--olive-6)', fontSize: 12 }}>·</Text>
+      <Text style={{ color: 'var(--olive-11)', fontSize: 12 }}>·</Text>
       ) : null}
 
       {docsUrl ? (
@@ -172,7 +181,7 @@ function ChatFooterLinks() {
           alt=""
           style={{ flexShrink: 0 }}
         />
-        <span style={{ fontSize: 12, color: 'var(--olive-9)', whiteSpace: 'nowrap' }}>
+        <span style={{ fontSize: 12, color: 'var(--olive-11)', whiteSpace: 'nowrap' }}>
           {t('common.docs')}
         </span>
       </a>
@@ -205,6 +214,7 @@ function ChatContent() {
   const rawAgentParam = searchParams.get('agentId');
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
+  const continuePrivatelyServed = useFeatureFlagsStore(selectContinuePrivatelyEnabled);
   const apiActionsEnabled = useFeatureFlagsStore(selectApiToolsetsEnabled);
   // A thread can't be scoped to both an agent and a project — agentId wins.
   // When the feature flag is off, projectId is always null so the UI degrades
@@ -259,6 +269,9 @@ function ChatContent() {
   const activeSlotIsOwner = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null
   );
+  const activeSlotIsShared = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.isShared === true : false
+  );
   const activeSlotConversationModelInfo = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.conversationModelInfo : undefined
   );
@@ -286,6 +299,8 @@ function ChatContent() {
 
   // ── Command palette state ──
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  /** `/resume text` (SLASH2) opens the palette already filtered by the text. */
+  const [paletteQuery, setPaletteQuery] = useState('');
 
   useEffect(() => {
     const mountedAt = window.location.pathname;
@@ -335,7 +350,8 @@ function ChatContent() {
     });
 
     // Register 'openCommandPalette' command for sidebar / external triggers
-    register('openCommandPalette', () => {
+    register('openCommandPalette', (query) => {
+      setPaletteQuery(typeof query === 'string' ? query : '');
       setIsCommandPaletteOpen(true);
     });
 
@@ -355,6 +371,7 @@ function ChatContent() {
       // ⌘+K → Open/close command palette
       if (!e.shiftKey && e.key.toLowerCase() === 'k') {
         e.preventDefault();
+        setPaletteQuery('');
         setIsCommandPaletteOpen((prev) => !prev);
         return;
       }
@@ -439,6 +456,9 @@ function ChatContent() {
           knowledgeDefaults: knowledgeDefaultsForStore,
           deprecatedToolNames: deprecatedAgentToolNames(agent),
           hasWebSearch: agent?.webSearch != null,
+          needsHarness: agent?.engineProfile != null,
+          engines: engineKinds(agent?.engineProfile),
+          gates: agentGatesOf(agent?.gates),
         });
         store.setAgentContextDisplayName(agent?.name?.trim() || null);
         store.setAgentContextCreatedBy(agent?.createdBy ?? null);
@@ -551,7 +571,9 @@ function ChatContent() {
         // for a *different* project scope was active — don't leak it here.
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'switch-project-scope' });
         store.clearActiveSlot();
-      } else if (store.activeSlotId && (!activeSlot || !activeSlot.isTemp)) {
+      } else if (store.activeSlotId && (!activeSlot || !activeSlot.isTemp || activeSlot.convId)) {
+        // A first turn that has its id is a chat, not the new-chat draft: /chat/ without that id means the person
+        // left it (the new interface's New chat is a plain link), and its answer keeps streaming in its slot.
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: null });
         useChatStore.setState({ activeSlotId: null });
       }
@@ -722,6 +744,9 @@ function ChatContent() {
 
         const messages = detail.messages;
         const isOwner = detail.conversation.access?.isOwner ?? false;
+        // Agent threads are not shared from the UI; only a shared chat can be continued privately.
+        const isShared =
+          !historyAndShareAgentId && (detail.conversation as { isShared?: boolean }).isShared === true;
         const apiPagination = detail.pagination;
         const modelInfo = pickModelInfoFromConversationBundle({
           modelInfo: detail.conversation.modelInfo,
@@ -751,6 +776,8 @@ function ChatContent() {
           hasLoaded: true,
           remoteRunInProgress: detail.conversation.status === 'Inprogress',
           isOwner,
+          isShared,
+          durable: (detail.conversation as { durable?: boolean }).durable === true,
           sharedWith: detail.conversation.sharedWith ?? null,
           forkedFrom: detail.conversation.forkedFrom ?? null,
           forks: detail.conversation.forks ?? [],
@@ -760,8 +787,20 @@ function ChatContent() {
             isLoadingOlder: false,
           },
           ...(modelInfo ? { conversationModelInfo: modelInfo } : {}),
+          // A project conversation opened from anywhere stays project-scoped (UX3 PS-2).
+          ...('projectId' in detail.conversation && detail.conversation.projectId
+            ? { projectId: String(detail.conversation.projectId) }
+            : {}),
           pendingAskUserQuestion: unansweredAskUserQuestion,
         });
+        if (selectAgentHarnessResumeEnabled(useFeatureFlagsStore.getState())) {
+          void resumeActiveDurableRunForSlot(
+            activeSlotId,
+            historyAndShareAgentId ?? undefined,
+            convId,
+            detail.conversation.activeRunId,
+          );
+        }
       } catch (error) {
         if (!cancelled && generationOf() !== generation) {
           return retryStale(attempt);
@@ -1033,6 +1072,23 @@ function ChatContent() {
     }
   }, [showConversationShare, isShareSidebarOpen]);
 
+  const forkDialog = forkMode({
+    served: continuePrivatelyServed,
+    conversationId: conversationId ?? null,
+    isOwner: activeSlotIsOwner,
+    isShared: activeSlotIsShared,
+    agentThread: Boolean(historyAndShareAgentId),
+  });
+
+  const handleContinuedPrivately = useCallback(
+    (copyId: string) => {
+      useChatStore.getState().bumpConversationsVersion();
+      // A fork of an agent conversation is that agent's conversation: it opens only under its agent.
+      router.push(buildChatHref({ conversationId: copyId, agentId: historyAndShareAgentId }));
+    },
+    [router, historyAndShareAgentId]
+  );
+
   const handleShareClick = useCallback(() => {
     if (!chatShareAdapter) return;
     setIsShareSidebarOpen(true);
@@ -1118,6 +1174,8 @@ function ChatContent() {
   // ── Split-pane layout: chat left | drag handle | preview right ────────────
   // Desktop only: on phones and tablets the two columns leave the document too narrow.
   const showSplitPane = !!previewFile && previewMode === 'sidebar' && !isBelowDesktop;
+  const backgroundAgentsOpen = useBackgroundAgentsOpen(conversationId);
+  const activityPanel = useActivityPanelLayout(isMobile, showSplitPane);
 
   // ── Auto-close preview when the active conversation changes ──────────────
   // Tracks the previous conversationId so we only clear on actual changes,
@@ -1132,8 +1190,13 @@ function ChatContent() {
     if (prevConversationIdRef.current !== conversationId) {
       prevConversationIdRef.current = conversationId;
       clearPreview();
+      // The drawer shows one answer's run; another conversation opens with it closed (CTL-3).
+      useActivityPanelStore.setState({ open: false, sheetOpen: false, run: null });
     }
   }, [conversationId, clearPreview]);
+
+  // CJ-3: the job details panel follows the URL (`&job=…[&section=…]`, `&ask=…`); after the close above on purpose.
+  useJobPanelUrl(searchParams, { conversationId, agentId, isMobile });
 
   // ── Collapse nav sidebar when split-pane preview opens, restore on close ──
   const didAutoCollapseNavRef = useRef(false);
@@ -1256,6 +1319,8 @@ function ChatContent() {
       {/* Agent creator chip and share group, top-right. */}
       <ConversationHeaderOverlay
         conversationId={conversationId}
+        backgroundAgents={conversationId ? <BackgroundAgentsButton isMobile={isMobile} onClosePreview={clearPreview} /> : null}
+        grants={conversationId ? <ChatGrantsButton isMobile={isMobile} /> : null}
         agentChip={
           historyAndShareAgentId && agentCreatorName ? (
             <Tooltip content={`${t('agentBuilder.createdBy')}: ${agentCreatorName}`}>
@@ -1294,11 +1359,32 @@ function ChatContent() {
           ) : null
         }
         shareGroup={
-          showConversationShare ? (
-            <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
+          showConversationShare || forkDialog === 'shared' ? (
+            /* Share header group (owners only) and "Continue privately" (any participant of a shared chat) */
+            <Flex align="center" gap="4">
+              {forkDialog === 'shared' && conversationId && (
+                <ContinuePrivately
+                  conversationId={conversationId}
+                  isOwner={activeSlotIsOwner === true}
+                  onContinued={handleContinuedPrivately}
+                />
+              )}
+              {showConversationShare && (
+                <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
+              )}
+            </Flex>
           ) : null
         }
       />
+      {forkDialog === 'own' && conversationId && (
+        <ContinuePrivately
+          conversationId={conversationId}
+          isOwner
+          onContinued={handleContinuedPrivately}
+          mode="own"
+          agentKey={historyAndShareAgentId}
+        />
+      )}
 
       {/* Full-width pane: message list scrolls here (scrollbar on the pane edge).
           Message content + composer share chatContentColumnStyle so widths match. */}
@@ -1365,12 +1451,12 @@ function ChatContent() {
                       <MaterialIcon
                         name="folder"
                         size={28}
-                        color={projectColor || 'var(--accent-9)'}
+                        color={projectColor || 'var(--accent-11)'}
                       />
                       <Text size="5" weight="bold" style={{ color: 'var(--slate-12)' }}>
                         {projectName ?? '…'}
                       </Text>
-                      <MaterialIcon name="settings" size={16} color="var(--slate-9)" />
+                      <MaterialIcon name="settings" size={16} color="var(--slate-11)" />
                     </Flex>
                   </>
                 ) : (
@@ -1445,34 +1531,7 @@ function ChatContent() {
   // ─────────────────────────────────────────────────────────────────────────
 
   // Props for the full-screen / phone preview overlay.
-  const previewProps = previewFile ? {
-    source: 'chat' as const,
-    file: {
-      id: previewFile.id,
-      name: previewFile.name,
-      url: previewFile.url,
-      blob: previewFile.blob,
-      type: previewFile.type,
-      size: previewFile.size,
-      webUrl: previewFile.webUrl,
-      previewRenderable: previewFile.previewRenderable,
-      version: previewFile.version,
-    },
-    isLoading: previewFile.isLoading,
-    error: previewFile.error,
-    recordDetails: previewFile.recordDetails,
-    initialPage: previewFile.initialPage,
-    highlightBox: previewFile.highlightBox,
-    citations: previewFile.citations,
-    initialCitationId: previewFile.initialCitationId,
-    jumpSeq: previewFile.jumpSeq,
-    hideFileDetails: previewFile.hideFileDetails,
-    showDownload: previewFile.showDownload,
-    latestVersion: previewFile.latestVersion,
-    onVersionChange: previewFile.onVersionChange,
-    isSwitchingVersion: previewFile.isSwitchingVersion,
-    defaultTab: 'preview' as const,
-  } : null;
+  const previewProps = previewFile ? chatPreviewProps(previewFile) : null;
 
   return (
     <Flex
@@ -1506,6 +1565,12 @@ function ChatContent() {
         >
           {chatColumnBody}
         </Flex>
+
+        {activityPanel.visible && activityPanel.run && !isMobile && (
+          <ActivityPanelHost run={activityPanel.run} isMobile={false} />
+        )}
+
+        {backgroundAgentsOpen && !activityPanel.visible && !showSplitPane && !isMobile && <BackgroundAgentsHost isMobile={false} />}
 
         {/* Drag handle + preview panel — appear when split-pane is active */}
         {showSplitPane && (
@@ -1560,6 +1625,7 @@ function ChatContent() {
                     url: previewFile.url,
                     blob: previewFile.blob,
                     type: previewFile.type,
+                    sourceType: previewFile.sourceType,
                     size: previewFile.size,
                     webUrl: previewFile.webUrl,
                     previewRenderable: previewFile.previewRenderable,
@@ -1609,6 +1675,12 @@ function ChatContent() {
         )
       )}
 
+      {activityPanel.visible && activityPanel.run && isMobile && (
+        <ActivityPanelHost run={activityPanel.run} isMobile />
+      )}
+
+      {backgroundAgentsOpen && !activityPanel.visible && isMobile && <BackgroundAgentsHost isMobile />}
+
       {/* Share Sidebar */}
       {showConversationShare && chatShareAdapter && (
         <ShareSidebar
@@ -1621,6 +1693,7 @@ function ChatContent() {
       {/* Command palette overlay (⌘+K) */}
       <ChatSearch
         open={isCommandPaletteOpen}
+        initialQuery={paletteQuery}
         onClose={() => setIsCommandPaletteOpen(false)}
       />
     </Flex>
@@ -1646,10 +1719,14 @@ export default function ChatPage() {
   const activeIsStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming : false
   );
+  // A new chat gets its server id on the same slot: the thread's owner must follow it.
+  const activeConvId = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.convId : null
+  );
 
   const liveConfig = useMemo(
     () => buildExternalStoreConfig(activeSlotId),
-    [activeSlotId, activeMessages, activeIsStreaming]
+    [activeSlotId, activeMessages, activeIsStreaming, activeConvId]
   );
 
   const runtime = useExternalStoreRuntime(liveConfig);

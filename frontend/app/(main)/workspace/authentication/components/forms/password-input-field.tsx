@@ -38,13 +38,13 @@ export function PasswordInputField({ field, value, onChange, revealed = false }:
             <MaterialIcon
               name={showSecret ? 'visibility_off' : 'visibility'}
               size={16}
-              color="var(--slate-9)"
+              color="var(--slate-11)"
             />
           </span>
         </TextField.Slot>
       </SecretTextField>
       {field.helperText && (
-        <Text size="1" style={{ color: 'var(--slate-10)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>
           {field.helperText}
         </Text>
       )}

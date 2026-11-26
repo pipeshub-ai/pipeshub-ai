@@ -31,6 +31,10 @@ async def test_a_rejected_team_update_does_not_move_the_version(monkeypatch) -> 
 
     graph = MagicMock()
     graph.update_node = AsyncMock(return_value=None)               # the team does not exist: 404
+    graph.begin_transaction = AsyncMock(return_value="txn-1")      # the write runs in one transaction
+    graph.commit_transaction = AsyncMock()
+    graph.rollback_transaction = AsyncMock()
+    graph.is_write_conflict = MagicMock(return_value=False)
     services = {"graph_provider": graph, "logger": MagicMock()}
     bumped = AsyncMock()
     monkeypatch.setattr(routes, "get_services", AsyncMock(return_value=services))

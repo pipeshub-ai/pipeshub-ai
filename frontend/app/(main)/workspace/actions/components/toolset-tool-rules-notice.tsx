@@ -2,7 +2,7 @@
 
 import { useTranslation } from 'react-i18next';
 import { Button, Dialog, Flex, Text } from '@radix-ui/themes';
-import { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
+import { EnterpriseFeatureNotice } from '@/config';
 
 interface ToolsetToolRulesNoticeProps {
   open: boolean;
