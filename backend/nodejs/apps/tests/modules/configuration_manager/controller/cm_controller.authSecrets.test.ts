@@ -96,7 +96,7 @@ describe('sign-in provider secrets', () => {
       try {
         const res = response()
         const req = { ...request(), user: { userId: 'u1', orgId: 'o1', isOAuth: true } }
-        await getGoogleAuthConfig(store(STORED_GOOGLE))(req, res, sinon.stub())
+        await getGoogleAuthConfig(store(STORED_GOOGLE))(req, res, sinon.stub<unknown[]>())
         expect(res.json.firstCall.args[0].clientId).to.equal(CONFIG_SECRET_PLACEHOLDER)
       } finally {
         delete process.env.TOKEN_RESTRICTIONS_MODE
@@ -111,7 +111,7 @@ describe('sign-in provider secrets', () => {
       const req = { ...request(), user: { userId: 'u1', orgId: 'org-mask-log', isOAuth: true } }
       // The log takes the org from the bound org context, as the auth middleware sets it.
       await runWithOrgContext(makeOrgContext({ orgId: 'org-mask-log', userId: 'u1', kind: 'user', source: 'jwt' }), () =>
-        getGoogleAuthConfig(store(STORED_GOOGLE))(req, res, sinon.stub()),
+        getGoogleAuthConfig(store(STORED_GOOGLE))(req, res, sinon.stub<unknown[]>()),
       )
       expect(res.json.firstCall.args[0].clientId).to.equal(STORED_GOOGLE.clientId)
       expect(warn.firstCall.args[1]).to.include({ securityEvent: 'token_restriction_observed', reason: 'token_caller_unmasked', orgId: 'org-mask-log' })

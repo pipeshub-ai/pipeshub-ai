@@ -162,16 +162,22 @@ describe('Configuration manager routes: who may call them', () => {
       delete process.env.TOKEN_RESTRICTIONS_MODE;
     });
 
+    const guardOf = (id: string) => {
+      const guard = routes.find((r) => r.id === id)?.handlers[1];
+      if (!guard) throw new Error(`${id} has no guard after authenticate`);
+      return guard;
+    };
+
     // The guard right after authenticate must stop a token that lacks the scope when enforcing.
     for (const [id, scope] of [
       ['GET /slack-bot', 'config:read'],
       ['POST /slack-bot', 'config:write'],
       ['PUT /slack-bot/:configId', 'config:write'],
       ['DELETE /slack-bot/:configId', 'config:write'],
-    ]) {
+    ] as const) {
       it(`${id} refuses a token without ${scope} when enforcing and lets a session through`, async () => {
         process.env.TOKEN_RESTRICTIONS_MODE = 'enforce';
-        const guard = routes.find((r) => r.id === id)!.handlers[1];
+        const guard = guardOf(id);
         const refused = sinon.stub();
         await guard(
           { user: { isOAuth: true, oauthScopes: ['user:read'] } } as never,
@@ -193,7 +199,7 @@ describe('Configuration manager routes: who may call them', () => {
 
       it(`${id} lets a token without ${scope} through in log mode`, async () => {
         delete process.env.TOKEN_RESTRICTIONS_MODE;
-        const guard = routes.find((r) => r.id === id)!.handlers[1];
+        const guard = guardOf(id);
         const next = sinon.stub();
         await guard(
           {

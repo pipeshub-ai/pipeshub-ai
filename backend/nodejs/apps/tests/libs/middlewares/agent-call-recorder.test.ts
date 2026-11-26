@@ -88,7 +88,7 @@ describe('Agent call recorder', () => {
     kb.use(auth.authenticate)
     kb.get('/:kbId/records', requireScopes(OAuthScopeNames.KB_READ), (_q, s) => s.json({ ok: true }))
     kb.post('/:kbId/records', requireScopes(OAuthScopeNames.KB_WRITE), (_q, s) => s.status(201).json({}))
-    kb.put('/:kbId/records', requireScopesWhenEnforced(OAuthScopeNames.KB_WRITE), (_q, s) => s.json({ ok: true }))
+    kb.put('/:kbId/records', requireScopesWhenEnforced(OAuthScopeNames.KB_WRITE), (_q, s) => { s.json({ ok: true }) })
     kb.get('/:kbId/boom', (_q, _s, next) => next(new Error('nope')))
     kb.get('/:kbId/moved', (_q, s) => s.redirect(302, '/elsewhere'))
     app.use('/api/v1/knowledgeBase', kb)
