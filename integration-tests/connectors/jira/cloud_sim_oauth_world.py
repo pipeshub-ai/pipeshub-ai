@@ -36,11 +36,13 @@ from connectors.jira.cloud_sim_world import (
     basic,
 )
 from pipeshub_client import PipeshubClient, PipeshubClientError  # type: ignore[import-not-found]
+from helper.clients.connectors_client import ConnectorOAuthConfigsClient  # type: ignore[import-not-found]
 
 OAUTH_SIM_URL_ENV = "JIRA_CLOUD_OAUTH_SIM_URL"
 APP_CONTAINER_ENV = "JIRA_CLOUD_OAUTH_SIM_APP_CONTAINER"
 AUTH_HOST, API_HOST = "auth.atlassian.com", "api.atlassian.com"
 CLIENT_ID, CLIENT_SECRET = "sim-client-id", "sim-client-secret"
+_ORG_APPS: dict[tuple[str, str, str], str] = {}
 CLOUD_ID = "6f3a1c52-7b1e-4c1d-9a55-0d1f2e3a4b5c"
 SITE = {"id": CLOUD_ID, "name": "pipeshubsim", "url": "https://pipeshubsim.atlassian.net", "served": True}
 SYNC_TIMEOUT_SEC = int(os.getenv("JIRA_CLOUD_SIM_SYNC_TIMEOUT_SEC", "600"))
@@ -96,6 +98,11 @@ class OAuthWorld(JiraCloudWorld):
 
     def create_oauth_connector(self, *, base_url: str | None = None, client_secret: str | None = None) -> str:
         auth: dict[str, Any] = {"clientId": CLIENT_ID, "clientSecret": client_secret or CLIENT_SECRET}
+        if not self.team:
+            # A person's own OAuth app is held to public https addresses on every call it leads to (the token exchange
+            # included), and here Atlassian's hosts are the simulator's front on the stack's network: a personal
+            # connector signs in through an app the admin saved for the org, as it may.
+            auth = {"oauthConfigId": self._org_oauth_app(auth["clientSecret"])}
         if base_url:
             auth["baseUrl"] = base_url
         created = self.client.create_connector(
@@ -104,6 +111,20 @@ class OAuthWorld(JiraCloudWorld):
         assert created.connector_id, "Connector must have a valid ID"
         self.connector_id = created.connector_id
         return self.connector_id
+
+    def _org_oauth_app(self, client_secret: str) -> str:
+        """The id of an OAuth app the admin saved for ``registry_name`` with the simulator's client, made once per stack."""
+        key = (self.client.base_url, self.registry_name, client_secret)
+        if key not in _ORG_APPS:
+            resp = ConnectorOAuthConfigsClient(self.client).create_config(self.registry_name, {
+                "oauthInstanceName": f"jira-oauth-sim-{uuid.uuid4().hex[:8]}",
+                "config": {"clientId": CLIENT_ID, "clientSecret": client_secret},
+            })
+            assert resp.status_code in (200, 201), f"saving the {self.registry_name} OAuth app answered HTTP {resp.status_code}"
+            oauth = resp.json().get("oauthConfig") or {}
+            _ORG_APPS[key] = str(oauth.get("_id") or oauth.get("id") or "")
+            assert _ORG_APPS[key], f"saving the {self.registry_name} OAuth app returned no id"
+        return _ORG_APPS[key]
 
     def authorization_url(self) -> str:
         return self.client._request_json("GET", f"/api/v1/connectors/{self.connector_id}/oauth/authorize")["authorizationUrl"]
