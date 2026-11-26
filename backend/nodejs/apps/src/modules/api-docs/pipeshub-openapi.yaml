@@ -57991,6 +57991,13 @@ paths:
             server's search deadline (`SEARCH_DEADLINE_SECONDS`, 50 by default)
             and was stopped ("This search took too long, so it was stopped and
             no results are shown. ..."): try again, or narrow it with filters.
+            Also returned when the embedding model's provider is limiting
+            requests: try again later.
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again. 60 when the embedding model's provider is limiting requests; other 503s may also carry it.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -58181,6 +58188,13 @@ paths:
 
             When the service could not check what the caller may read, the usual error envelope
             also carries `accessNotices` with the code `check_unavailable`, and no results are shown.
+
+            Also returned when the embedding model's provider is limiting requests: try again later.
+          headers:
+            Retry-After:
+              description: Seconds to wait before trying again. 60 when the embedding model's provider is limiting requests; other 503s may also carry it.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
