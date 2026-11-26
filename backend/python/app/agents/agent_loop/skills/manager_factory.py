@@ -33,6 +33,7 @@ one deliberate difference (what is shared through an agent) above.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 from typing import TYPE_CHECKING, Any
@@ -45,6 +46,7 @@ from app.agent_loop_lib.modules.providers.skills.governor import (
     ManualReviewGovernor,
     SkillGovernor,
 )
+from app.agent_loop_lib.modules.providers.skills.loader import iter_skill_dirs
 from app.agent_loop_lib.modules.providers.skills.manager import (
     SkillManager,
     SkillManagerConfig,
@@ -259,10 +261,11 @@ async def sync_builtin_skills(
         await manager.refresh()
 
 
+@functools.cache
 def _reserved_skill_names() -> frozenset[str]:
-    """Names of the builtin packs: only the seeder may create a skill under one."""
-    seeder = get_builtin_seeder()
-    return frozenset(seeder.pack_versions) if seeder is not None else frozenset()
+    """Names of the builtin packs: only the seeder may create a skill under one. Read from the pack
+    directories, not the loaded packs, so a pack that fails to load or validate still keeps its name."""
+    return frozenset(os.path.basename(path) for path, _category, _sub in iter_skill_dirs(_BUILTIN_PACKS_ROOT))
 
 
 async def _build_manager(

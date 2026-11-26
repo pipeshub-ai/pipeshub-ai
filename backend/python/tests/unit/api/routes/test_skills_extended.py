@@ -1308,7 +1308,7 @@ class TestFinalizeImport:
             from app.api.routes.skills import finalize_import
             resp = await finalize_import(req, payload)
         assert resp.status_code == 201
-        manager.write_resource.assert_awaited_once()
+        assert manager.create.await_args.args[4] == {"ref.md": "# ref"}
 
     @pytest.mark.asyncio
     async def test_no_frontmatter_raises_400(self):

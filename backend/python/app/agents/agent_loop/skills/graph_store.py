@@ -47,6 +47,7 @@ documents per org, not millions, so this stays cheap.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import uuid
@@ -943,8 +944,15 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         # One conditional insert: of two creators of a name, exactly one lands.
         if not await self._graph.create_node_if_absent(self._key(name), _SKILLS, doc):
             raise SkillAlreadyExistsError(name)
-        await self._create_owner_permission_edge(name, now)
-        await self._sync_relation_edges(name, skill.metadata, now)
+        try:
+            await self._create_owner_permission_edge(name, now)
+            await self._sync_relation_edges(name, skill.metadata, now)
+        except Exception:
+            # A skill without its edges would hold the name with nothing to finish it: undo this creation (and any
+            # edge it got) so the create can be retried. A failed undo must not hide why the create failed.
+            with contextlib.suppress(Exception):
+                await self._graph.delete_node_if_match(self._key(name), _SKILLS, expected=self._bound_to(doc))
+            raise
         return skill.metadata
 
     async def update_skill(
@@ -1187,7 +1195,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
                 created_at=str(d.get("createdAtTimestamp", "")),
                 summary=d.get("summary") or "",
             )
-            for d in docs
+            for d in {d.get("version"): d for d in reversed(docs)}.values()  # one per version: its latest state
         ]
         versions.sort(key=lambda v: v.created_at, reverse=True)
         return versions
@@ -1361,8 +1369,13 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         filters = {"orgId": self._org_id, "name": name, **({"version": version} if version is not None else {})}
         docs = await self._graph.get_nodes_by_filters(_VERSIONS, filters)
         if current is not None:
-            return [d for d in docs if self._belongs_to(d, current)]
-        return sorted(docs, key=lambda d: int(d.get("createdAtTimestamp") or 0), reverse=True)
+            docs = [d for d in docs if self._belongs_to(d, current)]
+        # Of several rows for one version, the latest state first: that is the one its successor superseded.
+        return sorted(
+            docs,
+            key=lambda d: (int(d.get("stateUpdatedAtTimestamp") or 0), int(d.get("createdAtTimestamp") or 0)),
+            reverse=True,
+        )
 
     async def _get_version_doc(self, name: str, version: str, current: dict | None) -> dict | None:
         docs = await self._version_docs(name, current, version)
@@ -1372,7 +1385,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         """Archives `current_doc` into `agentSkillVersions` before it's
         overwritten by the caller's `update_skill`/`rollback`.
 
-        The doc `id` is keyed on `(skill_key, generation, version)`, NOT
+        The doc `id` is keyed on `(skill_key, generation, version, archived state)`, NOT
         `(skill_key, now)`; the generation keeps a re-created name's history apart
         from the previous owner's: `now` is an epoch-millisecond timestamp, and two snapshot
         calls landing in the same millisecond (trivially reproducible in a
@@ -1386,8 +1399,12 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         skill_key = _doc_id(current_doc) or self._key(current_doc["name"])
         version = current_doc.get("version") or "1.0.0"
         generation = current_doc.get("generation")
+        state = int(current_doc.get("updatedAtTimestamp") or 0)
         version_doc = {
-            "id": f"{skill_key}_{generation}_v{version}" if generation else f"{skill_key}_v{version}",
+            # One row per archived state: a writer that then loses its conditional commit (another write
+            # superseded this version first) adds a row for the older state, never overwrites the right one.
+            "id": f"{skill_key}_{generation}_v{version}_s{state}" if generation else f"{skill_key}_v{version}_s{state}",
+            "stateUpdatedAtTimestamp": state,
             "orgId": self._org_id,
             "skillKey": skill_key,
             "name": current_doc["name"],

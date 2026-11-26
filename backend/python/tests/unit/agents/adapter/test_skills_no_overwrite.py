@@ -789,3 +789,63 @@ async def test_a_team_skill_keeps_the_history_its_other_editors_wrote_before_gen
     await manager.update_skill(_NAME, _OTHER_MD.replace("entirely", "completely"))
     _strip_generations(graph)
     assert {v.version for v in await owner.list_versions(_NAME)} == {"1.0.0", "1.0.1"}
+
+
+class _RelationEdgesFailOnce(FakeGraphProvider):
+    """The owner edge lands, then the relation edges fail once."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures = 1
+
+    async def batch_create_edges(self, edges: list[dict[str, Any]], collection: str, transaction: str | None = None) -> bool:
+        if collection == "agentSkillRelation" and self.failures:
+            self.failures -= 1
+            raise RuntimeError("edge write failed")
+        return await super().batch_create_edges(edges, collection, transaction)
+
+
+class TestACreateWhoseEdgesFailIsUndone:
+    async def test_the_name_is_free_again_and_the_retry_completes_it(self) -> None:
+        graph = _RelationEdgesFailOnce()
+        owner = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
+        with pytest.raises(RuntimeError, match="edge write failed"):
+            await owner.create_skill(_NAME, _OWNER_MD)
+        assert _KEY not in graph._col("agentSkills")
+        assert not [e for edges in graph._edges.values() for e in edges if e.get("to_id") == _KEY]
+        await owner.create_skill(_NAME, _OWNER_MD)
+        assert graph._col("agentSkills")[_KEY]["createdBy"] == "user-a"
+        assert {e["type"] for e in graph._edges["agentSkillRelation"]} == {"requires", "related"}
+
+
+class _OthersWriteBeforeTheSnapshot(FakeGraphProvider):
+    """As the store is about to archive the version it read, `interleave` runs: other writes that land first."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.interleave = None
+
+    async def batch_upsert_nodes(self, nodes: list[dict[str, Any]], collection: str, *args: object, **kwargs: object) -> bool:
+        if collection == "agentSkillVersions" and self.interleave is not None:
+            interleave, self.interleave = self.interleave, None
+            await interleave()
+        return await super().batch_upsert_nodes(nodes, collection, *args, **kwargs)
+
+
+class TestAWriteThatLosesItsCommitArchivesNothingOverTheWinner:
+    async def test_the_version_keeps_the_state_the_successful_write_superseded(self) -> None:
+        graph = _OthersWriteBeforeTheSnapshot()
+        loser = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
+        await loser.create_skill(_NAME, _OTHER_MD, resources={"notes.md": "X"})
+        winner = skill_store(graph, "org-1", "user-a", visibility_scope="user-a")
+
+        async def resource_write_then_an_edit() -> None:
+            await winner.write_resource(_NAME, "notes.md", "Y")  # same version 1.0.0, new state
+            await winner.update_skill(_NAME, _OTHER_MD.replace("entirely", "by the winner"))
+
+        graph.interleave = resource_write_then_an_edit
+        with pytest.raises(SkillConflictError):
+            await loser.update_skill(_NAME, _OTHER_MD.replace("entirely", "by the loser"))
+
+        assert (await loser.content_files(_NAME, "1.0.0"))["notes.md"] == "Y"
+        assert [v.version for v in await loser.list_versions(_NAME)] == ["1.0.0"]

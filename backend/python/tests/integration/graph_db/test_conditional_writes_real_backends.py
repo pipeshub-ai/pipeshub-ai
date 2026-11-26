@@ -276,6 +276,14 @@ async def test_a_delete_racing_a_re_create_never_removes_the_new_node(graph) -> 
         assert stored is not None and stored["generation"] == "g2", (trial, stored)
 
 
+def _settled(results: list) -> list:
+    """`gather(..., return_exceptions=True)`'s results once every task has finished; the first failure is raised."""
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
+    return results
+
+
 async def race_deleters_updaters_and_a_re_creator(provider: IGraphDBProvider, org: str, key: str, rnd: random.Random) -> str:
     """6 deleters, 3 merges and 3 replaces holding one node's expectation race a writer that
     creates the key again the moment it is free. Exactly one of the 12 wins. When the delete
@@ -320,25 +328,28 @@ async def race_deleters_updaters_and_a_re_creator(provider: IGraphDBProvider, or
             await asyncio.sleep(0.002)
 
     creator = asyncio.create_task(re_create())
-    racers = [delete() for _ in range(6)] + [merge(i) for i in range(3)] + [replace(i) for i in range(3)]
-    rnd.shuffle(racers)
-    results = await asyncio.gather(*racers)
-    winners = [kind for kind, won in results if won]
-    assert len(winners) == 1, results
-    if winners[0] == "delete":
-        await asyncio.wait_for(re_created.wait(), timeout=30)
-        late = await asyncio.gather(delete(), delete(), merge(9), replace(9))
-        assert not any(won for _, won in late), late
-        stored = await provider.get_document(key, SKILLS)
-        assert stored is not None and stored["generation"] == "g2" and stored["description"] == "d"
-        assert await _edges_of(provider, key) == (0, 1)
-    else:
+    try:
+        racers = [delete() for _ in range(6)] + [merge(i) for i in range(3)] + [replace(i) for i in range(3)]
+        rnd.shuffle(racers)
+        results = _settled(await asyncio.gather(*racers, return_exceptions=True))
+        winners = [kind for kind, won in results if won]
+        assert len(winners) == 1, results
+        if winners[0] == "delete":
+            await asyncio.wait_for(re_created.wait(), timeout=30)
+            late = _settled(await asyncio.gather(delete(), delete(), merge(9), replace(9), return_exceptions=True))
+            assert not any(won for _, won in late), late
+            stored = await provider.get_document(key, SKILLS)
+            assert stored is not None and stored["generation"] == "g2" and stored["description"] == "d"
+            assert await _edges_of(provider, key) == (0, 1)
+        else:
+            stop.set()
+            stored = await provider.get_document(key, SKILLS)
+            assert stored["generation"] == "g1" and stored["description"].startswith(winners[0])
+            assert await _edges_of(provider, key) == (1, 1)
+    finally:
+        # The creator stops (or is cancelled) and every racer has settled before the fixture tears down.
         stop.set()
-        stored = await provider.get_document(key, SKILLS)
-        assert stored["generation"] == "g1" and stored["description"].startswith(winners[0])
-        assert await _edges_of(provider, key) == (1, 1)
-    stop.set()
-    await creator
+        await asyncio.wait_for(creator, timeout=30)
     return winners[0]
 
 

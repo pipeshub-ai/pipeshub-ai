@@ -33,8 +33,24 @@ def _seeder(tmp_path) -> BuiltinSkillSeeder:
     return BuiltinSkillSeeder(root)
 
 
+class _BothFindTheKeyFree(FakeGraphProvider):
+    """Holds each insert until two have arrived: both syncs have read the name as free before either inserts."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.arrived = 0
+        self._both = asyncio.Event()
+
+    async def create_node_if_absent(self, *args: object, **kwargs: object) -> bool:
+        self.arrived += 1
+        if self.arrived == 2:
+            self._both.set()
+        await asyncio.wait_for(self._both.wait(), timeout=5)
+        return await super().create_node_if_absent(*args, **kwargs)
+
+
 async def test_concurrent_syncs_settle_on_one_builtin_doc(tmp_path) -> None:
-    graph = FakeGraphProvider()
+    graph = _BothFindTheKeyFree()
     seeder = _seeder(tmp_path)
 
     settled = await asyncio.gather(
@@ -42,6 +58,7 @@ async def test_concurrent_syncs_settle_on_one_builtin_doc(tmp_path) -> None:
         seeder.sync(skill_store(graph, "org-1", SEED_IDENTITY)),
     )
 
+    assert graph.arrived == 2  # the loser reached the insert and settled through its conflict
     assert settled == [True, True]
     docs = graph._col("agentSkills")
     assert list(docs) == ["org-1_pack-a"]
@@ -53,7 +70,8 @@ async def test_a_custom_skill_on_a_pack_name_is_not_overwritten(tmp_path) -> Non
     graph = FakeGraphProvider()
     await skill_store(graph, "org-1", "user-a").create_skill("pack-a", _CUSTOM_MD)
 
-    await _seeder(tmp_path).sync(skill_store(graph, "org-1", SEED_IDENTITY))
+    # Settled (True): the org is not left to retry the seed on every request.
+    assert await _seeder(tmp_path).sync(skill_store(graph, "org-1", SEED_IDENTITY)) is True
 
     doc = graph._col("agentSkills")["org-1_pack-a"]
     assert doc["createdBy"] == "user-a"
