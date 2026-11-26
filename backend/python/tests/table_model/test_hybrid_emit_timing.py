@@ -28,6 +28,12 @@ def figures(weights) -> dict[int, dict]:
     return {n: run_timing(weights, n) for n in (1, 2)}
 
 
+def test_the_worker_thread_budget_reaches_the_model(figures: dict[int, dict]) -> None:
+    # the worker's lane threads go with each table and the model runs it with them
+    for n, f in figures.items():
+        assert f["model_threads_used"] == [min(n, f["host"]["cpus_allowed"] or n)], f
+
+
 def test_the_figures_are_measured_and_reported(figures: dict[int, dict]) -> None:
     lines = ["| worker threads | table pages | added wall per table page (median / max, s) | cpu added (s) | model s per table (median / mean) |", "|---|---|---|---|---|"]
     for n, f in figures.items():

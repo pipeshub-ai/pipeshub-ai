@@ -92,6 +92,7 @@ class StructureModelRunner:
         cfg = common.read_config(os.path.join(art, "tm_config.json"))
         cfg["model"]["save_dir"] = art
         self._mode = mode
+        self._threads = threads
         self._weights_sha256 = weights_sha256(art)
         self._pred = TFPredictor(cfg, "cpu", threads)
         self._model = self._pred._model
@@ -125,10 +126,11 @@ class StructureModelRunner:
         page = {"width": spec["page_w"], "height": spec["page_h"], "tokens": tokens}
         self._model._max_pred_len = int(spec["cap"])  # the bound the decode loop reads
         self._last.clear()
+        threads = use_threads(spec.get("threads") or self._threads)
         cpu0, wall0 = time.process_time(), time.time()
         tfr, det = self._pred.predict(page, list(spec["table_bbox"]), image, float(spec["scale_factor"]), None, False)
         steps, ended = self._last.get("steps"), bool(self._last.get("ended"))
-        out: dict[str, Any] = {"steps": steps, "cpu_ms": round((time.process_time() - cpu0) * 1000, 2)}
+        out: dict[str, Any] = {"steps": steps, "cpu_ms": round((time.process_time() - cpu0) * 1000, 2), "threads": threads}
         if not ended:
             out["status"] = "cap_hit"
             out["wall_ms"] = round((time.time() - wall0) * 1000, 2)
@@ -153,6 +155,20 @@ class StructureModelRunner:
         out.update(status="ok", n_rows=int(det.get("num_rows", nrow)), n_cols=int(det.get("num_cols", ncol)), cells=cells)
         out["wall_ms"] = round((time.time() - wall0) * 1000, 2)
         return out
+
+
+def use_threads(requested: int) -> int:
+    """Run the model with *requested* threads, at most the CPUs this process may use; the number it runs with."""
+    import torch
+
+    try:
+        cpus = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpus = os.cpu_count() or 1
+    n = max(1, min(int(requested), cpus))
+    if torch.get_num_threads() != n:
+        torch.set_num_threads(n)
+    return n
 
 
 def _flag(value: object) -> bool | None:

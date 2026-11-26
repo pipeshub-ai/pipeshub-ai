@@ -218,6 +218,7 @@ class SupervisorClient:
         self.history: list[float] = []  # the model's own wall seconds of each table
         self.cpu_history: list[float] = []  # the model's own cpu seconds of each table
         self.round_trip: list[float] = []  # seconds from the request to the answer of each table, as the caller sees it
+        self.threads_used: list[int] = []  # the threads the model ran each table with
 
     def post_batch(self, meta: dict[str, Any], files: dict[str, bytes], *, deadline_ms: int, timeout_s: float) -> BatchOutcome:
         self.calls += 1
@@ -226,6 +227,8 @@ class SupervisorClient:
             t0 = time.perf_counter()
             raw = self._loop.run_until_complete(self.sup.run_table({k: v for k, v in spec.items() if k != "image"}, files[spec["image"]]))
             self.round_trip.append(time.perf_counter() - t0)
+            if raw.get("threads") is not None:
+                self.threads_used.append(raw["threads"])
             if raw.get("cpu_ms") is not None:
                 self.cpu_history.append(raw["cpu_ms"] / 1000.0)
             tables.append(TableResult(id=spec["id"], **raw))

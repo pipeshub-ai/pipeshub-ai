@@ -20,6 +20,7 @@ MODEL_REPO = "docling-project/docling-models"
 MODEL_REVISION = "fc0f2d45e2218ea24bce5045f58a389aed16dc23"  # a commit, never a branch: the measured weights
 MAX_TABLES_PER_REQUEST = 16
 MAX_CAP = 1024  # decode steps of one table
+MAX_MODEL_THREADS = 64
 MAX_SUM_CAPS = 1024  # decode steps of one request: one request holds a gate permit per table, never longer
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_TOKENS = 20_000
@@ -48,6 +49,9 @@ class TableSpec(BaseModel):
     table_bbox: Box
     cap: int = Field(ge=1, le=MAX_CAP)
     tokens: list[Token] = Field(default_factory=list)
+    # The caller's thread budget for this table: the parse worker waits while the model runs, so its lane's threads
+    # are free. None: the model child's own setting.
+    threads: int | None = Field(default=None, ge=1, le=MAX_MODEL_THREADS)
 
 
 class TableRequestMeta(BaseModel):
@@ -92,6 +96,7 @@ class TableResult(BaseModel):
     n_rows: int | None = None
     n_cols: int | None = None
     cells: list[CellOut] | None = None
+    threads: int | None = None  # the threads the model ran this table with
 
 
 class ModelInfo(BaseModel):

@@ -228,3 +228,38 @@ def test_the_sync_client_ends_a_trickled_answer_at_its_timeout() -> None:
     t0 = time.monotonic()
     out = c.post_batch({"v": 1, "tables": []}, {"c0": b"x"}, deadline_ms=1000, timeout_s=0.5)
     assert out.kind == "timeout" and time.monotonic() - t0 < 1.5
+
+
+@pytest.mark.parametrize(("lane", "sent"), [("3", 3), ("", None), ("0", None), ("bogus", None), ("999", 64)])
+def test_each_table_carries_the_workers_lane_threads(monkeypatch: pytest.MonkeyPatch, lane: str, sent: int | None) -> None:
+    monkeypatch.setenv("PIPESHUB_LANE_THREADS", lane)
+    client = FakeModelClient()
+    run_pages(emitter(client), client, pages=1)
+    specs = client.requests[0]["meta"]["tables"]
+    assert specs and all(s.get("threads") == sent for s in specs)
+
+
+def test_the_model_child_runs_a_table_with_the_threads_it_is_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    import torch
+
+    from app.services.docling import table_structure_child as child
+
+    before = torch.get_num_threads()
+    try:
+        assert child.use_threads(2) == 2 and torch.get_num_threads() == 2
+        monkeypatch.setattr(child.os, "sched_getaffinity", lambda _pid: {0, 1, 2})
+        assert child.use_threads(16) == 3  # never more than the CPUs the process may use
+    finally:
+        torch.set_num_threads(before)
+
+
+def test_a_thread_budget_outside_the_limits_is_invalid() -> None:
+    from pydantic import ValidationError
+
+    from app.services.docling.table_structure_schema import TableSpec
+
+    base = {"id": "a", "image": "c0", "scale_factor": 1.0, "page_w": 1.0, "page_h": 1.0, "table_bbox": [0, 0, 1, 1], "cap": 1}
+    assert TableSpec.model_validate({**base, "threads": 4}).threads == 4
+    for bad in (0, 65):
+        with pytest.raises(ValidationError):
+            TableSpec.model_validate({**base, "threads": bad})

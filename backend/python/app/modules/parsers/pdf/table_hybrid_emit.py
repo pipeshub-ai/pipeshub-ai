@@ -14,6 +14,7 @@ import contextlib
 import copy
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
@@ -39,7 +40,11 @@ from app.modules.parsers.pdf.table_hybrid_flow import (
     remaining_inline,
 )
 from app.modules.parsers.pdf.table_hybrid_sync_client import SyncTableClient
-from app.services.docling.table_structure_schema import TableSpec, config_hash
+from app.services.docling.table_structure_schema import (
+    MAX_MODEL_THREADS,
+    TableSpec,
+    config_hash,
+)
 from app.utils.env_config import env_seconds
 
 if TYPE_CHECKING:
@@ -63,6 +68,11 @@ EVIDENCE_REASONS = (
 )
 LOAD_REASONS = ("service_busy", "deadline", "timeout", "service_down", "error")
 
+
+def lane_threads() -> int | None:
+    """This worker's lane thread budget (``PIPESHUB_LANE_THREADS``), lent to the model for the tables it waits on."""
+    raw = os.environ.get("PIPESHUB_LANE_THREADS", "").strip()
+    return min(int(raw), MAX_MODEL_THREADS) if raw.isdigit() and int(raw) > 0 else None
 
 class TableClient(Protocol):
     def post_batch(self, meta: dict[str, Any], files: dict[str, bytes], *, deadline_ms: int, timeout_s: float) -> BatchOutcome: ...
@@ -412,6 +422,8 @@ class TableEmitter:
                     self._demote_row(row, "malformed")
                     continue
                 spec = {"id": row["key"], "image": "c0", "scale_factor": sf, "page_w": w * RENDER_SCALE, "page_h": h * RENDER_SCALE, "table_bbox": tb, "cap": row["_cap"], "tokens": tokens}
+                if (lane := lane_threads()) is not None:
+                    spec["threads"] = lane
                 try:
                     TableSpec.model_validate(spec)
                 except ValueError:
