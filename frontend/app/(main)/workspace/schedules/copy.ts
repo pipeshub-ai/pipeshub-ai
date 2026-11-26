@@ -13,6 +13,8 @@ export const SCHEDULE_REFUSALS: Readonly<Record<ErrorCodeOf<'schedule'>, string>
   SCHEDULE_LIMIT: 'schedules.refusal.limit',
   SCHEDULE_BUDGET_EXCEEDS_CEILING: 'schedules.refusal.budgetCeiling',
   SCHEDULE_TRIGGER_TOKEN_INVALID: 'schedules.refusal.triggerTokenInvalid',
+  SCHEDULE_RAN_ONCE: 'schedules.refusal.ranOnce',
+  SCHEDULE_NOT_APPROVED: 'schedules.refusal.notApproved',
 };
 
 /** Why a firing was refused or skipped, and why the system paused or disabled a schedule. */
@@ -37,6 +39,12 @@ export const FIRING_REASONS: Readonly<Record<string, string>> = {
 export const firingReasonKey = (reason: string | null): string =>
   (reason !== null && FIRING_REASONS[reason]) || 'schedules.reason.other';
 
-/** A status the schedule's owner did not choose: the system paused or disabled it. */
+/** A one-off schedule that has fired (ADR-SCH-01 D1): kept with its run, never resumed or run again. */
+export const RAN_ONCE = 'ran_once';
+
+export const ranOnce = (schedule: { status: string; statusReason: string | null }): boolean =>
+  schedule.status === 'disabled' && schedule.statusReason === RAN_ONCE;
+
+/** A status the schedule's owner did not choose: the system paused or disabled it. A fired one-off is neither. */
 export const isSystemStatus = (status: string, reason: string | null): boolean =>
-  status !== 'active' && reason !== null && reason !== 'by_actor' && reason !== 'by_admin';
+  status !== 'active' && reason !== null && reason !== 'by_actor' && reason !== 'by_admin' && reason !== RAN_ONCE;

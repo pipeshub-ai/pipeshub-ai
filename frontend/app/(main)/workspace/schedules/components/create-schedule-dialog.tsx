@@ -28,8 +28,10 @@ export interface ScheduleForm {
   name: string;
   agent: string;
   query: string;
-  kind: 'cron' | 'webhook';
+  kind: 'cron' | 'once' | 'webhook';
   cron: string;
+  /** A one-off's time as the date-time field holds it: local to the browser, `YYYY-MM-DDTHH:mm`. */
+  onceAt: string;
   timeZone: string;
   catchUp: CatchUpPolicy;
   overlap: OverlapPolicy;
@@ -48,6 +50,7 @@ export const emptyForm = (): ScheduleForm => ({
   query: '',
   kind: 'cron',
   cron: '',
+  onceAt: '',
   timeZone: browserTimeZone(),
   catchUp: 'skip',
   overlap: 'skip',
@@ -58,8 +61,38 @@ export const emptyForm = (): ScheduleForm => ({
   version: 'pinned',
 });
 
+/** ADR-SCH-01 D1: a one-off is made at least a minute and at most 366 days ahead. */
+export const ONCE_MIN_AHEAD_MS = 60_000;
+export const ONCE_MAX_AHEAD_MS = 366 * 86_400_000;
+
+/** A date-time field's value (`YYYY-MM-DDTHH:mm`, the browser's zone) for an instant. */
+export function localInputValue(at: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
+/** The one-off's instant from the field, or why it can't be made: blank, too soon or too far ahead. */
+export function onceInstant(value: string, now: Date = new Date()): { at: string } | { problem: 'missing' | 'tooSoon' | 'tooFar' } {
+  const parsed = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(value.trim()) ? new Date(value.trim()) : null;
+  if (parsed === null || Number.isNaN(parsed.getTime())) return { problem: 'missing' };
+  const ahead = parsed.getTime() - now.getTime();
+  if (ahead < ONCE_MIN_AHEAD_MS) return { problem: 'tooSoon' };
+  if (ahead > ONCE_MAX_AHEAD_MS) return { problem: 'tooFar' };
+  return { at: parsed.toISOString() };
+}
+
+function triggerOf(form: ScheduleForm, now: Date): NewSchedule['trigger'] {
+  if (form.kind === 'cron') return { kind: 'cron', cron: form.cron.trim(), timeZone: form.timeZone.trim(), catchUp: form.catchUp };
+  if (form.kind === 'once') {
+    const instant = onceInstant(form.onceAt, now);
+    // The field is in the browser's zone, so that is the zone the schedule is read in.
+    return { kind: 'once', at: 'at' in instant ? instant.at : '', timeZone: browserTimeZone() };
+  }
+  return { kind: 'webhook', auth: form.tokenAuth ? 'token' : 'signature' };
+}
+
 /** The form as the create route's body; a blank optional number is absent, not zero. */
-export function toNewSchedule(form: ScheduleForm): NewSchedule {
+export function toNewSchedule(form: ScheduleForm, now: Date = new Date()): NewSchedule {
   const budget = form.budget.trim() === '' ? null : Number(form.budget);
   const hours = form.deadlineHours.trim() === '' ? null : Number(form.deadlineHours);
   return {
@@ -67,10 +100,7 @@ export function toNewSchedule(form: ScheduleForm): NewSchedule {
     agentKey: form.agent === ASSISTANT ? null : form.agent,
     ...(form.agent !== ASSISTANT && form.version === 'latest' ? { agentVersion: 'latest' as const } : {}),
     query: form.query,
-    trigger:
-      form.kind === 'cron'
-        ? { kind: 'cron', cron: form.cron.trim(), timeZone: form.timeZone.trim(), catchUp: form.catchUp }
-        : { kind: 'webhook', auth: form.tokenAuth ? 'token' : 'signature' },
+    trigger: triggerOf(form, now),
     maxCostUsd: budget,
     deadlineS: hours === null ? null : Math.round(hours * 3600),
     overlap: form.overlap,
@@ -220,11 +250,14 @@ export function CreateScheduleDialog({
   const [form, setForm] = useState<ScheduleForm>(emptyForm);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The date-time field's bounds, from when the dialog opened; the time itself is checked again on every change.
+  const [openedAt, setOpenedAt] = useState(() => new Date());
 
   useEffect(() => {
     if (open) {
       setForm(initialAgent ? { ...emptyForm(), agent: initialAgent } : emptyForm());
       setError(null);
+      setOpenedAt(new Date());
     }
   }, [open, initialAgent]);
 
@@ -243,10 +276,13 @@ export function CreateScheduleDialog({
       return notify.length === prev.notify.length ? prev : { ...prev, notify };
     });
   }, [choices]);
+  const once = form.kind === 'once' ? onceInstant(form.onceAt) : null;
+  const onceProblem = once !== null && 'problem' in once && once.problem !== 'missing' ? once.problem : null;
   const complete =
     form.name.trim() !== '' &&
     form.query.trim() !== '' &&
-    (form.kind === 'webhook' || (form.cron.trim() !== '' && form.timeZone.trim() !== ''));
+    (form.kind === 'webhook' ||
+      (form.kind === 'once' ? once !== null && 'at' in once : form.cron.trim() !== '' && form.timeZone.trim() !== ''));
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -316,9 +352,10 @@ export function CreateScheduleDialog({
               <RadioGroup.Root
                 aria-labelledby={`${id}-kind-label`}
                 value={form.kind}
-                onValueChange={(value) => set('kind', value === 'webhook' ? 'webhook' : 'cron')}
+                onValueChange={(value) => set('kind', value === 'webhook' || value === 'once' ? value : 'cron')}
               >
                 <RadioGroup.Item value="cron">{t('schedules.create.kindCron')}</RadioGroup.Item>
+                <RadioGroup.Item value="once">{t('schedules.create.kindOnce')}</RadioGroup.Item>
                 <RadioGroup.Item value="webhook">{t('schedules.create.kindWebhook')}</RadioGroup.Item>
               </RadioGroup.Root>
             </Flex>
@@ -346,6 +383,27 @@ export function CreateScheduleDialog({
                   onChange={(value) => set('catchUp', value)}
                 />
               </>
+            ) : form.kind === 'once' ? (
+              <Field
+                id={`${id}-once`}
+                label={t('schedules.create.onceAt')}
+                hint={t('schedules.create.onceAtHint', { timeZone: browserTimeZone() })}
+              >
+                <TextField.Root
+                  id={`${id}-once`}
+                  type="datetime-local"
+                  value={form.onceAt}
+                  min={localInputValue(new Date(openedAt.getTime() + ONCE_MIN_AHEAD_MS))}
+                  max={localInputValue(new Date(openedAt.getTime() + ONCE_MAX_AHEAD_MS))}
+                  aria-invalid={onceProblem !== null}
+                  onChange={(e) => set('onceAt', e.target.value)}
+                />
+                {onceProblem !== null && (
+                  <Text size="1" role="alert" style={{ color: 'var(--red-11)' }}>
+                    {t(onceProblem === 'tooFar' ? 'schedules.create.onceTooFar' : 'schedules.create.onceTooSoon')}
+                  </Text>
+                )}
+              </Field>
             ) : (
               <Flex direction="column" gap="2">
                 <Text size="2" style={{ color: 'var(--slate-11)' }}>
@@ -371,13 +429,15 @@ export function CreateScheduleDialog({
               </Flex>
             )}
 
-            <Choice
-              id={`${id}-overlap`}
-              label={t('schedules.create.overlap')}
-              value={form.overlap}
-              options={OVERLAP}
-              onChange={(value) => set('overlap', value)}
-            />
+            {form.kind !== 'once' && (
+              <Choice
+                id={`${id}-overlap`}
+                label={t('schedules.create.overlap')}
+                value={form.overlap}
+                options={OVERLAP}
+                onChange={(value) => set('overlap', value)}
+              />
+            )}
 
             <Flex direction="column" gap="2" role="group" aria-labelledby={`${id}-notify-label`}>
               <Text as="span" id={`${id}-notify-label`} size="2" weight="medium">

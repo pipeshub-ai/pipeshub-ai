@@ -7088,6 +7088,13 @@
       "hidden": "這裡有些字元原本不可見或會改變文字順序，因此顯示為 ⟨U+202E⟩ 這樣的代碼。請確認這正是您要傳送的內容。",
       "host": "{{ascii}} 混用了不同文字，看起來像 {{unicode}}。它可能不是看起來的那個網站，因此以真實形式顯示。",
       "markerTitle": "原本不可見或會改變文字順序的字元"
+    },
+    "schedule": {
+      "name": "名稱",
+      "when": "時間",
+      "ask": "每次執行要問的內容",
+      "notify": "通知方式",
+      "where": "每次執行都會開啟獨立的對話。可隨時在「工作區 > 排程」中暫停或刪除。"
     }
   },
   "codeTaskCard": {
@@ -7917,7 +7924,8 @@
     "status": {
       "active": "啟用中",
       "paused": "已暫停",
-      "disabled": "已關閉"
+      "disabled": "已關閉",
+      "ranOnce": "已執行一次"
     },
     "trigger": {
       "cron": "Cron",
@@ -7940,7 +7948,8 @@
         "cron": "依排程",
         "manual": "立即執行",
         "event": "已觸發",
-        "cronCaughtUp": "排程執行（補執行）"
+        "cronCaughtUp": "排程執行（補執行）",
+        "once": "一次性"
       },
       "openConversation": "開啟對話",
       "admitted": "已啟動",
@@ -7993,7 +8002,12 @@
       "notifyUnknown": "暫時無法使用。",
       "notifyCheckFailed": "無法檢查你可以使用哪些管道，因此只提供 PipesHub。",
       "webhookCantSign": "呼叫端無法簽署。改為在標頭中使用權杖",
-      "webhookCantSignHint": "任何看到權杖的人都能呼叫它。簽署較安全。"
+      "webhookCantSignHint": "任何看到權杖的人都能呼叫它。簽署較安全。",
+      "kindOnce": "一次，在指定日期和時間",
+      "onceAt": "日期和時間",
+      "onceAtHint": "依你的時區（{{timeZone}}）。至少一分鐘後，最多一年內。",
+      "onceTooSoon": "請選擇至少一分鐘後的時間。",
+      "onceTooFar": "請選擇一年以內的時間。"
     },
     "webhook": {
       "title": "您的 webhook",
@@ -8019,7 +8033,9 @@
       "limit": "您已達到允許的排程數量上限。請先刪除一個。",
       "budgetCeiling": "每次執行的預算過高。",
       "unavailable": "排程執行需要持久化代理聊天，而你的組織已將其關閉。",
-      "triggerTokenInvalid": "Webhook 的觸發權杖不相符。請從排程中複製目前的權杖後重試。"
+      "triggerTokenInvalid": "Webhook 的觸發權杖不相符。請從排程中複製目前的權杖後重試。",
+      "ranOnce": "此排程已執行過一次，不會再次執行；你可以刪除它。",
+      "notApproved": "此排程未獲核准，因此沒有建立。"
     },
     "reason": {
       "scheduledRunsDisabled": "組織已關閉排程執行",
@@ -8055,6 +8071,21 @@
       "latest": "一律使用目前版本",
       "latestHint": "每次執行都使用最近發布的版本。",
       "save": "儲存"
+    },
+    "ranOnce": "已執行一次，不會再次執行。",
+    "when": {
+      "cron": "{{cron}}（cron）",
+      "everyMinute": "每分鐘",
+      "everyMinutes": "每 {{count}} 分鐘",
+      "hourly": "每小時的第 {{minute}} 分",
+      "daily": "每天 {{time}}",
+      "weekdays": "每個工作日 {{time}}",
+      "weekly": "每{{day}} {{time}}",
+      "monthly": "每月 {{day}} 日 {{time}}",
+      "onceToday": "一次，今天 {{time}}",
+      "onceTomorrow": "一次，明天 {{time}}",
+      "onceOn": "一次，{{date}}",
+      "withZone": "{{when}}（{{timeZone}}）"
     }
   },
   "unknownEffectCard": {
@@ -8839,7 +8870,9 @@
       "generic_one": "{{action}}",
       "generic_other": "{{action}}（{{count}} 次調用）",
       "install_packages_one": "安裝套件",
-      "install_packages_other": "安裝套件 {{count}} 次"
+      "install_packages_other": "安裝套件 {{count}} 次",
+      "scheduleCreate_one": "設定排程",
+      "scheduleCreate_other": "設定 {{count}} 個排程"
     },
     "engineWants": "{{engine}} 想要：",
     "childWants": "代碼任務想要：",
@@ -8907,7 +8940,8 @@
     "waitingForOwner_one": "正在等待對話所有者對一個步驟作出決定",
     "waitingForOwner_other": "正在等待對話所有者對 {{count}} 個步驟作出決定",
     "denyAllLabel": "全部拒絕：{{title}}",
-    "titleSiteUpload": "允許本次執行上傳到 {{destination}}？"
+    "titleSiteUpload": "允許本次執行上傳到 {{destination}}？",
+    "titleSchedule": "設定排程"
   },
   "engineSignIn": {
     "title": "程式設計引擎登入",
