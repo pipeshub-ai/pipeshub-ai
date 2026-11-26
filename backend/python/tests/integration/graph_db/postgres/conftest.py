@@ -5,6 +5,7 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
+import asyncpg
 import pytest
 
 from app.core.db import DbConfig, KernelDB
@@ -27,6 +28,26 @@ def _provider_contract_tests_skip_schema_validation(monkeypatch: pytest.MonkeyPa
 def _no_background_sample(monkeypatch: pytest.MonkeyPatch) -> None:
     """The reader repeats 1 % of its answers by the walk on a task of its own, which calls ``decide`` again: a test that counts the decisions of its call would sometimes see two. Tests of the sample set it themselves."""
     monkeypatch.setenv("PG_KG_SHADOW_SAMPLE", "0")
+
+
+TABLE_LOCK_KEY = 0x6B675F7461626C65       # the advisory lock that runs a ``pg_table_lock`` test alone
+
+
+@pytest.fixture(autouse=True)
+async def _table_locks_run_alone(request: pytest.FixtureRequest) -> AsyncIterator[None]:
+    """xdist workers share one database. A test marked ``pg_table_lock`` (LOCK TABLE, an index dropped or built) holds this lock exclusively and every other test
+    holds it shared, so the marked one runs while no other test of the folder does: a read queued behind its table lock waits out its ``lock_timeout`` and the walk
+    answers, which fails a sibling that counts kg's answers."""
+    if not os.environ.get("PG_CORE_URL"):
+        yield
+        return
+    con = await asyncpg.connect(os.environ["PG_CORE_URL"])
+    try:
+        alone = request.node.get_closest_marker("pg_table_lock") is not None
+        await con.execute("SELECT pg_advisory_lock($1)" if alone else "SELECT pg_advisory_lock_shared($1)", TABLE_LOCK_KEY)
+        yield
+    finally:
+        await con.close()                       # the session's advisory locks end with it
 
 
 @pytest.fixture
