@@ -164,11 +164,7 @@ async def test_an_older_copy_is_filled_in_place_and_served_again(pg_provider, pg
     await _world(p, pg_db, org)
     want = await _marks(pg_db, org)
     await _admin("UPDATE kg.scope_members SET parent_held = false, node_group = NULL WHERE org_id = $1", org)
-    await _admin("ALTER TABLE kg.projection_state NO FORCE ROW LEVEL SECURITY")
-    try:
-        await _admin(f"UPDATE kg.projection_state SET code_epoch = {bf.MARKS_FROM} WHERE org_id = $1", org)
-    finally:
-        await _admin("ALTER TABLE kg.projection_state FORCE ROW LEVEL SECURITY")
+    await _admin(f"UPDATE kg.projection_state SET code_epoch = {bf.MARKS_FROM} WHERE org_id = $1", org)
     mode, more = await bf.fill_grant_marks(pg_db, org, "app1", page=2)
     assert (mode, more) == ("enforce", None)
     assert await _marks(pg_db, org) == want

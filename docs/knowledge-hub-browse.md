@@ -77,10 +77,18 @@ It is not needed for the cost: the check is a fixed statement already.
 
 ### Bounds
 
-- **Children read per node:** `_KH_SPLIT_MAX_CHILDREN` (5,000), first by id. A browse whose start has more is answered by the legacy statement
-  for that request: its rules decide in the database, and its check is windowed with a budget and a resume cursor. A row's arrow asks about that
-  many children; one admitted among them decides it, and with none the page is answered by legacy (below), so an arrow is never off for a
-  child past the bound.
+- **A start held whole:** up to `_KH_SPLIT_START_MAX` (5,000) edges out of it. A wider start (a folder of 50,000 or 500,000 files) lists its
+  stubs and chain-tops as above, and reads its other children with the page (`_kh_split_window`): the next ones past the page's boundary in
+  the page's order, a window at a time (up to `_KH_UNDECIDED_WINDOW_MAX`, 2,000), each asked of the check, until the page holds its rows or
+  `_KH_UNDECIDED_BUDGET_S` is spent (`_kh_v3_browse_undecided`, the windowing legacy and ArangoDB use). Bounded by the window, not the
+  folder: the memory a page holds (the window's read is a top-k, so it keeps a window of rows), the ids it asks the check about, and whether
+  a child is hidden by navigation (read for the window alone). Still in proportion to the folder, on every page: the start's hierarchy edge
+  count, the read of its stubs, and each window's read, which orders all of the start's qualifying edges before its limit. So the time a page
+  takes still grows with the folder's width, though far more slowly than deciding every child (`_kh_split_listed`), which the page no
+  longer does. Its total is a lower bound (`totalCapped`), and a page the budget ended carries a sealed resume cursor. A wide start with
+  more than `_KH_SPLIT_MAX_CHILDREN` stubs is answered by legacy.
+- **Children read per row:** `_KH_SPLIT_MAX_CHILDREN` (5,000), first by id. A row's arrow asks about that many children; one admitted among
+  them decides it, and with none the page is answered by legacy (below), so an arrow is never off for a child past the bound.
 - **Stubs below stubs:** followed to `_KH_SPLIT_STUB_DEPTH` (50), the walks' hop cap.
 - **One request asks about a row once** (a memo shared by the listing and the arrows).
 - **The check reads siblings' ancestors once.** On Neo4j, when it is asked about more than one node, the batch check first decides its walk
@@ -99,7 +107,6 @@ It is not needed for the cost: the check is a fixed statement already.
 
 Shortcuts, each bounded by the above:
 
-- A wide start should be read in windows of the page's order, with a resume cursor, rather than handed to legacy.
 - Each page of a folder with many children recomputes the start's whole child admission (about 0.35 s per page for 343 children on
   the live copy); carrying the admitted window in the cursor would remove that.
 - An arrow asks the check in growing windows, but reads each row's children to the bound at once (with their hidden-ancestor tests);
