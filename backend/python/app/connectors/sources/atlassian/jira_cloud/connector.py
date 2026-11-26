@@ -2175,7 +2175,7 @@ class JiraConnector(BaseConnector):
                 records = audit_data.get("records")
                 if not isinstance(records, list):
                     # Not an empty window: read as one, the checkpoint would pass deletions nobody will look for again.
-                    self.logger.warning("⚠️ Audit records came back without a record list")
+                    self.logger.warning("Audit records came back without a record list")
                     ok = False
                     break
 
@@ -3507,7 +3507,7 @@ class JiraConnector(BaseConnector):
             if not isinstance(permission_grants, list):
                 # Not a scheme that grants nobody: read as one, everyone would lose the project.
                 self.logger.warning(
-                    f"⚠️ Permission grants for scheme {scheme_id} ({project_key}) came back without a grant list; "
+                    f"Permission grants for scheme {scheme_id} ({project_key}) came back without a grant list; "
                     "keeping the project's stored access"
                 )
                 return None
