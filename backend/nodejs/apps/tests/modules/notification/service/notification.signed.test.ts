@@ -140,15 +140,50 @@ describe('notification/service/notification.signed', () => {
     expect(stored, 'nothing is written in either org').to.have.length(0);
   });
 
-  it('counts a signed message in the older shape and holds it to its signed org', async () => {
-    const legacy = forOrg(orgA, 'test', () =>
-      JSON.parse(JSON.stringify(signMessage('notification', { ...notification(orgA, userA), payload: { orgId: orgA } }))),
+  const legacySigned = (org: string, user: string) =>
+    forOrg(org, 'test', () =>
+      JSON.parse(JSON.stringify(signMessage('notification', { ...notification(org, user), payload: { orgId: org } }))),
     );
 
-    await deliver(legacy);
+  it('in enforce mode refuses a signed message in the older shape: its text and recipients are not covered', async () => {
+    const savedMode = process.env.ORG_CONTEXT_MODE;
+    process.env.ORG_CONTEXT_MODE = 'enforce';
+    try {
+      // e.g. a writer who takes a signed alert copy, drops its audience and adds a title, a link and recipients
+      await deliver({ ...legacySigned(orgA, userA), title: 'Forged', redirectLink: 'https://evil.example' });
+      expect(stored).to.have.length(0);
+    } finally {
+      if (savedMode === undefined) delete process.env.ORG_CONTEXT_MODE;
+      else process.env.ORG_CONTEXT_MODE = savedMode;
+    }
+  });
 
+  it('in shadow mode still reads a signed message in the older shape, held to its signed org', async () => {
+    const savedMode = process.env.ORG_CONTEXT_MODE;
+    process.env.ORG_CONTEXT_MODE = 'shadow';
+    try {
+      await deliver(legacySigned(orgA, userA));
+      expect(stored).to.have.length(1);
+      expect(stored[0].org).to.equal(orgA);
+    } finally {
+      if (savedMode === undefined) delete process.env.ORG_CONTEXT_MODE;
+      else process.env.ORG_CONTEXT_MODE = savedMode;
+    }
+  });
+
+  it('an added top-level audience does not route a signed notification to the platform handler', async () => {
+    const platform = { handle: sinon.stub().resolves() };
+    const service = { sendToUser: sinon.stub() } as unknown as NotificationService;
+    const withHandler = new NotificationConsumer(broker, logger, service, platform as never);
+    broker.consume.resetHistory();
+    await withHandler.consume(sinon.stub().resolves());
+    await publish(orgA, notification(orgA, userA));
+
+    await deliver({ ...wire[0], audience: 'platformAdmins' });
+
+    expect(platform.handle.called).to.equal(false);
     expect(stored).to.have.length(1);
-    expect(stored[0].org).to.equal(orgA);
+    expect(stored[0].doc).to.include({ orgId: orgA, assignedTo: userA });
   });
 
   it('a payload whose details hold type and orgId is still read in the older shape', () => {

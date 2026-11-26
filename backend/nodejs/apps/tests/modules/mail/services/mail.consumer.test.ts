@@ -281,8 +281,10 @@ describe('MailConsumer - asynchronous mail delivery', () => {
         throw new Error('config unavailable');
       },
     );
+    // A link is only minted for a user of the job's org, into a mail addressed to that user alone.
     const event = payload({
-      passwordResetLinkFor: { userId: 'u1', orgId: 'o1', email: 'a@b.co' },
+      mail: { ...payload().mail, sendEmailTo: ['a@b.co'] },
+      passwordResetLinkFor: { userId: 'u1', orgId: '507f1f77bcf86cd799439012', email: 'a@b.co' },
     });
 
     await (failing as any).deliver(event);

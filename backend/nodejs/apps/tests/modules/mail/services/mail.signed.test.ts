@@ -118,4 +118,79 @@ describe('mail/services/mail.signed', () => {
     const { sent } = await consume(wire);
     expect(sent.map((s) => s.to)).to.deep.equal(['new.person@example.com']);
   });
+
+  describe('a writer to the broker', () => {
+    const orgB = '6b0800000000000000000002';
+    const victimB = { userId: '6b08000000000000000000b1', orgId: orgB, email: 'victim@b.example' };
+    const signedJob = async () => {
+      process.env.ENVELOPE_SIGN = 'true';
+      const key = deriveKey('mail-signed-test');
+      configureEnvelope(async () => [key], null, key);
+      await forOrg(org, 'test', () =>
+        new MailProducer(broker as never, logger).publishEvent({
+          eventType: MailEventType.SendMailEvent,
+          timestamp: Date.now(),
+          payload: job('mail-evt-2'),
+        } as never),
+      );
+      return wire[0];
+    };
+
+    it('cannot add a top-level job to a signed message: the signed job is sent, the added one never', async () => {
+      const genuine = await signedJob();
+      const forged = {
+        ...genuine,
+        mail: { emailTemplateType: 'appuserInvite', sendEmailTo: ['attacker@evil.example'], subject: 'x', templateData: {} },
+        passwordResetLinkFor: victimB,
+      };
+
+      const { sent } = await consume([forged]);
+
+      expect(sent.map((s) => s.to)).to.deep.equal(['new.person@example.com']);
+    });
+
+    it('cannot hang a top-level job on a validly signed message that carries none: nothing is sent', async () => {
+      process.env.ENVELOPE_SIGN = 'true';
+      const key = deriveKey('mail-signed-test');
+      configureEnvelope(async () => [key], null, key);
+      // Any validly signed message on the topic whose payload is not a job (here: only the org).
+      const signedOther = forOrg(org, 'test', () =>
+        JSON.parse(JSON.stringify(signMessage(BrokerTopic.MAIL_EVENTS, { payload: { orgId: org } }))),
+      );
+      const forged = {
+        ...signedOther,
+        mail: { emailTemplateType: 'appuserInvite', sendEmailTo: ['attacker@evil.example'], subject: 'x', templateData: {} },
+        passwordResetLinkFor: victimB,
+      };
+
+      const { sent } = await consume([forged]);
+
+      expect(sent).to.deep.equal([]);
+    });
+
+    it('gets no set-password link for another org, nor one addressed to anyone else (unsigned path too)', async () => {
+      process.env.ENVELOPE_SIGN = 'false';
+      const otherOrg = { ...job(), passwordResetLinkFor: victimB };
+      const otherTo = {
+        ...job(),
+        passwordResetLinkFor: { userId: '6b08000000000000000000a1', orgId: org, email: 'someone.else@example.com' },
+      };
+
+      const { sent } = await consume([otherOrg, otherTo]);
+
+      expect(sent, 'neither job is sent').to.deep.equal([]);
+    });
+
+    it('a genuine invite still gets its set-password link', async () => {
+      process.env.ENVELOPE_SIGN = 'false';
+      const invite = {
+        ...job(),
+        passwordResetLinkFor: { userId: '6b08000000000000000000a1', orgId: org, email: 'new.person@example.com' },
+      };
+
+      const { sent } = await consume([invite]);
+
+      expect(sent.map((s) => s.to)).to.deep.equal(['new.person@example.com']);
+    });
+  });
 });

@@ -8,7 +8,8 @@ import { isRetryableStoreError } from '../../../libs/repositories/errors';
 import { DuplicateEnvelope } from '../../../libs/context/envelope';
 import { NotificationService } from './notification.service';
 import { notificationOf, toBrokerMessage } from '../utils/notification-payload.resolver';
-import { notificationLegacySigned } from './notification.delivery';
+import { notificationEventRefused, notificationLegacySigned } from './notification.delivery';
+import { enforcing } from '../../../libs/context/orgContext';
 import { ValidationError } from '../../../libs/errors/validation.error';
 import { deliverToOrg, messageFacts } from './notification.delivery';
 import {
@@ -70,14 +71,22 @@ export class NotificationConsumer {
         async (message: StreamMessage<INotification>) => {
           let redeliver = false;
           try {
-            if (isPlatformAudience(message.value)) {
+            const { value, signedLegacy, signedBody } = notificationOf(message.value);
+            // A signed notification is never routed by its unsigned top level (an added `audience`).
+            if (!signedBody && isPlatformAudience(message.value)) {
               await this.handlePlatformEvent(message.value);
               return;
             }
-            const { value, signedLegacy } = notificationOf(message.value);
-            // Signed, but in the older shape: its top-level fields are not covered by the signature (counted; its org is
-            // still held to the signed one at delivery).
-            if (signedLegacy) notificationLegacySigned.inc();
+            // Signed, but in the older shape: its top-level fields (text, recipients) are not covered by the signature.
+            // Counted; refused in enforce mode, read in shadow mode (its org is held to the signed one at delivery).
+            if (signedLegacy) {
+              notificationLegacySigned.inc();
+              if (enforcing()) {
+                notificationEventRefused.inc({ reason: 'legacy_signed' });
+                this.logger.warn('Notification event refused: signed in the older shape', messageFacts(message.value));
+                return;
+              }
+            }
             const event = toBrokerMessage(value);
             if (!event) {
               this.logger.warn(

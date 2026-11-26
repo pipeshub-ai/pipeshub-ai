@@ -5,6 +5,7 @@ import {
 } from '../../../libs/types/messaging.types';
 import {
   getCurrentOrgId,
+  orgContextStorage,
   makeOrgContext,
   runWithOrgContext,
 } from '../../../libs/context/orgContext';
@@ -91,6 +92,18 @@ interface SuppressedFailures {
  * redelivery: the consumer base auto-commits offsets and swallows handler
  * errors, so throwing would drop the job instead of replaying it.
  */
+/** A job asked for a set-password link it may not have (another org, or other recipients): nothing is sent. */
+class PasswordLinkRefused extends Error {
+  constructor() {
+    super('set-password link refused: the job names another org or other recipients');
+  }
+}
+
+/** Whether this delivery was opened from a verified signed envelope. */
+function signedDelivery(): boolean {
+  return orgContextStorage.getStore()?.source === 'envelope';
+}
+
 @injectable()
 export class MailConsumer {
   // Presence means a notification went out for this org in the current window;
@@ -144,7 +157,8 @@ export class MailConsumer {
     }
 
     await this.consumer.consume(async (message: StreamMessage<T>) => {
-      const payload = mailJobOf(message.value);
+      // Under a verified signature only the signed job is read (a top-level job beside it is a writer's, not the producer's).
+      const payload = mailJobOf(message.value, signedDelivery());
       const job = newMailJob(payload);
       try {
         if (!payload?.mail?.emailTemplateType) {
@@ -276,6 +290,10 @@ export class MailConsumer {
     try {
       mail = this.withPasswordResetLink(payload);
     } catch (error) {
+      if (error instanceof PasswordLinkRefused) {
+        this.end(job, 'failure', { reason: 'link_refused', errorClass: 'forbidden', error });
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       this.end(job, 'failure', {
         reason: 'link_failed',
@@ -364,6 +382,17 @@ export class MailConsumer {
     const target = payload.passwordResetLinkFor;
     if (!target) {
       return payload.mail;
+    }
+    // A set-password link is a credential: it is minted only for a user of the org this delivery is bound to, and only
+    // into a mail addressed to that user alone. A job that asks otherwise was not written by our producer.
+    const bound = getCurrentOrgId();
+    const to = payload.mail.sendEmailTo ?? [];
+    const onlyTarget =
+      to.length === 1 &&
+      typeof to[0] === 'string' &&
+      to[0].trim().toLowerCase() === String(target.email).trim().toLowerCase();
+    if ((bound !== undefined && String(target.orgId) !== bound) || !onlyTarget) {
+      throw new PasswordLinkRefused();
     }
     const config = this.getAppConfig();
     return {

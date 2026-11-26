@@ -31,16 +31,25 @@ export interface NotificationBrokerMessage {
  * the older shape (fields at the top level), read as before; `signedLegacy` is true when such a message was signed,
  * since its top-level fields are not covered.
  */
-export function notificationOf(raw: unknown): { value: unknown; signedLegacy: boolean } {
-  if (raw == null || typeof raw !== 'object') return { value: raw, signedLegacy: false };
+export function notificationOf(raw: unknown): {
+  value: unknown;
+  signedLegacy: boolean;
+  signedBody: boolean;
+} {
+  if (raw == null || typeof raw !== 'object')
+    return { value: raw, signedLegacy: false, signedBody: false };
   const payload = (raw as Record<string, unknown>).payload;
   if (payload != null && typeof payload === 'object' && !Array.isArray(payload)) {
     const inner = (payload as Record<string, unknown>).notification;
     if (inner != null && typeof inner === 'object' && !Array.isArray(inner)) {
-      return { value: inner, signedLegacy: false };
+      return { value: inner, signedLegacy: false, signedBody: true };
     }
   }
-  return { value: raw, signedLegacy: currentEnvelopeOrg() !== null };
+  return {
+    value: raw,
+    signedLegacy: currentEnvelopeOrg() !== null,
+    signedBody: false,
+  };
 }
 
 /** The org a verified envelope bound for this delivery, or null (unsigned message, or no delivery). */

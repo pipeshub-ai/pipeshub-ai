@@ -52,7 +52,7 @@ export class NotificationProducer {
   async publishEvent(event: Event): Promise<void> {
     const doc = event.payload as NotificationEventPayload & { orgId?: unknown };
     const value: Record<string, unknown> = signEnabled()
-      ? { payload: { notification: doc, orgId: doc.orgId } }
+      ? { payload: { notification: doc, orgId: doc.orgId == null ? doc.orgId : String(doc.orgId) } }
       : (doc as Record<string, unknown>);
     const message: StreamMessage<Record<string, unknown>> = {
       key: event.payload.id as string, // the broker key, when the payload carries an id

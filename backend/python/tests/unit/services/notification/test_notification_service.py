@@ -133,7 +133,7 @@ async def _publish_signed(monkeypatch: pytest.MonkeyPatch, *, details: dict | No
 
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
     key = envelope.derive_key("notification-signed-test")
-    envelope.configure(None, key)
+    envelope.configure(None, sign_key=key)
     try:
         kafka_service = MagicMock()
         kafka_service.publish_notification = AsyncMock(return_value=True)
@@ -156,7 +156,7 @@ async def _publish_signed(monkeypatch: pytest.MonkeyPatch, *, details: dict | No
         assert set(signed) <= {"ctx", "payload", "eventType", "eventId"}, "nothing the consumer reads is left unsigned"
         return json.loads(signed["payload"])
     finally:
-        envelope.configure(None, None)
+        envelope.configure(None, sign_key=None)
 
 
 @pytest.mark.asyncio
@@ -192,3 +192,30 @@ async def test_with_signing_off_the_document_is_sent_as_before(monkeypatch: pyte
     )
     doc = kafka_service.publish_notification.await_args.args[0]
     assert doc["orgId"] == ORG and doc["title"] == "t" and "notification" not in doc
+
+
+@pytest.mark.asyncio
+async def test_a_provider_hold_notice_is_published_in_its_org_and_signed_whole(monkeypatch: pytest.MonkeyPatch) -> None:
+    # It was published with no org bound, so with signing on it went out unsigned and was dropped where enforced.
+    import json
+
+    from app.core import envelope
+    from app.indexing_main import _send_hold_notice
+
+    monkeypatch.setenv("ENVELOPE_SIGN", "true")
+    key = envelope.derive_key("hold-notice-test")
+    envelope.configure(None, sign_key=key)
+    try:
+        sent: list[dict] = []
+
+        class Producer:
+            async def send_message(self, *, topic: str, message: dict, key: str) -> bool:
+                sent.append(envelope.sign_message(topic, message))
+                return True
+
+        doc = {"orgId": ORG, "type": "INDEXING_PROVIDER_ON_HOLD", "title": "Model provider on hold", "payload": {"v": 1}}
+        assert await _send_hold_notice(Producer(), doc) is True
+        assert sent[0]["ctx"]["orgId"] == ORG
+        assert json.loads(sent[0]["payload"])["notification"]["title"] == "Model provider on hold"
+    finally:
+        envelope.configure(None, sign_key=None)
