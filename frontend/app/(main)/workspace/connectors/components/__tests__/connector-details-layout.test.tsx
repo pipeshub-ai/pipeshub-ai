@@ -1,6 +1,7 @@
 import React from 'react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
+import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 
 vi.mock('../../api', () => ({ ConnectorsApi: {} }));
@@ -34,6 +35,16 @@ type Props = React.ComponentProps<typeof ConnectorDetailsLayout>;
 const NOTICE =
   "Records from this connector stay searchable, with the access they had when you disabled it. Changes to sharing in Jira won't reach PipesHub until you enable it again. To remove the records, delete the connector.";
 
+let lastRender: ReturnType<typeof renderInTheme> | null = null;
+
+function rerenderLayout(props: Props) {
+  lastRender?.rerender(
+    <Theme>
+      <ConnectorDetailsLayout {...props} />
+    </Theme>
+  );
+}
+
 function renderLayout(overrides: Partial<Props> = {}) {
   const props: Props = {
     connector: makeConnector({ isConfigured: true }),
@@ -48,7 +59,7 @@ function renderLayout(overrides: Partial<Props> = {}) {
     onInstanceChevron: vi.fn(),
     ...overrides,
   };
-  renderInTheme(<ConnectorDetailsLayout {...props} />);
+  lastRender = renderInTheme(<ConnectorDetailsLayout {...props} />);
   return props;
 }
 
@@ -227,6 +238,19 @@ describe('ConnectorDetailsLayout: enabling and disabling sync', () => {
 
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
     expect(props.onToggleSyncActive).not.toHaveBeenCalled();
+  });
+
+  it('keeps the card and the focus on its switch when turning sync on authenticates the instance', () => {
+    // Turning sync on sets isAuthenticated on the server. Rebuilding the card for that
+    // would drop a keyboard user's focus back to the page.
+    const props = renderLayout({ instances: [makeInstance({ isActive: false, isAuthenticated: false })] });
+    const sw = screen.getByRole('switch');
+    sw.focus();
+
+    rerenderLayout({ ...props, instances: [makeInstance({ isActive: true, isAuthenticated: true })] });
+
+    expect(screen.getByRole('switch')).toBe(sw);
+    expect(document.activeElement).toBe(sw);
   });
 
   it('ignores extra clicks while a toggle is still in flight', async () => {
