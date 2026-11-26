@@ -486,9 +486,12 @@ def _not_seeks(plan: dict[str, Any], indexes: set[str], levels: dict[str, int]) 
 
 
 async def _btree_levels(indexes: set[str]) -> dict[str, int]:
-    """Each kg index's btree level (0: the root is a leaf), from its metapage (pageinspect, dropped again if this added it)."""
+    """Each kg index's btree level (0: the root is a leaf), from its metapage (pageinspect, dropped again if this added it). pageinspect is for superusers only,
+    so ``PG_ADMIN_URL`` must name one here (``scripts/prepare_pg_test_db.sh`` takes a superuser's DSN); an owner that is not one skips the test, saying so."""
     con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
     try:
+        if not await con.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname = current_user"):
+            pytest.skip("PG_ADMIN_URL is not a superuser: the reader plan gate reads each index's btree level with pageinspect, which only a superuser may use")
         had = await con.fetchval("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pageinspect')")
         await con.execute("CREATE EXTENSION IF NOT EXISTS pageinspect")
         try:
