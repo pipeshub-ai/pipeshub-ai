@@ -662,6 +662,8 @@ class TestCifsConnectorSync:
         cifs_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
         cifs_connector.configured_share = SHARE
         await cifs_connector.run_sync()
+        # A cached creator email is not looked up again.
+        mock_data_store_provider.transaction.return_value.get_user_by_user_id.assert_not_awaited()
         mock_processor.on_new_app_users.assert_awaited()
         mock_processor.ensure_team_app_edge.assert_not_awaited()
         record, perms = mock_processor.on_new_records.await_args.args[0][0]
@@ -685,6 +687,38 @@ class TestCifsConnectorSync:
         _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
         assert [(p.type, p.entity_type, p.external_id) for p in group_perms] == [
             (PermissionType.READ, EntityType.ORG, "org-1")
+        ]
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_failed_creator_lookup_keeps_the_stored_share_grants(
+        self, mock_filters, cifs_connector, mock_processor, mock_data_store_provider
+    ):
+        mock_filters.return_value = _empty_filters()
+        tx = mock_data_store_provider.transaction.return_value
+        tx.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("store down"))
+        cifs_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
+        cifs_connector.configured_share = SHARE
+        await cifs_connector.run_sync()
+        tx.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert group_perms is None
+        assert cifs_connector.creator_email is None
+        mock_processor.on_new_records.assert_awaited()
+
+    @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_creator_lookup_that_failed_at_init_is_retried_at_sync(
+        self, mock_filters, cifs_connector, mock_processor, mock_data_store_provider
+    ):
+        mock_filters.return_value = _empty_filters()
+        tx = mock_data_store_provider.transaction.return_value
+        cifs_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt")]})
+        cifs_connector.configured_share = SHARE
+        assert cifs_connector.creator_email is None
+        await cifs_connector.run_sync()
+        tx.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert [(p.type, p.entity_type, p.email) for p in group_perms] == [
+            (PermissionType.OWNER, EntityType.USER, "user@test.com")
         ]
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)

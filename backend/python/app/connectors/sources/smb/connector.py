@@ -61,6 +61,7 @@ from app.connectors.sources.network_share.operations import (
     stream_file,
     walk_shares,
 )
+from app.connectors.sources.network_share.permissions import share_permissions
 from app.connectors.sources.network_share.record_mapper import RecordMapper
 from app.connectors.sources.smb.auth import STANDARD_PORTS, auth_problems, port_of
 from app.connectors.sources.smb.common.apps import SmbApp
@@ -401,9 +402,7 @@ class SmbConnector(BaseConnector):
             processor=self.data_entities_processor,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
-            scope=self.scope,
-            created_by=self.created_by,
-            creator_email=self.creator_email,
+            permissions=await share_permissions(self),
             description_prefix="SMB share",
         )
         report = await walk_shares(
