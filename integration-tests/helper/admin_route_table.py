@@ -400,7 +400,6 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/skills.py::approve_candidate": "the learner or an admin decides",
     "api/routes/skills.py::reject_candidate": "the learner or an admin decides",
     "api/routes/skills.py::get_pending_candidates": "an admin sees every proposal",
-    "api/routes/skills.py::finalize_import": "never asks; matched by name only",
     # Only instances that use the shared admin credential need an admin.
     "api/routes/mcp_servers.py::authenticate_instance": "shared admin credential needs admin",
     "api/routes/mcp_servers.py::update_credentials": "shared admin credential needs admin",

@@ -167,6 +167,7 @@ NO_BUMP = {
     "connectors/core/base/data_store/graph_data_store.py::delete_edges_to_groups": STORE,
     "connectors/core/base/data_store/graph_data_store.py::delete_inherit_permissions_relation_record": STORE,
     "agents/agent_loop/skills/graph_store.py::delete_skill": AGENT,
+    "agents/agent_loop/skills/graph_store.py::create_skill": AGENT,  # undoes its own insert when its edges fail
     "agents/agent_loop/skills/graph_store.py::erase_session_learned_skills": AGENT,
     "agents/agent_loop/skills/graph_store.py::erase_skill_author": AGENT,
     # The harness's versioned agents (update_agent writes through the draft).
