@@ -95,6 +95,10 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
      * missing rows in a descending sort and scramble recency order.
      */
     isPinned: { type: Boolean },
+    // Same sparse shape as isPinned: only temporary chats store `true`.
+    // A default `false` would appear on every list DTO and break strict response schemas.
+    isTemporary: { type: Boolean },
+    expiresAt: { type: Date },
     /** Identifies the run that currently owns the thread, so only it can release or keep it alive. Internal: never selected. */
     activeRunId: { type: String, select: false },
     status: {
@@ -171,7 +175,12 @@ chatSessionSchema.index({ sessionType: 1, orgId: 1, initiator: 1 });
 chatSessionSchema.index({ agentKey: 1, orgId: 1 });
 chatSessionSchema.index({ userId: 1, agentKey: 1 });
 chatSessionSchema.index({ isShared: 1 });
-chatSessionSchema.index({ projectId: 1, orgId: 1, isDeleted: 1, lastActivityAt: -1 });
+chatSessionSchema.index({
+  projectId: 1,
+  orgId: 1,
+  isDeleted: 1,
+  lastActivityAt: -1,
+});
 chatSessionSchema.index({ lastActivityAt: -1 });
 // Only sessions whose erasure is still under way carry the marker (erasure
 // deletes the document), so the sweeper's lost-enqueue pass reads a small index.
@@ -181,6 +190,10 @@ chatSessionSchema.index(
     name: 'erasure_requested',
     partialFilterExpression: { erasureRequestedAt: { $exists: true } },
   },
+);
+chatSessionSchema.index(
+  { expiresAt: 1 },
+  { partialFilterExpression: { isTemporary: true } },
 );
 
 export const ChatSession: Model<IChatSessionDocument> =

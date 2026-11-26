@@ -10,8 +10,14 @@ import {
 // A conversation can hold many artifacts, each a storage purge plus graph deletes.
 const CLEANUP_TIMEOUT_MS = 120_000;
 
+export type ConversationArtifactOwner = {
+  authorization: string;
+  orgId: string;
+  userId: string;
+};
+
 /**
- * Deletes every artifact the caller owns in a conversation, and the files the
+ * Deletes every artifact the owner owns in a conversation, and the files the
  * assistant stored for it, before the conversation itself is deleted. Throws
  * when that could not be done, so the conversation is not deleted and the
  * user's retry finishes the cleanup.
@@ -19,20 +25,19 @@ const CLEANUP_TIMEOUT_MS = 120_000;
  * The caller must already be known to own the conversation: the folder purge
  * below relies on it, since the storage service cannot check it.
  */
-export async function deleteConversationArtifacts(
+export async function deleteConversationArtifactsOwnedBy(
   appConfig: AppConfig,
   conversationId: string,
-  req: AuthenticatedUserRequest,
+  owner: ConversationArtifactOwner,
 ): Promise<void> {
   const operation = 'delete conversation artifacts';
   const id = encodeURIComponent(conversationId);
   try {
     // The caller's own token: the connectors service deletes only what they own.
-    const authorization = req.headers.authorization;
     const response = await executeConnectorCommand<{ kept?: number }>(
       `${appConfig.connectorBackend}/api/v1/artifacts/conversations/${id}`,
       HttpMethod.DELETE,
-      { authorization: typeof authorization === 'string' ? authorization : '' },
+      { authorization: owner.authorization },
       undefined,
       { timeoutMs: CLEANUP_TIMEOUT_MS },
     );
@@ -47,9 +52,9 @@ export async function deleteConversationArtifacts(
       return;
     }
     const storageToken = scopedStorageServiceJwtGenerator(
-      String(req.user?.orgId),
+      owner.orgId,
       appConfig.scopedJwtSecret,
-      String(req.user?.userId),
+      owner.userId,
     );
     const purge = await executeConnectorCommand(
       `${appConfig.storage.endpoint}/api/v1/document/internal/conversations/${id}/purge`,
@@ -88,4 +93,19 @@ export async function deleteArtifactById(
   } catch (error: unknown) {
     throw handleBackendError(error, operation);
   }
+}
+
+export async function deleteConversationArtifacts(
+  appConfig: AppConfig,
+  conversationId: string,
+  req: AuthenticatedUserRequest,
+): Promise<void> {
+  await deleteConversationArtifactsOwnedBy(appConfig, conversationId, {
+    authorization:
+      typeof req.headers.authorization === 'string'
+        ? req.headers.authorization
+        : '',
+    orgId: String(req.user?.orgId ?? ''),
+    userId: String(req.user?.userId ?? ''),
+  });
 }

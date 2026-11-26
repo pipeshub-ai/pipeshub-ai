@@ -61,6 +61,12 @@ export interface ChatSessionDto {
   archivedBy?: string;
   /** The owner's pin: `true` when pinned, absent otherwise (never `false`). */
   isPinned?: boolean;
+  /**
+   * Hidden from history. Absent or false on a normal chat. A temporary chat
+   * is deleted when the user leaves, and again if `expiresAt` has passed.
+   */
+  isTemporary?: boolean;
+  expiresAt?: Date;
   lastActivityAt?: number;
   status?: string;
   failReason?: string;
@@ -108,6 +114,8 @@ export interface NewSession {
   /** The agent harness's executor pin and import ledger, for a session it creates (a durable chat, a fork). */
   harnessVersion?: HarnessVersionDto;
   harnessLedger?: HarnessLedgerDto;
+  isTemporary?: boolean;
+  expiresAt?: Date;
 }
 
 export interface MessageCitationDto {
@@ -233,6 +241,11 @@ export interface SessionListQuery {
   scope: SessionScope;
   /** One conversation instead of a list. */
   id?: string;
+  /**
+   * Owner reopen of a hidden temporary chat. Only honoured together with `id`;
+   * lists stay without temporary rows.
+   */
+  includeTemporary?: boolean;
   /** Plain chats: own rows, rows shared with the user, or both. */
   owned?: boolean;
   shared?: boolean;
@@ -584,6 +597,20 @@ export interface ConversationRepository {
     orgId: string,
     tx?: Tx,
   ): Promise<{ sessions: number; messages: number }>;
+  /**
+   * Hard-deletes a temporary chat the actor owns: session, messages and
+   * citations. Null when the row is missing, not theirs, or not temporary.
+   */
+  hardDeleteTemporary(
+    id: string,
+    actor: SessionActor,
+    tx?: Tx,
+  ): Promise<{ session: ChatSessionDto; citationIds: string[] } | null>;
+  /** Expired temporary rows the sweep can delete. */
+  listExpiredTemporary(
+    now: Date,
+    limit: number,
+  ): Promise<Array<{ id: string; orgId: string; userId: string }>>;
   /**
    * The owner pins or unpins their own chat. Pinning an archived chat finds nothing; unpinning always works so a stale pin can be
    * cleared. Neither changes `updatedAt`. Repeating either is a no-op that still returns the row.

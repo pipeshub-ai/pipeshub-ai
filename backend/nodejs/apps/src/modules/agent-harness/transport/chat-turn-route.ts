@@ -119,6 +119,8 @@ const ROUTING_FIELDS = new Set([
  * field a client starts sending never moves its turns to today's loop unnoticed.
  */
 export const LEGACY_ONLY_FIELDS: Readonly<Record<string, string>> = {
+  temporary:
+    "the harness keeps its own record of a run, which the temporary chat's purge does not delete",
   compareTurn:
     "Compare models answers one question with two models side by side, which only today's loop does",
   toolApproval:
@@ -185,6 +187,8 @@ export interface ChatTurnRouteOptions {
    * ModelGroupStep holds harness turns to them. Absent: group access is not composed.
    */
   modelGroups?: Pick<ChatModelGroups, 'admits'>;
+  /** An existing conversation whose turns today's loop must serve, whatever routing says. */
+  legacyOnly?: (identity: RequestIdentity, sessionId: string) => Promise<boolean>;
   /** G2 (ADR-INBOX-01): while the turn's stream is open its sender watches the conversation. */
   watchers?: Pick<RunWatchRegistry, 'watch'>;
 }
@@ -670,7 +674,12 @@ export function chatTurnMiddleware(
     const turn = options.turn ?? 'send';
     const input = chatTurnInput(body, options.kind, turn, expandedCommand(res));
     // A knowledge-limited token's turn stays with today's loop, which holds it to the limit.
-    if (input === null || knowledgeLimited(req)) {
+    if (
+      input === null ||
+      knowledgeLimited(req) ||
+      (sessionId !== undefined &&
+        (await options.legacyOnly?.(identity, sessionId)) === true)
+    ) {
       if (await refusedAsGatedAnswer(identity)) return;
       service.declined({ ...who, chatMode }, 'surface_request_not_supported');
       await legacy();

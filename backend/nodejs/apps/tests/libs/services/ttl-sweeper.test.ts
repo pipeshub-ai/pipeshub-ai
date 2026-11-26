@@ -1,5 +1,8 @@
 import { expect } from 'chai';
-import { activityRetentionDays } from '../../../src/libs/services/ttl-sweeper.service';
+import {
+  activityRetentionDays,
+  TtlSweeper,
+} from '../../../src/libs/services/ttl-sweeper.service';
 
 describe('USER_ACTIVITY_RETENTION_DAYS', () => {
   // the default is read from the environment, so a developer's own setting must not reach the test
@@ -22,6 +25,29 @@ describe('USER_ACTIVITY_RETENTION_DAYS', () => {
 
   it('refuses anything else, naming the setting', () => {
     for (const bad of ['0', '-1', '1.5', 'ninety', '7d'])
-      expect(() => activityRetentionDays(bad)).to.throw(/USER_ACTIVITY_RETENTION_DAYS/);
+      expect(() => activityRetentionDays(bad)).to.throw(
+        /USER_ACTIVITY_RETENTION_DAYS/,
+      );
+  });
+});
+
+describe('TtlSweeper without the jobs-role tables (MongoDB)', () => {
+  it('does not run the PostgreSQL activity trim', async () => {
+    const errors: unknown[] = [];
+    const logger = {
+      info() {},
+      warn() {},
+      error: (...a: unknown[]) => errors.push(a),
+    } as never;
+    const sweeper = new TtlSweeper(
+      logger,
+      60_000,
+      () => new Date(),
+      90,
+      undefined,
+      false,
+    );
+    await sweeper.sweepOnce();
+    expect(errors).to.deep.equal([]);
   });
 });
