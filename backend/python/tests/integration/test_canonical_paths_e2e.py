@@ -12,11 +12,12 @@ name the connectors a user can enter and no record group, so grep is never
 narrowed to some of a connector's groups: it covers the connector and the batch
 access check decides every hit, admitting the groups the user reaches.
 
-Needs Docker services, and skips cleanly when they are not reachable:
+Needs Docker services, and skips each one whose variable is unset:
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \
     up -d --wait neo4j-graph-it arango-graph-it
-  cd backend/python && pytest tests/integration/test_canonical_paths_e2e.py -m integration
+  cd backend/python && NEO4J_IT_URI=bolt://localhost:17687 ARANGO_IT_URL=http://localhost:18529 \
+    pytest tests/integration/test_canonical_paths_e2e.py -m integration
 
 Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
@@ -38,12 +39,11 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.pattern_match import _accessible_groups_for_connector, _fetch_container_group_rows
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from tests.support import it_backends
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
-NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
 NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 ARANGO_DB = "canonical_paths_it"
 
@@ -208,7 +208,8 @@ class _Env:
 
 
 async def _connect_neo4j(monkeypatch: pytest.MonkeyPatch) -> IGraphDBProvider:
-    monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
+    neo4j_uri = it_backends.endpoint("NEO4J_IT_URI")
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
     monkeypatch.setenv("NEO4J_DATABASE", "neo4j")
@@ -219,9 +220,10 @@ async def _connect_neo4j(monkeypatch: pytest.MonkeyPatch) -> IGraphDBProvider:
 
 
 async def _connect_arango() -> IGraphDBProvider:
+    arango_url = it_backends.endpoint("ARANGO_IT_URL")
     config_service = MagicMock()
     config_service.get_config = AsyncMock(
-        return_value={"url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB}
+        return_value={"url": arango_url, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB}
     )
     provider = ArangoHTTPProvider(logger, config_service)
     if not await asyncio.wait_for(provider.connect(), timeout=60):

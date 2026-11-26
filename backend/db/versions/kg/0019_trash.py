@@ -17,6 +17,7 @@ depends_on = None
 # A contract, as kg_0014: code of an older release projects a delete without the trash columns and is refused by the epoch floor, so it cannot leave a trashed record
 # out of the listing that pages by them.
 min_code_epoch = 19
+blocking_index_ok = "both indexes key deleted_ms and delete_batch, which this revision adds, so they cannot be built before its transaction"
 
 WRITERS = ("w_trash_set",)
 EPOCH_WRITERS = ("w_stamps_set", "w_fence_rows", "w_queue_touch", "w_queue_done", "w_changes_ack", "w_changes_delete")

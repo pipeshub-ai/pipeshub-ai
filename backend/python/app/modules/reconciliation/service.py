@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import hashlib
 from app.models.blocks import BlocksContainer, BlockType, GroupSubType
 from app.modules.parsers.table_titles import table_titles
+from app.utils.table_row_memory import without_row_digest
 from app.utils.logger import create_logger
 
 logger = create_logger("reconciliation_service")
@@ -13,6 +14,7 @@ logger = create_logger("reconciliation_service")
 
 def _content_hash(data: Any, title: str | None) -> str:  # noqa: ANN401 - block data is any JSON value
     """A block's data hash; with a title, of the data and the title together."""
+    data = without_row_digest(data)
     payload = json.dumps(data if title is None else {"data": data, "title": title}, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest() + ":" + hashlib.md5(payload).hexdigest()
 

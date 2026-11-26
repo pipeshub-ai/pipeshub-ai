@@ -4,8 +4,8 @@ The indexing service runs it before consuming, beside the connector service's bo
 has to be idempotent on a live database, wait for the collections the connector service
 creates, and repair duplicate stage states that a missing unique constraint let through.
 
-Uses the same throwaway engines as test_ensure_nodes_it.py; each test skips when its engine
-is not reachable.
+Uses the same throwaway engines as test_ensure_nodes_it.py; each test skips when its engine's
+variable (NEO4J_IT_URI, ARANGO_IT_URL) is unset.
 """
 
 import logging
@@ -23,12 +23,11 @@ from app.modules.pipeline.models import Priority, StageJob, StageState
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.services.resource_governor.models import ParseTier
+from tests.support import it_backends
 
 pytestmark = pytest.mark.integration
 
-NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
 NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 
 STAGES = CollectionNames.STAGE_STATES.value
@@ -52,13 +51,14 @@ def _stage_state(vrid: str) -> dict[str, object]:
 
 @pytest.fixture
 async def neo4j(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Neo4jProvider]:
-    monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
+    neo4j_uri = it_backends.endpoint("NEO4J_IT_URI")
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
     monkeypatch.setenv("NEO4J_DATABASE", "neo4j")
     provider = Neo4jProvider(_logger, AsyncMock())
     if not await provider.connect():
-        pytest.skip(f"Neo4j not reachable at {NEO4J_URI}")
+        pytest.skip(f"Neo4j not reachable at {neo4j_uri}")
     assert provider.client is not None
     yield provider
     await provider.client.execute_query(f"MATCH (n:{LABEL}) WHERE n.orgId = $org DETACH DELETE n", {"org": ORG})
@@ -72,24 +72,26 @@ async def neo4j(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Neo4jProvider]
 @pytest.fixture
 async def arango() -> AsyncIterator[tuple[ArangoHTTPProvider, str]]:
     # A database of its own, so the test can start before records exists, as a first start does.
+    arango_url = it_backends.endpoint("ARANGO_IT_URL")
     database = f"pipeline_schema_it_{uuid.uuid4().hex[:8]}"
     config = AsyncMock()
     config.get_config = AsyncMock(return_value={
-        "url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": database,
+        "url": arango_url, "username": "root", "password": ARANGO_PASSWORD, "db": database,
     })
     provider = ArangoHTTPProvider(_logger, config)
     if not await provider.connect():
-        pytest.skip(f"ArangoDB not reachable at {ARANGO_URL}")
+        pytest.skip(f"ArangoDB not reachable at {arango_url}")
     yield provider, database
     await provider.disconnect()
     async with aiohttp.ClientSession(auth=aiohttp.BasicAuth("root", ARANGO_PASSWORD)) as session:
-        async with session.delete(f"{ARANGO_URL}/_db/_system/_api/database/{database}") as response:
+        async with session.delete(f"{arango_url}/_db/_system/_api/database/{database}") as response:
             assert response.status in (200, 404)
 
 
 async def _index_fields(database: str, collection: str) -> list[list[str]]:
+    arango_url = it_backends.endpoint("ARANGO_IT_URL")
     async with aiohttp.ClientSession(auth=aiohttp.BasicAuth("root", ARANGO_PASSWORD)) as session:
-        async with session.get(f"{ARANGO_URL}/_db/{database}/_api/index", params={"collection": collection}) as response:
+        async with session.get(f"{arango_url}/_db/{database}/_api/index", params={"collection": collection}) as response:
             assert response.status == 200
             body = await response.json()
     return [index["fields"] for index in body["indexes"] if index["type"] == "persistent"]

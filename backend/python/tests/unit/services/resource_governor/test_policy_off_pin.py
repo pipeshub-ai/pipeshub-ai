@@ -27,9 +27,13 @@ EDITED = {
         "docling_working_set_gb", "resolve_heavy_working_set", "class HeavyWorkingSet", "HeavyWorkingSet.gb",  # new
         "HeavyWorkingSet.source", "HeavyWorkingSet.as_dict",
         "assign:PDF_PARENT_WORKING_SET_GB", "assign:DOCLING_WORKING_SET_DEFAULT_GB",
+        # The code sandbox yield: only acts with host_yield=True, which the grid never passes.
+        "assign:YIELD_INDEX_SHRINK_FACTOR", "assign:YIELD_GROW_CONFIRM_SAMPLES", "assign:YIELD_POOLS",
+        "_yield_shrink_target", "_yield_holdoff",
+        "assign:YIELD_REPEAT_WINDOW_SAMPLES", "assign:YIELD_HEAVY_MAX_HOLDOFF_SAMPLES",
         # Read-only admission explain: a rule tag on the returned state, no change to any limit.
         "_with_rule", "_feedback_services", "assign:_GROWTH_HOLDS", "assign:_SHRINK_CAUSE",
-        "_feedback_for", "assign:_SERVICE_POOL",  # a Docling-only report brakes INDEX_HEAVY only; no memory gate reads feedback
+        "_feedback_for", "assign:SERVICE_POOL",  # a Docling-only report brakes INDEX_HEAVY only; no memory gate reads feedback
         "resolve_ceilings",  # two keyword arguments (cells, profile); profile="legacy" (the default) runs the old body, so the capacity-profile test pins the equality
     },
     "memory_budget.py": {
@@ -40,6 +44,7 @@ EDITED = {
     "consumer_concurrency.py": {
         "reserve_record_memory", "acquire_parsing_slot",  # optional kind; no kind or no excess = the old path
         "record_parse_kind",
+        "wait_out_held_service",  # new; waits out a held service's pause before the parse permit and reserves nothing (test_docling_hold_recheck)
         "parse_ceiling", "parse_lease_pool",  # one heavy lease for both tiers, only with USE_PARSING_SERVICE and PARSING_SERVICE_CONCURRENCY set; otherwise unchanged
         "RequeueWithoutAttempt.pauses_consumer",  # read only by the PostgreSQL consumer's stage admission, not by a memory gate
         "RequeueWithoutAttempt.__init__",  # adds the level the consumer logs the hand-back at; reserves nothing
@@ -86,6 +91,8 @@ EDITED = {
         # still swallowed; it runs after settlement and reserves nothing (tests/unit/services/messaging/test_indexing_end.py::
         # test_redis_retry_tracker_failure_after_the_ack_is_a_second_line).
         "clear_retry_tracking",
+        # A Docling 429 holds only the records that call Docling (F57f): read and dispatch decisions, no gate or memory charge.
+        "downstream_read_pause", "read_pausing_services", "held_pools", "held_downstream",
     },
     "controller.py": {
         "ResourceGovernor.__init__", "ResourceGovernor._sample_once", "ResourceGovernor.stats",
@@ -93,9 +100,12 @@ EDITED = {
         # PIPESHUB_CAPACITY_PROFILE=auto only: __init__ (inputs and the container link), _sample_once (one step on the shared limits), stats (one extra key). Flag off: the branches are not taken.
         "ResourceGovernor._policy_working_set", "ResourceGovernor._measured_base_applies",
         "ResourceGovernor._resolve_heavy_working_set",
+        # The code sandbox yield signal: without one (every governor but indexing's) none of it runs.
+        "ResourceGovernor._read_yield", "ResourceGovernor._after_yield_read", "ResourceGovernor._yield_stats",
+        "ResourceGovernor.close",
         # Read-only admission explain.
         "ResourceGovernor.admission_explain", "ResourceGovernor.slot_wait", "ResourceGovernor.report_memory_incident",
-        "if:TYPE_CHECKING",  # Iterator, for slot_wait
+        "if:TYPE_CHECKING",  # Iterator, for slot_wait; YieldSignal, for the yield signal
         # A monotonic count of brake entries per pool and reason, incremented where the decision is made
         # (_sample_once, report_memory_incident) and shown in admission_explain: no limit, state or
         # admission outcome changes. Reason: load notifications must not miss an entry a delayed read skipped.

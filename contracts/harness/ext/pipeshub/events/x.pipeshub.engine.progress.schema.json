@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.engine.progress.schema.json",
+  "title": "PipeshubEngineProgressEvent",
+  "description": "One line of an engine run's progress as the chat shows it (U1's engine_progress frame: tool, taskId, kind, text, data), with the turn and the sequence it was journaled under (E1). Presentation only (non-critical); the fold ignores it.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.engine.progress"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubEngineProgressData"
+    }
+  },
+  "$defs": {
+    "PipeshubEngineProgressData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool",
+        "taskId",
+        "kind",
+        "text",
+        "data",
+        "turnId",
+        "seq"
+      ],
+      "properties": {
+        "tool": {
+          "description": "The card's tag. Journals already hold it and readers key on it, so it keeps the name of the tool that introduced the card (stage 1's code_task, retired by S1R).",
+          "const": "code_task"
+        },
+        "taskId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "kind": {
+          "enum": [
+            "started",
+            "finished",
+            "command",
+            "output",
+            "command_done",
+            "file",
+            "tool",
+            "tool_result",
+            "tool_update",
+            "helper",
+            "artifact",
+            "version",
+            "diff",
+            "approval",
+            "signin",
+            "repository"
+          ],
+          "description": "repository: the run's GitHub repository (GIT-FLOW), its data {action: copied, repository, branch}: copied once the setup phase cloned it and the agent phase holds it. tool_update: a started tool step's facts the engine sent after it announced the call (data {callId, args, step}, WP-112): the same step, never a second start."
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 20000
+        },
+        "data": {
+          "type": "object",
+          "description": "The frame's structured part (app/harness/engines/progress.py)."
+        },
+        "turnId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "seq": {
+          "description": "The sequence within its turn the line was journaled under.",
+          "$ref": "../../../core/common.schema.json#/$defs/UInt"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "x.pipeshub.engine.progress",
+      "data": {
+        "tool": "code_task",
+        "taskId": "run_1",
+        "kind": "command",
+        "text": "python report.py",
+        "data": {
+          "callId": "c1"
+        },
+        "turnId": "trn_0123456789abcdef0123456789abcdef",
+        "seq": 3
+      }
+    }
+  ]
+}

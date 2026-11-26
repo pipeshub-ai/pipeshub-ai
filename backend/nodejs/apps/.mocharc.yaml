@@ -5,7 +5,13 @@ require:
   - './tests/helpers/mock-kafkajs-global.ts'
   - './tests/helpers/mock-mcp-global.ts'
   - './tests/helpers/keep-worker-coverage.ts'
+  - './tests/helpers/no-network-global.ts'
+  - './tests/helpers/journal-history-hooks.ts'
+  - './tests/helpers/policy-write-observers-hooks.ts'
+  - './tests/helpers/org-lifecycle-hooks.ts'
+  - './tests/helpers/session-family-hooks.ts'
   - './tests/helpers/telemetry-env-global.ts'
+  - './tests/helpers/harness-switch-env-global.ts'
   - './tests/helpers/logger-isolation-global.ts'
 spec: 'tests/**/*.test.ts'
 timeout: 10000

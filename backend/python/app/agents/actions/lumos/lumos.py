@@ -12,6 +12,7 @@ from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -389,7 +390,7 @@ tools.extend([
 ])
 
 
-@ToolsetBuilder("Lumos")\
+@ToolsetBuilder("Lumos", provider=ToolProvider.CONNECTOR)\
     .in_group("Identity & Access")\
     .with_description("Lumos integration for access governance, users, groups, and platform permissions")\
     .with_category(ToolsetCategory.APP)\
@@ -444,7 +445,7 @@ class Lumos:
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number", required=False, default=1),
             ToolParameter(name="size", type=ParameterType.INTEGER, description="Page size", required=False, default=25),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_platforms(
         self,
@@ -464,7 +465,7 @@ class Lumos:
         parameters=[
             ToolParameter(name="app_id", type=ParameterType.STRING, description="Lumos app ID", required=True),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_platform(self, app_id: str) -> tuple[bool, str]:
         return await self._call(
@@ -481,7 +482,7 @@ class Lumos:
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number", required=False, default=1),
             ToolParameter(name="size", type=ParameterType.INTEGER, description="Page size", required=False, default=25),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_users(
         self,
@@ -501,7 +502,7 @@ class Lumos:
         parameters=[
             ToolParameter(name="user_id", type=ParameterType.STRING, description="Lumos user ID", required=True),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user(self, user_id: str) -> tuple[bool, str]:
         return await self._call(
@@ -518,7 +519,7 @@ class Lumos:
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number", required=False, default=1),
             ToolParameter(name="size", type=ParameterType.INTEGER, description="Page size", required=False, default=25),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user_accounts(
         self,
@@ -538,7 +539,7 @@ class Lumos:
         parameters=[
             ToolParameter(name="user_id", type=ParameterType.STRING, description="Lumos user ID", required=True),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user_roles(self, user_id: str) -> tuple[bool, str]:
         return await self._call(
@@ -556,7 +557,7 @@ class Lumos:
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number", required=False, default=1),
             ToolParameter(name="size", type=ParameterType.INTEGER, description="Page size", required=False, default=25),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_groups(
         self,
@@ -577,7 +578,7 @@ class Lumos:
         parameters=[
             ToolParameter(name="group_id", type=ParameterType.STRING, description="Lumos group ID", required=True),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_group(self, group_id: str) -> tuple[bool, str]:
         return await self._call(
@@ -594,7 +595,7 @@ class Lumos:
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number", required=False, default=1),
             ToolParameter(name="size", type=ParameterType.INTEGER, description="Page size", required=False, default=25),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_group_members(
         self,
@@ -617,7 +618,7 @@ class Lumos:
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number", required=False, default=1),
             ToolParameter(name="size", type=ParameterType.INTEGER, description="Page size", required=False, default=25),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_permissions(
         self,
@@ -646,7 +647,7 @@ class Lumos:
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number", required=False, default=1),
             ToolParameter(name="size", type=ParameterType.INTEGER, description="Page size", required=False, default=25),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_app_permissions(
         self,
@@ -675,7 +676,7 @@ class Lumos:
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number", required=False, default=1),
             ToolParameter(name="size", type=ParameterType.INTEGER, description="Page size", required=False, default=25),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_access_requests(
         self,
@@ -701,7 +702,7 @@ class Lumos:
         parameters=[
             ToolParameter(name="request_id", type=ParameterType.STRING, description="Access request ID", required=True),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_access_request(self, request_id: str) -> tuple[bool, str]:
         return await self._call(
@@ -724,7 +725,7 @@ class Lumos:
             ToolParameter(name="requestable_permission_ids", type=ParameterType.ARRAY, description="Permission IDs to request", required=False, items={"type": "string"}),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_access_request(
         self,
@@ -764,7 +765,7 @@ class Lumos:
             ToolParameter(name="reason", type=ParameterType.STRING, description="Cancellation reason", required=False),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def cancel_access_request(
         self,
@@ -789,7 +790,7 @@ class Lumos:
             ToolParameter(name="page", type=ParameterType.INTEGER, description="Page number", required=False, default=1),
             ToolParameter(name="size", type=ParameterType.INTEGER, description="Page size", required=False, default=25),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_access_policies(
         self,
@@ -809,7 +810,7 @@ class Lumos:
         parameters=[
             ToolParameter(name="access_policy_id", type=ParameterType.STRING, description="Access policy ID", required=True),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_access_policy(self, access_policy_id: str) -> tuple[bool, str]:
         return await self._call(
@@ -829,7 +830,7 @@ class Lumos:
             ToolParameter(name="is_everyone_condition", type=ParameterType.BOOLEAN, description="Whether policy applies to everyone", required=False),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_access_policy(
         self,
@@ -871,7 +872,7 @@ class Lumos:
             ToolParameter(name="is_everyone_condition", type=ParameterType.BOOLEAN, description="Whether policy applies to everyone", required=False),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def update_access_policy(
         self,
@@ -910,7 +911,7 @@ class Lumos:
             ToolParameter(name="access_policy_id", type=ParameterType.STRING, description="Access policy ID", required=True),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def delete_access_policy(self, access_policy_id: str, confirm: bool = False) -> tuple[bool, str]:
         blocked = self._confirm_mutation(confirm, "delete_access_policy")
@@ -934,7 +935,7 @@ class Lumos:
             ToolParameter(name="request_config", type=ParameterType.OBJECT, description="Request configuration object (approval, provisioning and access-length settings)", required=False),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_requestable_permission(
         self,
@@ -973,7 +974,7 @@ class Lumos:
             ToolParameter(name="permission_id", type=ParameterType.STRING, description="Permission ID", required=True),
             ToolParameter(name="include_inherited_configs", type=ParameterType.BOOLEAN, description="Include inherited configurations", required=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_requestable_permission(
         self,
@@ -1002,7 +1003,7 @@ class Lumos:
             ToolParameter(name="request_config", type=ParameterType.OBJECT, description="Request configuration object (approval, provisioning and access-length settings)", required=False),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def update_requestable_permission(
         self,
@@ -1043,7 +1044,7 @@ class Lumos:
             ToolParameter(name="permission_id", type=ParameterType.STRING, description="Permission ID", required=True),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def delete_requestable_permission(self, permission_id: str, confirm: bool = False) -> tuple[bool, str]:
         blocked = self._confirm_mutation(confirm, "delete_requestable_permission")
@@ -1065,7 +1066,7 @@ class Lumos:
             ToolParameter(name="role_name", type=ParameterType.STRING, description="Role name", required=True),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def add_user_role(self, user_id: str, role_name: str, confirm: bool = False) -> tuple[bool, str]:
         blocked = self._confirm_mutation(confirm, "add_user_role")
@@ -1088,7 +1089,7 @@ class Lumos:
             ToolParameter(name="role_name", type=ParameterType.STRING, description="Role name", required=True),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="destructive"), Tag(key="effect", value="write")],
     )
     async def remove_user_role(self, user_id: str, role_name: str, confirm: bool = False) -> tuple[bool, str]:
         blocked = self._confirm_mutation(confirm, "remove_user_role")

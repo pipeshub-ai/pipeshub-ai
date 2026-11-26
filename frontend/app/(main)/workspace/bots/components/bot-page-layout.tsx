@@ -8,6 +8,7 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { WorkspaceHeaderIconButton } from '../../components';
 import type { SlackBotConfig, AgentOption } from '../types';
 import { BotCard } from './bot-card';
+import { SlackIdentityLinks } from './slack-identity-links';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
@@ -127,6 +128,7 @@ export function BotPageLayout({
           })}
         </Grid>
       )}
+      {!isLoading && configs.length > 0 ? <SlackIdentityLinks /> : null}
     </Flex>
   );
 }
@@ -181,7 +183,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
       gap="3"
       style={{ width: '100%', flex: 1, paddingTop: 80 }}
     >
-      <MaterialIcon name="smart_toy" size={48} color="var(--gray-9)" />
+      <MaterialIcon name="smart_toy" size={48} color="var(--gray-11)" />
       <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
         {t('workspace.bots.noBots')}
       </Text>

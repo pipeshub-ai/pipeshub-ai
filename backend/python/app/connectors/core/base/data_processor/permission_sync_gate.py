@@ -75,6 +75,13 @@ class PersonalConnectorCapReachedError(ValueError):
     """Shown to the user as is: it says what happened and what lifts the limit."""
 
 
+#: What a person is told when the personal connector cap could not be checked (the API answers 503 with it).
+PERSONAL_CAP_CHECK_FAILED = (
+    "We couldn't check the limit on personal connectors just now, so this one was not added. "
+    "Please try again in a moment."
+)
+
+
 class PersonalConnectorCapUnavailableError(Exception):
     """The cap could not be checked, so the connector was not created; trying again is the fix."""
 

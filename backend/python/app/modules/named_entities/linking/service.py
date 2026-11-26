@@ -30,6 +30,7 @@ from app.modules.named_entities.linking.verifier import (
     offerable,
 )
 from app.modules.retrieval.entity_permissions import readable_spellings
+from app.utils.run_model_scope import note_records_read
 
 if TYPE_CHECKING:
     from app.modules.named_entities.linking.mentions import Mention
@@ -92,6 +93,9 @@ async def readable_names(graph: IGraphDBProvider, org_id: str, candidates: list[
     rather than dropping the candidate; drop it if such edges ever appear."""
     names = {candidate.entity_id: candidate.name for candidate in candidates}
     record_ids = sorted({str(row["_key"]) for c in candidates for row in c.records if row.get("_key")})
+    # These records' own spellings are what the verifier's model is shown: in a harness run the classification
+    # extension point checks them.
+    note_records_read(record_ids)
     names.update(await readable_spellings(graph, org_id, sorted(names), record_ids))
     return names
 

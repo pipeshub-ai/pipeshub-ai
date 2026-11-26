@@ -1,0 +1,238 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/policy/policy-dimensions.schema.json",
+  "title": "PolicyDimensions",
+  "description": "The dimension table (R2 CP3, 02-lld §3.2): one row per policy dimension, read by the one generic resolver in each language. A row's position is its refusal order: when a layer widens two dimensions, the earlier row is named. Adding a knob is a row, a property of policy-layer.schema.json and vectors; no resolver code unless it needs a new order kind.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "dimensions"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "dimensions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 500,
+      "items": {
+        "$ref": "#/$defs/Dimension"
+      }
+    }
+  },
+  "$defs": {
+    "DimensionPath": {
+      "description": "Where the dimension's value sits in a layer and in the effective config, dot-separated.",
+      "type": "string",
+      "pattern": "^[a-z][A-Za-z0-9]*(?:\\.[A-Za-z][A-Za-z0-9_]*){0,7}$"
+    },
+    "DimensionKind": {
+      "description": "ceiling: each layer may only narrow it (a meet in its order); choice: the nearest layer that sets it wins, inside its `within` ceiling; operator: the deployment sets it, no layer below may.",
+      "x-constant": "DIMENSION_KINDS",
+      "enum": [
+        "ceiling",
+        "choice",
+        "operator"
+      ]
+    },
+    "OrderKind": {
+      "description": "The closed set of orders, each implemented once per language. Null is unbounded (the top) in every order that admits it.",
+      "x-constant": "ORDER_KINDS",
+      "enum": [
+        "min",
+        "subset",
+        "min-map",
+        "rank",
+        "rank-raise",
+        "bool-and",
+        "bool-or",
+        "flat",
+        "tree",
+        "gated",
+        "admits",
+        "approval-rules",
+        "rank-raise-rules"
+      ]
+    },
+    "Widening": {
+      "description": "What a layer that asks for more than the layers above it gets: `refuse` names the dimension and the layer (ARCHITECTURE principle 6); `meet` keeps the stricter value (approvals: no layer can approve on behalf of another).",
+      "x-constant": "WIDENINGS",
+      "enum": [
+        "refuse",
+        "meet"
+      ]
+    },
+    "Order": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/OrderKind"
+        },
+        "ranks": {
+          "description": "rank: groups from the narrowest up; rank-raise and rank-raise-rules: from the widest up. Values in one group rank equal.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 16,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+            }
+          }
+        },
+        "bottom": {
+          "description": "flat: the one value below every other (`none` for egress); absent, values are unordered.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+        },
+        "children": {
+          "description": "tree: each value's direct narrowings.",
+          "type": "object",
+          "maxProperties": 32,
+          "additionalProperties": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+            }
+          },
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+          }
+        },
+        "switch": {
+          "description": "gated: the boolean member that turns the bounds on.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+        },
+        "bounds": {
+          "description": "gated: numeric members, each narrowed as a minimum while the switch is on.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+          }
+        },
+        "off": {
+          "description": "gated: the value every switched-off value is.",
+          "type": "object",
+          "maxProperties": 9,
+          "additionalProperties": {
+            "type": [
+              "boolean",
+              "integer"
+            ],
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+          }
+        }
+      }
+    },
+    "Dimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "kind",
+        "exposure",
+        "description"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/DimensionPath"
+        },
+        "narrowedBy": {
+          "description": "Where a layer below the release carries it, when not at `path` (an engine is admitted by `engines` selectors; the release names the `engine`).",
+          "$ref": "#/$defs/DimensionPath"
+        },
+        "kind": {
+          "$ref": "#/$defs/DimensionKind"
+        },
+        "order": {
+          "$ref": "#/$defs/Order"
+        },
+        "within": {
+          "description": "choice: the ceiling the chosen value must lie within.",
+          "$ref": "#/$defs/DimensionPath"
+        },
+        "widening": {
+          "$ref": "#/$defs/Widening"
+        },
+        "exposure": {
+          "description": "The layers below the release that may set it.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 9,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "policy-layer.schema.json#/$defs/LayerName"
+          }
+        },
+        "flag": {
+          "description": "The flags.json row this dimension is (rollout and operator rows).",
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "dimensions": [
+        {
+          "path": "engineProfile.limits.maxSteps",
+          "kind": "ceiling",
+          "order": {
+            "kind": "min"
+          },
+          "exposure": [
+            "org",
+            "agent",
+            "request"
+          ],
+          "description": "Steps an engine run may take; null is unlimited."
+        },
+        {
+          "path": "models.primary",
+          "kind": "choice",
+          "within": "models.routes",
+          "exposure": [
+            "org",
+            "agent",
+            "user",
+            "request"
+          ],
+          "description": "The model a run calls."
+        }
+      ]
+    }
+  ]
+}

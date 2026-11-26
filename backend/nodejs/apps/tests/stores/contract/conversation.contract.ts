@@ -70,9 +70,9 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(s.initiator).to.equal(user);
       const rows = await repo.listMessages(s._id, { orgId: org });
       expect(rows).to.have.length(1);
-      expect(rows[0].dto.seq).to.equal(1);
-      expect(rows[0].dto.sessionId).to.equal(s._id);
-      expect(rows[0].dto.content).to.equal('hi');
+      expect(rows[0]!.dto.seq).to.equal(1);
+      expect(rows[0]!.dto.sessionId).to.equal(s._id);
+      expect(rows[0]!.dto.content).to.equal('hi');
     });
 
     it('rolls the session back with its first message on a replica set, and not on a standalone server', async () => {
@@ -127,7 +127,7 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(row).to.not.have.property('nextSeq');
       expect(row).to.not.have.property('sessionType');
       expect(row).to.not.have.property('activeRunId');
-      expect(row._id).to.match(HEX);
+      expect(row!._id).to.match(HEX);
     });
 
     it('hides other orgs and soft-deleted rows', async () => {
@@ -149,7 +149,7 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(mine.rows[0]).to.not.have.property('sharedWith');
       expect((await shared(stranger)).total).to.equal(0);
       // Listed as owner it still has the member list.
-      expect((await repo.listSessions(q(org, owner))).rows[0].sharedWith).to.have.length(1);
+      expect((await repo.listSessions(q(org, owner))).rows[0]!.sharedWith).to.have.length(1);
       // isShared false hides the member entry.
       await repo.setSharing(CHAT, s._id, { isShared: false, sharedWith: [{ userId: reader, accessLevel: 'read' }] });
       expect((await shared(reader)).total).to.equal(0);
@@ -190,8 +190,8 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect((await repo.listSessions(q(org, user, { startDate: future }))).total).to.equal(0);
       expect((await repo.listSessions(q(org, user, { endDate: future }))).total).to.equal(2);
       expect((await repo.listSessions(q(org, user, { isSharedFilter: true }))).total).to.equal(0);
-      expect((await repo.listSessions(q(org, user, { projectFilter: { kind: 'project', id: project } }))).rows[0]._id).to.equal(a._id);
-      expect((await repo.listSessions(q(org, user, { projectFilter: { kind: 'unassigned' } }))).rows[0]._id).to.equal(b._id);
+      expect((await repo.listSessions(q(org, user, { projectFilter: { kind: 'project', id: project } }))).rows[0]!._id).to.equal(a._id);
+      expect((await repo.listSessions(q(org, user, { projectFilter: { kind: 'unassigned' } }))).rows[0]!._id).to.equal(b._id);
     });
 
     it('splits chats from agent chats and filters archives', async () => {
@@ -206,7 +206,7 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect((await repo.listSessions(q(org, user))).total).to.equal(0);
       const archived = await repo.listSessions(q(org, user, { archived: 'only' }));
       expect(archived.rows.map((r) => r._id)).to.deep.equal([chat._id]);
-      expect(archived.rows[0].archivedBy).to.equal(user);
+      expect(archived.rows[0]!.archivedBy).to.equal(user);
     });
 
     it('findVisibleSummary returns the projection the page needs, only for visible rows', async () => {
@@ -294,8 +294,8 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(done).to.include({ status: 'Failed', failReason: 'bad', lastActivityAt: 5 });
       expect(done!.modelInfo!.modelKey).to.equal('k2');
       expect(done!.conversationErrors).to.have.length(1);
-      expect(done!.conversationErrors![0].message).to.equal('bad');
-      expect(done!.conversationErrors![0].timestamp).to.be.instanceOf(Date);
+      expect(done!.conversationErrors![0]!.message).to.equal('bad');
+      expect(done!.conversationErrors![0]!.timestamp).to.be.instanceOf(Date);
       expect(done!.__v).to.equal(1);
       const cleared = await repo.recordRunState(s._id, { status: 'Inprogress', failReason: null });
       expect(cleared).to.not.have.property('failReason');
@@ -325,10 +325,10 @@ export function describeConversationContract(fx: ConversationFixture): void {
       const org = fx.newId(), user = fx.newId();
       const s = await open(org, user);
       const [cit] = await repo.createCitations([{ content: 'c', chunkIndex: 0, citationType: 't', metadata: { orgId: org, mimeType: 'm', recordId: 'r', recordName: 'n', origin: 'o' } }]);
-      await repo.appendMessages(s._id, org, [botMsg('a', { citations: [{ citationId: cit._id }] })]);
+      await repo.appendMessages(s._id, org, [botMsg('a', { citations: [{ citationId: cit!._id }] })]);
       const res = await repo.softDelete(s._id, actor(org, user));
       expect(res!.session).to.include({ isDeleted: true, deletedBy: user });
-      expect(res!.citationIds).to.deep.equal([cit._id]);
+      expect(res!.citationIds).to.deep.equal([cit!._id]);
       expect(await repo.findOwned(CHAT, s._id, actor(org, user))).to.equal(null);
       let err: unknown;
       try {
@@ -477,12 +477,12 @@ export function describeConversationContract(fx: ConversationFixture): void {
       const org = fx.newId(), user = fx.newId();
       const s = await open(org, user);
       const [cit] = await repo.createCitations([{ content: 'c', chunkIndex: 1, citationType: 't', metadata: { orgId: org, mimeType: 'm', recordId: 'rec', recordName: 'n', origin: 'o' } }]);
-      await repo.appendMessages(s._id, org, [botMsg('a', { citations: [{ citationId: cit._id, relevanceScore: 0.5 }] })]);
+      await repo.appendMessages(s._id, org, [botMsg('a', { citations: [{ citationId: cit!._id, relevanceScore: 0.5 }] })]);
       const plain = (await repo.listMessages(s._id, { orgId: org })).pop()!.dto;
-      expect(plain.citations![0].citationId).to.equal(cit._id);
+      expect(plain.citations![0]!.citationId).to.equal(cit!._id);
       const pop = (await repo.listMessages(s._id, { orgId: org, withCitations: true })).pop()!.dto;
-      const populated = pop.citations![0].citationId as unknown as { _id: string; content: string; metadata: { recordId: string } };
-      expect(populated._id).to.equal(cit._id);
+      const populated = pop.citations![0]!.citationId as unknown as { _id: string; content: string; metadata: { recordId: string } };
+      expect(populated._id).to.equal(cit!._id);
       expect(populated.content).to.equal('c');
       expect(populated).to.not.have.property('__v');
       const refs = await repo.listAttachmentsAndCitedRecords(s._id);
@@ -494,14 +494,14 @@ export function describeConversationContract(fx: ConversationFixture): void {
       const org = fx.newId(), user = fx.newId();
       const s = await open(org, user);
       const [a, b] = await repo.appendMessages(s._id, org, [botMsg('old', { feedback: [] }), botMsg('x')]);
-      const rep = await repo.replaceMessage(a._id, org, botMsg('new'));
-      expect(rep).to.include({ _id: a._id, seq: a.seq, content: 'new' });
+      const rep = await repo.replaceMessage(a!._id, org, botMsg('new'));
+      expect(rep).to.include({ _id: a!._id, seq: a!.seq, content: 'new' });
       expect(await repo.replaceMessage(fx.newId(), org, botMsg('n'))).to.equal(null);
-      const fb = await repo.appendFeedback(a._id, org, { isHelpful: true, timestamp: 1 });
+      const fb = await repo.appendFeedback(a!._id, org, { isHelpful: true, timestamp: 1 });
       expect(fb!.feedback).to.have.length(1);
-      expect(await repo.findMessage(s._id, org, a._id)).to.include({ _id: a._id });
-      expect(await repo.findMessage(s._id, fx.newId(), a._id)).to.equal(null);
-      expect(await repo.deleteMessages([b._id], org)).to.equal(1);
+      expect(await repo.findMessage(s._id, org, a!._id)).to.include({ _id: a!._id });
+      expect(await repo.findMessage(s._id, fx.newId(), a!._id)).to.equal(null);
+      expect(await repo.deleteMessages([b!._id], org)).to.equal(1);
       expect(await repo.deleteMessages([], org)).to.equal(0);
     });
 
@@ -511,9 +511,9 @@ export function describeConversationContract(fx: ConversationFixture): void {
       const s2 = await open(org, user);
       const [a] = await repo.appendMessages(s1._id, org, [botMsg('a')]);
       const [b] = await repo.appendMessages(s2._id, org, [botMsg('b')]);
-      expect(await repo.deleteMessages([a._id, b._id], org, undefined, s1._id)).to.equal(1);
-      expect(await repo.findMessage(s2._id, org, b._id)).to.include({ _id: b._id });
-      expect(await repo.deleteMessages([b._id], org, undefined, s1._id)).to.equal(0);
+      expect(await repo.deleteMessages([a!._id, b!._id], org, undefined, s1._id)).to.equal(1);
+      expect(await repo.findMessage(s2._id, org, b!._id)).to.include({ _id: b!._id });
+      expect(await repo.deleteMessages([b!._id], org, undefined, s1._id)).to.equal(0);
     });
 
     it('updateUserQueryContent rewrites a question’s text, and its files only when given', async () => {
@@ -524,25 +524,25 @@ export function describeConversationContract(fx: ConversationFixture): void {
         { ...userMsg('old'), attachments: [{ recordId: 'rec-1', recordName: 'a.pdf' } as never] },
         botMsg('answer'),
       ]);
-      const text = await repo.updateUserQueryContent(q1._id, org, s._id, 'new');
-      expect(text).to.include({ _id: q1._id, seq: q1.seq, content: 'new', messageType: 'user_query' });
+      const text = await repo.updateUserQueryContent(q1!._id, org, s._id, 'new');
+      expect(text).to.include({ _id: q1!._id, seq: q1!.seq, content: 'new', messageType: 'user_query' });
       expect(text!.attachments).to.have.length(1);
-      const files = await repo.updateUserQueryContent(q1._id, org, s._id, 'newer', [{ recordId: 'rec-2', recordName: 'b.pdf' } as never]);
+      const files = await repo.updateUserQueryContent(q1!._id, org, s._id, 'newer', [{ recordId: 'rec-2', recordName: 'b.pdf' } as never]);
       expect(files!.attachments!.map((f) => f.recordId)).to.deep.equal(['rec-2']);
-      const cleared = await repo.updateUserQueryContent(q1._id, org, s._id, 'newer', []);
+      const cleared = await repo.updateUserQueryContent(q1!._id, org, s._id, 'newer', []);
       expect(cleared!.attachments).to.have.length(0);
       // Not a question, another session's id, or another org: nothing matches.
-      expect(await repo.updateUserQueryContent(answer._id, org, s._id, 'x')).to.equal(null);
-      expect(await repo.updateUserQueryContent(q1._id, org, other._id, 'x')).to.equal(null);
-      expect(await repo.updateUserQueryContent(q1._id, fx.newId(), s._id, 'x')).to.equal(null);
-      expect((await repo.findMessage(s._id, org, q1._id))!.content).to.equal('newer');
+      expect(await repo.updateUserQueryContent(answer!._id, org, s._id, 'x')).to.equal(null);
+      expect(await repo.updateUserQueryContent(q1!._id, org, other._id, 'x')).to.equal(null);
+      expect(await repo.updateUserQueryContent(q1!._id, fx.newId(), s._id, 'x')).to.equal(null);
+      expect((await repo.findMessage(s._id, org, q1!._id))!.content).to.equal('newer');
     });
 
     it('a NUL character in message text is stored as written', async () => {
       const org = fx.newId(), user = fx.newId();
       const s = await open(org, user);
       const [m] = await repo.appendMessages(s._id, org, [botMsg('a\u0000b')]);
-      expect(m.content).to.equal(fx.stripsNul ? 'ab' : 'a\u0000b');
+      expect(m!.content).to.equal(fx.stripsNul ? 'ab' : 'a\u0000b');
     });
   });
 
@@ -591,7 +591,7 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(res.assistantCount).to.equal(1);
       expect(res.agentCount).to.equal(1);
       expect(res.rows.map((r) => r.source).sort()).to.deep.equal(['agent', 'assistant']);
-      expect(res.rows[0]._id).to.match(HEX);
+      expect(res.rows[0]!._id).to.match(HEX);
       expect(res.rows[0]).to.not.have.property('sessionType');
     });
 
@@ -652,16 +652,286 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(await seenBy(viewer)).to.deep.equal(['assistant']); // not the archived agent chat
       expect(await seenBy(member)).to.deep.equal([]); // project members cannot open an archived chat
       const archived = (await repo.listVisibleSummaries(org, owner, [assistant._id], [project]))[0];
-      expect(archived.isArchived).to.equal(true);
+      expect(archived!.isArchived).to.equal(true);
     });
 
     it('getCitations filters by org and drops __v', async () => {
       const org = fx.newId();
       const [c] = await repo.createCitations([{ content: 'x', chunkIndex: 0, citationType: 't', metadata: { orgId: org, mimeType: 'm', recordId: 'r', recordName: 'n', origin: 'o' } }]);
-      expect((await repo.getCitations([c._id], org)).map((r) => r._id)).to.deep.equal([c._id]);
-      expect(await repo.getCitations([c._id], fx.newId())).to.deep.equal([]);
+      expect((await repo.getCitations([c!._id], org)).map((r) => r._id)).to.deep.equal([c!._id]);
+      expect(await repo.getCitations([c!._id], fx.newId())).to.deep.equal([]);
       expect(await repo.getCitations([], org)).to.deep.equal([]);
-      expect((await repo.getCitations([c._id], org))[0]).to.not.have.property('__v');
+      expect((await repo.getCitations([c!._id], org))[0]).to.not.have.property('__v');
+    });
+  });
+
+  describe('the agent harness fields (WP109-FU-2)', () => {
+    const LEDGER = { seq: 0, digest: 'd0' };
+    const harnessFields = (sender: string): Partial<NewMessage> => ({
+      senderId: sender,
+      runId: 'run-1',
+      errorCode: 'mcp_tool_withdrawn',
+      errorServers: ['Jira'],
+      errorStop: { scope: 'org', reason: 'maintenance' },
+      truncatedBy: 'budget',
+      budgetScope: 'pool-a',
+      runOutcome: { kind: 'failed', closing: 'stopped' } as unknown as NewMessage['runOutcome'],
+      notFound: { subject: 'the Q3 plan', line: 'I could not find the Q3 plan.' } as unknown as NewMessage['notFound'],
+      limits: { items: [{ kind: 'clone', target: 'github.com/acme/x' }] } as unknown as NewMessage['limits'],
+      copied: true,
+      foreignTurn: true,
+      label: { complete: true, sources: [{ kind: 'record', recordId: 'r-1' }] } as unknown as NewMessage['label'],
+    });
+
+    it('keeps every harness field of a message and reads its label only when asked', async () => {
+      const org = fx.newId(), user = fx.newId(), sender = fx.newId();
+      const s = await open(org, user);
+      const command = { name: 'review', version: '1', contentDigest: 'c', args: { a: '1' }, typed: '/review', owner: 'builtin' };
+      await repo.appendMessages(s._id, org, [
+        botMsg('answer', harnessFields(sender)),
+        { ...userMsg('q'), command } as NewMessage,
+      ]);
+      const [plain] = (await repo.listMessages(s._id, { orgId: org, afterSeq: 1 })).map((r) => r.dto);
+      expect(plain).to.include({ senderId: sender, runId: 'run-1', errorCode: 'mcp_tool_withdrawn', truncatedBy: 'budget', budgetScope: 'pool-a', copied: true, foreignTurn: true });
+      expect(plain!.errorServers).to.deep.equal(['Jira']);
+      expect(plain!.errorStop).to.deep.equal({ scope: 'org', reason: 'maintenance' });
+      expect(plain!.runOutcome).to.deep.equal({ kind: 'failed', closing: 'stopped' });
+      // R45-MIGR: the not-found fact and the run's limits are kept on PostgreSQL as on MongoDB
+      expect(plain!.notFound).to.deep.equal({ subject: 'the Q3 plan', line: 'I could not find the Q3 plan.' });
+      expect(plain!.limits).to.deep.equal({ items: [{ kind: 'clone', target: 'github.com/acme/x' }] });
+      expect(plain).to.not.have.property('label');
+      const labelled = (await repo.listMessages(s._id, { orgId: org, withLabels: true, afterSeq: 1 })).map((r) => r.dto);
+      expect(labelled[0]!.label).to.deep.equal({ complete: true, sources: [{ kind: 'record', recordId: 'r-1' }] });
+      expect(labelled[1]!.command).to.deep.include({ name: 'review', typed: '/review', owner: 'builtin' });
+      expect(labelled[1]).to.not.have.property('label');
+      const found = await repo.findMessage(s._id, org, plain!._id);
+      expect(found).to.include({ senderId: sender, runId: 'run-1' });
+      expect(found).to.not.have.property('label');
+    });
+
+    it('a replaced message carries the harness fields of its replacement only', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user);
+      const [m] = await repo.appendMessages(s._id, org, [botMsg('first', harnessFields(fx.newId()))]);
+      await repo.replaceMessage(m!._id, org, botMsg('second', { runId: 'run-2' }));
+      const [row] = (await repo.listMessages(s._id, { orgId: org, withLabels: true, afterSeq: 1 })).map((r) => r.dto);
+      expect(row).to.include({ content: 'second', runId: 'run-2' });
+      for (const gone of ['senderId', 'errorCode', 'copied', 'label']) expect(row).to.not.have.property(gone);
+    });
+
+    it('listMessages after a seq is a keyset page, in either order', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user, {}, userMsg('m1'));
+      await repo.appendMessages(s._id, org, [botMsg('m2'), userMsg('m3'), botMsg('m4')]);
+      const page = await repo.listMessages(s._id, { orgId: org, afterSeq: 2, limit: 1 });
+      expect(page.map((r) => r.dto.content)).to.deep.equal(['m3']);
+      const desc = await repo.listMessages(s._id, { orgId: org, afterSeq: 2, order: 'desc' });
+      expect(desc.map((r) => r.dto.content)).to.deep.equal(['m4', 'm3']);
+    });
+
+    it('a session keeps its executor pin, ledger and seq counter, which no other read returns', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await repo.createSession({ orgId: org, userId: user, initiator: user, lastActivityAt: 5, status: 'Inprogress', sessionType: 'agent', agentKey: 'ag', harnessVersion: 'durable-v1', harnessLedger: LEDGER });
+      await repo.appendMessages(s._id, org, [userMsg('a'), botMsg('b')]);
+      const row = await repo.findHarnessSession(s._id, org);
+      expect(row).to.deep.include({ sessionType: 'agent', nextSeq: 2, harnessVersion: 'durable-v1', harnessLedger: LEDGER });
+      expect(row!.session).to.include({ _id: s._id, orgId: org, userId: user, agentKey: 'ag' });
+      expect(row!.session.sharedWith).to.deep.equal([]);
+      expect(row).to.not.have.property('erasureRequestedAt');
+      const plain = await repo.findById(s._id);
+      for (const hidden of ['harnessVersion', 'harnessLedger', 'nextSeq']) expect(plain).to.not.have.property(hidden);
+      expect(await repo.findHarnessSession(s._id, fx.newId())).to.equal(null);
+      expect(await repo.findHarnessSession('not-an-id', org)).to.equal(null);
+    });
+
+    it('setHarnessFields writes only the fields given, and finds nothing for another org', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user, { lastActivityAt: 5 });
+      expect(await repo.findHarnessSession(s._id, org)).to.not.have.property('harnessVersion');
+      expect(await repo.setHarnessFields(s._id, org, { harnessVersion: 'durable-v1', harnessLedger: { seq: 1, digest: 'x', diverged: true }, status: 'Complete', lastActivityAt: 9 })).to.equal(true);
+      expect(await repo.setHarnessFields(s._id, org, { erasureRequestedAt: 77 })).to.equal(true);
+      const row = await repo.findHarnessSession(s._id, org);
+      expect(row).to.deep.include({ harnessVersion: 'durable-v1', harnessLedger: { seq: 1, digest: 'x', diverged: true }, erasureRequestedAt: 77 });
+      expect(row!.session).to.include({ status: 'Complete', lastActivityAt: 9 });
+      expect(await repo.setHarnessFields(fx.newId(), org, { status: 'Complete' })).to.equal(false);
+    });
+
+    it('a pin read for update inside a unit of work commits with the unit, and rolls back with it', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const s = await open(org, user);
+      await uow.run(async (tx) => {
+        const locked = await repo.findHarnessSession(s._id, org, { forUpdate: true }, tx);
+        expect(locked!.nextSeq).to.equal(1);
+        await repo.setHarnessFields(s._id, org, { harnessVersion: 'durable-v1' }, tx);
+      }, { org });
+      expect((await repo.findHarnessSession(s._id, org))!.harnessVersion).to.equal('durable-v1');
+      const other = await open(org, user);
+      try {
+        await uow.run(async (tx) => {
+          await repo.setHarnessFields(other._id, org, { harnessVersion: 'durable-v1' }, tx);
+          throw new Error('boom');
+        }, { org });
+      } catch {
+        /* expected */
+      }
+      if (fx.transactional) expect(await repo.findHarnessSession(other._id, org)).to.not.have.property('harnessVersion');
+    });
+
+    it('retention lists idle live sessions oldest first and expires one only while it is still idle', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const old = await open(org, user, { lastActivityAt: 10 });
+      const older = await open(org, user, { lastActivityAt: 5 });
+      await open(org, user, { lastActivityAt: 1_000 });
+      expect(await repo.listIdleSessions(org, 100, 10)).to.deep.equal([older._id, old._id]);
+      expect(await repo.listIdleSessions(org, 100, 1)).to.deep.equal([older._id]);
+      expect(await repo.expireIdleSession(org, old._id, 100, 4242)).to.equal(true);
+      expect(await repo.expireIdleSession(org, old._id, 100, 4243)).to.equal(false);
+      expect(await repo.expireIdleSession(org, older._id, 3, 4243)).to.equal(false);
+      expect(await repo.listIdleSessions(org, 100, 10)).to.deep.equal([older._id]);
+      const row = await repo.findHarnessSession(old._id, org);
+      expect(row!.session.isDeleted).to.equal(true);
+      expect(row!.erasureRequestedAt).to.equal(4242);
+    });
+
+    it('lists erasure requests of every org by (requestedAt, id) and pages on that cursor', async () => {
+      const orgA = fx.newId(), orgB = fx.newId(), user = fx.newId();
+      const base = 9_000_000_000_000 + Math.floor(Math.random() * 1_000_000) * 10;
+      const a = await open(orgA, user, { lastActivityAt: 1 });
+      const b = await open(orgB, user, { lastActivityAt: 1 });
+      const live = await open(orgA, user, { lastActivityAt: 1 });
+      await repo.softDelete(a._id, actor(orgA, user));
+      await repo.setHarnessFields(a._id, orgA, { erasureRequestedAt: base + 1 });
+      await repo.expireIdleSession(orgB, b._id, 2, base + 2);
+      await repo.setHarnessFields(live._id, orgA, { erasureRequestedAt: base + 1 });
+      const ours = (rows: Awaited<ReturnType<typeof repo.listErasureRequests>>) =>
+        rows.filter((r) => [a._id, b._id, live._id].includes(r.sessionId));
+      const first = ours(await repo.listErasureRequests({ requestedAt: base, sessionId: '0'.repeat(24) }, 1000));
+      expect(first.map((r) => [r.orgId, r.sessionId, r.requestedAt])).to.deep.equal([
+        [orgA, a._id, base + 1],
+        [orgB, b._id, base + 2],
+      ]);
+      expect(first[0]!.deletedBy).to.equal(user);
+      expect(first[1]).to.not.have.property('deletedBy');
+      const next = ours(await repo.listErasureRequests({ requestedAt: base + 1, sessionId: a._id }, 1000));
+      expect(next.map((r) => r.sessionId)).to.deep.equal([b._id]);
+    });
+
+    it('the backfill reads deleted sessions with their message and citation counts, per org or for every org', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const gone = await open(org, user);
+      await repo.appendMessages(gone._id, org, [botMsg('x', { citations: [{ citationId: fx.newId() }, { citationId: fx.newId() }] }), botMsg('y')]);
+      await repo.softDelete(gone._id, actor(org, user));
+      const kept = await open(org, user);
+      const listed = await repo.listDeletedSessions(null, 10, org);
+      expect(listed.map((r) => r.sessionId)).to.deep.equal([gone._id]);
+      expect(listed[0]).to.deep.include({ orgId: org, isDeleted: true, deletedBy: user, messages: 3, citations: 2 });
+      expect(listed[0]!.updatedAt).to.be.instanceOf(Date);
+      expect(await repo.listDeletedSessions(gone._id, 10, org)).to.deep.equal([]);
+      const everyOrg = await repo.listDeletedSessions(null, 100_000, null);
+      expect(everyOrg.map((r) => r.sessionId)).to.include(gone._id);
+      const states = await repo.sessionDeletionStates(org, [kept._id, gone._id, 'bad']);
+      expect(states.map((r) => [r.sessionId, r.isDeleted, r.messages])).to.deep.equal(
+        [[gone._id, true, 3], [kept._id, false, 1]].sort((x, y) => String(x[0]).localeCompare(String(y[0]))),
+      );
+      expect(await repo.sessionDeletionStates(fx.newId(), [gone._id])).to.deep.equal([]);
+    });
+
+    it("lists a person's own undeleted sessions by id, chats and agent chats", async () => {
+      const org = fx.newId(), user = fx.newId(), other = fx.newId();
+      const chat = await open(org, user, { title: 'c' });
+      const agentChat = await open(org, user, { title: 'a', sessionType: 'agent', agentKey: 'ag', conversationSource: 'agent_chat' });
+      const gone = await open(org, user);
+      await repo.softDelete(gone._id, actor(org, user));
+      await open(org, other);
+      const rows = await repo.listUserSessionsAfter(org, user, null, 10);
+      expect(rows.map((r) => [r._id, r.sessionType, r.title])).to.deep.equal([
+        [chat._id, 'chat', 'c'],
+        [agentChat._id, 'agent', 'a'],
+      ]);
+      expect(rows[1]!.agentKey).to.equal('ag');
+      expect((await repo.listUserSessionsAfter(org, user, chat._id, 10)).map((r) => r._id)).to.deep.equal([agentChat._id]);
+      expect(await repo.listUserSessionsAfter(org, user, null, 1)).to.have.length(1);
+    });
+
+    it('erasure removes a session with its messages and its citations, counting each', async () => {
+      const org = fx.newId(), user = fx.newId();
+      const [c1, c2] = await repo.createCitations([
+        { content: 'a', chunkIndex: 0, citationType: 't', metadata: { orgId: org, recordId: 'r1', mimeType: 'm', recordName: 'n', origin: 'o' } },
+        { content: 'b', chunkIndex: 1, citationType: 't', metadata: { orgId: org, recordId: 'r2', mimeType: 'm', recordName: 'n', origin: 'o' } },
+      ]);
+      const s = await open(org, user);
+      await repo.appendMessages(s._id, org, [botMsg('x')]);
+      expect(await repo.deleteCitations([c1!._id, c2!._id], fx.newId())).to.equal(0);
+      expect(await repo.deleteCitations([c1!._id, c2!._id, 'bad'], org)).to.equal(2);
+      expect(await repo.getCitations([c1!._id], org)).to.deep.equal([]);
+      expect(await repo.discardSession(s._id, fx.newId())).to.deep.equal({ sessions: 0, messages: 0 });
+      expect(await repo.discardSession(s._id, org)).to.deep.equal({ sessions: 1, messages: 2 });
+      expect(await repo.findHarnessSession(s._id, org)).to.equal(null);
+    });
+
+    it("marks an erased upload removed in the org's other conversations, and finds who carries an upload", async () => {
+      const org = fx.newId(), user = fx.newId();
+      const att = (recordId: string) => ({ ...userMsg('with file'), attachments: [{ recordId, recordName: 'f' }, { recordId: 'keep', recordName: 'k' }] }) as NewMessage;
+      const erased = await open(org, user, {}, att('up-1'));
+      const other = await open(org, user, {}, att('up-1'));
+      const unrelated = await open(org, user, {}, att('up-2'));
+      const carriers = await repo.findAttachmentCarriers(org, ['up-1', 'up-2', 'none']);
+      expect([...carriers.keys()].sort()).to.deep.equal(['up-1', 'up-2']);
+      expect([erased._id, other._id]).to.include(carriers.get('up-1'));
+      expect(carriers.get('up-2')).to.equal(unrelated._id);
+      expect((await repo.findAttachmentCarriers(fx.newId(), ['up-1'])).size).to.equal(0);
+      expect(await repo.markAttachmentsRemoved(org, erased._id, ['up-1'])).to.equal(1);
+      expect(await repo.markAttachmentsRemoved(org, erased._id, ['up-1'])).to.equal(0);
+      const [marked] = (await repo.listMessages(other._id, { orgId: org })).map((r) => r.dto);
+      expect(marked!.attachments).to.deep.equal([{ recordId: 'up-1', recordName: 'f', removed: true }, { recordId: 'keep', recordName: 'k' }]);
+      const [own] = (await repo.listMessages(erased._id, { orgId: org })).map((r) => r.dto);
+      expect(own!.attachments![0]).to.not.have.property('removed');
+      // a removed upload is still carried: that message names it
+      expect((await repo.findAttachmentCarriers(org, ['up-1'])).has('up-1')).to.equal(true);
+    });
+
+    it("a person's deletion: their own sessions with whether they are shared; a shared one moves to an admin, who no longer holds a share", async () => {
+      const org = fx.newId(), user = fx.newId(), reader = fx.newId(), admin = fx.newId();
+      const own = await open(org, user);
+      const shared = await open(org, user);
+      await repo.setSharing(CHAT, shared._id, { isShared: true, sharedWith: [{ userId: reader, accessLevel: 'read' }, { userId: admin, accessLevel: 'write' }] });
+      const gone = await open(org, user);
+      await repo.softDelete(gone._id, actor(org, user));
+      await open(org, reader);
+      expect(await repo.listOwnedForHandover(org, user)).to.deep.equal(
+        [{ sessionId: own._id, shared: false }, { sessionId: shared._id, shared: true }].sort((a, b) => a.sessionId.localeCompare(b.sessionId)),
+      );
+      expect(await repo.listOwnedForHandover(fx.newId(), user)).to.deep.equal([]);
+      expect(await repo.transferOwners(org, [shared._id], reader, admin)).to.equal(0);
+      expect(await repo.transferOwners(org, [shared._id, 'bad'], user, admin)).to.equal(1);
+      const moved = await repo.findById(shared._id);
+      expect(moved).to.include({ userId: admin, initiator: admin });
+      expect((moved!.sharedWith ?? []).map((m) => m.userId)).to.deep.equal([reader]);
+      expect((await repo.listOwnedForHandover(org, user)).map((r) => r.sessionId)).to.deep.equal([own._id]);
+    });
+
+    it("an org's deletion: every session id by id, sessions marked deleted for erasure once, the org's citations removed in batches", async () => {
+      const org = fx.newId(), user = fx.newId();
+      const a = await open(org, user);
+      const b = await open(org, user);
+      await repo.softDelete(b._id, actor(org, user));
+      await open(fx.newId(), user);
+      const ids = [a._id, b._id].sort();
+      expect(await repo.listSessionIdsAfter(org, null, 10)).to.deep.equal(ids);
+      expect(await repo.listSessionIdsAfter(org, ids[0]!, 10)).to.deep.equal([ids[1]]);
+      expect(await repo.listSessionIdsAfter(org, null, 1)).to.deep.equal([ids[0]]);
+      expect(await repo.markDeletedForErasure(org, [a._id, b._id, 'bad'], 100)).to.equal(2);
+      expect(await repo.markDeletedForErasure(org, [a._id], 200)).to.equal(1);
+      expect(await repo.markDeletedForErasure(fx.newId(), [a._id], 300)).to.equal(0);
+      expect(await repo.findHarnessSession(a._id, org)).to.deep.include({ erasureRequestedAt: 100 });
+      expect((await repo.findHarnessSession(a._id, org))!.session.isDeleted).to.equal(true);
+      const meta = (recordId: string) => ({ orgId: org, recordId, mimeType: 'm', recordName: 'n', origin: 'o' });
+      await repo.createCitations([1, 2, 3].map((i) => ({ content: 'c', chunkIndex: i, citationType: 't', metadata: meta(`r${String(i)}`) })));
+      expect(await repo.deleteOrgCitations(fx.newId(), 10)).to.equal(0);
+      expect(await repo.deleteOrgCitations(org, 2)).to.equal(2);
+      expect(await repo.deleteOrgCitations(org, 2)).to.equal(1);
+      expect(await repo.deleteOrgCitations(org, 2)).to.equal(0);
     });
   });
 }
+

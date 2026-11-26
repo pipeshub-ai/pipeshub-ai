@@ -3,6 +3,8 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
+import { Button } from '@radix-ui/themes';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { toast } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api';
 import { ServiceGate } from '@/app/components/ui/service-gate';
@@ -10,23 +12,21 @@ import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/s
 import {
   useFeatureFlagsStore,
   selectMcpEnabled,
+  selectFeatureFlagsKnown,
   selectFeatureFlagsLoaded,
 } from '@/lib/store/feature-flags-store';
-import { ConfirmationDialog } from '../../components';
+import { EnterpriseFeatureNotice, isMcpInstanceReadOnly } from '@/config';
+import { ConfirmationDialog, WorkspaceHeaderIconButton } from '../../components';
 import { orgInstancesWithStatus, useMcpTeamStore } from './store';
 import { McpServersApi } from '../api';
 import { mcpOAuthFailureMessage, useMcpOAuthPopup } from '../hooks/use-mcp-oauth-popup';
-import { McpAuthDialog, McpDisconnectDialog } from '../components';
-import type { McpMyServerEntry, McpToolInfo } from '../types';
-import { isOfferedForNewServers, replacementFor } from '../catalog-replacement';
+import { McpAddServerButton, McpAuthDialog, McpServerPage, McpServersLayout } from '../components';
+import type { McpMyServerEntry } from '../types';
+import { isOfferedForNewServers } from '../catalog-replacement';
 import { reloadMcpLogos } from '../logo-store';
-import {
-  McpCatalogLayout,
-  McpServerDetailsLayout,
-  McpInstanceConfigPanel,
-} from './components';
+import { McpInstanceConfigPanel } from './components';
 
-type ToolsResult = { tools: McpToolInfo[]; error?: string; loading: boolean };
+const LIST_PATH = '/workspace/mcp-servers/team/';
 
 function TeamMcpServersPageContent() {
   const { t } = useTranslation();
@@ -36,14 +36,29 @@ function TeamMcpServersPageContent() {
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const flagsLoaded = useFeatureFlagsStore(selectFeatureFlagsLoaded);
+  // A failed read's stand-in never redirects: only an answer that says it is off (UIADOPT1-FU-1).
+  const flagsKnown = useFeatureFlagsStore(selectFeatureFlagsKnown);
   const store = useMcpTeamStore();
   const [isDeleting, setIsDeleting] = useState(false);
   const [busyInstanceId, setBusyInstanceId] = useState<string | null>(null);
   const [authDialogInstance, setAuthDialogInstance] = useState<McpMyServerEntry | null>(null);
-  const [disconnecting, setDisconnecting] = useState<McpMyServerEntry | null>(null);
-  const [toolsState, setToolsState] = useState<Record<string, ToolsResult | undefined>>({});
 
-  const typeId = searchParams.get('typeId');
+  const serverId = searchParams.get('serverId');
+  const justAdded = searchParams.get('added') === '1';
+  // A link to one server's admin section (the chat's "approve its tools"): `?serverId=<id>&tab=hub`.
+  const focusAdminSection = searchParams.get('tab') === 'hub';
+  // Links written before a server had its own page: `?instance=<id>` opens that page.
+  const legacyInstance = searchParams.get('instance');
+  const selectedServer = useMemo(
+    () => (serverId ? store.instances.find((i) => i._id === serverId) ?? null : null),
+    [serverId, store.instances]
+  );
+
+  useEffect(() => {
+    if (!legacyInstance || serverId) return;
+    const tab = focusAdminSection ? '&tab=hub' : '';
+    router.replace(`${LIST_PATH}?serverId=${encodeURIComponent(legacyInstance)}${tab}`);
+  }, [legacyInstance, serverId, focusAdminSection, router]);
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
@@ -52,10 +67,10 @@ function TeamMcpServersPageContent() {
   }, [isProfileInitialized, isAdmin, router]);
 
   useEffect(() => {
-    if (flagsLoaded && !mcpEnabled) {
+    if (flagsKnown && !mcpEnabled) {
       router.replace('/workspace/general');
     }
-  }, [flagsLoaded, mcpEnabled, router]);
+  }, [flagsKnown, mcpEnabled, router]);
 
   // Loads overlap (a refresh during a delete) and can answer out of order: only the latest applies.
   const loadRequestIdRef = useRef(0);
@@ -88,6 +103,16 @@ function TeamMcpServersPageContent() {
     return () => useMcpTeamStore.getState().reset();
   }, [isProfileInitialized, isAdmin, flagsLoaded, mcpEnabled, loadData]);
 
+  const refresh = useCallback(() => {
+    void loadData();
+    void reloadMcpLogos();
+  }, [loadData]);
+
+  const openServer = useCallback(
+    (instance: McpMyServerEntry) => router.push(`${LIST_PATH}?serverId=${encodeURIComponent(instance._id)}`),
+    [router]
+  );
+
   const handleConfirmDelete = useCallback(async () => {
     const target = store.deleteTarget;
     if (!target) return;
@@ -97,6 +122,7 @@ function TeamMcpServersPageContent() {
       toast.success(t('workspace.mcpServers.toasts.deleted'));
       store.closeDeleteDialog();
       store.closeConfigPanel();
+      if (serverId === target._id) router.push(LIST_PATH);
       void loadData();
     } catch (error) {
       const detail = isProcessedError(error) ? error.message : undefined;
@@ -104,47 +130,7 @@ function TeamMcpServersPageContent() {
     } finally {
       setIsDeleting(false);
     }
-  }, [store, loadData, t]);
-
-  // ── Type-detail page (?typeId=) ──
-
-  const detailsTemplate = useMemo(
-    () => store.templates.find((tpl) => tpl.typeId === typeId) ?? null,
-    [store.templates, typeId]
-  );
-  const detailsHeader = useMemo(
-    () =>
-      detailsTemplate
-        ? {
-            typeId: detailsTemplate.typeId,
-            displayName: detailsTemplate.displayName,
-            description: detailsTemplate.description,
-            icon: detailsTemplate.icon,
-            notice: isOfferedForNewServers(detailsTemplate)
-              ? null
-              : t('workspace.mcpServers.replacedNotice', {
-                  name: replacementFor(detailsTemplate, store.templates)?.displayName ?? detailsTemplate.replacedBy,
-                }),
-          }
-        : null,
-    [detailsTemplate, store.templates, t]
-  );
-  const detailsInstances = useMemo(
-    () => store.instances.filter((i) => i.typeId === typeId),
-    [store.instances, typeId]
-  );
-  const showDetailsPage = Boolean(typeId);
-
-  const handleManageTemplate = useCallback(
-    (typeIdToOpen: string) => {
-      router.push(`/workspace/mcp-servers/team/?typeId=${encodeURIComponent(typeIdToOpen)}`);
-    },
-    [router]
-  );
-
-  const handleBackToList = useCallback(() => {
-    router.push('/workspace/mcp-servers/team/');
-  }, [router]);
+  }, [store, loadData, t, serverId, router]);
 
   // ── Auth: OAuth popup + api_token/headers dialog (mirrors the personal page) ──
 
@@ -167,6 +153,8 @@ function TeamMcpServersPageContent() {
     },
   });
 
+  // A first sign-in and a new one take the same path: a new sign-in replaces the stored tokens
+  // only when it succeeds, so a blocked or cancelled popup leaves the working connection as it was.
   const handleAuthenticate = useCallback(
     (instance: McpMyServerEntry) => {
       if (instance.authMode === 'oauth') {
@@ -177,20 +165,6 @@ function TeamMcpServersPageContent() {
       setAuthDialogInstance(instance);
     },
     [startOAuthPopup]
-  );
-
-  const handleReauthenticate = useCallback(
-    async (instance: McpMyServerEntry) => {
-      if (instance.authMode === 'oauth') {
-        // A new sign-in replaces the stored tokens only when it succeeds, so a blocked or
-        // cancelled popup leaves the working connection as it was.
-        setBusyInstanceId(instance._id);
-        void startOAuthPopup(instance._id);
-        return;
-      }
-      setAuthDialogInstance(instance);
-    },
-    [startOAuthPopup, t]
   );
 
   const handleDisconnect = useCallback(
@@ -210,68 +184,73 @@ function TeamMcpServersPageContent() {
     [loadData, t]
   );
 
-  // ── Tool discovery (on-demand, per instance) ──
-
-  const handleDiscoverTools = useCallback(
-    async (instance: McpMyServerEntry) => {
-      setToolsState((prev) => ({ ...prev, [instance._id]: { tools: [], loading: true } }));
-      try {
-        const res = await McpServersApi.getInstanceTools(instance._id);
-        setToolsState((prev) => ({ ...prev, [instance._id]: { tools: res.tools, loading: false } }));
-      } catch (error) {
-        const detail = isProcessedError(error) ? error.message : t('workspace.mcpServers.toasts.discoveryError');
-        setToolsState((prev) => ({ ...prev, [instance._id]: { tools: [], error: detail, loading: false } }));
-      }
-    },
-    [t]
-  );
-
   if (!isProfileInitialized || isAdmin === false || !flagsLoaded || !mcpEnabled) return null;
+
+  const canEdit = (instance: McpMyServerEntry) => !isMcpInstanceReadOnly(instance);
 
   return (
     <>
-      {showDetailsPage ? (
-        <McpServerDetailsLayout
-          header={detailsHeader}
-          instances={detailsInstances}
-          isLoading={store.isLoading}
-          onBack={handleBackToList}
-          onAddInstance={
-            detailsTemplate && isOfferedForNewServers(detailsTemplate)
-              ? () => store.openCreateFromTemplate(detailsTemplate)
-              : undefined
-          }
-          onManageInstance={(instance) => store.openEditInstance(instance)}
-          onDeleteInstance={(instance) => store.openDeleteDialog(instance)}
-          onAuthenticate={handleAuthenticate}
-          onReauthenticate={(instance) => void handleReauthenticate(instance)}
-          onDisconnect={setDisconnecting}
-          busyInstanceId={busyInstanceId}
-          onRefreshAll={() => {
-            void loadData();
-            void reloadMcpLogos();
-          }}
-          toolsState={toolsState}
-          onDiscoverTools={(instance) => void handleDiscoverTools(instance)}
+      {selectedServer ? (
+        <McpServerPage
+          key={selectedServer._id}
+          instance={selectedServer}
+          templates={store.templates}
+          isAdmin
+          rulesEditable={false}
+          isBusy={busyInstanceId === selectedServer._id}
+          onBack={() => router.push(LIST_PATH)}
+          onAuthenticate={() => handleAuthenticate(selectedServer)}
+          onReauthenticate={() => handleAuthenticate(selectedServer)}
+          onDisconnect={() => handleDisconnect(selectedServer)}
+          onEdit={canEdit(selectedServer) ? () => store.openEditInstance(selectedServer) : undefined}
+          justAdded={justAdded}
+          onDismissAdded={() => router.replace(`${LIST_PATH}?serverId=${encodeURIComponent(selectedServer._id)}`)}
+          onDelete={canEdit(selectedServer) ? () => store.openDeleteDialog(selectedServer) : undefined}
+          focusAdminSection={focusAdminSection}
         />
       ) : (
-        <McpCatalogLayout
-          templates={store.templates}
-          instances={store.instances}
+        <McpServersLayout
+          title={t('workspace.mcpServers.team.title')}
+          subtitle={t('workspace.mcpServers.team.subtitle')}
+          actions={
+            <>
+              <Button
+                size="2"
+                variant="soft"
+                color="gray"
+                className="touch-hit"
+                onClick={() => router.push('/workspace/mcp-servers/personal/')}
+                style={{ cursor: 'pointer' }}
+              >
+                {t('workspace.sidebar.nav.yourMcpServers')}
+                <MaterialIcon name="arrow_forward" size={16} color="var(--gray-11)" />
+              </Button>
+              <McpAddServerButton onClick={store.openCreateCustom} />
+              <WorkspaceHeaderIconButton icon="refresh" onClick={refresh} aria-label={t('action.refresh')} />
+            </>
+          }
           isLoading={store.isLoading}
           searchQuery={store.searchQuery}
           onSearchChange={store.setSearchQuery}
-          onAddCustom={store.openCreateCustom}
-          onSetupTemplate={store.openCreateFromTemplate}
-          onAddInstanceForTemplate={store.openCreateFromTemplate}
-          onManageTemplate={(template) => handleManageTemplate(template.typeId)}
-          onEditInstance={(instance) => store.openEditInstance(instance)}
-          onDeleteInstance={(instance) => store.openDeleteDialog(instance)}
-          onRefresh={() => {
-            void loadData();
-            void reloadMcpLogos();
-          }}
-          onOpenPersonal={() => router.push('/workspace/mcp-servers/personal/')}
+          instances={store.instances}
+          templates={store.templates}
+          catalog={store.templates.filter(isOfferedForNewServers)}
+          catalogDescription={t('workspace.mcpServers.catalog.description')}
+          emptyTitle={t('workspace.mcpServers.team.emptyTitle')}
+          emptyDescription={t('workspace.mcpServers.team.emptyDescription')}
+          isAdmin
+          busyInstanceId={busyInstanceId}
+          onOpen={openServer}
+          onConnect={handleAuthenticate}
+          onReconnect={handleAuthenticate}
+          onEdit={(instance) => (canEdit(instance) ? store.openEditInstance(instance) : openServer(instance))}
+          onAdd={store.openCreateFromTemplate}
+          footer={
+            <EnterpriseFeatureNotice
+              title={t('workspace.mcpServers.enterprise.userServersTitle')}
+              description={t('workspace.mcpServers.enterprise.userServersDescription')}
+            />
+          }
         />
       )}
 
@@ -283,22 +262,10 @@ function TeamMcpServersPageContent() {
         onOpenChange={(open) => {
           if (!open) store.closeConfigPanel();
         }}
-        onSaved={() => void loadData()}
-        onRequestDelete={(instance) => store.openDeleteDialog(instance)}
-        busyInstanceId={busyInstanceId}
-        onAuthenticate={handleAuthenticate}
-        onReauthenticate={(instance) => void handleReauthenticate(instance)}
-        onDisconnect={(instance) => void handleDisconnect(instance)}
-      />
-
-      <McpDisconnectDialog
-        instance={disconnecting}
-        onOpenChange={(open) => {
-          if (!open) setDisconnecting(null);
-        }}
-        onConfirm={() => {
-          if (disconnecting) void handleDisconnect(disconnecting);
-          setDisconnecting(null);
+        onSaved={({ id, created }) => {
+          void loadData();
+          // A new server opens on its own page, where its sign-in is the next step.
+          if (created) router.push(`${LIST_PATH}?serverId=${encodeURIComponent(id)}&added=1`);
         }}
       />
 

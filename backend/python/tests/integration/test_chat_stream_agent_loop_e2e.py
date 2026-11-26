@@ -3,7 +3,7 @@
 run_chat_stream()` -> `PipesHubAgentFactory`/`AgentContext`/`AnswerFinalizer`
 -> SSE bytes back out through the `StreamingResponse`.
 
-Unlike `tests/unit/agents/chat_modes/test_bridge.py` (which patches
+Unlike `tests/unit/agents/chat_modes/test_chat_turn.py` (which patches
 `PipesHubAgentFactory.create` to unit-test `run_chat_stream()` in
 isolation) or `tests/unit/api/routes/test_chatbot_agent_loop_dispatch.py`
 (which patches `run_chat_stream` itself to unit-test the route seam), this
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,11 +27,24 @@ from fastapi.responses import StreamingResponse
 from app.api.routes.chatbot import askAIStream
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.web.models import WebResult
+from tests.support.bound_org import bound_like_auth
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+_USER = {"orgId": "org-1", "userId": "user-1", "email": "user@corp.example"}
+
+
+@pytest.fixture(autouse=True)
+def _bound_as_auth() -> Iterator[None]:
+    """The route is called directly, so bind what ``authMiddleware`` would have bound for its user."""
+    with bound_like_auth(_USER):
+        yield
 
 
 def _mock_request(body: dict) -> MagicMock:
     request = MagicMock(spec=Request)
-    request.state.user = {"orgId": "org-1", "userId": "user-1", "email": "user@corp.example"}
+    request.state.user = dict(_USER)
     request.query_params = {"sendUserInfo": True}
     request.json = AsyncMock(return_value=body)
     request.app.container.logger.return_value = MagicMock()
@@ -128,8 +142,8 @@ def _events_by_name(chunks: list[str]) -> dict[str, list[dict]]:
 @pytest.fixture
 def _no_connectors():
     # `run_chat_stream()` imports these lazily inside its own body (see
-    # `bridge.py`), so they must be patched at their SOURCE modules, not
-    # as `chat_modes.bridge` attributes.
+    # `chat_modes/setup.py`), so they must be patched at their SOURCE modules, not
+    # as `chat_modes.setup` attributes.
     with (
         patch(
             "app.utils.execute_query.has_sql_connector_configured",
@@ -160,7 +174,7 @@ def _agent_loop_llm():
 def _fake_agent_run():
     """Real `run_chat_stream()` -> real `PipesHubAgentFactory` construction
     would need a live LLM/tool registry -- the one boundary this E2E test
-    still mocks, at the exact same seam `test_bridge.py` uses."""
+    still mocks, at the exact same seam `test_chat_turn.py` uses."""
 
     async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
         agent = MagicMock()
@@ -174,8 +188,8 @@ def _fake_agent_run():
         return agent, MagicMock(), MagicMock(constraints=[]), []
 
     with (
-        patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
-        patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+        patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
     ):
         yield
 
@@ -308,10 +322,10 @@ class TestChatStreamAgentLoopEndToEnd:
 
         with (
             patch(
-                "app.agents.chat_modes.bridge.PipesHubAgentFactory.create",
+                "app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create",
                 new=_fake_create_capturing_goal,
             ),
-            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
             patch(
                 "app.modules.transformers.blob_storage.BlobStorage.get_record_from_storage",
                 new=AsyncMock(return_value=fake_record),
@@ -408,7 +422,7 @@ class TestWebSearchCitationEndToEnd:
         request = _mock_request({"query": "Latest news on the Fed rate decision", "chatMode": "web_search"})
 
         with (
-            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
             patch("app.web.container.search_providers", return_value=[canned_provider]),
         ):
             response = await askAIStream(

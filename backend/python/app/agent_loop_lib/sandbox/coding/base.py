@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from enum import Enum
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.agent_loop_lib.core.exceptions import AgentLoopError
 from app.agent_loop_lib.sandbox.base import SandboxInfo
@@ -39,8 +40,13 @@ __all__ = [
     "CodingSandboxBackend",
     "CodingLanguage",
     "CodingSandboxError",
+    "CodeOutOfMemory",
     "EnvironmentSetupError",
+    "OUT_OF_MEMORY_EXIT",
+    "memory_limit_end",
+    "ran_out_of_memory",
     "OUTPUT_DIR_NAME",
+    "WORKSPACE_DIR_NAME",
     "normalize_sandbox_path",
     "IsolationLevel",
     "SandboxCapabilities",
@@ -59,6 +65,12 @@ OUTPUT_DIR_NAME = "output"
 # container env), which resolves to `/output` in the container.
 _OUTPUT_DIR_ALIASES = ("${OUTPUT_DIR}", "$OUTPUT_DIR", "/output")
 
+# The chat's workspace folder, relative to the sandbox working dir: `$WORKSPACE_DIR` in a run. A durable run stages
+# the session workspace here and saves what a call leaves here (`app/harness/assembly/run_code_workspace.py`), the
+# same files an engine sees at `/workspace` and a person's `/run` line runs in.
+WORKSPACE_DIR_NAME = "workspace"
+_WORKSPACE_DIR_ALIASES = ("${WORKSPACE_DIR}", "$WORKSPACE_DIR")
+
 
 def normalize_sandbox_path(path: str) -> str:
     """Rewrite the ways a model spells the deliverable directory into the
@@ -76,12 +88,30 @@ def normalize_sandbox_path(path: str) -> str:
     silently reinterpreting it as sandbox-relative.
     """
     cleaned = path.strip()
-    for alias in _OUTPUT_DIR_ALIASES:
-        if cleaned == alias:
-            return OUTPUT_DIR_NAME
-        if cleaned.startswith(alias + "/"):
-            return f"{OUTPUT_DIR_NAME}/{cleaned[len(alias) + 1:].lstrip('/')}"
+    for aliases, name in ((_OUTPUT_DIR_ALIASES, OUTPUT_DIR_NAME), (_WORKSPACE_DIR_ALIASES, WORKSPACE_DIR_NAME)):
+        for alias in aliases:
+            if cleaned == alias:
+                return name
+            if cleaned.startswith(alias + "/"):
+                return f"{name}/{cleaned[len(alias) + 1:].lstrip('/')}"
     return cleaned
+
+
+_ENTRY_FILE_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*")
+
+
+def validate_entry_file(entry: str) -> str:
+    """`entry` if it is a plain relative path inside the working directory:
+    segments of letters, digits, ``_``, ``.`` and ``-`` that do not start
+    with ``.`` or ``-``, so no ``..``, no absolute path, no shell
+    metacharacters (backends put it in a ``sh -c`` command). Raises
+    `ValueError` otherwise."""
+    if not isinstance(entry, str) or len(entry) > 255 or not _ENTRY_FILE_RE.fullmatch(entry):
+        raise ValueError(
+            f"entry_file {entry!r} must be a relative path inside the working directory "
+            "(letters, digits, '_', '.', '-' and '/', no '..')"
+        )
+    return entry
 
 
 class CodingSandboxError(AgentLoopError):
@@ -106,6 +136,7 @@ class ErrorCategory(str, Enum):
     IMPORT = "import"
     TIMEOUT = "timeout"
     PERMISSION = "permission"
+    OUT_OF_MEMORY = "out_of_memory"
     UNKNOWN = "unknown"
 
 
@@ -152,6 +183,11 @@ class CodeRequest(BaseModel):
     allow_network: bool = False
     entry_file: str | None = None
 
+    @field_validator("entry_file")
+    @classmethod
+    def _entry_file_inside_working_dir(cls, value: str | None) -> str | None:
+        return None if value is None else validate_entry_file(value)
+
 
 class CodeResult(BaseModel):
     """Uniform result envelope for a code run.
@@ -173,10 +209,66 @@ class CodeResult(BaseModel):
     duration_ms: float
     error_analysis: ErrorAnalysis | None = None
     artifacts: list[str] = Field(default_factory=list)
+    # The sandbox's memory limit in MB, when that limit ended the run (R32SECCOMP-FU-1).
+    out_of_memory_mb: int | None = None
 
     @property
     def success(self) -> bool:
         return self.exit_code == 0
+
+
+class CodeOutOfMemory(Exception):
+    """The sandbox's memory limit ended the code (R32SECCOMP-FU-1): under runc the kernel killed its process, under
+    gVisor the whole sandbox went. A code-level failure, so ``execute`` turns it into a ``CodeResult`` that names the
+    limit; never a ``CodingSandboxError``, which reads as the tool failing."""
+
+    def __init__(self, memory_mb: int, *, stdout: str = "", stderr: str = "") -> None:
+        super().__init__(ran_out_of_memory(memory_mb))
+        self.memory_mb = memory_mb
+        self.stdout = stdout
+        self.stderr = stderr
+
+    def result(self, language: str, duration_ms: float) -> CodeResult:
+        """The run as ``run_code`` reports it: a failed run whose words and analysis name the limit."""
+        said = str(self)
+        return CodeResult(
+            stdout=self.stdout,
+            stderr=f"{said}\n{self.stderr}".strip(),
+            exit_code=OUT_OF_MEMORY_EXIT,
+            language=language,
+            duration_ms=duration_ms,
+            error_analysis=ErrorAnalysis(
+                category=ErrorCategory.OUT_OF_MEMORY,
+                message=said,
+                suggestion=(
+                    "Use less memory: read and process the data in smaller pieces, or stream it, instead of "
+                    "loading it all at once."
+                ),
+            ),
+            out_of_memory_mb=self.memory_mb,
+        )
+
+
+# What a process the kernel's OOM killer ended exits with (128 + SIGKILL), and so what ``run_code`` reports.
+OUT_OF_MEMORY_EXIT = 137
+
+
+def ran_out_of_memory(memory_mb: int, what: str = "code") -> str:
+    """How a person is told the sandbox's memory limit stopped their code (or their ``/run`` command)."""
+    from harness_core.sandbox.errors import memory_limit_text
+
+    return f"The {what} ran out of memory (limit {memory_limit_text(memory_mb)}) and was stopped."
+
+
+def memory_limit_end(
+    exit_code: int, *, oom_killed: bool, memory_mb: int, stdout: str = "", stderr: str = ""
+) -> CodeOutOfMemory | None:
+    """The one reading every container backend makes of a run's end (R33JGAPS-FU-2): its process was killed (exit
+    137) and the sandbox says its memory limit did it. A kill for any other reason, or a sandbox that cannot tell,
+    is the code's own failure, read as before."""
+    if exit_code != OUT_OF_MEMORY_EXIT or not oom_killed:
+        return None
+    return CodeOutOfMemory(memory_mb, stdout=stdout, stderr=stderr)
 
 
 class InstallResult(BaseModel):
@@ -216,6 +308,9 @@ class SandboxContext(BaseModel):
     user_id: str | None = None
     conversation_id: str | None = None
     request_id: str | None = None
+    # A durable run's ids: its sandboxes are reaped with the run (or the attempt that left them).
+    run_id: str | None = None
+    attempt_id: str | None = None
 
 
 class SandboxRef(BaseModel):
@@ -330,6 +425,19 @@ class CodingSandboxBackend(ABC):
         """Read a file from the sandbox's working directory. Same
         traversal restriction as `upload_file`."""
         ...
+
+    async def read_file_head(self, path: str, max_bytes: int) -> tuple[bytes, bool]:
+        """At most `max_bytes` of a file, and whether the file has more.
+        Backends that can read part of a file override this so a large file
+        is never read whole; this default downloads it and cuts it."""
+        content = await self.download_file(path)
+        max_bytes = max(0, int(max_bytes))
+        return content[:max_bytes], len(content) > max_bytes
+
+    async def file_size(self, path: str) -> int | None:
+        """Size in bytes of a file, or None when the backend cannot tell
+        without reading it. Same traversal restriction as `download_file`."""
+        return None
 
     @abstractmethod
     async def list_files(self) -> list[str]:

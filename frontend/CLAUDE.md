@@ -63,6 +63,7 @@ File and folder names are kebab-case (`kb-data-table.tsx`), hooks are `use-*.ts`
 - `className` is only for classes defined in `globals.css`: mainly `material-icons-outlined` (Material Icons font) and `no-scrollbar`, plus a few feature classes for animations and React Flow. Do not add utility-class strings.
 - Hover and active states that Radix props cannot express are done with React state and inline styles.
 - The theme is set once in `app/components/theme-provider.tsx` (accent `jade`, gray `olive`, radius `medium`, light/dark/system appearance). Do not wrap subtrees in another `<Theme>`.
+- Text in a hue (status words, links, icons) is step 11 (`var(--red-11)`, `color="amber"`), never 9 or 10. `globals.css` darkens the light step 11 of the hues the UI writes text in so it holds 4.5:1 on the page and neutral steps 1-5; a new hue used as text must pass `text-step-contrast.test.ts` (TEXTSTEP-6/7) or get its own line in that `globals.css` block.
 - Icons: use `MaterialIcon` from `app/components/ui/`.
 - Read `docs/style-guide.md` for Radix usage details.
 
@@ -75,7 +76,7 @@ File and folder names are kebab-case (`kb-data-table.tsx`), hooks are `use-*.ts`
 ## State
 
 - Zustand. Page stores live in the page's `store.ts`; global stores in `lib/store/`. Most stores use the `immer` and `devtools` middleware; follow the store next to yours.
-- `lib/store/auth-store.ts` persists tokens and is read by the API client. Use stores instead of prop drilling across more than a couple of levels.
+- `lib/store/auth-store.ts` holds the access token in memory and is read by the API client; the refresh token is an HttpOnly cookie (desktop: the OS keychain), never in web storage (ADR-WEB-02, enforced by `lib/__tests__/no-token-in-web-storage.test.ts`). Use stores instead of prop drilling across more than a couple of levels.
 
 ## API and data fetching
 

@@ -9,6 +9,7 @@ files:
   - electron/compile/deep-link.js
   - electron/compile/navigation.js
   - electron/compile/static-export.js
+  - electron/compile/session-vault.js
   - electron/package.json
   - electron/compile/local-sync/**/*.js
   - "!electron/compile/local-sync/**/*.test.js"

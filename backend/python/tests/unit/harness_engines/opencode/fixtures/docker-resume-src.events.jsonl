@@ -1,0 +1,104 @@
+{"id": "evt_001", "type": "server.connected", "properties": {}}
+{"id": "evt_002", "type": "session.created", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "jolly-eagle", "version": "1.18.34", "projectID": "<SHA1>", "directory": "/workspace", "path": "", "title": "resume-src", "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938453748, "updated": 1790938453748}}}}
+{"id": "evt_003", "type": "session.updated", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "jolly-eagle", "projectID": "<SHA1>", "directory": "/workspace", "path": "", "title": "resume-src", "agent": "pipeshub", "model": {"id": "fake-model", "providerID": "pipeshub", "variant": "default"}, "version": "1.18.34", "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938453748, "updated": 1790938454087}}}}
+{"id": "evt_004", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_001", "role": "user", "sessionID": "ses_001", "time": {"created": 1790938454087}, "agent": "pipeshub", "model": {"providerID": "pipeshub", "modelID": "fake-model"}}}}
+{"id": "evt_005", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"type": "text", "text": "first turn", "messageID": "msg_001", "sessionID": "ses_001", "id": "prt_001"}, "time": 1790938454185}}
+{"id": "evt_006", "type": "session.updated", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "jolly-eagle", "projectID": "<SHA1>", "directory": "/workspace", "path": "", "title": "resume-src", "agent": "pipeshub", "model": {"id": "fake-model", "providerID": "pipeshub", "variant": "default"}, "version": "1.18.34", "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938453748, "updated": 1790938454249}}}}
+{"id": "evt_007", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "busy"}}}
+{"id": "evt_008", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_002", "parentID": "msg_001", "role": "assistant", "mode": "pipeshub", "agent": "pipeshub", "path": {"cwd": "/workspace", "root": "/workspace"}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "modelID": "fake-model", "providerID": "pipeshub", "time": {"created": 1790938456970}, "sessionID": "ses_001"}}}
+{"id": "evt_009", "type": "session.updated", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "jolly-eagle", "projectID": "<SHA1>", "directory": "/workspace", "path": "", "title": "resume-src", "agent": "pipeshub", "model": {"id": "fake-model", "providerID": "pipeshub", "variant": "default"}, "version": "1.18.34", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938453748, "updated": 1790938457637}}}}
+{"id": "evt_010", "type": "session.diff", "properties": {"sessionID": "ses_001", "diff": []}}
+{"id": "evt_011", "type": "plugin.added", "properties": {"id": "core/config-reference"}}
+{"id": "evt_012", "type": "plugin.added", "properties": {"id": "agent"}}
+{"id": "evt_013", "type": "plugin.added", "properties": {"id": "command"}}
+{"id": "evt_014", "type": "plugin.added", "properties": {"id": "skill"}}
+{"id": "evt_015", "type": "plugin.added", "properties": {"id": "models-dev"}}
+{"id": "evt_016", "type": "plugin.added", "properties": {"id": "config-agent"}}
+{"id": "evt_017", "type": "plugin.added", "properties": {"id": "config-command"}}
+{"id": "evt_018", "type": "plugin.added", "properties": {"id": "config-skill"}}
+{"id": "evt_019", "type": "plugin.added", "properties": {"id": "alibaba"}}
+{"id": "evt_020", "type": "plugin.added", "properties": {"id": "amazon-bedrock"}}
+{"id": "evt_021", "type": "plugin.added", "properties": {"id": "anthropic"}}
+{"id": "evt_022", "type": "plugin.added", "properties": {"id": "azure-cognitive-services"}}
+{"id": "evt_023", "type": "plugin.added", "properties": {"id": "azure"}}
+{"id": "evt_024", "type": "plugin.added", "properties": {"id": "cerebras"}}
+{"id": "evt_025", "type": "plugin.added", "properties": {"id": "cloudflare-ai-gateway"}}
+{"id": "evt_026", "type": "plugin.added", "properties": {"id": "cloudflare-workers-ai"}}
+{"id": "evt_027", "type": "plugin.added", "properties": {"id": "cohere"}}
+{"id": "evt_028", "type": "plugin.added", "properties": {"id": "deepinfra"}}
+{"id": "evt_029", "type": "plugin.added", "properties": {"id": "gateway"}}
+{"id": "evt_030", "type": "plugin.added", "properties": {"id": "github-copilot"}}
+{"id": "evt_031", "type": "plugin.added", "properties": {"id": "gitlab"}}
+{"id": "evt_032", "type": "plugin.added", "properties": {"id": "google"}}
+{"id": "evt_033", "type": "plugin.added", "properties": {"id": "google-vertex-anthropic"}}
+{"id": "evt_034", "type": "plugin.added", "properties": {"id": "google-vertex"}}
+{"id": "evt_035", "type": "plugin.added", "properties": {"id": "groq"}}
+{"id": "evt_036", "type": "plugin.added", "properties": {"id": "kilo"}}
+{"id": "evt_037", "type": "plugin.added", "properties": {"id": "llmgateway"}}
+{"id": "evt_038", "type": "plugin.added", "properties": {"id": "mistral"}}
+{"id": "evt_039", "type": "plugin.added", "properties": {"id": "nvidia"}}
+{"id": "evt_040", "type": "plugin.added", "properties": {"id": "opencode"}}
+{"id": "evt_041", "type": "plugin.added", "properties": {"id": "snowflake-cortex"}}
+{"id": "evt_042", "type": "plugin.added", "properties": {"id": "openai-compatible"}}
+{"id": "evt_043", "type": "plugin.added", "properties": {"id": "openai"}}
+{"id": "evt_044", "type": "plugin.added", "properties": {"id": "openrouter"}}
+{"id": "evt_045", "type": "plugin.added", "properties": {"id": "perplexity"}}
+{"id": "evt_046", "type": "plugin.added", "properties": {"id": "sap-ai-core"}}
+{"id": "evt_047", "type": "plugin.added", "properties": {"id": "togetherai"}}
+{"id": "evt_048", "type": "catalog.updated", "properties": {}}
+{"id": "evt_049", "type": "plugin.added", "properties": {"id": "vercel"}}
+{"id": "evt_050", "type": "plugin.added", "properties": {"id": "venice"}}
+{"id": "evt_051", "type": "plugin.added", "properties": {"id": "xai"}}
+{"id": "evt_052", "type": "plugin.added", "properties": {"id": "zenmux"}}
+{"id": "evt_053", "type": "plugin.added", "properties": {"id": "dynamic-provider"}}
+{"id": "evt_054", "type": "plugin.added", "properties": {"id": "config-plugin"}}
+{"id": "evt_055", "type": "plugin.added", "properties": {"id": "config-provider"}}
+{"id": "evt_056", "type": "plugin.added", "properties": {"id": "variant"}}
+{"id": "evt_057", "type": "reference.updated", "properties": {}}
+{"id": "evt_058", "type": "integration.updated", "properties": {}}
+{"id": "evt_059", "type": "catalog.updated", "properties": {}}
+{"id": "evt_060", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "busy"}}}
+{"id": "evt_061", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_002", "messageID": "msg_002", "sessionID": "ses_001", "type": "step-start"}, "time": 1790938460668}}
+{"id": "evt_062", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_003", "messageID": "msg_002", "sessionID": "ses_001", "type": "text", "text": "", "time": {"start": 1790938460683}}, "time": 1790938460684}}
+{"id": "evt_063", "type": "message.part.delta", "properties": {"sessionID": "ses_001", "messageID": "msg_002", "partID": "prt_003", "field": "text", "delta": "ok"}}
+{"id": "evt_064", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_003", "messageID": "msg_002", "sessionID": "ses_001", "type": "text", "text": "ok", "time": {"start": 1790938460683, "end": 1790938460703}}, "time": 1790938460703}}
+{"id": "evt_065", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_004", "reason": "stop", "messageID": "msg_002", "sessionID": "ses_001", "type": "step-finish", "tokens": {"total": 15, "input": 10, "output": 5, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "cost": 0}, "time": 1790938460723}}
+{"id": "evt_066", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_002", "parentID": "msg_001", "role": "assistant", "mode": "pipeshub", "agent": "pipeshub", "path": {"cwd": "/workspace", "root": "/workspace"}, "cost": 0, "tokens": {"total": 15, "input": 10, "output": 5, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "modelID": "fake-model", "providerID": "pipeshub", "time": {"created": 1790938456970, "completed": 1790938460748}, "sessionID": "ses_001", "finish": "stop"}}}
+{"id": "evt_067", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_002", "parentID": "msg_001", "role": "assistant", "mode": "pipeshub", "agent": "pipeshub", "path": {"cwd": "/workspace", "root": "/workspace"}, "cost": 0, "tokens": {"total": 15, "input": 10, "output": 5, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "modelID": "fake-model", "providerID": "pipeshub", "time": {"created": 1790938456970, "completed": 1790938460748}, "sessionID": "ses_001", "finish": "stop"}}}
+{"id": "evt_068", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "busy"}}}
+{"id": "evt_069", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "idle"}}}
+{"id": "evt_070", "type": "session.idle", "properties": {"sessionID": "ses_001"}}
+{"id": "evt_071", "type": "session.updated", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "jolly-eagle", "projectID": "<SHA1>", "directory": "/workspace", "path": "", "title": "resume-src", "agent": "pipeshub", "model": {"id": "fake-model", "providerID": "pipeshub", "variant": "default"}, "version": "1.18.34", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 10, "output": 5, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938453748, "updated": 1790938460766}}}}
+{"id": "evt_072", "type": "session.diff", "properties": {"sessionID": "ses_001", "diff": []}}
+{"id": "evt_073", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_003", "role": "user", "sessionID": "ses_001", "time": {"created": 1790938460992}, "agent": "pipeshub", "model": {"providerID": "pipeshub", "modelID": "fake-model"}}}}
+{"id": "evt_074", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"type": "text", "text": "CALLTOOL:pipeshub_pipeshub_search:{\"query\":\"turn two\"}", "messageID": "msg_003", "sessionID": "ses_001", "id": "prt_005"}, "time": 1790938461011}}
+{"id": "evt_075", "type": "session.updated", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "jolly-eagle", "projectID": "<SHA1>", "directory": "/workspace", "path": "", "title": "resume-src", "agent": "pipeshub", "model": {"id": "fake-model", "providerID": "pipeshub", "variant": "default"}, "version": "1.18.34", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 10, "output": 5, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938453748, "updated": 1790938461016}}}}
+{"id": "evt_076", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "busy"}}}
+{"id": "evt_077", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_004", "parentID": "msg_003", "role": "assistant", "mode": "pipeshub", "agent": "pipeshub", "path": {"cwd": "/workspace", "root": "/workspace"}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "modelID": "fake-model", "providerID": "pipeshub", "time": {"created": 1790938461034}, "sessionID": "ses_001"}}}
+{"id": "evt_078", "type": "session.updated", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "jolly-eagle", "projectID": "<SHA1>", "directory": "/workspace", "path": "", "title": "resume-src", "agent": "pipeshub", "model": {"id": "fake-model", "providerID": "pipeshub", "variant": "default"}, "version": "1.18.34", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 10, "output": 5, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938453748, "updated": 1790938461073}}}}
+{"id": "evt_079", "type": "session.diff", "properties": {"sessionID": "ses_001", "diff": []}}
+{"id": "evt_080", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "busy"}}}
+{"id": "evt_081", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_006", "messageID": "msg_004", "sessionID": "ses_001", "type": "step-start"}, "time": 1790938461119}}
+{"id": "evt_082", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_007", "messageID": "msg_004", "sessionID": "ses_001", "type": "tool", "tool": "pipeshub_pipeshub_search", "callID": "call_1", "state": {"status": "pending", "input": {}, "raw": ""}}, "time": 1790938461129}}
+{"id": "evt_083", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"type": "tool", "tool": "pipeshub_pipeshub_search", "callID": "call_1", "state": {"status": "running", "input": {"query": "turn two"}, "time": {"start": 1790938461157}}, "id": "prt_007", "sessionID": "ses_001", "messageID": "msg_004"}, "time": 1790938461157}}
+{"id": "evt_084", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"type": "tool", "tool": "pipeshub_pipeshub_search", "callID": "call_1", "state": {"status": "completed", "input": {"query": "turn two"}, "output": "RESULT for pipeshub_search {\"query\": \"turn two\"}", "metadata": {"truncated": false}, "title": "", "time": {"start": 1790938461157, "end": 1790938461181}}, "id": "prt_007", "sessionID": "ses_001", "messageID": "msg_004"}, "time": 1790938461181}}
+{"id": "evt_085", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_008", "reason": "tool-calls", "messageID": "msg_004", "sessionID": "ses_001", "type": "step-finish", "tokens": {"total": 15, "input": 10, "output": 5, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "cost": 0}, "time": 1790938461190}}
+{"id": "evt_086", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_004", "parentID": "msg_003", "role": "assistant", "mode": "pipeshub", "agent": "pipeshub", "path": {"cwd": "/workspace", "root": "/workspace"}, "cost": 0, "tokens": {"total": 15, "input": 10, "output": 5, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "modelID": "fake-model", "providerID": "pipeshub", "time": {"created": 1790938461034, "completed": 1790938461208}, "sessionID": "ses_001", "finish": "tool-calls"}}}
+{"id": "evt_087", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_004", "parentID": "msg_003", "role": "assistant", "mode": "pipeshub", "agent": "pipeshub", "path": {"cwd": "/workspace", "root": "/workspace"}, "cost": 0, "tokens": {"total": 15, "input": 10, "output": 5, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "modelID": "fake-model", "providerID": "pipeshub", "time": {"created": 1790938461034, "completed": 1790938461208}, "sessionID": "ses_001", "finish": "tool-calls"}}}
+{"id": "evt_088", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "busy"}}}
+{"id": "evt_089", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_005", "parentID": "msg_003", "role": "assistant", "mode": "pipeshub", "agent": "pipeshub", "path": {"cwd": "/workspace", "root": "/workspace"}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "modelID": "fake-model", "providerID": "pipeshub", "time": {"created": 1790938461216}, "sessionID": "ses_001"}}}
+{"id": "evt_090", "type": "session.updated", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "jolly-eagle", "projectID": "<SHA1>", "directory": "/workspace", "path": "", "title": "resume-src", "agent": "pipeshub", "model": {"id": "fake-model", "providerID": "pipeshub", "variant": "default"}, "version": "1.18.34", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 20, "output": 10, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938453748, "updated": 1790938461234}}}}
+{"id": "evt_091", "type": "session.diff", "properties": {"sessionID": "ses_001", "diff": []}}
+{"id": "evt_092", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "busy"}}}
+{"id": "evt_093", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_009", "messageID": "msg_005", "sessionID": "ses_001", "type": "step-start"}, "time": 1790938461302}}
+{"id": "evt_094", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_010", "messageID": "msg_005", "sessionID": "ses_001", "type": "text", "text": "", "time": {"start": 1790938461309}}, "time": 1790938461310}}
+{"id": "evt_095", "type": "message.part.delta", "properties": {"sessionID": "ses_001", "messageID": "msg_005", "partID": "prt_010", "field": "text", "delta": "DONE:RESULT for pipeshub_search {\"query\": \"turn two\"}"}}
+{"id": "evt_096", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_010", "messageID": "msg_005", "sessionID": "ses_001", "type": "text", "text": "DONE:RESULT for pipeshub_search {\"query\": \"turn two\"}", "time": {"start": 1790938461309, "end": 1790938461318}}, "time": 1790938461318}}
+{"id": "evt_097", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_011", "reason": "stop", "messageID": "msg_005", "sessionID": "ses_001", "type": "step-finish", "tokens": {"total": 15, "input": 10, "output": 5, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "cost": 0}, "time": 1790938461327}}
+{"id": "evt_098", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_005", "parentID": "msg_003", "role": "assistant", "mode": "pipeshub", "agent": "pipeshub", "path": {"cwd": "/workspace", "root": "/workspace"}, "cost": 0, "tokens": {"total": 15, "input": 10, "output": 5, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "modelID": "fake-model", "providerID": "pipeshub", "time": {"created": 1790938461216, "completed": 1790938461344}, "sessionID": "ses_001", "finish": "stop"}}}
+{"id": "evt_099", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_005", "parentID": "msg_003", "role": "assistant", "mode": "pipeshub", "agent": "pipeshub", "path": {"cwd": "/workspace", "root": "/workspace"}, "cost": 0, "tokens": {"total": 15, "input": 10, "output": 5, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "modelID": "fake-model", "providerID": "pipeshub", "time": {"created": 1790938461216, "completed": 1790938461344}, "sessionID": "ses_001", "finish": "stop"}}}
+{"id": "evt_100", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "busy"}}}
+{"id": "evt_101", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "idle"}}}
+{"id": "evt_102", "type": "session.idle", "properties": {"sessionID": "ses_001"}}
+{"id": "evt_103", "type": "session.updated", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "jolly-eagle", "projectID": "<SHA1>", "directory": "/workspace", "path": "", "title": "resume-src", "agent": "pipeshub", "model": {"id": "fake-model", "providerID": "pipeshub", "variant": "default"}, "version": "1.18.34", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 30, "output": 15, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938453748, "updated": 1790938461356}}}}
+{"id": "evt_104", "type": "session.diff", "properties": {"sessionID": "ses_001", "diff": []}}

@@ -36,21 +36,39 @@ def build_chat_model(
     azure_deployment: str | None = None,
     azure_api_version: str | None = None,
 ) -> BaseChatModel:
-    """A LangChain chat model for ``provider``.
+    """A LangChain chat model for ``provider``, with the product's client timeout: without one the
+    OpenAI client waits forever on a stalled connection (P4.9 FB-2).
 
     Azure's endpoint and deployment default to ``TEST_AZURE_OPENAI_*``; the
     demo answer judge passes its own.
     """
+    from app.utils.aimodels import DEFAULT_LLM_TIMEOUT_S
+
     if not api_key:
         raise MissingModelError(
             f"No API key for '{provider}'. Set the key in the workflow's "
             "environment (TEST_AZURE_OPENAI_API_KEY for Azure OpenAI, "
-            "TEST_OPENAI_API_KEY for OpenAI) and run again."
+            "TEST_OPENAI_API_KEY for OpenAI, TEST_OPENAI_COMPATIBLE_API_KEY for "
+            "an OpenAI-compatible endpoint) and run again."
         )
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(model=model, api_key=api_key, temperature=0)
+        return ChatOpenAI(model=model, api_key=api_key, temperature=0, timeout=DEFAULT_LLM_TIMEOUT_S)
+    if provider == "openai_compatible":
+        from langchain_openai import ChatOpenAI
+
+        # A gateway such as Bifrost: the same client, pointed at its base URL.
+        base_url = os.getenv("TEST_OPENAI_COMPATIBLE_ENDPOINT")
+        if not base_url or not model:
+            raise MissingModelError(
+                "An OpenAI-compatible endpoint needs a base URL and a model as well "
+                "as a key. Set TEST_OPENAI_COMPATIBLE_ENDPOINT and "
+                "TEST_OPENAI_COMPATIBLE_LLM_MODEL and run again."
+            )
+        return ChatOpenAI(
+            model=model, api_key=api_key, base_url=base_url, temperature=0, timeout=DEFAULT_LLM_TIMEOUT_S
+        )
     if provider == "azure_openai":
         from langchain_openai import AzureChatOpenAI
 
@@ -71,14 +89,15 @@ def build_chat_model(
             # thing they are measuring does.
             api_version=azure_api_version or AzureOpenAILLM.AZURE_OPENAI_VERSION.value,
             temperature=0,
+            timeout=DEFAULT_LLM_TIMEOUT_S,
         )
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(model=model, api_key=api_key, temperature=0)
+        return ChatAnthropic(model=model, api_key=api_key, temperature=0, timeout=DEFAULT_LLM_TIMEOUT_S)
     raise MissingModelError(
         f"'{provider}' is not a provider this runner knows. Use 'azure_openai', "
-        "'openai' or 'anthropic', or add it to build_chat_model in "
+        "'openai', 'openai_compatible' or 'anthropic', or add it to build_chat_model in "
         "tests/evals/chat_models.py."
     )
 
@@ -110,6 +129,10 @@ def resolve_model(
     if provider == "openai":
         return provider, model or os.getenv("TEST_OPENAI_LLM_MODEL") or "gpt-4o-mini", os.getenv(
             "TEST_OPENAI_API_KEY"
+        )
+    if provider == "openai_compatible":
+        return provider, model or os.getenv("TEST_OPENAI_COMPATIBLE_LLM_MODEL") or "", os.getenv(
+            "TEST_OPENAI_COMPATIBLE_API_KEY"
         )
     if provider == "anthropic":
         return provider, model or "claude-haiku-4-5", os.getenv("TEST_ANTHROPIC_API_KEY")
@@ -244,7 +267,7 @@ def _dedicated_judge(provider: str) -> JudgeModel:
 
 # TEST_AI_MODEL_PROVIDER (the integration helper's provider ids) -> this module's.
 # Matched without case, so `openai` doesn't quietly send the judge to Azure.
-_RUN_PROVIDERS = {"openai": "openai", "azureopenai": "azure_openai"}
+_RUN_PROVIDERS = {"openai": "openai", "azureopenai": "azure_openai", "openaicompatible": "openai_compatible"}
 
 
 def run_provider() -> str | None:

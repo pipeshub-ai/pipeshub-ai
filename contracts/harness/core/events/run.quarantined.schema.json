@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/run.quarantined.schema.json",
+  "title": "RunQuarantinedEvent",
+  "description": "Terminal: poison run quarantined after repeated claims.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "run.quarantined"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/RunQuarantinedData"
+    }
+  },
+  "$defs": {
+    "RunQuarantinedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempts"
+      ],
+      "properties": {
+        "attempts": {
+          "$ref": "../common.schema.json#/$defs/PosInt"
+        },
+        "lastErrorType": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.quarantined",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "attempts": 4,
+        "lastErrorType": "worker_crash"
+      }
+    }
+  ]
+}

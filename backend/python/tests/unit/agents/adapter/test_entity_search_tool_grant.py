@@ -85,7 +85,6 @@ async def _create(
         context.tool_state["entity_vector_store"] = MagicMock()
     flag = flag or AsyncMock(return_value=ner)
     with patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=_registry()), \
-            patch("app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory", return_value=None), \
             patch(_NER_FLAG, flag):
         agent, runtime, goal, _clarifying = await PipesHubAgentFactory().create(
             context, context.llm, mode, query=query,
@@ -216,11 +215,11 @@ class TestGrantPerMode:
 
     @pytest.mark.asyncio
     async def test_it_unlocks_nothing_mid_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Its result shows no entity ids, so it does not grant
-        find_records_by_entity, and the tool list stays what the run began with."""
+        """Its result shows no entity ids, so it is no trigger of the entity unlock; the tool list stays what the
+        run began with (find_records_by_entity is in it from the start with search_entities, R4)."""
         monkeypatch.setenv(ENTITY_SEARCH_TOOL_ENV_VAR, "true")
         _context, agent, _runtime, _ = await _create()
-        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME not in agent.spec.tool_names
+        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME in agent.spec.tool_names
         from app.agents.agent_loop.hooks.progressive_tools import (
             _ENTITY_SEARCH_TRIGGER_NAMES,
         )

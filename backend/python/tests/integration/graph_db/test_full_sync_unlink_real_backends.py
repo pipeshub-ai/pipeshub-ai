@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import secrets
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
 from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.services.event_service import EventService
 from app.connectors.sources.web.connector import WebConnector
@@ -52,7 +54,6 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import (
     backend_unavailable,
@@ -847,9 +848,7 @@ def _web_record(sync: _Sync, path: str, *, parent: str | None, internal: bool, r
 async def _browse(sync: _Sync, user_key: str, external_id: str) -> tuple[bool, set[str]]:
     """Whether the user can open the record in the knowledge hub, and the records it sits under there.
 
-    The hub descends PARENT_CHILD edges. On Neo4j its own parent lookup must agree. ArangoDB's
-    ``get_knowledge_hub_parent_node`` returns no parent for any connector record (its parent id is a
-    subquery's array), a separate bug, so it is not asked there.
+    The hub descends PARENT_CHILD edges, and its own parent lookup must agree with them.
     """
     record = await sync.graph.get_record_by_external_id(sync.connector_id, external_id)
     assert record is not None, external_id
@@ -860,9 +859,9 @@ async def _browse(sync: _Sync, user_key: str, external_id: str) -> tuple[bool, s
         for edge in edges
         if edge.get("relationshipType") == RecordRelations.PARENT_CHILD.value
     }
-    if isinstance(sync.graph, Neo4jProvider):
+    if parents:
         hub_parent = await sync.graph.get_knowledge_hub_parent_node(record.id, [])
-        assert {(hub_parent or {}).get("id")} == parents or not parents, (hub_parent, parents)
+        assert {(hub_parent or {}).get("id")} == parents, (hub_parent, parents)
     return opened is not None, parents
 
 
@@ -1015,3 +1014,85 @@ async def test_an_unlicensed_full_sync_limits_the_connector_and_leaves_its_acces
     assert await members() == {sync.alice}
     assert await sync.can_read(sync.alice, "m1")
     assert not await sync.can_read(sync.bob, "m1"), "the licensed sync took bob's grant away first"
+
+
+_CURSOR_KEY = "messages"
+
+
+def _cursor(sync: _Sync) -> SyncPoint:
+    return SyncPoint(sync.connector_id, sync.org_id, SyncDataPointType.RECORDS, GraphDataStore(logger, sync.graph))
+
+
+async def _cursor_script(s: _Sync) -> None:
+    """Re-reads everything only when it finds no cursor, as Jira, Linear or S3 do: m2 is the one change since it."""
+    if await _cursor(s).read_sync_point(_CURSOR_KEY):
+        await s.processor.on_new_records([s.message("m2", readers=(s.alice, s.bob))])
+    else:
+        await s.processor.on_new_record_groups([s.channel(readers=(s.alice, s.bob))])
+        await s.processor.on_new_records([s.message(name, readers=(s.alice, s.bob)) for name in ("m1", "m2", "m3")])
+    await _cursor(s).update_sync_point(_CURSOR_KEY, {"cursor": s.now})
+
+
+async def _unlinked(sync: _Sync) -> tuple[int, int]:
+    """(nodes still at the source that lost every link, nodes gone at the source that did)."""
+    channel = await sync.graph.get_record_group_by_external_id(sync.connector_id, f"C-{sync.connector_id}")
+    nodes = [(RECORD_GROUPS, channel.id, True)] + [
+        (RECORDS, await sync.record_id(name), name != "gone") for name in ("m1", "m2", "m3", "gone")
+    ]
+    wrongly = gone = 0
+    for collection, node_id, at_source in nodes:
+        if not any((await sync.links(collection, node_id)).values()):
+            wrongly += at_source
+            gone += not at_source
+    return wrongly, gone
+
+
+async def _full_sync_owed(sync: _Sync) -> bool:
+    doc = await sync.graph.get_document(sync.connector_id, CollectionNames.APPS.value)
+    return bool((doc or {}).get("pendingFullSync"))
+
+
+async def _with_a_cursor(sync: _Sync, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", secrets.token_hex(32))  # the key ring refuses a key under 32 characters
+    await _first_sync(sync)
+    await sync.processor.on_new_records([sync.message("gone", readers=(sync.alice, sync.bob))])
+    await _cursor(sync).update_sync_point(_CURSOR_KEY, {"cursor": sync.now - DAY_MS})
+
+
+async def test_a_full_sync_that_reset_its_sync_points_unlinks_only_what_is_gone(
+    sync: _Sync, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _with_a_cursor(sync, monkeypatch)
+
+    task, _ = await sync.full_sync(_cursor_script)
+    await asyncio.wait_for(task, timeout=60)
+
+    assert await _unlinked(sync) == (0, 1)
+    assert await sync.can_read(sync.alice, "m1")
+    assert not await _full_sync_owed(sync)
+
+
+@pytest.mark.parametrize("failure", ["returned_false", "raised"])
+async def test_a_full_sync_whose_sync_points_could_not_be_deleted_unlinks_nothing_and_owes_one(
+    sync: _Sync, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    await _with_a_cursor(sync, monkeypatch)
+    failing = (
+        AsyncMock(return_value=(0, False)) if failure == "returned_false"
+        else AsyncMock(side_effect=RuntimeError("sync points unreachable"))
+    )
+
+    with patch.object(sync.graph, "delete_sync_points_by_connector_id", failing):
+        task, _ = await sync.full_sync(_cursor_script)
+        await asyncio.wait_for(task, timeout=60)
+
+    wrongly, gone = await _unlinked(sync)
+    assert (wrongly, gone) == (0, 0), f"wrongly unlinked: {wrongly}, really gone unlinked: {gone}"
+    assert await sync.can_read(sync.alice, "m1")
+    assert await _full_sync_owed(sync)
+
+    task, _ = await sync.full_sync(_cursor_script)
+    await asyncio.wait_for(task, timeout=60)
+
+    assert await _unlinked(sync) == (0, 1)
+    assert not await _full_sync_owed(sync)

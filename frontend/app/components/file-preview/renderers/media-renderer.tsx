@@ -15,7 +15,7 @@ export function MediaRenderer({ fileUrl, fileName: _fileName, fileType }: MediaR
   if (!fileUrl || fileUrl.trim() === '') {
     return (
       <Flex direction="column" align="center" justify="center" gap="3" style={{ height: '100%', padding: 'var(--space-6)' }}>
-        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--slate-9)' }}>
+        <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--slate-11)' }}>
           {isVideo ? 'movie' : 'audio_file'}
         </span>
         <Text size="3" weight="medium" color="gray">

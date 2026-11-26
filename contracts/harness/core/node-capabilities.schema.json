@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/node-capabilities.schema.json",
+  "title": "NodeCapabilities",
+  "description": "What the control plane that hands out a claim accepts from the worker beyond what every v2 control plane accepts, sent with every claim (UX2): the mirror of WorkerCapabilities. A worker writes a newer event shape or request field only when the control plane of its claim names it, and otherwise behaves as before that shape existed, so a worker deployed ahead of its control plane is never refused. Code constants of the control plane's build, never configuration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "harnessMajor",
+    "features"
+  ],
+  "properties": {
+    "harnessMajor": {
+      "const": 2
+    },
+    "features": {
+      "description": "What this control plane accepts from a worker, by name (approval_reasons: interaction.explained for the flow rule and an engine's default, and conversation grants; approval_rule_layers: interaction.explained naming the layer that set the rule, and a layer's own approval rules (writes, effect_class, tool); child_labels: a child admission carrying the parent's label; child_grants: a child admission carrying the conversation grants its parent holds; task_asks_first: task.created and task.updated carrying asksFirst; intent_allowed_by: tool.intent carrying allowedBy; approval_rule_grants: interaction.explained carrying ruleGrant; skill_labels: the host's citation event carrying the labels of agent-written skill content a run read; native_events: the host's events keeping what an engine sent natively, its unknown messages and its transcript; approval_edits: interaction.explained offering editable, and an approval journaling the person's edited arguments (AP-06); connect_pauses: interaction.requested with kind connect, a run waiting for its owner to connect an item (G-12); knowledge_exports: the host's knowledge-export event, a run's export of knowledge records to its sandbox (G-35); external_policy_asks: interaction.explained with rule external_policy, the org's policy webhook asking for a person (G-40); priority_preemption: a claim-next naming aboveClass, and run.yielded with reason preempted (G-45); approval_edit_order: interaction.explained carrying fieldOrder, the tool's argument order for the edit card (WP-56); approval_args_digest: interaction.explained carrying argsDigest, the held call's arguments digest a person's decline covers for their runs (ADR-GRANT-01 D9); child_mcp_pins: a child admission carrying the first-use pins of the MCP servers its parent listed (ADR-OWD-07 D-LAZY-5); attachment_limits: the host's finalized-answer limits naming a file of the turn the model never read (R33JGAPS-FU-6)). Open vocabulary: a worker ignores names it does not know.",
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "common.schema.json#/$defs/Name"
+      }
+    }
+  },
+  "examples": [
+    {
+      "harnessMajor": 2,
+      "features": [
+        "approval_reasons",
+        "approval_rule_layers",
+        "child_labels"
+      ]
+    },
+    {
+      "harnessMajor": 2,
+      "features": []
+    }
+  ]
+}

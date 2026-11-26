@@ -312,7 +312,7 @@ describe('KnowledgeBaseContainer - coverage', () => {
         expect.fail('Should have thrown')
       } catch {
         expect(errorCalls.length).to.be.greaterThan(0)
-        expect(errorCalls[errorCalls.length - 1][1]).to.deep.equal({
+        expect(errorCalls[errorCalls.length - 1]![1]).to.deep.equal({
           error: 'Unknown error',
         })
       } finally {
@@ -395,7 +395,7 @@ describe('KnowledgeBaseContainer - coverage', () => {
         await KnowledgeBaseContainer.dispose()
 
         expect(errorCalls.length).to.be.greaterThan(0)
-        expect(errorCalls[errorCalls.length - 1][1]).to.deep.equal({
+        expect(errorCalls[errorCalls.length - 1]![1]).to.deep.equal({
           error: 'Unknown error',
         })
       } finally {

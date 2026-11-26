@@ -245,5 +245,7 @@ def test_the_pptm_mime_is_read_as_the_pptx_it_is_by_the_dispatch_itself() -> Non
     for ext, name in ((None, "deck"), ("unknown", "deck"), ("pptm", "deck.pptm")):
         own = _plan((ext, _PPTM_MIME, name, "FILE"), None, None)[0]
         assert own is not None and own.route is Route.PPTX, ext
-    # The extension alone is still not indexable.
-    assert not _gate(("pptm", _OCTET, "deck.pptm", "FILE")).supported
+    # The extension alone is indexable too, read as the same deck.
+    assert _gate(("pptm", _OCTET, "deck.pptm", "FILE")).supported
+    own = _plan(("pptm", _OCTET, "deck.pptm", "FILE"), None, None)[0]
+    assert own is not None and own.route is Route.PPTX

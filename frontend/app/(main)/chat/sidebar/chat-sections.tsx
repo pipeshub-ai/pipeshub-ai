@@ -1,18 +1,20 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useId, useMemo, useState } from 'react';
+import { RecentsToggle } from './recents-toggle';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Flex, Text } from '@radix-ui/themes';
+import { Flex } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, selectPendingForSidebar } from '@/chat/store';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { debugLog } from '@/chat/debug-logger';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ChatSection } from './chat-section';
 import { groupConversationsWithPinned } from './time-group';
 import { orderPinnedFirst } from '@/chat/utils/pinned-conversations';
+import { sidebarDot, strongestDot } from '@/lib/harness-jobs/jobs-list';
+import { ChatDotMark, markWords } from './chat-section-element';
 
 /**
  * Maximum number of chat items shown per section before
@@ -71,6 +73,7 @@ export const ChatSections = React.memo(function ChatSections({
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
   const isMobile = useIsMobile();
 
+  const recentsId = useId();
   const [recentsCollapsed, setRecentsCollapsed] = useState(true);
 
   const handleNewChat = () => {
@@ -105,6 +108,19 @@ export const ChatSections = React.memo(function ChatSections({
   // Group only "Your Chats": Pinned first, then by time
   const yourNonEmptyGroups = groupConversationsWithPinned(visibleYour);
 
+  // Folded, Recents still says when a chat in it needs the person or is working (CJ14-FU-2), from the list it holds.
+  const foldedMark = useMemo(
+    () =>
+      recentsCollapsed
+        ? strongestDot(
+            [...conversations, ...sharedConversations].map((c) =>
+              sidebarDot(c.harnessState, { streaming: false, unread: false, active: c.id === currentConversationId }),
+            ),
+          )
+        : null,
+    [recentsCollapsed, conversations, sharedConversations, currentConversationId],
+  );
+
   const activePendingConversations = useMemo(() => {
     const convIds = new Set(conversations.map((c) => c.id));
     return selectPendingForSidebar(pendingConversations, slots, convIds, 'global');
@@ -122,43 +138,16 @@ export const ChatSections = React.memo(function ChatSections({
         style={recentsCollapsed ? undefined : { flex: 1, minHeight: 0, overflow: 'hidden' }}
       >
         {/* Recents header with collapse toggle */}
-        <Flex
-          align="center"
-          justify="between"
-          onClick={() => setRecentsCollapsed((c) => !c)}
-          style={{
-            height: 32,
-            padding: '0 var(--space-3)',
-            flexShrink: 0,
-            cursor: 'pointer',
-            borderRadius: 'var(--radius-2)',
-            userSelect: 'none',
-          }}
-        >
-          <Text
-            style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color: 'var(--slate-12)',
-              lineHeight: 1,
-            }}
-          >
-            {t('chat.recents')}
-          </Text>
-          <MaterialIcon
-            name="chevron_right"
-            size={16}
-            color="var(--slate-11)"
-            style={{
-              transform: recentsCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
-              transition: 'transform 0.2s ease',
-              display: 'block',
-            }}
-          />
-        </Flex>
+        <RecentsToggle
+          collapsed={recentsCollapsed}
+          onToggle={() => setRecentsCollapsed((c) => !c)}
+          controls={recentsId}
+          mark={foldedMark ? <ChatDotMark dot={foldedMark.dot} label={markWords(t, foldedMark)} /> : null}
+        />
 
         {!recentsCollapsed && (
           <Flex
+            id={recentsId}
             direction="column"
             gap="3"
             style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}

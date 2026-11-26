@@ -113,8 +113,8 @@ export class LocalFsRelay {
     const normalizedDeviceId = String(deviceId ?? '').trim();
     if (!normalizedDeviceId) {
       this.logger.warn('Local FS desktop registered without a deviceId', {
-        orgId,
-        userId,
+        org_id: orgId,
+        target_user_id: userId,
       });
       return { ok: false, reason: 'MISSING_DEVICE_ID' };
     }
@@ -130,9 +130,9 @@ export class LocalFsRelay {
     socket.data.deviceName = String(deviceName ?? '').trim() || undefined;
     this.devices.set(deviceKey(orgId, userId, normalizedDeviceId), socket);
     this.logger.debug('Local FS desktop registered', {
-      orgId,
-      userId,
-      deviceId: normalizedDeviceId,
+      org_id: orgId,
+      target_user_id: userId,
+      device_id: normalizedDeviceId,
     });
     return { ok: true };
   }

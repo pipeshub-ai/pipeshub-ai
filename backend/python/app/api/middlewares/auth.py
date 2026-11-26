@@ -134,6 +134,14 @@ def extract_bearer_token(authorization_header: Optional[str]) -> str:
     return token
 
 
+def _normalize_knowledge_limit(limit: Mapping[str, Any]) -> dict[str, list[str]]:
+    return {
+        key: [i for i in limit.get(key) or [] if isinstance(i, str) and i]
+        if isinstance(limit.get(key), list) else []
+        for key in _KNOWLEDGE_LIMIT_KEYS
+    }
+
+
 def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str, Any]:
     """Add metadata and normalize OAuth tokens for scope enforcement."""
     payload["user"] = token
@@ -151,11 +159,7 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
         payload["oauthScopes"] = scopes
         payload["oauthClientId"] = payload.get("client_id")
         if isinstance(limit, dict):
-            payload[KNOWLEDGE_LIMIT_CLAIM] = {
-                key: [i for i in limit.get(key) or [] if isinstance(i, str) and i]
-                if isinstance(limit.get(key), list) else []
-                for key in _KNOWLEDGE_LIMIT_KEYS
-            }
+            payload[KNOWLEDGE_LIMIT_CLAIM] = _normalize_knowledge_limit(limit)
         # A client_credentials token has no caller of its own: its userId is
         # the client id. The `createdBy` claim carries the identity it acts
         # as, which Node resolves when minting the token — the application's
@@ -370,6 +374,13 @@ async def resolve_request_role(request: Request, payload: dict[str, Any]) -> str
     if payload.get("isOAuth"):
         caller = await fetch_caller_role(request, config_service)
         _refuse_unconfirmed(caller, "Token is no longer valid", "token_revoked")
+        if caller.knowledge_limit_given:
+            # A personal access token's owner may have changed its limit since it was
+            # signed; what Node stores now is the limit, not the claim.
+            if caller.knowledge_limit is None:
+                payload.pop(KNOWLEDGE_LIMIT_CLAIM, None)
+            else:
+                payload[KNOWLEDGE_LIMIT_CLAIM] = _normalize_knowledge_limit(caller.knowledge_limit)
         return caller.role
 
     caller = await _session_checks.get(

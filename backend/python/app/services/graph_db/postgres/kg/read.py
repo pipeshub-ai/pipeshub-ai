@@ -9,7 +9,8 @@ inside an explicit transaction, for the system role or failing, takes the walk. 
 - every virtual record id (kg has no index for them yet);
 - a node whose class names a literal that kg itself cannot vouch for (see :func:`class_verdicts`).
 
-The viewer is the walk's own description (``get_knowledge_hub_access_v3``: the principals, the gated connectors and the grants per connector). What differs between the two answers is how
+The viewer is the walk's own description (``get_knowledge_hub_access_v3``: the principals, the gated connectors and the grants per connector, or a gate whose grants are read per node:
+``access.grants_of``). What differs between the two answers is how
 a node is decided: the walk follows the hierarchy of each node, kg evaluates the node's class (``kg.scope_classes``) against those grants.
 """
 from __future__ import annotations
@@ -61,7 +62,8 @@ LITERALS = """/* pipeshub:kg.read_literals */ SELECT coalesce(array_agg(r.sk), '
     WHERE r.leaf IS FALSE AND (r.kind <> 3 OR coalesce((SELECT true FROM (SELECT c.parent_sk FROM kg.records c WHERE c.org_id = r.org_id AND c.parent_sk >= r.sk ORDER BY c.parent_sk LIMIT 1) x WHERE x.parent_sk = r.sk),
         (SELECT true FROM (SELECT l.parent_sk, l.kind FROM kg.links l WHERE l.org_id = r.org_id AND (l.parent_sk, l.kind) >= (r.sk, 1) ORDER BY l.parent_sk, l.kind LIMIT 1) x
             WHERE x.parent_sk = r.sk AND x.kind = 1), false))"""
-# With no statistics a bitmap scan of the whole org can look cheaper than the index searches an array of ids needs (plan_cache_mode, set by the unit, is the other half of the profile).
+# With no statistics a bitmap scan of the whole org can look cheaper than the index searches an array of ids needs (custom plans, plan_cache_mode, are the other half of the
+# profile: set here, as the walk that shares the check's snapshot plans better without them).
 # With sorts off nothing but the key's index can answer a seek above; the read's other statements ask for no order (a join, GROUP BY or DISTINCT is hashed instead).
 # The short lock and statement limits hand a blocked or slow read to the walk at once, instead of holding a pooled connection for the service's own limits.
 # The knowledge-hub listing asks class_verdicts in a transaction of its own, without PROFILE (its pages are ordered): sorts are off for the literals' seeks only.
@@ -69,7 +71,7 @@ SORTS_OFF = """/* pipeshub:kg.read_sorts_off */ WITH s AS MATERIALIZED (SELECT c
 SORTS_BACK = "/* pipeshub:kg.read_sorts_back */ SELECT set_config('enable_sort', $1, true)"
 # JIT is off as well: the planner's estimate of a seek per asked id passes jit_above_cost at about 9,500 ids (a CHUNK), and compiling the statement then costs more than reading it.
 PROFILE = """/* pipeshub:kg.read_profile */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('enable_sort', 'off', true), set_config('lock_timeout', '200ms', true),
-    set_config('statement_timeout', '2s', true), set_config('jit', 'off', true)"""
+    set_config('statement_timeout', '2s', true), set_config('jit', 'off', true), set_config('plan_cache_mode', 'force_custom_plan', true)"""
 
 
 def enabled() -> bool:
@@ -99,6 +101,8 @@ async def class_verdicts(tx: Tx, org: str, classes: dict[int, list[list[Any]]], 
     was = await tx.fetchval(SORTS_OFF) if lits else None
     for k in range(0, len(lits), CHUNK):
         r = await tx.fetchrow(LITERALS, org, lits[k:k + CHUNK])
+        if isinstance(granted, access_sql.Grants):
+            await granted.see(tx, org, r["ids"])
         seen.update(r["sks"])
         live.update(sk for sk, i in zip(r["sks"], r["ids"], strict=True) if i in granted)
     if was is not None:
@@ -130,7 +134,7 @@ async def decide(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> De
     """Classify the asked nodes: admitted by kg, denied by kg, or left to the walk (module docstring). Runs in one snapshot."""
     d = Decision()
     gated = set(access["gated_app_ids"])
-    granted = {g for gs in access["by_connector"].values() for g in gs}
+    granted = access_sql.grants_of(access)
     ids = list(dict.fromkeys(ids))
     by_id: dict[str, list[Any]] = {}
     for i in range(0, len(ids), CHUNK):
@@ -176,6 +180,7 @@ async def decide(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> De
     if need:
         classes = {c["id"]: (json.loads(c["clauses"]) if isinstance(c["clauses"], str) else list(c["clauses"])) for c in await tx.fetch(CLASSES, org, sorted(set(need.values())))}
         by_class = await class_verdicts(tx, org, classes, granted)
+        await granted.see(tx, org, list(need))
         for i, c in need.items():
             if by_class.get(c) is None:                                # no class row, or a literal kg cannot vouch for: never decide from it
                 to_walk(i, "legacy" if c not in classes else "stale_literal")

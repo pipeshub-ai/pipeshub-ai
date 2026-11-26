@@ -463,10 +463,9 @@ class TestInitHousekeeping:
         assert {"metadata.orgId", "metadata.level", "connectorIds", "recordGroupIds"} <= fields
 
     async def test_missing_ai_models_config_uses_the_default_model(self, monkeypatch) -> None:
-        from app.modules.transformers import entity_vectorstore as module
 
         default = MagicMock(embed_query=MagicMock(return_value=[0.1, 0.2]))
-        monkeypatch.setattr(module, "get_default_embedding_model", lambda: default)
+        monkeypatch.setattr("app.utils.llm.get_default_embedding_model", lambda: default)
         service = MagicMock()
         service.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
         store = EntityVectorStore(logger=MagicMock(), config_service=embedding_config_service(), vector_db_service=service)
