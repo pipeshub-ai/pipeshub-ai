@@ -1,0 +1,16 @@
+# Starts the durable agent harness processes (relay and trusted worker) inside
+# the app container.
+#
+# Usage:
+#   docker compose -f docker-compose.yml \
+#     -f docker-compose.agent-harness.yml up -d
+#
+# The base file already runs MongoDB as an authenticated single-node replica
+# set, which durable runs need. The Labs flag remains the product rollout
+# control; this overlay only starts the processes that serve durable runs.
+
+services:
+  pipeshub-ai:
+    environment:
+      AGENT_HARNESS_RELAY_ENABLED: "true"
+      AGENT_HARNESS_WORKER_ENABLED: "true"

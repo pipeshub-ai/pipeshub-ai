@@ -2,7 +2,8 @@
 
 import React, { useEffect, useState } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
-import { isLegacyWordDocFile } from '../utils';
+import { useTranslation } from 'react-i18next';
+import { isLegacyWordDocFile, isPresentationFile } from '../utils';
 import type { FilePreviewRendererProps } from '../types';
 
 // Export new specialized renderers
@@ -16,7 +17,8 @@ export { SpreadsheetRenderer } from './spreadsheet-renderer';
 export { DocxRenderer } from './docx-renderer';
 
 // Fallback renderer for unsupported Office documents (e.g. legacy Word .doc when not converted to PDF)
-export function DocumentPreview({ fileUrl, fileName, fileBlob }: FilePreviewRendererProps) {
+export function DocumentPreview({ fileUrl, fileName, fileType, fileBlob }: FilePreviewRendererProps) {
+  const { t } = useTranslation();
   const [blobUrl, setBlobUrl] = useState('');
 
   useEffect(() => {
@@ -52,14 +54,18 @@ export function DocumentPreview({ fileUrl, fileName, fileBlob }: FilePreviewRend
         padding: 'var(--space-6)',
       }}
     >
-      <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--slate-9)' }}>
+      <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--slate-11)' }}>
         description
       </span>
       <Text size="4" weight="medium" style={{ textAlign: 'center' }}>
         {fileName}
       </Text>
       <Text size="2" color="gray" style={{ textAlign: 'center', maxWidth: '400px' }}>
-        {isLegacyDoc
+        {isPresentationFile(fileType, fileName)
+          ? t('recordView.previewConversionFailed', {
+              defaultValue: 'Preview conversion failed. You can still download the file.',
+            })
+          : isLegacyDoc
           ? 'This file is in legacy Word (.doc) format. In-browser preview is not supported here; download it to open in Word, or save a copy as .docx to preview in Pipeshub.'
           : 'Preview not available for this document type. Please download to view.'}
       </Text>
@@ -144,7 +150,7 @@ export function UnknownPreview({ fileName, fileUrl, fileBlob, webUrl, previewRen
         padding: 'var(--space-6)',
       }}
     >
-      <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--slate-9)' }}>
+      <span className="material-icons-outlined" style={{ fontSize: '48px', color: 'var(--slate-11)' }}>
         insert_drive_file
       </span>
       <Text size="4" weight="medium" style={{ textAlign: 'center' }}>

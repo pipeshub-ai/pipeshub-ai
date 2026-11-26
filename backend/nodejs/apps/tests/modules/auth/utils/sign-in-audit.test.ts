@@ -111,7 +111,7 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
     const correctEmail = sinon.stub().resolves();
     sinon.stub(userRepo, 'getUserRepository').returns({ correctEmail } as any);
     const target = { _id: userId, orgId, email: EMAILS[1] };
-    await inRequest(() => controller().correctEmailFromToken({ email: EMAILS[0], preferred_username: EMAILS[1] }, target, 'Microsoft auth', true));
+    await inRequest(() => (controller() as any).correctEmailFromToken({ email: EMAILS[0], preferred_username: EMAILS[1] }, target, 'Microsoft auth', true));
     expect(correctEmail.calledOnce).to.equal(true);
     expect(audits()).to.deep.equal([['auth.email.change', 'success', 'sso_mail_claim', userId, null]]);
     noEmails();
@@ -119,7 +119,7 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
 
   it('T13 a correction that clashes with another account is one warning with the user id, without either address', async () => {
     sinon.stub(userRepo, 'getUserRepository').returns({ correctEmail: sinon.stub().rejects(new Error(`E11000 duplicate key: ${EMAILS[0]}`)) } as any);
-    await inRequest(() => controller().correctEmailFromToken({ email: EMAILS[0], preferred_username: EMAILS[1] }, { _id: userId, orgId, email: EMAILS[1] }, 'Microsoft auth', true));
+    await inRequest(() => (controller() as any).correctEmailFromToken({ email: EMAILS[0], preferred_username: EMAILS[1] }, { _id: userId, orgId, email: EMAILS[1] }, 'Microsoft auth', true));
     const warnings = records.filter((r) => r.level === 'warning');
     expect(warnings).to.have.length(1);
     expect(warnings[0]).to.include({ message: 'auth.email.correct_failed', user_id: userId });
@@ -155,7 +155,7 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
     const res = { status: () => res, json: () => res } as any;
     await inRequest(async () => {
       setContextIdentity({ orgId, userId: adminId });
-      await users.unblockUser({ params: { id: userId }, user: { orgId, userId: adminId } } as any, res, sinon.stub());
+      await users.unblockUser({ params: { id: userId }, user: { orgId, userId: adminId } } as any, res, sinon.stub() as any);
     });
     expect(audits()).to.deep.equal([['auth.account.unlock', 'success', 'admin', adminId, userId]]);
   });

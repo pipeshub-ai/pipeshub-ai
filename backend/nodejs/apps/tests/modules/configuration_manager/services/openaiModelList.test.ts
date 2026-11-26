@@ -44,13 +44,13 @@ describe('OpenAI model catalog', () => {
       'tts-1',
       'whisper-1',
     ]);
-    expect(byId['gpt-4o'].owned_by).to.equal('openAI');
-    expect(byId['gpt-4o'].created).to.equal(1_700_000_000);
-    expect(byId['gpt-4o'].task).to.equal('chat');
-    expect(byId['gpt-image-1'].task).to.equal('image');
-    expect(byId['tts-1'].task).to.equal('text-to-speech');
-    expect(byId['whisper-1'].task).to.equal('automatic-speech-recognition');
-    expect(byId['text-embedding-3-small'].task).to.equal('embedding');
+    expect(byId['gpt-4o']!.owned_by).to.equal('openAI');
+    expect(byId['gpt-4o']!.created).to.equal(1_700_000_000);
+    expect(byId['gpt-4o']!.task).to.equal('chat');
+    expect(byId['gpt-image-1']!.task).to.equal('image');
+    expect(byId['tts-1']!.task).to.equal('text-to-speech');
+    expect(byId['whisper-1']!.task).to.equal('automatic-speech-recognition');
+    expect(byId['text-embedding-3-small']!.task).to.equal('embedding');
     const dumped = JSON.stringify(listed);
     expect(dumped).to.not.include('sk-live-secret');
     expect(dumped).to.not.include('api.openai.com');

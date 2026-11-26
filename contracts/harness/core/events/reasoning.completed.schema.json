@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/reasoning.completed.schema.json",
+  "title": "ReasoningCompletedEvent",
+  "description": "A reasoning block finished.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "reasoning.completed"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/ReasoningCompletedData"
+    }
+  },
+  "$defs": {
+    "ReasoningCompletedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "redacted"
+      ],
+      "properties": {
+        "textRef": {
+          "$ref": "../common.schema.json#/$defs/ContentRef"
+        },
+        "redacted": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "reasoning.completed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "redacted": true
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "reasoning.completed",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "redacted": false,
+        "textRef": {
+          "ref": "cas/rz",
+          "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "size": 99
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

@@ -18,12 +18,12 @@ from typing import Any
 
 import pytest
 
+from tests.support import it_backends
+
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 ORG = "org-it-dated-scope"
-NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
 NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 ARANGO_DB = "dated_scope_it"
 
@@ -79,16 +79,17 @@ async def neo4j_provider() -> AsyncIterator[Any]:
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
     logger = _log()
+    uri = it_backends.endpoint("NEO4J_IT_URI")
     client = Neo4jClient(
-        uri=NEO4J_URI, username="neo4j", password=NEO4J_PASSWORD, database="neo4j", logger=logger
+        uri=uri, username="neo4j", password=NEO4J_PASSWORD, database="neo4j", logger=logger
     )
-    # Unreachable is a skip (the unit-test job has no Neo4j; backend-matrix fails on any skip).
+    # Unset is a skip; set but unreachable fails (tests/support/it_backends.py).
     try:
         connected = await client.connect()
     except Exception as exc:
-        pytest.skip(f"Neo4j not available at {NEO4J_URI}: {exc}")
+        it_backends.unavailable("NEO4J_IT_URI", exc)
     if not connected:
-        pytest.skip(f"Neo4j not available at {NEO4J_URI}")
+        it_backends.unavailable("NEO4J_IT_URI", "connect() returned False")
     provider = Neo4jProvider.__new__(Neo4jProvider)
     provider.logger = logger
     provider.client = client
@@ -104,12 +105,13 @@ async def arango_provider() -> AsyncIterator[Any]:
     from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
     logger = _log()
+    url = it_backends.endpoint("ARANGO_IT_URL")
     try:
-        await _ensure_arango_schema()
+        await _ensure_arango_schema(url)
     except aiohttp.ClientConnectionError as exc:
-        pytest.skip(f"ArangoDB not available at {ARANGO_URL}: {exc}")
+        it_backends.unavailable("ARANGO_IT_URL", exc)
     client = ArangoHTTPClient(
-        base_url=ARANGO_URL, username="root", password=ARANGO_PASSWORD, database=ARANGO_DB, logger=logger
+        base_url=url, username="root", password=ARANGO_PASSWORD, database=ARANGO_DB, logger=logger
     )
     provider = ArangoHTTPProvider.__new__(ArangoHTTPProvider)
     provider.logger = logger
@@ -118,17 +120,17 @@ async def arango_provider() -> AsyncIterator[Any]:
     await client.disconnect()
 
 
-async def _ensure_arango_schema() -> None:
+async def _ensure_arango_schema(url: str) -> None:
     import aiohttp
 
     auth = aiohttp.BasicAuth("root", ARANGO_PASSWORD)
     async with aiohttp.ClientSession(auth=auth) as s:
-        async with s.post(f"{ARANGO_URL}/_db/_system/_api/database", json={"name": ARANGO_DB}) as r:
+        async with s.post(f"{url}/_db/_system/_api/database", json={"name": ARANGO_DB}) as r:
             if r.status not in (200, 201, 409):
                 raise RuntimeError(f"cannot create database {ARANGO_DB}: {r.status}")
         wanted = [(n, 2) for n in _DOC_COLLECTIONS] + [(n, 3) for n in _EDGE_COLLECTIONS]
         for name, kind in wanted:
-            async with s.post(f"{ARANGO_URL}/_db/{ARANGO_DB}/_api/collection", json={"name": name, "type": kind}) as r:
+            async with s.post(f"{url}/_db/{ARANGO_DB}/_api/collection", json={"name": name, "type": kind}) as r:
                 if r.status not in (200, 201, 409):
                     raise RuntimeError(f"cannot create collection {name}: {r.status}")
 

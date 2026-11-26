@@ -15,10 +15,16 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from app.services.pg_runtime import QUEUE_CHANNEL, RuntimeDb
 from app.utils.log_redaction import redact_secrets_in_text
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Iterator
 
 _GROUPS = """/* pipeshub:queue.groups */
 SELECT group_id FROM platform.queue_groups WHERE topic = $1 FOR SHARE"""
@@ -129,6 +135,24 @@ _TOPICS = """/* pipeshub:queue.topics */
 SELECT DISTINCT topic FROM platform.queue_groups UNION SELECT DISTINCT topic FROM platform.queue_messages ORDER BY 1"""
 
 
+#: Set by :func:`joined_to`: runs a function on the open unit of work of a write that the published messages must commit with.
+_JOINED: ContextVar[Callable[[Callable[[Any], Awaitable[None]]], Awaitable[Any]] | None] = ContextVar("pg_queue_joined", default=None)
+
+
+@contextmanager
+def joined_to(run: Callable[[Callable[[Any], Awaitable[None]]], Awaitable[Any]]) -> Iterator[None]:
+    """Publishes in the block go into the transaction ``run`` executes in, so they are delivered exactly when it commits."""
+    token = _JOINED.set(run)
+    try:
+        yield
+    finally:
+        _JOINED.reset(token)
+
+
+def joined() -> bool:
+    return _JOINED.get() is not None
+
+
 def stored_error(error: str) -> str:
     """The text kept in ``last_error``: redacted first, then cut, so the cut cannot leave half a secret."""
     return redact_secrets_in_text(error)[:500]
@@ -153,17 +177,27 @@ class PgQueue:
         return (await self.rt.db()).runtime_uow(write=True)
 
     async def publish(self, topic: str, items: list[tuple[str | None, str]]) -> None:
-        """Append messages in order; one transaction, one NOTIFY."""
+        """Append messages in order; one transaction, one NOTIFY. Inside :func:`joined_to`, the joined transaction instead."""
         if not items:
             return
+        if (run := _JOINED.get()) is not None:
+            async def at_commit(tx: Any) -> None:  # noqa: ANN401 - the unit of work
+                # Written last, right before COMMIT: the group read's FOR SHARE, which a group being created waits for (ensure_group),
+                # is then held no longer than by a publish in a transaction of its own, not for the rest of the joined write.
+                tx.before_commit.append(lambda t: self.publish_in(t, topic, items))
+
+            await run(at_commit)
+            return
         async with await self._write() as tx:
-            # FOR SHARE on the group rows conflicts with add_group's table lock: a group is either seen here or backfilled from this
-            # message, never neither.
-            groups = [r["group_id"] for r in await tx.fetch(_GROUPS, topic)]
-            await tx.execute(
-                _INSERT, topic, [k for k, _ in items], [v for _, v in items], groups
-            )
-            await tx.execute(_NOTIFY, topic)
+            await self.publish_in(tx, topic, items)
+
+    @staticmethod
+    async def publish_in(tx: Any, topic: str, items: list[tuple[str | None, str]]) -> None:  # noqa: ANN401 - the unit of work
+        # FOR SHARE on the group rows conflicts with add_group's table lock: a group is either seen here or backfilled from this
+        # message, never neither.
+        groups = [r["group_id"] for r in await tx.fetch(_GROUPS, topic)]
+        await tx.execute(_INSERT, topic, [k for k, _ in items], [v for _, v in items], groups)
+        await tx.execute(_NOTIFY, topic)  # sent at COMMIT, so a consumer wakes only for what committed
 
     async def ensure_group(
         self, topic: str, group_id: str, *, from_start: bool, ephemeral: bool = False
@@ -247,9 +281,12 @@ class PgQueue:
 
     async def ack(self, group_id: str, d: Delivery) -> bool:
         async with await self._write() as tx:
-            return (
-                await tx.execute(_ACK, group_id, d.topic, d.message_id, d.attempts)
-            ).endswith(" 1")
+            return await self.ack_in(tx, group_id, d)
+
+    @staticmethod
+    async def ack_in(tx: Any, group_id: str, d: Delivery) -> bool:  # noqa: ANN401 - the unit of work
+        """The ack as one statement of the caller's unit of work (the consumer inbox records the event in the same one)."""
+        return (await tx.execute(_ACK, group_id, d.topic, d.message_id, d.attempts)).endswith(" 1")
 
     async def admit(self, group_id: str, d: Delivery, admission_ms: int, admission_mac: str) -> bool:
         """Record that this claim opened its message. Applied only while the claim still stands, so a consumer that lost the row writes nothing."""
@@ -354,4 +391,4 @@ class PgQueue:
             return [r["topic"] for r in await tx.fetch(_TOPICS)]
 
 
-__all__ = ["Delivery", "PgQueue", "QUEUE_CHANNEL"]
+__all__ = ["Delivery", "PgQueue", "QUEUE_CHANNEL", "joined", "joined_to"]

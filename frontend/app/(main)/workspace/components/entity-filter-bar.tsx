@@ -46,7 +46,7 @@ export function EntityFilterBar({ filters, renderFilter }: EntityFilterBarProps)
         borderBottom: '1px solid var(--olive-3)',
       }}
     >
-      <MaterialIcon name="filter_list" size={16} color="var(--olive-9)" />
+      <MaterialIcon name="filter_list" size={16} color="var(--olive-11)" />
 
       {filters.map((filter) =>
         renderFilter ? (

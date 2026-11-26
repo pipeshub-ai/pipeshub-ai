@@ -12,13 +12,16 @@
  * request via a shared `refreshPromise`.
  */
 
-import { useAuthStore, logoutAndRedirect, readStoredRefreshToken } from '@/config';
+import { useAuthStore, logoutAndRedirect } from '@/config';
 import { onSessionEnd, captureSession } from '@/lib/api/session-cache';
+import {
+  REFRESH_TOKEN_ENDPOINT,
+  requestAccessToken,
+  signedInMark,
+} from '@/lib/auth/session-credential';
 
-import { getApiBaseUrl } from '@/lib/utils/api-base-url';
-
-/** Endpoint that issues a new access token from a valid refresh token. */
-export const REFRESH_TOKEN_ENDPOINT = '/api/v1/userAccount/refresh/token';
+/** Endpoint that issues a new access token from the session's refresh token. */
+export { REFRESH_TOKEN_ENDPOINT };
 
 /**
  * Default expiry buffer (seconds). A token expiring within this window is
@@ -76,12 +79,12 @@ export function isRefreshInProgress(): boolean {
 }
 
 /**
- * Refresh the access token using the stored refresh token.
+ * Get a new access token from the session's refresh token (the web app's
+ * HttpOnly cookie, the desktop's keychain; ADR-WEB-02).
  *
  * Returns `true` when the auth store has been updated with a fresh access
- * token, `false` on any failure (no refresh token, network error, non-2xx
- * response, or response missing `accessToken`/`token`). Callers are
- * responsible for handling the failure path (typically `logoutAndRedirect`).
+ * token, `false` on any failure (no session, network error, refused).
+ * Callers are responsible for the failure path (typically `logoutAndRedirect`).
  *
  * Concurrent calls collapse onto the same in-flight promise.
  */
@@ -91,43 +94,19 @@ export async function refreshAccessToken(): Promise<boolean> {
   }
 
   const current = captureSession();
-  const storedRefreshToken = readStoredRefreshToken();
+  const mark = signedInMark();
   const promise = (async () => {
     try {
-      const refreshToken = useAuthStore.getState().refreshToken ?? storedRefreshToken;
-
-      if (!refreshToken) {
-        console.log('No refresh token available');
+      const answer = await requestAccessToken();
+      if (answer.outcome !== 'issued') {
+        console.log('Token refresh failed:', answer.outcome);
         return false;
       }
-
-      // Bypass axios so the request interceptor doesn't recurse into refresh.
-      const response = await fetch(`${getApiBaseUrl()}${REFRESH_TOKEN_ENDPOINT}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${refreshToken}`,
-        },
-      });
-
-      if (!response.ok) {
-        console.log('Token refresh request failed:', response.status);
-        return false;
-      }
-
-      const data = await response.json();
-      const newAccessToken: string | undefined = data.accessToken;
-
       // Signed out while the refresh was out, here or in another tab this one has not heard
-      // from yet: storing the token would sign the last user back in, in every tab.
-      if (!current() || readStoredRefreshToken() !== storedRefreshToken) return false;
-
-      if (newAccessToken) {
-        useAuthStore.getState().setTokens(newAccessToken, refreshToken);
-        return true;
-      }
-
-      return false;
+      // from yet: storing the token would sign the last user back in.
+      if (!current() || signedInMark() !== mark) return false;
+      useAuthStore.getState().setAccessToken(answer.accessToken);
+      return true;
     } catch (error) {
       console.error('Error refreshing token:', error);
       return false;

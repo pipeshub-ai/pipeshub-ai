@@ -71,7 +71,7 @@ jobs:
 
       - name: Install
         run: |
-          pip install -r backend/db/requirements.txt pytest
+          pip install --require-hashes --no-deps -r backend/db/requirements-test.lock
           sudo apt-get update -qq && sudo apt-get install -y -qq pgbouncer
 
       - name: Start PostgreSQL ${{ matrix.pg }} in memory, with no fsync

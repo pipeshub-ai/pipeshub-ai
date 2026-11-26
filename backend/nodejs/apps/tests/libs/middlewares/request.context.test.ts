@@ -89,6 +89,26 @@ describe('Request Context Middleware', () => {
       expect(req.context.requestId).to.match(/^anon-[a-f0-9]{32}$/)
     })
 
+    it('sends the request id back in the X-Request-Id response header', () => {
+      const req = createMockRequest()
+      const res = createMockResponse()
+
+      requestContextMiddleware(req, res, createMockNext())
+
+      expect(res.setHeader.calledOnceWith('X-Request-Id', req.context.requestId)).to.be.true
+    })
+
+    it('sends back the id the caller chose, sanitised', () => {
+      const getStub = sinon.stub()
+      getStub.withArgs('X-Request-ID').returns('my-trace-42')
+      const req = createMockRequest({ get: getStub })
+      const res = createMockResponse()
+
+      requestContextMiddleware(req, res, createMockNext())
+
+      expect(res.setHeader.calledOnceWith('X-Request-Id', 'my-trace-42')).to.be.true
+    })
+
     it('should use existing X-Request-ID header if provided', () => {
       const getStub = sinon.stub()
       getStub.withArgs('user-agent').returns('test-agent')

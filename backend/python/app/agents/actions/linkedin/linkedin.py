@@ -14,6 +14,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -75,7 +76,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register LinkedIn toolset
-@ToolsetBuilder("LinkedIn")\
+@ToolsetBuilder("LinkedIn", provider=ToolProvider.CONNECTOR)\
     .in_group("Social Media")\
     .with_description("LinkedIn integration for posts and networking")\
     .with_category(ToolsetCategory.APP)\
@@ -185,7 +186,7 @@ class LinkedIn:
         short_description="Get current user information using OpenID Connect",
         description="Get current LinkedIn user information using OpenID Connect.",
         parameters=[],
-        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_userinfo(self) -> Tuple[bool, str]:
         """Get current user information using OpenID Connect."""
@@ -224,7 +225,7 @@ class LinkedIn:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     def create_post(
         self,
@@ -257,7 +258,7 @@ class LinkedIn:
                 description="Post URN or ID"
             )
         ],
-        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_post(self, post_id: str) -> Tuple[bool, str]:
         """Get a post by ID from LinkedIn."""
@@ -284,7 +285,7 @@ class LinkedIn:
                 description="JSON object with patch operations (e.g., {'$set': {'commentary': 'New text'}})"
             )
         ],
-        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="update")],
+        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="update"), Tag(key="effect", value="write")],
     )
     def update_post(
         self,
@@ -321,7 +322,7 @@ class LinkedIn:
                 description="Post URN or ID to delete"
             )
         ],
-        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_post(self, post_id: str) -> Tuple[bool, str]:
         """Delete a post from LinkedIn."""
@@ -349,7 +350,7 @@ class LinkedIn:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="search")],
+        tags=[Tag(key="category", value="social_media"), Tag(key="type", value="search"), Tag(key="effect", value="read")],
     )
     def search_people(
         self,

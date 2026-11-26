@@ -1,6 +1,12 @@
 """Lucid MCP server template — official remote server (Streamable HTTP), OAuth + DCR."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -27,6 +33,12 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Sign in with your Lucid account.",
         ),
         tags=["lucid", "diagrams", "flowcharts", "whiteboard", "design"],
+        category=MCPCategory.DESIGN,
+        capabilities=[
+            "Draw a flowchart",
+            "Edit diagrams",
+            "Make wireframes",
+        ],
     )
 )
 class LucidMCPServer:

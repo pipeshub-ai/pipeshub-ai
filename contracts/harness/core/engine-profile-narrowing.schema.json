@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/engine-profile-narrowing.schema.json",
+  "title": "EngineProfileNarrowing",
+  "description": "One layer over an engine profile (an org ceiling, an agent's choice, a request): every dimension optional, an absent one leaves the profile's value. Each named value must be at or below the profile's or the layer is refused naming the dimension (E4a); never null, so a layer cannot ask for 'unlimited'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [],
+  "properties": {
+    "engines": {
+      "description": "Engines this layer admits, by kind or kind@version; the first release engine every layer admits runs.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/EngineSelector"
+      }
+    },
+    "mode": {
+      "$ref": "engine-profile.schema.json#/$defs/EngineModeName"
+    },
+    "isolationMin": {
+      "$ref": "engine-profile.schema.json#/$defs/IsolationModeName"
+    },
+    "egress": {
+      "$ref": "engine-profile.schema.json#/$defs/ProfileEgress"
+    },
+    "tools": {
+      "$ref": "#/$defs/NarrowedTools"
+    },
+    "limits": {
+      "$ref": "#/$defs/NarrowedLimits"
+    },
+    "subAgents": {
+      "$ref": "engine-profile.schema.json#/$defs/ProfileSubAgents"
+    },
+    "reasoningEffort": {
+      "$ref": "engine-profile.schema.json#/$defs/ProfileEffort"
+    },
+    "approvals": {
+      "$ref": "#/$defs/NarrowedApprovals"
+    },
+    "skills": {
+      "$ref": "engine-profile.schema.json#/$defs/ProfileSkillNames"
+    },
+    "accountKinds": {
+      "$ref": "engine-profile.schema.json#/$defs/ProfileAccountKinds"
+    }
+  },
+  "$defs": {
+    "EngineSelector": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}(?:@[A-Za-z0-9_.+-]{1,64})?$"
+    },
+    "NarrowedTools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "maxTools": {
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "effects": {
+          "$ref": "engine-profile.schema.json#/$defs/ProfileEffects"
+        }
+      }
+    },
+    "NarrowedLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "maxSteps": {
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "maxWallS": {
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "maxTokens": {
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "maxUsd": {
+          "$ref": "common.schema.json#/$defs/Usd"
+        }
+      }
+    },
+    "NarrowedApprovals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "read": {
+          "$ref": "engine-profile.schema.json#/$defs/ApprovalLevel"
+        },
+        "workspace": {
+          "$ref": "engine-profile.schema.json#/$defs/ApprovalLevel"
+        },
+        "write": {
+          "$ref": "engine-profile.schema.json#/$defs/ApprovalLevel"
+        },
+        "execute": {
+          "$ref": "engine-profile.schema.json#/$defs/ApprovalLevel"
+        }
+      }
+    }
+  },
+  "examples": [
+    {},
+    {
+      "engines": [
+        "engine-a"
+      ],
+      "isolationMin": "gvisor",
+      "limits": {
+        "maxUsd": 2
+      },
+      "subAgents": {
+        "enabled": false,
+        "maxDepth": 1,
+        "maxConcurrent": 1
+      }
+    },
+    {
+      "engines": [
+        "engine-a@1.2.3"
+      ],
+      "mode": "plan",
+      "egress": "none",
+      "tools": {
+        "maxTools": 20,
+        "effects": [
+          "read"
+        ]
+      },
+      "limits": {
+        "maxSteps": 10,
+        "maxWallS": 600,
+        "maxTokens": 100000
+      },
+      "reasoningEffort": "low",
+      "approvals": {
+        "write": "deny"
+      },
+      "skills": [
+        "xlsx"
+      ]
+    },
+    {
+      "accountKinds": [
+        "org_api_key",
+        "user_api_key"
+      ]
+    }
+  ]
+}

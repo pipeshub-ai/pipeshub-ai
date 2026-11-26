@@ -31,9 +31,18 @@ from app.models.entities import (
     serialize_artifact_versions,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from harness_core.engines.durable.inputs import input_name
+from harness_core.workspace.safe_names import safe_name
 
 from .access import AccessPolicy
 from .models import Actor, ArtifactMetadata, ArtifactVersion
+
+
+def storage_file_name(name: str) -> str:
+    """The file name an artifact's bytes are stored under (SEC-FS-02): its own name when that is one plain file
+    name, else the same reduction an input gets (``charts/q3.png`` → ``q3.png``, ``..`` → ``input``). The
+    artifact keeps the name it was given; only the storage path is made safe."""
+    return name if safe_name(name) else input_name(name)
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +222,8 @@ class VersionManager:
         visibility: ArtifactVisibility = ArtifactVisibility.VISIBLE,
         connector_name: Connectors = Connectors.CODING_SANDBOX,
         result_schema: dict | None = None,
+        artifact_id: str | None = None,
+        lifecycle_status: LifecycleStatus = LifecycleStatus.PUBLISHED,
     ) -> ArtifactMetadata:
         """Create a brand-new, version-1 artifact: blob doc (version-enabled)
         + `records`/`artifacts` graph docs + owner permission edge, all
@@ -222,7 +233,7 @@ class VersionManager:
         upload_info = await self._blob_store.save_versioned_artifact_to_storage(
             org_id=actor.org_id,
             conversation_id=conversation_id or "unscoped",
-            file_name=name,
+            file_name=storage_file_name(name),
             file_bytes=content,
             content_type=mime_type,
         )
@@ -230,7 +241,7 @@ class VersionManager:
         if not document_id:
             raise VersionSyncError(f"Blob upload for artifact {name!r} returned no documentId")
 
-        artifact_id = str(uuid4())
+        artifact_id = artifact_id or str(uuid4())
         now = get_epoch_timestamp_in_ms()
         record = ArtifactRecord(
             id=artifact_id,
@@ -251,7 +262,7 @@ class VersionManager:
             preview_renderable=True,
             hide_weburl=True,
             artifact_type=artifact_type,
-            lifecycle_status=LifecycleStatus.PUBLISHED,
+            lifecycle_status=lifecycle_status,
             source_tool=source_tool,
             conversation_id=conversation_id,
             is_temporary=is_temporary,
@@ -394,7 +405,7 @@ class VersionManager:
         upload_result = await self._blob_store.upload_artifact_version(
             org_id=actor.org_id,
             document_id=document_id,
-            file_name=file_name,
+            file_name=storage_file_name(file_name),
             file_bytes=content,
             content_type=effective_mime,
         )
@@ -544,7 +555,7 @@ def to_metadata(record: ArtifactRecord, *, document_id: str) -> ArtifactMetadata
     )
 
 
-def to_metadata_from_docs(record: dict, artifact_doc: dict) -> ArtifactMetadata:
+def to_metadata_from_docs(record: dict[str, Any], artifact_doc: dict[str, Any]) -> ArtifactMetadata:
     _, ext = os.path.splitext(record.get("recordName") or "")
     visibility_raw = artifact_doc.get("visibility")
     try:

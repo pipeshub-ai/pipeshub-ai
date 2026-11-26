@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from typing import TYPE_CHECKING
 
-from app.core.db import DbError, DbTimeout
+from app.core.db import ConnectionLost, DbError, DbTimeout
 from app.telemetry.modules import pgvector_search_metrics as telemetry
 
 if TYPE_CHECKING:
@@ -82,24 +83,32 @@ async def search(
 ) -> tuple[list[tuple[int, str]], str | None]:
     """``(rows, degraded)``: the lexical leg's points in order, and why it is incomplete: ``timeout`` (it ran out of time, or no
     connection was free in time) and ``error`` (any other database failure, logged as an error) answer nothing, ``partial`` answers
-    what was found within ``MAX_LEG`` rows. The dense leg still answers in every case. A malformed query raises."""
+    what was found within ``MAX_LEG`` rows. The dense leg still answers in every other case. A malformed query, and a database that cannot
+    be reached (``ConnectionLost``), raise."""
     if not 1 <= leg <= MAX_LEG:
         raise ValueError(f"a lexical leg is 1..{MAX_LEG} rows")
     terms_of(sparse)             # validated before any statement
+    started = time.monotonic()
     if scope.matches_nothing:    # every row fails the filter: an empty, complete answer, not a search that is repeated up to MAX_LEG and reported partial
+        telemetry.observe_leg("lexical", leg, started)
         return [], None
     try:
         rows, partial = await db.run(
             lambda tx: _run(tx, org, collection_id, sparse, scope, leg, t), timeout_ms=t.h_timeout_ms(leg), custom_plan=True)
         if partial:
             telemetry.DEGRADED.inc("partial", "lexical", telemetry.leg_band(leg))
+        telemetry.observe_leg("lexical", leg, started)
         return rows, "partial" if partial else None
     except DbTimeout:
         telemetry.TIMEOUT.inc("lexical", "lexical")
         logger.warning("lexical leg ran out of time; answering from the dense leg alone")
         reason = "timeout"
+    except ConnectionLost:
+        telemetry.observe_leg("lexical", leg, started)
+        raise                   # the database is out: the whole search answers unavailable rather than half of it
     except DbError:
         logger.error("lexical leg failed; answering from the dense leg alone", exc_info=True)
         reason = "error"
     telemetry.DEGRADED.inc(reason, "lexical", telemetry.leg_band(leg))
+    telemetry.observe_leg("lexical", leg, started)
     return [], reason

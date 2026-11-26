@@ -51,7 +51,7 @@ BASELINE = {
     # Not cleaned up yet: these hand back ValueErrors that are sometimes written
     # for the reader ("Invalid npm package name") and sometimes not. Lower the
     # number as each one is given wording of its own.
-    "api/routes/skills.py": 11,
+    "api/routes/skills.py": 10,
     "api/routes/mcp_servers.py": 3,
     "api/routes/search.py": 1,
     "connectors/sources/localKB/handlers/kb_service.py": 0,

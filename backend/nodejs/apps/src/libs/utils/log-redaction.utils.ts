@@ -456,16 +456,32 @@ const QUOTED_JSON_FIELD =
 // Starts only where no token character precedes: `\b` also matches after `-`, which made `eyJ-eyJ-…` quadratic.
 const JWT = /(?<![\w-])eyJ[\w-]*\.[\w-]+\.[\w-]*/g;
 
+// V8's JSON.parse error quotes the text it could not read, which may be a decrypted setting or a request body: all of it up
+// to 20 UTF-16 units, else 10 each side of the error (`Unexpected token 'x', ..."<text>"... is not valid JSON`). The
+// offending character goes too. Bounded at 32 units so the lazy match stays linear on a long run of quotes.
+const JSON_PARSE_QUOTE =
+  /(Unexpected token '[\s\S]', )?(?:\.\.\.)?"[\s\S]{0,32}?"(?:\.\.\.)?(?= is not valid JSON)/g;
+
+const redactJsonParseQuote = (text: string): string =>
+  text.includes(' is not valid JSON')
+    ? text.replace(
+        JSON_PARSE_QUOTE,
+        (_quote, token?: string) =>
+          `${token !== undefined ? 'Unexpected token, ' : ''}"${REDACTED}"`,
+      )
+    : text;
+
 /**
  * Free text such as an error message or stack: each word that could hold a
  * `name=value` pair or a `user:password@` URL is redacted on its own, so the
  * rest of the text (stack frames, Mongo key errors) stays readable. A quoted
- * JSON field (`"access_token":"..."`) is redacted by its key.
+ * JSON field (`"access_token":"..."`) is redacted by its key, and the text a
+ * JSON.parse error quotes is redacted whole.
  */
 
 export const redactSecretsInText = (text: string): string =>
   // Split, not a \S*[=@]\S* scan: that pattern backtracks quadratically on a long word.
-  text
+  redactJsonParseQuote(text)
     .replace(QUOTED_JSON_FIELD, (field, opening: string, key: string) =>
       isSensitiveQueryKey(key) || SECRET_HEADERS.has(key.toLowerCase())
         ? `${opening}${REDACTED}"`

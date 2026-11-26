@@ -69,6 +69,7 @@
   "app/query_main.py": 1,
   "app/sandbox/artifact_cleanup.py": 1,
   "app/sandbox/artifact_upload.py": 1,
+  "app/sandbox/docker_proxy.py": 2,
   "app/scripts/build_code_graph_edges.py": 1,
   "app/services/cache/accessible_records_cache.py": 2,
   "app/services/graph_db/dated_scope.py": 1,
@@ -168,7 +169,8 @@
   "app/connectors/sources/salesforce/connector.py": 2,
   "app/core/org_jobs.py": 1,
   "app/ee/permission_sync/salesforce.py": 2,
-  "app/events/events.py": 8,
+  "app/events/emptied_record.py": 1,
+  "app/events/events.py": 7,
   "app/indexing_main.py": 4,
   "app/migrations/all_team_migration.py": 1,
   "app/migrations/code_graph_backfill.py": 2,
@@ -195,6 +197,7 @@
   "app/modules/indexing/lane_upkeep.py": 1,
   "app/modules/indexing/named_entity_completion.py": 2,
   "app/modules/indexing/named_entity_persist_retry.py": 2,
+  "app/modules/indexing/pdf_page_limit_audit.py": 2,
   "app/modules/indexing/record_label_repair.py": 1,
   "app/modules/indexing/record_republish.py": 1,
   "app/modules/indexing/record_title_consumer.py": 2,
@@ -249,6 +252,7 @@
   "app/utils/execute_query.py": 2,
   "app/utils/fetch_slack_nearby_messages.py": 2,
   "app/utils/fetch_slack_thread.py": 4,
+  "app/utils/oauth_config.py": 1,
   "app/utils/pattern_match.py": 1
  }
 }

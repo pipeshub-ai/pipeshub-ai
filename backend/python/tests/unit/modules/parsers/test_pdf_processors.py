@@ -758,19 +758,19 @@ class TestVLMOCRStrategy:
             "provider": "openai",
             "configuration": {"model": "gpt-4o"},
         }
-        with patch("app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model") as mock_get:
+        with patch("app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = MagicMock()
-            result = strategy._create_llm_from_config(config)
-            mock_get.assert_called_once_with("openai", config, "gpt-4o", sdk_retries=0)
+            result = asyncio.run(strategy._create_llm_from_config(config))
+            mock_get.assert_awaited_once_with(strategy.config, "openai", config, "gpt-4o", sdk_retries=0)
             assert strategy.llm_config == config
 
     def test_create_llm_from_config_no_model(self):
         strategy = self._make_strategy()
         config = {"provider": "openai", "configuration": {}}
-        with patch("app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model") as mock_get:
+        with patch("app.modules.parsers.pdf.vlm_ocr_strategy.build_chat_model", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = MagicMock()
-            strategy._create_llm_from_config(config)
-            mock_get.assert_called_once_with("openai", config, None, sdk_retries=0)
+            asyncio.run(strategy._create_llm_from_config(config))
+            mock_get.assert_awaited_once_with(strategy.config, "openai", config, None, sdk_retries=0)
 
     @pytest.mark.asyncio
     async def test_get_multimodal_llm_default(self):
@@ -779,7 +779,7 @@ class TestVLMOCRStrategy:
             "llm": [{"provider": "openai", "isDefault": True, "configuration": {"model": "gpt-4o"}}]
         })
         with patch("app.modules.parsers.pdf.vlm_ocr_strategy.is_multimodal_llm", return_value=True), \
-             patch("app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model") as mock_get:
+             patch("app.utils.aimodels.get_generator_model") as mock_get:
             mock_get.return_value = MagicMock()
             result = await strategy._get_multimodal_llm()
             assert result is not None
@@ -817,7 +817,7 @@ class TestVLMOCRStrategy:
             return config["provider"] == "anthropic"
 
         with patch("app.modules.parsers.pdf.vlm_ocr_strategy.is_multimodal_llm", side_effect=mock_is_multimodal), \
-             patch("app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model") as mock_get:
+             patch("app.utils.aimodels.get_generator_model") as mock_get:
             mock_get.return_value = MagicMock()
             result = await strategy._get_multimodal_llm()
             assert result is not None

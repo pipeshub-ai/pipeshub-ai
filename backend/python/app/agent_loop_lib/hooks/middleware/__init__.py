@@ -1,64 +1,18 @@
-"""Express-style middleware pipeline: contexts, dispatch engine, and path routing.
+"""Legacy import path; this package lives in ``harness_core.kernel.hooks.middleware``.
 
-This package is the deterministic backbone the rest of agent-loop's hooks
-system is built on (see `agent_loop.hooks`). It has no knowledge of tools,
-agents, or turns — it only knows how to route a context object through an
-ordered stack of `(matcher, middleware)` pairs and let each middleware decide
-whether to continue the chain.
+Moved submodules keep their old paths as aliases; submodules that did not
+move still live in this directory.
 """
 
-from app.agent_loop_lib.hooks.middleware.context import (
-    AgentLifecycleContext,
-    GuardrailContext,
-    ModelCallContext,
-    ToolCallContext,
-    ToolResultContext,
-    TurnContext,
-)
-from app.agent_loop_lib.hooks.middleware.decisions import (
-    POST_SEVERITY,
-    PRE_SEVERITY,
-    PostDecision,
-    PreDecision,
-)
-from app.agent_loop_lib.hooks.middleware.pipeline import Middleware, Next, Pipeline
-from app.agent_loop_lib.hooks.middleware.routing import (
-    Matcher,
-    by_tag,
-    by_tags,
-    match_all,
-    path_match,
-    prefixed,
-    to_matcher,
-)
-from app.agent_loop_lib.hooks.middleware.wrapper import (
-    WrapMiddleware,
-    WrapNext,
-    Wrapper,
+from harness_core.kernel.hooks import middleware as _moved
+from harness_core.kernel.hooks.middleware import *  # noqa: F403
+
+globals().update(
+    {k: v for k, v in vars(_moved).items() if not k.startswith("__") or k == "__all__"}
 )
 
-__all__ = [
-    "ToolCallContext",
-    "ToolResultContext",
-    "AgentLifecycleContext",
-    "TurnContext",
-    "ModelCallContext",
-    "GuardrailContext",
-    "PreDecision",
-    "PostDecision",
-    "PRE_SEVERITY",
-    "POST_SEVERITY",
-    "Pipeline",
-    "Middleware",
-    "Next",
-    "Wrapper",
-    "WrapMiddleware",
-    "WrapNext",
-    "Matcher",
-    "match_all",
-    "to_matcher",
-    "path_match",
-    "prefixed",
-    "by_tag",
-    "by_tags",
-]
+
+def __getattr__(name: str) -> object:
+    # The update above copies the moved package as it was at import; a submodule imported later by its new path
+    # becomes an attribute of the moved package only, so it is looked up there.
+    return getattr(_moved, name)

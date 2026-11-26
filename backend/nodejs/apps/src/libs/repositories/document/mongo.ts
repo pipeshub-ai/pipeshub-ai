@@ -122,13 +122,13 @@ async function touchArtifactSet(
     const forward = await DocumentModel.findOneAndUpdate(
       later as never,
       { $set: { updatedAt: now }, $unset: { 'artifactSet.retiringAt': 1 } },
-      { new: true, timestamps: false },
+      { returnDocument: 'after', timestamps: false },
     );
     if (forward) return row(forward);
     const bumped = await DocumentModel.findOneAndUpdate(
       writable as never,
       { $inc: { updatedAt: 1 }, $unset: { 'artifactSet.retiringAt': 1 } },
-      { new: true, timestamps: false },
+      { returnDocument: 'after', timestamps: false },
     );
     return bumped ? row(bumped) : null;
   };
@@ -202,7 +202,7 @@ export class MongoDocumentRepository implements DocumentRepository {
         $inc: { writeSeq: 1 },
         $push: { writers: { t: token, until: now + windowMs } },
       },
-      { new: true, timestamps: false },
+      { returnDocument: 'after', timestamps: false },
     )
       .select('+writeSeq')
       .maxTimeMS(TOKEN_MAX_TIME_MS);
@@ -242,7 +242,7 @@ export class MongoDocumentRepository implements DocumentRepository {
     const bumped = await DocumentModel.findOneAndUpdate(
       { _id: id, orgId },
       { $inc: { writeSeq: 1 } },
-      { new: true, timestamps: false },
+      { returnDocument: 'after', timestamps: false },
     )
       .select('+writeSeq')
       .maxTimeMS(TOKEN_MAX_TIME_MS);
@@ -287,7 +287,7 @@ export class MongoDocumentRepository implements DocumentRepository {
     const marked = await DocumentModel.findOneAndUpdate(
       { _id: id, orgId },
       { $set: patch, $inc: { writeSeq: 1 } },
-      { new: true },
+      { returnDocument: 'after' },
     ).select('+writeSeq');
     return marked
       ? { row: rowWithoutState(marked), writeSeq: seqOf(marked) }
@@ -610,7 +610,7 @@ export class MongoDocumentRepository implements DocumentRepository {
     const marked = await DocumentModel.findOneAndUpdate(
       { _id: id, orgId: orgId, isDeleted: false, retiredAt: null },
       { $set: { retiredAt: now } },
-      { new: true, timestamps: false },
+      { returnDocument: 'after', timestamps: false },
     ).lean();
     if (marked) return { retiredAt: marked.retiredAt ?? null };
     const existing = await DocumentModel.findOne({
@@ -823,7 +823,7 @@ export class MongoDocumentRepository implements DocumentRepository {
     const claimed = await DocumentModel.findOneAndUpdate(
       guarded as never,
       { $set: { 'artifactSet.retiringAt': now } },
-      { new: true, timestamps: false },
+      { returnDocument: 'after', timestamps: false },
     );
     if (claimed) return row(claimed);
     const present =

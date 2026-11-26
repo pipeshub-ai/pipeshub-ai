@@ -1,0 +1,138 @@
+name: Contracts and Codegen
+
+# CPD-0: one generator writes every contract root (contracts/harness,
+# contracts/control-plane) to every target (three Python packages, the Node
+# agent-harness and control-plane trees, the frontend's two trees). This job
+# regenerates them all and fails on any diff (C-5, both halves: Node and both
+# node_modules are installed and PXH_REQUIRE_NODE=1 turns a skipped TypeScript
+# half into a failure), runs the contract and constants suites in each
+# language and the tool gateway's MCP conformance run (TG-18), and keeps the
+# import-linter contracts. A separate file so it does
+# not overlap the unit-test workflows FX (R3 CI-1) is changing.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'contracts/**'
+      - 'backend/python/harness_core/contracts/**'
+      - 'backend/python/app/harness/contracts/**'
+      - 'backend/python/app/control_plane/**'
+      # QA-7: files that read a generated enumeration or code, so a hand edit runs the guards.
+      - 'backend/python/app/harness/**'
+      - 'backend/python/app/agents/run_definition.py'
+      - 'backend/python/harness_core/**'
+      - 'backend/python/harness_engines/**'
+      - 'backend/python/tests/cohesion/test_c3_c7_contracts_and_versions.py'
+      - 'backend/python/tests/cohesion/test_c33_vector_readers.py'
+      - 'backend/python/tests/cohesion/test_c34_one_definition.py'
+      - 'backend/python/tests/cohesion/test_cpd0_ci.py'
+      - 'backend/nodejs/apps/src/modules/agent-harness/**'
+      - 'backend/nodejs/apps/src/libs/repositories/agent-harness/**'
+      - 'backend/nodejs/apps/src/libs/repositories/control-plane/**'
+      - 'backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml'
+      - 'frontend/app/(main)/agents/types.ts'
+      - 'frontend/app/(main)/chat/**'
+      - 'frontend/app/(main)/workspace/memories/**'
+      - 'backend/python/tests/unit/contracts_harness/**'
+      - 'backend/python/pyproject.toml'
+      - 'backend/python/requirements/**'
+      # TG-18: the tool gateway's MCP conformance run (the gateway itself is under app/harness/** above).
+      - 'backend/python/tests/unit/harness/gateway/**'
+      - 'backend/nodejs/apps/package-lock.json'
+      - 'backend/nodejs/apps/src/modules/agent-harness/contracts/**'
+      - 'backend/nodejs/apps/src/modules/control-plane/**'
+      - 'backend/nodejs/apps/tests/modules/agent-harness/contracts/**'
+      - 'backend/nodejs/apps/tests/modules/control-plane/**'
+      - 'backend/nodejs/apps/tests/cohesion/cp-layering.test.ts'
+      - 'backend/nodejs/apps/tests/support/layering.ts'
+      - 'frontend/lib/contracts/**'
+      - 'frontend/package.json'
+      - '.github/workflows/contracts-codegen.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codegen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        working-directory: backend/python
+        run: |
+          requirements/install.sh dev --project . --editable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            backend/nodejs/apps/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci --ignore-scripts
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --ignore-scripts
+
+      - name: Regenerate every target; any diff fails
+        run: |
+          bash contracts/harness/generate.sh
+          git status --porcelain -- contracts backend frontend
+          test -z "$(git status --porcelain -- contracts backend frontend)"
+
+      - name: Python contract suites (C-1..C-6, constants, error catalogues, identifiers, QA-7 guards)
+        working-directory: backend/python
+        env:
+          PXH_REQUIRE_NODE: '1'
+        run: >-
+          python -m pytest -q -n 4 tests/unit/contracts_harness tests/unit/harness/test_journal_wire_codes.py
+          tests/unit/harness_core/journal/test_types_are_generated.py
+          tests/cohesion/test_c3_c7_contracts_and_versions.py tests/cohesion/test_c33_vector_readers.py
+          tests/cohesion/test_c34_one_definition.py tests/cohesion/test_cpd0_ci.py
+
+      # TG-18 (C3.39): the protocol is a contract with every engine's MCP client. Offline: the gateway runs on
+      # 127.0.0.1 and is driven by raw JSON-RPC, the Python SDK's client and the locked TypeScript SDK's client.
+      - name: MCP protocol conformance of the tool gateway (TG-18)
+        working-directory: backend/python
+        env:
+          PXH_REQUIRE_NODE: '1'
+        run: >-
+          python -m pytest -q -n 4 tests/unit/harness/gateway/test_tg18_mcp_conformance.py
+          tests/unit/harness/gateway/test_mcp_transport.py
+
+      - name: Import-linter contracts
+        working-directory: backend/python
+        run: lint-imports
+
+      - name: Node contract suites and control-plane layering
+        working-directory: backend/nodejs/apps
+        env:
+          TS_NODE_PROJECT: tsconfig.test.json
+        run: >-
+          npx mocha --no-config --require reflect-metadata --require ts-node/register --timeout 120000
+          'tests/modules/agent-harness/contracts/*.test.ts' 'tests/modules/control-plane/**/*.test.ts'
+          tests/cohesion/cp-layering.test.ts
+
+      - name: Frontend contract constants and types
+        working-directory: frontend
+        run: |
+          npx vitest run lib/contracts
+          npm run typecheck

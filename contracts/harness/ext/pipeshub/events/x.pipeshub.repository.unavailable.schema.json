@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.repository.unavailable.schema.json",
+  "title": "PipeshubRepositoryUnavailableEvent",
+  "description": "A repository_fetch refused because its host, or the repository under it, is not on the git hosts the org allows (WP-63): the chat's \"Clone not available\" card, from which an org admin may turn the host's preset on and the person try again. The host and the repository's path only, never a URL. Journaled with the call's outcome, only to a journal whose claim names repository_fetches. Folds ignore it.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.repository.unavailable"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubRepositoryUnavailableData"
+    }
+  },
+  "$defs": {
+    "PipeshubRepositoryUnavailableData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "path",
+        "reason"
+      ],
+      "properties": {
+        "host": {
+          "description": "The git host, by name.",
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$"
+        },
+        "path": {
+          "description": "The repository's path on the host, with its leading slash, without .git.",
+          "type": "string",
+          "maxLength": 301,
+          "pattern": "^/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}(/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}){1,7}$"
+        },
+        "reason": {
+          "description": "host_not_allowed: the host, or the repository under it, is not on the org's list.",
+          "enum": [
+            "host_not_allowed"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-02T12:00:00.123Z",
+      "visibility": "owner",
+      "writer": "worker",
+      "type": "x.pipeshub.repository.unavailable",
+      "data": {
+        "host": "github.com",
+        "path": "/onyx-dot-app/onyx",
+        "reason": "host_not_allowed"
+      }
+    }
+  ]
+}

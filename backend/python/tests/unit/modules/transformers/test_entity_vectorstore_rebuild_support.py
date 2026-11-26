@@ -281,7 +281,7 @@ OPENAI = {"provider": "openAI", "isDefault": True, "configuration": {"model": "t
 class TestDimensionChange:
     async def test_mismatch_raises_by_default(self) -> None:
         store, db, model = _init_store(768, 1536, recreate=False, embedding_config=OPENAI)
-        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model), \
+        with patch("app.utils.llm.get_embedding_model", return_value=model), \
              pytest.raises(VectorStoreError):
             await store._ensure_initialized()
         db.delete_collection.assert_not_awaited()
@@ -289,14 +289,14 @@ class TestDimensionChange:
     async def test_mismatch_without_the_leader_request_raises_when_it_holds_entities(self) -> None:
         store, db, model = _init_store(768, 1536, recreate=True, embedding_config=OPENAI)
         db.scroll = AsyncMock(return_value=ScrollResult(points=[VectorPoint(id="p1", payload={})]))
-        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model), \
+        with patch("app.utils.llm.get_embedding_model", return_value=model), \
              pytest.raises(VectorStoreError, match="dimension 768"):
             await store._ensure_initialized()
         db.delete_collection.assert_not_awaited()
 
     async def test_an_indexing_store_recreates_a_mismatch_holding_no_entities(self) -> None:
         store, db, model = _init_store(768, 1536, recreate=True, embedding_config=OPENAI)
-        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model):
+        with patch("app.utils.llm.get_embedding_model", return_value=model):
             await store._ensure_initialized()
         db.delete_collection.assert_awaited_once()
         assert db.create_collection.await_args.kwargs["config"].embedding_size == 1536
@@ -307,7 +307,7 @@ class TestDimensionChange:
             VectorCollectionInfo(name="entities", exists=True, dense_dimension=768),
             VectorCollectionInfo(name="entities", exists=True, dense_dimension=1536),
         ]
-        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model):
+        with patch("app.utils.llm.get_embedding_model", return_value=model):
             await store._ensure_initialized(recreate=True)
         db.delete_collection.assert_not_awaited()
         db.create_collection.assert_not_awaited()
@@ -319,7 +319,7 @@ class TestDimensionChange:
             VectorCollectionInfo(name="entities", exists=False),
             VectorCollectionInfo(name="entities", exists=True, dense_dimension=1536),
         ]
-        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model):
+        with patch("app.utils.llm.get_embedding_model", return_value=model):
             await store._ensure_initialized()
         assert store._initialized
         db.create_index.assert_awaited()
@@ -327,14 +327,14 @@ class TestDimensionChange:
     async def test_a_failed_create_with_no_usable_collection_raises(self) -> None:
         store, db, model = _init_store(None, 1536, recreate=True, embedding_config=OPENAI)
         db.create_collection.side_effect = RuntimeError("vector db down")
-        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model), \
+        with patch("app.utils.llm.get_embedding_model", return_value=model), \
              pytest.raises(RuntimeError, match="vector db down"):
             await store._ensure_initialized()
         assert not store._initialized
 
     async def test_mismatch_recreates_when_enabled(self, caplog) -> None:
         store, db, model = _init_store(768, 1536, recreate=True, embedding_config=OPENAI)
-        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model), \
+        with patch("app.utils.llm.get_embedding_model", return_value=model), \
              caplog.at_level(logging.WARNING, logger="entity-store-test"):
             await store._ensure_initialized(recreate=True)
         db.delete_collection.assert_awaited_once()
@@ -343,7 +343,7 @@ class TestDimensionChange:
 
     async def test_matching_dimension_is_left_alone(self) -> None:
         store, db, model = _init_store(1536, 1536, recreate=True, embedding_config=OPENAI)
-        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model):
+        with patch("app.utils.llm.get_embedding_model", return_value=model):
             await store._ensure_initialized()
         db.delete_collection.assert_not_awaited()
         db.create_collection.assert_not_awaited()
@@ -352,12 +352,12 @@ class TestDimensionChange:
 class TestFingerprint:
     async def test_configured_model_fingerprint(self) -> None:
         store, _, model = _init_store(1536, 1536, recreate=False, embedding_config=OPENAI)
-        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model):
+        with patch("app.utils.llm.get_embedding_model", return_value=model):
             assert await store.embedding_fingerprint() == "openAI:text-embedding-3-small:1536"
 
     async def test_default_model_fingerprint(self) -> None:
         store, _, model = _init_store(384, 384, recreate=False)
-        with patch("app.modules.transformers.entity_vectorstore.get_default_embedding_model", return_value=model):
+        with patch("app.utils.llm.get_default_embedding_model", return_value=model):
             fingerprint = await store.embedding_fingerprint()
         assert fingerprint.startswith("default:") and fingerprint.endswith(":384")
 
@@ -365,9 +365,9 @@ class TestFingerprint:
         other = {**OPENAI, "configuration": {"model": "text-embedding-3-large"}}
         a, _, model_a = _init_store(1536, 1536, recreate=False, embedding_config=OPENAI)
         b, _, model_b = _init_store(1536, 1536, recreate=False, embedding_config=other)
-        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model_a):
+        with patch("app.utils.llm.get_embedding_model", return_value=model_a):
             fa = await a.embedding_fingerprint()
-        with patch("app.modules.transformers.entity_vectorstore.get_embedding_model", return_value=model_b):
+        with patch("app.utils.llm.get_embedding_model", return_value=model_b):
             fb = await b.embedding_fingerprint()
         assert fa != fb
 
