@@ -1398,6 +1398,29 @@ class TestEnsureSchema:
             assert await connected_provider.ensure_schema() is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("collection", ["agentSkills", "agentSkillVersions"])
+    async def test_a_skills_schema_goes_through_its_generation_guard(self, connected_provider, collection) -> None:
+        """An older build writes its skills schema unconditionally; this build applies its own only over a lower live
+        generation, and its poll puts it back after such a write, as for the records and apps schemas."""
+        from app.schema.arango.documents import (
+            AGENT_SKILLS_SCHEMA_GENERATION,
+            agent_skills_schema,
+        )
+        from app.services.graph_db.arango.record_schema_guard import (
+            generation_of_schema,
+        )
+
+        assert generation_of_schema(agent_skills_schema) == AGENT_SKILLS_SCHEMA_GENERATION >= 1
+        guard = MagicMock(ensure_wide=AsyncMock(return_value=True), is_wide=AsyncMock(return_value=True))
+        connected_provider._skill_schema_guards = {collection: guard}
+        connected_provider.http_client.update_collection_schema = AsyncMock(return_value=True)
+        assert await connected_provider._apply_schema(collection, {"rule": {}}) is True
+        guard.ensure_wide.assert_awaited_once_with("startup")
+        connected_provider.http_client.update_collection_schema.assert_not_awaited()
+        connected_provider.start_record_schema_poll(5.0)
+        guard.start.assert_called_once_with(5.0)
+
+    @pytest.mark.asyncio
     async def test_an_apps_collection_not_created_fails_the_ensure(self, connected_provider) -> None:
         from app.config.constants.arangodb import CollectionNames
 

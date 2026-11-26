@@ -485,3 +485,25 @@ class TestReservedSkillNames:
                 await member.create_skill("broken-pack", md)
         finally:
             forget()
+
+    @pytest.mark.asyncio
+    async def test_no_pack_directory_refuses_every_create(self, tmp_path, monkeypatch) -> None:
+        """Without the pack directory the reserved names are unknown: no create, and nothing cached as empty."""
+        import app.agents.agent_loop.skills.manager_factory as mf
+        from app.agent_loop_lib.core.exceptions import RegistryError
+        from tests.support.skill_stores import skill_store
+        from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
+
+        monkeypatch.setattr(mf, "_BUILTIN_PACKS_ROOT", str(tmp_path / "missing"))
+        mf._reserved_skill_names.cache_clear()
+        try:
+            member = skill_store(FakeGraphProvider(), "org-1", "user-a", reserved_names=mf._reserved_skill_names)
+            md = "---\nname: my-skill\ndescription: Use when testing\n---\n\nBody.\n"
+            with pytest.raises(RegistryError, match="unavailable"):
+                await member.create_skill("my-skill", md)
+            (tmp_path / "missing" / "a-pack").mkdir(parents=True)
+            (tmp_path / "missing" / "a-pack" / "SKILL.md").write_text("x")
+            await member.create_skill("my-skill", md)
+            assert mf._reserved_skill_names() == frozenset({"a-pack"})
+        finally:
+            mf._reserved_skill_names.cache_clear()

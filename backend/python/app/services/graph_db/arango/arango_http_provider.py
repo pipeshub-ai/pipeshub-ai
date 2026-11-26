@@ -108,6 +108,7 @@ from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
 from app.modules.pipeline import parser_identity
 from app.schema.arango.documents import (
+    AGENT_SKILLS_SCHEMA_GENERATION,
     APP_SCHEMA_GENERATION,
     RECORD_SCHEMA_GENERATION,
     agent_schema,
@@ -1122,6 +1123,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self.logger = logger
         self.config_service = config_service
         self.http_client: ArangoHTTPClient | None = None
+        # The skills collections' schema guards for the current client (start and poll only), by collection name.
+        self._skill_schema_guards: dict[str, RecordSchemaGuard] = {}
         # The walk index's actual name, found by its fields (is_trash_walk_index_ready).
         self._purge_walk_index = PURGE_WALK_INDEX
         # Edge collections per graph, read once: see _edge_collections_of_graph.
@@ -1304,6 +1307,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.http_client, self.logger, schema=app_schema, generation=APP_SCHEMA_GENERATION,
                 collection=CollectionNames.APPS.value,
             )
+            self._skill_schema_guards = {
+                name: RecordSchemaGuard(
+                    self.http_client, self.logger, schema=schema, generation=AGENT_SKILLS_SCHEMA_GENERATION,
+                    collection=name,
+                )
+                for name, schema in (
+                    (CollectionNames.AGENT_SKILLS.value, agent_skills_schema),
+                    (CollectionNames.AGENT_SKILL_VERSIONS.value, agent_skill_versions_schema),
+                )
+            }
 
             # Ensure database exists
             if not await self.http_client.database_exists(arango_db):
@@ -1327,11 +1340,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.http_client = None
             return False
 
+    def _schema_guards(self) -> list[RecordSchemaGuard]:
+        client = self.http_client
+        if client is None:
+            return []
+        return [g for g in (client.record_guard, client.apps_guard, *self._skill_schema_guards.values()) if g is not None]
+
     async def _stop_schema_guards(self) -> None:
         """Cancel the polls of the current client's schema guards (they hold the client, so they would keep polling after a disconnect)."""
-        for guard in (self.http_client.record_guard, self.http_client.apps_guard) if self.http_client else ():
-            if guard is not None:
-                await guard.stop()
+        for guard in self._schema_guards():
+            await guard.stop()
 
     async def disconnect(self) -> bool:
         """
@@ -1353,7 +1371,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return False
 
     async def _apply_schema(self, name: str, schema: dict[str, Any]) -> bool:
-        """Apply ``schema`` to a collection. The records and apps schemas are applied only while the live generation is
+        """Apply ``schema`` to a collection. The records, apps and agent skills schemas are applied only while the live generation is
         lower than this process's, through the guard's lock and last-look checks. That narrows, but cannot close, the window in which an
         older start puts its schema over a newer one (a schema change is not transactional with the lock); the newer process's poll
         repairs it, eventually (see ``record_schema_guard``)."""
@@ -1363,6 +1381,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             guard = client.record_guard
         elif client is not None and name == CollectionNames.APPS.value:
             guard = client.apps_guard
+        elif client is not None:
+            guard = self._skill_schema_guards.get(name)
         if guard is not None:
             # The guard's locked recheck decides from reads that can be out of date by the time the schema is written; the schema
             # update itself is not fenced, so a paused older start can still overwrite a newer schema, and the newer process's
@@ -1382,11 +1402,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return bool(guard and await guard.ensure_wide(trigger))
 
     def start_record_schema_poll(self, interval: float = 10.0) -> None:
-        """Check the live records and apps schemas every ``interval`` seconds on the running loop and widen each when it is
+        """Check the live guarded schemas (records, apps, agent skills) every ``interval`` seconds on the running loop and widen each when it is
         narrower than this process's."""
-        for guard in (self.http_client.record_guard, self.http_client.apps_guard) if self.http_client else ():
-            if guard is not None:
-                guard.start(interval)
+        for guard in self._schema_guards():
+            guard.start(interval)
 
     async def ensure_schema(self) -> bool:
         """

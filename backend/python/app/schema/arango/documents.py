@@ -2010,8 +2010,8 @@ agent_skill_versions_schema = {
             "summary": {"type": "string", "default": ""},
             "updatedBy": {"type": ["string", "null"]},
             "generation": {"type": "string"},  # the generation of the skill this revises
-            # The archived state's own updatedAtTimestamp: of two rows for one version, the later state is the
-            # one a committed write superseded (a write that lost its conditional commit archived an older one).
+            # The archived state's own updatedAtTimestamp: a version superseded in more than one state (a resource
+            # write keeps the version) has a row per state, and readers take the latest.
             "stateUpdatedAtTimestamp": {"type": "number"},
             "createdAtTimestamp": {"type": "number"},
         },
@@ -2021,6 +2021,14 @@ agent_skill_versions_schema = {
     "level": "strict",
     "message": "Document does not match the agent skill versions schema.",
 }
+
+# Raised by one with every change to ``agent_skills_schema`` or ``agent_skill_versions_schema``; applied as
+# ``RECORD_SCHEMA_GENERATION`` is, so an older start that put its schema back is repaired by a newer process's poll.
+AGENT_SKILLS_SCHEMA_GENERATION = 1
+agent_skills_schema["rule"]["$comment"] = f"pipeshub-agent-skills-schema gen={AGENT_SKILLS_SCHEMA_GENERATION}"
+agent_skill_versions_schema["rule"]["$comment"] = (
+    f"pipeshub-agent-skill-versions-schema gen={AGENT_SKILLS_SCHEMA_GENERATION}"
+)
 
 # Agent Skill Candidates Node Schema — learning-loop candidates pending
 # governance review (`SkillCandidateStore`, `manager.py`). Rows are deleted
