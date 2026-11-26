@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from app.agent_loop_lib.commands.render import CommandArgument, parse_arguments
-from app.agent_loop_lib.core.exceptions import AgentLoopError
+from app.agent_loop_lib.core.exceptions import AgentLoopError, RegistryError
 
 """Skill data model — implements the agentskills.io / anthropic/skills
 SKILL.md standard directly (see modules/providers/skills/loader.py for the parser) rather than
@@ -398,6 +398,32 @@ class SkillConflictError(AgentLoopError):
         super().__init__(
             f"Skill {name!r} was modified (current version {self.current_version!r})"
         )
+
+
+class SkillAlreadyExistsError(RegistryError):
+    """A create found the name taken. Says nothing about who holds it or what
+    it contains: the caller may not be allowed to see that skill."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__("Skill name is unavailable")
+
+
+class SkillNameReservedError(RegistryError):
+    """A create used a name only the builtin seeder may take."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"{name!r} is a built-in skill name.")
+
+
+class SkillPermissionError(RegistryError):
+    """A write on a skill its caller may not change. Carries only the name the
+    caller already supplied."""
+
+    def __init__(self, name: str, message: str = "Skill is not writable by this actor") -> None:
+        self.name = name
+        super().__init__(message)
 
 
 class SkillInUseError(AgentLoopError):

@@ -2194,11 +2194,12 @@ class TestCreateSkillEdges:
         assert edges[0]["_from"] == "agentInstances/agent1"
 
     @pytest.mark.asyncio
-    async def test_links_builtin_skill_regardless_of_creator(self) -> None:
+    async def test_links_a_seeded_builtin_skill_whoever_the_caller_is(self) -> None:
+        """A builtin the seeder wrote; one that only says builtin is not linked (test_agent_skill_edges.py)."""
         from app.api.routes.agent import _create_skill_edges
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(
-            return_value={"orgId": "org1", "createdBy": "someone-else", "source": "builtin"}
+            return_value={"orgId": "org1", "createdBy": "system:builtin-seeder", "source": "builtin"}
         )
         graph_provider.batch_create_edges = AsyncMock(return_value=True)
         result = await _create_skill_edges(

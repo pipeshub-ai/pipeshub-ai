@@ -259,6 +259,12 @@ async def sync_builtin_skills(
         await manager.refresh()
 
 
+def _reserved_skill_names() -> frozenset[str]:
+    """Names of the builtin packs: only the seeder may create a skill under one."""
+    seeder = get_builtin_seeder()
+    return frozenset(seeder.pack_versions) if seeder is not None else frozenset()
+
+
 async def _build_manager(
     graph_provider: "IGraphDBProvider",
     org_id: str,
@@ -270,9 +276,11 @@ async def _build_manager(
     visibility: SkillVisibility,
     rights: SharedSkillRights | None = None,
     provenance: Callable[[], SkillProvenance] | None = None,
+    is_admin: bool = False,
 ) -> SkillManager:
     store = GraphSkillStore(
         graph_provider, org_id, user_id, visibility=visibility, rights=rights, provenance=provenance,
+        is_admin=is_admin, reserved_names=_reserved_skill_names,
     )
     index = SemanticSkillIndex(retrieval_service)
     tracker = GraphUsageTracker(graph_provider, org_id, user_id)
@@ -332,13 +340,18 @@ async def build_management_skill_manager(
     *,
     visibility: SkillVisibility | None = None,
     rights: SharedSkillRights | None = None,
+    is_admin: bool = False,
 ) -> SkillManager:
     """Management profile for the REST API: creator-scoped reads (see
     `SkillVisibility`; the routes widen them to the caller's team and org
     commands), no learning-loop extractor, no
     builtin-pack seeding side effect. Never returns `None` — routes call
     this only once `graph_provider` is already known to exist (same
-    `get_services()` guard every other agent route uses)."""
+    `get_services()` guard every other agent route uses).
+
+    `is_admin` is passed only by a route that has checked the caller's live
+    organization role. An admin's manager sees every skill in the org, so it
+    can change the availability of, or delete, one a member created."""
     config = skills_manager_config()
     return await _build_manager(
         graph_provider, org_id, user_id, config,
@@ -346,4 +359,5 @@ async def build_management_skill_manager(
         extractor_transport=None,
         visibility=visibility or SkillVisibility.of([user_id]),
         rights=rights,
+        is_admin=is_admin,
     )

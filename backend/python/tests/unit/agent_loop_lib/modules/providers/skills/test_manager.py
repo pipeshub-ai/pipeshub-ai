@@ -73,6 +73,7 @@ class FakeStore(SkillStore):
         self.remove_resource_calls: list[tuple[str, str]] = []
         self.referential_usage = SkillReferentialUsage()
         self.detach_calls: list[str] = []
+        self.delete_expectations: list[object] = []
 
     def refresh(self) -> None:
         self.refresh_called = True
@@ -131,7 +132,8 @@ class FakeStore(SkillStore):
         self._skills[name] = skill.model_copy(update={"body": skill.body.replace(old_string, new_string, 1)})
         return True
 
-    async def delete_skill(self, name: str) -> bool:
+    async def delete_skill(self, name: str, *, expected: object = None) -> bool:
+        self.delete_expectations.append(expected)
         return self._skills.pop(name, None) is not None
 
     async def write_resource(self, skill_name: str, path: str, content: str) -> bool:
@@ -197,7 +199,7 @@ class _NoRefreshStore(SkillStore):
     async def patch_skill(self, name, old_string, new_string, expected_updated_at=None) -> bool:
         raise NotImplementedError
 
-    async def delete_skill(self, name) -> bool:
+    async def delete_skill(self, name, *, expected=None) -> bool:
         raise NotImplementedError
 
     async def write_resource(self, skill_name, path, content) -> bool:
@@ -642,6 +644,48 @@ class TestCrud:
         assert store.detach_calls == ["s"]
         assert "s" not in store._skills
         assert index.removed == ["s"]
+
+    async def test_the_delete_carries_the_binding_read_before_the_usage_check(self) -> None:
+        """The usage decision and the delete are about one skill: the binding is read
+        before anything else and again after the usage, and the store gets it back."""
+        calls: list[str] = []
+        store = FakeStore({"s": _skill("s")})
+
+        async def binding(name: str) -> dict:
+            calls.append("binding")
+            return {"token": name}
+
+        async def usage(name: str) -> SkillReferentialUsage:
+            calls.append("usage")
+            return SkillReferentialUsage()
+
+        store.deletion_binding = binding  # type: ignore[method-assign]
+        store.get_referential_usage = usage  # type: ignore[method-assign]
+        assert await _manager(store).delete("s") is True
+        assert calls == ["binding", "usage", "binding"]
+        assert store.delete_expectations == [{"token": "s"}]
+
+    async def test_a_binding_that_changed_after_the_usage_read_is_a_conflict(self) -> None:
+        """Nothing about the usage read leaves the manager: no in-use refusal, no delete."""
+        from app.agent_loop_lib.modules.providers.skills.base import SkillConflictError
+
+        store = FakeStore({"s": _skill("s")})
+        store.referential_usage = SkillReferentialUsage(used_by_agents=[{"id": "a9", "name": "Other"}])
+        tokens = iter([{"generation": "first"}, {"generation": "second"}])
+
+        async def binding(name: str) -> dict:
+            return next(tokens)
+
+        store.deletion_binding = binding  # type: ignore[method-assign]
+        with pytest.raises(SkillConflictError) as exc:
+            await _manager(store).delete("s")
+        assert "Other" not in str(exc.value)
+        assert store.delete_expectations == [] and "s" in store._skills
+
+    async def test_a_store_that_does_not_bind_deletes_gets_none(self) -> None:
+        store = FakeStore({"s": _skill("s")})
+        assert await _manager(store).delete("s") is True
+        assert store.delete_expectations == [None]
 
     async def test_deprecate_success_resyncs_and_notifies_governor(self) -> None:
         store = FakeStore({"s": _skill("s")})

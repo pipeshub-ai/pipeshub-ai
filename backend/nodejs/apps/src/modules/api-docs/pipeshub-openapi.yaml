@@ -74807,6 +74807,68 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /skills/admin/skills:
+    get:
+      tags:
+        - Skills
+      summary: List every skill in the organization (admin)
+      description: |
+        For an organization admin to find the skills they may disable (`POST /skills/{name}/disable`)
+        or delete (`DELETE /skills/{name}`), including custom skills of other members. Metadata
+        only: no body and no resources. The role is checked on every request; any other caller
+        gets `403`.
+      operationId: listOrgSkills
+      security:
+        - bearerAuth: []
+        - oauth2: [skill:read]
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, deprecated, disabled]
+        - name: source
+          in: query
+          schema:
+            type: string
+        - name: q
+          in: query
+          description: Free-text filter on name and description.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Every skill in the organization
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [skills]
+                properties:
+                  skills:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SkillMetadata'
+        '401':
+          description: Missing, malformed or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: "The caller is not an organization admin, skills are disabled for this organization, or the OAuth token lacks the `skill:read` scope."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/SkillsServiceError'
+        '503':
+          description: The skills service could not be reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /skills/search:
     get:
       tags:
@@ -75605,7 +75667,9 @@ paths:
         force-deleted — deprecate it instead so dependents still resolve.
         `detach=true` unassigns the skill from any agents (removing the
         `agentHasSkill` edges) before deleting; call `GET /skills/{name}/usage`
-        first to show the user which agents will be affected.
+        first to show the user which agents will be affected. The creator,
+        or an organization admin, can delete a custom skill; a built-in
+        skill cannot be deleted.
       operationId: deleteSkill
       security:
         - bearerAuth: []
@@ -75659,11 +75723,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/SkillsServiceError'
         '409':
-          description: "Skill is in use: agents are assigned to it and `detach` is not `true`, or another skill requires it"
+          description: "Skill is in use: agents are assigned to it and `detach` is not `true`, or another skill requires it; or it changed, or was deleted and created again, while the request was handled"
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SkillInUseError'
+                oneOf:
+                  - $ref: '#/components/schemas/SkillInUseError'
+                  - $ref: '#/components/schemas/SkillEditConflictError'
         '422':
           description: "The `detach` query parameter is not a boolean, or is empty (failed validation in the skills service)"
           content:
@@ -76011,6 +76077,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillsServiceError'
+        '409':
+          description: "The skill changed, or was deleted and created again, while the request was handled; nothing was written."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SkillEditConflictError'
+                  - $ref: '#/components/schemas/SkillsServiceError'
         '422':
           description: The request body failed validation in the skills service
           content:
@@ -76044,9 +76118,10 @@ paths:
         judgment (no reason, no replacement) and is undone with `POST
         /skills/{name}/enable`.
 
-        Custom skills: only the creator can disable (a non-owner gets 404,
-        matching GET). Builtin skills: only an organization admin; members
-        get 403. Content edits of builtins remain 403.
+        Custom skills: the creator, or an organization admin (any other
+        non-owner gets 404, matching GET). Builtin skills: only an
+        organization admin; members get 403. Content edits of builtins
+        remain 403.
       operationId: disableSkill
       security:
         - bearerAuth: []
@@ -76120,7 +76195,8 @@ paths:
         Reverses `POST /skills/{name}/disable` — restores catalog/search
         visibility and loadability. Only valid from `disabled`; does not
         undeprecate a deprecated skill. Same authorization as disable:
-        creator for custom skills, organization admin for builtins.
+        creator or organization admin for custom skills, organization
+        admin for builtins.
       operationId: enableSkill
       security:
         - bearerAuth: []
@@ -76454,6 +76530,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillsServiceError'
+        '409':
+          description: "The skill changed, or was deleted and created again, while the request was handled; nothing was written."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SkillEditConflictError'
+                  - $ref: '#/components/schemas/SkillsServiceError'
         '422':
           description: The request body failed validation in the skills service
           content:
@@ -76625,7 +76709,14 @@ paths:
           description: The caller does not govern the command or the scope
         '404':
           description: Skill or team not found
-
+        '409':
+          description: "The skill changed, or was deleted and created again, while the request was handled; nothing was written."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SkillEditConflictError'
+                  - $ref: '#/components/schemas/SkillsServiceError'
   /skills/{name}/resource:
     get:
       tags:
@@ -76789,6 +76880,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillsServiceError'
+        '409':
+          description: "The skill changed, or was deleted and created again, while the request was handled; nothing was written."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SkillEditConflictError'
+                  - $ref: '#/components/schemas/SkillsServiceError'
         '422':
           description: The request body failed validation in the skills service
           content:
@@ -76871,6 +76970,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SkillsServiceError'
+        '409':
+          description: "The skill changed, or was deleted and created again, while the request was handled; nothing was written."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SkillEditConflictError'
+                  - $ref: '#/components/schemas/SkillsServiceError'
         '422':
           description: "The `path` query parameter is missing, empty, or sent more than once (failed validation in the skills service)"
           content:

@@ -85,6 +85,10 @@ on:
       # Entity search and named-entity linking: graph_db/test_permitted_entity_records_* reads through them.
       - 'backend/python/app/modules/retrieval/**'
       - 'backend/python/app/modules/named_entities/**'
+      # Skills: graph_db/test_skill_create_no_overwrite_* and test_skills_rest_* drive the skill store and its routes.
+      - 'backend/python/app/agents/agent_loop/skills/**'
+      - 'backend/python/app/agent_loop_lib/modules/providers/skills/**'
+      - 'backend/python/app/api/routes/skills.py'
       # Connectors whose real-graph tests drive the connector itself (graph_db/test_<name>_*).
       - 'backend/python/app/connectors/sources/linear/**'
       - 'backend/python/app/sources/client/linear/**'

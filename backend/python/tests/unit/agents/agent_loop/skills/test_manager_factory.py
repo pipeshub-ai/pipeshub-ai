@@ -406,9 +406,10 @@ class TestBuildManagerInternal:
                 extractor_transport=None,
                 visibility=SkillVisibility.of(["creator-scope"]),
             )
-        mock_store.assert_called_once_with(
-            gp, "org", "user", visibility=SkillVisibility.of(["creator-scope"]), rights=None, provenance=None,
-        )
+        args, kwargs = mock_store.call_args
+        assert args == (gp, "org", "user")
+        assert kwargs["visibility"] == SkillVisibility.of(["creator-scope"])
+        assert kwargs["is_admin"] is False
 
     @pytest.mark.asyncio
     async def test_manager_start_awaited(self) -> None:

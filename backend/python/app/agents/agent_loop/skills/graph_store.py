@@ -2,8 +2,8 @@
 `SkillCandidateStore` backed by `IGraphDBProvider` — works unmodified
 against either `ArangoHTTPProvider` or `Neo4jProvider` since it only calls
 the generic, backend-agnostic surface of that interface (`get_document`,
-`batch_upsert_nodes`, `update_node`, `update_node_if_match`,
-`delete_nodes`/`delete_nodes_and_edges`, `batch_create_edges`,
+`create_node_if_absent`, `update_node_if_match`, `update_node_fields_if_match`,
+`delete_node_if_match`, `batch_upsert_nodes`, `delete_nodes`, `batch_create_edges`,
 `delete_edges_from`, `get_nodes_by_filters`) — never
 `execute_query` (that method is explicitly database-specific: AQL for
 Arango, Cypher for Neo4j, so using it here would silently break whichever
@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -56,10 +57,13 @@ from app.agent_loop_lib.commands.render import CommandArgument, parse_arguments
 from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import (
     Skill,
+    SkillAlreadyExistsError,
     SkillCandidate,
     SkillConflictError,
     SkillFilter,
     SkillMetadata,
+    SkillNameReservedError,
+    SkillPermissionError,
     SkillProvenance,
     SkillReferentialUsage,
     SkillSource,
@@ -77,6 +81,7 @@ from app.agent_loop_lib.modules.providers.skills.store import (
     SkillStore,
 )
 from app.agent_loop_lib.modules.providers.skills.validator import SkillValidator
+from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY
 from app.agents.agent_loop.skills.provenance import (
     UNKNOWN_LABEL,
     content_label,
@@ -87,7 +92,7 @@ from app.core.org_context import org_of
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Collection, Iterable, Mapping
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -171,8 +176,15 @@ class SkillScope:
 _SHARING_FIELDS = ("scope", "teamId", "authorFormer")
 
 
-def _sharing_columns(doc: Mapping[str, Any]) -> dict[str, Any]:
-    return {f: doc[f] for f in _SHARING_FIELDS if f in doc}
+# What other writers keep on the skill document (an approval, the audit trail): a content edit replaces the whole
+# document, so it carries these forward.
+_KEPT_FIELDS = (
+    "approvedBy", "approvedAtTimestamp", "auditActions", "auditActorIds", "auditReasons", "auditTimestamps", "auditLog",
+)
+
+
+def _kept_columns(doc: Mapping[str, Any]) -> dict[str, Any]:
+    return {f: doc[f] for f in (*_SHARING_FIELDS, *_KEPT_FIELDS) if f in doc}
 
 
 def _label_columns(doc: Mapping[str, Any], change_note: str | None) -> dict[str, Any]:
@@ -364,6 +376,18 @@ async def collect_referential_usage(
     )
 
 
+def is_seeded_builtin(doc: Mapping[str, Any]) -> bool:
+    """A builtin written by the seeder. `source` alone proves nothing: it is
+    read from the SKILL.md frontmatter, which an importer supplies."""
+    return doc.get("source") == SkillSource.BUILTIN.value and doc.get("createdBy") == SEED_IDENTITY
+
+
+def _stored_source(doc: Mapping[str, Any]) -> SkillSource:
+    """A member's skill stored as builtin before the store refused that is an ordinary skill of its creator."""
+    source = SkillSource(doc.get("source") or "manual")
+    return SkillSource.MANUAL if source == SkillSource.BUILTIN and not is_seeded_builtin(doc) else source
+
+
 @dataclass(frozen=True, slots=True)
 class SkillVisibility:
     """Which of an org's skills a reader sees: builtins always; a custom skill when one of ``viewers`` owns it, or
@@ -393,7 +417,7 @@ class SkillVisibility:
         )
 
     def allows(self, doc: Mapping[str, Any]) -> bool:
-        if self.viewers is None or doc.get("source") == SkillSource.BUILTIN.value:
+        if self.viewers is None or is_seeded_builtin(doc):
             return True
         if doc.get("createdBy") in self.viewers or doc.get("name") in self.shared:
             return True
@@ -415,8 +439,17 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         allow_builtin_writes: bool = False,
         rights: SharedSkillRights | None = None,
         provenance: Callable[[], SkillProvenance] | None = None,
+        is_admin: bool = False,
+        reserved_names: Callable[[], Collection[str]] | None = None,
     ) -> None:
+        """`is_admin` is set only by a caller that has itself checked the acting
+        user's organization role (never from a request body). It lets the store
+        see every skill of the org, and change the availability of, or delete, a
+        skill the user did not create; never its content.
+        `reserved_names` lists names only the seeder may create."""
         self._graph = graph_provider
+        self._is_admin = is_admin
+        self._reserved_names = reserved_names
         self._org_id = org_id
         self._user_id = user_id
         self._validator = validator or SkillValidator()
@@ -432,31 +465,76 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
 
     def _sees(self, doc: Mapping[str, Any]) -> bool:
         """Visible to the reader, or a shared skill they govern (an org admin sees every team's commands)."""
-        if self._visibility.allows(doc):
+        if self._is_admin or self._visibility.allows(doc):
             return True
         sharing = SkillSharing.of(doc)
         return sharing.scope in SkillScope.SHARED and self._rights.manages(sharing.scope, sharing.team_id)
 
-    async def _get_writable_doc(self, name: str) -> dict | None:
-        doc = await self._get_org_doc(name)
-        if doc is None:
-            return None
-        if doc.get("source") == SkillSource.BUILTIN.value:
+    def _check_writable(self, name: str, doc: Mapping[str, Any], *, moderation: bool = False) -> None:
+        """Raises for a skill the caller can see but may not change. Content, resources, versions and rollback:
+        whoever the skill's own rule names. `moderation` (availability and delete) also allows a vetted admin."""
+        if moderation and self._is_admin:
+            return
+        if is_seeded_builtin(doc):
             if not self._allow_builtin_writes:
-                raise RegistryError("Built-in skills are read-only")
-        else:
-            sharing = SkillSharing.of(doc)
-            if sharing.scope in SkillScope.SHARED:
-                # The role governs a shared skill, not authorship: its author's own agent cannot edit it either.
-                if not self._rights.manages(sharing.scope, sharing.team_id):
-                    raise RegistryError("Skill is not writable by this actor")
-            elif doc.get("createdBy") != self._user_id:
-                raise RegistryError("Skill is not writable by this actor")
+                raise SkillPermissionError(name, "Built-in skills are read-only")
+            return
+        sharing = SkillSharing.of(doc)
+        if sharing.scope in SkillScope.SHARED:
+            # The role governs a shared skill, not authorship: its author's own agent cannot edit it either.
+            if not self._rights.manages(sharing.scope, sharing.team_id):
+                raise SkillPermissionError(name)
+        elif doc.get("createdBy") != self._user_id:
+            raise SkillPermissionError(name)
+
+    async def _get_writable_doc(self, name: str, *, moderation: bool = False) -> dict | None:
+        """The doc to write to, or None when there is none the caller can see.
+
+        Every write that follows is one conditional call bound to this doc with
+        `_bound_to`, never a write by key: the doc can be deleted and the name
+        created again by someone else between this read and the write."""
+        doc = await self._get_org_doc(name)
+        if doc is not None:
+            self._check_writable(name, doc, moderation=moderation)
         return doc
+
+    @staticmethod
+    def _bound_to(doc: Mapping[str, Any]) -> dict[str, Any]:
+        """The expectation that holds only for the doc that was read: its creation (a
+        doc stored before generations existed has none, and `None` matches only such a
+        doc) and its last write."""
+        return {"generation": doc.get("generation"), "updatedAtTimestamp": doc.get("updatedAtTimestamp")}
+
+    async def _missed(self, name: str, read: Mapping[str, Any]) -> SkillConflictError:
+        """The error for a conditional write that did not land. The current version is
+        reported only while the name still holds the creation that was read; another
+        creation, or none, says nothing about what holds the name now."""
+        current = await self._get_unscoped_org_doc(name)
+        if current is None or current.get("generation") != read.get("generation"):
+            return SkillConflictError(name, current_updated_at=0)
+        return SkillConflictError(
+            name,
+            current_updated_at=int(current.get("updatedAtTimestamp") or 0),
+            current_version=current.get("version"),
+        )
+
+    async def _update_fields(self, name: str, read: Mapping[str, Any], updates: dict[str, Any]) -> None:
+        if not await self._graph.update_node_fields_if_match(self._key(name), _SKILLS, updates, self._bound_to(read)):
+            raise await self._missed(name, read)
 
     def _validate_source(self, skill: Skill) -> None:
         if skill.metadata.source == SkillSource.BUILTIN and not self._allow_builtin_writes:
             raise RegistryError("Only the built-in seeder can write built-in skills")
+
+    def _without_seeder_fields(self, skill: Skill) -> Skill:
+        """Only the seeder stores a builtin. Everyone else's skill loses the builtin
+        source and the pack fields that came in with its SKILL.md."""
+        if self._allow_builtin_writes:
+            return skill
+        source = SkillSource.MANUAL if skill.metadata.source == SkillSource.BUILTIN else skill.metadata.source
+        return skill.model_copy(update={"metadata": skill.metadata.model_copy(update={
+            "source": source, "pack_name": None, "pack_version": None,
+        })})
 
     # ---- internal doc <-> domain-model mapping -----------------------------
 
@@ -476,7 +554,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             related=list(doc.get("related") or []),
             requires=list(doc.get("requires") or []),
             status=SkillStatus(doc.get("status") or "active"),
-            source=SkillSource(doc.get("source") or "manual"),
+            source=_stored_source(doc),
             created_at=str(doc["createdAtTimestamp"]) if doc.get("createdAtTimestamp") is not None else None,
             updated_at=str(doc["updatedAtTimestamp"]) if doc.get("updatedAtTimestamp") is not None else None,
             deprecated_reason=doc.get("deprecatedReason"),
@@ -522,6 +600,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         updated_at: int,
         updated_by: str | None = None,
         usage: dict[str, Any] | None = None,
+        generation: str | None = None,
     ) -> dict[str, Any]:
         """The single place a `Skill` becomes a document — `content` is
         ALWAYS re-rendered from `skill` here (never the caller's raw input
@@ -565,6 +644,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             "updatedAtTimestamp": updated_at,
         }
         doc.update(usage if usage is not None else _default_usage())
+        if generation:
+            doc["generation"] = generation
         return doc
 
     @staticmethod
@@ -620,10 +701,14 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         return self._provenance() if self._provenance is not None else None
 
     async def _get_org_doc(self, name: str) -> dict | None:
+        doc = await self._get_unscoped_org_doc(name)
+        return doc if doc is not None and self._sees(doc) else None
+
+    async def _get_unscoped_org_doc(self, name: str) -> dict | None:
+        """The org's doc for `name` whoever created it. Creates and deletes decide on this, never on
+        the visibility-scoped view: a skill the caller cannot see still holds the key."""
         doc = await self._graph.get_document(self._key(name), _SKILLS)
         if doc is None or org_of(doc) != self._org_id:
-            return None
-        if not self._sees(doc):
             return None
         return doc
 
@@ -662,27 +747,24 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         (current or archived), ignoring visibility scoping and deletion: a run
         pinned the content when it was granted, and the version log keeps
         what a deleted skill held. None for an unknown skill or version."""
-        current = await self._graph.get_document(self._key(name), _SKILLS)
-        if current is not None and org_of(current) != self._org_id:
-            current = None
+        current = await self._get_unscoped_org_doc(name)
         if current is not None and version in (None, current.get("version") or "1.0.0"):
             doc = current
         elif version is None:
             return None
         else:
-            doc = await self._get_version_doc(name, version)
+            doc = await self._get_version_doc(name, version, current)
         if doc is None:
             return None
         return {**_resources_from_doc(doc), "SKILL.md": doc.get("content") or ""}
 
     async def content_versions(self, name: str) -> list[str]:
         """Every version `content_files` can return, current first."""
-        current = await self._graph.get_document(self._key(name), _SKILLS)
+        current = await self._get_unscoped_org_doc(name)
         versions: list[str] = []
-        if current is not None and org_of(current) == self._org_id:
+        if current is not None:
             versions.append(current.get("version") or "1.0.0")
-        archived = await self._graph.get_nodes_by_filters(_VERSIONS, {"orgId": self._org_id, "name": name})
-        for doc in sorted(archived, key=lambda d: int(d.get("createdAtTimestamp") or 0), reverse=True):
+        for doc in sorted(await self._version_docs(name, current), key=lambda d: int(d.get("createdAtTimestamp") or 0), reverse=True):
             version = doc.get("version") or "0.0.0"
             if version not in versions:
                 versions.append(version)
@@ -697,7 +779,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         doc = await self._graph.get_document(key, _SKILLS)
         if doc is None or org_of(doc) != self._org_id or doc.get("status") == SkillStatus.DISABLED.value:
             return False
-        if agent_key is None or doc.get("source") == SkillSource.BUILTIN.value:
+        if agent_key is None or is_seeded_builtin(doc):
             return True
         edge = await self._graph.get_edge(
             from_id=agent_key, from_collection=_AGENT_INSTANCES, to_id=key, to_collection=_SKILLS,
@@ -746,20 +828,20 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         doc = await self._get_writable_doc(name)
         if doc is None:
             raise RegistryError(f"Skill {name!r} not found")
-        if doc.get("source") == SkillSource.BUILTIN.value:
-            raise RegistryError("Built-in skills are read-only")
+        if is_seeded_builtin(doc):
+            raise SkillPermissionError(name, "Built-in skills are read-only")
         if scope in SkillScope.SHARED:
             if not self._rights.manages(scope, team_id):
-                raise RegistryError("Skill is not writable by this actor")
+                raise SkillPermissionError(name)
         elif doc.get("createdBy") != self._user_id:
-            raise RegistryError("Skill is not writable by this actor")
+            raise SkillPermissionError(name)
         columns = {
             "scope": scope,
             "teamId": team_id if scope == SkillScope.TEAM else None,
             "updatedBy": self._user_id,
             "updatedAtTimestamp": _next_updated_at(doc.get("updatedAtTimestamp")),
         }
-        await self._graph.update_node(self._key(name), _SKILLS, columns)
+        await self._update_fields(name, doc, columns)
         return SkillSharing.of({**doc, **columns})
 
     async def labels(self) -> dict[str, SkillLabels]:
@@ -778,8 +860,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         doc = await self._get_writable_doc(name)
         if doc is None:
             raise RegistryError(f"Skill {name!r} not found")
-        if doc.get("source") == SkillSource.BUILTIN.value:
-            raise RegistryError("Built-in skills are read-only")
+        if is_seeded_builtin(doc):
+            raise SkillPermissionError(name, "Built-in skills are read-only")
         wanted = " ".join((display_name or "").split()) or None
         if wanted is not None and len(wanted) > MAX_DISPLAY_NAME:
             raise RegistryError(f"A skill name is at most {MAX_DISPLAY_NAME} characters")
@@ -801,13 +883,11 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             "updatedBy": self._user_id,
             "updatedAtTimestamp": _next_updated_at(observed),
         }
-        if not await self._graph.update_node_if_match(self._key(name), _SKILLS, merged, "updatedAtTimestamp", observed):
-            current = await self._get_org_doc(name)
-            raise SkillConflictError(
-                name,
-                current_updated_at=int((current or {}).get("updatedAtTimestamp") or 0),
-                current_version=(current or {}).get("version"),
-            )
+        if not await self._graph.update_node_if_match(
+            self._key(name), _SKILLS, merged, "updatedAtTimestamp", observed,
+            expected={"generation": self._bound_to(doc)["generation"]},
+        ):
+            raise await self._missed(name, doc)
         return SkillLabels.of(merged)
 
     # ---- SkillWriter ----------------------------------------------------
@@ -822,12 +902,14 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         resources: dict[str, str] | None = None, *, provenance: SkillProvenance | None = None,
         change_note: str | None = None, approved_by: str | None = None,
     ) -> SkillMetadata:
-        # Visibility-filtered existence must not turn a hidden record into an upsert.
+        if not self._allow_builtin_writes and self._reserved_names is not None and name in self._reserved_names():
+            raise SkillNameReservedError(name)
         if await self._graph.get_document(self._key(name), _SKILLS) is not None:
-            raise RegistryError("Skill name is unavailable")
+            raise SkillAlreadyExistsError(name)
         skill = parse_skill_md(content, expected_name=name, validator=self._validator)
         self._validator.validate_skill(skill, expected_name=name)
         self._validate_source(skill)
+        skill = self._without_seeder_fields(skill)
         skill = self._apply_category_defaults(skill, category, subcategory)
         resources = resources or {}
         self._validate_resources(resources)
@@ -836,6 +918,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         now = get_epoch_timestamp_in_ms()
         doc = self._skill_to_doc(
             skill, resources=resources, created_by=self._user_id, created_at=now, updated_at=now,
+            generation=uuid.uuid4().hex,
         )
         if sessions:
             doc["sourceSessionIds"] = sessions
@@ -844,7 +927,9 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         if approved_by:
             doc["approvedBy"] = approved_by
             doc["approvedAtTimestamp"] = now
-        await self._graph.batch_upsert_nodes([doc], _SKILLS)
+        # One conditional insert: of two creators of a name, exactly one lands.
+        if not await self._graph.create_node_if_absent(self._key(name), _SKILLS, doc):
+            raise SkillAlreadyExistsError(name)
         await self._create_owner_permission_edge(name, now)
         await self._sync_relation_edges(name, skill.metadata, now)
         return skill.metadata
@@ -873,6 +958,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         skill = parse_skill_md(content, expected_name=name, validator=self._validator)
         self._validator.validate_skill(skill, expected_name=name)
         self._validate_source(skill)
+        skill = self._without_seeder_fields(skill)
         resolved_resources = _resources_from_doc(existing_doc) if resources is None else resources
         self._validate_resources(resolved_resources)
         skill, sessions = self._stamped(skill, existing_doc, self._write_provenance())
@@ -886,7 +972,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             return kept
 
         now = _next_updated_at(existing_doc.get("updatedAtTimestamp"))
-        await self._snapshot_revision(existing_doc, now)
+        bound = await self._with_generation(existing_doc)
+        await self._snapshot_revision(bound, now)
         bumped_metadata = skill.metadata.model_copy(update={"version": _bump_patch(existing_doc.get("version"))})
         skill = skill.model_copy(update={"metadata": bumped_metadata})
         doc = self._skill_to_doc(
@@ -897,8 +984,9 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             updated_at=now,
             updated_by=self._user_id,
             usage=_extract_usage(existing_doc),
+            generation=bound["generation"],
         )
-        doc.update(_sharing_columns(existing_doc))
+        doc.update(_kept_columns(existing_doc))
         doc.update(_label_columns(existing_doc, change_note))
         if sessions:
             doc["sourceSessionIds"] = sessions
@@ -907,7 +995,7 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         # rather than a follow-up `set_skill_status`.
         if status is not None:
             doc["status"] = status.value
-        await self._commit_skill_update(name, doc, expected_updated_at)
+        await self._commit_skill_update(name, doc, expected_updated_at, read=existing_doc)
         await self._sync_relation_edges(name, skill.metadata, now)
         return skill.metadata
 
@@ -932,10 +1020,27 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         )
         return True
 
-    async def delete_skill(self, name: str) -> bool:
-        doc = await self._get_writable_doc(name)
+    async def deletion_binding(self, name: str) -> dict[str, Any]:
+        """`_bound_to` of the org's skill under `name` (visibility is `delete_skill`'s to
+        apply; the binding never leaves the store). With none, a binding no stored skill
+        matches (every write stamps `updatedAtTimestamp`), so a name created after this
+        read is never deleted by the delete that follows."""
+        doc = await self._get_unscoped_org_doc(name)
+        return self._bound_to(doc) if doc is not None else {"generation": None, "updatedAtTimestamp": None}
+
+    async def delete_skill(self, name: str, *, expected: Mapping[str, Any] | None = None) -> bool:
+        """With `expected` (from `deletion_binding`), only the skill that read saw is
+        deleted: another one under the name by now is a conflict, whoever the caller is."""
+        # Compared with the org's doc whoever created it: a name created again by
+        # someone the caller cannot see is a conflict too (a create says as much).
+        doc = await self._get_unscoped_org_doc(name)
         if doc is None:
             return False
+        if expected is not None and self._bound_to(doc) != dict(expected):
+            raise await self._missed(name, expected)
+        if not self._sees(doc):
+            return False
+        self._check_writable(name, doc, moderation=True)
         # Revision history in `agentSkillVersions` is intentionally left in
         # place after a hard-delete — it references this skill by
         # `skillKey`/`name`, not a live graph edge, and audit/compliance
@@ -943,24 +1048,20 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         # audit log surviving deletion of the thing it describes). The last
         # content joins it, so runs pinned to it still resolve (P7.1).
         await self._snapshot_revision(doc, get_epoch_timestamp_in_ms())
-        await self._graph.delete_nodes_and_edges([self._key(name)], _SKILLS)
+        # The node goes with every edge touching it, agent assignments included.
+        if not await self._graph.delete_node_if_match(self._key(name), _SKILLS, self._bound_to(doc)):
+            raise await self._missed(name, doc)
         return True
 
     async def get_referential_usage(self, name: str) -> SkillReferentialUsage:
         return await collect_referential_usage(self._graph, self._org_id, name)
 
     async def detach_from_agents(self, name: str) -> None:
-        usage = await self.get_referential_usage(name)
-        if not usage.used_by_agents:
-            return
-        edges_to_delete = [
-            {
-                "from_id": agent["id"], "from_collection": _AGENT_INSTANCES,
-                "to_id": f"{self._org_id}_{name}", "to_collection": _SKILLS,
-            }
-            for agent in usage.used_by_agents
-        ]
-        await self._graph.batch_delete_edges(edges_to_delete, _AGENT_HAS_SKILL)
+        """Reads and writes nothing. The agent edges go with the skill in `delete_skill`,
+        whose one read is checked and whose one conditional delete is bound to it. A read
+        and a write here would be a second decision, on whatever skill holds the name by
+        then: an admin may moderate a skill created again in between, too."""
+        return
 
     async def write_resource(self, skill_name: str, path: str, content: str) -> bool:
         self._validator.validate_resource_path(path)
@@ -970,14 +1071,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         resources = _resources_from_doc(doc)
         resources[path] = content
         self._validator.validate_resource_budget(resources)
-        return await self._graph.update_node(
-            self._key(skill_name), _SKILLS,
-            {
-                **_resources_to_fields(resources),
-                **self._stamped_columns(doc),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+        await self._write_resources(skill_name, doc, resources)
+        return True
 
     async def remove_resource(self, skill_name: str, path: str) -> bool:
         doc = await self._get_writable_doc(skill_name)
@@ -987,14 +1082,15 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         if path not in resources:
             return False
         del resources[path]
-        return await self._graph.update_node(
-            self._key(skill_name), _SKILLS,
-            {
-                **_resources_to_fields(resources),
-                **self._stamped_columns(doc),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+        await self._write_resources(skill_name, doc, resources)
+        return True
+
+    async def _write_resources(self, name: str, read: dict, resources: dict[str, str]) -> None:
+        await self._update_fields(name, read, {
+            **_resources_to_fields(resources),
+            **self._stamped_columns(read),
+            "updatedAtTimestamp": _next_updated_at(read.get("updatedAtTimestamp")),
+        })
 
     async def deprecate_skill(self, name: str, reason: str, replaced_by: str | None = None) -> bool:
         skill = await self.get_skill(name)
@@ -1021,33 +1117,31 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         that needs to change and no revision/semver bump to make.
 
         `from_status` is compare-and-swap: the write lands only if the
-        stored status still matches. `update_node_if_match` replaces the
-        whole document, so the CAS carries the read doc with status and
-        token overlaid — matching on `updatedAtTimestamp` so a concurrent
-        content edit cannot be clobbered by a mute."""
-        doc = await self._get_org_doc(name)
+        stored status still matches, and returns False when it does not.
+        Either way the write is bound to the doc the check read (its
+        generation and `updatedAtTimestamp`), so a concurrent content edit
+        is not clobbered by a mute and a skill created again under the name
+        is never touched; without `from_status` a miss raises a conflict."""
+        doc = await self._get_writable_doc(name, moderation=True)
         if doc is None:
             return False
-        if from_status is not None and doc.get("status") != from_status.value:
-            return False
-        observed = int(doc.get("updatedAtTimestamp") or 0)
-        next_ts = _next_updated_at(observed)
+        updates = {"status": status.value, "updatedAtTimestamp": _next_updated_at(doc.get("updatedAtTimestamp"))}
         if from_status is None:
-            return await self._graph.update_node(
-                self._key(name), _SKILLS,
-                {"status": status.value, "updatedAtTimestamp": next_ts},
-            )
-        merged = {**doc, "status": status.value, "updatedAtTimestamp": next_ts}
-        return await self._graph.update_node_if_match(
-            self._key(name), _SKILLS, merged, "updatedAtTimestamp", observed,
-        )
+            await self._update_fields(name, doc, updates)
+            return True
+        if doc.get("status") != from_status.value:
+            return False
+        expected = self._bound_to(doc)
+        expected["status"] = from_status.value
+        return await self._graph.update_node_fields_if_match(self._key(name), _SKILLS, updates, expected)
 
     # ---- SkillHistoryReader ----------------------------------------------
 
     async def list_versions(self, name: str) -> list[SkillVersionInfo]:
-        if await self._get_org_doc(name) is None:
+        current = await self._get_org_doc(name)
+        if current is None:
             return []
-        docs = await self._graph.get_nodes_by_filters(_VERSIONS, {"orgId": self._org_id, "name": name})
+        docs = await self._version_docs(name, current)
         versions = [
             SkillVersionInfo(
                 version=d.get("version") or "0.0.0",
@@ -1061,9 +1155,10 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         return versions
 
     async def get_version(self, name: str, version: str) -> Skill | None:
-        if await self._get_org_doc(name) is None:
+        current = await self._get_org_doc(name)
+        if current is None:
             return None
-        archived = await self._get_version_doc(name, version)
+        archived = await self._get_version_doc(name, version, current)
         if archived is None:
             return None
         skill = parse_skill_md(archived["content"], expected_name=name, validator=self._validator)
@@ -1073,12 +1168,12 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         current_doc = await self._get_writable_doc(name)
         if current_doc is None:
             raise RegistryError(f"Skill {name!r} not found")
-        archived = await self._get_version_doc(name, version)
+        archived = await self._get_version_doc(name, version, current_doc)
         if archived is None:
             raise RegistryError(f"Version {version!r} of skill {name!r} not found")
 
         restored = parse_skill_md(archived["content"], expected_name=name, validator=self._validator)
-        self._validate_source(restored)
+        restored = self._without_seeder_fields(restored)
         # The archived text's own label too: a learned version from before labels is unknown, not unlabelled.
         restored = restored.model_copy(
             update={"metadata": restored.metadata.model_copy(update={"label": content_label(restored.metadata)})}
@@ -1089,8 +1184,9 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         ):
             return self._doc_to_metadata(current_doc)
 
-        now = get_epoch_timestamp_in_ms()
-        await self._snapshot_revision(current_doc, now)
+        now = _next_updated_at(current_doc.get("updatedAtTimestamp"))
+        bound = await self._with_generation(current_doc)
+        await self._snapshot_revision(bound, now)
         # Rollback creates a NEW revision on top of the current one (never
         # reuses the archived version number) — history stays monotonic and
         # a second rollback can always distinguish "restored copy" from
@@ -1105,12 +1201,13 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             updated_at=now,
             updated_by=self._user_id,
             usage=_extract_usage(current_doc),
+            generation=bound["generation"],
         )
-        doc.update(_sharing_columns(current_doc))
+        doc.update(_kept_columns(current_doc))
         doc.update(_label_columns(current_doc, f"Restored version {version}"))
         if sessions:
             doc["sourceSessionIds"] = sessions
-        await self._graph.batch_upsert_nodes([doc], _SKILLS)
+        await self._commit_skill_update(name, doc, None, read=current_doc)
         await self._sync_relation_edges(name, restored.metadata, now)
         return restored.metadata
 
@@ -1119,36 +1216,22 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         name: str,
         doc: dict[str, Any],
         expected_updated_at: int | None,
+        *,
+        read: dict,
     ) -> None:
-        """Last-write-wins when `expected_updated_at` is None; otherwise the
-        timestamp check is the write itself (`update_node_if_match`), not a
-        prior read. The written token always advances past the matched
-        value so a same-millisecond clock cannot reuse If-Match."""
-        incoming = int(doc.get("updatedAtTimestamp") or 0)
-        if expected_updated_at is not None:
-            doc["updatedAtTimestamp"] = (
-                incoming if incoming > expected_updated_at else expected_updated_at + 1
-            )
-        if expected_updated_at is None:
-            await self._graph.batch_upsert_nodes([doc], _SKILLS)
-            return
-        applied = await self._graph.update_node_if_match(
-            self._key(name),
-            _SKILLS,
-            doc,
-            "updatedAtTimestamp",
-            expected_updated_at,
-        )
-        if applied:
-            return
-        current = await self._get_org_doc(name)
-        if current is None:
-            raise RegistryError(f"Skill {name!r} not found")
-        raise SkillConflictError(
-            name,
-            current_updated_at=int(current.get("updatedAtTimestamp") or 0),
-            current_version=current.get("version"),
-        )
+        """The write lands only on the doc the ownership check ran on (`read`): its
+        generation, and its token, or `expected_updated_at` when the caller sent one.
+        A doc deleted and re-created in between has another generation, so the stale
+        write is refused even when the new doc carries the same token.
+        The written token always advances past the matched value so a same-millisecond
+        clock cannot reuse If-Match."""
+        match = int(read.get("updatedAtTimestamp") or 0) if expected_updated_at is None else expected_updated_at
+        doc["updatedAtTimestamp"] = max(int(doc.get("updatedAtTimestamp") or 0), match + 1)
+        if not await self._graph.update_node_if_match(
+            self._key(name), _SKILLS, doc, "updatedAtTimestamp", match,
+            expected={"generation": self._bound_to(read)["generation"]},
+        ):
+            raise await self._missed(name, read)
 
     def _holds_content(self, doc: dict, skill: Skill, resources: dict[str, str]) -> bool:
         """Whether ``doc`` already stores ``skill``'s text and ``resources``: a version names content, so the
@@ -1168,22 +1251,92 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         """An update that changes no content: only a different lifecycle status is written, under the same
         If-Match as a content write."""
         if status is not None and doc.get("status") != status.value:
+            read = doc
             doc = {**doc, "status": status.value, "updatedAtTimestamp": _next_updated_at(doc.get("updatedAtTimestamp"))}
-            await self._commit_skill_update(name, doc, expected_updated_at)
+            await self._commit_skill_update(name, doc, expected_updated_at, read=read)
         return self._doc_to_metadata(doc)
 
-    async def _get_version_doc(self, name: str, version: str) -> dict | None:
-        docs = await self._graph.get_nodes_by_filters(
-            _VERSIONS, {"orgId": self._org_id, "name": name, "version": version},
+    def _belongs_to(self, version_doc: dict, current: dict) -> bool:
+        """An archived revision belongs to the live skill only if it carries the live
+        skill's generation: a random id drawn when the skill was created. A name created
+        again after a delete draws a new one, so the previous owner's revisions are kept
+        for audit but never served; no clock takes part in the decision.
+
+        A skill stored before generations existed has none until its first write, which
+        assigns one (`_with_generation`). Until then it is served the revisions it wrote
+        itself (`_is_legacy_revision`) and those already stamped with the generation it will get."""
+        generation = current.get("generation")
+        if generation:
+            return version_doc.get("generation") == generation
+        # No generation yet: a first write that did not land, or stamped only some rows, has
+        # already given its rows the generation the skill will carry.
+        return version_doc.get("generation") == self._derived_generation(current) or self._is_legacy_revision(
+            version_doc, current,
         )
+
+    def _derived_generation(self, current_doc: dict) -> str:
+        """The generation a generation-less skill gets at its first write. It is derived from
+        the creation, so a write that did not land is retried with the same one."""
+        skill_key = _doc_id(current_doc) or self._key(current_doc["name"])
+        return uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"{skill_key}/{current_doc.get('createdBy')}/{current_doc.get('createdAtTimestamp')}",
+        ).hex
+
+    @staticmethod
+    def _is_legacy_revision(version_doc: dict, current: dict) -> bool:
+        """A revision archived before generations existed that its live skill wrote: no
+        generation, not older than the skill (a revision is written while its skill exists,
+        so one that predates the creation is a predecessor's), and written by the skill's
+        creator. A team or org skill is also edited by those who govern it, so there the
+        writer is not compared."""
+        if version_doc.get("generation") is not None:
+            return False
+        if int(version_doc.get("createdAtTimestamp") or 0) < int(current.get("createdAtTimestamp") or 0):
+            return False
+        creator = current.get("createdBy")
+        return current.get("scope") in SkillScope.SHARED or (bool(creator) and version_doc.get("updatedBy") == creator)
+
+    async def _with_generation(self, current_doc: dict) -> dict:
+        """`current_doc` carrying a generation. A skill stored before generations existed
+        is given one at its first write, and the revisions it wrote itself
+        (`_is_legacy_revision`) are stamped with it, so from then on every reader matches
+        on the generation alone. The history is read with `raise_on_error`: a failed read
+        must fail the edit, not commit a generation that no unstamped row can match."""
+        if current_doc.get("generation"):
+            return current_doc
+        generation = self._derived_generation(current_doc)
+        archived = await self._graph.get_nodes_by_filters(
+            _VERSIONS, {"orgId": self._org_id, "name": current_doc["name"]}, raise_on_error=True,
+        )
+        mine = [
+            {**{k: v for k, v in d.items() if k not in ("_id", "_key", "_rev")}, "id": _doc_id(d), "generation": generation}
+            for d in archived if self._is_legacy_revision(d, current_doc)
+        ]
+        if mine:
+            await self._graph.batch_upsert_nodes(mine, _VERSIONS)
+        return {**current_doc, "generation": generation}
+
+    async def _version_docs(self, name: str, current: dict | None, version: str | None = None) -> list[dict]:
+        """The archived revisions of the live skill (`_belongs_to`); of a deleted one, every revision under the
+        name, newest first, which only a run pinned to their content reads."""
+        filters = {"orgId": self._org_id, "name": name, **({"version": version} if version is not None else {})}
+        docs = await self._graph.get_nodes_by_filters(_VERSIONS, filters)
+        if current is not None:
+            return [d for d in docs if self._belongs_to(d, current)]
+        return sorted(docs, key=lambda d: int(d.get("createdAtTimestamp") or 0), reverse=True)
+
+    async def _get_version_doc(self, name: str, version: str, current: dict | None) -> dict | None:
+        docs = await self._version_docs(name, current, version)
         return docs[0] if docs else None
 
     async def _snapshot_revision(self, current_doc: dict, now: int) -> None:
         """Archives `current_doc` into `agentSkillVersions` before it's
         overwritten by the caller's `update_skill`/`rollback`.
 
-        The doc `id` is keyed on `(skill_key, version)`, NOT `(skill_key,
-        now)`: `now` is an epoch-millisecond timestamp, and two snapshot
+        The doc `id` is keyed on `(skill_key, generation, version)`, NOT
+        `(skill_key, now)`; the generation keeps a re-created name's history apart
+        from the previous owner's: `now` is an epoch-millisecond timestamp, and two snapshot
         calls landing in the same millisecond (trivially reproducible in a
         fast test, and not impossible under real concurrent/rapid edits)
         would collide and silently overwrite each other via
@@ -1194,8 +1347,9 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         """
         skill_key = _doc_id(current_doc) or self._key(current_doc["name"])
         version = current_doc.get("version") or "1.0.0"
+        generation = current_doc.get("generation")
         version_doc = {
-            "id": f"{skill_key}_v{version}",
+            "id": f"{skill_key}_{generation}_v{version}" if generation else f"{skill_key}_v{version}",
             "orgId": self._org_id,
             "skillKey": skill_key,
             "name": current_doc["name"],
@@ -1207,6 +1361,8 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             "updatedBy": current_doc.get("updatedBy") or current_doc.get("createdBy"),
             "createdAtTimestamp": now,
         }
+        if generation:
+            version_doc["generation"] = generation
         await self._graph.batch_upsert_nodes([version_doc], _VERSIONS)
 
     # ---- Graph edges: permissions + skill-to-skill connectedness --------
@@ -1401,7 +1557,7 @@ async def erase_skill_author(
     erased = reassigned = 0
     for doc in await graph.get_nodes_by_filters(_SKILLS, {"orgId": org_id}):
         key = _doc_id(doc)
-        if key is None or doc.get("source") == SkillSource.BUILTIN.value:
+        if key is None or is_seeded_builtin(doc):
             continue
         if doc.get("createdBy") not in ids:
             if doc.get("updatedBy") in ids:

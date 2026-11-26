@@ -18,6 +18,7 @@ from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import SkillSource
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop.context import AgentContext
+from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY
 from app.agents.agent_loop.skills.graph_store import GraphSkillStore, SkillVisibility
 from app.agents.agent_loop.skills.manager_factory import (
     get_builtin_seeder,
@@ -148,9 +149,11 @@ class TestTheRule:
             ({"b"}, set(), _doc("a", "x"), False),
             ({"b"}, {"x"}, _doc("a", "x"), True),
             ({"b"}, {"y"}, _doc("a", "x"), False),
-            ({"b"}, set(), _doc("seed", "x", SkillSource.BUILTIN.value), True),
+            ({"b"}, set(), _doc(SEED_IDENTITY, "x", SkillSource.BUILTIN.value), True),
             (set(), set(), _doc("a", "x"), False),
-            (set(), set(), _doc("seed", "x", SkillSource.BUILTIN.value), True),
+            # A member's skill that only says it is builtin is that member's.
+            ({"b"}, set(), _doc("a", "x", SkillSource.BUILTIN.value), False),
+            (set(), set(), _doc(SEED_IDENTITY, "x", SkillSource.BUILTIN.value), True),
         ],
     )
     def test_sk4_visible_iff_builtin_owned_or_shared(

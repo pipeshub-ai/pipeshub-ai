@@ -1951,6 +1951,9 @@ agent_skills_schema = {
             "changeNote": {"type": ["string", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
+            # Random id drawn when the skill is created; its revisions carry it, so a
+            # name created again never inherits the previous skill's history.
+            "generation": {"type": "string"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             # Usage tracking (GraphUsageTracker / MUSE-Autoskill pattern) —
@@ -2006,6 +2009,7 @@ agent_skill_versions_schema = {
             "resources": {"type": "object"},
             "summary": {"type": "string", "default": ""},
             "updatedBy": {"type": ["string", "null"]},
+            "generation": {"type": "string"},  # the generation of the skill this revises
             "createdAtTimestamp": {"type": "number"},
         },
         "required": ["orgId", "skillKey", "name", "version", "content", "createdAtTimestamp"],

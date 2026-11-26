@@ -184,6 +184,14 @@ async def test_mg4_an_orgs_agents_with_their_edges_platform_toolsets_left_out() 
     assert agent["createdBy"] == "mongo-u1"
 
 
+async def test_mg4_a_members_skill_that_only_says_builtin_is_that_members() -> None:
+    graph, kv, asked = world()
+    graph.add("agentSkills", "org-a_notes", name="notes", version="1.0.0", orgId="org-a", source="builtin", createdBy="u1", status="active")
+    facts = (await reader(graph, kv, asked).read("org-a")).model_dump(mode="json", by_alias=True)
+    notes = next(s for s in facts["agents"][0]["skills"] if s["name"] == "notes")
+    assert notes["builtin"] is False and notes["createdBy"] == "mongo-u1"
+
+
 async def test_mg4_one_agent_of_another_org_reads_as_none() -> None:
     graph, kv, asked = world()
     assert (await reader(graph, kv, asked).read("org-a", agent_key="b1")).agents == []

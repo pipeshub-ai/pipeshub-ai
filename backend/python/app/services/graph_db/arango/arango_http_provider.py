@@ -4421,30 +4421,32 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         match_field: str,
         match_value: Any,
         transaction: str | None = None,
+        *,
+        expected: dict[str, Any] | None = None,
     ) -> bool:
         """REPLACE the document only while `match_field` still equals
-        `match_value`. FILTER + REPLACE is one AQL statement so a concurrent
-        overwrite cannot sneak in between the check and the write."""
+        `match_value` and `expected` holds. FILTER + REPLACE is one AQL statement
+        so a concurrent overwrite cannot sneak in between the check and the write."""
         try:
             arango_node = self._translate_node_to_arango(node)
             arango_node["_key"] = key
-            query = """
+            bind_vars: dict[str, Any] = {
+                "@collection": collection,
+                "key": key,
+                "field": match_field,
+                "expected": match_value,
+                "node": arango_node,
+            }
+            filters = _aql_expectations(expected or {}, bind_vars)
+            newline = "\n                "
+            query = f"""
             FOR doc IN @@collection
                 FILTER doc._key == @key AND doc[@field] == @expected
+                {newline.join(filters)}
                 REPLACE doc WITH @node IN @@collection
                 RETURN NEW._key
             """
-            updated = await self.http_client.execute_aql(
-                query,
-                {
-                    "@collection": collection,
-                    "key": key,
-                    "field": match_field,
-                    "expected": match_value,
-                    "node": arango_node,
-                },
-                transaction,
-            )
+            updated = await self.http_client.execute_aql(query, bind_vars, transaction)
             return bool(updated)
         except Exception:
             raise
@@ -7401,7 +7403,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 INSERT @node INTO @@collection OPTIONS { overwriteMode: "ignore" }
                 RETURN NEW
                 """,
-                bind_vars={"@collection": collection, "node": {**node, "_key": key}},
+                # The generic `id` becomes the `_key`, as in `batch_upsert_nodes`: a collection with a
+                # strict schema refuses a document that carries both.
+                bind_vars={"@collection": collection, "node": {**self._translate_node_to_arango(node), "_key": key}},
                 txn_id=transaction,
             ),
             transaction,

@@ -106,6 +106,7 @@ def _skills_manager(monkeypatch: pytest.MonkeyPatch, **methods) -> None:
     manager = SimpleNamespace(**{name: AsyncMock(**spec) for name, spec in methods.items()})
     monkeypatch.setattr(skills, "_build_manager", AsyncMock(return_value=(manager, {})))
     monkeypatch.setattr(skills, "_reject_if_builtin_skill", AsyncMock())
+    monkeypatch.setattr(skills, "_moderation_manager", AsyncMock(return_value=(manager, SimpleNamespace(source=None))))
 
 
 @pytest.mark.parametrize("route, args, methods, detail", [

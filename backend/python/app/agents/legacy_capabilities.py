@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from app.agents.agent_loop.skills.graph_store import is_seeded_builtin
 from app.agents.constants.mcp_server_constants import get_mcp_instances_prefix
 from app.agents.constants.toolset_constants import (
     get_toolset_org_user_instances_prefix,
@@ -312,8 +313,8 @@ class LegacyCapabilityReader:
                 {
                     "name": name,
                     "version": version,
-                    "builtin": _text(skill, "source") == "builtin",
-                    "createdBy": None if _text(skill, "source") == "builtin" else await self._person(_text(skill, "createdBy")),
+                    "builtin": is_seeded_builtin(skill),
+                    "createdBy": None if is_seeded_builtin(skill) else await self._person(_text(skill, "createdBy")),
                     "bundleDigest": digest,
                 }
             )
