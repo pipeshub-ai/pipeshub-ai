@@ -672,13 +672,16 @@ export const redactConversationFor = async <C extends { messages?: unknown }>(
 ): Promise<C> => {
   if (!Array.isArray(conversation.messages)) return conversation;
   const fresh = new Set((opts.freshIds ?? []).map(String));
+  // A message with no sender is the initiator's (as a fetch reads it), never the viewer's by default.
+  const { initiator } = conversation as { initiator?: unknown };
+  const owner = messageActor({ senderId: initiator }, viewer.userId);
   return {
     ...conversation,
     messages: await redactMessagesFor(
       appConfig,
       viewer,
       conversation.messages as ViewerMessage[],
-      (m) => messageActor(m, viewer.userId),
+      (m) => messageActor(m, owner),
       {
         known: opts.known,
         fresh: (m) =>

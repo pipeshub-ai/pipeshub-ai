@@ -1204,6 +1204,17 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
     for (const leaked of HIDDEN) expect(JSON.stringify(message), leaked).to.not.contain(leaked)
   })
 
+  it("a turn's response to a collaborator reads a message without a sender as the initiator's", async () => {
+    stubAccess(ALL)
+    const out: any = await redactConversationFor(appConfig, viewerOf(COLLABORATOR, ORG), { initiator: OWNER, messages: [richAnswer()] })
+    expect(out.messages[0].content).to.equal('The answer [1][2]')
+    expect(out.messages[0].reasoning).to.deep.equal([])
+    expect(out.messages[0].tools).to.deep.equal([])
+    for (const leaked of HIDDEN) expect(JSON.stringify(out.messages[0]), leaked).to.not.contain(leaked)
+    const own: any = await redactConversationFor(appConfig, viewerOf(COLLABORATOR, ORG), { initiator: OWNER, messages: [{ ...richAnswer(), senderId: COLLABORATOR }] })
+    expect(own.messages[0].reasoning).to.have.length(1)
+  })
+
   it('the owner still gets reasoning and tool steps of their own answer', async () => {
     stubAccess(ALL)
     stubConversation([richAnswer()])
