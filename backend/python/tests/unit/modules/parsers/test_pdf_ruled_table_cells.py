@@ -1778,3 +1778,10 @@ def test_a_targeted_read_that_cannot_read_its_words_gives_no_grid() -> None:
     assert ola._table_grid_and_band(table, region, (0.0, 0.0, 10.0, 10.0)) == ([], [])
     # untargeted: the character-level grid stays the fallback
     assert ola._table_grid_and_band(table, region) == ([], [["left", "right"], ["a", "b"]])
+
+
+def test_a_key_opening_with_an_underscore_after_a_blank_line_starts_a_record() -> None:
+    cols = [(0.0, 50.0), (50.0, 300.0)]
+    specs = [("REG1", 2.0, 10.0), ("Enabled.", 52.0, 10.0),
+             ("_MODE2", 2.0, 30.0), ("Disabled.", 52.0, 30.0)]  # a blank line between them
+    assert _groups(specs, cols) == [1, 1]
