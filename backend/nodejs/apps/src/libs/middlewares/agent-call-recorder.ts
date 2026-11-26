@@ -24,6 +24,11 @@ export function markScopeDenied(req: object): void {
   scopeDenied.add(req);
 }
 
+/** Clears the flag when a scope check only logged its refusal and let the request through. */
+export function clearScopeDenied(req: object): void {
+  scopeDenied.delete(req);
+}
+
 /** The tool name of a single MCP `tools/call` message, else undefined. Names only, never arguments. */
 function mcpToolName(body: unknown): string | undefined {
   const m = body as

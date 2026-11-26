@@ -4,6 +4,10 @@ import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
+import {
+  observeTokenRestriction,
+  tokenRestrictionsEnforced,
+} from '../../../libs/utils/token-restrictions.utils';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { Logger } from '../../../libs/services/logger.service';
 import { parseKvObject } from '../../../libs/utils/kv-object.utils';
@@ -187,9 +191,17 @@ type SlackBotStore = {
 };
 
 
-/** Returns true when the HIDE_SECRET_CONFIG env var is set to "true". */
-function shouldHideSecrets(): boolean {
-  return process.env.HIDE_SECRET_CONFIG === 'true';
+/**
+ * Returns true when the HIDE_SECRET_CONFIG env var is set to "true".
+ * With TOKEN_RESTRICTIONS_MODE=enforce, an OAuth or personal access token caller never gets them.
+ */
+function shouldHideSecrets(req: Request): boolean {
+  const hidden = process.env.HIDE_SECRET_CONFIG === 'true';
+  if (!hidden && (req as AuthenticatedUserRequest).user?.isOAuth === true) {
+    if (tokenRestrictionsEnforced()) return true;
+    observeTokenRestriction(req as never, 'token_caller_unmasked');
+  }
+  return hidden;
 }
 
 async function requesterIsOrgAdmin(
@@ -650,7 +662,8 @@ export const getSmtpConfig =
     try {
       const smtpConfig = await getParsedSmtpConfig(keyValueStoreService);
       if (smtpConfig) {
-        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        const hideSecrets =
+          applyMasking && shouldHideSecrets(req) && !canRevealSecrets(req);
         res
           .status(200)
           .json(hideSecrets ? maskSmtpConfig(smtpConfig) : smtpConfig)
@@ -1389,8 +1402,12 @@ export const getMicrosoftAuthConfig =
       }
 
       if (authConfig) {
-        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
-        res.status(200).json(hideSecrets ? maskMicrosoftAuthConfig(authConfig) : authConfig).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets(req) && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(hideSecrets ? maskMicrosoftAuthConfig(authConfig) : authConfig)
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -1449,8 +1466,12 @@ export const getGoogleAuthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAuthConfig),
         );
-        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
-        res.status(200).json(hideSecrets ? maskGoogleAuthConfig(authConfig) : authConfig).end();
+        const hideSecrets =
+          applyMasking && shouldHideSecrets(req) && !canRevealSecrets(req);
+        res
+          .status(200)
+          .json(hideSecrets ? maskGoogleAuthConfig(authConfig) : authConfig)
+          .end();
       } else {
         res.status(200).json({}).end();
       }
@@ -4780,7 +4801,7 @@ export const getWebSearchProviders =
       // may read their API keys or server addresses.
       const isAdmin = await requesterIsOrgAdmin(req);
       const hideSecrets =
-        !isAdmin || (shouldHideSecrets() && !canRevealSecrets(req));
+        !isAdmin || (shouldHideSecrets(req) && !canRevealSecrets(req));
       const mask = isAdmin
         ? maskWebSearchProvider
         : maskWebSearchProviderForMember;

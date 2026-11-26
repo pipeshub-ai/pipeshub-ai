@@ -763,14 +763,19 @@ export class OAuthAppService {
       orgId,
       userId,
       appId,
-      {
-        clientSecretEncrypted: this.encryptionService.encrypt(clientSecret),
-      },
+      { clientSecretEncrypted: this.encryptionService.encrypt(clientSecret) },
     );
 
     if (!app) {
       throw new NotFoundError('OAuth app not found');
     }
+
+    // Tokens issued under the old secret must not outlive it. A failed revocation keeps
+    // the new secret: putting the old one back would revive it, and a concurrent rotation
+    // could restore a secret that was already replaced. The caller gets an error and
+    // rotates again, which revokes again; a token minted while this ran is caught by the
+    // secret recheck in generateTokens.
+    await this.oauthTokenService.revokeAllTokensForApp(app.clientId);
 
     this.logger.info('OAuth app secret regenerated', {
       app_id: app._id,

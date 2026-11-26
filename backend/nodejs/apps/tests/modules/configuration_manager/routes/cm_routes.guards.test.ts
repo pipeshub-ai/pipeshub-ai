@@ -156,6 +156,60 @@ describe('Configuration manager routes: who may call them', () => {
 
     expect(late).to.deep.equal([]);
   });
+
+  describe('TOKEN_RESTRICTIONS_MODE on the Slack bot routes', () => {
+    afterEach(() => {
+      delete process.env.TOKEN_RESTRICTIONS_MODE;
+    });
+
+    // The guard right after authenticate must stop a token that lacks the scope when enforcing.
+    for (const [id, scope] of [
+      ['GET /slack-bot', 'config:read'],
+      ['POST /slack-bot', 'config:write'],
+      ['PUT /slack-bot/:configId', 'config:write'],
+      ['DELETE /slack-bot/:configId', 'config:write'],
+    ]) {
+      it(`${id} refuses a token without ${scope} when enforcing and lets a session through`, async () => {
+        process.env.TOKEN_RESTRICTIONS_MODE = 'enforce';
+        const guard = routes.find((r) => r.id === id)!.handlers[1];
+        const refused = sinon.stub();
+        await guard(
+          { user: { isOAuth: true, oauthScopes: ['user:read'] } } as never,
+          {} as never,
+          refused,
+        );
+        expect(refused.firstCall.args[0]).to.have.property('statusCode', 403);
+        const allowed = sinon.stub();
+        await guard(
+          { user: { isOAuth: true, oauthScopes: [scope] } } as never,
+          {} as never,
+          allowed,
+        );
+        expect(allowed.firstCall.args).to.deep.equal([]);
+        const session = sinon.stub();
+        await guard({ user: { userId: 'u' } } as never, {} as never, session);
+        expect(session.firstCall.args).to.deep.equal([]);
+      });
+
+      it(`${id} lets a token without ${scope} through in log mode`, async () => {
+        delete process.env.TOKEN_RESTRICTIONS_MODE;
+        const guard = routes.find((r) => r.id === id)!.handlers[1];
+        const next = sinon.stub();
+        await guard(
+          {
+            user: {
+              isOAuth: true,
+              oauthScopes: ['user:read'],
+              orgId: `org-${id}`,
+            },
+          } as never,
+          {} as never,
+          next,
+        );
+        expect(next.firstCall.args).to.deep.equal([]);
+      });
+    }
+  });
 });
 
 // Serves the real configuration router over HTTP with the real AuthMiddleware,

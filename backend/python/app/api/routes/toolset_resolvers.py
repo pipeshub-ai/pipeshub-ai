@@ -19,6 +19,7 @@ from app.config.redaction import (
     OAUTH_CLIENT_SECRET_FIELDS,
     REDACTED_PLACEHOLDER,
     hide_secrets_by_default,
+    hide_secrets_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -207,10 +208,13 @@ def mask_oauth_secrets(
     *,
     is_inherited: bool = False,
     reveal: bool = False,
+    request: Request | None = None,
 ) -> dict[str, Any]:
-    """Redact secret fields under HIDE_SECRET_CONFIG unless revealed; OSS has no org inheritance."""
+    """Redact secret fields under HIDE_SECRET_CONFIG unless revealed; OSS has no org inheritance.
+
+    ``request`` lets a token caller be masked by the token restrictions switch."""
     del is_inherited
-    if reveal or not hide_secrets_by_default():
+    if reveal or not hide_secrets_for(request, hidden=hide_secrets_by_default()):
         return dict(cfg_data)
     return {k: (REDACTED_PLACEHOLDER if k in OAUTH_CLIENT_SECRET_FIELDS else v) for k, v in cfg_data.items()}
 

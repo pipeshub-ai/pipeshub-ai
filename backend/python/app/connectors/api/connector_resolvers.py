@@ -18,6 +18,7 @@ from app.config.redaction import (
     OAUTH_CLIENT_SECRET_FIELDS,
     REDACTED_PLACEHOLDER,
     hide_secrets_by_default,
+    hide_secrets_for,
 )
 from app.api.middlewares.auth import is_request_admin
 from app.utils.user_lookup import get_user_or_503
@@ -106,13 +107,16 @@ def mask_oauth_config_for_response(
     *,
     is_admin: bool,
     reveal: bool = False,
+    request: Optional[Request] = None,
 ) -> dict[str, Any]:
-    """OSS: admins get the config, its secrets masked under HIDE_SECRET_CONFIG unless revealed."""
+    """OSS: admins get the config, its secrets masked under HIDE_SECRET_CONFIG unless revealed.
+
+    ``request`` lets a token caller be masked by the token restrictions switch."""
     del caller_org_id
     if not is_admin:
         return {"config": {}, "inherited": False}
     raw_cfg = dict(oauth_config.get("config") or {})
-    if hide_secrets_by_default() and not reveal:
+    if not reveal and hide_secrets_for(request, hidden=hide_secrets_by_default()):
         raw_cfg = {
             k: (REDACTED_PLACEHOLDER if k in OAUTH_CLIENT_SECRET_FIELDS and v else v)
             for k, v in raw_cfg.items()

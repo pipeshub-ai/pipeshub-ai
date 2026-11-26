@@ -42,7 +42,7 @@ from app.api.middlewares.request_log import (
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
-from app.config.redaction import OAUTH_CLIENT_SECRET_FIELDS
+from app.config.redaction import OAUTH_CLIENT_SECRET_FIELDS, hide_secrets_for
 from app.core.org_context import current_org_id, org_of
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
@@ -271,9 +271,12 @@ def _holds_object(value: object) -> bool:
     return isinstance(value, dict) or (isinstance(value, list) and any(_holds_object(v) for v in value))
 
 
-def _mask_inline_auth(auth: dict[str, Any], secret_fields: frozenset[str]) -> dict[str, Any]:
-    """Nested objects (stored tokens) are always hidden whole; declared secrets follow HIDE_SECRET_CONFIG."""
-    hide_secrets = hide_secrets_by_default()
+def _mask_inline_auth(
+    auth: dict[str, Any], secret_fields: frozenset[str], request: Request | None = None
+) -> dict[str, Any]:
+    """Nested objects (stored tokens) are always hidden whole; declared secrets follow
+    HIDE_SECRET_CONFIG, and for a token caller the token restrictions switch."""
+    hide_secrets = hide_secrets_for(request, hidden=hide_secrets_by_default())
     return {
         key: REDACTED_PLACEHOLDER
         if _holds_object(value) or (hide_secrets and key in secret_fields and value)
@@ -288,15 +291,34 @@ def _secret_auth_fields(request: Request, instance: dict[str, Any]) -> frozenset
         meta = _get_toolset_metadata(_get_registry(request), instance.get("toolsetType", ""))
     except Exception:  # noqa: BLE001 - an unknown toolset still gets its OAuth secret masked
         return OAUTH_CLIENT_SECRET_FIELDS
-    auth_meta = (meta.get("config") or {}).get("auth") or {}
-    schema = (auth_meta.get("schemas") or {}).get((instance.get("authType") or "").upper()) or auth_meta.get("schema") or {}
     declared = {
         field["name"]
-        for field in schema.get("fields", [])
-        if isinstance(field, dict) and field.get("name")
-        and (field.get("isSecret") or field.get("is_secret") or field.get("fieldType") == "PASSWORD")
+        for field in _schema_fields(meta, instance.get("authType"))
+        if _declares_secret(field)
     }
     return frozenset(declared) | OAUTH_CLIENT_SECRET_FIELDS
+
+
+def _schema_fields(meta: dict[str, Any], auth_type: str | None) -> list[dict[str, Any]]:
+    """The fields a toolset's metadata declares for an auth type."""
+    auth_meta = (meta.get("config") or {}).get("auth") or {}
+    schema = (auth_meta.get("schemas") or {}).get((auth_type or "").upper()) or auth_meta.get("schema") or {}
+    return [field for field in schema.get("fields", []) if isinstance(field, dict) and field.get("name")]
+
+
+def _declares_secret(field: dict[str, Any]) -> bool:
+    return bool(field.get("isSecret") or field.get("is_secret") or field.get("fieldType") == "PASSWORD")
+
+
+def _mask_agent_auth(auth: dict[str, Any], meta: dict[str, Any] | None, auth_type: str | None) -> dict[str, Any]:
+    """Only fields the schema declares as not secret stay readable; a field it does not declare is masked."""
+    readable = {
+        field["name"] for field in _schema_fields(meta or {}, auth_type) if not _declares_secret(field)
+    } - OAUTH_CLIENT_SECRET_FIELDS
+    return {
+        key: REDACTED_PLACEHOLDER if value and (key not in readable or _holds_object(value)) else value
+        for key, value in auth.items()
+    }
 
 
 def _instance_for_response(
@@ -305,6 +327,7 @@ def _instance_for_response(
     is_admin: bool,
     reveal: bool = False,
     secret_fields: frozenset[str] = OAUTH_CLIENT_SECRET_FIELDS,
+    request: Request | None = None,
 ) -> dict[str, Any]:
     """Copy of *instance* that is safe to return.
 
@@ -316,7 +339,7 @@ def _instance_for_response(
     safe = {k: v for k, v in instance.items() if k != "auth"}
     auth = instance["auth"]
     if is_admin and isinstance(auth, dict) and auth:
-        safe["auth"] = dict(auth) if reveal else _mask_inline_auth(auth, secret_fields)
+        safe["auth"] = dict(auth) if reveal else _mask_inline_auth(auth, secret_fields, request)
     return safe
 
 
@@ -1412,7 +1435,7 @@ async def _create_personal_instance(
     await sync_capabilities(config_service, org_id)
     return {
         "status": "success",
-        "instance": _instance_for_response(instance, is_admin=True, secret_fields=_secret_auth_fields(request, instance)),
+        "instance": _instance_for_response(instance, is_admin=True, secret_fields=_secret_auth_fields(request, instance), request=request),
         "message": "Toolset instance created successfully.",
     }
 
@@ -1584,7 +1607,7 @@ async def create_toolset_instance(
     return {
         "status": "success",
         "instance": _instance_for_response(
-            new_instance, is_admin=True, secret_fields=_secret_auth_fields(request, new_instance)
+            new_instance, is_admin=True, secret_fields=_secret_auth_fields(request, new_instance), request=request
         ),
         "message": "Toolset instance created successfully."
     }
@@ -1630,7 +1653,7 @@ async def get_toolset_instances(
         meta = registry.get_toolset_metadata(toolset_type)
         enriched.append({
             **_instance_for_response(
-                inst, is_admin=is_admin, secret_fields=_secret_auth_fields(request, inst)
+                inst, is_admin=is_admin, secret_fields=_secret_auth_fields(request, inst), request=request
             ),
             "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
             "description": meta.get("description", "") if meta else "",
@@ -1684,7 +1707,7 @@ async def get_toolset_instance(
     result: dict[str, Any] = {
         **_instance_for_response(
             instance, is_admin=is_admin, reveal=reveal,
-            secret_fields=_secret_auth_fields(request, instance),
+            secret_fields=_secret_auth_fields(request, instance), request=request,
         ),
         "displayName": meta.get("display_name", toolset_type) if meta else toolset_type,
         "description": meta.get("description", "") if meta else "",
@@ -1722,7 +1745,7 @@ async def get_toolset_instance(
                 if oauth_cfg:
                     cfg_data = oauth_cfg.get("config", {}) or {}
                     masked = mask_oauth_secrets(
-                        cfg_data, is_inherited=is_inherited_oauth, reveal=reveal
+                        cfg_data, is_inherited=is_inherited_oauth, reveal=reveal, request=request
                     )
                     oauth_config_dict = {
                         "_id": oauth_cfg.get("_id"),
@@ -1828,7 +1851,7 @@ async def _update_personal_instance(
     await sync_capabilities(config_service, org_of(instance))
     return {
         "status": "success",
-        "instance": _instance_for_response(instance, is_admin=True, secret_fields=_secret_auth_fields(request, instance)),
+        "instance": _instance_for_response(instance, is_admin=True, secret_fields=_secret_auth_fields(request, instance), request=request),
         "message": "Toolset instance updated successfully." + (" Sign in to it again with the new OAuth app." if deauthed else ""),
         "deauthenticatedUserCount": deauthed,
     }
@@ -1999,7 +2022,7 @@ async def update_toolset_instance(
     return {
         "status": "success",
         "instance": _instance_for_response(
-            instance, is_admin=True, secret_fields=_secret_auth_fields(request, instance)
+            instance, is_admin=True, secret_fields=_secret_auth_fields(request, instance), request=request
         ),
         "message": msg,
         "deauthenticatedUserCount": deauthed_count,
@@ -3015,7 +3038,8 @@ async def list_toolset_oauth_configs(
             cfg_data = cfg.get("config", {}) or {}
             entry.update(
                 mask_oauth_secrets(
-                    cfg_data, is_inherited=is_inherited, reveal=can_reveal_secrets(request)
+                    cfg_data, is_inherited=is_inherited, reveal=can_reveal_secrets(request),
+                    request=request,
                 )
             )
             if "clientSecret" in cfg_data:
@@ -3318,6 +3342,7 @@ async def _build_toolsets_list_response(
     include_has_credentials: bool = False,
     include_auth_key_for_registry: bool = False,
     expose_non_oauth_auth: bool = False,
+    mask_non_oauth_auth: bool = False,
     toolset_type_filter: str | None = None,
     personal_owner_id: str | None = None,
 ) -> dict[str, Any]:
@@ -3431,6 +3456,9 @@ async def _build_toolsets_list_response(
                 if auth_type_upper != "OAUTH" and auth_record is not None
                 else None
             )
+            # The editor form sends the placeholder back to keep a masked value.
+            if mask_non_oauth_auth and isinstance(toolset_entry["auth"], dict):
+                toolset_entry["auth"] = _mask_agent_auth(toolset_entry["auth"], meta, auth_type)
 
         toolsets.append(toolset_entry)
 
@@ -3664,6 +3692,7 @@ async def get_agent_toolsets(
         include_has_credentials=True,
         include_auth_key_for_registry=True,
         expose_non_oauth_auth=expose_non_oauth_auth_fields,
+        mask_non_oauth_auth=True,
         toolset_type_filter=toolset_type,
     )
 
@@ -3702,6 +3731,8 @@ async def authenticate_agent_toolset(
 
     if not auth:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Credentials are required.")
+    if any(is_redacted_placeholder(v) for v in auth.values()):
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="A masked value cannot be saved. Enter the value again.")
     _refuse_undeclared_auth_fields(request, instance, auth)
 
     # Validate required fields per auth type — mirrors the user authenticate endpoint
@@ -3762,6 +3793,13 @@ async def update_agent_toolset_credentials(
         if not existing_auth or not isinstance(existing_auth, dict):
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="No existing credentials found for this instance. Please authenticate first.")
 
+        if any(is_redacted_placeholder(v) for v in auth.values()):
+            auth = _keep_stored_secrets(
+                auth,
+                existing_auth.get("auth"),
+                _declared_destination_fields(request, instance.get("toolsetType", ""), instance.get("authType", "")),
+                _declared_field_defaults(request, instance.get("toolsetType", ""), instance.get("authType", "")),
+            )
         existing_auth["auth"] = auth
         existing_auth["updatedAt"] = get_epoch_timestamp_in_ms()
         existing_auth["agentKey"] = agent_key  # track which agent these creds belong to

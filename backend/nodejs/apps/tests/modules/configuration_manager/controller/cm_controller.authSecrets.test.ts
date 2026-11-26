@@ -6,6 +6,8 @@ import * as encryptorModule from '../../../../src/libs/encryptor/encryptor'
 import { BadRequestError } from '../../../../src/libs/errors/http.errors'
 import { configPaths } from '../../../../src/modules/configuration_manager/paths/paths'
 import { CONFIG_SECRET_PLACEHOLDER } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets'
+import { Logger } from '../../../../src/libs/services/logger.service'
+import { makeOrgContext, runWithOrgContext } from '../../../../src/libs/context/orgContext'
 import {
   getGoogleAuthConfig,
   getMicrosoftAuthConfig,
@@ -86,6 +88,33 @@ describe('sign-in provider secrets', () => {
       const req = { ...request({ reveal: 'true' }), user: { userId: 'u1', orgId: 'o1', isOAuth: true } }
       await getGoogleAuthConfig(store(STORED_GOOGLE))(req, res, sinon.stub<unknown[]>())
       expect(res.json.firstCall.args[0].clientId).to.equal(CONFIG_SECRET_PLACEHOLDER)
+    })
+
+    it('masks for an OAuth-app token when the flag is off and restrictions are enforced', async () => {
+      process.env.HIDE_SECRET_CONFIG = 'false'
+      process.env.TOKEN_RESTRICTIONS_MODE = 'enforce'
+      try {
+        const res = response()
+        const req = { ...request(), user: { userId: 'u1', orgId: 'o1', isOAuth: true } }
+        await getGoogleAuthConfig(store(STORED_GOOGLE))(req, res, sinon.stub())
+        expect(res.json.firstCall.args[0].clientId).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      } finally {
+        delete process.env.TOKEN_RESTRICTIONS_MODE
+      }
+    })
+
+    it('leaves an OAuth-app token unmasked when the flag is off in log mode, and records it', async () => {
+      process.env.HIDE_SECRET_CONFIG = 'false'
+      delete process.env.TOKEN_RESTRICTIONS_MODE
+      const warn = sinon.stub(Logger.getInstance(), 'warn')
+      const res = response()
+      const req = { ...request(), user: { userId: 'u1', orgId: 'org-mask-log', isOAuth: true } }
+      // The log takes the org from the bound org context, as the auth middleware sets it.
+      await runWithOrgContext(makeOrgContext({ orgId: 'org-mask-log', userId: 'u1', kind: 'user', source: 'jwt' }), () =>
+        getGoogleAuthConfig(store(STORED_GOOGLE))(req, res, sinon.stub()),
+      )
+      expect(res.json.firstCall.args[0].clientId).to.equal(STORED_GOOGLE.clientId)
+      expect(warn.firstCall.args[1]).to.include({ securityEvent: 'token_restriction_observed', reason: 'token_caller_unmasked', orgId: 'org-mask-log' })
     })
 
     it('gives the internal route (sign-in) the stored values while hidden', async () => {
