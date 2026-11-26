@@ -37,17 +37,17 @@ class SyncTableClient:
                 data={"meta": json.dumps(meta, separators=(",", ":"))},
                 files={name: (f"{name}.png", data, "image/png") for name, data in files.items()},
                 headers={DEADLINE_HEADER: str(max(0, int(deadline_ms)))},
-            ) as resp:
+            ) as streamed:
                 # httpx bounds each read, not the whole answer: the worker's wait ends at timeout_s however the answer
                 # trickles in. shortcut: the upload is bounded per write only; a server that reads the request slowly
                 # can hold it longer (connect is capped at CONNECT_TIMEOUT_S).
                 body = bytearray()
-                for chunk in resp.iter_bytes():
+                for chunk in streamed.iter_bytes():
                     body += chunk
                     if time.monotonic() > end:
                         return BatchOutcome("timeout")
                 # the body is decoded already: the answer is read from it, by its status and JSON only
-                resp = httpx.Response(resp.status_code, content=bytes(body))
+                resp = httpx.Response(streamed.status_code, content=bytes(body))
         except httpx.ConnectError:
             return BatchOutcome("service_down")
         except httpx.TimeoutException:
