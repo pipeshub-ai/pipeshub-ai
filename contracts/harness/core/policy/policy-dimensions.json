@@ -1,0 +1,1168 @@
+{
+  "schemaVersion": 1,
+  "description": "The policy dimensions (R2 CP3). Row order is refusal order. `engineProfile.*` rows are E4a's engine-profile narrowing, in its refusal order; `access` and `resultSchema` are set by the host only. Generated as POLICY_DIMENSIONS in every target.",
+  "dimensions": [
+    {
+      "path": "engineProfile.engine",
+      "kind": "ceiling",
+      "order": {
+        "kind": "admits"
+      },
+      "narrowedBy": "engineProfile.engines",
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "The engine build the run uses; a layer admits engines by `kind` or `kind@version` selectors and the first release engine every layer admits runs (E4a)."
+    },
+    {
+      "path": "engineProfile.access",
+      "kind": "ceiling",
+      "order": {
+        "kind": "flat"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "The model access route the run is pinned to; a narrowing may only name the same route. Set by the host, never by a wire layer."
+    },
+    {
+      "path": "engineProfile.mode",
+      "kind": "ceiling",
+      "order": {
+        "kind": "tree",
+        "children": {
+          "build": [
+            "plan",
+            "review"
+          ]
+        }
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "plan and review read and report; build edits. build narrows to either; plan and review only to themselves."
+    },
+    {
+      "path": "engineProfile.isolationMin",
+      "kind": "ceiling",
+      "order": {
+        "kind": "rank-raise",
+        "ranks": [
+          [
+            "docker"
+          ],
+          [
+            "gvisor",
+            "k8s",
+            "managed"
+          ],
+          [
+            "microvm"
+          ]
+        ]
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "The weakest sandbox runtime the run accepts; a narrowing may only raise it."
+    },
+    {
+      "path": "engineProfile.egress",
+      "kind": "ceiling",
+      "order": {
+        "kind": "flat",
+        "bottom": "none"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "Network beyond the gateways: none, or one named allowlist, which narrows only to itself or to none."
+    },
+    {
+      "path": "engineProfile.tools.maxTools",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "How many gateway tools the run may be granted; null is unlimited."
+    },
+    {
+      "path": "engineProfile.tools.effects",
+      "kind": "ceiling",
+      "order": {
+        "kind": "subset"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "The effect classes of the gateway tools the run may be granted."
+    },
+    {
+      "path": "engineProfile.limits.maxSteps",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "Steps the run may take; null is unlimited."
+    },
+    {
+      "path": "engineProfile.limits.maxWallS",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "Wall-clock seconds the run may take; null is unlimited."
+    },
+    {
+      "path": "engineProfile.limits.maxTokens",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "Model tokens the run may use; null is unlimited."
+    },
+    {
+      "path": "engineProfile.limits.maxUsd",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "USD the run may spend on routes the operator pays; null is unlimited."
+    },
+    {
+      "path": "engineProfile.subAgents",
+      "kind": "ceiling",
+      "order": {
+        "kind": "gated",
+        "switch": "enabled",
+        "bounds": [
+          "maxDepth",
+          "maxConcurrent"
+        ],
+        "off": {
+          "enabled": false,
+          "maxDepth": 1,
+          "maxConcurrent": 1
+        }
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "The engine's own sub-agents: off, or on with a depth and a concurrency bound."
+    },
+    {
+      "path": "engineProfile.reasoningEffort",
+      "kind": "ceiling",
+      "order": {
+        "kind": "rank",
+        "ranks": [
+          [
+            "low"
+          ],
+          [
+            "medium"
+          ],
+          [
+            "high"
+          ]
+        ]
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "The highest reasoning effort the run may use; null is any."
+    },
+    {
+      "path": "engineProfile.approvals.read",
+      "kind": "ceiling",
+      "order": {
+        "kind": "rank-raise",
+        "ranks": [
+          [
+            "allow"
+          ],
+          [
+            "ask"
+          ],
+          [
+            "deny"
+          ]
+        ]
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "The decision before a gateway tool of class read runs."
+    },
+    {
+      "path": "engineProfile.approvals.workspace",
+      "kind": "ceiling",
+      "order": {
+        "kind": "rank-raise",
+        "ranks": [
+          [
+            "allow"
+          ],
+          [
+            "ask"
+          ],
+          [
+            "deny"
+          ]
+        ]
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "The decision before a gateway tool of class workspace runs."
+    },
+    {
+      "path": "engineProfile.approvals.write",
+      "kind": "ceiling",
+      "order": {
+        "kind": "rank-raise",
+        "ranks": [
+          [
+            "allow"
+          ],
+          [
+            "ask"
+          ],
+          [
+            "deny"
+          ]
+        ]
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "The decision before a gateway tool of class write runs."
+    },
+    {
+      "path": "engineProfile.approvals.execute",
+      "kind": "ceiling",
+      "order": {
+        "kind": "rank-raise",
+        "ranks": [
+          [
+            "allow"
+          ],
+          [
+            "ask"
+          ],
+          [
+            "deny"
+          ]
+        ]
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "The decision before a gateway tool of class execute runs."
+    },
+    {
+      "path": "engineProfile.skills",
+      "kind": "ceiling",
+      "order": {
+        "kind": "subset"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "The skills the run may mount, by name; null is any the agent pins."
+    },
+    {
+      "path": "engineProfile.accountKinds",
+      "kind": "ceiling",
+      "order": {
+        "kind": "subset"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "Whose accounts the run may reach models with (A1)."
+    },
+    {
+      "path": "engineProfile.resultSchema",
+      "kind": "ceiling",
+      "order": {
+        "kind": "flat"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "The shape of the task's result; once a layer pins one, a narrowing may only repeat it. Set by the host, never by a wire layer."
+    },
+    {
+      "path": "approvals",
+      "kind": "ceiling",
+      "order": {
+        "kind": "approval-rules"
+      },
+      "widening": "meet",
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "Per-call approval rules: per effect class and per tool the strictest layer, and the strictest flow rules (P2.6c, P2.11e, SEC2)."
+    },
+    {
+      "path": "models.routes",
+      "kind": "ceiling",
+      "order": {
+        "kind": "subset"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "The models a run may call (MA1)."
+    },
+    {
+      "path": "models.primary",
+      "kind": "choice",
+      "within": "models.routes",
+      "exposure": [
+        "org",
+        "team",
+        "agent",
+        "user",
+        "trigger",
+        "parent",
+        "request"
+      ],
+      "description": "The model the run calls (MA1)."
+    },
+    {
+      "path": "models.roles",
+      "kind": "choice",
+      "within": "models.routes",
+      "exposure": [
+        "org",
+        "team",
+        "agent",
+        "user",
+        "trigger",
+        "parent",
+        "request"
+      ],
+      "description": "The model each named role calls: a sub-agent role's child run (MA1), and the run's own engine roles under the reserved keys fast, subagent and compaction (GA-15); a role without one calls the run's."
+    },
+    {
+      "path": "models.roleCostCeilings",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min-map"
+      },
+      "widening": "meet",
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "live"
+      ],
+      "description": "The most a sub-agent role's model may cost, in USD per 1M tokens (input plus output list price, short-context tier), per role key; `default` bounds every role (MA1)."
+    },
+    {
+      "path": "budgets.maxTurns",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "Model turns the run may take."
+    },
+    {
+      "path": "budgets.maxTokens",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "Tokens the run may spend; an engine profile's limits.maxTokens narrows it."
+    },
+    {
+      "path": "budgets.maxCostUsd",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "USD the run may spend; a schedule's cap and an engine profile's limits.maxUsd narrow it."
+    },
+    {
+      "path": "budgets.activeTimeS",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ],
+      "description": "Seconds the run may be active; its deadline and an engine profile's limits.maxWallS narrow it; null is unbounded."
+    },
+    {
+      "path": "rollout.ENABLE_AGENT_HARNESS",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-and"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "flag": "ENABLE_AGENT_HARNESS",
+      "description": "Durable agent runs."
+    },
+    {
+      "path": "rollout.AGENT_HARNESS_KILL_SWITCH",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-or"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "live"
+      ],
+      "flag": "AGENT_HARNESS_KILL_SWITCH",
+      "description": "The kill switch: on stops new durable admissions. A run in flight finishes; its live layer marks the switch."
+    },
+    {
+      "path": "rollout.ENABLE_SCHEDULED_RUNS",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-and"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "flag": "ENABLE_SCHEDULED_RUNS",
+      "description": "Scheduled runs."
+    },
+    {
+      "path": "rollout.ENABLE_KNOWLEDGE_PUBLICATIONS",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-and"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "flag": "ENABLE_KNOWLEDGE_PUBLICATIONS",
+      "description": "Knowledge publications."
+    },
+    {
+      "path": "rollout.ENABLE_SKILLS",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-and"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "flag": "ENABLE_SKILLS",
+      "description": "Skills."
+    },
+    {
+      "path": "rollout.ENABLE_USER_CONTEXT",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-and"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "flag": "ENABLE_USER_CONTEXT",
+      "description": "User context."
+    },
+    {
+      "path": "rollout.durable.modes",
+      "kind": "ceiling",
+      "order": {
+        "kind": "subset"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "description": "The agent chat modes a turn may take on the durable path; a mode not listed stays on today's loop (chat_mode_not_supported)."
+    },
+    {
+      "path": "rollout.durable.assistantModes",
+      "kind": "ceiling",
+      "order": {
+        "kind": "subset"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "description": "The built-in assistant's chat modes a turn may take on the durable path; a mode not listed stays on today's loop."
+    },
+    {
+      "path": "rollout.durable.modelFamilies",
+      "kind": "ceiling",
+      "order": {
+        "kind": "subset"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "description": "The model families (the configured model's provider, lower-case) whose turns take the durable path; null is any, an empty list none."
+    },
+    {
+      "path": "rollout.ENABLE_ACTIONS",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-and"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "flag": "ENABLE_ACTIONS",
+      "description": "Toolset actions."
+    },
+    {
+      "path": "rollout.ENABLE_MCP",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-and"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "flag": "ENABLE_MCP",
+      "description": "MCP servers."
+    },
+    {
+      "path": "rollout.ENABLE_NAMED_ENTITY_EXTRACTION",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-and"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "flag": "ENABLE_NAMED_ENTITY_EXTRACTION",
+      "description": "Typed named entities and the tools that read them."
+    },
+    {
+      "path": "rollout.CONTROL_PLANE_CAPABILITIES",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-and"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "description": "Whether the org's capabilities are recorded as migrated to the control plane, so a run's effective set is the authority for its items. No layer above the org sets it and the release holds none: a pin without the row reads as not migrated."
+    },
+    {
+      "path": "catalog.approval",
+      "kind": "ceiling",
+      "order": {
+        "kind": "rank-raise-rules",
+        "ranks": [
+          [
+            "none"
+          ],
+          [
+            "owner"
+          ],
+          [
+            "teamAdmin"
+          ],
+          [
+            "orgAdmin"
+          ]
+        ]
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team"
+      ],
+      "description": "Who approves a configuration change (02-lld §2.6, §3.3), per rule `{change}:{kind}` (`*` for every kind): none < owner < teamAdmin < orgAdmin. A layer below may only raise a rule; a rule for `change:*` also binds every kind of that change. No rule: the workflow's default (owner for a user's object, teamAdmin for a team's, orgAdmin for the org's)."
+    },
+    {
+      "path": "catalog.delegation",
+      "kind": "ceiling",
+      "order": {
+        "kind": "subset"
+      },
+      "exposure": [
+        "org"
+      ],
+      "description": "The control-plane actions an org delegates to the admins (OWNER role) of a team, on that team's own objects (FR-21). Unset: nothing is delegated; the org must name each action."
+    },
+    {
+      "path": "toolDisclosure.modes",
+      "kind": "ceiling",
+      "order": {
+        "kind": "subset"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request"
+      ],
+      "description": "The tool-disclosure modes an agent may pick (C5.01): eager, lazy, filesystem; null is any."
+    },
+    {
+      "path": "toolDisclosure.mode",
+      "kind": "choice",
+      "within": "toolDisclosure.modes",
+      "exposure": [
+        "org",
+        "team",
+        "agent"
+      ],
+      "description": "How the run's tools reach the model (C5.01): eager lists every granted tool, lazy finds the rest through search_tools and call_tool, filesystem describes them in /pipeshub/tools. Unset, each executor keeps its own default."
+    },
+    {
+      "path": "snapshots.ttlDays",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "description": "How long an engine's sandbox snapshot is kept, in days, before the retention sweeper deletes it; no run restores an older one (OWD-12). The release keeps them 7 days; the deployment or the org may keep them shorter."
+    },
+    {
+      "path": "triggers.webhookMaxBytes",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "description": "The largest body a webhook trigger accepts, in bytes (TR-04); a larger one is refused before it is read further. The release accepts 256 KiB; the deployment or the org may accept less."
+    },
+    {
+      "path": "triggers.webhookPerMinute",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "description": "Authenticated deliveries one webhook trigger takes per minute (TR-04); more are refused with a retry time. Coalescing still makes one run per window. The release takes 30; the deployment or the org may take fewer."
+    },
+    {
+      "path": "triggers.notifyChannels",
+      "kind": "ceiling",
+      "order": {
+        "kind": "subset"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "description": "Where a schedule's actor may be told that a run ended (TR-07): in_app, email, slack. Each schedule picks among them; email and Slack carry the schedule, the outcome and a link, never the answer."
+    },
+    {
+      "path": "quotas.activeRunsPerOrg",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "description": "Runs one org may have queued or running at once (C4.10, P1.14); one more is refused with a retry time. The release allows 200; the deployment or the org may allow fewer."
+    },
+    {
+      "path": "quotas.activeRunsPerUser",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "description": "Runs one person may have queued or running at once in an org (C4.10, P1.14). The release allows 10; the deployment or the org may allow fewer."
+    },
+    {
+      "path": "toolResults.maxChars",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request"
+      ],
+      "description": "The most characters of one tool result the model reads inline (C4.10, TG-11); past it the result is cut head and tail with how to get the rest, or offloaded to a file in the sandbox (/pipeshub/knowledge). null: each executor's own cap (the loop 64,000, an engine 24,000); a set value lowers both."
+    },
+    {
+      "path": "toolResults.formats",
+      "kind": "ceiling",
+      "order": {
+        "kind": "subset"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request"
+      ],
+      "description": "The response_format values an agent may default to (C4.10, WP-12): concise, detailed; null is any."
+    },
+    {
+      "path": "toolResults.format",
+      "kind": "choice",
+      "within": "toolResults.formats",
+      "exposure": [
+        "org",
+        "team",
+        "agent"
+      ],
+      "description": "The response_format a knowledge search uses when the model names none (C4.10, WP-12): concise returns the most relevant passages within a smaller budget, detailed the full budget. Unset: concise."
+    },
+    {
+      "path": "interactions.waitS",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request"
+      ],
+      "description": "How long a run waits for a person's answer to an approval or a question before it ends as expired (C4.10, AP-07). null: the deployment's HARNESS_WAIT_FOR_PERSON_DAYS (7 days)."
+    },
+    {
+      "path": "interactions.conversationGrants",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-and"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request"
+      ],
+      "description": "Whether a person may answer an approval for the rest of the conversation (C4.10, \"approve for session\"), where the rule allows it. false: every call is asked."
+    },
+    {
+      "path": "recovery.autoResume",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-and"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent"
+      ],
+      "description": "Whether a run whose worker was lost is queued again and resumed from its checkpoint (C4.10). false: it ends as interrupted and the person sends the message again. A call whose outcome is unknown is never repeated either way: it is reconciled or asked."
+    },
+    {
+      "path": "sandbox.cpus",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request"
+      ],
+      "description": "CPUs an engine run's sandbox gets (C4.10); null: the engine's template. A set value lowers the template's, never raises it."
+    },
+    {
+      "path": "sandbox.memoryMb",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request"
+      ],
+      "description": "Memory in MB an engine run's sandbox gets (C4.10); null: the template's. A set value lowers it, never raises it."
+    },
+    {
+      "path": "sandbox.pids",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request"
+      ],
+      "description": "Processes an engine run's sandbox may hold (C4.10); null: the template's. A set value lowers it, never raises it."
+    },
+    {
+      "path": "sandbox.scratchMb",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "trigger",
+        "parent",
+        "request"
+      ],
+      "description": "Scratch disk (/tmp) in MB an engine run's sandbox gets (C4.10); null: the template's. The workspace's own quota is the deployment's SANDBOX_WORKSPACE_QUOTA_MB."
+    },
+    {
+      "path": "sandbox.inputMaxMb",
+      "kind": "ceiling",
+      "order": {
+        "kind": "min"
+      },
+      "exposure": [
+        "deployment",
+        "org"
+      ],
+      "description": "The largest file in MiB a run is given as an input (J-26); null: the deployment's HARNESS_INPUT_MAX_MB (100 by default). A set value lowers it, never raises it; an input past it is refused before any of it is read."
+    },
+    {
+      "path": "ui.reasoning",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-and"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent"
+      ],
+      "description": "Whether the conversation shows the model's reasoning where the model exposes it (C4.10). false: reasoning is never sent to the browser."
+    },
+    {
+      "path": "ui.terminal",
+      "kind": "ceiling",
+      "order": {
+        "kind": "bool-and"
+      },
+      "exposure": [
+        "deployment",
+        "org",
+        "team",
+        "agent"
+      ],
+      "description": "Whether the conversation shows the read-only terminal of an engine run's commands and their output (C4.10). false: commands are listed by name, their output is not sent to the browser."
+    },
+    {
+      "path": "operator.SANDBOX_MODE",
+      "kind": "operator",
+      "exposure": [
+        "deployment"
+      ],
+      "flag": "SANDBOX_MODE",
+      "description": "The sandbox backend."
+    },
+    {
+      "path": "operator.EGRESS_CONNECT_TUNNELS",
+      "kind": "operator",
+      "exposure": [
+        "deployment"
+      ],
+      "flag": "EGRESS_CONNECT_TUNNELS",
+      "description": "CONNECT tunnels through the egress proxy."
+    },
+    {
+      "path": "operator.MCP_ALLOW_CUSTOM_STDIO",
+      "kind": "operator",
+      "exposure": [
+        "deployment"
+      ],
+      "flag": "MCP_ALLOW_CUSTOM_STDIO",
+      "description": "Custom stdio MCP servers."
+    },
+    {
+      "path": "operator.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
+      "kind": "operator",
+      "exposure": [
+        "deployment"
+      ],
+      "flag": "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
+      "description": "Message content in traces."
+    },
+    {
+      "path": "operator.HARNESS_PROVIDER_STATE",
+      "kind": "operator",
+      "exposure": [
+        "deployment"
+      ],
+      "flag": "HARNESS_PROVIDER_STATE",
+      "description": "Provider-side conversation state."
+    },
+    {
+      "path": "operator.AGENT_HARNESS_OFFERING",
+      "kind": "operator",
+      "exposure": [
+        "deployment"
+      ],
+      "flag": "AGENT_HARNESS_OFFERING",
+      "description": "Which offering the install is (A1)."
+    }
+  ]
+}

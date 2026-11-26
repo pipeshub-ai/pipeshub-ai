@@ -23,18 +23,21 @@ export default defineConfig({
       ? ['--no-experimental-webstorage']
       : [],
     globals: false,
+    setupFiles: ['./vitest.setup.ts'],
     // Every unit test under app/ and lib/. A hand-kept list let new test
     // files sit unrun: three never ran, and one of them caught a real bug.
     // Playwright (tests/e2e) and Electron (electron/, run by
-    // test:electron) have their own runners.
-    include: ['app/**/*.test.{ts,tsx}', 'lib/**/*.test.{ts,tsx}'],
+    // test:electron) have their own runners; the e2e lanes' own pure guards
+    // (tests/e2e/**/support) are unit tested here, since no browser lane runs
+    // when they refuse.
+    include: ['app/**/*.test.{ts,tsx}', 'lib/**/*.test.{ts,tsx}', 'tests/e2e/**/support/**/*.test.ts'],
     passWithNoTests: false,
     // `include` lists every source file, loaded by a test or not, so the
     // percentage counts untested files instead of hiding them.
     coverage: {
       provider: 'v8',
       include: ['app/**/*.{ts,tsx}', 'lib/**/*.{ts,tsx}'],
-      exclude: ['**/*.test.{ts,tsx}', '**/__tests__/**', '**/*.d.ts'],
+      exclude: ['**/*.test.{ts,tsx}', '**/__tests__/**', '**/*.d.ts', 'lib/contracts/**/generated/**'],
       reporter: ['text-summary', 'json-summary', 'json', 'html'],
       reportsDirectory: 'coverage/unit',
       // Only ever raise the frontend minimum; never lower it to make a PR pass. Add tests instead.

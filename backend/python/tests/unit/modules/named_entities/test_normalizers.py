@@ -21,6 +21,7 @@ from app.modules.named_entities.recognizers.pattern import (
 )
 from app.modules.named_entities.recognizers.values import ValueCandidateRecognizer
 from app.modules.named_entities.text import TextUnit
+from tests.support.cpu_budget import thread_cpu
 
 
 def _ms(year: int, month: int, day: int) -> int:
@@ -583,16 +584,12 @@ def test_ambiguous_suffixes_and_decades_are_not_values():
     ],
 )
 def test_a_long_run_of_digits_or_dots_scans_in_linear_time(text):
-    import time
-
     unit = TextUnit(block_index=0, block_id="b", text=text)
-    start = time.process_time()
-    ValueCandidateRecognizer(frozenset(EntityKind)).recognize([unit])
-    PatternRecognizer(frozenset(EntityKind)).recognize([unit])
-    # The quadratic versions took minutes on these inputs; the linear ones take
-    # about 30ms. CPU time and a wide margin keep xdist workers sharing a CI
-    # runner from failing it on wall-clock stalls.
-    assert time.process_time() - start < 5.0
+    with thread_cpu() as cpu:
+        ValueCandidateRecognizer(frozenset(EntityKind)).recognize([unit])
+        PatternRecognizer(frozenset(EntityKind)).recognize([unit])
+    # The quadratic versions took minutes on these inputs; the linear ones take about 30 ms.
+    assert cpu.seconds < 5.0
 
 
 @pytest.mark.parametrize(
@@ -882,12 +879,10 @@ def test_a_range_reaches_the_indexed_values_whole() -> None:
 
 
 def test_a_date_padded_with_spaces_normalizes_in_linear_time() -> None:
-    import time
-
     # The single-date pattern takes any run of spaces ("Jan     5" in a padded table).
-    start = time.process_time()
-    normalize_temporal(EntityKind.DATE, "Jan" + " " * 16_000 + "5", NormalizationContext(tz="UTC"))
-    assert time.process_time() - start < 1.0
+    with thread_cpu() as cpu:
+        normalize_temporal(EntityKind.DATE, "Jan" + " " * 16_000 + "5", NormalizationContext(tz="UTC"))
+    assert cpu.seconds < 1.0
 
 
 def _dates(text: str) -> list[tuple[str, str | None]]:
@@ -1009,11 +1004,9 @@ def test_a_half_by_name_through_normalize_value_rejects_product_codes() -> None:
 
 
 def test_a_between_span_padded_with_spaces_normalizes_in_linear_time() -> None:
-    import time
-
     surface = "between March and May" + " " * 40_000 + "2026"
-    start = time.process_time()
-    value = normalize_temporal(EntityKind.DATE_RANGE, surface, NormalizationContext(tz="UTC"))
+    with thread_cpu() as cpu:
+        value = normalize_temporal(EntityKind.DATE_RANGE, surface, NormalizationContext(tz="UTC"))
     # The " and " separator retried at every space took about 4 s here; guarded, milliseconds.
-    assert time.process_time() - start < 1.0
+    assert cpu.seconds < 1.0
     assert value is not None and value.timex == "2026-03/2026-05"

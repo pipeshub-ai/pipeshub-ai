@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 from typing import BinaryIO, Dict, List, Optional, Union
 
 from box_sdk_gen import BoxClient  # type: ignore
@@ -131,6 +132,7 @@ class BoxDataSource:
 
         Args:
             file_id (str, required): The ID of the file
+            fields (List[str], optional): The fields to answer instead of Box's standard set
 
         Returns:
             BoxResponse: SDK response
@@ -146,7 +148,11 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_by_id(file_id, fields=fields.split(',') if fields else None))
+            response = await loop.run_in_executor(
+                None,
+                contextvars.copy_context().run,
+                lambda: manager.get_file_by_id(file_id, fields=fields.split(",") if fields else None),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -174,7 +180,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_file_by_id(file_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_file_by_id(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -204,7 +210,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_file_by_id(file_id, name=name, parent=parent))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_file_by_id(file_id, name=name, parent=parent))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -233,7 +239,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.copy_file(file_id, parent))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.copy_file(file_id, parent))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -262,7 +268,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_thumbnail_by_id(file_id, extension=extension))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_file_thumbnail_by_id(file_id, extension=extension))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -301,6 +307,7 @@ class BoxDataSource:
         try:
             response = await loop.run_in_executor(
                 None,
+                contextvars.copy_context().run,
                 lambda: manager.get_download_file_url(
                     file_id=file_id,
                     version=version,
@@ -335,7 +342,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_content(file_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_file_content(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -363,7 +370,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_versions(file_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_file_versions(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -392,7 +399,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.promote_file_version(file_id, file_version_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.promote_file_version(file_id, file_version_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -421,7 +428,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.restore_file_version(file_id, file_version_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.restore_file_version(file_id, file_version_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -450,7 +457,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_file_version(file_id, file_version_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_file_version(file_id, file_version_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -478,7 +485,11 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_folder_by_id(folder_id, fields=fields.split(',') if fields else None))
+            response = await loop.run_in_executor(
+                None,
+                contextvars.copy_context().run,
+                lambda: manager.get_folder_by_id(folder_id, fields=fields.split(",") if fields else None),
+            )
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -506,7 +517,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_folder_by_id(folder_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_folder_by_id(folder_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -536,7 +547,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_folder_by_id(folder_id, name=name, parent=parent))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_folder_by_id(folder_id, name=name, parent=parent))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -565,7 +576,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_folder(name, parent))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_folder(name, parent))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -608,6 +619,7 @@ class BoxDataSource:
             # The As-User header is set at the client level via with_as_user_header()
             response = await loop.run_in_executor(
                 None,
+                contextvars.copy_context().run,
                 lambda: manager.get_folder_items(folder_id, **params)
             )
             return BoxResponse(success=True, data=response)
@@ -638,7 +650,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.copy_folder(folder_id, parent))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.copy_folder(folder_id, parent))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -663,7 +675,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_user_me())
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_user_me())
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -691,7 +703,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_user_by_id(user_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_user_by_id(user_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -720,7 +732,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_user(name, login))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_user(name, login))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -749,7 +761,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_user_by_id(user_id, name=name))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_user_by_id(user_id, name=name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -777,7 +789,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_user_by_id(user_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_user_by_id(user_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -806,7 +818,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_users(limit=limit, offset=offset))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_users(limit=limit, offset=offset))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -835,7 +847,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_groups(limit=limit, offset=offset))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_groups(limit=limit, offset=offset))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -863,7 +875,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_group_by_id(group_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_group_by_id(group_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -891,7 +903,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_group(name))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_group(name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -920,7 +932,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_group_by_id(group_id, name=name))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_group_by_id(group_id, name=name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -948,7 +960,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_group_by_id(group_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_group_by_id(group_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -978,7 +990,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_group_memberships(group_id, limit=limit, offset=offset))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_group_memberships(group_id, limit=limit, offset=offset))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1007,7 +1019,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.add_user_to_group(group_id, user_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.add_user_to_group(group_id, user_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1036,7 +1048,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.remove_user_from_group(group_id, user_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.remove_user_from_group(group_id, user_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1067,7 +1079,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_collaboration(item_id, item_type, accessible_by, role))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_collaboration(item_id, item_type, accessible_by, role))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1095,7 +1107,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_collaboration_by_id(collaboration_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_collaboration_by_id(collaboration_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1124,7 +1136,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_collaboration(collaboration_id, role=role))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_collaboration(collaboration_id, role=role))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1152,7 +1164,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_collaboration(collaboration_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_collaboration(collaboration_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1182,7 +1194,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_collaborations(file_id, limit=limit, marker=marker))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_file_collaborations(file_id, limit=limit, marker=marker))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1212,7 +1224,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_folder_collaborations(folder_id, limit=limit, marker=marker))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_folder_collaborations(folder_id, limit=limit, marker=marker))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1237,7 +1249,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_pending_collaborations())
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_pending_collaborations())
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1281,6 +1293,7 @@ class BoxDataSource:
             # Note: We do NOT pass **kwargs here because the SDK method doesn't accept arbitrary args
             response = await loop.run_in_executor(
                 None,
+                contextvars.copy_context().run,
                 lambda: manager.update_file_by_id(
                     file_id,
                     shared_link=shared_link_payload
@@ -1328,6 +1341,7 @@ class BoxDataSource:
             # 4: Call update_folder_by_id
             response = await loop.run_in_executor(
                 None,
+                contextvars.copy_context().run,
                 lambda: manager.update_folder_by_id(
                     folder_id,
                     shared_link=shared_link_payload
@@ -1360,7 +1374,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_shared_link(shared_link_url))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_shared_link(shared_link_url))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1389,7 +1403,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.remove_shared_link(item_id, item_type))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.remove_shared_link(item_id, item_type))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1418,7 +1432,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_comment(item_id, message))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_comment(item_id, message))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1446,7 +1460,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_comment_by_id(comment_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_comment_by_id(comment_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1475,7 +1489,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_comment(comment_id, message))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_comment(comment_id, message))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1503,7 +1517,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_comment(comment_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_comment(comment_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1531,7 +1545,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_comments(file_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_file_comments(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1560,7 +1574,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.reply_to_comment(comment_id, message))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.reply_to_comment(comment_id, message))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1590,7 +1604,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_task(item_id, action, message=message))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_task(item_id, action, message=message))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1618,7 +1632,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_task_by_id(task_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_task_by_id(task_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1647,7 +1661,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_task(task_id, message=message))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_task(task_id, message=message))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1675,7 +1689,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_task(task_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_task(task_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1703,7 +1717,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_tasks(file_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_file_tasks(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1732,7 +1746,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_task_assignment(task_id, assign_to))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_task_assignment(task_id, assign_to))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1760,7 +1774,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_task_assignments(task_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_task_assignments(task_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1791,7 +1805,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_webhook(target_id, target_type, address, triggers))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_webhook(target_id, target_type, address, triggers))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1819,7 +1833,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_webhook_by_id(webhook_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_webhook_by_id(webhook_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1844,7 +1858,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_webhooks())
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_webhooks())
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1873,7 +1887,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_webhook(webhook_id, address=address))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_webhook(webhook_id, address=address))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1901,7 +1915,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_webhook(webhook_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_webhook(webhook_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1931,7 +1945,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_web_link(url, parent, name=name))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_web_link(url, parent, name=name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1959,7 +1973,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_web_link_by_id(web_link_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_web_link_by_id(web_link_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -1988,7 +2002,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_web_link(web_link_id, name=name))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_web_link(web_link_id, name=name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2016,7 +2030,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_web_link(web_link_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_web_link(web_link_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2046,7 +2060,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_retention_policy(policy_name, policy_type, retention_length))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_retention_policy(policy_name, policy_type, retention_length))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2071,7 +2085,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_retention_policies())
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_retention_policies())
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2099,7 +2113,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_retention_policy_by_id(policy_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_retention_policy_by_id(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2128,7 +2142,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_retention_policy(policy_id, policy_name=policy_name))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_retention_policy(policy_id, policy_name=policy_name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2156,7 +2170,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_retention_policy(policy_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_retention_policy(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2185,7 +2199,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_retention_policy_assignment(policy_id, assign_to))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_retention_policy_assignment(policy_id, assign_to))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2213,7 +2227,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_retention_policy_assignments(policy_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_retention_policy_assignments(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2242,7 +2256,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_legal_hold_policy(policy_name, description=description))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_legal_hold_policy(policy_name, description=description))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2267,7 +2281,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_legal_hold_policies())
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_legal_hold_policies())
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2295,7 +2309,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_legal_hold_policy_by_id(policy_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_legal_hold_policy_by_id(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2324,7 +2338,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_legal_hold_policy(policy_id, policy_name=policy_name))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_legal_hold_policy(policy_id, policy_name=policy_name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2352,7 +2366,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_legal_hold_policy(policy_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_legal_hold_policy(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2381,7 +2395,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_legal_hold_policy_assignment(policy_id, assign_to))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_legal_hold_policy_assignment(policy_id, assign_to))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2406,7 +2420,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_classification_template())
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_classification_template())
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2435,7 +2449,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.add_classification_to_file(file_id, classification))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.add_classification_to_file(file_id, classification))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2464,7 +2478,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.add_classification_to_folder(folder_id, classification))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.add_classification_to_folder(folder_id, classification))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2493,7 +2507,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_classification_on_file(file_id, classification))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_classification_on_file(file_id, classification))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2521,7 +2535,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.remove_classification_from_file(file_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.remove_classification_from_file(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2546,7 +2560,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_shield_information_barriers())
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_shield_information_barriers())
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2574,7 +2588,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_shield_information_barrier_by_id(barrier_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_shield_information_barrier_by_id(barrier_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2603,7 +2617,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_shield_information_barrier(enterprise, type))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_shield_information_barrier(enterprise, type))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2632,7 +2646,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_shield_information_barrier_status(barrier_id, status))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_shield_information_barrier_status(barrier_id, status))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2661,7 +2675,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_sign_request(source_files, signers))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_sign_request(source_files, signers))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2686,7 +2700,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_sign_requests())
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_sign_requests())
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2714,7 +2728,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_sign_request_by_id(sign_request_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_sign_request_by_id(sign_request_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2742,7 +2756,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.cancel_sign_request(sign_request_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.cancel_sign_request(sign_request_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2770,7 +2784,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.resend_sign_request(sign_request_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.resend_sign_request(sign_request_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2795,7 +2809,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_workflows())
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_workflows())
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2825,7 +2839,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.start_workflow(workflow_id, files, folder))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.start_workflow(workflow_id, files, folder))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2853,7 +2867,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_metadata_templates(scope=scope))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_metadata_templates(scope=scope))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2882,7 +2896,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_metadata_template(scope, template_key))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_metadata_template(scope, template_key))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2913,7 +2927,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_metadata_template(scope, template_key, display_name, fields))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_metadata_template(scope, template_key, display_name, fields))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2943,7 +2957,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_metadata_template(scope, template_key, operations))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_metadata_template(scope, template_key, operations))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -2972,7 +2986,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_metadata_template(scope, template_key))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_metadata_template(scope, template_key))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3003,7 +3017,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_file_metadata(file_id, scope, template_key, metadata))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_file_metadata(file_id, scope, template_key, metadata))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3033,7 +3047,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_file_metadata(file_id, scope, template_key))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_file_metadata(file_id, scope, template_key))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3064,7 +3078,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_file_metadata(file_id, scope, template_key, operations))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_file_metadata(file_id, scope, template_key, operations))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3094,7 +3108,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_file_metadata(file_id, scope, template_key))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_file_metadata(file_id, scope, template_key))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3122,7 +3136,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_all_file_metadata(file_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_all_file_metadata(file_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3153,7 +3167,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_folder_metadata(folder_id, scope, template_key, metadata))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_folder_metadata(folder_id, scope, template_key, metadata))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3183,7 +3197,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_folder_metadata(folder_id, scope, template_key))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_folder_metadata(folder_id, scope, template_key))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3213,7 +3227,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_metadata_cascade_policy(folder_id, scope, template_key))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_metadata_cascade_policy(folder_id, scope, template_key))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3241,7 +3255,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_metadata_cascade_policies(folder_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_metadata_cascade_policies(folder_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3269,7 +3283,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_metadata_cascade_policy(policy_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_metadata_cascade_policy(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3297,7 +3311,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_metadata_cascade_policy(policy_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_metadata_cascade_policy(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3325,7 +3339,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.force_apply_metadata_cascade_policy(policy_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.force_apply_metadata_cascade_policy(policy_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3366,6 +3380,7 @@ class BoxDataSource:
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
                 None,
+                contextvars.copy_context().run,
                 lambda: manager.get_events(
                     stream_type=stream_type,
                     stream_position=stream_position,
@@ -3403,7 +3418,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_events_with_long_polling(stream_type=stream_type, stream_position=stream_position))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_events_with_long_polling(stream_type=stream_type, stream_position=stream_position))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3433,7 +3448,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_enterprise_events(stream_type=stream_type, created_after=created_after, created_before=created_before))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_enterprise_events(stream_type=stream_type, created_after=created_after, created_before=created_before))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3458,7 +3473,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_collections())
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_collections())
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3486,7 +3501,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_collection_items(collection_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_collection_items(collection_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3516,7 +3531,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.add_to_collection(collection_id, item_id, item_type))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.add_to_collection(collection_id, item_id, item_type))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3546,7 +3561,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.remove_from_collection(collection_id, item_id, item_type))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.remove_from_collection(collection_id, item_id, item_type))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3571,7 +3586,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_terms_of_service())
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_terms_of_service())
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3599,7 +3614,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_terms_of_service_by_id(tos_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_terms_of_service_by_id(tos_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3629,7 +3644,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_terms_of_service_user_status(tos_id, user_id, is_accepted))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_terms_of_service_user_status(tos_id, user_id, is_accepted))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3657,7 +3672,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_terms_of_service_user_statuses(tos_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_terms_of_service_user_statuses(tos_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3686,7 +3701,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.update_terms_of_service_user_status(tos_user_status_id, is_accepted))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.update_terms_of_service_user_status(tos_user_status_id, is_accepted))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3711,7 +3726,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_collaboration_allowlist_entries())
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_collaboration_allowlist_entries())
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3740,7 +3755,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_collaboration_allowlist_entry(domain, direction))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_collaboration_allowlist_entry(domain, direction))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3768,7 +3783,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.get_collaboration_allowlist_entry(entry_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.get_collaboration_allowlist_entry(entry_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3796,7 +3811,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.delete_collaboration_allowlist_entry(entry_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.delete_collaboration_allowlist_entry(entry_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3837,7 +3852,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.search_for_content(query, limit=limit, offset=offset, scope=scope, file_extensions=file_extensions, created_at_range=created_at_range, updated_at_range=updated_at_range, size_range=size_range, owner_user_ids=owner_user_ids, ancestor_folder_ids=ancestor_folder_ids, content_types=content_types, type=type, trash_content=trash_content, mdfilters=mdfilters))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.search_for_content(query, limit=limit, offset=offset, scope=scope, file_extensions=file_extensions, created_at_range=created_at_range, updated_at_range=updated_at_range, size_range=size_range, owner_user_ids=owner_user_ids, ancestor_folder_ids=ancestor_folder_ids, content_types=content_types, type=type, trash_content=trash_content, mdfilters=mdfilters))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3866,7 +3881,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.upload_file(attributes, file))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.upload_file(attributes, file))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3895,7 +3910,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.upload_file_version(file_id, file))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.upload_file_version(file_id, file))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3925,7 +3940,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.preflight_file_upload_check(name, size, parent))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.preflight_file_upload_check(name, size, parent))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3955,7 +3970,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.create_upload_session(folder_id, file_size, file_name))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.create_upload_session(folder_id, file_size, file_name))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -3984,7 +3999,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.upload_part(upload_session_id, part_data))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.upload_part(upload_session_id, part_data))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -4013,7 +4028,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.commit_upload_session(upload_session_id, parts))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.commit_upload_session(upload_session_id, parts))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -4041,7 +4056,7 @@ class BoxDataSource:
             if kwargs:
                 # Handle additional parameters from kwargs
                 pass
-            response = await loop.run_in_executor(None, lambda: manager.abort_upload_session(upload_session_id))
+            response = await loop.run_in_executor(None, contextvars.copy_context().run, lambda: manager.abort_upload_session(upload_session_id))
             return BoxResponse(success=True, data=response)
         except Exception as e:
             return BoxResponse(success=False, error=_error_text(e))
@@ -4088,7 +4103,8 @@ class BoxDataSource:
         try:
             client = await self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.folders.get_folder_by_id("0")
+                None,
+                contextvars.copy_context().run, lambda: client.folders.get_folder_by_id("0")
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
@@ -4099,7 +4115,8 @@ class BoxDataSource:
         try:
             client = await self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.folders.get_folder_by_id(folder_id)
+                None,
+                contextvars.copy_context().run, lambda: client.folders.get_folder_by_id(folder_id)
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
@@ -4110,7 +4127,8 @@ class BoxDataSource:
         try:
             client = await self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.files.get_file_by_id(file_id)
+                None,
+                contextvars.copy_context().run, lambda: client.files.get_file_by_id(file_id)
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
@@ -4121,7 +4139,8 @@ class BoxDataSource:
         try:
             client = await self._get_client()
             response = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.users.get_user_me()
+                None,
+                contextvars.copy_context().run, lambda: client.users.get_user_me()
             )
             return BoxResponse(success=True, data=response)
         except Exception as e:
@@ -4133,7 +4152,8 @@ class BoxDataSource:
         try:
             client = await self._get_client()
             user = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: client.users.get_user_me()
+                None,
+                contextvars.copy_context().run, lambda: client.users.get_user_me()
             )
             return BoxResponse(success=True, data={"enterprise": getattr(user, 'enterprise', None)})
         except Exception as e:

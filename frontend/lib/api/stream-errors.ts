@@ -28,11 +28,35 @@ type StreamErrorMessages = typeof STREAM_ERROR_MESSAGES | typeof CHAT_STREAM_ERR
 /** An error whose message was written for the user, so it can be shown as-is. */
 export class StreamError extends Error {
   readonly status?: number;
+  /** The server's machine code for a refused request (`error.code`), when it sent one. */
+  readonly code?: string;
+  /** Which rule refused it, when the code covers several (`error.reasonCode`, e.g. `active_runs_user`). */
+  readonly reasonCode?: string;
 
-  constructor(message: string, status?: number) {
+  constructor(message: string, status?: number, code?: string, reasonCode?: string) {
     super(message);
     this.name = 'StreamError';
     this.status = status;
+    if (code !== undefined) this.code = code;
+    if (reasonCode !== undefined) this.reasonCode = reasonCode;
+  }
+}
+
+function errorCode(body: unknown): string | undefined {
+  const code = (body as { error?: { code?: unknown } } | null)?.error?.code;
+  return typeof code === 'string' && code.length > 0 ? code : undefined;
+}
+
+function reasonCodeOf(body: unknown): string | undefined {
+  const reason = (body as { error?: { reasonCode?: unknown } } | null)?.error?.reasonCode;
+  return typeof reason === 'string' && reason.length > 0 ? reason : undefined;
+}
+
+/** The server stopped sending bytes, heartbeats included, for longer than the caller allows. */
+export class StreamIdleError extends StreamError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StreamIdleError';
   }
 }
 
@@ -72,16 +96,17 @@ export async function streamHttpError(
     // Not JSON (a proxy's HTML page, an empty body): fall back on the status.
   }
   const { status } = response;
-  if (status === 401) return new StreamError(messages.sessionExpired, status);
+  const code = errorCode(body);
+  if (status === 401) return new StreamError(messages.sessionExpired, status, code);
   if (status === 429 || status === 503 || status === 504) {
-    return new StreamError(busyStreamMessage(retryAfterSeconds(response)), status);
+    return new StreamError(busyStreamMessage(retryAfterSeconds(response)), status, code, reasonCodeOf(body));
   }
   if (status >= 400 && status < 500) {
     const serverMessage = readableServerMessage(body);
-    if (serverMessage) return new StreamError(serverMessage, status);
-    if (status === 403) return new StreamError(messages.forbidden, status);
+    if (serverMessage) return new StreamError(serverMessage, status, code);
+    if (status === 403) return new StreamError(messages.forbidden, status, code);
   }
-  return new StreamError(messages.unavailable, status);
+  return new StreamError(messages.unavailable, status, code);
 }
 
 /**

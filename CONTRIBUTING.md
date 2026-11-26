@@ -18,6 +18,7 @@ Questions: [Discord](https://discord.com/invite/K5RskzJBm2), [GitHub Discussions
 - [New connectors](#new-connectors)
 - [Setting Up the Development Environment](#setting-up-the-development-environment)
 - [Project Architecture](#project-architecture)
+- [Extension points](#extension-points)
 - [Contribution Workflow](#contribution-workflow)
 - [Contributor License Agreement](#contributor-license-agreement)
 - [Code Style Guidelines](#code-style-guidelines)
@@ -111,7 +112,7 @@ Install Python 3.12, or use WSL2 and follow the Linux steps.
 ### Application tools
 
 1. **Docker** — Redis, Qdrant, Neo4j, and MongoDB (the default stores below)
-2. **Node.js 24 LTS** (22 minimum, 22.13 for the frontend) — API in `backend/nodejs/apps`, frontend in `frontend`. There is no root `package.json`.
+2. **Node.js 24 LTS** (22 minimum, 22.13 for the frontend; `.nvmrc` names the minimum, `nvm use`) — API in `backend/nodejs/apps`, frontend in `frontend`. There is no root `package.json`.
 3. **Python 3.12** — FastAPI services in `backend/python`
 
 ### Environment files
@@ -132,13 +133,13 @@ Start Redis, Qdrant, Neo4j, and MongoDB. Passwords and keys must match the `.env
 **Redis** (config KV and Redis Streams as the event bus):
 
 ```bash
-docker run -d --name redis --restart always -p 6379:6379 redis:7.4-bookworm
+docker run -d --name redis --restart always -p 6379:6379 redis:7.4.12-bookworm
 ```
 
 **Qdrant** (vectors). The API key must match `QDRANT_API_KEY` in `.env`:
 
 ```bash
-docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.15
+docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.15.5
 ```
 
 **Neo4j** (graph). The password must match `NEO4J_PASSWORD` in `.env`. Neo4j Desktop is fine instead of the container; Bolt stays on `localhost:7687`.
@@ -171,7 +172,7 @@ If you switch graph or KV backend on existing data, reset `dataStoreType` in the
 
 ```bash
 cd backend/nodejs/apps
-npm install
+npm ci
 npm run dev
 ```
 
@@ -182,10 +183,11 @@ Create the virtualenv once. Then start each process in its own terminal, with th
 ```bash
 cd backend/python
 python3.12 -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install uv
-uv pip install -e .
-python -c "import nltk; nltk.download('punkt')"
+source venv/bin/activate  # Windows: use WSL; install.sh is a POSIX shell script
+# The hashed lock CI and the images install (pip --require-hashes): dev adds the test and lint tools CI uses,
+# runtime is enough to run services. Changing a dependency: docs/agent-harness-v2/guides/SUPPLY-CHAIN.md.
+PYTHON=venv/bin/python requirements/install.sh dev --project . --editable
+python -c "import nltk; nltk.download('punkt')"   # into ~/nltk_data; the services need it, the tests do not
 
 python -m app.embedding_main
 python -m app.connectors_main
@@ -194,22 +196,11 @@ python -m app.query_main
 python -m app.docling_main
 ```
 
-`pyproject.toml` tells uv to skip `unclecode-litellm`, a fork that crawl4ai pins and that writes into the same `litellm/` directory as the real `litellm`. Run the install with `uv` from `backend/python`; plain `pip install -e .` ignores that setting. If you used plain pip, or installed with uv before this exclusion and the fork is still there (`uv pip install` does not remove packages it no longer needs), remove the fork and reinstall the litellm version the resolver already chose. Removing the fork deletes files litellm owns too, so read the version first:
+`pyproject.toml` excludes `unclecode-litellm`, a fork that crawl4ai pins and that writes into the same `litellm/` directory as the real `litellm`, so the locks never hold it. A venv installed before the exclusion may still carry it. Removing the fork deletes files litellm owns too, so remove both and install the lock again, which puts the locked litellm back whole:
 
 ```bash
-v=$(python -c "import importlib.metadata as m; print(m.version('litellm'))") && [ -n "$v" ] \
-  && pip uninstall -y unclecode-litellm \
-  && pip install --force-reinstall --no-deps "litellm==$v"
-```
-
-On Windows PowerShell:
-
-```powershell
-$v = python -c "import importlib.metadata as m; print(m.version('litellm'))"
-if ($LASTEXITCODE -eq 0 -and $v) {
-    pip uninstall -y unclecode-litellm
-    if ($LASTEXITCODE -eq 0) { pip install --force-reinstall --no-deps "litellm==$v" }
-}
+venv/bin/python -m pip uninstall -y unclecode-litellm litellm \
+  && PYTHON=venv/bin/python requirements/install.sh dev --project . --editable
 ```
 
 `tests/unit/test_single_litellm_owner.py` fails while two packages own `litellm/`.
@@ -223,7 +214,7 @@ Next.js uses port 3000 if `PORT` is unset, which collides with the API.
 ```bash
 cd frontend
 cp env.template .env
-npm install
+npm ci
 PORT=3001 npm run dev
 ```
 
@@ -236,6 +227,45 @@ Open `http://localhost:3001`. On Windows PowerShell, use `Copy-Item` instead of 
 ```
 
 This pings the API (3000), the UI (3001), and the Python services. Parsing and extraction are checked only if `USE_PARSING_SERVICE=true` in the shell (`export USE_PARSING_SERVICE=true` before the script).
+
+### Agent harness on a laptop (dev-harness)
+
+To work on the agent harness (durable runs, the gateways, the sandbox broker and egress proxy) you need the whole
+stack, but not real model keys. One command brings up a stack from this checkout with a scripted model:
+
+```bash
+bash deployment/e2e/run.sh dev-up
+```
+
+It runs the `dev-harness` stack profile (`deployment/e2e/docker-compose.dev-harness.yml` on top of
+`deployment/e2e/docker-compose.e2e.yml`):
+
+- every PipesHub process from this checkout, with Node and the UI built from it (nothing to rebuild an image for);
+- its own MongoDB replica set and Redis, Neo4j and Qdrant, all removed again by `run.sh down`;
+- the scripted model (`deployment/e2e/fake_llm/server.py`) behind the real model gateway, so no turn calls a paid
+  model; it answers the directives in a message, for example `say hello`
+  (`backend/python/harness_core/testing/engines/script.py`);
+- a scripted SaaS with an MCP server and a Jira API (`deployment/e2e/fake_saas/server.py`) in place of real
+  connectors;
+- the durable worker for chat-loop runs; coding engines are off unless you run it with `E2E_ENGINE_RUNS=true`, and
+  then run on hardened runc through `PIPESHUB_ENGINES_WITHOUT_GVISOR`, the development override, because a laptop
+  has no gVisor ([GVISOR.md](./deployment/docker-compose/GVISOR.md));
+- a seeded org, admin and agent, and one scripted turn checked before it says it is ready
+  (`deployment/e2e/dev_smoke.py`).
+
+It needs Docker with Compose v2, Node 22 (`E2E_NODE_HOME`, default `~/.local/node/current`), the Python venv from the
+steps above (`E2E_SITE_PACKAGES`, default `backend/python/venv/lib/python3.12/site-packages`), and `npm ci` in
+`backend/nodejs/apps` and `frontend`. It pulls the public images it lacks, including the sandbox image
+(`E2E_SANDBOX_IMAGE`, default `pipeshubai/pipeshub-sandbox:latest`). When it is up it prints the URL and the
+admin's email; the password is `E2E_ADMIN_PASSWORD` in the run's `stack.env`.
+
+```bash
+bash deployment/e2e/run.sh dev-smoke <run>   # the scripted turn again
+bash deployment/e2e/run.sh down <run>        # remove the stack and its data
+```
+
+Each of the stack's networks gets a /26 of `10.216.0.0/16` that no network on your machine holds, chosen when the
+stack is created; nothing is taken from Docker's default address pools.
 
 ## Project Architecture
 
@@ -254,6 +284,53 @@ Three application layers, plus stores:
 **Stores (defaults in `backend/env.template`):** Redis (config KV and Redis Streams as the event bus), Qdrant (vectors), Neo4j (graph), MongoDB (sessions and metadata). ArangoDB can replace Neo4j. Kafka can replace Redis Streams on a larger deployment. etcd can replace Redis as the KV store.
 
 In Docker (`./install.sh --build`), Node serves the API and the built UI together on port **3000**.
+
+## Extension points
+
+Other editions are built on this repository. They plug in only through the files below, each of which holds a
+working default here. Keep that default working, and do not add edition-specific logic anywhere else. The
+signatures are a public API: change one only in a pull request that updates the default and its tests with it.
+
+| Tier | File | What it holds | Default here |
+| --- | --- | --- | --- |
+| Python | `backend/python/app/edition.py` | Import-free constants | This build's values |
+| Python | `backend/python/app/edition_config.py` | Optional routers and resolvers; a service mounts each one only when it is set | `None` |
+| Python | `backend/python/app/edition_services.py` | Service hooks and classes. `harness_edition()` returns the agent harness's ports (`harness_core.edition.HarnessEdition`): a feature that can be replaced defines a port and a default, and reads it with `harness_edition().port(Port, DEFAULT)`; a feature this build does not have reads its port with `harness_edition().supplied(Port)` (`None`: off). Ports: `WriteIdentityPort` (who an external write is from), `OrgReferencesProvider` (an attempt's environment snapshots and org caches, and the worker's background job). Agent turns: `register_extra_agent_hooks` (hooks on both loops, after the completion gate), `extend_tool_grant` (tools a turn is granted after the session's grant), `split_record_continuation` (how one fetch continuing several records is read) | No-op hooks; no harness port, so every read answers its default (every write as the user with the AI disclosure; no snapshot, no org cache); the grant unchanged; a multi-record continuation refused |
+| Python | `backend/python/app/edition_containers.py` | Dependency-injection containers | This build's containers |
+| Node | `backend/nodejs/apps/src/config.ts` | `editionBoot` (start-up and shutdown hooks). `harnessEdition`: harness binders (run before the built-in ones, so what they bind is what the harness keeps), admin and internal route registrars (added after the built-in routes; each checks its own caller), routers mounted on the app at their own prefix under `/api/`, policy section rules (`CONTROL_PLANE_POLICY_SECTION_RULES`; each feature binds its own list, and a section outside the layer's own members is refused without one), index migrations (run after the built-in ones; an id or an index that repeats one is refused at boot), where audit anchors are written, background workers started and stopped with the harness, erasers a deleted org's erasure runs after the built-in ones, and the steps of a stored org erasure job (`orgErasure`). `orgLifecycleHook` (how an org is deleted, and how sign-in treats an org that is not live) and `scopedTokenGuard` (a sign-in good for its own routes only, which every other route refuses), installed at boot (`src/libs/org-lifecycle`) | `noopEditionBoot`, `noopHarnessEdition` (add nothing; an org job waits unchanged); `orgLifecycleHook` `null` (an org is deleted at once), `scopedTokenGuard` claims no token |
+| Node | `backend/nodejs/apps/src/edition.ts` | Import-free constants. `EDITION_DOCSTORE_COVERAGE`: how a move of the document store to PostgreSQL treats the collections an edition writes (ADR-DOCMIG-01), in one place: it classifies them, `held` (preflight refuses the move while one holds documents; `tables` names where its data lives, none when kept in MongoDB only), `ignored` (not copied, with the reason) and `heldFields` (fields an edition adds to a collection the copy maps, held the same way), and it maps them, `carriers` (each a docstore-migrate `Carrier`, `carry/types.ts`, typed `unknown` here so the file stays import-free and checked for its shape when the migrator loads): a carrier copies, follows, verifies, rolls back and resets its collections and fields as the built-in store groups are, may carry only held collections and held fields (this build's or the edition's), none twice, and what it carries is no longer held; the shared coverage test holds both to the same rules as this build's | This build's values; no edition collections and no carrier, so the edition-written collections this build lists stay held |
+| Node | `backend/nodejs/apps/src/integrations/slack-bot/src/edition.ts` | The Slack bot's edition, installed with `installSlackBotEdition` by an edition's own bot entry before it imports the bot (`./index`): `orgOfBot` (the organisation a bot configuration serves: whose links name the Slack person, the org on the bot's token, the org its thread map is kept as; a throw means the bot answers nobody) and `threadRepository` (the thread map, which reads the org from the context `asBotOrg` binds) | The install's only organisation; the configured document store's thread map |
+| Node | `backend/nodejs/apps/src/libs/services/telemetry/modules/auth-metrics.ts` | `addAuthAttemptMethods`: sign-in methods an edition offers, added to `pipeshub_auth_attempts_total`'s `method` label set when its module loads (lowercase names, checked once), so its sign-ins are counted with `recordAuthAttempt` like this build's | This build's methods only; any other name reads `other` |
+| Python | `backend/python/app/services/graph_db/` providers | `_asking_user` and `_user_anchor` (Neo4j), `_user_anchor_filter` (ArangoDB): how the virtual-record-id reads resolve and match the asking user; a subclass may narrow them and bind what it adds | Match by user id |
+| Node | `backend/nodejs/apps/src/modules/storage/` | `StorageContainer.createStorageController` (a subclass returns its own `StorageController`); in that controller, `readConfiguredStorageType` (every storage-type read), `getStorageConfig`, `uploadSizeLimitBytes` and `watchStorageType`. Export the subclassed container through `src/config.ts` | The configured key-value store's storage type and the platform upload limit |
+| Frontend | `frontend/config.ts` | Component and hook slots, and the stores (`useAuthStore`, `useOrgStore`). `workspaceNavExtras`: workspace sidebar entries, each placed in a section (after a named entry, or at the end); an entry for a built-in route replaces that entry. Shared code takes every name it re-exports from `@/config`, never from the module behind it (`frontend/lib/__tests__/config-seam-imports.test.ts`) | Slots render nothing; no extra entries |
+| Frontend | `frontend/config-pages.ts` | Pages | This build's pages |
+
+Contracts follow one directory convention instead of a file. An edition's repository may hold
+`contracts/harness/ee/`: schemas in a directory per contract group (`core`, `ext/pipeshub`, `control-plane`), and
+`flags.json` or `config-surface.json` that add entries to the documents of the same name (they may add, never
+redefine). When it is present, `contracts/harness/generate.sh` generates its schemas into an `ee` package or
+directory beneath each group's own output, and the C-5, C-16 and C4.10 tests read it too. This repository has no
+such directory, so it generates nothing for it; `FLAGS.md` renders this repository's matrix only.
+
+Tests that scan the source tree for the sites they accept (the org-context, structural-writer and permission-writer
+ratchets, the model funnel, the record-access fake, the usage convention, the durable-parity inventory, the
+open-file limits' stateless images and the Compose variants' flag values) read an overlay the same way: `backend/python/tests/ee/ratchets/<name>.json` adds entries to the list a test keeps, never redefines one
+(`backend/python/tests/edition_overlay.py`). On the Node side the Mongo seam and org-context ratchets add the baselines found under the directories in `SEAM_BASELINE_DIRS`.
+
+Docs cover this repository's code only, and only as reference: design, decisions, operation and testing. Project
+tracking (status boards, work logs, evidence captures, work-package records, research and review notes) is kept
+outside this repository, as is an edition's own design notes; nothing adds marked rows here for a test to skip.
+
+`scripts/edition_guard.py` keeps the repository neutral (CI: `.github/workflows/edition-guard.yml`). It fails a
+change that adds a file under an `ee/` directory or an edition-only build file, adds an import of an `ee` package
+or directory, adds a file to a directory that accepts fixes only, adds a proprietary licence marker, or adds a
+project-tracking document under `docs/agent-harness-v2/`. Run it
+before you push; `scripts/verify.sh` runs it on what you have not committed yet:
+
+```bash
+python3 -I scripts/edition_guard.py --base origin/main
+```
 
 ## Contribution Workflow
 
@@ -359,8 +436,9 @@ npm run test
 # Run tests with detailed coverage report (text + lcov + html)
 npm run test:coverage
 
-# Run tests with coverage thresholds (90% lines/functions/statements, 80% branches)
-npm run test:coverage-check
+# The coverage gate CI enforces: unit tests plus the MongoDB and Redis itests, one threshold
+# check on both (needs MONGO_IT_URI and REDIS_IT_URL; see the tests README)
+npm run test:coverage-gate
 
 # Run a specific test file
 npx mocha --require ts-node/register tests/libs/utils/password.utils.test.ts
@@ -421,7 +499,7 @@ The frontend (`frontend/`) uses [Playwright](https://playwright.dev/) for end-to
 1. Install dependencies (includes `@playwright/test`):
    ```bash
    cd frontend
-   npm install
+   npm ci
    ```
 
 2. Install Playwright browsers:

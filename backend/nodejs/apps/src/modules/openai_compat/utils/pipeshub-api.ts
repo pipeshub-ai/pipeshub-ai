@@ -3,6 +3,8 @@
  * vector store and project endpoints keep every permission and scope check of
  * the knowledge base, retrieval and project routes they map onto.
  */
+import { upstreamFetch } from '../../../libs/http/upstream-call';
+import { injectRequestHeaders } from '../../../libs/context/request-context';
 import {
   ChatRunError,
   codeForStatus,
@@ -44,7 +46,12 @@ export async function callApi(
     headers['Content-Type'] = 'application/json';
     body = JSON.stringify(request.json);
   }
-  return fetch(url, { method: request.method ?? 'GET', headers, body });
+  // Through upstreamFetch: the inner request carries this request's id, and the call gets its line.
+  return upstreamFetch(url.href, {
+    method: request.method ?? 'GET',
+    headers: injectRequestHeaders(headers),
+    body,
+  });
 }
 
 /** Throws the upstream error, keeping its status and message, as an OpenAI-shaped one. */
@@ -65,6 +72,7 @@ export async function failUnlessOk(
     ),
     response.status,
     response.status === 404 ? notFoundCode : codeForStatus(response.status),
+    true,
   );
 }
 

@@ -101,7 +101,7 @@ class TestMSGraphClientWithCertificatePath:
 
 
 class TestMSGraphClientWithClientIdSecret:
-    @patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter")
+    @patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter")
     @patch("app.sources.client.microsoft.microsoft.AzureIdentityAuthenticationProvider")
     @patch("app.sources.client.microsoft.microsoft.ClientSecretCredential")
     @patch("app.sources.client.microsoft.microsoft.GraphServiceClient")
@@ -115,7 +115,7 @@ class TestMSGraphClientWithClientIdSecret:
         with pytest.raises(ValueError, match="Invalid mode"):
             MSGraphClientWithClientIdSecret("cid", "csec", "tid", mode=GraphMode.DELEGATED)
 
-    @patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter")
+    @patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter")
     @patch("app.sources.client.microsoft.microsoft.AzureIdentityAuthenticationProvider")
     @patch("app.sources.client.microsoft.microsoft.ClientSecretCredential")
     @patch("app.sources.client.microsoft.microsoft.GraphServiceClient")
@@ -128,7 +128,7 @@ class TestMSGraphClientWithClientIdSecret:
         mock_credential.close.assert_called_once()
         assert client.credential is None
 
-    @patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter")
+    @patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter")
     @patch("app.sources.client.microsoft.microsoft.AzureIdentityAuthenticationProvider")
     @patch("app.sources.client.microsoft.microsoft.ClientSecretCredential")
     @patch("app.sources.client.microsoft.microsoft.GraphServiceClient")
@@ -158,7 +158,7 @@ class TestMSGraphUsernamePasswordConfig:
 
 
 class TestMSGraphClientWithClientIdSecretConfig:
-    @patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter")
+    @patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter")
     @patch("app.sources.client.microsoft.microsoft.AzureIdentityAuthenticationProvider")
     @patch("app.sources.client.microsoft.microsoft.ClientSecretCredential")
     @patch("app.sources.client.microsoft.microsoft.GraphServiceClient")
@@ -214,7 +214,7 @@ class TestBuildWithConfig:
         mc = MSGraphClient.build_with_config(cfg)
         assert isinstance(mc, MSGraphClient)
 
-    @patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter")
+    @patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter")
     @patch("app.sources.client.microsoft.microsoft.AzureIdentityAuthenticationProvider")
     @patch("app.sources.client.microsoft.microsoft.ClientSecretCredential")
     @patch("app.sources.client.microsoft.microsoft.GraphServiceClient")
@@ -278,7 +278,7 @@ class TestBuildFromServices:
                 },
             }
         )
-        with patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter"), \
+        with patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter"), \
              patch("app.sources.client.microsoft.microsoft.AzureIdentityAuthenticationProvider"), \
              patch("app.sources.client.microsoft.microsoft.ClientSecretCredential"), \
              patch("app.sources.client.microsoft.microsoft.GraphServiceClient"):
@@ -445,7 +445,7 @@ class TestBuildFromToolset:
             "expires_in": 3600,
         }
 
-        with patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter"), \
+        with patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter"), \
              patch("app.sources.client.microsoft.microsoft.GraphServiceClient") as mock_gsc, \
              patch(
                  "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
@@ -490,7 +490,7 @@ class TestBuildFromToolsetTokenRefresh:
             "access_token": "me-token-to-replace",
         }
 
-        with patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter"), \
+        with patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter"), \
              patch("app.sources.client.microsoft.microsoft.GraphServiceClient") as mock_gsc, \
              patch(
                  "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
@@ -528,7 +528,7 @@ class TestBuildFromToolsetTokenRefresh:
             "error_description": "Token expired",
         }
 
-        with patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter"), \
+        with patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter"), \
              patch("app.sources.client.microsoft.microsoft.GraphServiceClient") as mock_gsc, \
              patch(
                  "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
@@ -563,7 +563,7 @@ class TestBuildFromToolsetTokenRefresh:
         mock_msal.ConfidentialClientApplication.return_value = mock_msal_app
         mock_msal_app.acquire_token_by_refresh_token.side_effect = Exception("network error")
 
-        with patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter"), \
+        with patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter"), \
              patch("app.sources.client.microsoft.microsoft.GraphServiceClient") as mock_gsc, \
              patch(
                  "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
@@ -596,7 +596,7 @@ class TestBuildFromToolsetTokenRefresh:
         mock_msal = MagicMock()
         mock_msal.ConfidentialClientApplication.return_value = MagicMock()
 
-        with patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter"), \
+        with patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter"), \
              patch("app.sources.client.microsoft.microsoft.GraphServiceClient") as mock_gsc, \
              patch(
                  "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
@@ -633,7 +633,7 @@ class TestBuildFromToolsetTokenRefresh:
             "expires_in": 3600,
         }
 
-        with patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter"), \
+        with patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter"), \
              patch("app.sources.client.microsoft.microsoft.GraphServiceClient") as mock_gsc, \
              patch(
                  "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
@@ -666,7 +666,7 @@ class TestBuildFromToolsetTokenRefresh:
         mock_msal = MagicMock()
         mock_msal.ConfidentialClientApplication.return_value = MagicMock()
 
-        with patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter"), \
+        with patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter"), \
              patch("app.sources.client.microsoft.microsoft.GraphServiceClient") as mock_gsc, \
              patch(
                  "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
@@ -698,7 +698,7 @@ class TestBuildFromToolsetTokenRefresh:
         mock_msal = MagicMock()
         mock_msal.ConfidentialClientApplication.return_value = MagicMock()
 
-        with patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter"), \
+        with patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter"), \
              patch("app.sources.client.microsoft.microsoft.GraphServiceClient") as mock_gsc, \
              patch(
                  "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
@@ -731,7 +731,7 @@ class TestBuildFromToolsetTokenRefresh:
         mock_msal = MagicMock()
         mock_msal.ConfidentialClientApplication.return_value = MagicMock()
 
-        with patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter"), \
+        with patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter"), \
              patch("app.sources.client.microsoft.microsoft.GraphServiceClient") as mock_gsc, \
              patch(
                  "app.api.routes.toolsets.get_oauth_credentials_for_toolset",
@@ -785,7 +785,7 @@ class TestBuildFromToolsetTokenRefresh:
 
 
 class TestMSGraphClientWithClientIdSecretClose:
-    @patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter")
+    @patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter")
     @patch("app.sources.client.microsoft.microsoft.AzureIdentityAuthenticationProvider")
     @patch("app.sources.client.microsoft.microsoft.ClientSecretCredential")
     @patch("app.sources.client.microsoft.microsoft.GraphServiceClient")
@@ -819,7 +819,7 @@ class TestBuildFromServicesAdditional:
                 },
             }
         )
-        with patch("app.sources.client.microsoft.microsoft.HttpxRequestAdapter"), \
+        with patch("app.sources.client.microsoft.microsoft.send_safe_graph_adapter"), \
              patch("app.sources.client.microsoft.microsoft.AzureIdentityAuthenticationProvider"), \
              patch("app.sources.client.microsoft.microsoft.ClientSecretCredential"), \
              patch("app.sources.client.microsoft.microsoft.GraphServiceClient"):

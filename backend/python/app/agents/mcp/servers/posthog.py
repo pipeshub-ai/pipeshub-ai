@@ -1,6 +1,12 @@
 """PostHog MCP server template — official remote server (Streamable HTTP), OAuth + DCR."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -30,6 +36,13 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Sign in with your PostHog account.",
         ),
         tags=["analytics", "product"],
+        category=MCPCategory.DATA,
+        capabilities=[
+            "Query product analytics",
+            "Turn feature flags on or off",
+            "Review experiments",
+            "Look into errors",
+        ],
     )
 )
 class PostHogMCPServer:

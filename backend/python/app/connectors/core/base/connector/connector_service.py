@@ -32,6 +32,8 @@ from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole, NotificationOutcome
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.notification.notification_service import NotificationService
+from app.services.rate_budget import AccountBudget, account_budget, family_for_connector
+from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.resilience import ResiliencePolicy
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -241,6 +243,8 @@ class BaseConnector(ABC):
         self._background_tasks: set[asyncio.Task] = set()
         self._resilience: Optional[ResiliencePolicy] = None
         self._resilience_loaded = False
+        self._rate_budget: AccountBudget | None = None
+        self._rate_budget_loaded = False
         self._thread_pool_lease: ThreadPoolLease | None = None
         self.instance_name: Optional[str] = None
 
@@ -263,8 +267,37 @@ class BaseConnector(ABC):
                 name=str(self.connector_name),
                 logger=self.logger,
             )
+            if self._resilience is not None:
+                self._resilience.shared = self.rate_budget
             self._resilience_loaded = True
         return self._resilience
+
+    @property
+    def rate_budget(self) -> AccountBudget | None:
+        """The org's budget for this connector's vendor, which its agent toolsets spend too (G-31); None when the
+        vendor has none. Cached for the same reason as ``resilience``."""
+        # Read with defaults: Slack reads this in its own __init__, which a subclass may run without this one's.
+        if not getattr(self, "_rate_budget_loaded", False):
+            org_id = getattr(getattr(self, "data_entities_processor", None), "org_id", None)
+            self._rate_budget = account_budget(
+                org_id if isinstance(org_id, str) else None,
+                family_for_connector(getattr(self, "connector_name", None)),
+            )
+            self._rate_budget_loaded = True
+        return self._rate_budget
+
+    def pace_http_client(self, http_client: object) -> None:
+        """Put ``resilience`` under an ``HTTPClient`` a builder shared with the agent toolsets made without one,
+        so this sync is paced by the vendor's shared budget (G-31). Before the client's first request."""
+        if not isinstance(http_client, HTTPClient) or self.resilience is None:
+            return
+        own = getattr(http_client, "resilience", None)
+        if own is None:
+            http_client.use_resilience(self.resilience)
+        elif own.shared is None:
+            # The builder gave the client its own policy (Confluence's quota-aware retries, main #4553): keep it,
+            # and let it spend the same shared budget.
+            own.shared = self.resilience.shared
 
     def _thread_lease(self, max_concurrency: int) -> ThreadPoolLease:
         """This connector's capped share of the shared connector thread pool.

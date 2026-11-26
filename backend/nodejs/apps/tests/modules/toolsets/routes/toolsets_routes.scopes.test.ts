@@ -34,6 +34,9 @@ const EXPECTED_ROUTE_SCOPES: Record<string, string> = {
   'POST /instances/:instanceId/reauthenticate': 'toolset:write',
   'GET /instances/:instanceId/oauth/authorize': 'toolset:read',
   'GET /instances/:instanceId/status': 'toolset:read',
+  // The GitHub repository and branch pickers (GIT-FLOW): reads of the instance's connection.
+  'GET /instances/:instanceId/github/repositories': 'toolset:read',
+  'GET /instances/:instanceId/github/branches': 'toolset:read',
   'GET /instances/:instanceId/tool-rules': 'toolset:read',
   'PUT /instances/:instanceId/tool-rules': 'toolset:write',
   'GET /oauth-configs/:toolsetType': 'toolset:read',

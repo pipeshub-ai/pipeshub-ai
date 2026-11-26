@@ -34,7 +34,7 @@ vi.mock('../../components/connector-panel', () => ({
   },
 }));
 vi.mock('../../components/instance-panel', () => ({ InstanceManagementPanel: () => null }));
-vi.mock('@/config', () => ({ PermissionLockIcon: () => null }));
+vi.mock('@/config', () => ({ PermissionLockIcon: () => null, useUserPermission: () => true }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/app/components/ui/ConnectorIcon', () => ({ ConnectorIcon: () => null }));
 vi.mock('@/app/components/ui/lottie-loader', () => ({
@@ -154,7 +154,7 @@ describe('Personal connectors page', () => {
 
     fireEvent.click(toggle);
 
-    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', undefined));
+    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', true, undefined));
     await waitFor(() => expect(toastTitles()).toContain('Connector sync enabled'));
   });
 

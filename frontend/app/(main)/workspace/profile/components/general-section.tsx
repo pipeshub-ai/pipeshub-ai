@@ -6,7 +6,7 @@ import { Flex, Text, TextField, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { AvatarUploadWidget } from '../../components';
 import { SettingsSection } from './settings-section';
-import { SettingsRow } from './settings-row';
+import { SettingsRow, SettingsRowTextField } from './settings-row';
 
 // ========================================
 // Types
@@ -70,7 +70,7 @@ export function GeneralSection({
       {/* Full Name */}
       <SettingsRow label={t('workspace.profile.general.fullName')} description={t('workspace.profile.general.fullNameDescription')}>
         <Flex direction="column" gap="1">
-          <TextField.Root
+          <SettingsRowTextField
             placeholder={t('workspace.profile.general.fullNamePlaceholder')}
             value={fullName}
             onChange={(e) => onFullNameChange(e.target.value)}
@@ -86,7 +86,7 @@ export function GeneralSection({
 
       {/* Designation */}
       <SettingsRow label={t('workspace.profile.general.designation')} description={t('workspace.profile.general.designationDescription')}>
-        <TextField.Root
+        <SettingsRowTextField
           placeholder={t('workspace.profile.general.designationPlaceholder')}
           value={designation}
           onChange={(e) => onDesignationChange(e.target.value)}
@@ -98,13 +98,14 @@ export function GeneralSection({
         label={t('workspace.profile.general.companyEmail')}
         description={t('workspace.profile.general.companyEmailDescription')}
       >
-        <TextField.Root
+        <SettingsRowTextField
           value={emailLoading ? t('common.loading') : email}
           readOnly
-          style={{ color: 'var(--gray-10)' }}
+          style={{ color: 'var(--gray-11)' }}
         >
           <TextField.Slot side="right">
             <IconButton
+              aria-label={t('action.edit')}
               variant="ghost"
               className="touch-hit"
               color="gray"
@@ -112,10 +113,10 @@ export function GeneralSection({
               onClick={onEditEmailClick}
               style={{ cursor: 'pointer' }}
             >
-              <MaterialIcon name="edit" size={14} color="var(--gray-9)" />
+              <MaterialIcon name="edit" size={14} color="var(--gray-11)" />
             </IconButton>
           </TextField.Slot>
-        </TextField.Root>
+        </SettingsRowTextField>
       </SettingsRow>
 
     </SettingsSection>

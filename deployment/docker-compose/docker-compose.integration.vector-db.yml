@@ -7,9 +7,30 @@
 # opensearch-vector-it or redis-vector-it); the tests for the others skip.
 # Ports are deliberately non-standard so this can run beside a dev stack
 # without clashing with it. Images match the ones the product ships.
+
+# Every service that runs an image the base file runs keeps the base file's
+# baseline (ADR-OPS-02): no capability but those its image proves it needs, with
+# the reason beside each, no privilege gain, and memory and process limits.
+# tests/unit/harness/security/test_container_baseline.py checks it.
+x-hardened: &hardened
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+
+# A service whose image writes only to its volumes also gets a read-only root.
+x-read-only-root: &read-only-root
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+
 services:
   qdrant-vector-it:
-    image: qdrant/qdrant:v1.15
+    <<: *hardened
+    image: qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
+    ulimits:
+      nofile:
+        soft: 50000
+        hard: 50000
     ports:
       # The client talks gRPC (prefer_grpc defaults on) and reads its gRPC port
       # as 6334, which is also the port the tests pass it.
@@ -21,9 +42,14 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          pids: 4096
 
   opensearch-vector-it:
-    image: opensearchproject/opensearch:3.6.0
+    image: opensearchproject/opensearch:3.6.0@sha256:b5dd1512af2a99748c942cfbbd7f32162623336b210667d0fc6333c6321f171d
     ports:
       - "9299:9200"
     environment:
@@ -47,11 +73,20 @@ services:
       retries: 40
 
   redis-vector-it:
+    <<: [*hardened, *read-only-root]
+    # The image entrypoint drops to the redis user (SETUID, SETGID) and empties its
+    # bounding set (SETPCAP: Redis 8's entrypoint stops without it); with no volume
+    # an earlier redis wrote, there is nothing to hand over.
+    cap_add: [SETUID, SETGID, SETPCAP]
     # The vector store needs 8.4+ for FT.HYBRID. When the command starts with
     # redis-server, the image's entrypoint loads its bundled modules (search
     # among them) itself; loading search again aborts the server.
     # Exact version: a test pins how this server treats query dialect 1 (deprecated), so a floating tag could break CI by itself.
-    image: redis:8.4.8
+    image: redis:8.4.8@sha256:319f54e668c14f68cee51d1fdf9dba699deecac048fc0e52962433a3ef5562c0
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     ports:
       - "6399:6379"
     command:
@@ -65,3 +100,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          pids: 4096

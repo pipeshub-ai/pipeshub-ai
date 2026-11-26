@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.history.labelled.schema.json",
+  "title": "PipeshubHistoryLabelledEvent",
+  "description": "The confidentiality label of the history a session.imported brought in (UX2, P2.5a), written by Node in the same commit and matched to it by transcriptDigest. Node derives it from what it knows of each imported message: a user's turn names its attachments, an answer a durable run wrote carries the label recorded with it, and any other answer (one legacy wrote) leaves the label incomplete. Without it the import is unknown context. Label evidence (non-critical); folds ignore it.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.history.labelled"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubHistoryLabelledData"
+    }
+  },
+  "$defs": {
+    "PipeshubHistoryLabelledData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transcriptDigest",
+        "label"
+      ],
+      "properties": {
+        "transcriptDigest": {
+          "$ref": "../../../core/common.schema.json#/$defs/Digest",
+          "description": "The session.imported this labels (its transcriptDigest)."
+        },
+        "label": {
+          "$ref": "../turn-label.schema.json"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 8,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.history.labelled",
+      "data": {
+        "transcriptDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "label": {
+          "complete": true,
+          "sources": [
+            {
+              "kind": "attachment",
+              "recordId": "r2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 8,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.history.labelled",
+      "data": {
+        "transcriptDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "label": {
+          "complete": false,
+          "sources": []
+        }
+      }
+    }
+  ]
+}

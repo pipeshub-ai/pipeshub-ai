@@ -400,18 +400,21 @@ describe('project-context', () => {
       }
     })
 
-    it('refuses a token without project:read before checking the project', async () => {
+    it('refuses a token without project:read before checking the project, and says it was a scope denial', async () => {
       const accessStub = sinon.stub(ProjectService, 'assertAccess')
+      const onScopeDenied = sinon.spy()
       try {
         await resolveProjectLink(ORG_ID, USER_ID, { projectId: PROJECT_ID }, {
           ...NO_TEAMS,
           oauthScopes: ['conversation:chat'],
+          onScopeDenied,
         })
         expect.fail('Expected rejection')
       } catch (error) {
         expect(error).to.be.instanceOf(ForbiddenError)
       }
       expect(accessStub.called).to.equal(false)
+      expect(onScopeDenied.calledOnce, 'the audit row is flagged as a scope denial').to.equal(true)
     })
 
     it('accepts a token that carries project:read', async () => {

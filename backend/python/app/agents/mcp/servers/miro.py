@@ -1,6 +1,12 @@
 """Miro MCP server template — official remote server (Streamable HTTP), OAuth + DCR."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -27,6 +33,12 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Sign in with your Miro account.",
         ),
         tags=["miro", "whiteboard", "diagrams", "collaboration", "visual"],
+        category=MCPCategory.DESIGN,
+        capabilities=[
+            "Brainstorm on a whiteboard",
+            "Create mind maps",
+            "Sketch wireframes",
+        ],
     )
 )
 class MiroMCPServer:

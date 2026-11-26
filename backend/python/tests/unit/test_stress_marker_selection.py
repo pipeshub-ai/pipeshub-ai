@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
-from tests.conftest import pytest_collection_modifyitems
+from tests.support.stress_marker import skip_stress_tests
 
 if TYPE_CHECKING:
     import pytest
@@ -32,7 +32,7 @@ def _skipped(config_mark: str, env: dict[str, str], monkeypatch: pytest.MonkeyPa
         monkeypatch.setenv(key, value)
     items = _items()
     config = SimpleNamespace(getoption=lambda name: config_mark)
-    pytest_collection_modifyitems(config, items)  # type: ignore[arg-type]
+    skip_stress_tests(config, items)  # type: ignore[arg-type]
     return [bool(i.markers) for i in items]
 
 

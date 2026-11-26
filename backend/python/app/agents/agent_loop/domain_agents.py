@@ -367,7 +367,10 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
             "fetch that data with the real tools FIRST, then delegate only the "
             "computation/file-generation step to this agent; never delegate data "
             "RETRIEVAL from a connected system to it. Returns the final result "
-            "and paths of files it generated."
+            "and paths of files it generated. A file the user names by a path "
+            "(wiki/plan.md, data/clean.csv) belongs in this chat's workspace at "
+            "that path: say so in the goal (write it under $WORKSPACE_DIR at "
+            "exactly that path); $OUTPUT_DIR only attaches a file to the reply."
         ),
         tool_names=frozenset({
             "run_code", "install_packages", "read_sandbox_file",
@@ -390,9 +393,12 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
             "data. run_code always sets $OUTPUT_DIR — write ONLY the final "
             "deliverable(s) there and they are attached to the response "
             "automatically as downloadable artifacts; never re-run code to "
-            "\"attach\" or \"provide\" a file already written there. Anything "
-            "written outside $OUTPUT_DIR (intermediates, page renders, scratch "
-            "data) stays inside the sandbox and is never shown to the user."
+            "\"attach\" or \"provide\" a file already written there. Notes, "
+            "data and files you or the user will come back to in a later turn go "
+            "under $WORKSPACE_DIR when run_code's description says it is the "
+            "chat's workspace (they are kept there, not attached); a file the user "
+            "names by a workspace path goes at that path there. Anything else "
+            "(intermediates, page renders, scratch data) stays inside the sandbox."
         ),
     ),
     DomainAgentDefinition(

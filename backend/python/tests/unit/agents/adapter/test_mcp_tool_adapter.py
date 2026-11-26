@@ -969,6 +969,17 @@ class TestDisplay:
 
         assert adapter.display_name == "Jira MCP · search"
 
+    def test_display_name_takes_the_servers_title_for_the_tool(self) -> None:
+        # TOOLNAMES: the MCP `title` annotation is the tool's human name; the UI humanizes a bare id itself.
+        adapter = MCPToolAdapter(_server(), _tool_info(annotations={"title": "  Search issues "}), _FakeSessionManager())
+
+        assert adapter.display_name == "Jira MCP · Search issues"
+
+    def test_display_name_ignores_a_blank_or_non_text_title(self) -> None:
+        for title in ("   ", 7, None):
+            adapter = MCPToolAdapter(_server(), _tool_info(annotations={"title": title}), _FakeSessionManager())
+            assert adapter.display_name == "Jira MCP · search"
+
     def test_summarize_args_lists_the_arguments(self) -> None:
         adapter = _make_adapter(_FakeSessionManager())
 

@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Activity panel results</title>
+<style>
+:root {
+  --bg: #fbfbfa; --surface: #ffffff; --surface-2: #f4f5f2; --border: #e0e3dc; --border-strong: #c9cec5; --text: #1d211c;
+  --muted: #646b62; --faint: #8c9389; --accent: #1f8a65; --accent-11: #1a7a5a; --accent-soft: #e3f4ec; --accent-ink: #fff;
+  --warn: #9a5b00; --warn-soft: #fdf1dc; --bad: #b4231f; --bad-soft: #fde8e8; --blue: #1d5fbf; --blue-soft: #e6effc;
+  --focus: #2b6cd8; --hl: #fff4c2; --mono-bg: #f7f8f5; --stderr: #b4231f; --shadow: 0 1px 2px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121412; --surface: #1a1d1a; --surface-2: #222622; --border: #313731; --border-strong: #454c44; --text: #e8ebe6;
+    --muted: #a2aa9f; --faint: #7c8579; --accent: #3fbf93; --accent-11: #5fd1a8; --accent-soft: #163128; --accent-ink: #0b1a14;
+    --warn: #f0b555; --warn-soft: #33290f; --bad: #ff8f8a; --bad-soft: #3a1b1b; --blue: #8ab4ff; --blue-soft: #18263d;
+    --focus: #7aa7ff; --hl: #3b3410; --mono-bg: #161916; --stderr: #ff9a95; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121412; --surface: #1a1d1a; --surface-2: #222622; --border: #313731; --border-strong: #454c44; --text: #e8ebe6;
+  --muted: #a2aa9f; --faint: #7c8579; --accent: #3fbf93; --accent-11: #5fd1a8; --accent-soft: #163128; --accent-ink: #0b1a14;
+  --warn: #f0b555; --warn-soft: #33290f; --bad: #ff8f8a; --bad-soft: #3a1b1b; --blue: #8ab4ff; --blue-soft: #18263d;
+  --focus: #7aa7ff; --hl: #3b3410; --mono-bg: #161916; --stderr: #ff9a95; --shadow: none;
+}
+* { box-sizing: border-box; }
+html, body { background: var(--bg); }
+body { margin: 0; color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: var(--accent-11); }
+button { font: inherit; color: inherit; }
+button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+header.top { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; background: var(--surface); }
+header.top h1 { font-size: 16px; margin: 0; flex: 1 1 240px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tabs button, #theme { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 6px 12px; min-height: 36px; cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 420px; height: calc(100vh - 61px); }
+.chat { overflow: auto; padding: 24px clamp(16px, 4vw, 48px); }
+.chat-inner { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.user { align-self: flex-end; background: var(--surface-2); border-radius: 14px; padding: 8px 14px; max-width: 85%; }
+.steps-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; }
+.steps-bar .va { border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; background: var(--surface); cursor: pointer; min-height: 28px; }
+.steps-bar .va[aria-pressed="true"] { border-color: var(--accent); color: var(--accent-11); }
+.answer p { margin: 0 0 10px; }
+.cite { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 18px; padding: 0 5px; margin: 0 1px; border-radius: 9px; border: 0;
+  background: var(--accent-soft); color: var(--accent-11); font-size: 11px; font-weight: 600; cursor: pointer; vertical-align: 2px; }
+.cite:hover { background: var(--accent); color: var(--accent-ink); }
+.cite.on { background: var(--accent); color: var(--accent-ink); }
+.sentence.hl { background: var(--hl); border-radius: 3px; }
+.composer { margin-top: 8px; border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; color: var(--muted); background: var(--surface); }
+
+aside.panel { border-left: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; min-height: 0; }
+.p-head { padding: 12px 16px 8px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.p-head .row1 { display: flex; align-items: center; gap: 8px; }
+.p-head h2 { font-size: 15px; margin: 0; flex: 1; font-weight: 600; }
+.badge { font-size: 11px; font-weight: 600; border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+.b-ok { background: var(--accent-soft); color: var(--accent-11); }
+.b-run { background: var(--blue-soft); color: var(--blue); }
+.b-wait { background: var(--warn-soft); color: var(--warn); }
+.b-bad { background: var(--bad-soft); color: var(--bad); }
+.b-gray { background: var(--surface-2); color: var(--muted); }
+.p-head .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.filter { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.filter button { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 2px 10px; font-size: 12px; min-height: 30px; cursor: pointer; }
+.filter button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-11); font-weight: 600; }
+.close { margin-left: 4px; border: 0; background: none; cursor: pointer; width: 32px; height: 32px; border-radius: 6px; color: var(--muted); font-size: 18px; }
+.p-body { overflow: auto; padding: 8px 16px 24px; flex: 1; min-height: 0; }
+.sec-h { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; padding: 10px 0 6px; color: var(--text); }
+.sec-h .n { color: var(--muted); font-weight: 400; margin-left: auto; }
+
+ol.steps { list-style: none; margin: 0; padding: 0; position: relative; }
+ol.steps::before { content: ""; position: absolute; left: 9px; top: 8px; bottom: 8px; width: 2px; background: var(--border); }
+li.step { position: relative; padding-left: 28px; margin-bottom: 6px; }
+li.step > .dot { position: absolute; left: 0; top: 9px; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; background: var(--surface); border: 2px solid var(--border-strong); color: var(--muted); }
+li.step.ok > .dot { border-color: var(--accent); color: var(--accent-11); }
+li.step.fail > .dot, li.step.denied > .dot { border-color: var(--bad); color: var(--bad); }
+li.step.wait > .dot { border-color: var(--warn); color: var(--warn); }
+li.step.run > .dot { border-color: var(--blue); color: var(--blue); }
+li.step.quiet > .dot { width: 10px; height: 10px; left: 5px; top: 8px; border-width: 2px; }
+.card { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); transition: box-shadow .2s, border-color .2s; }
+.card.flash { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.s-row { display: flex; align-items: flex-start; border-radius: 10px; }
+.s-row:hover { background: var(--surface-2); }
+.s-row > .meta { display: flex; gap: 4px; align-items: center; flex-shrink: 0; padding: 10px 10px 0 0; flex-wrap: wrap; justify-content: flex-end; max-width: 45%; }
+.s-head { flex: 1 1 0; min-width: 0; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: start; gap: 8px; text-align: left; background: none; border: 0; padding: 8px 10px; cursor: pointer; border-radius: 10px; min-height: 44px; }
+.s-head .txt { min-width: 0; display: block; }
+.s-head .lbl { font-weight: 500; overflow-wrap: break-word; }
+.s-head .lbl .app { color: var(--muted); font-weight: 400; }
+.s-head .out { font-size: 12px; color: var(--muted); }
+.s-head .out.bad { color: var(--bad); }
+.s-head .out.warn { color: var(--warn); }
+.s-head .dur { font-size: 11px; color: var(--faint); flex-shrink: 0; padding-top: 2px; }
+.chev { color: var(--muted); font-size: 12px; width: 16px; text-align: center; padding-top: 3px; flex-shrink: 0; }
+.s-body { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 8px; }
+.s-body[hidden] { display: none; }
+.lab { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: none; margin-bottom: 2px; }
+.supports { font-size: 12px; color: var(--muted); display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.quiet-line { color: var(--faint); font-size: 12px; padding: 4px 0 4px 0; }
+
+.summary { font-size: 13px; color: var(--text); }
+.summary ul { margin: 2px 0 0; padding-left: 18px; }
+.summary li { margin: 2px 0; }
+.summary p { margin: 0 0 4px; }
+.rec-cite { font-size: 10px; margin-left: 4px; }
+.tbl { max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.tbl table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.tbl th, .tbl td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
+.tbl th { background: var(--surface-2); font-weight: 600; white-space: nowrap; position: sticky; top: 0; }
+.tbl tr:last-child td { border-bottom: 0; }
+.more-note { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.fields { border: 1px solid var(--border); border-radius: 8px; padding: 8px; display: grid; grid-template-columns: minmax(5rem, max-content) 1fr; gap: 3px 12px; font-size: 12px; }
+.fields .k { color: var(--muted); }
+.fields .open { grid-column: 1 / -1; margin-top: 4px; }
+.raw { position: relative; border: 1px solid var(--border); border-radius: 8px; background: var(--mono-bg); }
+.raw pre { margin: 0; padding: 8px 30px 8px 8px; max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.raw.tall pre { max-height: none; }
+.raw .copy { position: absolute; top: 4px; right: 4px; border: 0; background: var(--surface-2); border-radius: 4px; cursor: pointer; font-size: 11px; padding: 2px 4px; color: var(--muted); }
+.raw .stderr { color: var(--stderr); }
+.plain { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; }
+.plain.clip { max-height: 140px; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.linkbtn { border: 0; background: none; color: var(--accent-11); cursor: pointer; padding: 6px 0; font-size: 12px; font-weight: 500; min-height: 32px; }
+.sublinkbtn { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 4px 0; font-size: 12px; min-height: 28px; display: inline-flex; gap: 4px; align-items: center; }
+.args { font-size: 12px; display: grid; grid-template-columns: minmax(4rem, max-content) 1fr; gap: 2px 10px; border-left: 2px solid var(--border); padding-left: 8px; }
+.args .k { color: var(--muted); }
+.note { font-size: 12px; color: var(--muted); border-radius: 8px; background: var(--surface-2); padding: 6px 8px; }
+.note.bad { background: var(--bad-soft); color: var(--bad); }
+.note.warn { background: var(--warn-soft); color: var(--warn); }
+.files { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.files a { display: inline-flex; gap: 6px; align-items: center; }
+.group-items { list-style: none; margin: 0; padding: 0 0 0 4px; display: flex; flex-direction: column; gap: 4px; }
+.group-items > li .card { border-style: solid; background: var(--surface); }
+.nested { border-left: 2px dashed var(--border-strong); margin-left: 4px; padding-left: 10px; display: flex; flex-direction: column; gap: 4px; }
+.nested .sub-row { display: flex; gap: 6px; font-size: 12px; align-items: baseline; }
+.nested .sub-row .ic { width: 14px; flex-shrink: 0; }
+.legend { font-size: 12px; color: var(--muted); padding: 8px 16px; border-top: 1px solid var(--border); }
+
+.grabber { display: none; }
+@media (max-width: 760px) {
+  .layout { grid-template-columns: 1fr; height: auto; }
+  .chat { padding: 16px; }
+  aside.panel { border-left: 0; border-top: 1px solid var(--border); border-radius: 16px 16px 0 0; box-shadow: 0 -4px 20px rgba(0,0,0,.08); }
+  .grabber { display: block; width: 40px; height: 4px; border-radius: 2px; background: var(--border-strong); margin: 8px auto 0; }
+  .close { display: none; }
+  .p-body { overflow: visible; padding: 8px 12px 24px; }
+  .p-head { padding: 8px 12px; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Activity panel: what each step found</h1>
+  <div class="tabs" role="tablist" aria-label="Scenario">
+    <button role="tab" aria-selected="true" data-s="short">Short run (3 steps)</button>
+    <button role="tab" aria-selected="false" data-s="long">Long run (30 steps)</button>
+    <button role="tab" aria-selected="false" data-s="kinds">Every kind of result</button>
+  </div>
+  <button id="theme" type="button">Toggle dark</button>
+</header>
+<div class="layout">
+  <main class="chat" id="chat" aria-label="Conversation"></main>
+  <aside class="panel" aria-labelledby="p-title">
+    <div class="grabber" aria-hidden="true"></div>
+    <div class="p-head">
+      <div class="row1"><h2 id="p-title">Activity</h2><span id="p-status"></span><button class="close" type="button" aria-label="Close activity">✕</button></div>
+      <div class="sub" id="p-sub"></div>
+      <div class="filter" id="p-filter"></div>
+    </div>
+    <div class="p-body" id="p-body"></div>
+  </aside>
+</div>
+<script>
+'use strict';
+/* Links: only http, https and mailto become links; anything else stays text (the build reuses safeLink). */
+function safeHref(u) {
+  try { const x = new URL(u); return ['http:', 'https:', 'mailto:'].includes(x.protocol) && !x.username && !x.password ? x.href : null; } catch { return null; }
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function a(href, text) {
+  const h = safeHref(href);
+  return h ? `<a href="${esc(h)}" target="_blank" rel="noopener noreferrer">${esc(text ?? href)}</a>` : esc(text ?? href);
+}
+/* Internal record links open the record viewer, as citations do. */
+function rec(id, text) { return `<a href="/record?recordId=${encodeURIComponent(id)}">${esc(text)}</a>`; }
+/* Plain text with its URLs made clickable (the same rule for raw results). */
+function linkify(text) {
+  return esc(text).replace(/\b((?:https?:\/\/|mailto:)[^\s"'<>)\]]+)/g, (m) => {
+    const h = safeHref(m.replace(/&amp;/g, '&'));
+    return h ? `<a href="${esc(h)}" target="_blank" rel="noopener noreferrer">${m}</a>` : m;
+  });
+}
+function cites(ns) { return ns.map((n) => `<button type="button" class="cite" data-cite="${n}" aria-label="Citation ${n}">${n}</button>`).join(''); }
+
+/* ---------- result renderers (the build reuses the main chat's ToolDetails pieces) ---------- */
+function rSummary(r) { return `<div class="summary">${r.html}</div>`; }
+function rRecords(r) {
+  const head = r.columns.map((c) => `<th>${esc(c)}</th>`).join('');
+  const rows = r.rows.map((row) => `<tr>${row.cells.map((c, i) => `<td>${i === 0 && row.url ? a(row.url, c) : i === 0 && row.rec ? rec(row.rec, c) : esc(c)}${i === 0 && row.cite ? `<span class="rec-cite">${cites([row.cite])}</span>` : ''}</td>`).join('')}</tr>`).join('');
+  return `<div class="tbl"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>${r.total > r.rows.length ? `<div class="more-note">Showing ${r.rows.length} of ${r.total}</div>` : ''}`;
+}
+function rFields(r) {
+  return `<div class="fields">${r.fields.map(([k, v]) => `<span class="k">${esc(k)}</span><span>${linkify(v)}</span>`).join('')}${r.url ? `<span class="open">${a(r.url, r.open ?? 'Open')}</span>` : ''}</div>`;
+}
+function rJson(r) { return `<div class="raw"><button class="copy" type="button" aria-label="Copy">⧉</button><pre class="mono">${linkify(JSON.stringify(r.value, null, 2))}</pre></div>`; }
+function rPlain(r) {
+  if (!r.long) return `<div class="plain">${linkify(r.text)}</div>`;
+  return `<div class="plain clip" data-clip>${linkify(r.text)}</div><button type="button" class="linkbtn" data-more aria-expanded="false">Show more</button><div class="more-note">The chat keeps the first 2,000 characters of a result; the agent read all 48,310.</div>`;
+}
+function rCode(r) {
+  const out = r.stdout ? `<span>${linkify(r.stdout)}</span>` : '';
+  const err = r.stderr ? `<span class="stderr">${linkify(r.stderr)}</span>` : '';
+  const files = r.files?.length ? `<div><div class="lab">Files it made</div><div class="files">${r.files.map((f) => `<span>📄 ${rec(f.id, f.name)} <span class="more-note" style="display:inline">${esc(f.size)}</span></span>`).join('')}</div></div>` : '';
+  return `<div><div class="lab">Output · exit code ${r.exit}</div><div class="raw"><pre class="mono">${out}${out && err ? '\n' : ''}${err}</pre></div></div>${files}`;
+}
+function rRawToggle(r) {
+  const id = `raw-${++uid}`;
+  return `<div><button type="button" class="sublinkbtn" data-raw aria-expanded="false" aria-controls="${id}">▸ View raw</button><div id="${id}" hidden>${rJson(r)}</div></div>`;
+}
+function rNote(r) { return `<div class="note ${r.tone ?? ''}">${r.html}</div>`; }
+function rEmpty() { return `<div class="note">No results.</div>`; }
+const RENDER = { summary: rSummary, records: rRecords, fields: rFields, json: rJson, plain: rPlain, code: rCode, note: rNote, empty: rEmpty, rawtoggle: rRawToggle };
+function result(r) { return Array.isArray(r) ? r.map(result).join('') : RENDER[r.kind](r); }
+
+const ICON = { ok: '✓', fail: '!', denied: '✕', wait: '⏸', run: '…' };
+const BADGE = {
+  allowed: '<span class="badge b-ok">You allowed</span>',
+  denied: '<span class="badge b-bad">You declined</span>',
+  wait: '<span class="badge b-wait">Waiting for you</span>',
+  run: '<span class="badge b-run">Running</span>',
+};
+
+let uid = 0;
+function stepCard(s) {
+  const id = `st-${++uid}`;
+  s.domId = id;
+  const statusCls = s.status ?? 'ok';
+  const outCls = statusCls === 'fail' || statusCls === 'denied' ? 'bad' : statusCls === 'wait' ? 'warn' : '';
+  const meta = `${s.approval ? BADGE[s.approval] : statusCls === 'run' ? BADGE.run : ''}${s.cites?.length ? cites(s.cites) : ''}`;
+  const hasBody = s.result || s.args || s.children || s.why;
+  const body = hasBody ? `
+    <div class="s-body" id="${id}-b" ${s.open ? '' : 'hidden'}>
+      ${s.why ? rNote({ html: s.why, tone: s.whyTone }) : ''}
+      ${s.children ? `<div class="nested">${s.children.map((c) => `<div class="sub-row"><span class="ic" aria-hidden="true">${ICON[c.status ?? 'ok']}</span><span><b style="font-weight:500">${esc(c.label)}</b>${c.out ? ` <span style="color:var(--muted)">· ${linkify(c.out)}</span>` : ''}</span></div>`).join('')}</div>` : ''}
+      ${s.result ? result(s.result) : ''}
+      ${s.args ? `<div><button type="button" class="sublinkbtn" data-details aria-expanded="false" aria-controls="${id}-d">▸ Details</button>
+        <div id="${id}-d" hidden><div class="lab">What the agent asked for</div><div class="args">${Object.entries(s.args).map(([k, v]) => `<span class="k">${esc(k)}</span><span>${linkify(typeof v === 'string' ? v : JSON.stringify(v))}</span>`).join('')}</div></div></div>` : ''}
+    </div>` : '';
+  return `<div class="card" id="${id}" data-cites="${(s.cites ?? []).join(' ')}"><div class="s-row">
+    <button type="button" class="s-head" ${hasBody ? `aria-expanded="${s.open ? 'true' : 'false'}" aria-controls="${id}-b"` : 'aria-disabled="true"'}>
+      <span class="chev" aria-hidden="true">${hasBody ? (s.open ? '▾' : '▸') : ''}</span>
+      <span class="txt"><span class="lbl">${s.app ? `<span class="app">${esc(s.app)} · </span>` : ''}${esc(s.label)}</span>
+        <span class="out ${outCls}" style="display:block">${esc(s.out)}</span></span>
+      ${s.dur ? `<span class="dur">${esc(s.dur)}</span>` : ''}
+    </button>${meta ? `<span class="meta">${meta}</span>` : ''}</div>${body}</div>`;
+}
+function stepLi(s) {
+  if (s.quiet) return `<li class="step quiet"><span class="dot" aria-hidden="true"></span><div class="quiet-line">${esc(s.label)}</div></li>`;
+  if (s.group) {
+    const id = `gr-${++uid}`;
+    const allCites = [...new Set(s.items.flatMap((i) => i.cites ?? []))];
+    s.domId = id;
+    return `<li class="step ${s.status ?? 'ok'}"><span class="dot" aria-hidden="true">${ICON[s.status ?? 'ok']}</span>
+      <div class="card" id="${id}" data-cites="${allCites.join(' ')}">
+        <div class="s-row"><button type="button" class="s-head" aria-expanded="${s.open ? 'true' : 'false'}" aria-controls="${id}-b">
+          <span class="chev" aria-hidden="true">${s.open ? '▾' : '▸'}</span>
+          <span class="txt"><span class="lbl">${s.app ? `<span class="app">${esc(s.app)} · </span>` : ''}${esc(s.label)}</span><span class="out" style="display:block">${esc(s.out)}</span></span>
+          <span class="dur">${esc(s.dur ?? '')}</span>
+        </button>${allCites.length ? `<span class="meta">${cites(allCites)}</span>` : ''}</div>
+        <div class="s-body" id="${id}-b" ${s.open ? '' : 'hidden'}><ul class="group-items">${s.items.map((i) => `<li>${stepCard({ ...i, app: undefined })}</li>`).join('')}</ul></div>
+      </div></li>`;
+  }
+  return `<li class="step ${s.status ?? 'ok'}"><span class="dot" aria-hidden="true">${ICON[s.status ?? 'ok']}</span>${stepCard(s)}</li>`;
+}
+
+/* ---------- scenarios ---------- */
+const SHORT = {
+  question: 'When is the Q3 release and is anything blocking it?',
+  answer: [
+    ['The Q3 release is planned for <b>October 30</b>.', [1]],
+    ['The one open blocker is the flaky payment-retry test, tracked in PAY-1423 and assigned to Priya.', [2]],
+    ['The code freeze starts three days earlier, on October 27.', [3]],
+  ],
+  status: '<span class="badge b-ok">Done</span>', sub: '3 steps · 3 sources cited · 9 s',
+  steps: [
+    { label: 'Searched your Collections for “Q3 release date”', out: 'Found 6 passages in 3 records', dur: '1.4 s', cites: [1],
+      result: [{ kind: 'summary', html: `<p>Retrieved 6 passages from 3 records</p><ul><li>${rec('r-1', 'Q3 Release Plan.docx')} <span class="rec-cite">${cites([1])}</span></li><li>${rec('r-2', 'Eng weekly sync — Oct 9')}</li><li>${rec('r-3', 'Roadmap 2026 H2.pdf')}</li></ul>` }],
+      args: { Query: 'Q3 release date', Collections: 'Engineering, Product' } },
+    { app: 'Jira', label: 'Opened PAY-1423', out: 'In progress · assigned to Priya Nair', dur: '0.8 s', cites: [2],
+      result: [{ kind: 'fields', fields: [['Summary', 'Flaky payment-retry test blocks release'], ['Status', 'In progress'], ['Priority', 'Highest'], ['Assignee', 'Priya Nair'], ['Updated', 'Oct 20, 16:42']], url: 'https://acme.atlassian.net/browse/PAY-1423', open: 'Open PAY-1423 in Jira' }],
+      args: { Issue: 'PAY-1423' } },
+    { label: 'Read docs.acme.dev/release-process', out: 'Read the page (1,240 words)', dur: '2.1 s', cites: [3],
+      result: [{ kind: 'summary', html: `<p>${a('https://docs.acme.dev/release-process', 'Release process — Acme Engineering')}</p><p>Code freeze begins 3 working days before each release. Only release-blocker fixes merge during the freeze.</p>` }],
+      args: { URL: 'https://docs.acme.dev/release-process' } },
+  ],
+};
+
+function slackSearch(q, n, cite) {
+  return { app: 'Slack', label: `Searched for “${q}”`, out: n ? `Found ${n} messages` : 'No results', dur: `${(0.6 + q.length / 30).toFixed(1)} s`,
+    ...(cite ? { cites: [cite] } : {}),
+    result: n ? [{ kind: 'records', columns: ['Message', 'Channel', 'When'], total: n, rows: [
+      { cells: [`“…${q} looks bad on canary, rolling back”`, '#deploys', 'Oct 14, 15:02'], url: 'https://acme.slack.com/archives/C01DEPLOY/p1728918120', cite },
+      { cells: ['“p99 doubled after 2.41.0”', '#eng-oncall', 'Oct 14, 14:55'], url: 'https://acme.slack.com/archives/C02ONCALL/p1728917700' },
+      { cells: ['“Is the payments dashboard red for anyone else?”', '#payments', 'Oct 14, 14:51'], url: 'https://acme.slack.com/archives/C03PAY/p1728917460' },
+    ].slice(0, Math.min(3, n)) }] : [{ kind: 'empty' }],
+    args: { Query: q, 'In channels': 'all you can see', After: '2026-10-13' } };
+}
+function slackThread(ch, n, cite) {
+  return { app: 'Slack', label: `Read a thread in ${ch}`, out: `${n} replies`, dur: '0.7 s', ...(cite ? { cites: [cite] } : {}),
+    result: [{ kind: 'summary', html: `<p>${a('https://acme.slack.com/archives/C01DEPLOY/p1728918120', `Thread in ${ch}`)} · ${n} replies</p><ul><li><b>Dana</b>: canary error rate 4.1% vs 0.3% baseline</li><li><b>Luis</b>: rolling back to 2.40.3, cause looks like the connection-pool change in #8812</li></ul>` }],
+    args: { Channel: ch, Thread: 'Oct 14, 15:02' } };
+}
+const LONG = {
+  question: 'Why did the Oct 14 deploy get rolled back, and is the fix out yet?',
+  answer: [
+    ['Release 2.41.0 was rolled back on Oct 14 at 15:04 after canary errors rose to 4.1% against a 0.3% baseline.', [1, 2]],
+    ['The cause was the database connection-pool limit lowered in pull request #8812.', [3, 4]],
+    ['The fix, #8840, merged on Oct 16 and shipped in 2.41.1 on Oct 17; the status page shows no incidents since.', [5, 6]],
+    ['I posted this summary to #eng as you asked.', [7]],
+  ],
+  status: '<span class="badge b-ok">Done</span>', sub: '30 steps · 7 sources cited · 1 min 48 s', filter: true,
+  steps: [
+    { quiet: true, label: 'Looked up available tools' },
+    { group: true, app: 'Slack', label: 'Searched 9 times', out: '54 messages found · 1 search found nothing', dur: '9.1 s', items: [
+      slackSearch('rollback', 14, 1), slackSearch('2.41.0', 9), slackSearch('canary', 11), slackSearch('revert deploy', 0), slackSearch('p99 latency', 5), slackSearch('incident oct 14', 2), slackSearch('deploy freeze', 3), slackSearch('connection pool', 6), slackSearch('hotfix 2.41.1', 4) ] },
+    { group: true, app: 'Slack', label: 'Read 4 threads', out: '#deploys, #eng-oncall, #payments, #eng', dur: '2.9 s', items: [
+      slackThread('#deploys', 18, 2), slackThread('#eng-oncall', 7), slackThread('#payments', 4), slackThread('#eng', 3) ] },
+    { app: 'Slack', label: 'Read #finance', status: 'fail', out: 'Couldn’t read this channel: the Slack app isn’t a member of #finance.', dur: '0.3 s',
+      why: 'Nothing was read. Add the PipesHub app to #finance in Slack if the agent should search it.', whyTone: 'bad', args: { Channel: '#finance' } },
+    { app: 'Jira', label: 'Searched for “rollback 2.41”', out: 'Found 3 issues', dur: '1.1 s',
+      result: [{ kind: 'records', columns: ['Issue', 'Status', 'Assignee'], total: 3, rows: [
+        { cells: ['INC-311 Deploy 2.41.0 rolled back', 'Done', 'Luis Ortega'], url: 'https://acme.atlassian.net/browse/INC-311' },
+        { cells: ['PAY-1431 Pool exhaustion under load', 'Done', 'Priya Nair'], url: 'https://acme.atlassian.net/browse/PAY-1431' },
+        { cells: ['OPS-77 Canary alert thresholds', 'To do', 'Dana Kim'], url: 'https://acme.atlassian.net/browse/OPS-77' } ] }],
+      args: { JQL: 'text ~ "rollback 2.41" ORDER BY updated DESC' } },
+    { group: true, app: 'Jira', label: 'Opened 3 issues', out: 'INC-311, PAY-1431, OPS-77', dur: '2.2 s', items: [
+      { app: 'Jira', label: 'Opened INC-311', out: 'Done · resolved Oct 17', dur: '0.7 s', result: [{ kind: 'fields', fields: [['Summary', 'Deploy 2.41.0 rolled back'], ['Status', 'Done'], ['Root cause', 'Connection pool max lowered from 50 to 10 in #8812']], url: 'https://acme.atlassian.net/browse/INC-311', open: 'Open INC-311 in Jira' }] },
+      { app: 'Jira', label: 'Opened PAY-1431', out: 'Done', dur: '0.8 s', result: [{ kind: 'fields', fields: [['Summary', 'Pool exhaustion under load'], ['Status', 'Done']], url: 'https://acme.atlassian.net/browse/PAY-1431', open: 'Open PAY-1431 in Jira' }] },
+      { app: 'Jira', label: 'Opened OPS-77', out: 'To do', dur: '0.7 s', result: [{ kind: 'fields', fields: [['Summary', 'Canary alert thresholds'], ['Status', 'To do']], url: 'https://acme.atlassian.net/browse/OPS-77', open: 'Open OPS-77 in Jira' }] } ] },
+    { app: 'GitHub', label: 'Listed pull requests that mention “pool”', out: 'Found 4 pull requests', dur: '1.3 s',
+      result: [{ kind: 'records', columns: ['Pull request', 'State', 'Merged'], total: 4, rows: [
+        { cells: ['#8812 Tune DB pool for cost', 'merged', 'Oct 13'], url: 'https://github.com/acme/api/pull/8812', cite: 3 },
+        { cells: ['#8840 Restore pool max to 50', 'merged', 'Oct 16'], url: 'https://github.com/acme/api/pull/8840', cite: 5 },
+        { cells: ['#8791 Pool metrics', 'merged', 'Oct 2'], url: 'https://github.com/acme/api/pull/8791' } ] }], cites: [3, 5],
+      args: { Repository: 'acme/api', Search: 'pool' } },
+    { group: true, app: 'GitHub', label: 'Opened 2 pull requests', out: '#8812, #8840', dur: '1.9 s', items: [
+      { app: 'GitHub', label: 'Opened #8812', out: 'Merged Oct 13 by Sam Lee', dur: '0.9 s', cites: [4], result: [{ kind: 'fields', fields: [['Title', 'Tune DB pool for cost'], ['Changed', 'config/db.yaml: pool.max 50 → 10']], url: 'https://github.com/acme/api/pull/8812', open: 'Open #8812 on GitHub' }] },
+      { app: 'GitHub', label: 'Opened #8840', out: 'Merged Oct 16 by Priya Nair', dur: '1.0 s', result: [{ kind: 'fields', fields: [['Title', 'Restore pool max to 50'], ['Released in', '2.41.1']], url: 'https://github.com/acme/api/pull/8840', open: 'Open #8840 on GitHub' }] } ] },
+    { label: 'Searched the web for “status.acme.dev incidents October”', out: 'Found 5 results', dur: '1.6 s',
+      result: [{ kind: 'records', columns: ['Title', 'Site'], total: 5, rows: [
+        { cells: ['Acme Status — Incident history', 'status.acme.dev'], url: 'https://status.acme.dev/history' },
+        { cells: ['Elevated API errors — Oct 14', 'status.acme.dev'], url: 'https://status.acme.dev/incidents/kq81' } ] }] },
+    { label: 'Read status.acme.dev/history', out: 'Read the page (380 words)', dur: '1.2 s', cites: [6],
+      result: [{ kind: 'summary', html: `<p>${a('https://status.acme.dev/history', 'Acme Status — Incident history')}</p><p>Oct 14: Elevated API errors (resolved 15:20). No incidents reported Oct 15–21.</p>` }] },
+    { label: 'Ran code', out: 'Built the timeline from 11 timestamps · exit code 0', dur: '3.4 s', cites: [1],
+      result: [{ kind: 'code', exit: 0, stdout: '14:51  first report in #payments\n14:55  p99 doubled (#eng-oncall)\n15:02  rollback called (#deploys)\n15:04  2.40.3 live\n15:20  status page resolved' }],
+      args: { Language: 'python', Code: 'events = sorted(...)\nfor t, what in events: print(t, what)' } },
+    { group: true, app: 'Confluence', label: 'Searched 3 times', out: '2 pages found', dur: '2.5 s', items: [
+      { app: 'Confluence', label: 'Searched for “postmortem 2.41”', out: 'Found 1 page', dur: '0.8 s', result: [{ kind: 'summary', html: `<ul><li>${a('https://acme.atlassian.net/wiki/spaces/ENG/pages/9911', 'Postmortem: 2.41.0 rollback')}</li></ul>` }] },
+      { app: 'Confluence', label: 'Searched for “connection pool runbook”', out: 'Found 1 page', dur: '0.9 s', result: [{ kind: 'summary', html: `<ul><li>${a('https://acme.atlassian.net/wiki/spaces/OPS/pages/4410', 'Runbook: DB connection pool')}</li></ul>` }] },
+      { app: 'Confluence', label: 'Searched for “canary thresholds”', out: 'No results', dur: '0.8 s', result: [{ kind: 'empty' }] } ] },
+    { app: 'Confluence', label: 'Read “Postmortem: 2.41.0 rollback”', out: 'Read the page (2,010 words)', dur: '1.0 s',
+      result: [{ kind: 'plain', long: true, text: 'Summary\nOn Oct 14 at 14:48 release 2.41.0 reached 10% canary. Within minutes the payments service began timing out on database connections. See https://acme.atlassian.net/browse/INC-311 for the incident ticket.\n\nTimeline\n14:48 canary starts\n14:51 first customer-visible errors\n14:55 p99 latency doubles\n15:02 rollback decided\n15:04 2.40.3 serving 100%\n\nRoot cause\nPull request #8812 lowered pool.max from 50 to 10 to save on database cost. Under peak load the payments retry path holds a connection while waiting on the processor, so ten connections were exhausted...\n\nWhat went well\nCanary caught it before full rollout...' }] },
+    { app: 'Slack', label: 'Send a message to #eng', approval: 'allowed', out: 'Sent · you allowed it at 15:31', dur: '0.6 s', cites: [7],
+      result: [{ kind: 'summary', html: `<p>${a('https://acme.slack.com/archives/C04ENG/p1729524660', 'Message in #eng')}</p>` }],
+      args: { Channel: '#eng', Text: 'Rollback of 2.41.0 (Oct 14): caused by #8812 pool limit; fixed in #8840, shipped 2.41.1 on Oct 17.' } },
+  ],
+};
+
+const KINDS = {
+  question: 'Show me one of every kind of step (mock catalogue).',
+  answer: [
+    ['Every step below shows what it found, in the chat’s own format.', [1]],
+    ['Each citation in an answer points to the step that found it.', [2, 3]],
+  ],
+  status: '<span class="badge b-wait">Waiting for you</span>', sub: '14 steps so far · running 2 min 4 s',
+  steps: [
+    { label: 'Searched your Collections for “onboarding checklist”', out: 'Found 8 passages in 4 records', dur: '1.2 s', cites: [1], open: true,
+      result: [{ kind: 'summary', html: `<p>Retrieved 8 passages from 4 records</p><ul><li>${rec('r-9', 'New hire checklist.docx')} <span class="rec-cite">${cites([1])}</span></li><li>${rec('r-10', 'IT access request form')}</li><li>${rec('r-11', 'Benefits overview 2026.pdf')}</li><li>${rec('r-12', 'Buddy program — Confluence')}</li></ul>` }],
+      args: { Query: 'onboarding checklist' } },
+    { label: 'Opened the record “New hire checklist.docx”', out: '3 pages · updated Sep 2', dur: '0.4 s', open: true,
+      result: [{ kind: 'fields', fields: [['Source', 'Google Drive'], ['Owner', 'people-ops@acme.dev'], ['Updated', 'Sep 2, 2026']], url: 'https://drive.google.com/file/d/1AbC/view', open: 'Open in Google Drive' }] },
+    { label: 'Searched the web for “SOC 2 onboarding requirements”', out: 'Found 6 results', dur: '1.8 s', cites: [2], open: true,
+      result: [{ kind: 'records', columns: ['Title', 'Site'], total: 6, rows: [
+        { cells: ['SOC 2 personnel controls explained', 'vanta.com'], url: 'https://www.vanta.com/resources/soc-2-personnel', cite: 2 },
+        { cells: ['AICPA Trust Services Criteria', 'aicpa-cima.com'], url: 'https://www.aicpa-cima.com/resources/tsc' },
+        { cells: ['Security awareness training — CC1.4', 'secureframe.com'], url: 'https://secureframe.com/hub/soc-2/cc1-4' } ] }] },
+    { label: 'Read vanta.com/resources/soc-2-personnel', out: 'Read the page (2,980 words)', dur: '2.4 s', cites: [2],
+      result: [{ kind: 'summary', html: `<p>${a('https://www.vanta.com/resources/soc-2-personnel', 'SOC 2 personnel controls explained')}</p><p>New hires must complete security training within 30 days and acknowledge policies.</p>` }] },
+    { app: 'Slack', label: 'Read 3 messages in #people-ops', out: '3 messages from Oct 18–20', dur: '0.9 s', cites: [3], open: true,
+      result: [{ kind: 'records', columns: ['Message', 'From', 'When'], total: 3, rows: [
+        { cells: ['Laptop orders now go through it.acme.dev/order', 'Maya', 'Oct 18'], url: 'https://acme.slack.com/archives/C05PO/p1729250000', cite: 3 },
+        { cells: ['Reminder: buddy assignments due Friday', 'Jon', 'Oct 19'], url: 'https://acme.slack.com/archives/C05PO/p1729336400' },
+        { cells: ['New starters list for Oct 28 is in the drive', 'Maya', 'Oct 20'], url: 'https://acme.slack.com/archives/C05PO/p1729422800' } ] },
+        { kind: 'rawtoggle', value: { messages: [
+        { from: 'Maya', text: 'Laptop orders now go through https://it.acme.dev/order', link: 'https://acme.slack.com/archives/C05PO/p1729250000' },
+        { from: 'Jon', text: 'Reminder: buddy assignments due Friday', link: 'https://acme.slack.com/archives/C05PO/p1729336400' } ] } }],
+      args: { Channel: '#people-ops', Limit: 3 } },
+    { app: 'Linear (MCP)', label: 'List issues', out: 'Found 2 issues', dur: '1.1 s', open: true,
+      result: [{ kind: 'records', columns: ['Issue', 'State'], total: 2, rows: [
+        { cells: ['ONB-12 Automate account creation', 'In progress'], url: 'https://linear.app/acme/issue/ONB-12' },
+        { cells: ['ONB-15 Welcome email copy', 'Todo'], url: 'https://linear.app/acme/issue/ONB-15' } ] },
+        { kind: 'note', html: 'A link the server sent as <span class="mono">javascript:alert(1)</span> is shown as text, not as a link.' }],
+      args: { team: 'ONB', state: 'open' } },
+    { label: 'Ran code', out: 'Made 1 chart · exit code 0 · 1 warning', dur: '4.2 s', open: true,
+      result: [{ kind: 'code', exit: 0, stdout: 'Rows read: 48\nSaved onboarding_by_week.png', stderr: 'FutureWarning: DataFrame.applymap is deprecated', files: [{ id: 'f-1', name: 'onboarding_by_week.png', size: '42 kB' }] }],
+      args: { Language: 'python', Code: 'import pandas as pd\n…' } },
+    { label: 'Code task · Add a checklist export to the HR app', out: '6 steps · changed 3 files · tests pass', dur: '1 min 12 s', open: true,
+      children: [
+        { label: 'Read src/checklist/export.ts' },
+        { label: 'Ran npm test', out: '41 passed' },
+        { label: 'Edited src/checklist/export.ts', out: '+38 −4' },
+        { label: 'Edited src/checklist/export.test.ts', out: '+52' },
+        { label: 'Ran npm test', out: '43 passed' },
+        { label: 'Fetched https://registry.npmjs.org/csv-stringify', status: 'denied', out: 'not allowed: this task has no internet access' } ],
+      result: [{ kind: 'note', html: 'Files changed: 3 · <a href="#files">See them under “Files changed”</a>' }] },
+    { app: 'Gmail', label: 'Send an email to maya@acme.dev', approval: 'wait', status: 'wait', out: 'Needs your approval in the chat', open: true,
+      why: 'Your organization asks before an agent sends email. <a href="#approval">Decide on the approval card in the chat</a>.', whyTone: 'warn',
+      args: { To: 'maya@acme.dev', Subject: 'Onboarding checklist for Oct 28 starters' } },
+    { app: 'Google Drive', label: 'Share “New hire checklist.docx” with everyone', approval: 'denied', status: 'denied', out: 'Not done · you declined at 10:42' },
+    { app: 'Jira', label: 'Opened HR-88', status: 'fail', out: 'Failed: Jira says you don’t have permission to see HR-88.', dur: '0.5 s', open: true,
+      why: 'The agent uses your Jira access. Ask a Jira admin for access to the HR project.', whyTone: 'bad', args: { Issue: 'HR-88' } },
+    { label: 'Read the record “Employee handbook 2026.pdf”', out: '212 pages · showing the start', dur: '3.0 s', open: true,
+      result: [{ kind: 'plain', long: true, text: 'Employee Handbook 2026\n\n1. Welcome\nWelcome to Acme. This handbook explains how we work, what we expect from each other, and what you can expect from us. Questions go to people-ops@acme.dev or mailto:hr-help@acme.dev.\n\n2. Your first week\nDay 1: laptop pickup and accounts. Day 2: security training at https://learn.acme.dev/security. Day 3–5: meet your buddy and team...\n\n3. Time off\nAll full-time employees accrue 1.67 days of paid time off per month...\n\n4. Expenses\nSubmit expenses within 30 days through https://expenses.acme.dev ...' }] },
+    { app: 'Okta', label: 'Get an admin API token', out: 'Done · the token is masked', dur: '0.3 s', open: true,
+      result: [{ kind: 'json', value: { token: '•••••••• (masked)', expiresIn: '1h' } },
+        { kind: 'note', html: 'Values that look like passwords or access tokens are masked here and in the chat.' }] },
+    { label: 'Loaded the skill “Onboarding playbook”', out: 'Instructions for the agent', dur: '0.1 s', open: true,
+      result: [{ kind: 'note', html: 'Not shown: this is guidance the agent read for itself, not a result about your question.' }] },
+  ],
+};
+const SCENARIOS = { short: SHORT, long: LONG, kinds: KINDS };
+
+/* ---------- render ---------- */
+let current = 'short';
+let citedOnly = false;
+function render() {
+  uid = 0;
+  const s = SCENARIOS[current];
+  const answer = s.answer.map(([text, ns], i) => `<span class="sentence" data-sent="${ns.join(' ')}">${text}</span> ${cites(ns)}`).join(' ');
+  document.getElementById('chat').innerHTML = `<div class="chat-inner">
+    <div class="user">${esc(s.question)}</div>
+    <div class="steps-bar"><span>✓ ${esc(s.sub.split(' · ')[0])}</span><button type="button" class="va" aria-pressed="true" aria-controls="p-body">View activity</button></div>
+    <div class="answer"><p>${answer}</p></div>
+    <div class="composer">Ask anything…</div></div>`;
+  document.getElementById('p-status').innerHTML = s.status;
+  document.getElementById('p-sub').textContent = s.sub;
+  document.getElementById('p-filter').innerHTML = s.filter
+    ? `<button type="button" aria-pressed="${!citedOnly}" data-f="all">All steps</button><button type="button" aria-pressed="${citedOnly}" data-f="cited">Only steps the answer cites</button>`
+    : '';
+  const steps = citedOnly ? s.steps.filter((x) => (x.cites?.length || x.items?.some((i) => i.cites?.length))) : s.steps;
+  const files = current === 'kinds' ? `<div class="sec-h" id="files">Files changed <span class="n">3</span></div><div class="note">src/checklist/export.ts · src/checklist/export.test.ts · src/checklist/index.ts (unchanged from today’s panel)</div>` : '';
+  document.getElementById('p-body').innerHTML = `<div class="sec-h">Steps <span class="n">${s.sub.split(' ')[0]}</span></div><ol class="steps">${steps.map(stepLi).join('')}</ol>${files}`;
+}
+function toggle(btn) {
+  const body = document.getElementById(btn.getAttribute('aria-controls'));
+  if (!body) return;
+  const open = btn.getAttribute('aria-expanded') !== 'true';
+  btn.setAttribute('aria-expanded', String(open));
+  body.hidden = !open;
+  const chev = btn.querySelector('.chev');
+  if (chev) chev.textContent = open ? '▾' : '▸';
+}
+function openTo(el) {
+  for (let node = el; node && node.id !== 'p-body'; node = node.parentElement) {
+    if (node.classList?.contains('s-body') && node.hidden) {
+      node.hidden = false;
+      const head = node.previousElementSibling?.querySelector('.s-head');
+      head?.setAttribute('aria-expanded', 'true');
+      const chev = head?.querySelector('.chev');
+      if (chev) chev.textContent = '▾';
+    }
+  }
+}
+function trace(n) {
+  document.querySelectorAll('.cite.on, .card.flash, .sentence.hl').forEach((e) => e.classList.remove('on', 'flash', 'hl'));
+  document.querySelectorAll(`.cite[data-cite="${n}"]`).forEach((e) => e.classList.add('on'));
+  document.querySelectorAll('.sentence').forEach((e) => { if (e.dataset.sent.split(' ').includes(String(n))) e.classList.add('hl'); });
+  const cards = [...document.querySelectorAll('#p-body .card')].filter((c) => c.dataset.cites.split(' ').includes(String(n)));
+  const target = cards.find((c) => !c.querySelector('.card')) ?? cards[0];
+  if (!target) return;
+  openTo(target);
+  target.classList.add('flash');
+  target.scrollIntoView({ block: 'center', behavior: 'instant' });
+  target.querySelector('.s-head')?.focus({ preventScroll: true });
+}
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('button, a');
+  if (!t) return;
+  if (t.dataset.s) { current = t.dataset.s; citedOnly = false; document.querySelectorAll('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b === t))); render(); return; }
+  if (t.dataset.f) { citedOnly = t.dataset.f === 'cited'; render(); return; }
+  if (t.dataset.cite) { e.stopPropagation(); trace(t.dataset.cite); return; }
+  if (t.classList.contains('s-head')) { toggle(t); return; }
+  if (t.hasAttribute('data-details')) { const d = document.getElementById(t.getAttribute('aria-controls')); const open = d.hidden; d.hidden = !open; t.setAttribute('aria-expanded', String(open)); t.textContent = `${open ? '▾' : '▸'} Details`; return; }
+  if (t.hasAttribute('data-raw')) { const d = document.getElementById(t.getAttribute('aria-controls')); const open = d.hidden; d.hidden = !open; t.setAttribute('aria-expanded', String(open)); t.textContent = `${open ? '▾' : '▸'} ${open ? 'Hide raw' : 'View raw'}`; return; }
+  if (t.hasAttribute('data-more')) { const p = t.previousElementSibling; const open = p.classList.contains('clip'); p.classList.toggle('clip', !open); p.style.maxHeight = open ? 'none' : ''; t.textContent = open ? 'Show less' : 'Show more'; t.setAttribute('aria-expanded', String(open)); return; }
+  if (t.id === 'theme') { const r = document.documentElement; const dark = r.dataset.theme === 'dark' || (!r.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches); r.dataset.theme = dark ? 'light' : 'dark'; return; }
+  if (t.getAttribute('href')?.startsWith('/record') || t.getAttribute('href')?.startsWith('#')) e.preventDefault();
+});
+const params = new URLSearchParams(location.search);
+if (params.get('s') && SCENARIOS[params.get('s')]) current = params.get('s');
+document.querySelectorAll('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.s === current)));
+render();
+</script>
+</body>
+</html>

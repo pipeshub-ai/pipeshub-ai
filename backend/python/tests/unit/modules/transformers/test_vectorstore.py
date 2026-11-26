@@ -325,7 +325,7 @@ class TestGetEmbeddingModelInstanceConfig:
         mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 768)
         mock_embed.model_name = "test-model"
 
-        with patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=mock_embed):
+        with patch("app.utils.llm.get_default_embedding_model", return_value=mock_embed):
             result = await vs.get_embedding_model_instance()
 
         assert result is False  # default model is not multimodal
@@ -350,7 +350,7 @@ class TestGetEmbeddingModelInstanceConfig:
         mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1536)
         mock_embed.model_name = "text-embedding-3-small"
 
-        with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
+        with patch("app.utils.llm.get_embedding_model", return_value=mock_embed):
             result = await vs.get_embedding_model_instance()
 
         assert result is True
@@ -379,7 +379,7 @@ class TestGetEmbeddingModelInstanceConfig:
         mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 768)
         mock_embed.model_name = "nomic-embed-text"
 
-        with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
+        with patch("app.utils.llm.get_embedding_model", return_value=mock_embed):
             await vs.get_embedding_model_instance()
 
         assert vs.base_url == "http://localhost:11434"
@@ -402,7 +402,7 @@ class TestGetEmbeddingModelInstanceConfig:
         mock_embed = MagicMock()
         mock_embed.aembed_query = AsyncMock(side_effect=RuntimeError("API error"))
 
-        with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
+        with patch("app.utils.llm.get_embedding_model", return_value=mock_embed):
             with pytest.raises(IndexingError):
                 await vs.get_embedding_model_instance()
 
@@ -427,7 +427,7 @@ class TestGetEmbeddingModelInstanceConfig:
         # Add only 'model' attribute
         mock_embed.model = "test-model-via-model"
 
-        with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
+        with patch("app.utils.llm.get_embedding_model", return_value=mock_embed):
             await vs.get_embedding_model_instance()
 
         assert vs.model_name == "test-model-via-model"
@@ -452,7 +452,7 @@ class TestGetEmbeddingModelInstanceConfig:
         mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embed.model_id = "test-model-via-id"
 
-        with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
+        with patch("app.utils.llm.get_embedding_model", return_value=mock_embed):
             await vs.get_embedding_model_instance()
 
         assert vs.model_name == "test-model-via-id"
@@ -1413,7 +1413,7 @@ class TestGetEmbeddingModelInstance:
             "embedding": []
         })
 
-        with patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=mock_embeddings):
+        with patch("app.utils.llm.get_default_embedding_model", return_value=mock_embeddings):
             result = await vs.get_embedding_model_instance()
 
         assert result is False  # Default is not multimodal
@@ -1428,7 +1428,7 @@ class TestGetEmbeddingModelInstance:
         vs.config_service.get_config = AsyncMock(return_value=None)
 
         with patch(
-            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            "app.utils.llm.get_default_embedding_model",
             return_value=mock_embeddings,
         ) as default_model:
             result = await vs.get_embedding_model_instance()
@@ -1461,7 +1461,7 @@ class TestGetEmbeddingModelInstance:
 
         vs.config_service.get_config = AsyncMock(return_value=config)
 
-        with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embeddings):
+        with patch("app.utils.llm.get_embedding_model", return_value=mock_embeddings):
             result = await vs.get_embedding_model_instance()
 
         assert result is True
@@ -1483,7 +1483,7 @@ class TestGetEmbeddingModelInstance:
             }]
         })
 
-        with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embeddings):
+        with patch("app.utils.llm.get_embedding_model", return_value=mock_embeddings):
             with pytest.raises(IndexingError, match="Failed to get embedding model"):
                 await vs.get_embedding_model_instance()
 
@@ -1499,7 +1499,7 @@ class TestGetEmbeddingModelInstance:
 
         vs.config_service.get_config = AsyncMock(return_value={"embedding": []})
 
-        with patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=mock_embeddings):
+        with patch("app.utils.llm.get_default_embedding_model", return_value=mock_embeddings):
             result = await vs.get_embedding_model_instance()
 
         assert vs.model_name == "my-model"
@@ -1516,7 +1516,7 @@ class TestGetEmbeddingModelInstance:
 
         vs.config_service.get_config = AsyncMock(return_value={"embedding": []})
 
-        with patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=mock_embeddings):
+        with patch("app.utils.llm.get_default_embedding_model", return_value=mock_embeddings):
             result = await vs.get_embedding_model_instance()
 
         assert vs.model_name == "my-model-id"
@@ -1532,7 +1532,7 @@ class TestGetEmbeddingModelInstance:
 
         vs.config_service.get_config = AsyncMock(return_value={"embedding": []})
 
-        with patch("app.modules.transformers.vectorstore.get_default_embedding_model", return_value=mock_embeddings):
+        with patch("app.utils.llm.get_default_embedding_model", return_value=mock_embeddings):
             await vs.get_embedding_model_instance()
 
         assert vs.model_name == "unknown"
@@ -1564,7 +1564,7 @@ class TestGetEmbeddingModelInstance:
 
         vs.config_service.get_config = AsyncMock(return_value=config)
 
-        with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embeddings):
+        with patch("app.utils.llm.get_embedding_model", return_value=mock_embeddings):
             await vs.get_embedding_model_instance()
 
         assert vs.aws_access_key_id == "AKID"
@@ -1594,7 +1594,7 @@ class TestProcessImageEmbeddings:
         )
 
         with patch(
-            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
+            "app.services.embeddings.multimodal.factory.MultimodalEmbeddingFactory.create",
             return_value=mock_provider,
         ):
             result = await vs._process_image_embeddings(
@@ -1613,7 +1613,7 @@ class TestProcessImageEmbeddings:
         vs.graph_provider.get_document = AsyncMock(return_value=None)
 
         with patch(
-            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
+            "app.services.embeddings.multimodal.factory.MultimodalEmbeddingFactory.create",
         ) as mock_create:
             result = await vs._process_image_embeddings(
                 [{"metadata": {}}], ["data:image/png;base64,abc"], "rec-1"
@@ -1649,7 +1649,7 @@ class TestProcessImageEmbeddings:
         mock_provider.embed_images = AsyncMock()
 
         with patch(
-            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
+            "app.services.embeddings.multimodal.factory.MultimodalEmbeddingFactory.create",
             return_value=mock_provider,
         ):
             result = await vs._process_image_embeddings(
@@ -1666,7 +1666,7 @@ class TestProcessImageEmbeddings:
         vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
 
         with patch(
-            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create"
+            "app.services.embeddings.multimodal.factory.MultimodalEmbeddingFactory.create"
         ) as mock_create:
             result = await vs._process_image_embeddings([], [], "rec-1")
 
@@ -2321,7 +2321,7 @@ class TestGetEmbeddingModelInstanceUnknown:
         mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         # No model_name, model, or model_id attributes
 
-        with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
+        with patch("app.utils.llm.get_embedding_model", return_value=mock_embed):
             await vs.get_embedding_model_instance()
 
         assert vs.model_name == "unknown"
@@ -2353,7 +2353,7 @@ class TestGetEmbeddingModelInstanceUnknown:
         mock_embed.aembed_query = AsyncMock(return_value=[0.1] * 1024)
         mock_embed.model_name = "titan-embed"
 
-        with patch("app.modules.transformers.vectorstore.get_embedding_model", return_value=mock_embed):
+        with patch("app.utils.llm.get_embedding_model", return_value=mock_embed):
             await vs.get_embedding_model_instance()
 
         assert vs.aws_access_key_id == "AKID"

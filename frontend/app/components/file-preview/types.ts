@@ -81,6 +81,8 @@ export interface FilePreviewProps {
     name: string;
     url: string;
     type: string;
+    /** The original file's type when `type` is a conversion of it (a PPTX previewed as PDF): the header badge shows this. */
+    sourceType?: string;
     size?: number;
     /**
      * In-memory file data. Used by renderers that work better with a raw
@@ -212,7 +214,7 @@ export interface PaginationControls {
   onTotalPagesDetected?: (totalPages: number) => void;
   /**
    * PDF-only: zoom level (0.5–2), matching the legacy viewer step behavior.
-   * When omitted, the PDF uses scale 1.
+   * When omitted, the PDF fits the page width, never above scale 1, and reports that scale through `onScaleChange`.
    */
   scale?: number;
   onScaleChange?: (scale: number) => void;

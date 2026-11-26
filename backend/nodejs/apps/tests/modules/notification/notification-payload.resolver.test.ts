@@ -80,7 +80,7 @@ describe('notification/notification-payload.resolver', () => {
       const event = toBrokerMessage({ orgId, type: 'CONNECTOR_ERROR', assignedTo: legacyUser });
       const ids = getLegacyAssignedToUserIds(event!);
       expect(ids).to.have.length(1);
-      expect(ids[0].toString()).to.equal(legacyUser);
+      expect(ids[0]).to.equal(legacyUser);
     });
 
     it('reads an array of assignedTo ids and filters invalid entries', () => {

@@ -153,17 +153,19 @@ export async function countByOrg(
   k: KernelTx,
   m: CollectionMapping,
 ): Promise<Map<string, number>> {
+  const where = m.countWhere ? ` WHERE ${m.countWhere}` : '';
   if (!m.orgCol) {
     const { rows } = await k.query<{ n: string }>(
-      fill('/* pipeshub:verify.count */ SELECT count(*)::text AS n FROM @{T}', {
-        T: ident(m.table),
-      }),
+      fill(
+        `/* pipeshub:verify.count */ SELECT count(*)::text AS n FROM @{T} t${where}`,
+        { T: ident(m.table) },
+      ),
     );
     return new Map([['', Number(rows[0]?.n ?? 0)]]);
   }
   const { rows } = await k.query<{ o: string; n: string }>(
     fill(
-      '/* pipeshub:verify.count_by_org */ SELECT t.@{O}::text AS o, count(*)::text AS n FROM @{T} t GROUP BY t.@{O}',
+      `/* pipeshub:verify.count_by_org */ SELECT t.@{O}::text AS o, count(*)::text AS n FROM @{T} t${where} GROUP BY t.@{O}`,
       {
         T: ident(m.table),
         O: ident(m.orgCol),

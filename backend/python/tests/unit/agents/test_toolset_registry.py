@@ -7,11 +7,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.connectors.core.registry.tool_builder import ToolsetCategory
-
+from tests.support.toolset_registry import toolset_registry_restored
 
 # ---------------------------------------------------------------------------
 # Helpers: since ToolsetRegistry is a singleton, we need to reset it
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _process_registry_kept() -> typing.Iterator[None]:
+    """Each test here replaces the process-wide singleton; later files get theirs back."""
+    with toolset_registry_restored():
+        yield
+
 
 def _fresh_registry():
     """Create a fresh ToolsetRegistry by resetting the singleton."""
@@ -40,8 +47,10 @@ def _restore_registry_singleton() -> typing.Iterator[None]:
 class TestToolsetDecorator:
     def test_string_auth_type_normalized(self):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         @Toolset(
+            provider=ToolProvider.CONNECTOR,
             name="TestTool",
             app_group="Test",
             supported_auth_types="API_TOKEN",
@@ -56,8 +65,10 @@ class TestToolsetDecorator:
 
     def test_list_auth_types(self):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         @Toolset(
+            provider=ToolProvider.CONNECTOR,
             name="Multi",
             app_group="G",
             supported_auth_types=["OAUTH", "API_TOKEN"],
@@ -70,9 +81,11 @@ class TestToolsetDecorator:
 
     def test_empty_auth_types_raises(self):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         with pytest.raises(ValueError, match="cannot be empty"):
             @Toolset(
+                provider=ToolProvider.CONNECTOR,
                 name="Bad",
                 app_group="G",
                 supported_auth_types=[],
@@ -82,9 +95,11 @@ class TestToolsetDecorator:
 
     def test_invalid_auth_type_raises(self):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         with pytest.raises(ValueError, match="must be str or List"):
             @Toolset(
+                provider=ToolProvider.CONNECTOR,
                 name="Bad",
                 app_group="G",
                 supported_auth_types=123,
@@ -94,8 +109,10 @@ class TestToolsetDecorator:
 
     def test_category_with_value_attribute(self):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         @Toolset(
+            provider=ToolProvider.CONNECTOR,
             name="Cat",
             app_group="G",
             supported_auth_types="API_TOKEN",
@@ -108,8 +125,10 @@ class TestToolsetDecorator:
 
     def test_string_category(self):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         @Toolset(
+            provider=ToolProvider.CONNECTOR,
             name="Str",
             app_group="G",
             supported_auth_types="API_TOKEN",
@@ -122,8 +141,10 @@ class TestToolsetDecorator:
 
     def test_internal_flag(self):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         @Toolset(
+            provider=ToolProvider.PLATFORM,
             name="Internal",
             app_group="G",
             supported_auth_types="API_TOKEN",
@@ -171,8 +192,10 @@ class TestToolsetRegistry:
 
     def test_register_toolset_success(self):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         @Toolset(
+            provider=ToolProvider.CONNECTOR,
             name="TestReg",
             app_group="G",
             supported_auth_types="API_TOKEN",
@@ -357,8 +380,10 @@ class TestGetAllRegisteredToolsets:
     @pytest.mark.asyncio
     async def test_internal_toolsets_excluded(self):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         @Toolset(
+            provider=ToolProvider.PLATFORM,
             name="Internal",
             app_group="G",
             supported_auth_types="API_TOKEN",
@@ -374,12 +399,13 @@ class TestGetAllRegisteredToolsets:
     @pytest.mark.asyncio
     async def test_search_filter(self):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
-        @Toolset(name="Alpha", app_group="G1", supported_auth_types="API_TOKEN", description="Alpha tool")
+        @Toolset(name="Alpha", app_group="G1", supported_auth_types="API_TOKEN", description="Alpha tool", provider=ToolProvider.CONNECTOR)
         class AlphaTs:
             pass
 
-        @Toolset(name="Beta", app_group="G2", supported_auth_types="API_TOKEN", description="Beta tool")
+        @Toolset(name="Beta", app_group="G2", supported_auth_types="API_TOKEN", description="Beta tool", provider=ToolProvider.CONNECTOR)
         class BetaTs:
             pass
 
@@ -392,7 +418,6 @@ class TestGetAllRegisteredToolsets:
 
     @pytest.mark.asyncio
     async def test_pagination(self):
-        from app.agents.registry.toolset_registry import Toolset
 
         for i in range(5):
             name = f"Tool{i}"
@@ -425,8 +450,10 @@ class TestGetToolsetMetadataSerialization:
 
     def _register_simple_toolset(self, name="TestSer"):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         @Toolset(
+            provider=ToolProvider.CONNECTOR,
             name=name,
             app_group="G",
             supported_auth_types="API_TOKEN",
@@ -503,7 +530,6 @@ class TestSanitizeOAuthConfigs:
             pass
 
         # Actually test the real fallback by making asdict raise
-        from dataclasses import asdict
         oauth_configs = {"OAUTH": bad_dc}
         # The real method handles this - just verify it doesn't crash
         result = self.registry._sanitize_oauth_configs(oauth_configs)
@@ -527,7 +553,8 @@ class TestConvertParametersToDict:
 
     def test_with_pydantic_schema(self):
         """When tool has args_schema (Pydantic model), convert its fields."""
-        from pydantic import BaseModel, Field as PydanticField
+        from pydantic import BaseModel
+        from pydantic import Field as PydanticField
 
         class MySchema(BaseModel):
             query: str = PydanticField(description="Search query")
@@ -633,7 +660,6 @@ class TestDiscoverToolsets:
             mock_module = MagicMock()
             mock_module.__name__ = "test_module"
             # No classes with _toolset_metadata
-            import inspect
             with patch("inspect.getmembers", return_value=[]):
                 mock_import.return_value = mock_module
                 self.registry.discover_toolsets(["test_module"])
@@ -648,7 +674,10 @@ class TestDiscoverToolsets:
 class TestToolsetDecoratorWithTools:
     def test_tools_list_converted(self):
         from app.agents.registry.toolset_registry import Toolset
-        from app.connectors.core.registry.tool_builder import ToolDefinition
+        from app.connectors.core.registry.tool_builder import (
+            ToolDefinition,
+            ToolProvider,
+        )
 
         tool_def = ToolDefinition(
             name="create_issue",
@@ -659,6 +688,7 @@ class TestToolsetDecoratorWithTools:
         )
 
         @Toolset(
+            provider=ToolProvider.CONNECTOR,
             name="Jira",
             app_group="Atlassian",
             supported_auth_types="OAUTH",
@@ -674,8 +704,10 @@ class TestToolsetDecoratorWithTools:
 
     def test_no_tools_empty_list(self):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         @Toolset(
+            provider=ToolProvider.CONNECTOR,
             name="NoTools",
             app_group="G",
             supported_auth_types="API_TOKEN",
@@ -688,8 +720,10 @@ class TestToolsetDecoratorWithTools:
     def test_category_as_non_enum_non_string(self):
         """Category that is not enum and not string gets str() applied."""
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         @Toolset(
+            provider=ToolProvider.CONNECTOR,
             name="WeirdCat",
             app_group="G",
             supported_auth_types="API_TOKEN",
@@ -712,8 +746,9 @@ class TestGetAllRegisteredToolsetsOptions:
     @pytest.mark.asyncio
     async def test_include_tools_false(self):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
-        @Toolset(name="Alpha", app_group="G1", supported_auth_types="API_TOKEN", description="Alpha tool")
+        @Toolset(name="Alpha", app_group="G1", supported_auth_types="API_TOKEN", description="Alpha tool", provider=ToolProvider.CONNECTOR)
         class AlphaTs:
             pass
 
@@ -726,8 +761,9 @@ class TestGetAllRegisteredToolsetsOptions:
     @pytest.mark.asyncio
     async def test_search_by_app_group(self):
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
-        @Toolset(name="Alpha", app_group="Atlassian", supported_auth_types="API_TOKEN", description="Alpha")
+        @Toolset(name="Alpha", app_group="Atlassian", supported_auth_types="API_TOKEN", description="Alpha", provider=ToolProvider.CONNECTOR)
         class AlphaTs:
             pass
 
@@ -738,7 +774,6 @@ class TestGetAllRegisteredToolsetsOptions:
 
     @pytest.mark.asyncio
     async def test_pagination_hasPrev(self):
-        from app.agents.registry.toolset_registry import Toolset
 
         for i in range(3):
             cls_dict = {"_toolset_metadata": {
@@ -784,7 +819,6 @@ class TestDiscoverToolsGetmembersException:
 
     def test_getmembers_loop_exception_continues(self):
         """When accessing _tool_metadata on a function raises, the loop continues."""
-        import inspect
 
         # Create a class with a function where _tool_metadata access raises
         class ProblematicToolMetadata:
@@ -819,7 +853,6 @@ class TestDiscoverToolsGetmembersException:
 
     def test_getmembers_hasattr_raises(self):
         """When hasattr check on _tool_metadata itself triggers an exception."""
-        import inspect
 
         class ExplodingDescriptor:
             """A descriptor that raises when accessed."""
@@ -1116,9 +1149,12 @@ class TestDiscoverToolsetsWithRealClass:
     def test_discover_module_with_toolset_class(self):
         """When a module contains a class with _toolset_metadata, it gets registered."""
         from types import ModuleType
+
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         @Toolset(
+            provider=ToolProvider.CONNECTOR,
             name="Discovered",
             app_group="G",
             supported_auth_types="API_TOKEN",
@@ -1236,8 +1272,10 @@ class TestGetAllRegisteredToolsetsSerializationFailure:
         """When get_toolset_metadata returns None for a toolset, it's skipped."""
         # Register a non-internal toolset
         from app.agents.registry.toolset_registry import Toolset
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         @Toolset(
+            provider=ToolProvider.CONNECTOR,
             name="SerFailTest",
             app_group="G",
             supported_auth_types="API_TOKEN",

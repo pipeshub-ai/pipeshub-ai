@@ -185,7 +185,7 @@ export function StepOrgProfile({ onSuccess }: StepOrgProfileProps) {
           <Text
             as="div"
             size="2"
-            style={{ color: 'var(--gray-9)' }}
+            style={{ color: 'var(--gray-11)' }}
           >
             Create your organization profile
           </Text>

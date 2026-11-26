@@ -562,6 +562,10 @@ async def test_failed_sink_rolls_back_the_records_it_already_wrote():
     keys = {tuple(c.args[0]) for c in gp.delete_nodes_and_edges.await_args_list}
     assert len(keys) == 1 and len(next(iter(keys))) == 1
     gp.delete_nodes.assert_not_awaited()
+    # CLEANUP-G5: the file it stored and its parsed blocks' documents are purged too.
+    bs.purge_document.assert_awaited_once_with("org-1", "ext")
+    [(org, virtual_record_id)] = [c.args for c in bs.purge_virtual_record_documents.await_args_list]
+    assert org == "org-1" and virtual_record_id
 
 
 @pytest.mark.asyncio
@@ -597,6 +601,119 @@ async def test_rollback_never_raises_over_the_original_error():
     assert gp.delete_nodes_and_edges.await_count == 2
 
 
+def _config_with_harness(*, labs: bool) -> AsyncMock:
+    """The request's configuration service: the org's Labs ``ENABLE_AGENT_HARNESS`` (ADR-OPS-08); any other read
+    answers what an unset key does."""
+    from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
+
+    async def get_config(key: str, default: object = None, **_kwargs: object) -> object:
+        return {"featureFlags": {"ENABLE_AGENT_HARNESS": labs}} if key == PLATFORM_SETTINGS_KEY else default
+
+    config = AsyncMock()
+    config.get_config.side_effect = get_config
+    return config
+
+
+async def _upload_text_as(
+    user: dict, graph: object, conversation_id: str | None = None, *, labs: bool = True,
+) -> list[str]:
+    from app.api.routes.chatbot import upload_chat_attachments
+
+    text = b"meeting notes"
+    req = MagicMock()
+    req.json = AsyncMock(return_value={"attachments": [
+        {"fileName": "notes.txt", "mimeType": "text/plain", "size": len(text),
+         "contentBase64": base64.b64encode(text).decode("ascii")},
+    ] * 2, **({"conversationId": conversation_id} if conversation_id else {})})
+    req.state.user = user
+    req.app.container.logger.return_value = MagicMock()
+    with patch("app.api.routes.chatbot.BlobStorage") as blob_storage, patch(
+        "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+    ), patch("app.api.routes.chatbot.SinkOrchestrator", return_value=AsyncMock()):
+        blob_storage.return_value.save_binary_to_storage = AsyncMock(return_value=("doc-1", None))
+        out = await upload_chat_attachments(req, graph, _config_with_harness(labs=labs))
+    return [attachment["recordId"] for attachment in out["attachments"]]
+
+
+@pytest.mark.asyncio
+async def test_qa15g_2_a_members_upload_names_them_and_is_granted_to_their_user_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.unit.services.artifact_registry.fakes import FakeGraphProvider
+
+    monkeypatch.setenv("AGENT_HARNESS_WORKER_ENABLED", "true")
+
+    graph = FakeGraphProvider()
+    graph.add_user("user-1", key="ukey-1")
+    record_ids = await _upload_text_as(
+        {"orgId": "org-1", "userId": "user-1", "isServiceAccount": False}, graph, conversation_id="conv-1"
+    )
+
+    for record_id in record_ids:
+        record = graph.nodes["records"][record_id]
+        assert (record["uploaderUserId"], record["uploaderKind"]) == ("user-1", "person")
+        assert (record["awaitingSend"], record["uploadConversationId"]) == (True, "conv-1")
+        assert "uploaderAgentKey" not in record
+    assert [(e["from_id"], e["to_id"], e["role"]) for e in graph.edges["permission"]] == [
+        ("ukey-1", record_id, "OWNER") for record_id in record_ids
+    ]
+
+
+@pytest.mark.asyncio
+async def test_qa15g_2_a_service_accounts_upload_names_the_person_and_agent_and_is_granted_to_the_org(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.unit.services.artifact_registry.fakes import FakeGraphProvider
+
+    monkeypatch.setenv("AGENT_HARNESS_WORKER_ENABLED", "true")
+
+    graph = FakeGraphProvider()
+    record_ids = await _upload_text_as(
+        {"orgId": "org-1", "userId": "slack-person", "isServiceAccount": True, "agentKey": "agent-7",
+         "token_type": "scoped", "scopes": ["conversation:create"]},
+        graph,
+    )
+
+    for record_id in record_ids:
+        record = graph.nodes["records"][record_id]
+        assert (record["uploaderUserId"], record["uploaderKind"], record["uploaderAgentKey"]) == (
+            "slack-person", "service_account", "agent-7",
+        )
+    assert [(e["from_id"], e["from_collection"], e["to_id"]) for e in graph.edges["permission"]] == [
+        ("org-1", "organizations", record_id) for record_id in record_ids
+    ]
+
+
+@pytest.mark.asyncio
+# The switch off, or the switch on with the org's Labs off (ADR-OPS-08): the same record.
+@pytest.mark.parametrize(("switch", "labs"), [("false", True), ("off", True), ("true", False), (None, False)])
+@pytest.mark.parametrize("service_account", [False, True])
+async def test_with_the_harness_off_an_uploads_record_is_written_as_before_the_upload_fields(
+    monkeypatch: pytest.MonkeyPatch, switch: str | None, labs: bool, service_account: bool,
+) -> None:
+    from app.schema.arango.documents import record_schema
+    from tests.unit.services.artifact_registry.fakes import FakeGraphProvider
+
+    if switch is None:
+        monkeypatch.delenv("AGENT_HARNESS_WORKER_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_HARNESS_WORKER_ENABLED", switch)
+    graph = FakeGraphProvider()
+    graph.add_user("user-1", key="ukey-1")
+    user = {"orgId": "org-1", "userId": "user-1", "isServiceAccount": service_account, "agentKey": "agent-7"}
+    record_ids = await _upload_text_as(
+        {**user, "token_type": "scoped", "scopes": ["conversation:create"]} if service_account else user,
+        graph,
+        conversation_id="conv-1",
+        labs=labs,
+    )
+
+    new_fields = {"awaitingSend", "uploadConversationId", "uploaderAgentKey", "uploaderKind", "uploaderUserId"}
+    assert record_ids
+    for record_id in record_ids:
+        record = graph.nodes["records"][record_id]
+        assert not new_fields & set(record)
+        assert set(record) - {"_key", "id"} <= set(record_schema["rule"]["properties"]) - new_fields
 def _pdf_upload_request(name: str = "deck.pdf") -> MagicMock:
     content = b"%PDF-1.7 fake"
     req = MagicMock()
@@ -636,16 +753,20 @@ class TestPdfAttachmentFailsOnItsOwn:
 
     @pytest.mark.asyncio
     async def test_a_parse_past_the_deadline_is_stopped_and_explained(self) -> None:
+        stopped = asyncio.Event()
+
         async def never_finishes(*_: object) -> None:
-            await asyncio.sleep(30)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                stopped.set()
+                raise
 
         processor = MagicMock(parse_document=AsyncMock(side_effect=never_finishes))
-        loop = asyncio.get_running_loop()
-        started = loop.time()
 
         error = await self._upload(processor, timeout_s=0.2)
 
-        assert loop.time() - started < 5
+        assert stopped.is_set()
         assert error.status_code == 422
         assert error.detail == (
             "deck.pdf took too long to read, so it wasn't attached. "

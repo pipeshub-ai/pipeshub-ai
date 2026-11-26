@@ -1,12 +1,13 @@
 'use client';
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import type { AuthMethod } from '../api';
 import SingleProvider from './single-provider';
 import AuthTitleSection from '../components/auth-title-section';
+import { useScrollEdges } from '@/lib/hooks/use-scroll-edges';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -74,31 +75,10 @@ export default function MultipleProviders({
 }: MultipleProvidersProps) {
   const [activeMethod, setActiveMethod] = useState<AuthMethod>(allowedMethods[0]);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [canScrollLeft, setCanScrollLeft] = useState(false);
-  const [canScrollRight, setCanScrollRight] = useState(false);
+  const { start: canScrollLeft, end: canScrollRight } = useScrollEdges(scrollRef);
 
   const { t } = useTranslation();
   const tabs = allowedMethods.map((method) => getTabConfig(method, t));
-
-  const updateScrollState = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    setCanScrollLeft(el.scrollLeft > 0);
-    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
-  }, []);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    updateScrollState();
-    el.addEventListener('scroll', updateScrollState);
-    const ro = new ResizeObserver(updateScrollState);
-    ro.observe(el);
-    return () => {
-      el.removeEventListener('scroll', updateScrollState);
-      ro.disconnect();
-    };
-  }, [updateScrollState]);
 
   const scrollBy = (direction: 'left' | 'right') => {
     scrollRef.current?.scrollBy({ left: direction === 'left' ? -120 : 120, behavior: 'smooth' });
@@ -173,7 +153,7 @@ export default function MultipleProviders({
                   border: 'none',
                   cursor: 'pointer',
                   background: isActive ? 'var(--olive-1)' : 'transparent',
-                  color: isActive ? 'var(--slate-12)' : 'var(--slate-10)',
+                  color: isActive ? 'var(--slate-12)' : 'var(--slate-11)',
                   transition: 'background 120ms ease, color 120ms ease',
                   boxShadow: isActive ? '0 1px 3px var(--slate-a4)' : 'none',
                   whiteSpace: 'nowrap',

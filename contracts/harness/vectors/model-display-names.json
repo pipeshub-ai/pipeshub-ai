@@ -1,0 +1,60 @@
+{
+  "description": "The name a person sees for a configured model (P2.2): the admin's display name (modelFriendlyName), qualified by the model when the entry lists several; the model name when there is no display name; a fixed label when the entry is gone. Never the model key, a deployment name or a key. Pinned by Python tests/unit/config/test_model_display_name.py and Node tests/modules/configuration_manager/model-display-name.test.ts.",
+  "unavailable": "Unavailable model",
+  "cases": [
+    {
+      "id": "friendly-one-model",
+      "entry": {"modelKey": "k1", "provider": "openAI", "modelFriendlyName": "Team GPT", "configuration": {"model": "gpt-4o", "apiKey": "sk-secret"}},
+      "modelName": "gpt-4o",
+      "display": "Team GPT"
+    },
+    {
+      "id": "friendly-several-models",
+      "entry": {"modelKey": "k2", "provider": "openAI", "modelFriendlyName": "Team GPT", "configuration": {"model": "gpt-4o, gpt-4o-mini"}},
+      "modelName": "gpt-4o-mini",
+      "display": "Team GPT (gpt-4o-mini)"
+    },
+    {
+      "id": "friendly-padded",
+      "entry": {"modelKey": "k3", "provider": "anthropic", "modelFriendlyName": "  Claude for support  ", "configuration": {"model": "claude-x"}},
+      "modelName": "claude-x",
+      "display": "Claude for support"
+    },
+    {
+      "id": "no-friendly",
+      "entry": {"modelKey": "k4", "provider": "azureOpenAI", "configuration": {"model": "gpt-4o", "deploymentName": "prod-eastus-gpt4o-7", "apiKey": "secret"}},
+      "modelName": "gpt-4o",
+      "display": "gpt-4o"
+    },
+    {
+      "id": "blank-friendly",
+      "entry": {"modelKey": "k5", "provider": "openAI", "modelFriendlyName": "   ", "configuration": {"model": "gpt-4o"}},
+      "modelName": "gpt-4o",
+      "display": "gpt-4o"
+    },
+    {
+      "id": "no-model-name-given",
+      "entry": {"modelKey": "k6", "provider": "openAI", "configuration": {"model": "gpt-4o, gpt-4o-mini"}},
+      "modelName": null,
+      "display": "gpt-4o"
+    },
+    {
+      "id": "friendly-several-no-model-name",
+      "entry": {"modelKey": "k7", "provider": "openAI", "modelFriendlyName": "Team GPT", "configuration": {"model": "gpt-4o, gpt-4o-mini"}},
+      "modelName": null,
+      "display": "Team GPT"
+    },
+    {
+      "id": "entry-gone",
+      "entry": null,
+      "modelName": "gpt-4o",
+      "display": "Unavailable model"
+    },
+    {
+      "id": "nothing-to-name",
+      "entry": {"modelKey": "k8", "provider": "openAI", "configuration": {"deploymentName": "prod-1"}},
+      "modelName": null,
+      "display": "Unavailable model"
+    }
+  ]
+}

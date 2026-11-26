@@ -37,7 +37,8 @@ def _node_access(placeholder: bool) -> AsyncMock:
 def _identifier_and_rows(path: str) -> tuple[str, list[dict[str, Any]]]:
     """Identifier and rows."""
     if path == "record id":
-        return RECORD_ID, [{**PP_8, "_key": RECORD_ID}]
+        # A record read by its id is held to the user's catalog, so it names its connector as a stored one does.
+        return RECORD_ID, [{**PP_8, "_key": RECORD_ID, "connectorId": "conn-jira"}]
     return ("PP-8" if path == "issue key" else f"{SITE}/browse/PP-8"), [PP_8]
 
 

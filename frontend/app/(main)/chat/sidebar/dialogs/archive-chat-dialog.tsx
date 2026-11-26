@@ -1,6 +1,7 @@
 'use client';
 
-import { Dialog, Flex, Text, Button, Box, VisuallyHidden } from '@radix-ui/themes';
+import { Dialog, Flex, Text, Button, Box } from '@radix-ui/themes';
+import { DialogHeading } from '@/app/components/ui/dialog-heading';
 import { useTranslation } from 'react-i18next';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 
@@ -54,22 +55,19 @@ export function ArchiveChatDialog({
           zIndex: 1000,
         }}
       >
-        <VisuallyHidden>
-          <Dialog.Title>Archive Confirmation</Dialog.Title>
-        </VisuallyHidden>
         <Flex direction="column" gap="4">
-          <Flex direction="column" gap="1">
-            <Text size="5" weight="bold">
-              {t('chat.archiveChatConfirm')}
-            </Text>
-            <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              {t('chat.archiveChatDescription')}{' '}
-              <Text size="2" weight="bold" style={{ color: 'var(--slate-12)' }}>
-                &apos;{chatTitle}&apos;
-              </Text>{' '}
-              {t('chat.archiveChatWarning')}
-            </Text>
-          </Flex>
+          <DialogHeading
+            title={t('chat.archiveChatTitle')}
+            description={
+              <>
+                {t('chat.archiveChatDescription')}{' '}
+                <Text size="2" weight="bold" style={{ color: 'var(--slate-12)' }}>
+                  &apos;{chatTitle}&apos;
+                </Text>{' '}
+                {t('chat.archiveChatWarning')}
+              </>
+            }
+          />
 
           <Flex gap="2" justify="end">
             <Button

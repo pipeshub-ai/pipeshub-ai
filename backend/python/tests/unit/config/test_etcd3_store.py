@@ -681,7 +681,7 @@ class TestLoggingInAgain:
     minutes by default), after which every call is rejected."""
 
     @pytest.fixture
-    def make_store(self):
+    def make_store(self) -> Callable[..., tuple]:
         from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
 
         def make(*clients) -> tuple:
@@ -1011,6 +1011,51 @@ class TestLoggingInAgain:
             await store.get_key("/k")
 
         assert second_refusing.call_count == 2
+
+
+class TestComponentScopedSubscription:
+    """R38IDENT-FU-9: a sandbox-plane component's etcd role reads only its own document, so its change subscription
+    watches that key alone; a watch of every key ("/") would be refused by etcd."""
+
+    @pytest.fixture
+    def make_store(self) -> Callable[..., tuple]:
+        from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
+
+        def make(*clients) -> tuple:
+            factory = patch(
+                "app.config.providers.etcd.etcd3_connection_manager.etcd3.client",
+                side_effect=list(clients),
+            )
+            store = Etcd3DistributedKeyValueStore(
+                serializer=lambda v: json.dumps(v).encode(),
+                deserializer=lambda b: json.loads(b.decode()),
+                host="etcd.test",
+                port=2379,
+            )
+            return store, factory
+
+        return make
+
+    async def test_a_scoped_subscription_watches_each_key_and_never_the_prefix(self, make_store) -> None:
+        client = _LoggedInClient()
+        store, factory = make_store(client)
+        changes: list = []
+        doc = "/services/agentHarness/components/egressProxy"
+        with factory:
+            handle = await store.subscribe_changes(changes.append, keys=[doc])
+            assert client.added == [doc]
+            (watch_id,) = list(client.watches)
+            client.watches[watch_id][1](_watch_response(_put_event(doc, b'"x"')))
+            await store.unsubscribe_changes(handle)
+        assert changes == [doc]
+        assert client.cancelled == [watch_id]
+
+    async def test_without_keys_it_still_watches_every_key(self, make_store) -> None:
+        client = _LoggedInClient()
+        store, factory = make_store(client)
+        with factory:
+            await store.subscribe_changes(lambda _key: None)
+        assert client.added == ["/"]
 
 
 # ============================================================================

@@ -2,8 +2,9 @@
 
 The backend-matrix workflow starts Neo4j and ArangoDB from
 deployment/docker-compose/docker-compose.integration.graph-db.yml and sets
-NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL and ARANGO_IT_PASSWORD; the
-defaults below match that file, so a local run needs nothing exported.
+NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL and ARANGO_IT_PASSWORD. A local
+run exports the URL of each backend it means to use (the ports in that file are
+bolt://localhost:17687 and http://localhost:18529); an unset one is skipped.
 """
 
 from __future__ import annotations
@@ -23,22 +24,24 @@ from app.services.graph_db.arango.arango_http_provider import (
     ArangoHTTPProvider,
 )
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support import it_backends
 
 if TYPE_CHECKING:
     import logging
+
+    import pytest
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 REQUIRED_WHEN_SET = {"neo4j": "NEO4J_IT_URI", "arango": "ARANGO_IT_URL"}
 
-NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
 NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 
 
 async def connect_neo4j(logger: logging.Logger, monkeypatch: pytest.MonkeyPatch) -> IGraphDBProvider:
-    monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
+    neo4j_uri = it_backends.endpoint("NEO4J_IT_URI")
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
     monkeypatch.setenv("NEO4J_DATABASE", "neo4j")
@@ -71,9 +74,10 @@ async def _neo4j_schema_present(provider: Neo4jProvider) -> bool:
 
 
 async def connect_arango(logger: logging.Logger, database: str) -> IGraphDBProvider:
+    arango_url = it_backends.endpoint("ARANGO_IT_URL")
     config_service = MagicMock()
     config_service.get_config = AsyncMock(
-        return_value={"url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": database}
+        return_value={"url": arango_url, "username": "root", "password": ARANGO_PASSWORD, "db": database}
     )
     provider = ArangoHTTPProvider(logger, config_service)
     if not await asyncio.wait_for(provider.connect(), timeout=60):
@@ -107,13 +111,5 @@ async def _arango_schema_present(provider: ArangoHTTPProvider) -> bool:
 
 
 def backend_unavailable(backend: str, error: BaseException) -> NoReturn:
-    """Fail when the job said this backend is there (backend-matrix sets its URL); skip otherwise.
-
-    The unit job collects these files on a runner with no graph, where a skip is
-    right. Where the backend was configured, a skip would turn a broken backend
-    into a green run.
-    """
-    variable = REQUIRED_WHEN_SET[backend]
-    if os.environ.get(variable):
-        pytest.fail(f"{backend} is configured ({variable}={os.environ[variable]}) but could not be used: {error!r}")
-    pytest.skip(f"{backend} not available (set {variable} to require it): {error}")
+    """Fail when the job said this backend is there (backend-matrix sets its URL); skip otherwise."""
+    it_backends.unavailable(REQUIRED_WHEN_SET[backend], error)

@@ -1,6 +1,7 @@
 """redact_secrets_in_text and the formatters and handlers that apply it."""
 
 import ast
+import gc
 import io
 import json
 import logging
@@ -125,10 +126,75 @@ def test_secret_is_masked(text: str, secret: str) -> None:
         "password=",
         "secret: [REDACTED]",
         "AccountName=acct account_id=4242424242 accountIdentifier=xy12345.eu-west-1 AccountKind=StorageV2",
+        # Near-misses of the connector token shapes: words, ids, hashes and URLs that only start like one.
+        "ya29 is the error code; see the secret_santa sheet and the lin_api_docs page",
+        "record 3fa85f64-5717-4562-b3fc-2c963f66afa6 moved to page 1//0 of 3",
+        "```\ncommit 9fceb02d0ae598e95dc970b74767f19372d61af8\nsha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n```",
+        "https://gitlab.com/help/user/profile/personal_access_tokens glpat-docs and https://www.notion.so/My-Page-1a2b3c4d5e6f",
+        "ATATT is the prefix Atlassian uses; Notion's start with ntn_ and older ones with secret_",
+        "mysecret_0123456789012345678901234567890123456789 and xntn_0123456789012345678901234567890123456789",
     ],
 )
 def test_ordinary_text_is_unchanged(text: str) -> None:
     assert redact_secrets_in_text(text) == text
+
+
+def _body(n: int) -> str:
+    """``n`` token characters holding no other shape's trigger (no ``gh``, ``sk-``, ``eyj``...), so each case below
+    fails when its own trigger or pattern is removed."""
+    return ("SENTINELqrstuvwxyz0123456789QRSTUVWXYZ" * 4)[:n]
+
+
+class TestConnectorTokenShapes:
+    """The tokens PipesHub's connectors hold: Google OAuth access (user and service account) and refresh, GitLab
+    personal and OAuth-application, Notion current and legacy, Atlassian, Linear API and OAuth."""
+
+    @pytest.mark.parametrize(
+        ("text", "token"),
+        [
+            (f"Drive said: Invalid Credentials for ya29.{_body(20)}", f"ya29.{_body(20)}"),
+            (f"service account ya29.c.c0{_body(18)}.{_body(20)} expired", f"ya29.c.c0{_body(18)}.{_body(20)}"),
+            (f"refresh 1//0{_body(30)} failed", f"1//0{_body(30)}"),
+            (f"401 for PRIVATE-TOKEN glpat-{_body(20)}", f"glpat-{_body(20)}"),
+            (f"file out_glpat-{_body(20)}.json", f"glpat-{_body(20)}"),
+            (f"oauth app secret gloas-{_body(64)} refused", f"gloas-{_body(64)}"),
+            (f"notion ntn_{_body(46)}", f"ntn_{_body(46)}"),
+            (f"integration secret_{_body(43)} is invalid", f"secret_{_body(43)}"),
+            (f"jira user:ATATT3xFfGF0{_body(14)}=A1B2C3D4 refused", f"ATATT3xFfGF0{_body(14)}=A1B2C3D4"),
+            (f"linear lin_api_{_body(40)}", f"lin_api_{_body(40)}"),
+            (f"linear oauth lin_oauth_{_body(64)}", f"lin_oauth_{_body(64)}"),
+        ],
+    )
+    def test_the_token_is_masked(self, text: str, token: str) -> None:
+        # Exactly one trigger in the text: its own, so removing it fails this case.
+        assert sum(t in text.lower() for t in log_redaction._KEY_SHAPE_TRIGGERS) == 1, text
+        redacted = redact_secrets_in_text(text)
+        assert token not in redacted and REDACTED in redacted
+
+    def test_an_atlassian_tokens_checksum_tail_is_masked_too(self) -> None:
+        assert redact_secrets_in_text(f"ATATT3xFfGF0{_body(14)}=A1B2C3D4 refused") == f"{REDACTED} refused"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # One character short of each minimum length.
+            f"code ya29.{_body(19)} here",
+            f"page 1//0{_body(29)} here",
+            f"see glpat-{_body(19)} here",
+            f"see ATATT{_body(19)} here",
+            f"see ntn_{_body(39)} here",
+            f"see secret_{_body(42)} here",
+            f"see lin_api_{_body(31)} here",
+            # A legacy Notion token is exactly 43 characters, and never follows `_`: hashes in paths stay.
+            f"see secret_{_body(44)} here",
+            "loaded /cache/secret_9fceb02d0ae598e95dc970b74767f19372d61af8.json",
+            f"top_secret_{_body(43)} stays",
+            # Lookalikes that touch the prefix.
+            "version ya29.1.0, page 1//0abc, ticket ATATT-12, an ATATTACK",
+        ],
+    )
+    def test_a_lookalike_is_unchanged(self, text: str) -> None:
+        assert redact_secrets_in_text(text) == text
 
 
 class TestEnvSecrets:
@@ -163,39 +229,65 @@ class TestEnvSecrets:
 class TestLinearTime:
     """Each shape below makes a backtracking pattern quadratic or worse.
 
-    Wall-clock limits break under coverage or a loaded xdist worker, so each
-    shape is timed at two sizes instead: linear work grows about 4x from n to
-    4n, quadratic work 16x. Runs are timed in this thread's CPU time, so a run
-    that waits for a CPU taken by other workers does not count as slower.
+    Each shape is timed at two sizes and only the growth is held: linear work grows about 4x from n to 4n, quadratic
+    work 16x. The clock is this thread's CPU time, which a loaded host's other processes do not add to, and the two
+    sizes alternate so that cache or frequency changes reach both alike.
     """
 
     SMALL = 250_000
     LARGE = 4 * SMALL
     # Below 8x, so a quadratic pass (16x) fails while timer noise on a linear one passes.
     MAX_GROWTH = 8
-    # Absorbs scheduler jitter when both runs take only a few milliseconds;
-    # a quadratic pass over a megabyte takes far longer than this.
-    SLACK_SECONDS = 0.05
+    # Absorbs jitter when both runs take only a few milliseconds; a quadratic pass over a megabyte takes far longer.
+    SLACK_SECONDS = 0.02
+    ROUNDS = 3
 
     @staticmethod
     def _repeat(unit: str, size: int) -> str:
         return (unit * (size // len(unit) + 1))[:size]
 
-    @staticmethod
-    def _best_of_three(text: str, redact: Callable[[str], str]) -> float:
-        best = float("inf")
-        for _ in range(3):
-            start = time.thread_time()
-            redact(text)
-            best = min(best, time.thread_time() - start)
-        return best
+    @classmethod
+    def _growth(cls, redact: Callable[[str], object], make: Callable[[int], str]) -> tuple[float, float]:
+        small_text, large_text = make(cls.SMALL), make(cls.LARGE)
+        small = large = float("inf")
+        gc_was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            for _ in range(cls.ROUNDS):
+                for text in (small_text, large_text):
+                    start = time.thread_time()
+                    redact(text)
+                    took = time.thread_time() - start
+                    if text is small_text:
+                        small = min(small, took)
+                    else:
+                        large = min(large, took)
+        finally:
+            if gc_was_enabled:
+                gc.enable()
+        return small, large
 
-    def _assert_linear(self, make: Callable[[int], str], redact: Callable[[str], str] = redact_secrets_in_text) -> None:
-        small = self._best_of_three(make(self.SMALL), redact)
-        large = self._best_of_three(make(self.LARGE), redact)
+    def _assert_linear(self, make: Callable[[int], str], redact: Callable[[str], object] = redact_secrets_in_text) -> None:
+        small, large = self._growth(redact, make)
         assert large < self.MAX_GROWTH * small + self.SLACK_SECONDS, (
             f"{self.SMALL} chars took {small:.4f}s, {self.LARGE} chars {large:.4f}s"
         )
+
+    def test_the_check_fails_a_quadratic_redactor(self) -> None:
+        """The growth check keeps its power: a redactor with a quadratic term fails it, a linear one passes."""
+        step = 512
+
+        def quadratic(text: str) -> None:
+            for end in range(0, len(text), step):
+                text.count("\0", 0, end)
+
+        def linear(text: str) -> None:
+            for start in range(0, len(text), step):
+                text.count("\0", start, start + step)
+
+        with pytest.raises(AssertionError, match="chars took"):
+            self._assert_linear(lambda n: "x" * n, redact=quadratic)
+        self._assert_linear(lambda n: "x" * n, redact=linear)
 
     def test_one_megabyte_single_token(self) -> None:
         text = "a" * self.LARGE
@@ -213,6 +305,8 @@ class TestLinearTime:
         "unit",
         [
             "eyJ", "eyJaaaaaaaa.", "_eyJ", "-eyJaaaaaaaa.", "sk-", "_sk-", "_xoxb-", "AKIA", "phpat_", "xoxb-", "AIza", "gh",
+            "ya29.", "ya29..", "1//0", "_1//0", "glpat-", "gloas-", "ntn_", "secret_", "_secret_", "ATATT", "lin_api_",
+            "lin_oauth_",
             "password=", 'password:"', "password: '", "a:", "a=", "a.", "a" * 200 + ":",
             "-----BEGIN ", "-----BEGIN PRIVATE KEY-----", "Bearer ", "Basic AAAAAAA= ",
             "https://", "://", "https://h/?" + "=" * 900 + " ", "https://u:" + "p@" * 400 + " ",

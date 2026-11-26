@@ -1,0 +1,43 @@
+{
+ "scenario": "agent_react_tool_error_then_success",
+ "parts": [
+  {
+   "type": "text",
+   "content": "",
+   "runId": "run-golden"
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-bad",
+   "toolName": "goldendocs__lookup_ticket",
+   "args": "{\"ticket_id\": \"T-4\"}",
+   "status": "failed",
+   "runId": "run-golden",
+   "argsSummary": "Lookup Ticket",
+   "resultPreview": "Ticket T-4 does not exist",
+   "resultSummary": "Failed: Ticket T-4 does not exist"
+  },
+  {
+   "type": "text",
+   "content": "",
+   "runId": "run-golden"
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-good",
+   "toolName": "goldendocs__lookup_ticket",
+   "args": "{\"ticket_id\": \"T-42\"}",
+   "status": "completed",
+   "runId": "run-golden",
+   "argsSummary": "Lookup Ticket",
+   "resultPreview": "{\"id\": \"T-42\", \"status\": \"resolved\", \"owner\": \"Priya\"}",
+   "resultSummary": "Completed successfully"
+  },
+  {
+   "type": "text",
+   "content": "Ticket T-42 is resolved and Priya owns it.",
+   "runId": "run-golden",
+   "isFinal": true
+  }
+ ]
+}

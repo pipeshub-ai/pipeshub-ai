@@ -1,15 +1,23 @@
-import type { CitationOrigin } from './components/message-area/response-tabs/citations';
-import type { CitationMaps } from './components/message-area/response-tabs/citations/types';
-import type { ThreadMessageLike } from '@assistant-ui/react';
-import { ACCEPTED_MIME_TYPES, SUPPORTED_FILE_TYPES } from './utils/attachment-file-types';
+import type { ConversationRunState } from '@/lib/contracts/harness/generated/ext/pipeshub/api/conversation-run-state';
+import type { CitationOrigin } from "./components/message-area/response-tabs/citations";
+import type { CitationMaps, StreamingCitationData } from "./components/message-area/response-tabs/citations/types";
+import type { ThreadMessageLike } from "@assistant-ui/react";
+import {
+  ACCEPTED_MIME_TYPES,
+  SUPPORTED_FILE_TYPES,
+} from "./utils/attachment-file-types";
+import type { CutShortReason, InteractionDecision, RuleLayer } from '@/lib/contracts/harness/generated/core/enums';
+import type { TurnGatesRequest } from './run-gates';
+import type { ResolvedRunConfig } from '@/lib/contracts/control-plane/generated/resolved-run-config';
+import type { RepoActivity } from './repository-steps';
 
 // Chat types following project conventions
 
 // Confidence level for bot responses
-export type ConfidenceLevel = 'Very High' | 'High' | 'Medium' | 'Low';
+export type ConfidenceLevel = "Very High" | "High" | "Medium" | "Low";
 
 // Tab types for response view
-export type ResponseTab = 'answer' | 'sources' | 'citation';
+export type ResponseTab = "answer" | "sources" | "citation";
 
 /**
  * Platform-normalized reasoning effort levels. `null`/absent means "no
@@ -25,20 +33,20 @@ export type ResponseTab = 'answer' | 'sources' | 'citation';
  * `'none'` to `'low'` instead of honoring it — see `_reasoning_effort_kwargs`
  * in `app/utils/aimodels.py`.
  */
-export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max';
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "max";
 
 /**
  * Effective reasoning effort applied by the backend (`_reasoning_effort_kwargs`
  * in `backend/python/app/utils/aimodels.py`) when neither the user, the agent
  * nor the model set one. Kept in sync with `DEFAULT_REASONING_EFFORT` there.
  */
-export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'high';
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high";
 
 /**
  * What the backend actually floors a legacy `'none'` to
  * (`REASONING_MANDATORY_FALLBACK_EFFORT` in `app/utils/llm_api_mode_store.py`).
  */
-const REASONING_MANDATORY_FALLBACK_EFFORT: ReasoningEffort = 'low';
+const REASONING_MANDATORY_FALLBACK_EFFORT: ReasoningEffort = "low";
 
 /**
  * Maps a persisted/legacy `'none'` to the value the backend actually runs
@@ -46,23 +54,23 @@ const REASONING_MANDATORY_FALLBACK_EFFORT: ReasoningEffort = 'low';
  * agrees with server behavior instead of echoing a choice that's no longer offered.
  */
 export function normalizeReasoningEffort(
-  value: ReasoningEffort | null
+  value: ReasoningEffort | null,
 ): ReasoningEffort | null {
-  return value === 'none' ? REASONING_MANDATORY_FALLBACK_EFFORT : value;
+  return value === "none" ? REASONING_MANDATORY_FALLBACK_EFFORT : value;
 }
 
 // Inline citation for display within answer text
 export interface InlineCitation {
   id: string;
-  label: string;      // e.g., "Sales 1", "Gmail 3"
+  label: string; // e.g., "Sales 1", "Gmail 3"
   sourceType: string; // For icon/color mapping (slack, gmail, jira, etc.)
-  sourceId?: string;  // Reference to source for scroll targeting
+  sourceId?: string; // Reference to source for scroll targeting
 }
 
 export interface ChatMessage {
   id: string;
   conversationId: string;
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   content: string;
   createdAt: string;
   sources?: ChatSource[];
@@ -142,6 +150,7 @@ export interface ConversationPagination {
 }
 
 export interface ConversationApiResponse {
+  harnessState?: ConversationRunState;
   _id: string;
   userId: string;
   orgId: string;
@@ -170,7 +179,7 @@ export interface ConversationApiResponse {
   agentKey?: string;
 }
 
-export type ConversationSource = 'owned' | 'shared';
+export type ConversationSource = "owned" | "shared";
 
 export interface ConversationsListResponse {
   conversations: ConversationApiResponse[];
@@ -204,12 +213,16 @@ export interface Conversation {
   sharedBy?: SharedByInfo;
   /** Set on a shared agent conversation: the agent it belongs to. */
   agentKey?: string;
+  /** ADR-UI-01 D2: the chat's run state for the caller (working, needs you, finished and not seen); harness only. */
+  harnessState?: ConversationRunState;
 }
 
 export interface ChatSuggestion {
   id: string;
   text: string;
-  icons: Array<'slack' | 'jira' | 'notion' | 'sheets' | 'confluence' | 'github'>;
+  icons: Array<
+    "slack" | "jira" | "notion" | "sheets" | "confluence" | "github"
+  >;
 }
 
 /**
@@ -219,37 +232,38 @@ export interface ChatSuggestion {
  * {@link StreamChatModePayload}. Code that handles `settings.mode` must not
  * import or assign `StreamChatModePayload` values here.
  */
-export type ChatMode = 'chat' | 'search';
+export type ChatMode = "chat" | "search";
 
 /**
  * Query sub-modes selectable from the dropdown panel.
  * These map to API `chatMode` for assistant streams.
  */
-export type QueryMode = 'chat' | 'web-search' | 'image' | 'agent';
+export type QueryMode = "chat" | "web-search" | "agent";
 
 /** Strategy when query mode is Agent (toolbar dropdown). */
-export type AgentStrategy = 'auto' | 'quick' | 'plan-execute' | 'deep';
+export type AgentStrategy = "auto" | "quick" | "plan-execute" | "deep";
 
 /**
  * Segment after `agent:` in the stream API body (differs from {@link AgentStrategy} for plan-execute → planExecute).
  */
-export type AgentStrategyApiSegment = 'auto' | 'quick' | 'planExecute' | 'deep';
+export type AgentStrategyApiSegment = "auto" | "quick" | "planExecute" | "deep";
 
 /**
  * API `chatMode` for streams (assistant modes + agent strategy variant).
- * `web-search`/`image` are UI mode tags persisted for restore; Python route
- * model config currently treats unrecognized values as standard behavior.
+ * The assistant's values are the ones its routes accept (`assistantChatModeSchema`
+ * on the server): a stream and a regenerate refuse anything else.
  */
 export type StreamChatModePayload =
-  | 'web_search'
-  | 'image'
-  | 'internal_search'
-  | 'agent'
+  | "web_search"
+  | "internal_search"
+  | "agent"
   | `agent:${AgentStrategyApiSegment}`;
 
 /** Maps UI agent strategy to the API `agent:` segment (plan-execute → planExecute). */
-export function agentStrategyToApiSegment(strategy: AgentStrategy): AgentStrategyApiSegment {
-  if (strategy === 'plan-execute') return 'planExecute';
+export function agentStrategyToApiSegment(
+  strategy: AgentStrategy,
+): AgentStrategyApiSegment {
+  if (strategy === "plan-execute") return "planExecute";
   return strategy;
 }
 
@@ -261,10 +275,10 @@ export function agentStrategyToApiSegment(strategy: AgentStrategy): AgentStrateg
  * `apply-conversation-model-info.ts`'s job, not this outgoing-request path.
  */
 const AGENT_HTTP_CHAT_MODES: readonly AgentStrategyApiSegment[] = [
-  'auto',
-  'quick',
-  'planExecute',
-  'deep',
+  "auto",
+  "quick",
+  "planExecute",
+  "deep",
 ];
 
 /**
@@ -272,13 +286,13 @@ const AGENT_HTTP_CHAT_MODES: readonly AgentStrategyApiSegment[] = [
  * expected by POST `/api/v1/agents/.../stream` (Python agent routes).
  */
 export function streamChatModeToAgentApiChatMode(
-  chatMode: StreamChatModePayload
+  chatMode: StreamChatModePayload,
 ): AgentStrategyApiSegment {
-  if (typeof chatMode === 'string' && chatMode.startsWith('agent:')) {
+  if (typeof chatMode === "string" && chatMode.startsWith("agent:")) {
     const rest = chatMode.slice(6) as AgentStrategyApiSegment;
     if (AGENT_HTTP_CHAT_MODES.includes(rest)) return rest;
   }
-  return 'auto';
+  return "auto";
 }
 
 /** Configuration for a single query mode option in the selector panel. */
@@ -291,12 +305,12 @@ export interface QueryModeConfig {
   /** Icon identifier — Material Icon name or SVG path (see iconType) */
   icon: string;
   /** How to render the icon */
-  iconType: 'material' | 'svg' | 'component';
+  iconType: "material" | "svg" | "component";
   /** CSS variable references for this mode's color scheme */
   colors: {
-    bg: string;     // Background for active state
-    fg: string;     // Text/label color
-    icon: string;   // Icon color
+    bg: string; // Background for active state
+    fg: string; // Text/label color
+    icon: string; // Icon color
     toggle: string; // Active toggle/indicator color
   };
   /** Whether this mode is currently supported by the backend */
@@ -371,7 +385,7 @@ export function buildAssistantApiFilters(filters: ChatKnowledgeFilters): ChatKno
 }
 
 /** Attached on send for replay + UI; `kind` defaults to `collectionRoot` when absent (legacy). */
-export type ChatCollectionAttachmentKind = 'collectionRoot' | 'recordGroup';
+export type ChatCollectionAttachmentKind = "collectionRoot" | "recordGroup";
 
 export interface ChatCollectionAttachment {
   id: string;
@@ -411,6 +425,8 @@ export interface ChatSettings {
    * Persisted to localStorage key `pipeshub-agent-capabilities`.
    */
   agentCapabilities: AgentCapabilities;
+  /** The "New agent harness" switch (CTL-7): how a new conversation starts. Persisted per browser. */
+  newHarness: boolean;
   /**
    * Per-context map of the model explicitly chosen by the user in the model
    * selector panel. The key is either ASSISTANT_CTX (for the non-agent chat) or
@@ -429,7 +445,10 @@ export interface ChatSettings {
    * Per-context cache of the full model list, with a freshness timestamp.
    * Used for deduping fetches and for invalidating stale selections.
    */
-  availableModels: Record<string, { models: AvailableLlmModel[]; fetchedAt: number }>;
+  availableModels: Record<
+    string,
+    { models: AvailableLlmModel[]; fetchedAt: number }
+  >;
   /**
    * Per-context reasoning effort override, keyed the same way as
    * `selectedModels`. `null`/missing means "use the model's own default".
@@ -454,7 +473,7 @@ export interface ChatSettings {
  * file to the composer (not at send time), so each chip carries its own
  * status. Send is blocked until every chip is `'uploaded'` (or removed).
  */
-export type AttachmentUploadStatus = 'uploading' | 'uploaded' | 'error';
+export type AttachmentUploadStatus = "uploading" | "uploaded" | "error";
 
 /**
  * How a chip entered the composer. `'paste-text'` marks a large plain-text
@@ -462,7 +481,7 @@ export type AttachmentUploadStatus = 'uploading' | 'uploaded' | 'error';
  * `utils/paste-attachment.ts`) — used to render a specialized chip/preview
  * instead of the generic file chip. The others are informational only.
  */
-export type UploadedFileSource = 'upload' | 'drag' | 'paste' | 'paste-text';
+export type UploadedFileSource = "upload" | "drag" | "paste" | "paste-text";
 
 export interface UploadedFile {
   id: string;
@@ -513,11 +532,14 @@ export interface AttachmentRef {
    * same defense-in-depth pattern used server-side. Reserved for future
    * use once the upload pipeline threads real origin metadata through.
    */
-  source?: 'upload' | 'paste-text';
+  source?: "upload" | "paste-text";
+  /** Set by the server once the upload was erased with another conversation that carried it. */
+  removed?: boolean;
 }
 
 /** MIME types accepted by the chat attachment upload endpoint. */
-export const CHAT_ATTACHMENT_ACCEPTED_MIMETYPES = Object.keys(ACCEPTED_MIME_TYPES);
+export const CHAT_ATTACHMENT_ACCEPTED_MIMETYPES =
+  Object.keys(ACCEPTED_MIME_TYPES);
 
 /** Maximum file size for a single chat attachment (5 MB). */
 export const CHAT_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
@@ -541,27 +563,27 @@ export const CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS = 180_000;
  * the only wire vocabulary the client needs to parse.
  */
 export type AGUIWireEventType =
-  | 'RUN_STARTED'
-  | 'RUN_FINISHED'
-  | 'RUN_ERROR'
-  | 'STEP_STARTED'
-  | 'STEP_FINISHED'
-  | 'TEXT_MESSAGE_START'
-  | 'TEXT_MESSAGE_CONTENT'
-  | 'TEXT_MESSAGE_END'
-  | 'REASONING_START'
-  | 'REASONING_MESSAGE_START'
-  | 'REASONING_MESSAGE_CONTENT'
-  | 'REASONING_MESSAGE_END'
-  | 'REASONING_END'
-  | 'TOOL_CALL_START'
-  | 'TOOL_CALL_ARGS'
-  | 'TOOL_CALL_END'
-  | 'TOOL_CALL_RESULT'
-  | 'STATE_DELTA'
-  | 'STATE_SNAPSHOT'
-  | 'CUSTOM'
-  | 'HEARTBEAT';
+  | "RUN_STARTED"
+  | "RUN_FINISHED"
+  | "RUN_ERROR"
+  | "STEP_STARTED"
+  | "STEP_FINISHED"
+  | "TEXT_MESSAGE_START"
+  | "TEXT_MESSAGE_CONTENT"
+  | "TEXT_MESSAGE_END"
+  | "REASONING_START"
+  | "REASONING_MESSAGE_START"
+  | "REASONING_MESSAGE_CONTENT"
+  | "REASONING_MESSAGE_END"
+  | "REASONING_END"
+  | "TOOL_CALL_START"
+  | "TOOL_CALL_ARGS"
+  | "TOOL_CALL_END"
+  | "TOOL_CALL_RESULT"
+  | "STATE_DELTA"
+  | "STATE_SNAPSHOT"
+  | "CUSTOM"
+  | "HEARTBEAT";
 
 /** One JSON Patch (RFC 6902) operation, as carried by AG-UI `STATE_DELTA.delta`. */
 export interface AGUIJsonPatchOp {
@@ -597,18 +619,192 @@ export interface AskUserQuestionItem {
 }
 
 export interface AskUserQuestionPayload {
-  name: 'ask_user_question';
+  name: "ask_user_question";
   userIntent?: string;
   questions: AskUserQuestionItem[];
   /** ISO time after which the card can no longer be answered with its options. */
   expiresAt?: string;
   /** Set on this client when the user typed a reply in the chat instead of answering. */
   repliedInChat?: boolean;
+  /** ADR-RUN-03 D1 (FU-2): a grounding question's typed fields, which the card words in the reader's language. */
+  grounding?: GroundingCard;
+}
+
+/**
+ * A grounding question (the subject the request names was not found): the subject, the near matches it offers and
+ * the English labels of the card's own options, which a reply still sends (the worker reads it by them).
+ */
+export interface GroundingCard {
+  subject: string;
+  near: string[];
+  useFound: string;
+  nameIt: string;
+  /** The connected sources searched besides the person's PipesHub knowledge, named with it. */
+  places: string[];
 }
 
 export interface SSEAskUserQuestionEvent {
   status: string;
   toolData: AskUserQuestionPayload;
+}
+
+/** A source the run read, as the approval card names it: title and link, never an id on screen (UX1). */
+export interface ApprovalSource {
+  title?: string;
+  recordId?: string;
+  url?: string;
+}
+
+/**
+ * Why the run asks: the rule and whose it is (QA6-F6). For the flow rule
+ * (UX1) the run read private (`private`) or unverified (`unknown`) content
+ * earlier in the conversation and this call would send content outside; a
+ * layer's own approval rule says nothing of what the run read.
+ */
+export interface ApprovalReason {
+  rule: string;
+  /** Absent for a reason journaled before layers were named. */
+  layer?: RuleLayer;
+  sensitivity?: 'public' | 'private' | 'unknown';
+  sources: ApprovalSource[];
+  moreSources: number;
+  /** Where the call sends its content, as a person names it (`#sales`, an address). */
+  destination?: string;
+  /** "Allow for this conversation" may be offered. */
+  conversationGrant: boolean;
+  /** "Don't ask again" may save the answer as the person's own rule for the tool (BUGS-B). */
+  ruleGrant?: true;
+  /** AP-06: the person the run acts for may edit the arguments before approving. */
+  editable?: true;
+  /** With `editable` (WP-56): the tool's argument names in its schema's order, for the edit card. */
+  fieldOrder?: string[];
+  /** The fields an edition's rule adds to the reason, as the server sent them (`approvalAskRules` reads them). */
+  edition?: Readonly<Record<string, unknown>>;
+}
+
+/** A tool call held for the user's approval (durable runs, AG-UI `approval_requested`). */
+export interface SSEApprovalRequestedEvent {
+  interactionId: string;
+  toolCallId: string;
+  toolName: string;
+  displayName?: string;
+  /** The call's arguments as JSON text, exactly as journaled; shown as plain text. */
+  args: string;
+  argsSummary: string | null;
+  reason?: ApprovalReason;
+  /**
+   * `unknown_effect` (UX3): a call that may or may not have happened, waiting for a person to say which. `connect`
+   * (G-12): a call waiting for its run's owner to connect the item it needs; it names that item in `connect`.
+   */
+  kind?: 'approval' | 'unknown_effect' | 'connect';
+  /** `connect` cards only: the item the call needs, and where it is connected (G-12). */
+  connect?: ConnectTarget;
+  /** What the automatic read of the provider answered before the effect was parked (P2.9). */
+  reconcile?: { verdict: string; reason: string; lookups: number };
+  /** A sub-agent's interaction, shown in the main thread (UX3): its run, and its role. */
+  childRunId?: string;
+  childRole?: string;
+  /** The coding engine that asked (`codex`, `claude_code`, ...), named on the card (UXINT-3). */
+  childEngine?: string;
+  /** Where it was asked in its run's journal, and after how many model turns: its order and its batch (UXINT-1). */
+  seq?: number;
+  afterTurns?: number;
+  /** How many of its run's asks were decided before it was asked: asks that waited together share it (WP-113). */
+  decidedBefore?: number;
+  /** The plan step in progress when it was asked. */
+  stepId?: string;
+  /** What the call would change and cost (C3.71), as the worker read it; checked by `approvalEffectOf`. */
+  effect?: ApprovalEffect;
+  /** When it was asked (ISO): the steps' header says since when it waits (WP-97). */
+  requestedAt?: string;
+}
+
+/**
+ * What a connect card waits on (G-12): the toolset or MCP server in words, and where it is connected. `instanceId`
+ * comes with the owner's live card and timeline only (a saved reply never has it): the sign-in it opens.
+ */
+export interface ConnectTarget {
+  item: string;
+  itemKind: 'toolset' | 'mcp';
+  connectPath: string;
+  instanceId?: string;
+  /** WP-64: it was connected, and its vendor rejected the saved sign-in during the task; the person reconnects it. */
+  reason?: 'sign_in_rejected';
+  /** When the sign-in was rejected (ISO), with `reason`. */
+  since?: string;
+}
+
+/** One check of a run's verification (G-05): its kind, what it checked, and why it failed, in the gate's words. */
+export interface VerificationCheck {
+  kind: string;
+  passed: boolean;
+  target?: string;
+  reason?: string;
+}
+
+/** A tool the agent found but cannot call: `not_authenticated` is one the person can connect. */
+export interface UnavailableTool {
+  tool: string;
+  toolset: string;
+  reason: string;
+}
+
+/** A held call's effect preview (UX-03): a bounded unified diff, and a cost the tool itself declares. */
+export interface ApprovalEffect {
+  diff?: string;
+  /** The diff was cut at the worker's bound; the card says so. */
+  diffTruncated?: true;
+  costEstimate?: { usd: number; basis: 'declared' };
+}
+
+/** AG-UI `interaction_waiting` (UXINT-5): how many approvals wait, and whether the run is paused on them. */
+export interface SSEInteractionWaitingEvent {
+  count: number;
+  paused: boolean;
+}
+
+/** `answered` (UX3): the person says an action whose outcome was unknown did happen. */
+export type ApprovalDecision = Exclude<InteractionDecision, 'expired' | 'cancelled'>;
+/**
+ * `conversation`: the same tool and destination are allowed for the rest of the conversation. `tool`: main's
+ * "Don't ask again", the answer saved as the person's own rule for the tool (BUGS-B).
+ */
+export type ApprovalScope = 'once' | 'conversation' | 'tool';
+
+/** AG-UI `approval_resolved`: `expired`/`cancelled` close the card without a person's decision. */
+export interface SSEApprovalResolvedEvent {
+  interactionId: string;
+  decision: InteractionDecision;
+  childRunId?: string;
+  /** Allowed for the rest of the conversation: by the person, or by a grant they gave that covers it (FLOWGRANT). */
+  scope?: 'conversation';
+}
+
+export type ApprovalPartStatus = 'pending' | 'approved' | 'denied' | 'closed' | 'expired';
+
+export interface PendingApproval extends SSEApprovalRequestedEvent {
+  /** `expired`: the run ended before anyone decided. */
+  status: 'pending' | 'sending' | 'approved' | 'denied' | 'answered' | 'closed' | 'expired';
+  /** The server's refusal of the user's decision (machine code), kept until they try again. */
+  errorCode?: string | null;
+  /** Approved for the rest of the conversation (UX1). */
+  scope?: 'conversation';
+  /** The reason the person gave with their denial here (AP-05), for the receipt. */
+  denyReason?: string;
+  /** AP-06: the arguments the person approved instead of the call's own (JSON text), for the receipt. */
+  editedArgs?: string;
+  /** The root run the card was asked in: interaction ids repeat across a conversation's runs (UXINT-0). */
+  runId?: string;
+  /** An ask a rule says needs several approvals, some given, waiting for the rest (counts only). */
+  approvals?: { counted: number; required: number };
+  /** The viewer's own approval of this ask is counted; someone else's is what it waits for. */
+  approvedByYou?: true;
+}
+
+/** A message sent to a running task, waiting for the run to read it (`input.consumed` names it by `messageSeq`). */
+export interface QueuedSteer {
+  messageSeq: number;
+  text: string;
 }
 
 /** User's collected answers per question (keyed by question uuid in slot state). */
@@ -626,7 +822,8 @@ export interface PendingAskUserQuestion {
   answers: Record<string, AskUserQuestionAnswer>;
   /** Answers the model already received. A resume only carries what is not here or differs. */
   sentAnswers?: Record<string, AskUserQuestionAnswer>;
-  status: 'pending' | 'submitted' | 'persisted';
+  /** `skipped`: the person sent a new message instead of answering (UXINT-5 D6). */
+  status: 'pending' | 'submitted' | 'persisted' | 'skipped';
 }
 
 /** New answers to a reply's question card, sent with its regeneration. */
@@ -658,7 +855,501 @@ export interface SSEArtifactEvent {
    * 'STAGING' — internal intermediate artifact; Python already suppresses these
    * before emitting SSE events, so this field serves as a defensive signal only.
    */
-  visibility?: 'VISIBLE' | 'STAGING';
+  visibility?: "VISIBLE" | "STAGING";
+  /** Set, with nothing else, when the viewer of a shared conversation may not open this file. */
+  unavailable?: boolean;
+  /**
+   * A card presented again replaces the one with the same id; `discarded`
+   * removes it. Absent on cards that are never drafts.
+   */
+  lifecycle?: ArtifactLifecycle;
+}
+
+export type ArtifactLifecycle = 'draft' | 'final' | 'discarded';
+
+/**
+ * AG-UI `CUSTOM engine_progress` of an engine run: one progress line, artifact
+ * change, workspace revision or file diff, keyed by task (tagged `code_task`).
+ */
+export interface SSEEngineProgressEvent {
+  tool: string;
+  taskId: string;
+  kind: string;
+  text: string;
+  data?: Record<string, unknown>;
+}
+
+/** One step of a durable run's plan (UXR-B1), whichever executor stated it. */
+export interface SSEPlanStep {
+  taskId: string;
+  title: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  deps: string[];
+  /** The step names a tool the run's rules ask about; absent: not known. */
+  asksFirst?: boolean;
+}
+
+/**
+ * AG-UI `CUSTOM plan`: the run's whole plan after a change (a snapshot, so
+ * the latest replaces the last). A run that never planned sends none.
+ */
+export interface SSEPlanEvent {
+  runId: string;
+  steps: SSEPlanStep[];
+  currentTaskId: string | null;
+}
+
+export type CodeTaskFileChange = 'added' | 'modified' | 'deleted';
+
+export interface CodeTaskFile {
+  path: string;
+  change: CodeTaskFileChange;
+  sizeBytes?: number;
+  binary?: boolean;
+  tooLarge?: boolean;
+  /** A unified diff, as text; never rendered as markup. */
+  diff?: string;
+  diffTruncated?: boolean;
+}
+
+/** A run's spend from the budget ledger (P6.5); null dimensions are unbounded. */
+export interface RunBudgetView {
+  cap: { usdMicros: number | null; tokens: number | null };
+  committed: { usdMicros: number; tokens: number };
+  reserved: { usdMicros: number; tokens: number };
+  available: { usdMicros: number | null; tokens: number | null };
+  exhausted: boolean;
+  /** Model calls (children's included) charged an estimate the provider's usage has not replaced (WP-66); absent from an older server. */
+  estimated?: number;
+}
+
+export type MergeConflictKind = 'both_changed' | 'target_deleted' | 'fork_deleted';
+
+/** What a child's workspace merge into its parent's did (P6.4). */
+export interface ChildMergeReport {
+  status: string;
+  into: string;
+  revision: number | null;
+  forkRevision: number;
+  merged: string[];
+  conflicts: Array<{ path: string; kind: MergeConflictKind }>;
+  repositoryConflicts: string[];
+}
+
+/** The model a run called, as its journal says (MA1); absent from an older server. */
+export interface RunModelRef {
+  provider: string;
+  model: string;
+}
+
+export interface RunChildView {
+  runId: string;
+  role: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  errorType?: string;
+  taskId?: string | null;
+  merge: ChildMergeReport | null;
+  /** `role` names the sub-agent role that set the model; without it the child inherited its parent's. */
+  model?: RunModelRef & { role?: string };
+}
+
+/** `GET …/runs/:runId/cost` (C10.05): a run's status and spend so far, from the budget ledger. */
+export interface RunCostView {
+  status: string;
+  budget: RunBudgetView | null;
+}
+
+/** `GET …/runs/:runId/timeline`: one durable run as its session's owner reads it (U3). */
+export interface RunTimelineView {
+  runId: string;
+  parentRunId: string | null;
+  status: string;
+  parts: MessagePart[];
+  engine: { taskId: string; frames: SSEEngineProgressEvent[]; truncated: boolean } | null;
+  approvals: Array<SSEApprovalRequestedEvent & { status: ApprovalPartStatus }>;
+  children: RunChildView[];
+  /** A child's own merge into its parent's workspace; null for a root run or one never merged. */
+  merge: ChildMergeReport | null;
+  budget: RunBudgetView | null;
+  /** Suggested next questions (UX5), offered after an answered run; absent from an older server. */
+  followups?: ActivityFollowup[];
+  /** The run's plan (UXR-B1); a `tool_call` part names its step as `stepId`. Absent from an older server. */
+  tasks?: SSEPlanStep[];
+  model?: RunModelRef;
+  /** From the run's pinned spec (QAFIX-7): `loop` or the engine's kind, its effort (null: the model's default) and
+   *  how many tools it grants. Absent from an older server or before the spec is pinned. */
+  executor?: string;
+  reasoningEffort?: string | null;
+  toolsGranted?: number;
+  /** The coding engine a loop run's `code_task` hands work to (CMDUI); null: none. Absent from an older server. */
+  codingEngine?: string | null;
+  /** What a `/compact` request did at the start of this run (SLASH2 C2); absent: none was asked. */
+  compacted?: ContextCompactedView;
+  /** The end-of-run summary (G-07), once the run ended; absent while it runs and from an older server. */
+  digest?: RunDigestView;
+  /** Calls that waited for the owner to connect an item (G-12): the connect cards a reload seeds. */
+  connects?: RunConnectView[];
+  /** The run's reach outside its sandbox (WP-63), in journal order; absent from an older server or when none. */
+  sites?: SiteActivityView[];
+  /** Clones refused because the org does not list the repository's host or owner (WP-63), in journal order. */
+  repositoriesUnavailable?: RepositoryUnavailableView[];
+  /** What a gateway hid from the run's model calls (WP103-FU-1); absent from an older server or when none. */
+  secretsHidden?: SecretsHiddenView;
+  /** BGUI-12: the sources its answer cites (`[chunkIndex]` in its final text); absent until it answered and from an
+   *  older server. */
+  answer?: { citations: RunAnswerCitation[] };
+}
+
+/** A cited source of a run's answer, as the chat's live citations carry it; a withheld one keeps only its number. */
+export type RunAnswerCitation = StreamingCitationData | { chunkIndex: number; unavailable: true };
+
+/** The credential shapes hidden from a run's model calls, by kind (`openai_key`, …): never a value. */
+export interface SecretsHiddenView {
+  kinds: string[];
+  count: number;
+}
+
+/** `x.pipeshub.repository.unavailable` as the timeline projects it; `path` starts with `/`. */
+export interface RepositoryUnavailableView {
+  host: string;
+  path: string;
+  reason: 'host_not_allowed' | string;
+}
+
+/**
+ * One outside-access line (WP-63, Node's `domain/site-activity.ts`): an allowed website request, a refused one, a
+ * clone, a held upload. `label` is the server's plain sentence (no id, no query); `reason` is kept for its tone.
+ */
+export interface SiteActivityView {
+  /** What the line says, worded per locale; absent from an older server (then `label` is shown). */
+  kind?:
+    | 'read'
+    | 'write'
+    | 'host_level'
+    | 'blocked'
+    | 'held'
+    | 'upload_allowed'
+    | 'upload_denied'
+    | 'cloned'
+    | 'clone_denied'
+    | 'push_denied'
+    | (string & {});
+  host: string;
+  path?: string;
+  access?: 'read' | 'read-write' | 'host-level';
+  use?: 'read' | 'write';
+  outcome: 'allowed' | 'blocked';
+  /** The egress proxy's reason of a block (`site_read_only`, `site_upload_held`, `host_not_allowed`, …). */
+  reason?: string;
+  /** A clone's size in bytes (`cloned`). */
+  bytes?: number;
+  /** The server's English line: shown for a `kind` this build does not word. */
+  label: string;
+}
+
+/** A call waiting for its run's owner to connect a toolset or MCP server (G-12). */
+export interface RunConnectView {
+  interactionId: string;
+  toolCallId: string;
+  toolName?: string;
+  displayName?: string;
+  item: string;
+  itemKind: 'toolset' | 'mcp';
+  instanceId?: string;
+  connectPath: string;
+  reason?: 'sign_in_rejected';
+  askedAt?: string;
+  status: RunConnectStatus;
+  stepId?: string;
+  seq?: number;
+  afterTurns?: number;
+}
+
+export type RunConnectStatus = 'pending' | 'connected' | 'declined' | 'expired' | 'closed';
+
+/** What a terminated run did (G-07), folded by the server from its journal: counts and file names only. */
+export interface RunDigestView {
+  outcome: 'answered' | 'needs_input' | 'failed' | 'cancelled';
+  cutShortBy?: CutShortReason;
+  actions: { total: number; failed: number; refused: number; tools: Array<{ name: string; displayName?: string; count: number }> };
+  commands: { total: number; failed: number };
+  records: { read: number; changed: number };
+  /** BGUI-11: with what its file card shows; absent from an older server. */
+  artifacts: Array<{ name: string; recordId?: string; mimeType?: string; sizeBytes?: number; artifactType?: string; version?: number }>;
+  /** `working`: the changed files it did not deliver (`lib/harness-jobs/job-files.ts`); absent from an older server. */
+  files: { added: number; modified: number; deleted: number; working?: number };
+  approvals: { asked: number; approved: number; denied: number; unanswered: number };
+  questions: { asked: number; open: boolean };
+  delegated: number;
+  cost: { usdMicros: number; tokens: number } | null;
+  /** Part of `cost` is an estimate for a call cut short before the provider reported its usage (WP-66); absent from an older server. */
+  costEstimated?: boolean;
+  durationMs: number | null;
+}
+
+/** `x.pipeshub.context.compacted` as the run's timeline shows it; token counts are estimates, null when unknown. */
+export interface ContextCompactedView {
+  /** `loop`, or the coding engine's kind. */
+  executor: string;
+  outcome: 'compacted' | 'nothing_to_compact' | 'unsupported' | 'failed';
+  beforeTokens: number | null;
+  afterTokens: number | null;
+  userMessagesKept: boolean;
+  focus?: string;
+}
+
+export interface ActivityFollowup {
+  text: string;
+}
+
+/** `GET …/runs/:runId/resolved` (CPD-5): the run's pin as admitted. */
+export interface ResolvedRunView {
+  resolved: ResolvedRunConfig;
+}
+
+/** `GET …/usage` (SLASH2 C1): the caller's own replies in a conversation, from the budget ledger. */
+export interface ConversationUsage {
+  runs: number;
+  committed: { usdMicros: number; tokens: number };
+}
+
+export type ActivityRunStatus = 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+export type ActivityCommandStatus = 'running' | 'completed' | 'failed' | 'timed_out' | 'cancelled';
+export type ActivityStream = 'stdout' | 'stderr';
+
+/** One command the run executed (UX5 §3.4); `stdout`/`stderr` are the newest output, as text. */
+export interface ActivityCommand {
+  commandId: string;
+  source: 'run_code' | 'engine';
+  command: string;
+  language?: string;
+  status: ActivityCommandStatus;
+  exitCode: number | null;
+  startedAt: number | null;
+  durationMs: number | null;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+  /** Bytes of output that were not shown live (the full log still has them). */
+  liveDropped: number;
+  hasLog: boolean;
+  /** The skills the command read (FIX-SKILLSHOW), by folder name: the step reads "Read the PDF skill". */
+  skills?: string[];
+  /** R32ENGFU-FU-1: its engine can lose a command's output, so an empty output reads "No output was captured." */
+  outputMayBeLost?: true;
+}
+
+/** The actions a step's row names (`toolNames.<action>` in i18n, `step_display.py`'s `StepAction`). */
+export type ToolStepAction = 'readPage' | 'webSearch' | 'findFiles' | 'searchFiles' | 'readFile' | 'listFiles';
+
+/** A tool step's typed facts, built by the worker (`app/harness/step_display.py`). */
+export interface ToolStepFacts {
+  action: ToolStepAction;
+  /** A page's host, a search's query, a find's pattern, a file's path. */
+  target?: string;
+  /** The page's link (http or https only). */
+  href?: string;
+  /** The page's title, once it was read. */
+  title?: string;
+  /** A search's hits, or the files a find or a search listed. */
+  count?: number;
+  /** The links the result offered, without their text fragments: the answer's citations of them point here. */
+  sources?: string[];
+}
+
+export interface ActivityTool {
+  toolCallId: string;
+  name: string;
+  displayName?: string;
+  /** The skills an engine's own call read (FIX-SKILLSHOW): its skill tool, or a file read on a SKILL.md. */
+  skills?: string[];
+  status: 'running' | 'completed' | 'failed' | 'awaiting_approval' | 'denied' | 'blocked';
+  reason?: ApprovalReason;
+  refusal?: { rule?: string; code?: string };
+  /** A dry run's call (G-03): recorded as what the run would have done, never made; whether it would have asked. */
+  dryRun?: { wouldAsk: boolean };
+  /** A failed call (ERR-UX): its code, and for the run's owner the redacted detail the model read. */
+  failure?: { code: string; detail?: string };
+  argsSummary?: string;
+  /** Which page, query, pattern or file, and what came of it (WP-115): the chat step's facts, read the same way. */
+  step?: ToolStepFacts;
+  durationMs?: number;
+  /** A finished call's outcome in a line, from its result (ACTRESULTS). */
+  outcome?: ActivityStepOutcome;
+  /** The fingerprint of the step's detail, read from `…/steps/:toolCallId` when the step is opened. */
+  detail?: string;
+  /**
+   * The detail itself, when the step came with it (a child run's timeline part) or once it was read: what the
+   * chat's own step shows of the call, with the same bounds.
+   */
+  args?: string;
+  resultPreview?: string;
+  resultSummary?: string;
+  /** Unchecked here, as on a part: see `toolResultView`. */
+  resultView?: unknown;
+  artifactId?: string;
+  approvalAnswer?: 'allowed' | 'declined' | 'expired';
+  /** The child run the call handed work to (`code_task`, a sub-agent). */
+  child?: ActivityChild;
+}
+
+export type ActivityStepOutcome =
+  | { kind: 'summary'; text: string }
+  | { kind: 'found'; count: number }
+  | { kind: 'empty' };
+
+/** `GET …/runs/:runId/steps/:toolCallId`'s `step` (ACTRESULTS). */
+export type ActivityStepDetail = Pick<
+  ActivityTool,
+  'toolCallId' | 'args' | 'argsSummary' | 'resultPreview' | 'resultSummary' | 'resultView' | 'artifactId'
+> & { fingerprint: string };
+
+export interface ActivityChild {
+  runId: string;
+  role: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  codeTaskGoal?: string;
+  /** A loop sub-agent's goal (CJFIX-B). */
+  goal?: string;
+}
+
+export interface ActivityTask {
+  taskId: string;
+  title: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+}
+
+export interface ActivityFile {
+  path: string;
+  change: CodeTaskFileChange;
+  diff?: string;
+  diffTruncated?: boolean;
+  /** Published as one of the run's artifacts (BGUI-11, the server's one classification); absent: a working file. */
+  delivered?: true;
+}
+
+/** `GET …/runs/:runId/activity`'s `snapshot`: what one run did in its sandbox, as its owner sees it (UX5). */
+export interface ActivityView {
+  runId: string;
+  status: ActivityRunStatus;
+  engine: boolean;
+  commands: ActivityCommand[];
+  omittedCommands: number;
+  tools: ActivityTool[];
+  tasks: ActivityTask[];
+  files: ActivityFile[];
+  followups: ActivityFollowup[];
+  model?: RunModelRef;
+  /** The /command the run started from (SLASH1). */
+  slashCommand?: { name: string; version: string; expandedChars: number; owner: string };
+  /** A person's `/run` (SLASH3): they ran it, not the agent, and no model was asked. */
+  personRan?: true;
+}
+
+/** The activity stream's events, by their SSE `event:` name. */
+export type ActivityEvent =
+  | { type: 'snapshot'; view: ActivityView }
+  | { type: 'command'; command: ActivityCommand }
+  /** `truncated`: output joined while waiting to be folded lost its oldest part to the terminal's bound. */
+  | { type: 'output'; commandId: string; stream: ActivityStream; text?: string; dropped?: number; truncated?: boolean }
+  | { type: 'end'; status: string };
+
+export interface WorkspaceVersionView {
+  revision: number;
+  parentRevision: number | null;
+  reason: string;
+  createdAt: number;
+  fileCount: number;
+  contentHash: string;
+  restoredByUser: boolean;
+  /** The run that wrote it (a turn, a `/run`); absent for a person's restore or upload, or a fork. */
+  runId?: string;  /** An `upload` revision's added or replaced paths: what its row lists after a reload. */
+  paths?: string[];
+}
+
+export interface WorkspaceVersions {
+  workspaceId: string;
+  head: number;
+  versions: WorkspaceVersionView[];
+}
+
+/** A session workspace's changes (SLASH2 `/diff`): `from` is the revision before them, `to` the head. */
+export interface WorkspaceDiff {
+  workspaceId: string;
+  head: number;
+  from: number;
+  to: number;
+  files: Array<CodeTaskFile & { sizeBytes: number; additions: number; deletions: number }>;
+  additions: number;
+  deletions: number;
+  /** Changed paths past the listed ones. */
+  omitted: number;
+}
+
+/** A workspace revision's files under a folder (SLASH3 `/files`): sizes only, never content. */
+export interface WorkspaceFileList {
+  workspaceId: string;
+  revision: number;
+  /** When the revision was saved (ms). */
+  createdAt: number;
+  files: Array<{ path: string; sizeBytes: number; mode?: number; hidden?: boolean }>;
+  totalBytes: number;
+  omitted: number;
+  /** Fetched copies (ADR-RUN-01 D2): recorded by address and version, never saved, so never among `files`. */
+  references?: WorkspaceReference[];
+}
+
+/** A repository the engine fetched, as `/files` names it: "onyx-dot-app/onyx at 57cb7b8 — fetched copy, not saved". */
+export interface WorkspaceReference {
+  path: string;
+  label: string;
+  address: string;
+  version?: string;
+}
+
+/** `/run` (SLASH3 §3.5): the line, and the chat's mode, model and tools as its next message would send them. */
+export interface SandboxCommandRequest {
+  command: string;
+  timeoutS?: number;
+  idempotencyKey: string;
+  chatMode: string;
+  modelKey?: string;
+  modelName?: string;
+  modelProvider?: string;
+  modelFriendlyName?: string;
+  tools?: string[];
+  agentCapabilities?: { internalSearch: boolean; webSearch: boolean; deepSearch?: boolean };
+}
+
+/** What `/sandbox` shows (SLASH3 §3.6): composed by the server without starting a sandbox. */
+export interface SessionSandboxView {
+  image: { name: string; isolation: string | null };
+  network: boolean;
+  /** How a code run is decided before it starts. */
+  codeRuns: 'allow' | 'ask' | 'deny';
+  workspace: { revision: number; files: number; bytes: number };
+  keptSignIn: { idleMinutes: number; maxHours: number; signedInAt?: string } | null;
+  /** This chat's own coding engine from its next message (`/engine`): a kind, `none`, or null (not set). */
+  codingEngine: string | null;
+}
+
+/** One workspace file as `/open` read it: at most the bytes asked for, with the full size. */
+export interface WorkspaceFileRead {
+  blob: Blob;
+  contentType: string;
+  sizeBytes: number;
+  truncated: boolean;
+  revision: number;
+}
+
+/** What the viewer may decide on a run's approvals (the decision route's rule). */
+export interface DecisionAuthority {
+  approve: boolean;
+  deny: boolean;
+  /** AP-06: the viewer is the person the run acts for, so may edit a call before approving it. */
+  edit?: boolean;
+  /** What rules beyond the usual one add for the run's asks they decide (`ApprovalAskRules`). */
+  [field: string]: unknown;
 }
 
 /** Artifact metadata attached to a chat slot for display. */
@@ -675,7 +1366,11 @@ export interface ChatArtifact {
   /** Id of the CODE artifact this was generated from, if any — lets the UI offer "view source". */
   derivedFromCodeArtifactId?: string;
   /** Mirrors the backend visibility field — STAGING artifacts should never be rendered. */
-  visibility?: 'VISIBLE' | 'STAGING';
+  visibility?: "VISIBLE" | "STAGING";
+  /** A file in a conversation shared with you that you may not open; nothing else about it is known. */
+  unavailable?: boolean;
+  /** A draft is shown as such until its final card replaces it. */
+  lifecycle?: Exclude<ArtifactLifecycle, 'discarded'>;
 }
 
 export interface SSEConnectedEvent {
@@ -714,6 +1409,8 @@ export interface CitationApiResponse {
     _id: string;
     content: string;
     chunkIndex: number;
+    /** A source the shared viewer cannot read; it carries no content or metadata. */
+    unavailable?: boolean;
     metadata: {
       recordName: string;
       recordId: string;
@@ -822,21 +1519,90 @@ export interface McpSignInServer {
   agentKey?: string;
 }
 
+/** DEEPROUTE: a run handing its work to the coding engine on its own (`x.pipeshub.run.handoff`). */
+export interface CodeTaskHandoff {
+  /** `upfront` (before its first step) or `escalation` (once it outgrew a reply). */
+  trigger: string;
+  /** Why: `research`, `analysis`, `planning`, `long_report`, `many_steps`, `context` or `budget`. */
+  reason: string;
+  /** The engine kind; absent from a server that did not name it. */
+  engine?: string;
+}
+
 export interface MessagePart {
-  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent' | 'mcp_sign_in';
+  /** `user_input`: a message the user sent while the run worked, where the run took it. */
+  /**
+   * `engine_task`: a durable engine run's progress lines (`frames`), the card a
+   * reload rebuilds; `approval`: a call held for a person's approval (U3);
+   * `plan`: a durable run's plan as it stood at the end (`steps`, CTL-3b); `notice`:
+   * something the run tells the person beside its steps (`code`, CTL-5b); `engine_command`: one command of an
+   * engine run as its timeline shows it, made in the chat from the `engine_task` frames, never saved (CTL-4);
+   * `engine_file`: one file it created, changed or deleted, made the same way (`file`).
+   */
+  type: "text" | "reasoning" | "tool_call" | "sub_agent" | "user_input" | "engine_task" | "approval" | "plan" | "notice" | "engine_command" | "engine_file" | "slash_command" | "mcp_sign_in" | "context_compacted" | "engine_repo";
+  /** `engine_repo`: an engine run's repository work in plain words (WP-26), made like `engine_command`. */
+  repo?: RepoActivity;
+  /** `engine_file`: the file and its diff, when the run saved one. */
+  file?: CodeTaskFile;
+  /** `slash_command`: the /command the run started from (SLASH1), the timeline's first row. */
+  commandName?: string;
+  /** `context_compacted`: what the person's `/compact` did before the run's first turn (SLASH2 C2), saved with the answer. */
+  compacted?: ContextCompactedView;
+  commandVersion?: string;
+  expandedChars?: number;
+  owner?: string;
+  /** `engine_command`: the command line and its exit code; `content` holds what it printed. */
+  command?: string;
+  /** `engine_command` and an engine's `tool_call`: the skills the step read (FIX-SKILLSHOW), named by the server. */
+  skills?: string[];
+  exitCode?: number;
+  /** `notice`: what it says, as the chat words it (e.g. `mcp_unavailable`). */
+  code?: string;
+  /** `notice` `credential_missing`: the toolset or MCP server the person has not connected (QA23-F1). */
+  item?: string;
+  /** `notice` `engine_switched` (WP-111): the coding engine used instead of `item`, which an admin turned off. */
+  engine?: string;
+  /** `notice` `mcp_unavailable`: the server instance to sign in to again (`sign_in`) or for an admin to approve (`not_approved`). */
+  instance?: string;
+  /** `notice` `mcp_tool_held` (D-MCP-5): the tools of the server in `item` the description scanner held back. */
+  tools?: string[];
+  /** `notice`: the item's kind; `approval`: `connect` for a call that waited for the owner to connect an item (G-12). */
+  kind?: 'toolset' | 'mcp' | 'connect';
+  /** `approval` of kind `connect`: what it waited on (never the instance). */
+  connect?: ConnectTarget;
+  /** `notice` `verified` / `unverified` (G-05): every check of the run's last verification. */
+  checks?: VerificationCheck[];
+  /** `notice` `verified` / `unverified`: the round that settled it (2: the run was sent back once to fix it). */
+  round?: number;
+  /** `notice` `time_plan` (ADR-RUN-01 D4): when the run starts writing at the latest, and when its work is due. */
+  writeBy?: string;
+  finishBy?: string;
   content?: string;
+  /** `user_input`: the message's number in its run. */
+  messageSeq?: number;
+  /** `user_input`: `false` when the run ended without taking it. */
+  consumed?: boolean;
+  /** `user_input`: the files the message carried (C-21). */
+  attachments?: AttachmentRef[];
   toolCallId?: string;
   toolName?: string;
   displayName?: string;
   args?: string;
   /** Human-readable summary of `args`, computed server-side. Falls back to `args` when absent. */
   argsSummary?: string;
-  status?: 'running' | 'completed' | 'failed' | 'blocked' | 'awaiting_approval';
+  /** `approval` parts: `pending`, `approved`, `denied`, `closed` or `expired`. */
+  status?: "running" | "completed" | "failed" | "blocked" | "awaiting_approval" | ApprovalPartStatus;
   resultPreview?: string;
+  /** A failed call's `ToolErrorCode` (ERR-UX): the card words it; the detail never reaches the part. */
+  errorCode?: string;
+  /** A failed write or execute whose outcome is definite: nothing was sent. */
+  nothingSent?: boolean;
   /** Human-readable summary of the tool result, computed server-side from the full (untruncated) output. Falls back to `resultPreview` when absent. */
   resultSummary?: string;
   /** A table or field list of the result, built server-side; unchecked here, see `toolResultView`. */
   resultView?: unknown;
+  /** What the step did, on what, and what came of it (WP-112): its row says which page, query, pattern or file. */
+  step?: ToolStepFacts;
   /** On an `awaiting_approval` call: what the approval card shows. */
   approval?: ToolApprovalDetails;
   /** The call a person approved, run when they answered. */
@@ -845,9 +1611,67 @@ export interface MessagePart {
   approvalAnswer?: 'allowed' | 'declined' | 'expired';
   /** On the `mcp_sign_in` part: the reply's sign-in card. Not activity, so never in the timeline. */
   servers?: McpSignInServer[];
+  /** On the final `text` part: the limit that cut the run's work short (BUDGETEND). */
+  truncatedBy?: CutShortReason;
+  /** With `truncatedBy` `budget`: which budget beyond the run's own ran out (C9.06, WP-51). */
+  budgetScope?: BudgetScope;
+  /** On a `notice` (WP-89): which time a state notice was journaled; each occurrence is its own part. */
+  occurrence?: number;
+  /** On the final `text` part (WP-89): the run's settled outcome, which the chat words; read by `runOutcomeOf`. */
+  runOutcome?: unknown;
+  /** On the final `text` part (ANSWER-CONTRACT-FU-2): the subject was not found; read by `notFoundOf`. */
+  notFound?: unknown;
+  /** On the final `text` part (R32REPO-FU-1): what the run tried and could not do; read by `couldNotDoOf`. */
+  limits?: unknown;
   runId?: string;
   roleName?: string;
   parts?: MessagePart[];
+  /** `sub_agent` of a durable child: the run that spawned it, and why it did not complete. */
+  parentRunId?: string;
+  errorType?: string;
+  /** `sub_agent` that ran out of memory: its sandbox's memory limit in MB, which its card names (R32SECCOMP-FU-4). */
+  memoryLimitMb?: number;
+  /** `sub_agent`: the model the child called, its own or the one it inherited (MA1). */
+  model?: RunModelRef;
+  /** `sub_agent` of a `code_task` handoff: the engine child's goal, its row's name (CTL-6). */
+  codeTaskGoal?: string;
+  /** `sub_agent` of a loop sub-agent: its `spawn_agent` goal, its job card's name (CJFIX-B), never the role id. */
+  goal?: string;
+  /** `sub_agent` of a hand-off the run made on its own (DEEPROUTE): why, and to which engine; its row's name. */
+  codeTaskHandoff?: CodeTaskHandoff;
+  /** `sub_agent` of an engine's own helper (EV-07), made in the chat from its run's frames: what it was asked. */
+  engineHelper?: { task?: string };
+  /** `approval`: the interaction the decision route takes; an engine's `tool_call`: the approval it waited for. */
+  interactionId?: string;
+  /** `approval`: where it was asked in the run's journal and after how many model turns (UXINT-1). */
+  seq?: number;
+  afterTurns?: number;
+  /** `approval`: how many of its run's asks were decided before it was asked (WP-113). */
+  decidedBefore?: number;
+  /** `approval`: when it was asked (ISO, WP-97), unchecked until `savedApprovals`. */
+  requestedAt?: unknown;
+  /**
+   * `approval`: why the run asked (UX1) and whether it was approved for the conversation. A `notice`
+   * `mcp_unavailable` carries a string here instead (MCPNOTE-1), read by `mcpUnusedGroups`.
+   */
+  reason?: ApprovalReason;
+  scope?: 'conversation';
+  /** `approval`: what the call would change and cost (C3.71), unchecked until `approvalEffectOf`. */
+  effect?: unknown;
+  /** `approval`: the reason given with its denial (AP-05), quoted by the receipt. */
+  denyReason?: unknown;
+  /** `approval`: the arguments the person approved instead (AP-06), JSON text; unchecked until `approvalFromPart`. */
+  editedArgs?: unknown;
+  /** `engine_task`: the task (the engine run's id) and its progress lines, oldest first. */
+  taskId?: string;
+  frames?: SSEEngineProgressEvent[];
+  /** `plan`: the run's steps with their last state (CTL-3b). */
+  steps?: SSEPlanStep[];
+  /** A saved durable step's time from the journal: a model turn's text part or a tool call (CTL-3b). */
+  durationMs?: number;
+  /** The final text part of a saved durable answer: the run's whole time (CTL-3b). */
+  elapsedMs?: number;
+  truncated?: boolean;
   /**
    * Set ONLY on the one root-level `text` part that IS the final answer
    * (mirrors Python's `TranscriptCollector.replace_final_text`) — every
@@ -876,11 +1700,11 @@ export interface MessagePart {
 
 export interface ConversationMessage {
   _id: string;
-  messageType: 'user_query' | 'bot_response' | 'tool_call' | 'error';
+  messageType: "user_query" | "bot_response" | "tool_call" | "error";
   content: string;
-  contentFormat: 'MARKDOWN';
+  contentFormat: "MARKDOWN";
   citations: CitationApiResponse[];
-  confidence?: 'Very High' | 'High' | 'Medium' | 'Low';
+  confidence?: "Very High" | "High" | "Medium" | "Low";
   followUpQuestions: string[];
   referenceData: ReferenceData[];
   modelInfo: ModelInfo;
@@ -890,6 +1714,8 @@ export interface ConversationMessage {
   appliedFilters?: AppliedFilters;
   /** File attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
+  /** `user_query` sent as a /command (SLASH1): what was typed; `content` is the text that was sent. */
+  command?: unknown;
   tools?: ToolCallEntry[];
   /** Present only when the org has reasoning persistence enabled server-side. */
   reasoning?: ReasoningTurn[];
@@ -897,9 +1723,37 @@ export interface ConversationMessage {
   parts?: MessagePart[];
   /** Set when this bot response was cut short by a user-initiated Stop (see Node's `IMessage.status`). */
   status?: 'stopped';
+  /** In a conversation continued privately: stands for another participant's turn, whose content was not copied. */
+  foreignTurn?: boolean;
+  /** Copied from another conversation by a fork: its saved steps show, but it names none of that conversation's runs. */
+  copied?: boolean;
+  /** The durable run that wrote this answer, when the server records it; always a run of this conversation. */
+  runId?: string;
+  /** An error answer's code (`messageType: 'error'`): shown in the reader's words (QA17-O2). */
+  errorCode?: string;
+  /** With errorCode `mcp_tool_withdrawn`: the labels of the servers the words name (WP-84). */
+  errorServers?: string[];
+  /** An answer a limit cut short (BUDGETEND): the spending limit, the turn limit or the working time. */
+  truncatedBy?: CutShortReason;
+  /** With `truncatedBy` `budget`: which budget beyond the run's own ran out (C9.06, WP-51); absent: the run's own limit. */
+  budgetScope?: BudgetScope;
+  /** With errorCode `operator_stopped` (ADR-OPS-01 D5): the control's scope and reason, read by `operatorStopDetails`. */
+  errorStop?: { scope?: string; reason?: string };
+  /** WP-89: the run's settled outcome (a failure's code, servers and stop among it); read by `runOutcomeOf`. */
+  runOutcome?: unknown;
+  /** ANSWER-CONTRACT-FU-2: the subject was not found; read by `notFoundOf`. */
+  notFound?: unknown;
+  /** R32REPO-FU-1: what the run tried and could not do; read by `couldNotDoOf`. */
+  limits?: unknown;
   /** The server withheld this answer: it used a record the reader can no longer access, or access could not be confirmed. */
   answerHidden?: { redacted: true; reason: 'no_longer_accessible' | 'access_check_unavailable' };
 }
+
+/**
+ * Which budget beyond the run's own stopped an answer (C9.06), as the extension that keeps such budgets names it;
+ * opaque here, and worded only by `budgetStopLines`.
+ */
+export type BudgetScope = string;
 
 export interface ConversationCompleteData {
   userId: string;
@@ -1021,6 +1875,24 @@ export interface StreamChatRequest {
    * is ignored").
    */
   projectId?: string;
+  /**
+   * `durable`: the default chat's Agent mode asks for the harness (ASSIST1).
+   * `legacy`: the "New agent harness" switch is off (CTL-7). The server
+   * decides; see `chatHarnessField`.
+   */
+  harness?: 'durable' | 'legacy';
+  /**
+   * The coding engine `/engine` chose before this chat's first message (CMDUI2): only on the request that creates
+   * the chat. The server checks it as `/engine` does and saves it on the chat before the run starts.
+   */
+  codingEngine?: string;
+  /**
+   * The GitHub repository chosen before this chat's first message (WP-26): only on the request that creates the chat.
+   * The server checks it as `PUT …/repository` does and saves it on the chat before the run starts.
+   */
+  repository?: { url: string; baseRef?: string; toolsetInstanceId: string };
+  /** This message's run gates (G-03..G-05) from the composer's "+" menu; only the agent harness serves them. */
+  gates?: TurnGatesRequest;
   /** The person's answer to a tool approval card; the call itself is saved server-side. */
   toolApproval?: ToolApprovalAnswer;
   /** Compare mode only: asks the server for a `turn_started` event once the question is saved. */
@@ -1070,25 +1942,22 @@ export interface ToolApprovalDetails {
  */
 export function buildStreamRequestModeFields(
   settings: ChatSettings,
-  isScopedAgent = false
-): Pick<StreamChatRequest, 'chatMode'> {
-  if (settings.queryMode === 'agent') {
+  isScopedAgent = false,
+): Pick<StreamChatRequest, "chatMode"> {
+  if (settings.queryMode === "agent") {
     return isScopedAgent
-      ? { chatMode: `agent:${agentStrategyToApiSegment(settings.agentStrategy)}` }
-      : { chatMode: 'agent' };
+      ? {
+          chatMode: `agent:${agentStrategyToApiSegment(settings.agentStrategy)}`,
+        }
+      : { chatMode: "agent" };
   }
-  if (settings.queryMode === 'web-search') {
+  if (settings.queryMode === "web-search") {
     return {
-      chatMode: 'web_search',
-    };
-  }
-  if (settings.queryMode === 'image') {
-    return {
-      chatMode: 'image',
+      chatMode: "web_search",
     };
   }
   return {
-    chatMode: 'internal_search',
+    chatMode: "internal_search",
   };
 }
 
@@ -1131,6 +2000,13 @@ export type ActiveMessageAction =
 
 /** Maximum number of concurrent chat slots before LRU eviction. */
 export const MAX_SLOTS = 15;
+
+/** Public coordinates needed to issue an authenticated durable-run command. */
+export interface DurableAgentRunHandle {
+  agentId?: string;
+  sessionId: string;
+  runId: string;
+}
 
 /**
  * Per-conversation state stored in the slots dictionary.
@@ -1230,9 +2106,32 @@ export interface ChatSlot {
    */
   pendingAskUserQuestion: PendingAskUserQuestion | null;
 
+  /** Tool calls of the durable run waiting for the user's approval (P2.6c). */
+  pendingApprovals: PendingApproval[];
+
+  /** What the run says waits on a person (UXINT-5): the count a shared viewer sees, and whether it is paused. */
+  interactionWaiting?: SSEInteractionWaitingEvent | null;
+
+  /** Messages sent to the running task that it has not read yet, shown until it does (UXINT-5). */
+  queuedSteers?: QueuedSteer[];
+
+  /** The latest plan of the run streaming in this slot (UXR-B1); none until it plans. */
+  plan?: SSEPlanEvent | null;
 
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;
+
+  /** Set only after durable admission; browser detach leaves the run alive. */
+  durableRun: DurableAgentRunHandle | null;
+  /** The latest durable run of this conversation in this session, kept after it ends (UX5's panel and chips). */
+  lastDurableRun?: DurableAgentRunHandle | null;
+
+  /**
+   * A turn sent on the chat route whose first frame has not arrived: the
+   * server has not yet said whether the durable harness or today's loop
+   * answers it, so a Stop waits for that frame to know which run to stop.
+   */
+  routePending: boolean;
 
   /**
    * Client-generated UUID for the in-flight run, minted in
@@ -1281,6 +2180,10 @@ export interface ChatSlot {
    * `null` until the first fetch completes; `false` for chats opened from Shared Chats (hide share UI).
    */
   isOwner: boolean | null;
+  /** From GET conversation detail `isShared`: other people take part, so it can be continued privately. */
+  isShared?: boolean;
+  /** From GET conversation detail `durable`: the session runs on the durable harness (LC2FIX), whatever its latest answer. */
+  durable?: boolean;
   /**
    * Who the conversation is shared with: from the loaded detail, or from the
    * last share/unshare answer. `null` when not known.

@@ -68,6 +68,19 @@ def _no_aws_lookup_leaves_the_process(monkeypatch: pytest.MonkeyPatch) -> Any:  
     assert not attempted, f"building models sent requests: {attempted}"
 
 
+@pytest.fixture(autouse=True)
+def _no_tokenizer_download(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Building Mistral embeddings downloads a tokenizer from Hugging Face unless one is given; the unit lane refuses
+    the dial (tests/support/no_network.py). Refusing it here takes the client's own offline fallback (a len() tokenizer),
+    which does not change the SDK client whose retries the test reads."""
+    from tokenizers import Tokenizer
+
+    def offline(*_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
+        raise OSError("no tokenizer download in a unit test")
+
+    monkeypatch.setattr(Tokenizer, "from_pretrained", offline)
+
+
 def test_the_indexing_constant_is_zero() -> None:
     assert INDEXING_SDK_RETRIES == 0
 
@@ -119,16 +132,11 @@ def built(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
         return model
 
     monkeypatch.setattr(llm_module, "get_generator_model", record)
-    from app.modules.parsers.pdf import vlm_ocr_strategy
+    # The region-pinned builder (``llm.build_chat_model``, which VLM OCR goes through) reaches the factory through
+    # ``get_generator_model_async``, which calls it by its name in ``app.utils.aimodels``.
+    from app.utils import aimodels
 
-    real_vlm = vlm_ocr_strategy.get_generator_model
-
-    def record_vlm(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-        model = real_vlm(*args, **kwargs)
-        models.append(model)
-        return model
-
-    monkeypatch.setattr(vlm_ocr_strategy, "get_generator_model", record_vlm)
+    monkeypatch.setattr(aimodels, "get_generator_model", record)
     return models
 
 

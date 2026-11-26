@@ -1,0 +1,8 @@
+# Gemini CLI's admin-tier policy in the PipesHub image (WP-13). Admin rules outrank user and workspace ones at any
+# priority: web access never comes from the engine (FG2), ACP carries no sub-agent sessions, and the run's mode is
+# the driver's, never Gemini CLI's own plan mode.
+
+[[rule]]
+toolName = ["web_fetch", "google_web_search", "invoke_agent", "enter_plan_mode", "exit_plan_mode"]
+decision = "deny"
+priority = 900

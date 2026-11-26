@@ -50,8 +50,9 @@ def _entry(key: str) -> dict[str, Any]:
 def graph() -> InMemoryGraph:
     g = InMemoryGraph()
     for key, (limit, org, creator) in SOURCES.items():
-        g.add_node("apps", {"_key": key, "type": "SLACK", "scope": "team", "orgId": org, "createdBy": creator,
-                            "accessLimit": limit, "isConfigured": True})
+        # The providers' get_agent names each source after its connector.
+        g.add_node("apps", {"_key": key, "name": f"Name {key}", "type": "SLACK", "scope": "team", "orgId": org,
+                            "createdBy": creator, "accessLimit": limit, "isConfigured": True})
         g.add_node("agentKnowledge", _entry(key))
     g.add_agent("shared", "alice", share_with_org=True, knowledge=[_entry(k) for k in SOURCES])
     for key in SOURCES:

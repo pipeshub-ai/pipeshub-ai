@@ -9,7 +9,7 @@ from the graph's record document, writes ``properties.json`` for it.
 
 import json
 import logging
-import time
+import sys
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -305,16 +305,37 @@ def _realistic(n: int) -> list[TicketRecord]:
     ]
 
 
-def test_ten_thousand_tickets_build_their_properties_within_budget() -> None:
-    tickets = _realistic(10_000)
-    started = time.perf_counter()
-    sizes = [len(canonical_json(m.to_json_dict())) for m in map(ticket_metadata, tickets) if m is not None]
-    elapsed = time.perf_counter() - started
-    assert len(sizes) == 10_000
-    # Budget: 0.5 ms per record (5 s for 10k), loose enough for a loaded CI worker.
-    assert elapsed < 5.0, f"{elapsed:.2f}s for 10k tickets"
-    print(f"\n10k tickets: {elapsed * 1000:.0f} ms ({elapsed / 10_000 * 1e6:.1f} us per record); "
-          f"mean file {sum(sizes) / len(sizes):.0f} B")
+def _lines_run_building(tickets: list[TicketRecord]) -> int:
+    """Python lines executed building every ticket's properties file: a count of the work that a busy runner
+    cannot move, as it moves a wall-clock time."""
+    mon = sys.monitoring
+    tool = next(i for i in range(6) if mon.get_tool(i) is None)  # coverage may hold one
+    count = 0
+
+    def on_line(_code: object, _line: int) -> None:
+        nonlocal count
+        count += 1
+
+    mon.use_tool_id(tool, "ticket-properties-cost")
+    mon.register_callback(tool, mon.events.LINE, on_line)
+    mon.set_events(tool, mon.events.LINE)
+    try:
+        files = [canonical_json(m.to_json_dict()) for m in map(ticket_metadata, tickets) if m is not None]
+    finally:
+        mon.set_events(tool, 0)
+        mon.register_callback(tool, mon.events.LINE, None)
+        mon.free_tool_id(tool)
+    assert len(files) == len(tickets)
+    return count
+
+
+def test_the_work_to_build_properties_grows_linearly_with_the_ticket_count() -> None:
+    # 312 is a whole number of _realistic's status, priority and label cycles, so ten times the tickets is ten
+    # times the same work. A per-ticket step that walks the tickets before it makes the ratio far larger.
+    # shortcut: a scan done inside one C call (`x in a_list`) is one line; time it in a benchmark if one appears.
+    _lines_run_building(_realistic(24))  # first-use imports and caches
+    small, large = _lines_run_building(_realistic(312)), _lines_run_building(_realistic(3120))
+    assert large <= 10.5 * small, f"{large / small:.2f}x the work for 10x the tickets"
 
 
 def test_the_write_path_reads_no_configuration() -> None:

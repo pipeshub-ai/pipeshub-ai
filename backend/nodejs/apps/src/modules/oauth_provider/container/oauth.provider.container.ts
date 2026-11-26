@@ -271,7 +271,6 @@ export class OAuthProviderContainer {
         .bind<OAuthAppController>('OAuthAppController')
         .toDynamicValue(() => {
           return new OAuthAppController(
-            logger,
             oauthAppService,
             oauthTokenService,
             scopeValidatorService,
@@ -279,7 +278,7 @@ export class OAuthProviderContainer {
         });
 
       container.bind<PatController>('PatController').toDynamicValue(() => {
-        return new PatController(logger, patService, scopeValidatorService);
+        return new PatController(patService, scopeValidatorService);
       });
 
       container

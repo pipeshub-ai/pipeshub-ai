@@ -37,7 +37,7 @@ class GoogleDrive:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_files_list(self, folder_id: Optional[str] = None, page_token: Optional[str] = None) -> tuple[bool, str]:
         """Get the list of files in the Google Drive"""
@@ -78,7 +78,7 @@ class GoogleDrive:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_folder(self, folder_name: str) -> tuple[bool, str]:
         """Create a folder in the Google Drive"""
@@ -128,7 +128,7 @@ class GoogleDrive:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def upload_file(self, file_name: str, file_content: BinaryIO, folder_id: Optional[str] = None) -> tuple[bool, str]:
         """Upload a file to the Google Drive
@@ -172,7 +172,7 @@ class GoogleDrive:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def download_file(self, file_id: str) -> tuple[bool, Optional[BinaryIO]]:
         """Download a file from the Google Drive
@@ -203,7 +203,7 @@ class GoogleDrive:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_file(self, file_id: str) -> tuple[bool, str]:
         """Delete a file from the Google Drive
@@ -234,7 +234,7 @@ class GoogleDrive:
                 required=True
             )
         ],
-        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="file_management"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_file_details(self, file_id: str) -> tuple[bool, str]:
         """Get the details of a file from the Google Drive

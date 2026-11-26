@@ -458,12 +458,16 @@ Generated from Google Discovery API schema definitions.
         
         # Generate class header
         class_code = f'''import asyncio
+import contextvars
 import functools
 from concurrent.futures import Executor
 from threading import Lock
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, TypeVar
 
 from app.sources.client.google.google import GOOGLE_HTTP_NUM_RETRIES
+
+if TYPE_CHECKING:
+    from app.sources.client.resilience import ResiliencePolicy
 
 T = TypeVar("T")
 
@@ -480,7 +484,8 @@ class {class_name}:
         self,
         client: object,
         *,
-        executor: Optional[Executor] = None
+        executor: Optional[Executor] = None,
+        resilience: "Optional[ResiliencePolicy]" = None,
     ) -> None:
         """
         Initialize with {service_description} client.
@@ -489,9 +494,13 @@ class {class_name}:
             executor: Optional executor to run blocking calls on -- normally the
                 connector's capped lease on the shared connector thread pool. When
                 omitted, falls back to the event loop's default executor.
+            resilience: The syncing connector's policy, taken once per request: its
+                local rate and its vendor's shared budget (G-31). An agent toolset
+                passes none; its tool call has already taken from the budget.
         """
         self.client = client
         self._executor = executor
+        self._resilience = resilience
         # googleapiclient services share one httplib2.Http per instance, which is
         # not thread-safe, so at most one in-flight request per datasource instance.
         self._transport_lock = Lock()
@@ -502,9 +511,13 @@ class {class_name}:
 
     async def execute(self, operation: Callable[[], T]) -> T:
         """Run one blocking operation without overlapping this client's HTTP transport."""
+        if self._resilience is not None:
+            await self._resilience.acquire()
         loop = asyncio.get_running_loop()
+        # The copied context carries the running tool call's send tracker into the worker thread.
         return await loop.run_in_executor(
             self._executor,
+            contextvars.copy_context().run,
             self._run_transport_operation,
             operation,
         )

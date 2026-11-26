@@ -283,7 +283,7 @@ async def test_unreached_entities_are_those_no_live_record_of_the_org_links_or_w
     await w.link("r", SUB1, "s1")
     await w.link("r", DEPTS, "dept")
     await w.link("gone-r", TOPICS, "trashed-only")
-    await w.p.batch_upsert_nodes([{"_key": "gone-r", "isDeleted": True}], "records")
+    await w.p.batch_update_nodes([{"id": "gone-r", "isDeleted": True}], "records")      # a targeted update trashes: an upsert leaves trash state alone
     await w.link("x", TOPICS, "theirs-only", org="someone-else")
     for i in range(30):                      # a language most records link to
         await w.link(f"m{i}", LANGS, "en")
@@ -312,7 +312,7 @@ async def test_unreached_follows_the_transaction_and_never_answers_empty_for_a_f
     await w.link("r", TOPICS, "t1")
     tid = await w.p.begin_transaction([], [])
     try:
-        await w.p.batch_upsert_nodes([{"_key": "r", "isDeleted": True}], "records", transaction=tid)
+        await w.p.batch_update_nodes([{"id": "r", "isDeleted": True}], "records", transaction=tid)
         assert await w.p.get_unreached_taxonomy_entities([{"id": "t1", "type": "topic"}], w.org, transaction=tid) == {("topic", "t1")}
     finally:
         await w.p.rollback_transaction(tid)
@@ -727,7 +727,7 @@ async def test_a_move_keeps_the_edges_fields_counts_trashed_records_and_refuses_
     await w.node(CATS, "to", "B")
     await w.link("r1", CATS, "from", extractedNames=["a", "aa"], confidence=0.9, mergedFrom=None)
     await w.link("trashed", CATS, "from")
-    await w.p.batch_upsert_nodes([{"_key": "trashed", "isDeleted": True}], "records")
+    await w.p.batch_update_nodes([{"id": "trashed", "isDeleted": True}], "records")
 
     assert await w.p.move_taxonomy_edges(CATS, "from", "to", w.org, set_merged_from="from", dry_run=True) == 2
     assert await w.p.move_taxonomy_edges(CATS, "from", "missing", w.org, set_merged_from="from", dry_run=True) == 2      # a dry run checks no target
@@ -824,3 +824,37 @@ async def test_the_writers_pass_schema_validation_with_what_the_resolver_writes(
     await w.p.ensure_taxonomy_hierarchy_edge(SUB1, "s1", "c")
     await w.p.add_taxonomy_aliases(SUB1, "s1", ["S one"], ["s one"], org_id=w.org)
     assert await w.hierarchy() == [(SUB1, "s1", CATS, "c")] and (await w.doc(SUB1, "s1"))["aliases"] == ["S one"]
+
+
+# ---- clearing a record's classification --------------------------------------------------------------------------------------------------
+
+
+async def test_clearing_a_classification_removes_the_records_taxonomy_and_extracted_organisation_links_and_nothing_else(w: Org) -> None:
+    """``GraphDBTransformer.clear_classification``: the taxonomy edges as a classification with no result would leave them, the EXTRACTED
+    organisation links directly (the classifier's own write skips its delete when the summary names none), another record's edges and
+    links of another origin stay, and a second run changes nothing."""
+    from app.modules.transformers.graphdb import GraphDBTransformer
+
+    for coll, key in ((TOPICS, "t1"), (CATS, "c1"), (LANGS, "l1")):
+        await w.node(coll, key)
+    await w.p.batch_upsert_nodes([{"_key": "d1", "departmentName": "Sales", "orgId": w.org}], DEPTS)
+    await w.p.batch_upsert_nodes([{"_key": "acme", "name": "Acme", "orgId": w.org}, {"_key": "globex", "name": "Globex", "orgId": w.org}], "organizations")
+    for record in ("mine", "twin"):
+        for coll, key in ((TOPICS, "t1"), (CATS, "c1"), (LANGS, "l1"), (DEPTS, "d1")):
+            await w.link(record, coll, key)
+    edge = {"createdAtTimestamp": 1}
+    await w.p.batch_create_entity_relations([
+        {"_from": "records/mine", "_to": "organizations/acme", "edgeType": "FOR_ACCOUNT", "origin": "INFERRED", **edge},
+        {"_from": "records/mine", "_to": "organizations/globex", "edgeType": "MENTIONS", "origin": "EXTRACTED", **edge},
+        {"_from": "records/twin", "_to": "organizations/globex", "edgeType": "MENTIONS", "origin": "EXTRACTED", **edge},
+    ])
+    transformer = GraphDBTransformer(graph_provider=w.p, logger=logging.getLogger("pg-clear"))
+
+    await transformer.clear_classification("mine")
+    await transformer.clear_classification("mine")
+
+    assert await w.p.get_record_taxonomy_links(["mine"], include_departments=True) == []
+    assert len(await w.p.get_record_taxonomy_links(["twin"], include_departments=True)) == 4
+    assert await w.p.delete_record_entity_relations("mine", "organizations", "EXTRACTED") == 0, "its extracted links are already gone"
+    assert await w.p.delete_record_entity_relations("mine", "organizations", "INFERRED") == 1, "its inferred link stayed"
+    assert await w.p.delete_record_entity_relations("twin", "organizations", "EXTRACTED") == 1, "the other record's link stayed"
