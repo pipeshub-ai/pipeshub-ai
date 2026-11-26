@@ -678,7 +678,7 @@ class TestRunSync:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("status", "raises", "kept"),
-        [(None, True, True), (500, True, True), (429, True, True), (403, False, True), (404, False, False)],
+        [(None, True, True), (500, True, True), (429, True, True), (403, False, True), (400, False, True), (404, False, True)],
     )
     async def test_run_sync_notifies_when_any_project_fails(self, status, raises, kept):
         # A read that may pass next time fails the run; a lasting answer (403, 404) does not. Either way the

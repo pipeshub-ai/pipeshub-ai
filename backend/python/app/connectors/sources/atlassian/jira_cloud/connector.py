@@ -885,13 +885,18 @@ class JiraConnector(BaseConnector):
 
         ``status`` is the HTTP status, or None for a transport error or an exception. A 403
         is a lasting refusal: ``kept`` names what stays as stored, noted as seen later by
-        ``_note_kept_after_refusal``. A 400 or 404 says the thing is not there, so nothing is
-        kept. Anything else may pass on a later run, so the sync reports an incomplete read.
+        ``_note_kept_after_refusal``. So is a 404 of a project's roles: "Returned if the project is not
+        found or if the user does not have administrative permissions for the project"
+        (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-project-roles/). A 404 of
+        anything else says the thing is not there, so nothing is kept. A 400 is an invalid request, so it says
+        nothing. Anything else may pass on a later run, so the sync reports an incomplete read.
         """
-        if status == HttpStatusCode.FORBIDDEN.value:
+        refused = status == HttpStatusCode.FORBIDDEN.value or (
+            status == HttpStatusCode.NOT_FOUND.value and kept is not None and kept[0] in ("project_roles", "role"))
+        if refused:
             if kept is not None:
                 self._kept_after_refusal.append(kept)
-        elif status is None or is_inconclusive_status(status):
+        elif status is None or status == HttpStatusCode.BAD_REQUEST.value or is_inconclusive_status(status):
             self._kept_unread_access = True
 
     async def _note_kept_after_refusal(self, projects: list[tuple[RecordGroup, Optional[list[Permission]]]]) -> None:
@@ -1235,11 +1240,10 @@ class JiraConnector(BaseConnector):
                          if failed_statuses.get(k) is None or (failed_statuses[k] != HttpStatusCode.FORBIDDEN.value
                                                                and is_inconclusive_status(failed_statuses[k]))]
             for key in failed_keys:
-                if key in transient:
-                    self._kept_after_refusal.append(("project_issues", key))
-                else:
-                    # Issues not read would look gone to a full sync's unlink.
-                    self._note_unread(failed_statuses.get(key), ("project_issues", key))
+                # Issues not read would look gone to a full sync's unlink. A 400 ("the search request is invalid",
+                # https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/) says nothing about them
+                # either, unlike a 404 of a group or a role: a project Jira no longer has is not in the project list.
+                self._kept_after_refusal.append(("project_issues", key))
             await self._note_kept_after_refusal(projects)
             if failed_keys:
                 preview = ", ".join(failed_keys[:10])
@@ -2168,7 +2172,12 @@ class JiraConnector(BaseConnector):
                     break
 
                 audit_data = response.json()
-                records = audit_data.get("records", [])
+                records = audit_data.get("records")
+                if not isinstance(records, list):
+                    # Not an empty window: read as one, the checkpoint would pass deletions nobody will look for again.
+                    self.logger.warning("⚠️ Audit records came back without a record list")
+                    ok = False
+                    break
 
                 if not records:
                     break
@@ -2620,6 +2629,21 @@ class JiraConnector(BaseConnector):
             )
         elif unresolved_count == 0 and not self._user_bulk_forbidden:
             self.logger.info("👥 All Jira users resolved, no reverse lookup needed")
+
+        me = self._authenticated_jira_account_id
+        if self._user_bulk_forbidden and me and me not in resolved and self._authenticated_jira_email:
+            # GET /myself showed this account, whatever the list says. With the list refused nothing else finds it when no
+            # PipesHub user has its email, and the user who authenticated the connector reads through it.
+            resolved[me] = AppUser(
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_user_id=me,
+                org_id=self.data_entities_processor.org_id,
+                email=self._authenticated_jira_email.lower(),
+                full_name=next((u.full_name for u in cached_app_users if u.source_user_id == me and u.full_name),
+                               self._authenticated_jira_email),
+                is_active=True
+            )
 
         self.logger.info(f"👥 Total: {len(resolved)} Jira AppUsers resolved")
         if self._user_read_unfinished:
@@ -3479,7 +3503,14 @@ class JiraConnector(BaseConnector):
                 return None
 
             grants_data = grants_response.json()
-            permission_grants = grants_data.get("permissions", [])
+            permission_grants = grants_data.get("permissions")
+            if not isinstance(permission_grants, list):
+                # Not a scheme that grants nobody: read as one, everyone would lose the project.
+                self.logger.warning(
+                    f"⚠️ Permission grants for scheme {scheme_id} ({project_key}) came back without a grant list; "
+                    "keeping the project's stored access"
+                )
+                return None
             self._browse_issue_holders[project_key] = browse_issue_holders(permission_grants)
 
             # Step 3: Resolve each BROWSE_PROJECTS grant to holders. Isolate per-grant so a
@@ -3550,7 +3581,11 @@ class JiraConnector(BaseConnector):
             )
             if grants.status != HttpStatusCode.OK.value:
                 return None
-            return browse_issue_holders(grants.json().get("permissions", []))
+            permission_grants = grants.json().get("permissions")
+            if not isinstance(permission_grants, list):  # not a scheme that grants nobody
+                self.logger.warning("Permission grants of %s came back without a grant list", project_key)
+                return None
+            return browse_issue_holders(permission_grants)
         except Exception as e:
             self.logger.warning("Could not read the permission scheme of %s: %s", project_key, e)
             return None
@@ -3988,10 +4023,13 @@ class JiraConnector(BaseConnector):
                         )
                     # The groups past a refusal (403) are unknown, so every project's stored
                     # grants, the groups and roles they name, every stored group, and each
-                    # project's roles are kept.
-                    self._note_unread(response.status, ("projects", ""))
-                    self._note_unread(response.status, ("user_groups", ""))
-                    self._note_unread(response.status, ("project_role_ids", ""))
+                    # project's roles are kept. A list that answers 400 ("the request is not valid") or 404 does not say
+                    # there are no groups: read as that, a full sync would unlink every one of them.
+                    status = None if response.status in (
+                        HttpStatusCode.BAD_REQUEST.value, HttpStatusCode.NOT_FOUND.value) else response.status
+                    self._note_unread(status, ("projects", ""))
+                    self._note_unread(status, ("user_groups", ""))
+                    self._note_unread(status, ("project_role_ids", ""))
                     break
 
                 groups_data = response.json()
@@ -4171,7 +4209,13 @@ class JiraConnector(BaseConnector):
                         continue
 
                     role_data = role_response.json()
-                    actors = role_data.get("actors", [])
+                    actors = role_data.get("actors") if isinstance(role_data, dict) else None
+                    if not isinstance(actors, list):
+                        # Not a role nobody holds: saved as one, everyone would lose what it grants.
+                        self.logger.warning("  %s: role %s came back without an actor list", project_key, role_name)
+                        self._note_unread(None)
+                        role_skipped = True
+                        continue
                     role_name_display = role_data.get("name", role_name)
 
                     app_role = AppRole(
@@ -4605,7 +4649,10 @@ class JiraConnector(BaseConnector):
             projects_batch = self._safe_json_parse(response, "project search")
             if projects_batch is None:
                 raise Exception("Failed to parse project search response")
-            batch_projects = projects_batch.get("values", [])
+            batch_projects = projects_batch.get("values") if isinstance(projects_batch, dict) else None
+            if not isinstance(batch_projects, list):
+                # Not an account that sees no project: read as one, every synced project would look gone.
+                raise Exception("Project search response has no project list")
 
             if not batch_projects:
                 break
@@ -5732,6 +5779,9 @@ class JiraConnector(BaseConnector):
                 issues_batch_response = self._safe_json_parse(response, f"issues fetch for {project_key}")
                 if issues_batch_response is None:
                     raise Exception(f"Failed to parse issues response for project {project_key}")
+                if not isinstance(issues_batch_response, dict) or not isinstance(issues_batch_response.get("issues"), list):
+                    # Not a project with no issue changed: read as one, the checkpoint would pass issues never read.
+                    raise Exception(f"Issues response for project {project_key} has no issue list")
 
             except Exception as e:
                 self.logger.error(f"❌ Failed to fetch issues for project {project_key}: {e}")
