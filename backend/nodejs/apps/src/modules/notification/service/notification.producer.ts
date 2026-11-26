@@ -19,6 +19,17 @@ export enum EventType {
   }
 
 
+/**
+ * What goes on the notification topic for *doc*. With `ENVELOPE_SIGN` on: `{ payload: { notification, orgId } }`, since
+ * a signature covers only `payload` and `NotificationConsumer` reads the notification from there (ignoring the top
+ * level). With signing off: the notification itself, as before. Publish it with the notification's org bound.
+ */
+export function notificationMessage(doc: object): Record<string, unknown> {
+  if (!signEnabled()) return doc as Record<string, unknown>;
+  const orgId = (doc as { orgId?: unknown }).orgId;
+  return { payload: { notification: doc, orgId: orgId == null ? orgId : String(orgId) } };
+}
+
 @injectable()
 export class NotificationProducer {
   private readonly topic = 'notification';
@@ -50,10 +61,7 @@ export class NotificationProducer {
    * ignores the top level). With signing off it is sent as before.
    */
   async publishEvent(event: Event): Promise<void> {
-    const doc = event.payload as NotificationEventPayload & { orgId?: unknown };
-    const value: Record<string, unknown> = signEnabled()
-      ? { payload: { notification: doc, orgId: doc.orgId == null ? doc.orgId : String(doc.orgId) } }
-      : (doc as Record<string, unknown>);
+    const value = notificationMessage(event.payload);
     const message: StreamMessage<Record<string, unknown>> = {
       key: event.payload.id as string, // the broker key, when the payload carries an id
       value,

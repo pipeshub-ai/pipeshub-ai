@@ -385,13 +385,28 @@ export class MailConsumer {
     }
     // A set-password link is a credential: it is minted only for a user of the org this delivery is bound to, and only
     // into a mail addressed to that user alone. A job that asks otherwise was not written by our producer.
+    // With no org bound there is nothing to hold the target to, so no link either.
     const bound = getCurrentOrgId();
     const to = payload.mail.sendEmailTo ?? [];
     const onlyTarget =
       to.length === 1 &&
       typeof to[0] === 'string' &&
       to[0].trim().toLowerCase() === String(target.email).trim().toLowerCase();
-    if ((bound !== undefined && String(target.orgId) !== bound) || !onlyTarget) {
+    // No copy to anyone else: CC, or any other recipient list a mail may carry now or later.
+    const otherRecipients = Object.entries(payload.mail).some(
+      ([field, value]) =>
+        field !== 'sendEmailTo' &&
+        /(to|cc|bcc)$/i.test(field) &&
+        field !== 'replyTo' &&
+        Array.isArray(value) &&
+        value.length > 0,
+    );
+    if (
+      bound === undefined ||
+      String(target.orgId) !== bound ||
+      !onlyTarget ||
+      otherRecipients
+    ) {
       throw new PasswordLinkRefused();
     }
     const config = this.getAppConfig();

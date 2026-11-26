@@ -188,13 +188,16 @@ export function parseSandboxCapacityAlert(
   if (!isRecord(raw)) return { ok: false, reason: 'not_an_object' };
   if (eventSize(raw) > MAX_EVENT_BYTES)
     return { ok: false, reason: 'too_large' };
-  const type = own(raw, 'type');
+  const p = ownFields(own(raw, 'payload'));
+  // The type and the email flag are read from the payload when it carries them (the part a signature covers), else
+  // from the top level (an older producer).
+  const signedFields = p !== null && p !== undefined && Object.prototype.hasOwnProperty.call(p, 'type');
+  const type = signedFields ? p.type : own(raw, 'type');
   if (!isSandboxAlertType(type)) {
     return { ok: false, reason: 'unknown_type', type: safeLabel(type) };
   }
   const alertType = type;
   const kind = SANDBOX_ALERT_TYPES[alertType];
-  const p = ownFields(own(raw, 'payload'));
   if (!p || p.v !== PAYLOAD_VERSION) {
     return { ok: false, reason: 'bad_payload', type };
   }
@@ -240,7 +243,7 @@ export function parseSandboxCapacityAlert(
     level,
     alertId,
     // Only an explicit `email: false` means in-app only; older events have no field.
-    email: kind !== 'resolved' && own(raw, 'email') !== false,
+    email: kind !== 'resolved' && (signedFields ? p.email : own(raw, 'email')) !== false,
     firedAt,
     expiresAtMs,
     host: matching(p.host, HOST_RE),

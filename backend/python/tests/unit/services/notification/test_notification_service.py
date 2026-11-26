@@ -219,3 +219,13 @@ async def test_a_provider_hold_notice_is_published_in_its_org_and_signed_whole(m
         assert json.loads(sent[0]["payload"])["notification"]["title"] == "Model provider on hold"
     finally:
         envelope.configure(None, sign_key=None)
+
+
+@pytest.mark.asyncio
+async def test_a_provider_hold_notice_without_an_org_is_skipped_quietly() -> None:
+    from app.indexing_main import _send_hold_notice
+
+    producer = MagicMock()
+    producer.send_message = AsyncMock(return_value=True)
+    assert await _send_hold_notice(producer, {"orgId": "", "type": "INDEXING_PROVIDER_ON_HOLD"}) is True
+    producer.send_message.assert_not_awaited()

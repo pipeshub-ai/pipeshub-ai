@@ -3198,8 +3198,12 @@ async def _send_hold_notice(producer: Any, document: dict[str, Any]) -> bool:  #
     from app.core.org_context import for_org
     from app.services.notification.notification_service import notification_message
 
+    org = document.get("orgId")
+    if not org:
+        # A hold re-indexed without its org cannot be told to anyone (no consumer delivers it): handled, not retried.
+        return True
     key = f"{document.get('type')}-{get_epoch_timestamp_in_ms()}"
-    with for_org(document.get("orgId"), job="provider_hold_notice"):
+    with for_org(org, job="provider_hold_notice"):
         return bool(await producer.send_message(topic=Topic.NOTIFICATION.value, message=notification_message(document), key=key))
 
 

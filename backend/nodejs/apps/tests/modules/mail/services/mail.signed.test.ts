@@ -181,6 +181,37 @@ describe('mail/services/mail.signed', () => {
       expect(sent, 'neither job is sent').to.deep.equal([]);
     });
 
+    it('gets no set-password link copied to anyone by CC, with or without an org on the job (unsigned path)', async () => {
+      process.env.ENVELOPE_SIGN = 'false';
+      const cc = (withOrg: boolean) => {
+        const { orgId: _o, ...noOrg } = job();
+        const base = withOrg ? job() : noOrg;
+        return {
+          ...base,
+          mail: { ...base.mail, sendEmailTo: [victimB.email], sendCcTo: ['attacker@evil.example'] },
+          passwordResetLinkFor: victimB,
+        };
+      };
+
+      const { sent } = await consume([cc(true), cc(false)]);
+
+      expect(sent, 'nothing is sent, to the victim or the attacker').to.deep.equal([]);
+    });
+
+    it('gets no set-password link when no org is bound at all', async () => {
+      process.env.ENVELOPE_SIGN = 'false';
+      const { orgId: _o, ...noOrg } = job();
+      const unbound = {
+        ...noOrg,
+        mail: { ...noOrg.mail, sendEmailTo: [victimB.email] },
+        passwordResetLinkFor: victimB,
+      };
+
+      const { sent } = await consume([unbound]);
+
+      expect(sent).to.deep.equal([]);
+    });
+
     it('a genuine invite still gets its set-password link', async () => {
       process.env.ENVELOPE_SIGN = 'false';
       const invite = {
