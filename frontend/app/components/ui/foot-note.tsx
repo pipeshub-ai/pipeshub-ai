@@ -12,7 +12,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 type Tone = 'neutral' | 'positive' | 'caution' | 'danger';
 
 const TONE: Record<Tone, { color: 'gray' | 'jade' | 'orange' | 'red'; bg: string; border: string; icon: string; fg: string }> = {
-  neutral: { color: 'gray', bg: 'var(--gray-a2)', border: 'var(--gray-a5)', icon: 'var(--gray-a10)', fg: 'var(--gray-11)' },
+  neutral: { color: 'gray', bg: 'var(--gray-a2)', border: 'var(--gray-a5)', icon: 'var(--gray-11)', fg: 'var(--gray-11)' },
   positive: { color: 'jade', bg: 'var(--accent-a3)', border: 'var(--accent-a5)', icon: 'var(--accent-a11)', fg: 'var(--gray-11)' },
   caution: { color: 'orange', bg: 'var(--orange-a3)', border: 'var(--orange-a5)', icon: 'var(--orange-11)', fg: 'var(--orange-11)' },
   danger: { color: 'red', bg: 'var(--red-a2)', border: 'var(--red-a5)', icon: 'var(--red-11)', fg: 'var(--red-11)' },

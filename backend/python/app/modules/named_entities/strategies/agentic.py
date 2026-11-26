@@ -12,7 +12,7 @@ from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.context import CancellationToken
-from app.agent_loop_lib.core.exceptions import BudgetExceeded
+from app.agent_loop_lib.core.exceptions import TOOLS_UNSUPPORTED_CODE, BudgetExceeded
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.hooks.events import HookEvent
 from app.agent_loop_lib.modules.providers.budget.tracker import BudgetTracker
@@ -33,6 +33,7 @@ from app.modules.named_entities.strategies.base import (
     ExtractionDocument,
     StrategyResult,
 )
+from app.utils import error_class
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.types import AgentResult
@@ -184,7 +185,7 @@ class AgenticExtractionStrategy:
                 submitted=session.staging.submitted,
                 rejected=session.staging.rejected,
                 failed_before_first_turn=failed_early,
-                tools_unsupported="bind_tools" in str(exc),
+                tools_unsupported=error_class.provider_code(exc) == TOOLS_UNSUPPORTED_CODE,
             )
         reason = _reason(result, stop["reason"])
         if reason == "finish_ok" and not session.finished and session.unread():
@@ -205,7 +206,7 @@ class AgenticExtractionStrategy:
             rejected_reasons=dict(session.staging.rejected_reasons),
             incomplete=bool(session.unread()),
             failed_before_first_turn=reason == "llm_error" and not turns,
-            tools_unsupported=reason == "llm_error" and "bind_tools" in (getattr(result, "error", None) or ""),
+            tools_unsupported=reason == "llm_error" and getattr(result, "error_code", None) == TOOLS_UNSUPPORTED_CODE,
             **(_unavailable(transport) if reason == "llm_error" else {}),
         )
 
@@ -237,6 +238,10 @@ def _reason(result: AgentResult, forced: str | None) -> str:
         return forced
     if getattr(result, "cancelled", False):
         return "no_progress"
+    # The loop ends a run its budget or turn limit stopped on a final answer, flagged (BUDGETEND).
+    truncated = getattr(result, "truncated_by", None)
+    if truncated in ("budget", "turns"):
+        return "budget_tokens" if truncated == "budget" else "budget_turns"
     budget = _budget_reason(getattr(result, "error", None) or "")
     if budget:
         return budget

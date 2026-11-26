@@ -25,6 +25,7 @@ from app.utils.table_enrichment import (
     indexing_llm_or_none,
     simple_table_enrichment,
 )
+from app.utils.table_row_memory import with_row_digest
 from app.utils.transformation.bbox import (
     normalize_corner_coordinates,
     transform_bbox_to_corners,
@@ -380,6 +381,7 @@ class DoclingDocToBlocksConverter():
 
             column_headers = enrichment.headers
             table_rows_text = enrichment.descriptions
+            row_digests = enrichment.row_digests
 
             # Convert caption and footnote references to text strings
             _captions = item.get("captions", [])
@@ -429,10 +431,10 @@ class DoclingDocToBlocksConverter():
                     source_name=None,
                     source_type=None,
                     parent_index=block_group.index,
-                    data={
+                    data=with_row_digest({
                         "row_natural_language_text": row_text,
                         "row_number": i+1
-                    },
+                    }, row_digests, i),
                     citation_metadata=block_group.citation_metadata
                 )
                 # _enrich_metadata(block, row, doc_dict)

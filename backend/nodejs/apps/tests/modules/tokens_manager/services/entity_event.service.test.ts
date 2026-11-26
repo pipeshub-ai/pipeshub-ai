@@ -83,8 +83,9 @@ describe('tokens_manager/services/entity_event.service', () => {
       expect(message.headers.timestamp).to.equal('1234567890')
     })
 
-    it('should log error if publish fails', async () => {
-      mockProducer.publish.rejects(new Error('Kafka error'))
+    it('rejects with the broker error when publish fails, and logs nothing', async () => {
+      const failure = new Error('Kafka error')
+      mockProducer.publish.rejects(failure)
 
       const event: any = {
         eventType: EventType.AppEnabledEvent,
@@ -92,9 +93,15 @@ describe('tokens_manager/services/entity_event.service', () => {
         payload: {},
       }
 
-      await producer.publishEvent(event)
+      let raised: unknown
+      try {
+        await producer.publishEvent(event)
+      } catch (error) {
+        raised = error
+      }
 
-      expect(mockLogger.error.calledOnce).to.be.true
+      expect(raised).to.equal(failure)
+      expect(mockLogger.error.called).to.be.false
     })
   })
 

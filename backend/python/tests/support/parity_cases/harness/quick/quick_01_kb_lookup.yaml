@@ -1,0 +1,22 @@
+id: quick-01-kb-lookup
+category: quick
+chat_mode: quick
+knowledge_base: true
+task: How many days of paid leave do I get?
+fixtures:
+  knowledge:
+    - {id: kb-leave, title: Leave policy, text: "Full-time employees get 25 days of paid leave per calendar year."}
+script:
+  turns:
+    - expect: {last_user_contains: paid leave}
+      reply:
+        tool_calls: [{id: c1, name: knowledgegraph__search, args: {query: paid leave}}]
+        usage: {input_tokens: 2100, output_tokens: 20, cache_read_tokens: 1500}
+    - expect: {tool_result_for: knowledgegraph__search, status: succeeded}
+      reply:
+        text: You get 25 days of paid leave per calendar year.
+        usage: {input_tokens: 2300, output_tokens: 15, cache_read_tokens: 2100}
+grader:
+  - regex: "(?i)\\b25 (paid[- ]leave )?days\\b"
+  - tool_called: knowledgegraph__search
+  - no_effects: true

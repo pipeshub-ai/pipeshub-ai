@@ -9,6 +9,7 @@ import pytest
 from app import embedding_main as em
 from app.capacity.budget_policy import AdmissionPolicy, Family, plan_floors
 from app.capacity.member_budget import MemberBudget
+from tests.support.settle import SETTLE_S
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -159,10 +160,11 @@ async def test_a_busy_node_answers_429_with_retry_after_and_frees_its_encode_slo
         await em.create_embeddings(request, SimpleHttpRequest())
     assert err.value.status_code == 429
     assert err.value.headers == {"Retry-After": str(em.EMBED_BACKPRESSURE_RETRY_AFTER_SECONDS)}
+    # wall-clock-ok: a hang guard: the refusal is immediate, the failure waits for a permit that never frees
     assert asyncio.get_running_loop().time() - started < 3.0
     held.release()
     # the encode slot went back: the next request is admitted at once
-    token = await asyncio.wait_for(mgr._encode_gate.acquire(BULK), 1)
+    token = await asyncio.wait_for(mgr._encode_gate.acquire(BULK), SETTLE_S)
     mgr._encode_gate.release(BULK, token)
     budget.close()
 

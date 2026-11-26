@@ -91,11 +91,21 @@ TEXT_PARENT_BASE_GB = 16 * MIB / GIB
 
 
 def classify_kind(extension: str | None, mime_type: str | None) -> ParseKind:
-    """The kind of a record, from its extension, else its mime type, as ``tiers.classify`` does.
+    """The kind of a record, from its labels, as ``tiers.classify`` does: the kind of the reader they select.
 
     Anything not recognised is ``UNKNOWN``, which is charged the old safe figures.
     """
     kind = file_types.kind(extension, mime_type)
+    return ParseKind(kind) if kind else ParseKind.UNKNOWN
+
+
+def parse_format_kind(format_key: str | None, extension: str | None, mime_type: str | None) -> ParseKind:
+    """The kind of a parse the parsing service runs as *format_key* (``file_types.parse_format``): that format's kind,
+    ``UNKNOWN`` (the safe figures) for a format with none, such as an image, and the labels' kind when no format was
+    resolved."""
+    if not format_key:
+        return classify_kind(extension, mime_type)
+    kind = file_types.kind_of_format(format_key)
     return ParseKind(kind) if kind else ParseKind.UNKNOWN
 
 
@@ -263,6 +273,7 @@ __all__ = [
     "ChargeScales",
     "ParseKind",
     "classify_kind",
+    "parse_format_kind",
     "explicit_lane_working_set_bytes",
     "lane_charge_bytes",
     "TEXT_PARENT_SLOPES",

@@ -10,14 +10,13 @@ import { sameModel, useCompareStore } from '../compare-store';
 import { MAX_COMPARE_MODELS } from '../types';
 
 /**
- * Compare is offered in the plain assistant, in any mode but image: flag on,
+ * Compare is offered in the plain assistant, in any mode: flag on,
  * at least two configured models, and not in a saved agent's chat.
  */
 export function useCompareAvailable(ctxKey: string): boolean {
   const flagOn = useFeatureFlagsStore(selectChatCompareEnabled);
-  const textMode = useChatStore((s) => s.settings.queryMode !== 'image');
   const modelCount = useChatStore((s) => s.settings.availableModels[ASSISTANT_CTX]?.models.length ?? 0);
-  return flagOn && ctxKey === ASSISTANT_CTX && textMode && modelCount >= MAX_COMPARE_MODELS;
+  return flagOn && ctxKey === ASSISTANT_CTX && modelCount >= MAX_COMPARE_MODELS;
 }
 
 const toOverride = (m: AvailableLlmModel): ModelOverride => ({
@@ -79,7 +78,7 @@ export function CompareToggle({
               ? t('chat.compare.pickTwo', { max: MAX_COMPARE_MODELS })
               : t('chat.compare.pickedHint')}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-10)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {t('chat.compare.costNote')}
           </Text>
         </>

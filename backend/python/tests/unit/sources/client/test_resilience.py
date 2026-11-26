@@ -13,6 +13,7 @@ from app.connectors.core.sync.run_context import (
     reset_run_stats,
 )
 from app.sources.client.resilience import ResiliencePolicy, parse_retry_after
+from harness_core.testing.virtual_time import on_virtual_time, run_on_virtual_time
 
 
 def _policy(**kwargs) -> ResiliencePolicy:
@@ -132,7 +133,7 @@ class TestBackoffGate:
         await asyncio.gather(*(policy.acquire() for _ in range(10)))
         assert loop.time() - start >= 0.25
 
-    @pytest.mark.asyncio
+    @on_virtual_time
     async def test_callers_queued_for_a_token_do_not_drain_into_a_pause(self):
         """The gate must hold back callers already waiting on the limiter.
 
@@ -174,29 +175,32 @@ class TestBackoffGate:
         await policy.acquire()
         assert loop.time() - start >= 0.25
 
-    @pytest.mark.asyncio
-    async def test_pause_is_capped_at_max_delay(self):
-        policy = _policy(max_delay=0.05)
-        loop = asyncio.get_running_loop()
+    def test_pause_is_capped_at_max_delay(self):
+        async def main() -> None:
+            policy = _policy(max_delay=0.05)
+            loop = asyncio.get_running_loop()
 
-        policy.pause(3600)
-        start = loop.time()
-        await policy.acquire()
-        assert loop.time() - start < 1.0
+            policy.pause(3600)
+            start = loop.time()
+            await policy.acquire()
+            assert loop.time() - start == pytest.approx(0.05)
 
-    @pytest.mark.asyncio
-    async def test_pausing_one_connector_does_not_delay_another(self):
+        run_on_virtual_time(main)
+
+    def test_pausing_one_connector_does_not_delay_another(self):
         """The non-blocking guarantee: policies are per connector instance."""
-        throttled = _policy(name="Notion")
-        other = _policy(name="Slack")
-        loop = asyncio.get_running_loop()
+        async def main() -> None:
+            throttled = _policy(name="Notion")
+            other = _policy(name="Slack")
+            loop = asyncio.get_running_loop()
 
-        throttled.pause(0.3)
-        start = loop.time()
-        await other.acquire()
-        # Generous bound: this asserts "not blocked by the 0.3s pause", not a
-        # precise timing, so scheduler jitter must not make it flaky.
-        assert loop.time() - start < 0.25
+            throttled.pause(0.3)
+            start = loop.time()
+            await other.acquire()
+            assert loop.time() - start == 0
+            assert throttled._gate_is_closed()  # still paused: the other policy did not wait it out
+
+        run_on_virtual_time(main)
 
 
 @contextlib.contextmanager

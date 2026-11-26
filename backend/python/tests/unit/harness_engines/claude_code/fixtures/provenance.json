@@ -1,0 +1,14 @@
+{
+ "source": "Recorded from the Claude Code binary 2.1.289 (`claude --version` = `2.1.289 (Claude Code)`, sha256 a186b99e4a9c88366cd49df2f7dad56c61fc306ef0140b19ee64b7c42a8d1348) on the E9 host, 2026-10-04: stdout of `claude -p --input-format stream-json --output-format stream-json --verbose --permission-mode dontAsk --tools Bash,Read,Write,Edit,Agent --allowedTools <same> --setting-sources '' --settings <built-in plugins off> --strict-mcp-config --agents <helper>` (mcp.jsonl: `--tools Bash --allowedTools Bash,mcp__tools --mcp-config` one HTTP server `tools` with tools `search` and `broken`), with an isolated HOME and CLAUDE_CONFIG_DIR, the E9 adapter's switches (bundled skills, auto-memory, CLAUDE.md, built-in agents, background tasks off), ANTHROPIC_BASE_URL a local scripted Anthropic Messages server and ANTHROPIC_AUTH_TOKEN a placeholder. One user message per file (interrupt.jsonl: an interrupt control request 1.5 s into a held call, then a second message).",
+ "redaction": "Claude Code is not open source: every string longer than 80 characters (system prompt fragments, tool-result explanations Claude Code writes) is replaced by `<redacted N characters>`; host paths are rewritten to /workspace and /state/claude, other temporary paths to /tmp/redacted, the initialize response's pid to 0. Keys, message types and subtypes, block types, ids, tool names and inputs, usage numbers and every short string are as emitted.",
+ "files": {
+  "text.jsonl": "one text reply",
+  "bash.jsonl": "Bash `echo hi; exit 3` (fails), then `echo ok`, then text",
+  "write.jsonl": "Write (create), Edit, Write (update), Edit of a missing file (fails), then text",
+  "agent.jsonl": "Agent spawning the `helper` sub-agent in the foreground, then text",
+  "interrupt.jsonl": "a held call interrupted, then a second turn",
+  "denied.jsonl": "a Bash call dontAsk refuses (`permission_denied`), then text",
+  "error.jsonl": "the model gateway answering 402 with x-should-retry: false",
+  "mcp.jsonl": "two gateway tools: one succeeds, one fails"
+ }
+}

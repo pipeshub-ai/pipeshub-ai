@@ -6,7 +6,7 @@ from typing import Never
 
 import pytest
 
-from app.agent_loop_lib.core.exceptions import TransportError
+from app.agent_loop_lib.core.exceptions import TOOLS_UNSUPPORTED_CODE, TransportError
 from app.agent_loop_lib.core.messages import AssistantMessage
 from app.agent_loop_lib.core.responses import StopReason
 from app.modules.named_entities import extractor as extractor_module
@@ -77,7 +77,10 @@ def test_bind_tools_failure_selects_single_call_and_is_cached() -> None:
 
 
 async def test_agent_bind_tools_error_falls_back_and_remembers() -> None:
-    transport = ScriptedTransport([ScriptedStep(error=TransportError("bind_tools() failed for 5 tool(s)"))])
+    # As LangChainTransport raises it: the code says the model can't take tools, whatever the text.
+    transport = ScriptedTransport([ScriptedStep(error=TransportError(
+        "bind_tools() failed for 5 tool(s)", code=TOOLS_UNSUPPORTED_CODE,
+    ))])
 
     async def complete(system, prompt) -> str:
         return json.dumps({"entities": [{"text": "Acme", "block": 0, "kind": "organization", "normalized": ""}]})

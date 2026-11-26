@@ -125,6 +125,63 @@ if [[ -n "$(env_val DATA_STORE)" ]]; then
 EOF
 fi
 
+# The sandbox plane these Compose files run (R43-SOCK): the broker reaches Docker only through the policy proxy's
+# broker profile. An image from before it has no such profile and its broker sends the legacy credential, so code
+# execution stops while the rest of the app runs. An image carries the plane it speaks as a label; the release
+# tooling test keeps the Dockerfile's value equal to this one.
+SANDBOX_PLANE_VERSION=2
+SANDBOX_PLANE_LABEL="ai.pipeshub.sandbox-plane.version"
+
+# The target image's label: from its local copy, else from the registry's config without pulling it. Empty when
+# the image has none (built before the label), "unknown" when neither can be read.
+target_sandbox_plane() {
+  local out
+  if out="$(docker image inspect "$IMAGE" --format "{{ index .Config.Labels \"${SANDBOX_PLANE_LABEL}\" }}" 2>/dev/null)"; then
+    [[ "$out" == "<no value>" ]] && out=""
+    printf '%s' "$out"
+    return 0
+  fi
+  if out="$(docker buildx imagetools inspect "$IMAGE" --format '{{ json .Image }}' 2>/dev/null)"; then
+    printf '%s' "$out" | grep -oE '"ai\.pipeshub\.sandbox-plane\.version": *"[0-9]+"' | head -1 \
+      | grep -oE '[0-9]+"$' | tr -d '"' || true
+    return 0
+  fi
+  printf unknown
+}
+
+_plane="$(target_sandbox_plane)"
+if [[ ! "$_plane" =~ ^[0-9]+$ ]] || (( _plane < SANDBOX_PLANE_VERSION )); then
+  if [[ "$_plane" == unknown ]]; then
+    _plane_why="Could not read the labels of ${IMAGE}. If ${TARGET}
+  is older than the release that put the sandbox broker behind the
+  Docker API proxy (R43-SOCK), this applies:"
+  else
+    _plane_why="${TARGET} is older than the release that put the sandbox
+  broker behind the Docker API proxy (R43-SOCK)."
+  fi
+  cat <<EOF
+
+  ${LOG_PREFIX}: code execution
+  ---------------------------------------------------------------
+  ${_plane_why}
+  With this release's Compose files the app, chat and search keep
+  working, but coding agents and code runs stop: the older sandbox
+  broker cannot reach Docker through this release's proxy.
+
+  To keep code execution, roll back with ${TARGET}'s own files:
+    1. Get deployment/docker-compose as of ${TARGET}, e.g.
+         git checkout v${TARGET} -- deployment/docker-compose
+       or from that release's page on GitHub.
+    2. Copy this .env into that folder and run there:
+         ./install.sh --yes --upgrade
+  ---------------------------------------------------------------
+EOF
+  if [[ "$DRY_RUN" != true && -t 0 ]]; then
+    read -r -p "${LOG_PREFIX}: roll back to ${TARGET} with these files, without code execution? [y/N] " _answer
+    [[ "$_answer" =~ ^[Yy]$ ]] || die "not rolled back. To keep code execution, follow the steps above."
+  fi
+fi
+
 if [[ "$DRY_RUN" == true ]]; then
   log "dry run — would set IMAGE_TAG=${TARGET} in ${ENV_FILE} and run: ./install.sh --yes --upgrade"
   exit 0

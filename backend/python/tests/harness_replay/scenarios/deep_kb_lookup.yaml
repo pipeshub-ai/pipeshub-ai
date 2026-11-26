@@ -1,0 +1,22 @@
+id: deep-kb-lookup
+description: deep plans one step, a sub-agent searches, the orchestrator verifies and answers.
+chat_mode: deep
+task: How many days of paid leave do I get?
+fixtures:
+  knowledge:
+    - {id: kb-leave, title: Leave policy, text: "Full-time employees get 25 days of paid leave per calendar year."}
+script:
+  turns:
+    - reply: {text: "Find how many days of paid leave the user gets."}
+    - reply:
+        tool_calls:
+          - id: plan-1
+            name: create_plan
+            args: {steps: [{id: lookup, description: Search the knowledge base for the leave policy and report the number of days, domain: knowledge}]}
+    - reply: {tool_calls: [{id: critique-1, name: critique_plan, args: {}}]}
+    - reply: {text: '{"passed": true, "confidence": "high", "summary": "ok", "issues": []}'}
+    - reply: {tool_calls: [{id: call-1, name: knowledge__search, args: {query: paid leave}}]}
+    - reply: {text: "Full-time employees get 25 days of paid leave per calendar year."}
+    - reply: {tool_calls: [{id: verify-1, name: verify_result, args: {result: "25 days of paid leave per year."}}]}
+    - reply: {text: '{"passed": true, "confidence": "high", "summary": "ok", "issues": []}'}
+    - reply: {text: "You get 25 days of paid leave per calendar year."}

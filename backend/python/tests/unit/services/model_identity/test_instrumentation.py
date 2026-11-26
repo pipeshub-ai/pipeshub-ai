@@ -33,6 +33,7 @@ from app.services.model_identity.transport.instrument import (
     settings_from_config,
 )
 from app.services.model_identity.workload import Workload
+from tests.support.settle import settle
 
 if TYPE_CHECKING:
     from langchain_openai import ChatOpenAI
@@ -263,19 +264,21 @@ class TestHook:
         assert "group:g1" in rec.seen[0]["x-litellm-tags"]
 
     async def test_a_slow_group_lookup_does_not_hold_the_request(self, alice) -> None:
+        never = asyncio.Event()
+
         class Slow:
             async def resolve(self, org_id, subject) -> None:
-                await asyncio.sleep(5)
+                await never.wait()
 
         rec = Recorder()
         client = rec.async_client()
         install_identity_hook(client, settings(), LiteLLMHeadersForwarder())
         handle = GroupsHandle(Slow(), alice, budget_seconds=0.02)
-        started = time.monotonic()
         async with bind_call_context(ctx_for(alice, groups=handle)):
-            await client.post("http://gw/v1")
-            await client.post("http://gw/v1")
-        assert time.monotonic() - started < 1
+            await settle(client.post("http://gw/v1"))
+            await settle(client.post("http://gw/v1"))
+        assert not handle._task.done(), "both requests went out while the lookup is still pending"
+        assert len(rec.seen) == 2
         assert rec.seen[0]["x-pipeshub-groups-incomplete"] == "true"
         handle._task.cancel()
 

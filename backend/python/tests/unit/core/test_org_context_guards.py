@@ -8,6 +8,8 @@ detached_work: long-lived work (loops, consumers, lazily created clients) starts
 ``spawn_detached``; a bare ``create_task``/``ensure_future`` copies the creating
 request's context, so the task would serve every later event as that org.
 direct_org_reads: new reads of the org straight off claims or payloads bypass the context.
+
+An edition's overlay (``tests/edition_overlay.py``, ``org_context.json``) adds sites per file to the counts here.
 """
 
 import ast
@@ -20,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.edition_overlay import overlay
 from tests.support.app_tree import may_contain_name, sources
 
 APP = Path(__file__).resolve().parents[3] / "app"
@@ -105,7 +108,9 @@ def _check(guard: str, hint: str) -> None:
     if os.environ.get("ORG_CONTEXT_UPDATE_BASELINE"):
         BASELINE.write_text(json.dumps(found, indent=1, sort_keys=True) + "\n")
     base = json.loads(BASELINE.read_text())
-    grown = {f: (base[guard].get(f, 0), n) for f, n in found[guard].items() if n > base[guard].get(f, 0)}
+    added: dict[str, int] = overlay("org_context").get(guard) or {}
+    allowed = {f: base[guard].get(f, 0) + added.get(f, 0) for f in found[guard]}
+    grown = {f: (allowed[f], n) for f, n in found[guard].items() if n > allowed[f]}
     assert not grown, f"{guard}: new sites (baseline, now) {grown}. {hint}"
 
 

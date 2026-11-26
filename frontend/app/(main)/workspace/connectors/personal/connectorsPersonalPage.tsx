@@ -464,7 +464,7 @@ function PersonalConnectorsPageContent() {
             return;
           }
         } else {
-          await ConnectorsApi.toggleConnector(instance._key, 'sync');
+          await ConnectorsApi.toggleConnector(instance._key, 'sync', false);
         }
         if (isLocalFsConnectorType(instance.type)) {
           const fresh = await refreshConnectorRowQuiet(instance._key);

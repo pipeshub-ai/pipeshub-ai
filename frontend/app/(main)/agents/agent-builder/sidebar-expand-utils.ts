@@ -41,5 +41,7 @@ export function useSearchAwareExpanded(searching: boolean, initial: Record<strin
     },
     [searching]
   );
-  return { isOpen, toggle };
+  /** Opens `key` once no search is running, as if the user had opened it. */
+  const expand = useCallback((key: string) => setNormal((p) => ({ ...p, [key]: true })), []);
+  return { isOpen, toggle, expand };
 }

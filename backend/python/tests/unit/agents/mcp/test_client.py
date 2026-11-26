@@ -45,6 +45,7 @@ from app.agents.mcp.errors import (
 )
 from app.agents.mcp.models import MCPAuthMode, MCPServerConfig, MCPTransport
 from app.utils.logger import log_record_fields
+from harness_core.testing.virtual_time import on_virtual_time, run_on_virtual_time
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -183,7 +184,7 @@ def sdk() -> Iterator[_Script]:
     script.stderr_paths: list[Path | None] = []  # type: ignore[attr-defined]
     script.transports: list[_Transport] = []  # type: ignore[attr-defined]
 
-    def _build(config: MCPServerConfig, *, env: Any = None, headers: Any = None, stderr_log_file: Path | None = None) -> _Transport:  # noqa: ANN401
+    def _build(config: MCPServerConfig, *, env: Any = None, headers: Any = None, stderr_log_file: Path | None = None, runner: Any = None) -> _Transport:  # noqa: ANN401
         script.stderr_paths.append(stderr_log_file)  # type: ignore[attr-defined]
         transport = _Transport("streams", http_clients=[MagicMock(headers={})])
         script.transports.append(transport)  # type: ignore[attr-defined]
@@ -1205,38 +1206,49 @@ class TestProgressKeepsACallAlive:
 
         sdk.answer = _answer
 
+    @on_virtual_time
     async def test_progress_carries_a_call_past_its_timeout(self, sdk: _Script) -> None:
         self._reporting(sdk, every=0.05, then_answer_after=0.6)
         manager = await _open(sdk, _config(call_timeout_seconds=0.25))
 
         assert await manager.call_tool_in_session("export", {}) == {"result": "export ok"}
 
-    async def test_without_progress_it_still_ends_at_the_call_timeout(self, sdk: _Script) -> None:
+    def test_without_progress_it_still_ends_at_the_call_timeout(self, sdk: _Script) -> None:
         async def _hang(*_args: object) -> Any:  # noqa: ANN401
             await asyncio.sleep(3600)
 
         sdk.answer = _hang
-        manager = await _open(sdk, _config(call_timeout_seconds=0.1))
-        started = asyncio.get_running_loop().time()
 
-        with pytest.raises(TimeoutError, match="didn't finish within") as caught:
-            await manager.call_tool_in_session("export", {})
-        assert not isinstance(caught.value, client_module.MCPCallTooLongError)
-        assert asyncio.get_running_loop().time() - started < 2
+        async def main() -> tuple[BaseException, float]:
+            manager = await _open(sdk, _config(call_timeout_seconds=0.1))
+            started = asyncio.get_running_loop().time()
+            with pytest.raises(TimeoutError, match="didn't finish within") as caught:
+                await manager.call_tool_in_session("export", {})
+            return caught.value, asyncio.get_running_loop().time() - started
 
-    async def test_the_limit_for_one_call_holds_against_endless_progress(
+        error, elapsed = run_on_virtual_time(main)
+
+        assert not isinstance(error, client_module.MCPCallTooLongError)
+        assert elapsed == pytest.approx(0.1)
+
+    def test_the_limit_for_one_call_holds_against_endless_progress(
         self, sdk: _Script, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv(client_module.MAX_CALL_SECONDS_ENV, raising=False)
         monkeypatch.setattr(client_module, "DEFAULT_MAX_CALL_SECONDS", 0.4)
         self._reporting(sdk, every=0.05)
-        manager = await _open(sdk, _config(call_timeout_seconds=0.15))
-        started = asyncio.get_running_loop().time()
 
-        with pytest.raises(client_module.MCPCallTooLongError, match="the limit for one call") as caught:
-            await manager.call_tool_in_session("export", {})
-        assert caught.value.limit_seconds == 0.4
-        assert 0.35 < asyncio.get_running_loop().time() - started < 2
+        async def main() -> tuple[client_module.MCPCallTooLongError, float]:
+            manager = await _open(sdk, _config(call_timeout_seconds=0.15))
+            started = asyncio.get_running_loop().time()
+            with pytest.raises(client_module.MCPCallTooLongError, match="the limit for one call") as caught:
+                await manager.call_tool_in_session("export", {})
+            return caught.value, asyncio.get_running_loop().time() - started
+
+        error, elapsed = run_on_virtual_time(main)
+
+        assert error.limit_seconds == 0.4
+        assert elapsed == pytest.approx(0.4)
 
     async def test_whoever_asked_hears_each_report(self, sdk: _Script) -> None:
         self._reporting(sdk, every=0.01, then_answer_after=0.03, message="page 1")
@@ -1453,18 +1465,29 @@ class TestResultsThatMissTheirSchemaAreKept:
         assert log_record_fields(record) == {"error_type": "RuntimeError"}
         assert "sentinel-v" not in caplog.text
 
-    async def test_a_failing_validation_listing_does_not_fail_the_call(self) -> None:
+    async def test_the_installed_sdk_lists_the_server_to_check_a_tool_its_session_never_listed(self) -> None:
+        from mcp.types import CallToolResult, ListToolsResult
+
+        session = self._session()
+        session._tool_output_schemas = {}
+        session.list_tools = AsyncMock(return_value=ListToolsResult(tools=[]))
+        await session.validate_tool_result("search", CallToolResult(content=[], structured_content={"b": 1}))
+        session.list_tools.assert_awaited_once()
+
+    async def test_r31journey_fu9_a_call_on_a_session_that_never_listed_the_tool_lists_nothing(self) -> None:
+        """R31JOURNEY-FU-9: the job's first call on a new pooled session made the SDK list its parent's server again,
+        the one listing the carried pin exists to save."""
         from mcp.types import CallToolResult
 
         from app.agents.mcp.client import _keep_results_that_miss_their_schema
 
         session = self._session()
-        # Not listed yet: the SDK lists tools first.
         session._tool_output_schemas = {}
         session.list_tools = AsyncMock(side_effect=MCPError(CONNECTION_CLOSED, "Connection closed"))
         _keep_results_that_miss_their_schema(SimpleNamespace(session=session))  # type: ignore[arg-type]
 
         await session.validate_tool_result("search", CallToolResult(content=[], structured_content={"b": 1}))
+        session.list_tools.assert_not_awaited()
 
     async def test_open_installs_it(self, sdk: _Script) -> None:
         manager = await _open(sdk, _config())

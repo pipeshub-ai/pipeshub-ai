@@ -1,0 +1,85 @@
+[
+  {
+    "description": "writer allowlist: only node writes interaction.grant_revoked",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 21,
+      "runId": "run_1",
+      "type": "interaction.grant_revoked",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-09T09:00:00.000Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "toolId": "web@searxng/fetch_url",
+        "key": "sha256:4c5c0f51fdaf2b50038b8c674f654f5407e153408d5688d5b5fbcf38395aa0c3",
+        "by": "p_user_1"
+      }
+    }
+  },
+  {
+    "description": "a revocation that names no destination",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 21,
+      "runId": "run_1",
+      "type": "interaction.grant_revoked",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-09T09:00:00.000Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "toolId": "web@searxng/fetch_url",
+        "by": "p_user_1"
+      }
+    }
+  },
+  {
+    "description": "who took it back is a principal reference, never a name",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 21,
+      "runId": "run_1",
+      "type": "interaction.grant_revoked",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-09T09:00:00.000Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "toolId": "web@searxng/fetch_url",
+        "key": "sha256:4c5c0f51fdaf2b50038b8c674f654f5407e153408d5688d5b5fbcf38395aa0c3",
+        "by": "alice"
+      }
+    }
+  },
+  {
+    "description": "a destination that is not a digest (never its label)",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 21,
+      "runId": "run_1",
+      "type": "interaction.grant_revoked",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-09T09:00:00.000Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "toolId": "web@searxng/fetch_url",
+        "key": "onyx.app",
+        "by": "p_user_1"
+      }
+    }
+  }
+]

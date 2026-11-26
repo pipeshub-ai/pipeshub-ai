@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,7 +43,11 @@ from app.api.routes.skills import (
     write_resource,
 )
 from app.config.constants.arangodb import CollectionNames
+from tests.support.bound_org import another_request, bind_test_org
 from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _SKILLS = CollectionNames.AGENT_SKILLS.value
 _AGENT_HAS_SKILL = CollectionNames.AGENT_HAS_SKILL.value
@@ -262,7 +266,8 @@ class TestCrossUserAndCrossOrgIsolation:
         req_org2 = _request("user-c", "org-2", graph)
         await create_skill(req_org1, SkillWriteRequest(name="deploy-runbook", description="d", body="body"))
 
-        list_resp_org2 = await list_skills(req_org2)
+        with another_request("org-2"):
+            list_resp_org2 = await list_skills(req_org2)
         names_org2 = {s["name"] for s in json.loads(list_resp_org2.body)["skills"]}
         # Org 2's list seeds its OWN builtin catalog (expected, per-org
         # seeding) but must never see org 1's custom `deploy-runbook` doc.
@@ -270,9 +275,10 @@ class TestCrossUserAndCrossOrgIsolation:
 
         # Org 2 can create a same-named skill independently — different
         # graph doc key (`{orgId}_{name}`), no collision.
-        create_resp = await create_skill(
-            req_org2, SkillWriteRequest(name="deploy-runbook", description="d2", body="body2"),
-        )
+        with another_request("org-2"):
+            create_resp = await create_skill(
+                req_org2, SkillWriteRequest(name="deploy-runbook", description="d2", body="body2"),
+            )
         assert create_resp.status_code == 201
         assert graph._col(_SKILLS)["org-1_deploy-runbook"]["orgId"] == "org-1"
         assert graph._col(_SKILLS)["org-2_deploy-runbook"]["orgId"] == "org-2"
@@ -477,3 +483,9 @@ class TestPutPreservesLifecycleStatus:
         assert skill["status"] == "deprecated"
         assert skill["deprecatedReason"] == "superseded"
         assert skill["replacedBy"] == "deploy-runbook-v2"
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("org-1")

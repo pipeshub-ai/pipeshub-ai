@@ -150,12 +150,13 @@ describe('OAuthAuthMiddleware', () => {
       expect(mockRes.status.calledWith(401)).to.be.true
     })
 
-    it('should return 401 for unknown errors', async () => {
+    // An unknown error is ours (a store read, a dropped connection), not the token's.
+    it('should return 503 for unknown errors', async () => {
       mockOAuthTokenService.verifyAccessToken.rejects(new Error('unknown'))
       const req = { headers: { authorization: 'Bearer token' } } as any
 
       await middleware.authenticate(req, mockRes, mockNext)
-      expect(mockRes.status.calledWith(401)).to.be.true
+      expect(mockRes.status.calledWith(503)).to.be.true
       expect(mockLogger.error.calledOnce).to.be.true
     })
   })
@@ -252,14 +253,15 @@ describe('OAuthAuthMiddleware', () => {
       await middleware.authenticate(req, mockRes, mockNext)
 
       // Still refused, because failing open on an unreadable allow-list would
-      // be worse than any wording.
+      // be worse than any wording; but 503, not 401: the token may be fine.
       expect(mockNext.called).to.be.false
-      expect(mockRes.status.calledWith(401)).to.be.true
+      expect(mockRes.status.calledWith(503)).to.be.true
+      expect(mockRes.json.firstCall.args[0].error).to.equal('temporarily_unavailable')
 
       // But not with the driver's text, and not silently: an outage must not
       // read like an administrator having withdrawn a permission.
       const description = mockRes.json.firstCall.args[0].error_description
-      expect(description).to.equal('Token validation failed')
+      expect(description).to.equal('The authorization server could not complete the request')
       expect(description).to.not.contain('mongo')
       expect(mockLogger.error.called).to.be.true
     })
@@ -301,6 +303,17 @@ describe('OAuthAuthMiddleware', () => {
       expect(response.error).to.equal('insufficient_scope')
     })
 
+    // Our failure, answered 500 with a fixed text, and logged once with the error (not its message alone).
+    it('should answer a failed scope check 500 and log it once', async () => {
+      const failure = new TypeError('scopes is not iterable')
+      mockScopeValidatorService.hasAllScopes.throws(failure)
+      const mw = middleware.requireScopes('org:read')
+      await mw({ oauth: { scopes: ['org:read'] } } as any, mockRes, mockNext)
+      expect(mockRes.status.calledWith(500)).to.be.true
+      expect(mockRes.json.firstCall.args[0].error_description).to.equal('Scope validation failed')
+      expect(mockLogger.error.calledOnceWith('oauth.request.failed', { error: failure })).to.be.true
+    })
+
     it('should call next when all scopes present', async () => {
       mockScopeValidatorService.hasAllScopes.returns(true)
       const mw = middleware.requireScopes('org:read')
@@ -324,6 +337,15 @@ describe('OAuthAuthMiddleware', () => {
       const req = { oauth: { scopes: ['org:read'] } } as any
       await mw(req, mockRes, mockNext)
       expect(mockRes.status.calledWith(403)).to.be.true
+    })
+
+    it('should answer a failed scope check 500 and log it once', async () => {
+      const failure = new TypeError('scopes is not iterable')
+      mockScopeValidatorService.hasAnyScope.throws(failure)
+      const mw = middleware.requireAnyScope('org:read')
+      await mw({ oauth: { scopes: ['org:read'] } } as any, mockRes, mockNext)
+      expect(mockRes.status.calledWith(500)).to.be.true
+      expect(mockLogger.error.calledOnceWith('oauth.request.failed', { error: failure })).to.be.true
     })
 
     it('should call next when any scope matches', async () => {

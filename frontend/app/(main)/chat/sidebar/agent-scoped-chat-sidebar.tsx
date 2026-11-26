@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useEffect, useCallback, useMemo, useState } from 'react';
+import React, { useEffect, useCallback, useId, useMemo, useState } from 'react';
+import { RecentsToggle } from './recents-toggle';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Flex, Text } from '@radix-ui/themes';
+import { Flex } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
@@ -20,6 +21,8 @@ import { ChatSidebarHeader } from './header';
 import { ChatSection } from './chat-section';
 import { groupConversationsByTime, getNonEmptyGroups } from './time-group';
 import { SidebarItem } from './sidebar-item';
+import { onJobListsRefresh } from '@/lib/harness-jobs/swr-keys';
+import { JobsNavEntries } from './jobs-nav-entries';
 import { AgentMoreChatsSidebar } from './agent-more-chats-sidebar';
 import { AgentsSidebar } from './agents-sidebar';
 import { SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE, MAX_VISIBLE_CHATS } from '../constants';
@@ -83,26 +86,30 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
   // False once the agent is known to be off limits: someone a chat was shared with cannot start chats on it.
   const canStartChat = !agentUnavailable && agentResult?.agent !== null;
 
-  const loadAgentConversations = useCallback(async () => {
-    setIsAgentConversationsLoading(true);
-    setAgentConversationsError(null);
+  const loadAgentConversations = useCallback(async (quiet = false) => {
+    if (!quiet) {
+      setIsAgentConversationsLoading(true);
+      setAgentConversationsError(null);
+    }
     try {
       const conv = await AgentsApi.fetchAgentConversations(agentId, {
         page: 1,
         limit: SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE,
       });
-      setAgentStreamTools(null);
+      if (!quiet) setAgentStreamTools(null);
       setAgentConversations(conv.conversations);
       setSharedAgentConversations(conv.sharedConversations);
       setAgentConversationsPagination(conv.pagination);
     } catch {
+      // A background re-read that fails keeps the rows already shown.
+      if (quiet) return;
       setAgentConversationsError(t('chat.failedToLoad'));
       setAgentConversations([]);
       setSharedAgentConversations([]);
       setAgentConversationsPagination(null);
       setAgentStreamTools(null);
     } finally {
-      setIsAgentConversationsLoading(false);
+      if (!quiet) setIsAgentConversationsLoading(false);
     }
   }, [
     agentId,
@@ -117,6 +124,9 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
   useEffect(() => {
     loadAgentConversations();
   }, [agentId, conversationsVersion, loadAgentConversations]);
+
+  // Run dots move without a skeleton: the job lists' refresh re-reads this list in place.
+  useEffect(() => onJobListsRefresh(() => void loadAgentConversations(true)), [loadAgentConversations]);
 
   const handleBackHome = () => {
     if (isMobile) closeMobile();
@@ -146,6 +156,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     return selectPendingForSidebar(pendingConversations, slots, agentConvIds, { agentId });
   }, [pendingConversations, slots, agentId, agentConversations]);
 
+  const recentsId = useId();
   const [recentsCollapsed, setRecentsCollapsed] = useState(false);
 
   const secondaryPanel = isAgentsSidebarOpen ? (
@@ -181,57 +192,25 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
         {canStartChat && (
           <SidebarItem
             icon={
-              <ChatStarIcon size={ICON_SIZE_DEFAULT} color="var(--accent-8)" />
+              <ChatStarIcon size={ICON_SIZE_DEFAULT} color="var(--accent-11)" />
             }
             label={t('chat.newChat')}
             onClick={handleNewAgentChat}
-            textColor="var(--accent-8)"
+            textColor="var(--accent-11)"
             fontWeight={500}
           />
         )}
+        <JobsNavEntries />
 
         {/* Recents — collapsible wrapper for agent conversations */}
         <Flex
           direction="column"
           style={recentsCollapsed ? { flexShrink: 0 } : { flex: 1, minHeight: 0, overflow: 'hidden' }}
         >
-          <Flex
-            align="center"
-            justify="between"
-            onClick={() => setRecentsCollapsed((c) => !c)}
-            style={{
-              height: 32,
-              padding: '0 var(--space-3)',
-              flexShrink: 0,
-              cursor: 'pointer',
-              borderRadius: 'var(--radius-2)',
-              userSelect: 'none',
-            }}
-          >
-            <Text
-              style={{
-                fontSize: 13,
-                fontWeight: 600,
-                color: 'var(--slate-12)',
-                lineHeight: 1,
-              }}
-            >
-              {t('chat.recents')}
-            </Text>
-            <MaterialIcon
-              name="chevron_right"
-              size={16}
-              color="var(--slate-11)"
-              style={{
-                transform: recentsCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
-                transition: 'transform 0.2s ease',
-                display: 'block',
-              }}
-            />
-          </Flex>
+          <RecentsToggle collapsed={recentsCollapsed} onToggle={() => setRecentsCollapsed((c) => !c)} controls={recentsId} />
 
           {!recentsCollapsed && (
-            <Flex direction="column" gap="3" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+            <Flex id={recentsId} direction="column" gap="3" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
               {visibleShared.length > 0 && (
                 <ChatSection
                   title={t('chat.sharedChats')}

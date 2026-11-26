@@ -1,0 +1,154 @@
+{
+  "title": "WP-89 Chat outcome words, the steps' header with running cost, the command's full log and the activity drawer's read-only file tree",
+  "spec": "frontend/tests/e2e/harness/wp89-chat-outcome.spec.ts",
+  "unitTests": [
+    "frontend/app/(main)/chat/components/message-area/__tests__/wp89-outcome-words.test.tsx",
+    "frontend/app/(main)/chat/components/message-area/__tests__/g48-degradation-notices.test.tsx",
+    "frontend/app/(main)/chat/components/message-area/__tests__/wp99-time-plan-notice.test.tsx"
+  ],
+  "mock": "docs/agent-harness-v2/impl/mocks/wp89-chat-outcome.html",
+  "screenshots": {
+    "pattern": "<name>-<desktop|phone>-<light|dark>.png",
+    "viewports": {
+      "desktop": "1280x900",
+      "phone": "390x844"
+    },
+    "where": "UI_CASE_SHOTS when the specs run on a lane stack. WP89-1..4 and 6 replay the turn's frames and saved conversation into the real page (R25-FIX); WP89-5 is a real held loop turn on the harness lane, WP89-7 a real engine turn on the durable lane (wp89-in-flight-engine.spec.ts) (R27-REST, Claude Code); WP89-8's paused-engine turn needs the operator controls, which moved out of this repository, and its words are held by g48-degradation-notices.test.tsx. Taken 2026-11-11 on lane 1d1acc9d, kept out of git"
+  },
+  "routed": "Nothing new is routed. The outcome note is under the answer; the cost is in the existing steps' header; the file tree is a folded section of the existing activity drawer.",
+  "cases": [
+    {
+      "id": "WP89-1",
+      "title": "Cut short with the engine's file",
+      "scenario": [
+        "WP89-F"
+      ],
+      "steps": [
+        "Ask for report.md; the run's working time runs out after the engine wrote it"
+      ],
+      "expected": [
+        "The answer is the report's opening, no English boilerplate in it",
+        "Under it: Stopped early: time limit reached; report.md holds what the task had written…; The full report is in report.md",
+        "One Continue button on the newest reply only"
+      ],
+      "screenshots": [
+        "wp89-1"
+      ]
+    },
+    {
+      "id": "WP89-2",
+      "title": "The file was not written, work kept",
+      "scenario": [
+        "WP89-F"
+      ],
+      "steps": [
+        "The run stops while still gathering"
+      ],
+      "expected": [
+        "No answer text; the note says report.md isn't written yet, why, how many sources it read and that they are saved",
+        "Continue sends \"continue\""
+      ],
+      "screenshots": [
+        "wp89-2"
+      ]
+    },
+    {
+      "id": "WP89-3",
+      "title": "Nothing gathered",
+      "scenario": [
+        "WP89-F"
+      ],
+      "steps": [
+        "The run stops before it gathers anything"
+      ],
+      "expected": [
+        "The note says it stopped before it gathered anything; never says anything was saved",
+        "Try again"
+      ],
+      "screenshots": [
+        "wp89-3"
+      ]
+    },
+    {
+      "id": "WP89-4",
+      "title": "An answer saved before WP-89",
+      "scenario": [
+        "WP89-F"
+      ],
+      "steps": [
+        "Reload a conversation whose answer holds the English closing"
+      ],
+      "expected": [
+        "The answer renders as saved; no second note under it"
+      ],
+      "screenshots": [
+        "wp89-4"
+      ]
+    },
+    {
+      "id": "WP89-5",
+      "title": "Running: time and cost",
+      "scenario": [
+        "WP89-F",
+        "WP89-C"
+      ],
+      "steps": [
+        "Watch a run that has spent money"
+      ],
+      "expected": [
+        "The collapsed header reads e.g. \"… · 6m 14s · $0.42 so far\" and updates every 10 s; nothing after the run ends"
+      ],
+      "screenshots": [
+        "wp89-5"
+      ]
+    },
+    {
+      "id": "WP89-6",
+      "title": "A long command",
+      "scenario": [
+        "WP89-F"
+      ],
+      "steps": [
+        "Open a command row with more than 20 lines of output"
+      ],
+      "expected": [
+        "Its last 20 lines; Show the whole output; Full log in Activity opens the drawer at Commands, where the full log opens with Download"
+      ],
+      "screenshots": [
+        "wp89-6"
+      ]
+    },
+    {
+      "id": "WP89-7",
+      "title": "Workspace files in the drawer",
+      "scenario": [
+        "WP89-F"
+      ],
+      "steps": [
+        "Open View activity, then Workspace files"
+      ],
+      "expected": [
+        "Folded until opened; a read-only tree with sizes; fetched copies on their own lines; no input or action anywhere"
+      ],
+      "screenshots": [
+        "wp89-7"
+      ]
+    },
+    {
+      "id": "WP89-8",
+      "title": "Ran without code tools, model switched, queued",
+      "scenario": [
+        "G48-F1..F4"
+      ],
+      "steps": [
+        "An engine agent's turn with the engine withheld, the provider down, or the sandboxes full"
+      ],
+      "expected": [
+        "One plain notice each above the steps; the queue status says when it tries again"
+      ],
+      "screenshots": [
+        "wp89-8"
+      ]
+    }
+  ]
+}

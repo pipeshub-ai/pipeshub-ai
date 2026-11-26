@@ -4,7 +4,7 @@ import json
 import logging
 import random
 import re
-import time
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,6 +28,7 @@ from app.utils.streaming import (
     extract_json_from_string,
     find_unescaped_quote,
     invoke_with_structured_output_and_reflection,
+    link_workspace_files,
     stream_content,
     strip_llm_authored_markers_in_parts,
 )
@@ -471,6 +472,18 @@ class TestAppendTaskMarkers:
         result = _append_task_markers(text, None)
         assert "[see details](/knowledge-base/123)" in result
 
+    def test_flattens_relative_link_that_is_no_app_route(self) -> None:
+        """CHAT-TL R2: `[out/12_jokes.pdf](out/12_jokes.pdf)` resolved to /chat/out/12_jokes.pdf, a dead page."""
+        assert _flatten_unusable_markdown_links("[out/x.pdf](out/x.pdf)") == "out/x.pdf"
+        assert _flatten_unusable_markdown_links("[x](./x.pdf)") == "x"
+        assert _flatten_unusable_markdown_links("[top](#answer)") == "[top](#answer)"
+
+    def test_keeps_citation_refs_the_finalizer_resolves_later(self) -> None:
+        """CTL-2 regression (golden journals): the sanitizer runs before citations are normalized, so `[source](ref1)`
+        must survive it to become a cited link."""
+        for text in ("[source](ref1)", "[source](ref1, ref2)", "[1](ref12)"):
+            assert _flatten_unusable_markdown_links(text) == text
+
     def test_flatten_unusable_markdown_links_direct(self):
         assert (
             _flatten_unusable_markdown_links("[Download](attachment://x.pdf)")
@@ -571,6 +584,36 @@ class TestAppendTaskMarkers:
 # ---------------------------------------------------------------------------
 # strip_llm_authored_markers_in_parts
 # ---------------------------------------------------------------------------
+class TestLinkWorkspaceFiles:
+    """CHAT-TL R2: an engine names the files it wrote by sandbox path; the reader gets the artifact."""
+
+    FILES = {"12_jokes.pdf": "rec-1", "travel_policy.md": "rec-2"}
+
+    def test_a_link_to_a_published_file_links_its_artifact(self) -> None:
+        text = "Created **[out/12_jokes.pdf](out/12_jokes.pdf)**, a PDF."
+        assert link_workspace_files(text, self.FILES) == "Created **[12_jokes.pdf](/record/rec-1)**, a PDF."
+
+    def test_a_code_span_path_links_its_artifact(self) -> None:
+        text = "I wrote **`out/travel_policy.md`**, which summarizes the rules."
+        assert link_workspace_files(text, self.FILES) == (
+            "I wrote **[travel_policy.md](/record/rec-2)**, which summarizes the rules."
+        )
+
+    def test_a_bare_path_links_its_artifact(self) -> None:
+        assert link_workspace_files("Saved to out/travel_policy.md.", self.FILES) == (
+            "Saved to [travel_policy.md](/record/rec-2)."
+        )
+
+    def test_a_file_that_was_not_published_is_its_name_without_a_link(self) -> None:
+        assert link_workspace_files("See `out/scratch.csv` and [notes](out/notes.txt).", {}) == (
+            "See scratch.csv and notes."
+        )
+
+    def test_prose_and_real_links_are_untouched(self) -> None:
+        text = "Log in/out first, then read [the guide](https://example.com/in/guide.pdf)."
+        assert link_workspace_files(text, self.FILES) == text
+
+
 class TestStripLlmAuthoredMarkersInParts:
     """The activity timeline renders narration `text` parts as raw markdown
     with no marker parsing, so a marker the model copied out of an earlier
@@ -2405,16 +2448,29 @@ class TestStreamContentUrlParseException:
 
     @pytest.mark.asyncio
     async def test_url_parse_fallback(self):
-        """The URL parse succeeds for normal URLs, test with very long URL."""
-        long_url = "https://example.com/" + "a" * 300
-        # This just tests that the function initializes correctly with a long URL
-        # It will fail at the HTTP request, but the URL parsing should succeed
-        import aiohttp
-        from fastapi import HTTPException
+        """A presigned URL longer than the log's limit is still requested unchanged (only the log is shortened)."""
+        long_url = "https://example.com/" + "a" * 300 + "?X-Amz-Signature=sig"
 
-        with pytest.raises((HTTPException, TypeError, aiohttp.ClientError, Exception)):
-            async for _ in stream_content(long_url, record_id="r1", file_name="test.pdf"):
-                pass
+        response = AsyncMock()
+        response.status = 200
+
+        async def iter_chunked(size: int) -> AsyncIterator[bytes]:
+            yield b"body"
+
+        response.content = MagicMock()
+        response.content.iter_chunked = iter_chunked
+        response.__aenter__ = AsyncMock(return_value=response)
+        response.__aexit__ = AsyncMock(return_value=False)
+        session = AsyncMock()
+        session.get = MagicMock(return_value=response)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("app.utils.streaming.aiohttp.ClientSession", return_value=session):
+            chunks = [chunk async for chunk in stream_content(long_url, record_id="r1", file_name="test.pdf")]
+
+        assert chunks == [b"body"]
+        assert session.get.call_args.args == (long_url,)
 
 
 class TestIncompleteCitationScanIsBounded:
@@ -2425,9 +2481,11 @@ class TestIncompleteCitationScanIsBounded:
         pytest.param("[a](" * 12_500 + ")x]", id="unclosed-targets"),
     ])
     def test_stays_fast(self, text: str) -> None:
-        started = time.perf_counter()
-        INCOMPLETE_CITE_RE.search(text)
-        assert time.perf_counter() - started < 1.0
+        from tests.support.cpu_budget import thread_cpu
+
+        with thread_cpu() as cpu:
+            INCOMPLETE_CITE_RE.search(text)
+        assert cpu.seconds < 1.0
 
     @pytest.mark.parametrize("seed", range(4))
     def test_finds_what_it_always_did(self, seed: int) -> None:

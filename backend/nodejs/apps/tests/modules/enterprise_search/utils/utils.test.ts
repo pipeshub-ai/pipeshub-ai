@@ -180,7 +180,7 @@ describe('Enterprise Search Utils', () => {
     it('getMessages filters by sessionId and orgId', async () => {
       const { findStub } = stubGetMessagesChain([])
       await getMessages(sessionId, { orgId })
-      expect(findStub.firstCall.args[0]).to.deep.equal({ sessionId, orgId })
+      expect((findStub.firstCall.args as unknown[])[0]).to.deep.equal({ sessionId, orgId })
     })
 
     it('updateMessageById returns null for a message of another org', async () => {
@@ -505,7 +505,7 @@ describe('Enterprise Search Utils', () => {
       const result = buildAIResponseMessage(aiResponse as any)
 
       expect(result.followUpQuestions).to.have.length(1)
-      expect(result.followUpQuestions![0].question).to.equal('Tell me more?')
+      expect(result.followUpQuestions![0]!.question).to.equal('Tell me more?')
     })
 
     it('should default followUpQuestions to empty array', () => {
@@ -582,7 +582,7 @@ describe('Enterprise Search Utils', () => {
       const citations = [{ _id: citationId, content: 'cite1' }] as any[]
       const result = buildAIResponseMessage(aiResponse as any, citations)
       expect(result.citations).to.have.length(1)
-      expect(result.citations![0].citationId).to.equal(citationId)
+      expect(result.citations![0]!.citationId).to.equal(citationId)
     })
   })
 
@@ -695,7 +695,7 @@ describe('Enterprise Search Utils', () => {
       ]
       const result = formatPreviousConversations(messages)
       expect(result[0]).to.have.property('referenceData')
-      expect(result[0].referenceData).to.have.length(1)
+      expect(result[0]!.referenceData).to.have.length(1)
     })
 
     it('should not include referenceData when empty', () => {
@@ -993,7 +993,7 @@ describe('Enterprise Search Utils', () => {
         VALID_OID2,
       )
 
-      expect(result[0].sharedBy).to.deep.equal({
+      expect(result[0]!.sharedBy).to.deep.equal({
         userId: VALID_OID,
         name: 'Ada Lovelace',
       })
@@ -1134,8 +1134,8 @@ describe('Enterprise Search Utils', () => {
       ]
       const result = sortMessages(messages, { field: 'createdAt' })
 
-      expect(result[0].content).to.equal('first')
-      expect(result[1].content).to.equal('second')
+      expect(result[0]!.content).to.equal('first')
+      expect(result[1]!.content).to.equal('second')
     })
 
     it('should handle empty array', () => {
@@ -1149,8 +1149,8 @@ describe('Enterprise Search Utils', () => {
         { createdAt: new Date(), content: 'apple', messageType: 'bot_response' },
       ]
       const result = sortMessages(messages, { field: 'content' })
-      expect(result[0].content).to.equal('apple')
-      expect(result[1].content).to.equal('banana')
+      expect(result[0]!.content).to.equal('apple')
+      expect(result[1]!.content).to.equal('banana')
     })
 
     it('should not mutate original array', () => {
@@ -1297,6 +1297,14 @@ describe('Enterprise Search Utils', () => {
       expect(result).to.have.property('pagination')
       expect(result).to.have.property('access')
       expect(result.access.isOwner).to.be.true
+      expect(result.durable).to.equal(false)
+    })
+
+    it('LC2FIX: says whether the session runs on the durable harness, whatever its latest answer', () => {
+      const pagination = { page: 1, limit: 20, skip: 0, totalMessages: 0, hasNextPage: false, hasPrevPage: false }
+      const base: any = { _id: 'conv-1', initiator: new mongoose.Types.ObjectId(VALID_OID), messages: [], sharedWith: [] }
+      expect(buildConversationResponse({ ...base, harnessVersion: 'durable-v1' }, VALID_OID, pagination, []).durable).to.equal(true)
+      expect(buildConversationResponse({ ...base, harnessVersion: 'legacy' }, VALID_OID, pagination, []).durable).to.equal(false)
     })
 
     it('should correctly compute pagination metadata', () => {
@@ -1346,8 +1354,8 @@ describe('Enterprise Search Utils', () => {
         citations: [{ citationId: { _id: citationId, content: 'ref' } }],
       }]
       const result = buildConversationResponse(conversation, VALID_OID, pagination, messages)
-      expect(result.messages[0].citations[0]).to.have.property('citationId')
-      expect(result.messages[0].citations[0]).to.have.property('citationData')
+      expect(result.messages[0]!.citations[0]).to.have.property('citationId')
+      expect(result.messages[0]!.citations[0]).to.have.property('citationData')
     })
   })
 
@@ -1839,11 +1847,11 @@ describe('Enterprise Search Utils', () => {
       expect(findByIdStub.calledOnce).to.be.true
       expect(findOneAndReplaceStub.calledOnce).to.be.true
       const replacement = findOneAndReplaceStub.firstCall.args[1]
-      expect(replacement.messageType).to.equal('error')
-      expect(replacement.content).to.equal('Error in regeneration')
+      expect(replacement!.messageType).to.equal('error')
+      expect(replacement!.content).to.equal('Error in regeneration')
       // sessionId/orgId/seq preserved from the existing message (full replace, not $set)
-      expect(replacement.sessionId).to.equal(existingMessage.sessionId)
-      expect(replacement.seq).to.equal(existingMessage.seq)
+      expect(replacement!.sessionId).to.equal(existingMessage.sessionId)
+      expect(replacement!.seq).to.equal(existingMessage.seq)
       expect(mockConversation.status).to.equal('Failed')
       expect(mockConversation.failReason).to.equal('Error in regeneration')
     })
@@ -1990,7 +1998,7 @@ describe('Enterprise Search Utils', () => {
 
       await validateAgentConversationAccess(VALID_OID, 'agent-1', VALID_OID, VALID_OID2, 'write')
 
-      const shared = findOneStub.firstCall.args[0].$or.find((b: any) => b.sharedWith)
+      const shared = findOneStub.firstCall.args[0]!.$or.find((b: any) => b.sharedWith)
       expect(shared.sharedWith.$elemMatch).to.deep.equal({ userId: VALID_OID, accessLevel: 'write' })
       expect(shared).to.not.have.property('sharedWith.accessLevel')
     })
@@ -2012,6 +2020,36 @@ describe('Enterprise Search Utils', () => {
 
     before(() => {
       deleteAgentConversation = require('../../../../src/modules/enterprise_search/utils/utils').deleteAgentConversation
+    })
+
+    it('RO-5: only the owner matches; a share of any level never deletes (SS0)', async () => {
+      const findOneStub = sinon.stub(ChatSession, 'findOne').resolves(null)
+
+      await deleteAgentConversation(VALID_OID, 'agent-1', VALID_OID, VALID_OID2)
+
+      const filter = findOneStub.firstCall.args[0] as Record<string, unknown>
+      expect(filter).to.deep.include({ sessionType: 'agent', agentKey: 'agent-1', userId: VALID_OID, isDeleted: false })
+      expect(JSON.stringify(filter)).to.not.include('sharedWith')
+    })
+
+    it('returns null when the id cannot be cast, since it can match nothing', async () => {
+      sinon.stub(ChatSession, 'findOne').rejects(new mongoose.Error.CastError('ObjectId', 'not-an-id', '_id'))
+
+      expect(await deleteAgentConversation('not-an-id', 'agent-1', VALID_OID, VALID_OID2)).to.be.null
+    })
+
+    it('passes any other lookup failure on instead of treating it as not found', async () => {
+      const outage = new Error('DB down')
+      sinon.stub(ChatSession, 'findOne').rejects(outage)
+
+      let thrown: unknown
+      try {
+        await deleteAgentConversation(VALID_OID, 'agent-1', VALID_OID, VALID_OID2)
+      } catch (error) {
+        thrown = error
+      }
+
+      expect(thrown).to.equal(outage)
     })
 
     it('should return null when conversation not found', async () => {
@@ -2332,7 +2370,7 @@ describe('Enterprise Search Utils - coverage', () => {
       ]
       const result = formatPreviousConversations(messages as any)
       expect(result).to.have.lengthOf(2)
-      expect(result[1].tool_results).to.deep.include({
+      expect(result[1]!.tool_results).to.deep.include({
         tool_id: 'ask_user_question',
         tool_name: 'internaltools__ask_user_question',
         result: JSON.stringify(payload),
@@ -2888,8 +2926,8 @@ describe('Enterprise Search Utils - coverage', () => {
         { createdAt: new Date('2024-01-01'), content: 'a' },
       ]
       const result = sortMessages(messages as any, { field: 'createdAt' })
-      expect(result[0].content).to.equal('a')
-      expect(result[1].content).to.equal('b')
+      expect(result[0]!.content).to.equal('a')
+      expect(result[1]!.content).to.equal('b')
     })
 
     it('should handle null createdAt gracefully', () => {
@@ -2899,7 +2937,7 @@ describe('Enterprise Search Utils - coverage', () => {
       ]
       const result = sortMessages(messages as any, { field: 'createdAt' })
       // null getTime falls back to 0
-      expect(result[0].content).to.equal('b')
+      expect(result[0]!.content).to.equal('b')
     })
 
     it('should sort by string fields like content', () => {
@@ -2908,8 +2946,8 @@ describe('Enterprise Search Utils - coverage', () => {
         { content: 'alpha', createdAt: new Date() },
       ]
       const result = sortMessages(messages as any, { field: 'content' as any })
-      expect(result[0].content).to.equal('alpha')
-      expect(result[1].content).to.equal('zebra')
+      expect(result[0]!.content).to.equal('alpha')
+      expect(result[1]!.content).to.equal('zebra')
     })
 
     it('should handle equal string values', () => {
@@ -2927,7 +2965,7 @@ describe('Enterprise Search Utils - coverage', () => {
         { messageType: 'bot_response', createdAt: new Date() },
       ]
       const result = sortMessages(messages as any, { field: 'messageType' as any })
-      expect(result[0].messageType).to.equal('bot_response')
+      expect(result[0]!.messageType).to.equal('bot_response')
     })
   })
 
@@ -3178,7 +3216,7 @@ describe('Enterprise Search Utils - coverage', () => {
       ]
       const pagination = { page: 1, limit: 20, skip: 0, totalMessages: 1, hasNextPage: false, hasPrevPage: false }
       const result = buildConversationResponse(conversation as any, VALID_OID, pagination, messages as any)
-      expect(result.messages[0].citations).to.deep.equal([])
+      expect(result.messages[0]!.citations).to.deep.equal([])
     })
 
     it('should default accessLevel to read when user not in sharedWith', () => {
@@ -4012,8 +4050,8 @@ describe('chatSessions helpers', () => {
 
   it('getMessages short-circuits to [] when limit <= 0 without hitting the DB', async () => {
     const findStub = sinon.stub(ChatSessionMessage, 'find')
-    expect(await getMessages(new mongoose.Types.ObjectId(), { limit: 0 })).to.deep.equal([])
-    expect(await getMessages(new mongoose.Types.ObjectId(), { limit: -1 })).to.deep.equal([])
+    expect(await getMessages(new mongoose.Types.ObjectId(), { orgId: new mongoose.Types.ObjectId(), limit: 0 })).to.deep.equal([])
+    expect(await getMessages(new mongoose.Types.ObjectId(), { orgId: new mongoose.Types.ObjectId(), limit: -1 })).to.deep.equal([])
     expect(findStub.called).to.be.false
   })
 
@@ -4038,8 +4076,8 @@ describe('chatSessions helpers', () => {
     const all = inserted.flat()
     expect(new Set(all).size).to.equal(5)
     expect(counter).to.equal(5)
-    const [first, second] = inserted.sort((x, y) => x[0] - y[0])
-    expect(first[first.length - 1]).to.be.lessThan(second[0])
+    const [first, second] = inserted.sort((x, y) => x[0]! - y[0]!)
+    expect(first![first!.length - 1]).to.be.lessThan(second![0])
   })
 
   it('updateMessageById keeps seq stable so regeneration does not jump position', async () => {
@@ -4050,8 +4088,8 @@ describe('chatSessions helpers', () => {
     sinon.stub(ChatSessionMessage, 'findOne').resolves(existing as any)
     const replaceStub = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ ...existing, content: 'new' } as any)
     await updateMessageById(messageId, orgId, { messageType: 'bot_response', content: 'new' } as any)
-    expect(replaceStub.firstCall.args[1].seq).to.equal(7)
-    expect(replaceStub.firstCall.args[1].sessionId).to.equal(sessionId)
+    expect(replaceStub.firstCall.args[1]!.seq).to.equal(7)
+    expect(replaceStub.firstCall.args[1]!.sessionId).to.equal(sessionId)
   })
 
   it('updateUserQueryContent rewrites only the text of a user_query row', async () => {
@@ -4116,7 +4154,7 @@ describe('chatSessions helpers', () => {
     const rows = [1, 2, 3].map(() => ({ _id: new mongoose.Types.ObjectId() }))
     sinon.stub(ChatSessionMessage, 'aggregate').resolves(rows)
     const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', 2)
-    expect(ids).to.deep.equal([rows[0]._id.toString(), rows[1]._id.toString()])
+    expect(ids).to.deep.equal([rows[0]!._id.toString(), rows[1]!._id.toString()])
   })
 
   // -----------------------------------------------------------------------
@@ -4165,8 +4203,8 @@ describe('chatSessions helpers', () => {
       )
 
       const replacement = findOneAndReplaceStub.firstCall.args[1]
-      expect(replacement.content).to.not.include('::artifact')
-      expect(replacement.content).to.include('draft')
+      expect(replacement!.content).to.not.include('::artifact')
+      expect(replacement!.content).to.include('draft')
     })
 
     it('appends a new stopped bot_response message for a fresh (non-regenerate) run', async () => {
@@ -4208,9 +4246,9 @@ describe('chatSessions helpers', () => {
       expect(findByIdStub.calledOnce).to.be.true
       expect(findOneAndReplaceStub.calledOnce).to.be.true
       const replacement = findOneAndReplaceStub.firstCall.args[1]
-      expect(replacement.content).to.equal('partial regen text')
-      expect(replacement.status).to.equal('stopped')
-      expect(replacement.seq).to.equal(3)
+      expect(replacement!.content).to.equal('partial regen text')
+      expect(replacement!.status).to.equal('stopped')
+      expect(replacement!.seq).to.equal(3)
       expect(insertManySpy.called).to.be.false
       expect(mockConversation.status).to.equal(CONVERSATION_STATUS.STOPPED)
     })

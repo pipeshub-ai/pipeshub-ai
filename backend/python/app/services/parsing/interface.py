@@ -88,6 +88,10 @@ class IParser(Protocol):
         ...  # pragma: no cover
 
 
+# ``details.reason`` of a ``PARSE_BACKPRESSURE`` answer whose cause is that Docling never received the file.
+DOCLING_UNAVAILABLE_REASON = "docling_unavailable"
+
+
 class ParseErrorCode(str, Enum):
     UNSUPPORTED_FORMAT = "UNSUPPORTED_FORMAT"
     PARSE_FAILED = "PARSE_FAILED"

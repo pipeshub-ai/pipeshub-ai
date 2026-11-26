@@ -315,9 +315,10 @@ def reasoning_multimodal_llm_model(
             pytest.fail(
                 f"Failed to seed reasoning multimodal LLM for enterprise-search ITs: {e}. "
                 "Configure TEST_OPENAI_API_KEY, TEST_AZURE_OPENAI_API_KEY (+ endpoint "
-                "and deployment), TEST_GEMINI_API_KEY, or TEST_GROQ_API_KEY. "
-                "Set TEST_AI_MODEL_PROVIDER (openAI or azureOpenAI) to choose one when "
-                "several are configured."
+                "and deployment), TEST_OPENAI_COMPATIBLE_API_KEY (+ endpoint and model), "
+                "TEST_GEMINI_API_KEY, or TEST_GROQ_API_KEY. Set TEST_AI_MODEL_PROVIDER "
+                "(openAI, azureOpenAI or openAICompatible) to choose one when several "
+                "are configured."
             )
         logger.info(
             "Seeded reasoning multimodal LLM for agent ITs: modelKey=%s model=%s",

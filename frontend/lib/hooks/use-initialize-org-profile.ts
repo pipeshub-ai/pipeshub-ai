@@ -1,8 +1,7 @@
 'use client';
 
 import { useCallback } from 'react';
-import { useAuthStore } from '@/config';
-import { useOrgStore } from '@/lib/store/org-store';
+import { useAuthStore, useOrgStore } from '@/config';
 
 export function useInitializeOrgProfile() {
   const accessToken = useAuthStore((s) => s.accessToken);

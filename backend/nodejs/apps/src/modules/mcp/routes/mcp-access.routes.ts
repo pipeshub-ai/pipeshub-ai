@@ -12,6 +12,8 @@ import {
   mcpAccessPolicySchema,
 } from '../access-policy';
 import { McpToolCatalog } from '../tool-catalog';
+import { auditConfigChange } from '../../configuration_manager/utils/config-audit';
+import { configPaths } from '../../configuration_manager/paths/paths';
 
 export const putMcpAccessPolicySchema = z.object({
   body: mcpAccessPolicySchema,
@@ -40,6 +42,8 @@ export async function putMcpAccessPolicy(
   try {
     const policy = req.body as McpAccessPolicy;
     await McpAccessPolicyStore.write(callerOrgId(), policy);
+    // The policy store is not the one cm_routes wraps for admin writes, so the line is written here.
+    auditConfigChange(configPaths.mcpAccessPolicy, 'update');
     res.status(200).json(policy);
   } catch (error) {
     next(error);

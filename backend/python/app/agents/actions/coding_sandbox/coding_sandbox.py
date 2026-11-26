@@ -14,16 +14,18 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, Tool, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agent_loop_lib.tools.tags import TAG_SINK_EXTERNAL
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
 from app.modules.agents.qna.chat_state import ChatState
 from app.sandbox.artifact_upload import upload_artifacts_to_blob
-from app.sandbox.manager import get_executor
+from app.sandbox.manager import get_executor, with_executor_sink
 from app.sandbox.models import ExecutionResult, SandboxLanguage
 from app.sandbox.package_policy import PackageNotAllowedError, get_allowlist
 from app.sandbox.redact import redact_sandbox_paths
@@ -83,7 +85,7 @@ class ExecuteTypeScriptInput(BaseModel):
 # Toolset registration
 # -------------------------------------------------------------------
 
-@ToolsetBuilder("Coding Sandbox")\
+@ToolsetBuilder("Coding Sandbox", provider=ToolProvider.PLATFORM)\
     .in_group("Internal Tools")\
     .with_description("Execute Python and TypeScript code in a sandboxed environment to generate artifacts like charts, documents, images, and data files")\
     .with_category(ToolsetCategory.CODE_EXECUTION)\
@@ -98,6 +100,10 @@ class CodingSandbox:
 
     def __init__(self, state: ChatState) -> None:
         self.chat_state = state
+
+    def tools_for_request(self, tools: list[Tool]) -> list[Tool]:
+        """Declared ``sink=external``; ``self`` where the configured executor runs the code offline (SINK2)."""
+        return with_executor_sink(tools)
 
     def _result(self, success: bool, payload: dict[str, Any]) -> tuple[bool, str]:
         return success, json.dumps(payload, default=str)
@@ -156,6 +162,7 @@ class CodingSandbox:
 
     async def _upload_artifacts(
         self, exec_result: ExecutionResult, *, source_tool: str = "coding_sandbox.execute_python",
+        provenance: Any = None,  # noqa: ANN401 - ArtifactProvenance
     ) -> list[dict[str, Any]]:
         """Upload produced artifacts to blob storage and create ArtifactRecords.
 
@@ -202,6 +209,7 @@ class CodingSandbox:
             graph_provider=graph_provider,
             connector_name=Connectors.CODING_SANDBOX,
             source_tool=source_tool,
+            provenance=provenance,
         )
 
     def _schedule_artifact_upload(
@@ -211,10 +219,14 @@ class CodingSandbox:
         conversation_id = self.chat_state.get("conversation_id")
         if not conversation_id or not exec_result.artifacts:
             return
+        from app.agents.agent_loop.artifact_provenance import request_provenance
+
+        # The code is the model's own, run offline: it can carry only what the request showed it.
+        provenance = request_provenance(self.chat_state, task_id=source_tool)
 
         async def _upload() -> Optional[dict[str, Any]]:
             try:
-                results = await self._upload_artifacts(exec_result, source_tool=source_tool)
+                results = await self._upload_artifacts(exec_result, source_tool=source_tool, provenance=provenance)
                 if results:
                     return {"type": "artifacts", "artifacts": results}
             except (OSError, ConnectionError, RuntimeError, ValueError):
@@ -273,7 +285,8 @@ class CodingSandbox:
                 items={"type": "string"},
             ),
         ],
-        tags=[Tag(key="category", value="code_execution"), Tag(key="type", value="action")],
+        # External as declared (SANDBOX_MODE=local runs it on the host); tools_for_request narrows it to self under docker/broker.
+        tags=[Tag(key="category", value="code_execution"), Tag(key="type", value="action"), Tag(key="effect", value="write"), TAG_SINK_EXTERNAL],
     )
     async def execute_python(self, code: str, requirements: list[str] | None = None) -> tuple[bool, str]:
         """Execute Python code in the sandbox and return results + artifacts."""
@@ -308,11 +321,6 @@ class CodingSandbox:
                 len(result.artifacts), len(result.stdout), len(result.stderr),
                 result.error or "None",
             )
-            if result.stdout:
-                logger.debug("[execute_python] STDOUT:\n%s", _truncate(result.stdout, 2000))
-            if result.stderr:
-                log_fn = logger.warning if not result.success else logger.debug
-                log_fn("[execute_python] STDERR:\n%s", _truncate(result.stderr, 2000))
 
             self._schedule_artifact_upload(result)
 
@@ -378,7 +386,7 @@ class CodingSandbox:
                 items={"type": "string"},
             ),
         ],
-        tags=[Tag(key="category", value="code_execution"), Tag(key="type", value="action")],
+        tags=[Tag(key="category", value="code_execution"), Tag(key="type", value="action"), Tag(key="effect", value="write"), TAG_SINK_EXTERNAL],
     )
     async def execute_typescript(self, code: str, packages: list[str] | None = None) -> tuple[bool, str]:
         """Execute TypeScript code in the sandbox and return results + artifacts."""
@@ -410,11 +418,6 @@ class CodingSandbox:
                 len(result.artifacts), len(result.stdout), len(result.stderr),
                 result.error or "None",
             )
-            if result.stdout:
-                logger.debug("[execute_typescript] STDOUT:\n%s", _truncate(result.stdout, 2000))
-            if result.stderr:
-                log_fn = logger.warning if not result.success else logger.debug
-                log_fn("[execute_typescript] STDERR:\n%s", _truncate(result.stderr, 2000))
 
             self._schedule_artifact_upload(result, source_tool="coding_sandbox.execute_typescript")
 
