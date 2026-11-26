@@ -43,7 +43,10 @@ import { AGENT_HARNESS_LIVE_LAYERS } from '../binders/change-notifier';
 import { AgentHarnessLiveLayerController } from './live-layer-controller';
 import { MemoryService } from '../application/memory-service';
 import { AgentHarnessMemoryController } from './memory-controller';
+import { AgentHarnessChatScheduleController } from './chat-schedule-controller';
+import type { ChatScheduleService } from '../application/chat-schedules';
 import {
+  AGENT_HARNESS_CHAT_SCHEDULES,
   AGENT_HARNESS_CLAIM_FEATURES,
   AGENT_HARNESS_METRICS_TARGETS,
   AGENT_HARNESS_LOCAL_METRICS,
@@ -295,6 +298,16 @@ export function createAgentHarnessInternalRouter(container: Container): Router {
     // P7.3: the run's pinned memories and its model's proposals.
     router.get('/runs/:runId/memories', attempt, memories.recall);
     router.post('/runs/:runId/memories', attempt, memories.propose);
+  }
+
+  if (container.isBound(AGENT_HARNESS_CHAT_SCHEDULES)) {
+    const chatSchedules = new AgentHarnessChatScheduleController(
+      container.get<ChatScheduleService>(AGENT_HARNESS_CHAT_SCHEDULES),
+      authority,
+      logger,
+    );
+    // ADR-SCH-01 D3: a schedule the run's person approved in chat, made as them.
+    router.post('/runs/:runId/schedules', attempt, chatSchedules.create);
   }
 
   if (container.isBound(AGENT_HARNESS_GATEWAY_TOKENS)) {

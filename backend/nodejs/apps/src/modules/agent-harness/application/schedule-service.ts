@@ -27,6 +27,7 @@ import {
   type AgentSchedule,
   type AgentVersionPin,
   assertCron,
+  assertOnce,
   assertScheduleBudget,
   type CatchUpPolicy,
   DEFAULT_COALESCE_S,
@@ -41,6 +42,8 @@ import {
   MIN_DEADLINE_S,
   nextCronSlot,
   NOTIFY_CHANNELS,
+  ranOnce,
+  type ScheduleOrigin,
   type NotifyChannel,
   type OverlapPolicy,
   scheduleAgentVersion,
@@ -96,6 +99,7 @@ export interface ScheduleTemplate {
 
 export type ScheduleTriggerRequest =
   | { kind: 'cron'; cron: string; timeZone: string; catchUp?: CatchUpPolicy }
+  | { kind: 'once'; at: string; timeZone: string }
   | { kind: 'webhook'; coalesceS?: number; auth?: WebhookAuth }
   | { kind: 'connector'; connectorId: string; coalesceS?: number };
 
@@ -138,6 +142,8 @@ export interface ScheduleView {
   nextFireAt: string | null;
   overlap: OverlapPolicy;
   notify: NotifyChannel[];
+  /** The chat it was made in (ADR-SCH-01); absent: made on the Schedules page or the API. */
+  origin?: ScheduleOrigin;
   createdAt: string;
   updatedAt: string;
   /** The template; only its actor sees it (it is their prompt). */
@@ -324,6 +330,9 @@ export function scheduleView(
     nextFireAt: iso(schedule.nextFireAt),
     overlap: scheduleOverlap(schedule),
     notify: scheduleNotify(schedule),
+    ...(schedule.origin !== undefined
+      ? { origin: { ...schedule.origin } }
+      : {}),
     createdAt: iso(schedule.createdAt) as string,
     updatedAt: iso(schedule.updatedAt) as string,
     ...(viewerId === schedule.actorId && schedule.input !== null
@@ -492,9 +501,14 @@ export class ScheduleService {
     });
   }
 
+  /**
+   * `made`: a schedule a chat asked for (ADR-SCH-01 D3), with the id its
+   * approval derives, so one decision can make one schedule in every store.
+   */
   async create(
     caller: ScheduleCaller,
     request: CreateScheduleRequest,
+    made?: { id: string; origin: ScheduleOrigin },
   ): Promise<{
     schedule: ScheduleView;
     webhookToken?: string;
@@ -522,7 +536,7 @@ export class ScheduleService {
       MAX_DEADLINE_S,
       'deadlineS',
     );
-    const trigger = this.trigger(request.trigger, now);
+    const trigger = this.trigger(request.trigger, now, made !== undefined);
     const notify = await this.notifyChannels(caller.orgId, request.notify);
     const agentVersion = await this.pinned(
       caller,
@@ -537,7 +551,7 @@ export class ScheduleService {
       trigger.kind === 'webhook' && !signed ? this.newToken() : null;
     const secret = signed ? this.newSecret() : null;
     const schedule: AgentSchedule = {
-      id: this.newId(),
+      id: made?.id ?? this.newId(),
       orgId: caller.orgId,
       actorId: caller.userId,
       name: request.name,
@@ -551,14 +565,16 @@ export class ScheduleService {
       deadlineS,
       status: 'active',
       statusReason: null,
+      // An approved one-off whose time came while its card waited fires at the next tick.
       nextFireAt:
-        trigger.kind === 'cron'
-          ? nextCronSlot(trigger.cron, trigger.timeZone, now)
-          : null,
+        trigger.kind === 'once'
+          ? Math.max(Date.parse(trigger.at), now)
+          : firstSlot(trigger, now),
       webhookTokenHash: token === null ? null : hashTriggerToken(token),
       ...(secret !== null ? { webhookSigningKey: secret } : {}),
       overlap: request.overlap ?? DEFAULT_OVERLAP,
       notify,
+      ...(made !== undefined ? { origin: { ...made.origin } } : {}),
       createdAt: now,
       updatedAt: now,
     };
@@ -577,6 +593,7 @@ export class ScheduleService {
         agentKey: created.agentKey,
         agentVersion: created.agentVersion,
         trigger: created.trigger.kind,
+        origin: created.origin !== undefined ? 'chat' : undefined,
         maxCostUsd: created.maxCostUsd,
         deadlineS,
         overlap: scheduleOverlap(created),
@@ -665,7 +682,7 @@ export class ScheduleService {
     const { schedule, asActor } = await this.manageable(caller, id);
     if (schedule.status === 'paused')
       return scheduleView(schedule, caller.userId);
-    if (schedule.status === 'disabled') throw this.disabled();
+    if (schedule.status === 'disabled') throw this.disabled(schedule);
     const now = await this.store.now();
     const changed = await this.audited(
       caller,
@@ -695,8 +712,18 @@ export class ScheduleService {
     const { schedule } = await this.manageable(caller, id);
     if (schedule.status === 'active')
       return scheduleView(schedule, caller.userId);
-    if (schedule.status === 'disabled') throw this.disabled();
+    if (schedule.status === 'disabled') throw this.disabled(schedule);
     const now = await this.store.now();
+    if (
+      schedule.trigger.kind === 'once' &&
+      Date.parse(schedule.trigger.at) <= now
+    ) {
+      throw new HarnessScheduleRefusedError(
+        'SCHEDULE_INVALID',
+        'Its time passed while it was paused. Delete it and create a new one',
+        'trigger',
+      );
+    }
     // A pause is not an outage: the paused period's slots never fire.
     const changed = await this.audited(
       caller,
@@ -712,14 +739,7 @@ export class ScheduleService {
               from: ['paused'],
               to: 'active',
               reason: null,
-              nextFireAt:
-                schedule.trigger.kind === 'cron'
-                  ? nextCronSlot(
-                      schedule.trigger.cron,
-                      schedule.trigger.timeZone,
-                      now,
-                    )
-                  : null,
+              nextFireAt: firstSlot(schedule.trigger, now),
             },
             now,
           )
@@ -750,7 +770,7 @@ export class ScheduleService {
         'Only an agent schedule runs a version of its agent',
       );
     }
-    if (schedule.status === 'disabled') throw this.disabled();
+    if (schedule.status === 'disabled') throw this.disabled(schedule);
     const pin = await this.pinned(caller, schedule.agentKey, agentVersion);
     if (pin === undefined) throw notFound();
     const now = await this.store.now();
@@ -801,7 +821,7 @@ export class ScheduleService {
     if (!asActor) {
       throw forbidden('A schedule runs as its owner: only they can run it now');
     }
-    if (schedule.status === 'disabled') throw this.disabled();
+    if (schedule.status === 'disabled') throw this.disabled(schedule);
     return firingView(await this.firer.runNow(schedule, key));
   }
 
@@ -1052,7 +1072,16 @@ export class ScheduleService {
   private trigger(
     request: ScheduleTriggerRequest,
     now: number,
+    approvedInChat: boolean,
   ): ScheduleTrigger {
+    if (request.kind === 'once') {
+      const at = assertOnce(request.at, request.timeZone, now, approvedInChat);
+      return {
+        kind: 'once',
+        at: new Date(at).toISOString(),
+        timeZone: request.timeZone,
+      };
+    }
     if (request.kind === 'cron') {
       assertCron(request.cron, request.timeZone, now);
       return {
@@ -1115,7 +1144,13 @@ export class ScheduleService {
     return scheduleView(changed, caller.userId);
   }
 
-  private disabled(): HarnessScheduleRefusedError {
+  private disabled(schedule: AgentSchedule): HarnessScheduleRefusedError {
+    if (ranOnce(schedule)) {
+      return new HarnessScheduleRefusedError(
+        'SCHEDULE_RAN_ONCE',
+        'This one-time schedule already ran. Create a new schedule to run it again',
+      );
+    }
     return new HarnessScheduleRefusedError(
       'SCHEDULE_DISABLED',
       'This schedule is disabled: its owner can no longer run it. Delete it and create a new one',
@@ -1164,6 +1199,18 @@ export class ScheduleService {
       );
     }
   }
+}
+
+/** A time trigger's first slot after `now`; null for an event trigger, or a one-time slot already past. */
+function firstSlot(trigger: ScheduleTrigger, now: number): number | null {
+  if (trigger.kind === 'cron') {
+    return nextCronSlot(trigger.cron, trigger.timeZone, now);
+  }
+  if (trigger.kind === 'once') {
+    const at = Date.parse(trigger.at);
+    return at > now ? at : null;
+  }
+  return null;
 }
 
 function sameHash(stored: string, given: string): boolean {

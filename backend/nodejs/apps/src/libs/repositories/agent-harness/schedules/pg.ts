@@ -227,6 +227,7 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
     firing: ScheduleFiring,
     expectedNextFireAt: number,
     nextFireAt: number | null,
+    disable?: string,
   ): Promise<ScheduleFiring | null> {
     try {
       return await this.org(firing.orgId, true, async (k) => {
@@ -237,7 +238,13 @@ export class PgScheduleStore implements ScheduleStore, ScheduleEraser {
             firing.orgId,
             firing.scheduleId,
             expectedNextFireAt,
-            docParam({ nextFireAt, updatedAt: firing.createdAt }),
+            docParam({
+              nextFireAt,
+              ...(disable !== undefined
+                ? { status: 'disabled', statusReason: disable }
+                : {}),
+              updatedAt: firing.createdAt,
+            }),
           ],
         );
         if (rowCount !== 1) return null;

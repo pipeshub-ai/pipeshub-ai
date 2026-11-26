@@ -1,0 +1,558 @@
+/**
+ * ADR-SCH-01: a schedule asked for in chat. D1, the one-time trigger (validation, its one slot fired once whatever
+ * the number of firers, lateness, resume and run now refused once it ran); D3, the worker's route that makes it only
+ * on the person's own approval of exactly that call, read from the run's journal, once per decision.
+ */
+import { expect } from 'chai';
+import sinon from 'sinon';
+import { InMemoryScheduleStore } from '../../../src/modules/agent-harness/adapters/in-memory-schedules';
+import {
+  ChatScheduleService,
+  chatScheduleId,
+  SCHEDULE_CREATE_TOOL_ID,
+  type ScheduleToolArguments,
+} from '../../../src/modules/agent-harness/application/chat-schedules';
+import { ScheduleFirer } from '../../../src/modules/agent-harness/application/schedule-firer';
+import {
+  type ScheduleCaller,
+  ScheduleService,
+} from '../../../src/modules/agent-harness/application/schedule-service';
+import { canonicalDigest, canonicalSha256 } from '../../../src/modules/agent-harness/contracts/canonical-json';
+import { HarnessScheduleRefusedError } from '../../../src/modules/agent-harness/domain/errors';
+import { type HarnessRun, resolvedData } from '../../../src/modules/agent-harness/domain/execution';
+import { approvalBindingDigests } from '../../../src/modules/agent-harness/domain/interactions';
+import type { JournalEvent } from '../../../src/modules/agent-harness/domain/journal';
+import {
+  assertOnce,
+  decideOnce,
+  firingInput,
+  MAX_ONCE_LATENESS_MS,
+  ONCE_TOO_LATE,
+  onceSlotKey,
+  RAN_ONCE,
+  triggerContext,
+} from '../../../src/modules/agent-harness/domain/schedules';
+import { AgentHarnessChatScheduleController } from '../../../src/modules/agent-harness/transport/chat-schedule-controller';
+import { testControlPlane } from '../control-plane/support/in-memory';
+import {
+  aSchedule,
+  ALICE,
+  BOB,
+  FakeActors,
+  FakeAdmission,
+  FakeNotifier,
+  FakeSetting,
+  ORG,
+  T0,
+  TestClock,
+} from './support/schedules';
+
+const MIN = 60_000;
+const alice: ScheduleCaller = { orgId: ORG, userId: ALICE, via: 'session' };
+/** 47 minutes after T0 (06:00Z), written in Berlin's summer offset. */
+const AT = '2026-07-06T08:47:00+02:00';
+const AT_MS = Date.parse(AT);
+
+async function code(promise: Promise<unknown>): Promise<string> {
+  try {
+    await promise;
+  } catch (error) {
+    expect(error).to.be.instanceOf(HarnessScheduleRefusedError);
+    return (error as HarnessScheduleRefusedError).code;
+  }
+  throw new Error('expected a refusal');
+}
+
+describe('ADR-SCH-01 D1: a one-time schedule', () => {
+  describe('domain', () => {
+    it('takes an ISO 8601 instant with its offset, 60 s to 366 days ahead, in a known zone', () => {
+      expect(assertOnce(AT, 'Europe/Berlin', T0)).to.equal(Date.parse('2026-07-06T06:47:00.000Z'));
+      expect(assertOnce('2026-07-06T06:01:00Z', 'UTC', T0)).to.equal(T0 + MIN);
+      const field = (at: string, zone = 'UTC', now = T0): string | undefined => {
+        try {
+          assertOnce(at, zone, now);
+          return undefined;
+        } catch (error) {
+          return (error as HarnessScheduleRefusedError).field;
+        }
+      };
+      expect(field('2026-07-06T06:00:59Z')).to.equal('at');
+      expect(field('2026-07-06T08:47:00')).to.equal('at');
+      expect(field('tomorrow at 9')).to.equal('at');
+      expect(field('2027-07-08T06:00:00Z')).to.equal('at');
+      expect(field('2027-07-07T06:00:00Z')).to.equal(undefined);
+      expect(field(AT, 'Mars/Olympus')).to.equal('timeZone');
+    });
+
+    it('fires its slot when due and up to 24 h late; later the slot is skipped; the cursor always goes', () => {
+      expect(decideOnce(AT_MS, AT_MS - 1)).to.deep.equal({ kind: 'wait' });
+      expect(decideOnce(AT_MS, AT_MS + 20 * MIN)).to.deep.include({ kind: 'fire', slotAt: AT_MS, nextFireAt: null, late: true });
+      expect(decideOnce(AT_MS, AT_MS + MAX_ONCE_LATENESS_MS)).to.deep.include({ kind: 'fire' });
+      expect(decideOnce(AT_MS, AT_MS + MAX_ONCE_LATENESS_MS + 1)).to.deep.include({ kind: 'skip', nextFireAt: null });
+      expect(onceSlotKey(AT_MS)).to.equal('o:2026-07-06T06:47:00.000Z');
+    });
+
+    it('its run is told it is a one-time firing, on the person’s clock', () => {
+      const schedule = aSchedule({ trigger: { kind: 'once', at: '2026-07-06T06:47:00.000Z', timeZone: 'Europe/Berlin' } });
+      const context = triggerContext(schedule, { id: 'f1', kind: 'once', slotAt: AT_MS }, false);
+      expect(context).to.deep.equal({ kind: 'once', scheduleId: schedule.id, firingId: 'f1', slotAt: '2026-07-06T06:47:00.000Z' });
+      expect(firingInput(schedule, AT_MS, context)).to.deep.include({ timezone: 'Europe/Berlin', currentTime: '2026-07-06T06:47:00.000Z' });
+    });
+  });
+
+  describe('service and firer', () => {
+    let clock: TestClock;
+    let store: InMemoryScheduleStore;
+    let admission: FakeAdmission;
+    let actors: FakeActors;
+    let notifier: FakeNotifier;
+    let service: ScheduleService;
+    const firer = () =>
+      new ScheduleFirer({ store, admission, actors, setting: new FakeSetting(), notifier });
+
+    beforeEach(() => {
+      clock = new TestClock();
+      store = new InMemoryScheduleStore(clock);
+      admission = new FakeAdmission();
+      actors = new FakeActors();
+      notifier = new FakeNotifier();
+      service = new ScheduleService({
+        transaction: testControlPlane(),
+        store,
+        firer: firer(),
+        actors,
+        setting: new FakeSetting(),
+      });
+    });
+
+    const once = () =>
+      service.create(alice, {
+        name: 'Joke in a while',
+        input: { query: 'Tell me a short, clean joke.' },
+        trigger: { kind: 'once', at: AT, timeZone: 'Europe/Berlin' },
+      });
+
+    it('is made with its instant in UTC as its cursor; a time too soon is refused', async () => {
+      const { schedule } = await once();
+      expect(schedule).to.deep.include({
+        status: 'active',
+        nextFireAt: '2026-07-06T06:47:00.000Z',
+        trigger: { kind: 'once', at: '2026-07-06T06:47:00.000Z', timeZone: 'Europe/Berlin' },
+      });
+      expect(
+        await code(
+          service.create(alice, {
+            name: 'Too soon',
+            input: { query: 'x' },
+            trigger: { kind: 'once', at: '2026-07-06T06:00:30Z', timeZone: 'UTC' },
+          }),
+        ),
+      ).to.equal('SCHEDULE_INVALID');
+    });
+
+    it('two firers fire its slot exactly once, and the claim disables it (ran_once)', async () => {
+      const { schedule } = await once();
+      clock.value = AT_MS + 5_000;
+      const fired = await Promise.all([firer().fireDue(), firer().fireDue(), firer().fireDue()]);
+      expect(fired.reduce((a, b) => a + b, 0)).to.equal(1);
+      expect(admission.admitted).to.equal(1);
+      expect(admission.requests[0]?.input.trigger).to.deep.include({ kind: 'once' });
+      const after = await store.get(ORG, schedule.id);
+      expect(after).to.deep.include({ status: 'disabled', statusReason: RAN_ONCE, nextFireAt: null });
+      const firings = await store.firings(ORG, schedule.id, 10);
+      expect(firings.map((f) => [f.kind, f.slotKey, f.status])).to.deep.equal([
+        ['once', 'o:2026-07-06T06:47:00.000Z', 'admitted'],
+      ]);
+      clock.advance(60 * MIN);
+      expect(await firer().fireDue()).to.equal(0);
+    });
+
+    it('a retried firing of its claimed slot still runs although the schedule is disabled', async () => {
+      const { schedule } = await once();
+      clock.value = AT_MS;
+      admission.refusals.push('unavailable');
+      await firer().fireDue();
+      expect(admission.admitted).to.equal(0);
+      clock.advance(10 * MIN);
+      await firer().retryStale();
+      expect(admission.admitted).to.equal(1);
+      expect((await store.firings(ORG, schedule.id, 10))[0]?.status).to.equal('admitted');
+    });
+
+    it('more than a day late: skipped, disabled, and its person told', async () => {
+      const { schedule } = await once();
+      clock.value = AT_MS + MAX_ONCE_LATENESS_MS + MIN;
+      expect(await firer().fireDue()).to.equal(0);
+      expect(admission.admitted).to.equal(0);
+      expect((await store.firings(ORG, schedule.id, 10)).map((f) => [f.status, f.reason])).to.deep.equal([
+        ['skipped', ONCE_TOO_LATE],
+      ]);
+      expect((await store.get(ORG, schedule.id))?.status).to.equal('disabled');
+      expect(notifier.refusals.map((n) => n.reason)).to.deep.equal([ONCE_TOO_LATE]);
+    });
+
+    it('once it ran, resume and run now are refused SCHEDULE_RAN_ONCE; delete removes it', async () => {
+      const { schedule } = await once();
+      clock.value = AT_MS;
+      await firer().fireDue();
+      expect(await code(service.resume(alice, schedule.id))).to.equal('SCHEDULE_RAN_ONCE');
+      expect(await code(service.runNow(alice, schedule.id, 'k1'))).to.equal('SCHEDULE_RAN_ONCE');
+      await service.delete(alice, schedule.id);
+      expect(await store.get(ORG, schedule.id)).to.equal(null);
+    });
+
+    it('paused past its time, it cannot be resumed into a slot that never comes', async () => {
+      const { schedule } = await once();
+      await service.pause(alice, schedule.id);
+      clock.value = AT_MS + MIN;
+      expect(await code(service.resume(alice, schedule.id))).to.equal('SCHEDULE_INVALID');
+      clock.value = T0 + MIN;
+      expect((await service.resume(alice, schedule.id)).nextFireAt).to.equal('2026-07-06T06:47:00.000Z');
+    });
+  });
+});
+
+// Computed by the worker's own functions (backend/python, `harness_core.effects.types.args_digest` and
+// `harness_core.interactions.hold.approval_interaction_id`); Node must name the same call with the same ids.
+const PYTHON_FIXTURE = [
+  {
+    runId: 'run-0193ab',
+    arguments: {
+      name: 'Joke in five minutes',
+      ask: 'Tell me a short, clean joke.',
+      when: { kind: 'once', at: '2026-11-26T15:47:00-08:00', timeZone: 'America/Los_Angeles' },
+      notify: ['in_app'],
+    },
+    argsDigest: 'sha256:2ef63f1dfc28d9dc86dadf75c7ce2345833238212d970adafdf9368ad960ae49',
+    interactionId: 'ix.approve.k7653147571b6e391911ef030c4f92bd1b96d9004',
+  },
+  {
+    runId: 'run-xyz',
+    arguments: {
+      name: 'Jira digest — 9 Uhr ☕',
+      ask: 'Summarise my open Jira issues.\n"quoted"',
+      when: { kind: 'cron', cron: '0 9 * * 1-5', timeZone: 'Europe/Berlin' },
+    },
+    argsDigest: 'sha256:419bb225c5685a75d5c18a7e06633918bb4a1f3fa013ae125f85c117f20664dc',
+    interactionId: 'ix.approve.kad85bf84f06e9b1ddf5c77044c5d38ba8b936135',
+  },
+];
+
+// The same call's approval request as each worker form journals it (`harness_core.interactions.journal.binding_digest`
+// for an engine, `kernel/durable/driver.py` `_requested` for the loop), computed by Python.
+const PYTHON_BINDINGS = [
+  {
+    form: 'engine',
+    interactionId: 'ix.approve.k7653147571b6e391911ef030c4f92bd1b96d9004',
+    bindingDigest: 'sha256:e38b47f427a9605567aef34a871ccb2427bc11eea1d5ba073f1c48387c757da9',
+  },
+  {
+    form: 'loop',
+    interactionId: 'ix.approve.call_7Hq2.0',
+    bindingDigest: 'sha256:11fca7b58372316a0e149cbab54180c90a340f55dd380f9d10a8aaef51e625c8',
+  },
+];
+
+/** An engine's approval id (`harness_core.interactions.hold.approval_interaction_id`). */
+const engineInteractionId = (runId: string, argsDigest: string): string =>
+  `ix.approve.k${canonicalSha256({ runId, toolId: SCHEDULE_CREATE_TOOL_ID, argsDigest }).slice(0, 40)}`;
+
+describe('ADR-SCH-01 D3: a schedule made on the person’s approval in chat', () => {
+  it('names a call as the worker does (canonical digest and both request binding forms, parity with Python)', () => {
+    for (const c of PYTHON_FIXTURE) {
+      expect(canonicalDigest(c.arguments)).to.equal(c.argsDigest);
+      expect(engineInteractionId(c.runId, c.argsDigest)).to.equal(c.interactionId);
+    }
+    const [joke] = PYTHON_FIXTURE;
+    for (const form of PYTHON_BINDINGS) {
+      expect(approvalBindingDigests(form.interactionId, SCHEDULE_CREATE_TOOL_ID, joke!.argsDigest)).to.include(
+        form.bindingDigest,
+      );
+    }
+  });
+
+  const RUN = 'run-chat-1';
+  const ARGS: ScheduleToolArguments = {
+    name: 'Joke in five minutes',
+    ask: 'Tell me a short, clean joke.',
+    when: { kind: 'once', at: AT, timeZone: 'Europe/Berlin' },
+  };
+  const ixOf = (args: unknown, runId = RUN): string => engineInteractionId(runId, canonicalDigest(args));
+
+  /** The approval request the worker journaled for the call `asked` (its own arguments), in the engine's form. */
+  const requested = (interactionId: string, asked: unknown, toolId = SCHEDULE_CREATE_TOOL_ID): JournalEvent =>
+    ({
+      type: 'interaction.requested',
+      runId: RUN,
+      data: {
+        interactionId,
+        kind: 'approval',
+        bindingDigest: canonicalDigest({ interactionId, kind: 'approval', subject: toolId, argsDigest: canonicalDigest(asked) }),
+      },
+    }) as unknown as JournalEvent;
+  const loopRequested = (invocationId: string, asked: unknown): JournalEvent =>
+    ({
+      type: 'interaction.requested',
+      runId: RUN,
+      data: {
+        interactionId: `ix.approve.${invocationId}`,
+        kind: 'approval',
+        bindingDigest: canonicalDigest({
+          invocationId,
+          toolId: SCHEDULE_CREATE_TOOL_ID,
+          argsDigest: canonicalDigest(asked),
+          purpose: 'approve',
+        }),
+      },
+    }) as unknown as JournalEvent;
+  /** The call asked and approved as is. */
+  const approvedCall = (args: unknown = ARGS): JournalEvent[] => [requested(ixOf(args), args), resolved(ixOf(args), 'approved')];
+
+  interface World {
+    controller: AgentHarnessChatScheduleController;
+    events: JournalEvent[];
+    setting: FakeSetting;
+    actors: FakeActors;
+    store: InMemoryScheduleStore;
+    call(body: Record<string, unknown>): Promise<{ status: number; body?: unknown; code?: string }>;
+  }
+
+  const resolved = (
+    interactionId: string,
+    decision: 'approved' | 'denied',
+    extra: { by?: string; channel?: 'web' | 'system'; edits?: Record<string, unknown> } = {},
+  ): JournalEvent =>
+    ({
+      type: 'interaction.resolved',
+      runId: RUN,
+      data: resolvedData(
+        {
+          interactionId,
+          decision,
+          channel: extra.channel ?? 'web',
+          ...(extra.edits !== undefined ? { edits: extra.edits } : {}),
+        },
+        extra.by ?? `p_${ALICE}`,
+      ),
+    }) as unknown as JournalEvent;
+
+  function world(): World {
+    const clock = new TestClock();
+    const store = new InMemoryScheduleStore(clock);
+    const actors = new FakeActors();
+    const setting = new FakeSetting();
+    const schedules = new ScheduleService({
+      transaction: testControlPlane(),
+      store,
+      firer: new ScheduleFirer({ store, admission: new FakeAdmission(), actors, setting }),
+      actors,
+      setting,
+    });
+    const run = {
+      orgId: ORG,
+      runId: RUN,
+      sessionId: 'ses-chat',
+      actorId: ALICE,
+      agentKey: 'helper',
+      agentVersion: 3,
+      input: {
+        query: 'can you tell me a joke after 5 mins',
+        recordIds: [],
+        filters: {},
+        attachments: [],
+        locale: 'de-DE',
+        model: { chatMode: 'quick', modelKey: 'm-1', modelName: 'gpt-x' },
+      },
+    } as unknown as HarnessRun;
+    const events: JournalEvent[] = [];
+    const service = new ChatScheduleService({
+      runs: {
+        get: async (orgId, runId) => (orgId === ORG && runId === RUN ? run : null),
+        runEvents: async () => events,
+      },
+      vias: { via: async () => 'session' },
+      schedules,
+      store,
+      actors,
+    });
+    const controller = new AgentHarnessChatScheduleController(service, {
+      authorizeAttempt: sinon.stub().resolves(),
+    } as never);
+    const call = async (body: Record<string, unknown>) => {
+      const res = { statusCode: 0, payload: undefined as unknown, status: sinon.stub(), json: sinon.stub() };
+      res.status.callsFake((s: number) => ((res.statusCode = s), res));
+      res.json.callsFake((p: unknown) => ((res.payload = p), res));
+      const next = sinon.spy();
+      await controller.create(
+        {
+          params: { runId: RUN },
+          body: { attemptId: 'a-1', fence: 1, ...body },
+          method: 'POST',
+          path: `/runs/${RUN}/schedules`,
+          harnessAttempt: { orgId: ORG, runId: RUN, attemptId: 'a-1', fence: 1 },
+        } as never,
+        res as never,
+        next,
+      );
+      if (next.called) {
+        const error = next.firstCall.args[0] as { statusCode: number; code?: string };
+        return { status: error.statusCode, code: String(error.code) };
+      }
+      return { status: res.statusCode, body: res.payload };
+    };
+    return { controller, events, setting, actors, store, call };
+  }
+
+  const body = (args: unknown = ARGS, interactionId = ixOf(ARGS)) => ({
+    interactionId,
+    toolId: SCHEDULE_CREATE_TOOL_ID,
+    arguments: args,
+  });
+
+  it('approved: 201, the run’s person’s schedule with the chat’s agent and model, its origin recorded', async () => {
+    const w = world();
+    w.events.push(...approvedCall());
+    const made = await w.call(body());
+    expect(made.status).to.equal(201);
+    const answer = made.body as { created: boolean; schedule: { id: string; status: string; nextFireAt: string } };
+    expect(answer).to.deep.include({ created: true });
+    expect(answer.schedule).to.deep.include({ status: 'active', nextFireAt: '2026-07-06T06:47:00.000Z' });
+    const stored = await w.store.get(ORG, answer.schedule.id);
+    expect(stored).to.deep.include({
+      actorId: ALICE,
+      agentKey: 'helper',
+      agentVersion: 3,
+      origin: { conversationId: 'ses-chat', runId: RUN, interactionId: ixOf(ARGS) },
+    });
+    expect(stored?.input).to.deep.include({ query: ARGS.ask, locale: 'de-DE' });
+    expect(stored?.input?.model).to.deep.include({ chatMode: 'quick', modelKey: 'm-1', modelName: 'gpt-x' });
+  });
+
+  it('a repeat of the same decision: 200, the same schedule, nothing new', async () => {
+    const w = world();
+    w.events.push(...approvedCall());
+    const first = (await w.call(body())).body as { schedule: { id: string } };
+    const again = await w.call(body());
+    expect(again.status).to.equal(200);
+    expect(again.body).to.deep.include({ created: false });
+    expect((again.body as { schedule: { id: string } }).schedule.id).to.equal(first.schedule.id);
+    expect(first.schedule.id).to.equal(chatScheduleId(ORG, ixOf(ARGS)));
+    expect(await w.store.list(ORG, {}, 10)).to.have.length(1);
+  });
+
+  it('two requests of one decision at once make one schedule', async () => {
+    const w = world();
+    w.events.push(...approvedCall());
+    const both = await Promise.all([w.call(body()), w.call(body())]);
+    expect(both.map((r) => r.status).sort()).to.deep.equal([200, 201]);
+    expect(await w.store.list(ORG, {}, 10)).to.have.length(1);
+  });
+
+  const NOT_APPROVED = 'HTTP_AGENT_HARNESS_SCHEDULE_NOT_APPROVED';
+
+  it('refused SCHEDULE_NOT_APPROVED (403) without a decision, on a denial, or a decision Node or someone else made', async () => {
+    const asked = requested(ixOf(ARGS), ARGS);
+    const cases: Array<JournalEvent[]> = [
+      [asked],
+      [asked, resolved(ixOf(ARGS), 'denied')],
+      [asked, resolved(ixOf(ARGS), 'approved', { channel: 'system' })],
+      [asked, resolved(ixOf(ARGS), 'approved', { by: `p_${BOB}` })],
+      [resolved(ixOf(ARGS), 'approved')],
+    ];
+    for (const events of cases) {
+      const w = world();
+      w.events.push(...events);
+      expect(await w.call(body())).to.deep.equal({ status: 403, code: NOT_APPROVED });
+      expect(await w.store.list(ORG, {}, 10)).to.have.length(0);
+    }
+  });
+
+  it('refused for other arguments than approved, another run’s call, or another tool', async () => {
+    const w = world();
+    w.events.push(...approvedCall());
+    const other = { ...ARGS, ask: 'Delete my files.' };
+    expect(await w.call(body(other, ixOf(ARGS)))).to.deep.equal({ status: 403, code: NOT_APPROVED });
+    const elsewhere = ixOf(ARGS, 'run-other');
+    // Another run's request and decision: never this run's, though a journal read gave them back.
+    w.events.push(
+      ...[requested(elsewhere, ARGS), resolved(elsewhere, 'approved')].map((e) => ({ ...e, runId: 'run-other' })),
+    );
+    expect(await w.call(body(ARGS, elsewhere))).to.deep.equal({ status: 403, code: NOT_APPROVED });
+    expect(await w.call({ ...body(), toolId: 'pipeshub@mail/send' })).to.deep.equal({ status: 403, code: NOT_APPROVED });
+    expect(
+      await w.call({ ...body(), callArgsDigest: canonicalDigest(other) }),
+    ).to.deep.equal({ status: 403, code: NOT_APPROVED });
+    expect(await w.store.list(ORG, {}, 10)).to.have.length(0);
+  });
+
+  it('the loop’s form of the request (`ix.approve.<invocationId>`): approved, 201', async () => {
+    const w = world();
+    w.events.push(loopRequested('call_1.0', ARGS), resolved('ix.approve.call_1.0', 'approved'));
+    expect((await w.call(body(ARGS, 'ix.approve.call_1.0'))).status).to.equal(201);
+  });
+
+  it('a request that asked about another tool or other arguments makes nothing (403)', async () => {
+    const other = { ...ARGS, ask: 'Delete my files.' };
+    for (const asked of [requested(ixOf(ARGS), ARGS, 'pipeshub@mail/send'), requested(ixOf(ARGS), other)]) {
+      const w = world();
+      w.events.push(asked, resolved(ixOf(ARGS), 'approved'));
+      expect(await w.call(body())).to.deep.equal({ status: 403, code: NOT_APPROVED });
+    }
+    const w = world();
+    w.events.push(loopRequested('call_2.0', other), resolved('ix.approve.call_2.0', 'approved'));
+    expect(await w.call(body(ARGS, 'ix.approve.call_2.0'))).to.deep.equal({ status: 403, code: NOT_APPROVED });
+  });
+
+  it('approved after its time came (the card waited): still made, and due at once', async () => {
+    const late = { ...ARGS, when: { kind: 'once' as const, at: '2026-07-06T05:58:30Z', timeZone: 'UTC' } };
+    const w = world();
+    w.events.push(...approvedCall(late));
+    const made = await w.call(body(late, ixOf(late)));
+    expect(made.status).to.equal(201);
+    expect((made.body as { schedule: { nextFireAt: string } }).schedule.nextFireAt).to.equal(new Date(T0).toISOString());
+    const stale = { ...ARGS, when: { kind: 'once' as const, at: '2026-07-05T05:00:00Z', timeZone: 'UTC' } };
+    w.events.push(...approvedCall(stale));
+    expect(await w.call(body(stale, ixOf(stale)))).to.deep.equal({ status: 400, code: 'HTTP_AGENT_HARNESS_SCHEDULE_INVALID' });
+  });
+
+  it('AP-06: an edited call is made with the edited arguments only', async () => {
+    const edited = { ...ARGS, name: 'A joke, a bit later', when: { ...ARGS.when, at: '2026-07-06T09:00:00+02:00' } };
+    const w = world();
+    w.events.push(requested(ixOf(ARGS), ARGS), resolved(ixOf(ARGS), 'approved', { edits: edited }));
+    expect(await w.call(body(ARGS))).to.deep.equal({ status: 403, code: NOT_APPROVED });
+    expect(await w.call(body(edited, ixOf(ARGS)))).to.deep.equal({ status: 403, code: NOT_APPROVED });
+    const made = await w.call({ ...body(edited, ixOf(ARGS)), callArgsDigest: canonicalDigest(ARGS) });
+    expect(made.status).to.equal(201);
+    expect((made.body as { schedule: { name: string; nextFireAt: string } }).schedule).to.deep.include({
+      name: 'A joke, a bit later',
+      nextFireAt: '2026-07-06T07:00:00.000Z',
+    });
+  });
+
+  it('Labs scheduled runs off: the create’s own refusal, nothing made', async () => {
+    const w = world();
+    w.events.push(...approvedCall());
+    w.setting.on = false;
+    expect(await w.call(body())).to.deep.equal({ status: 404, code: 'HTTP_AGENT_HARNESS_SCHEDULED_RUNS_DISABLED' });
+    expect(await w.store.list(ORG, {}, 10)).to.have.length(0);
+  });
+
+  it('the person’s authority is read again; a disabled person makes nothing', async () => {
+    const w = world();
+    w.events.push(...approvedCall());
+    w.actors.refused.set(ALICE, 'actor_disabled');
+    expect(await w.call(body())).to.deep.equal({ status: 403, code: 'HTTP_AGENT_HARNESS_SCHEDULE_FORBIDDEN' });
+  });
+
+  it('the create’s own checks hold: a cron more often than every five minutes is refused', async () => {
+    const fast: ScheduleToolArguments = { ...ARGS, when: { kind: 'cron', cron: '* * * * *', timeZone: 'UTC' } };
+    const w = world();
+    w.events.push(...approvedCall(fast));
+    expect(await w.call(body(fast, ixOf(fast)))).to.deep.equal({ status: 400, code: 'HTTP_AGENT_HARNESS_SCHEDULE_INVALID' });
+  });
+
+  it('a malformed body is a 400 that names nothing of it', async () => {
+    const w = world();
+    expect((await w.call({ ...body(), arguments: { ...ARGS, extra: 1 } })).status).to.equal(400);
+  });
+});

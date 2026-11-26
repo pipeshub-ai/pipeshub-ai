@@ -36,6 +36,11 @@ export type WebhookAuth = 'signature' | 'token';
 
 export type ScheduleTrigger =
   | { kind: 'cron'; cron: string; timeZone: string; catchUp: CatchUpPolicy }
+  /**
+   * A one-time schedule (ADR-SCH-01 D1): `at` the instant, in UTC; `timeZone`
+   * the zone its person thinks in, for wording and the run's own clock.
+   */
+  | { kind: 'once'; at: string; timeZone: string }
   | { kind: 'webhook'; coalesceS: number; auth?: WebhookAuth }
   | { kind: 'connector'; connectorId: string; coalesceS: number };
 
@@ -47,7 +52,13 @@ export const NOTIFY_CHANNELS: readonly NotifyChannel[] = [
   'slack',
 ];
 
-export type EventTriggerKind = Exclude<ScheduleTrigger['kind'], 'cron'>;
+export type EventTriggerKind = Exclude<
+  ScheduleTrigger['kind'],
+  TimeTriggerKind
+>;
+
+/** The triggers a time fires: the firer's tick claims their slot by moving `nextFireAt`. */
+export type TimeTriggerKind = 'cron' | 'once';
 
 export type ScheduleStatus = 'active' | 'paused' | 'disabled';
 
@@ -70,7 +81,7 @@ export interface TriggerEvent {
  * run through the run's own tools, labelled and access-checked there.
  */
 export interface RunTriggerContext {
-  kind: 'cron' | 'manual' | EventTriggerKind;
+  kind: TimeTriggerKind | 'manual' | EventTriggerKind;
   scheduleId: string;
   firingId: string;
   slotAt: string;
@@ -118,9 +129,9 @@ export interface AgentSchedule {
   /** A firing's run deadline: an unanswered approval expires with it. */
   deadlineS: number;
   status: ScheduleStatus;
-  /** Why it is paused or disabled: a reason code, or `by_actor` / `by_admin`. */
+  /** Why it is paused or disabled: a reason code, `by_actor` / `by_admin`, or `ran_once`. */
   statusReason: string | null;
-  /** The next cron slot not yet fired; null for event triggers and while disabled. */
+  /** The next cron or one-time slot not yet fired; null for event triggers and while disabled. */
   nextFireAt: number | null;
   /** SHA-256 of a webhook trigger's secret; the secret itself is shown once. */
   webhookTokenHash: string | null;
@@ -133,11 +144,20 @@ export interface AgentSchedule {
   overlap?: OverlapPolicy;
   /** Absent: `DEFAULT_NOTIFY`. */
   notify?: NotifyChannel[];
+  /** Made in a chat on its person's approval (ADR-SCH-01 D3); absent: made on the Schedules page or the API. */
+  origin?: ScheduleOrigin;
   createdAt: number;
   updatedAt: number;
 }
 
-export type FiringKind = 'cron' | 'manual' | 'event';
+/** The chat turn and the approved call a schedule was made from. */
+export interface ScheduleOrigin {
+  conversationId: string;
+  runId: string;
+  interactionId: string;
+}
+
+export type FiringKind = 'cron' | 'once' | 'manual' | 'event';
 export type FiringStatus = 'pending' | 'admitted' | 'refused' | 'skipped';
 
 export interface ScheduleFiring {
@@ -205,6 +225,15 @@ export const DEFAULT_COALESCE_S = 300;
 export const MIN_COALESCE_S = 60;
 export const MAX_COALESCE_S = 24 * 60 * 60;
 export const MAX_SCHEDULE_QUERY_CHARS = 10_000;
+/** A one-time schedule is made at least this far ahead of its time, and at most `MAX_ONCE_LEAD_MS`. */
+export const MIN_ONCE_LEAD_MS = 60_000;
+export const MAX_ONCE_LEAD_MS = 366 * 24 * 60 * 60 * 1000;
+/** A one-time slot missed while PipesHub was down still fires this late (a joke 20 minutes late is still the joke). */
+export const MAX_ONCE_LATENESS_MS = 24 * 60 * 60 * 1000;
+/** A one-time schedule's status reason once its slot is claimed: it never fires again. */
+export const RAN_ONCE = 'ran_once';
+/** A one-time slot later than `MAX_ONCE_LATENESS_MS`: skipped, and its person told. */
+export const ONCE_TOO_LATE = 'once_too_late';
 /** The actor credential minted at a firing only asks the agent authority, once. */
 export const ACTOR_CREDENTIAL_TTL = '5m';
 export const MAX_DUE_PER_TICK = 50;
@@ -306,6 +335,44 @@ export function assertCron(cron: string, timeZone: string, now: number): void {
       throw invalid('cron', 'A schedule may fire at most every five minutes');
     }
   }
+}
+
+// ISO 8601 with an explicit offset: an instant, never a wall time whose zone is guessed.
+const INSTANT =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * A one-time schedule's instant (ADR-SCH-01 D1), as epoch ms: an ISO 8601
+ * time with an offset, at least `MIN_ONCE_LEAD_MS` and at most
+ * `MAX_ONCE_LEAD_MS` after `now`, in a known zone. `approvedLate`: one a
+ * person approved in chat, whose time may have come while the card waited;
+ * up to `MAX_ONCE_LATENESS_MS` past it is still the run they asked for.
+ */
+export function assertOnce(
+  at: string,
+  timeZone: string,
+  now: number,
+  approvedLate = false,
+): number {
+  assertTimeZone(timeZone);
+  const instant = INSTANT.test(at) ? Date.parse(at) : Number.NaN;
+  if (!Number.isFinite(instant)) {
+    throw invalid(
+      'at',
+      'A one-time schedule needs an ISO 8601 time with its offset',
+    );
+  }
+  if (
+    approvedLate
+      ? instant < now - MAX_ONCE_LATENESS_MS
+      : instant < now + MIN_ONCE_LEAD_MS
+  ) {
+    throw invalid('at', 'A one-time schedule must be at least a minute ahead');
+  }
+  if (instant > now + MAX_ONCE_LEAD_MS) {
+    throw invalid('at', 'A one-time schedule can be at most a year ahead');
+  }
+  return instant;
 }
 
 export type CronDecision =
@@ -424,6 +491,31 @@ export function decideCron(
   };
 }
 
+/**
+ * What a tick does with a one-time schedule whose slot is `nextFireAt`: fire
+ * it when due and at most `MAX_ONCE_LATENESS_MS` late, else skip it. Either
+ * way the cursor goes to null: its one slot is claimed.
+ */
+export function decideOnce(nextFireAt: number, now: number): CronDecision {
+  if (now < nextFireAt) return { kind: 'wait' };
+  const late = now - nextFireAt > MISFIRE_GRACE_MS;
+  return {
+    kind: now - nextFireAt > MAX_ONCE_LATENESS_MS ? 'skip' : 'fire',
+    slotAt: nextFireAt,
+    nextFireAt: null,
+    missed: 0,
+    late,
+  };
+}
+
+/** Whether a schedule is a one-time one whose slot was claimed: resume and run now refuse it. */
+export const ranOnce = (
+  schedule: Pick<AgentSchedule, 'trigger' | 'status' | 'statusReason'>,
+): boolean =>
+  schedule.trigger.kind === 'once' &&
+  schedule.status === 'disabled' &&
+  schedule.statusReason === RAN_ONCE;
+
 /** The window an event falls in: every event of one window is one firing. */
 export function coalescedSlot(at: number, coalesceS: number): number {
   const windowMs = coalesceS * 1000;
@@ -432,6 +524,8 @@ export function coalescedSlot(at: number, coalesceS: number): number {
 
 export const cronSlotKey = (slotAt: number): string =>
   `c:${new Date(slotAt).toISOString()}`;
+export const onceSlotKey = (slotAt: number): string =>
+  `o:${new Date(slotAt).toISOString()}`;
 export const eventSlotKey = (slotAt: number): string =>
   `e:${new Date(slotAt).toISOString()}`;
 export const manualSlotKey = (key: string): string => `manual:${key}`;
@@ -469,7 +563,7 @@ export function firingInput(
 ): RunInputSnapshot | null {
   if (schedule.input === null) return null;
   const timeZone =
-    schedule.trigger.kind === 'cron'
+    schedule.trigger.kind === 'cron' || schedule.trigger.kind === 'once'
       ? schedule.trigger.timeZone
       : schedule.input.timezone;
   return {
@@ -498,8 +592,9 @@ export function triggerContext(
     slotAt: iso(firing.slotAt),
   };
   const trigger = schedule.trigger;
-  if (firing.kind !== 'event' || trigger.kind === 'cron') {
-    return { kind: firing.kind === 'manual' ? 'manual' : 'cron', ...base };
+  if (firing.kind !== 'event') return { kind: firing.kind, ...base };
+  if (trigger.kind === 'cron' || trigger.kind === 'once') {
+    return { kind: 'cron', ...base };
   }
   const window = {
     start: iso(firing.slotAt),

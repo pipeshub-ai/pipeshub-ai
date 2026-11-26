@@ -42,6 +42,9 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
     const org = [...this.schedules.values()].filter(
       (s) => s.orgId === schedule.orgId,
     );
+    if (this.schedules.has(schedule.id)) {
+      throw new Error('A schedule with this id exists');
+    }
     if (
       org.length >= limits.perOrg ||
       org.filter((s) => s.actorId === schedule.actorId).length >=
@@ -148,7 +151,7 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
       .filter(
         (s) =>
           s.status === 'active' &&
-          s.trigger.kind === 'cron' &&
+          (s.trigger.kind === 'cron' || s.trigger.kind === 'once') &&
           s.nextFireAt !== null &&
           s.nextFireAt <= now,
       )
@@ -161,6 +164,7 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
     firing: ScheduleFiring,
     expectedNextFireAt: number,
     nextFireAt: number | null,
+    disable?: string,
   ): Promise<ScheduleFiring | null> {
     const schedule = this.schedules.get(firing.scheduleId);
     if (
@@ -174,6 +178,9 @@ export class InMemoryScheduleStore implements ScheduleStore, ScheduleEraser {
     this.schedules.set(schedule.id, {
       ...schedule,
       nextFireAt,
+      ...(disable !== undefined
+        ? { status: 'disabled' as const, statusReason: disable }
+        : {}),
       updatedAt: firing.createdAt,
     });
     this.insert(firing);

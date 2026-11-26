@@ -9,6 +9,7 @@ import type {
   NotifyChannel,
   OverlapPolicy,
   RunTriggerContext,
+  ScheduleOrigin,
   ScheduleStatus,
   ScheduleTrigger,
 } from '../../../../modules/agent-harness/domain/schedules';
@@ -34,6 +35,7 @@ export interface ScheduleDocument {
   webhookSigningKey?: SealedContent | string | null;
   overlap?: OverlapPolicy;
   notify?: NotifyChannel[];
+  origin?: ScheduleOrigin;
   createdAt: number;
   updatedAt: number;
 }

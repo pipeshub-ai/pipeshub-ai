@@ -107,6 +107,36 @@ export function describeScheduleStoreContract(
       expect(await f.store.firings(ORG, schedule.id, 10)).to.have.length(1);
     });
 
+    it('SCH-01: a one-time slot is due, claimed once, and its claim disables the schedule in the same write', async () => {
+      const at = T0 + 30 * 60_000;
+      const schedule = await f.store.create(
+        aSchedule({ trigger: { kind: 'once', at: new Date(at).toISOString(), timeZone: 'UTC' }, nextFireAt: at }),
+        LIMITS,
+      );
+      expect((await f.store.dueCron(at, 10)).map((s) => s.id)).to.deep.equal([schedule.id]);
+      const firing = aFiring(schedule, { kind: 'once', slotKey: `o:${new Date(at).toISOString()}`, slotAt: at });
+      expect(await f.store.claimCronSlot(firing, at, null, 'ran_once')).to.deep.equal(firing);
+      expect(await f.store.get(ORG, schedule.id)).to.deep.include({
+        status: 'disabled',
+        statusReason: 'ran_once',
+        nextFireAt: null,
+      });
+      expect(await f.store.dueCron(at + 60_000, 10)).to.deep.equal([]);
+      const second = aFiring(schedule, { kind: 'once', slotKey: firing.slotKey, slotAt: at });
+      expect(await f.store.claimCronSlot(second, at, null, 'ran_once')).to.equal(null);
+      expect((await f.store.firings(ORG, schedule.id, 10)).map((x) => x.kind)).to.deep.equal(['once']);
+    });
+
+    it('SCH-01: a schedule keeps its chat origin; a second create under its id makes nothing', async () => {
+      const origin = { conversationId: 'ses-1', runId: 'run-1', interactionId: 'ix.approve.k1' };
+      const schedule = await f.store.create(aSchedule({ id: 'sch_chat_1', origin }), LIMITS);
+      expect((await f.store.get(ORG, schedule.id))?.origin).to.deep.equal(origin);
+      const again = await f.store.create(aSchedule({ id: 'sch_chat_1', origin, name: 'twice' }), LIMITS).catch((e: unknown) => e);
+      expect(again).to.be.instanceOf(Error);
+      expect(await f.store.list(ORG, {}, 10)).to.have.length(1);
+      expect((await f.store.get(ORG, schedule.id))?.name).to.equal(schedule.name);
+    });
+
     it('ST-2: a paused schedule is not due and cannot be claimed', async () => {
       const schedule = await f.store.create(aSchedule(), LIMITS);
       const slot = schedule.nextFireAt as number;

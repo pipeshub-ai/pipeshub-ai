@@ -5,7 +5,9 @@ import {
   type AgentSchedule,
   coalescedSlot,
   cronSlotKey,
+  type CronDecision,
   decideCron,
+  decideOnce,
   eventSlotKey,
   FIRING_LEASE_MS,
   FIRING_MAX_ATTEMPTS,
@@ -19,6 +21,9 @@ import {
   MAX_DUE_PER_TICK,
   MAX_WATCHED_PER_TICK,
   type NotifyChannel,
+  ONCE_TOO_LATE,
+  onceSlotKey,
+  RAN_ONCE,
   OVERLAP_RECHECK_MS,
   firedScheduleOf,
   parseScheduleIdempotencyKey,
@@ -219,28 +224,42 @@ export class ScheduleFirer {
     return fired;
   }
 
-  /** One due schedule's slot, as the schedule's org: claimed and fired, or skipped; true when it fired. */
+  /**
+   * One due schedule's slot, as the schedule's org: claimed and fired, or skipped; true when it fired. A one-time
+   * schedule's claim also disables it (`ran_once`), in the same store write, so no firer fires it again.
+   */
   private async fireSlot(
     schedule: AgentSchedule,
     now: number,
   ): Promise<boolean> {
-    if (schedule.trigger.kind !== 'cron' || schedule.nextFireAt === null) {
+    const trigger = schedule.trigger;
+    if (schedule.nextFireAt === null) return false;
+    let decision: CronDecision;
+    if (trigger.kind === 'cron') {
+      decision = decideCron(trigger, schedule.nextFireAt, now);
+    } else if (trigger.kind === 'once') {
+      decision = decideOnce(schedule.nextFireAt, now);
+    } else {
       return false;
     }
-    const decision = decideCron(schedule.trigger, schedule.nextFireAt, now);
     if (decision.kind === 'wait') return false;
+    const once = trigger.kind === 'once';
+    const skipReason = once ? ONCE_TOO_LATE : 'catch_up_skip';
     const firing = this.newFiring(schedule, {
-      kind: 'cron',
-      slotKey: cronSlotKey(decision.slotAt),
+      kind: once ? 'once' : 'cron',
+      slotKey: once
+        ? onceSlotKey(decision.slotAt)
+        : cronSlotKey(decision.slotAt),
       slotAt: decision.slotAt,
       now,
       missed: decision.missed,
-      skipped: decision.kind === 'skip',
+      skipped: decision.kind === 'skip' ? skipReason : null,
     });
     const claimed = await this.store.claimCronSlot(
       firing,
       schedule.nextFireAt,
       decision.nextFireAt,
+      once ? RAN_ONCE : undefined,
     );
     if (claimed === null) return false;
     if (decision.kind === 'skip') {
@@ -249,9 +268,11 @@ export class ScheduleFirer {
         harnessLogMeta('schedule.slot_skipped', {
           ...this.fields(claimed),
           missed: decision.missed + 1,
-          reason: 'catch_up_skip',
+          reason: skipReason,
         }),
       );
+      // Nothing will ever run of it: its person hears so, as of a refused firing.
+      if (once) await this.tellRefused(claimed, skipReason, now);
       return false;
     }
     await this.fire(claimed, schedule);
@@ -271,7 +292,7 @@ export class ScheduleFirer {
         slotAt: now,
         now,
         missed: 0,
-        skipped: false,
+        skipped: null,
       }),
     );
     if (created) await this.fire(firing, schedule);
@@ -297,6 +318,7 @@ export class ScheduleFirer {
       if (
         schedule.status !== 'active' ||
         trigger.kind === 'cron' ||
+        trigger.kind === 'once' ||
         trigger.kind !== event.kind
       ) {
         continue;
@@ -309,7 +331,7 @@ export class ScheduleFirer {
           slotAt,
           now: await this.store.now(),
           missed: 0,
-          skipped: false,
+          skipped: null,
         }),
         event: firingEvent(event),
       });
@@ -625,7 +647,8 @@ export class ScheduleFirer {
       slotAt: number;
       now: number;
       missed: number;
-      skipped: boolean;
+      /** Why the slot is skipped as it is claimed; null: it is to fire. */
+      skipped: string | null;
     },
   ): ScheduleFiring {
     return {
@@ -636,15 +659,15 @@ export class ScheduleFirer {
       slotKey: slot.slotKey,
       slotAt: slot.slotAt,
       kind: slot.kind,
-      status: slot.skipped ? 'skipped' : 'pending',
+      status: slot.skipped !== null ? 'skipped' : 'pending',
       runId: null,
       sessionId: null,
-      reason: slot.skipped ? 'catch_up_skip' : null,
+      reason: slot.skipped,
       missed: slot.missed,
-      attempts: slot.skipped ? 0 : 1,
+      attempts: slot.skipped !== null ? 0 : 1,
       leaseUntil: slot.now + FIRING_LEASE_MS,
       createdAt: slot.now,
-      settledAt: slot.skipped ? slot.now : null,
+      settledAt: slot.skipped !== null ? slot.now : null,
       watchUntil: null,
       notifiedAt: null,
     };
@@ -719,14 +742,20 @@ export class ScheduleFirer {
       known ?? (await this.store.get(firing.orgId, firing.scheduleId));
     if (schedule === null) return 'schedule_deleted';
     if (schedule.actorId !== firing.actorId) return 'actor_changed';
-    if (schedule.status === 'disabled') return 'schedule_disabled';
+    // A one-time schedule is disabled by the claim of its slot; that slot's retries still run it.
+    const claimedOnce =
+      firing.kind === 'once' && schedule.statusReason === RAN_ONCE;
+    if (schedule.status === 'disabled' && !claimedOnce) {
+      return 'schedule_disabled';
+    }
     if (schedule.status === 'paused' && firing.kind !== 'manual') {
       return 'schedule_paused';
     }
     if (!(await this.enabled(schedule.orgId))) return 'scheduled_runs_disabled';
     if (schedule.input === null) return 'template_missing';
-    // A person's run now is theirs to start; the policy is for what fires by itself.
-    if (firing.kind !== 'manual') {
+    // A person's run now is theirs to start, and a one-time slot has no other run to overlap; the policy is for
+    // what fires repeatedly by itself.
+    if (firing.kind !== 'manual' && firing.kind !== 'once') {
       const waiting = await this.overlap(schedule, firing);
       if (waiting !== null) return waiting;
     }

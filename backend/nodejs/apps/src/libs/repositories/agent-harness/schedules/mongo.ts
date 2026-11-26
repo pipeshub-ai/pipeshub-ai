@@ -290,6 +290,7 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
     firing: ScheduleFiring,
     expectedNextFireAt: number,
     nextFireAt: number | null,
+    disable?: string,
   ): Promise<ScheduleFiring | null> {
     try {
       return await inMongoTransaction(async (session) => {
@@ -300,7 +301,15 @@ export class MongoScheduleStore implements ScheduleStore, ScheduleEraser {
             status: 'active',
             nextFireAt: expectedNextFireAt,
           },
-          { $set: { nextFireAt, updatedAt: firing.createdAt } },
+          {
+            $set: {
+              nextFireAt,
+              ...(disable !== undefined
+                ? { status: 'disabled', statusReason: disable }
+                : {}),
+              updatedAt: firing.createdAt,
+            },
+          },
           { session },
         );
         if (moved.modifiedCount !== 1) return null;
