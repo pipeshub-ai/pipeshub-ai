@@ -29,12 +29,26 @@ check "the incremental schedule" "$(metric 'pipeshub_pg_backup_schedule_seconds{
 check "no attempt yet: no attempt series" "$(metric pipeshub_pg_backup_last_attempt_success)" ""
 check "no dropped WAL" "$(metric pipeshub_pg_backup_wal_gap_segments)" 0
 
+# pgBackRest can print a warning on stdout before the JSON, whatever the log levels (an invalid PGBACKREST_* variable does, live
+# with 2.60.0): the JSON document from its first line is still read
+rm -f "$work/state/info.json"
+{ echo "P00   WARN: environment contains invalid option 'bogus-option'"; cat "$here/tests/fixtures/pgbackrest-info.json"; } > "$work/warn.json"
+write "$work/warn.json" 2>"$work/err"
+check "a WARN line before the JSON: repository up" "$(metric pipeshub_pg_backup_repository_up)" 1
+check "a WARN line before the JSON: the newest full is read" "$(ts 1 full)" 1794103200
+
 # unreadable: an empty read (pgbackrest info failed), invalid JSON, a stanza in error; the last readable times stay
 for bad in "" "not json" '[{"name":"pipeshub","status":{"code":1,"message":"missing stanza path"},"backup":[]}]'; do
   printf '%s' "$bad" > "$work/new.json"; write "$work/new.json"
   check "unreadable (${bad:0:12}...): repository down" "$(metric pipeshub_pg_backup_repository_up)" 0
   check "unreadable (${bad:0:12}...): the last readable full time stays" "$(ts 1 full)" 1794103200
 done
+printf 'not json' > "$work/new.json"; write "$work/new.json" 2>"$work/err"
+check "text without JSON is logged as no JSON" "$(grep -c 'repository unreadable: pgbackrest info printed no JSON' "$work/err")" 1
+printf '[{"name":' > "$work/new.json"; write "$work/new.json" 2>"$work/err"
+check "broken JSON is logged as not JSON" "$(grep -c 'repository unreadable: not JSON' "$work/err")" 1
+printf '[{"name":"pipeshub","status":{"code":1,"message":"missing stanza path"},"backup":[]}]' > "$work/new.json"; write "$work/new.json" 2>"$work/err"
+check "a stanza in error is logged with its status" "$(grep -c 'repository unreadable: stanza pipeshub: status 1 (missing stanza path)' "$work/err")" 1
 rm -f "$work/state/info.json"; printf '' > "$work/new.json"; write "$work/new.json"
 check "never readable: down, and no backup series" "$(metric pipeshub_pg_backup_repository_up):$(grep -c last_success_timestamp_seconds\{ "$work/m.prom" || true)" "0:0"
 printf '[{"name":"pipeshub","status":{"code":2,"message":"no valid backups"},"backup":[]}]' > "$work/new.json"; write "$work/new.json"

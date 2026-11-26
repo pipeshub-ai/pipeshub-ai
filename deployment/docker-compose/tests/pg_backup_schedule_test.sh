@@ -58,6 +58,11 @@ check "full 1 day, newest backup 7 hours old: an incremental one" \
   "$(decide "[{\"status\":{\"code\":0},\"backup\":[$(backup full 86400),$(backup incr 25200)]}]")" "backup --type=incr --no-expire-auto"
 check "full 1 day, newest backup 1 hour old: waits, a minute at a time" "$(decide "$recent")" "sleep 60"
 check "unreadable repository: no backup, waits to retry" "$(decide 'not json')" "sleep 300"
+# pgBackRest can print a warning on stdout before the JSON (an invalid PGBACKREST_* variable does, whatever the log levels)
+warn_first="P00   WARN: environment contains invalid option 'bogus-option'
+$recent"
+check "a WARN line before the JSON: read as the repository it describes (waits, nothing due)" "$(decide "$warn_first")" "sleep 60"
+check "and the warning still reaches the log" "$(grep -c "pgbackrest info: P00   WARN: environment contains invalid option" "$work/out")" 1
 rm -f "$work/ok"; decide "$recent" >/dev/null 2>&1
 check "restarted with backups inside both intervals: healthy without a new backup" "$([ -e "$work/ok" ] && echo healthy || echo unhealthy)" healthy
 rm -f "$work/ok"; decide 'not json' >/dev/null 2>&1
@@ -67,6 +72,8 @@ check "restarted with an unreadable repository: not healthy" "$([ -e "$work/ok" 
 metric() { grep -E "^$1( |\{)" "$work/metrics.prom" | sed -E 's/.* //'; }
 rm -rf "$work/state"; decide "$recent" >/dev/null 2>&1
 check "metrics: the repository is up" "$(metric pipeshub_pg_backup_repository_up)" 1
+decide "$warn_first" >/dev/null 2>&1
+check "metrics: a WARN line before the JSON keeps the repository up" "$(metric pipeshub_pg_backup_repository_up)" 1
 check "metrics: the newest full backup's stop time" "$(metric 'pipeshub_pg_backup_last_success_timestamp_seconds\{stanza="",repo="",type="full"\}')" $((now - 86400))
 decide 'not json' >/dev/null 2>&1
 check "metrics: an unreadable repository is down" "$(metric pipeshub_pg_backup_repository_up)" 0

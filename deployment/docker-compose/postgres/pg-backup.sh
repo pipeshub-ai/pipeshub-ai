@@ -53,6 +53,15 @@ if [ "${1:-}" = clear-gap-hold ]; then
   exit 0
 fi
 
+# `pgbackrest info` as JSON on stdout. pgBackRest logs to stdout at the console level ("Specifies which log levels will output to stderr
+# rather than stdout", https://pgbackrest.org/configuration.html, log-level-stderr), and 2.60.0 prints some warnings there whatever the
+# levels (an invalid PGBACKREST_* variable), so the document starts at its first line opening with [ or {; the lines before it go to the
+# log. A failed command or no JSON prints nothing, which every reader below treats as an unreadable repository, never as no backups.
+info_json() {
+  pgbackrest --log-level-console=warn --output=json info \
+    | awk 'doc || /^[[{]/ { doc = 1; print; next } { print "pg-backup: pgbackrest info: " $0 > "/dev/stderr" }'
+}
+
 # Records the hold of the current gap (named by its first dropped segment) unless it exists: the newest backup that stopped before the
 # first drop was noticed (one that stopped later needed WAL past the gap, archive-check), or "none". Fails when the repository cannot be
 # read, so the hold stays pending and the drops stay.
@@ -63,7 +72,7 @@ record_hold() {
   t="$(stat -c %Y "$gaps/$first")" || return 1
   # a stanza whose status is not ok (0) or "no valid backups" (2) is not read: its backup list can be empty while backups exist (as
   # with the archive unreachable), which would record "none" for good
-  label="$(pgbackrest --log-level-console=warn --output=json info | perl -MJSON::PP -e '
+  label="$(info_json | perl -MJSON::PP -e '
     my ($t) = @ARGV; my $l = "none";
     for my $s (@{ decode_json(join "", <STDIN>) }) {
       my $c = $s->{status}{code} // 99; exit 1 unless $c == 0 || $c == 2;
@@ -113,7 +122,7 @@ serve_metrics() {   # (re)started when it is not running, so a crashed server co
 
 # "<seconds since newest full> <seconds since newest backup>" from the repository; a missing backup counts as infinitely old.
 ages() {
-  pgbackrest --log-level-console=warn --output=json info > "$state/info.new" || : > "$state/info.new"
+  info_json > "$state/info.new" || : > "$state/info.new"
   refresh_metrics
   perl -MJSON::PP -e '
     my $now = time; my ($full, $any) = (0, 0);

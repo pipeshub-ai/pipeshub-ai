@@ -22,13 +22,24 @@ else { die "usage: $0 write <info> <state dir> <gap dir> <full s> <incr s> <metr
 
 sub slurp { my ($f) = @_; open(my $h, '<', $f) or return ''; local $/; my $t = <$h>; close $h; return $t // '' }
 
-# The stanzas when every one is readable (status 0 or 2), else undef.
+# (the stanzas, undef) when every one is readable (status 0 or 2), else (undef, why not). Lines before the first one opening with [ or {
+# are skipped: pgBackRest can print a warning on stdout ahead of the JSON (see info_json in pg-backup.sh).
 sub stanzas {
     my ($text) = @_;
+    my @lines = split /^/m, $text;
+    shift @lines while @lines && $lines[0] !~ /^[\[{]/;
+    return (undef, 'pgbackrest info printed no JSON (it failed or the repository is unreachable)') unless @lines;
+    $text = join '', @lines;
     my $doc = eval { decode_json($text) };
-    return undef unless ref $doc eq 'ARRAY';
-    for my $s (@$doc) { my $c = $s->{status}{code} // 99; return undef unless $c == 0 || $c == 2 }
-    return $doc;
+    unless (ref $doc eq 'ARRAY') {
+        my $err = $@ ? (split /\n/, $@)[0] : 'not a list of stanzas';
+        return (undef, "not JSON: $err");
+    }
+    for my $s (@$doc) {
+        my $c = $s->{status}{code} // 99;
+        return (undef, sprintf('stanza %s: status %s (%s)', $s->{name} // '?', $c, $s->{status}{message} // '')) unless $c == 0 || $c == 2;
+    }
+    return ($doc, undef);
 }
 
 sub esc { my ($v) = @_; $v =~ s/(["\\])/\\$1/g; $v =~ s/\n/\\n/g; return $v }
@@ -37,14 +48,16 @@ sub write_metrics {
     my ($new, $state, $gaps, $full_s, $incr_s, $out) = @_;
     die "write: six arguments\n" unless defined $out;
     my $up = 0;
-    my $doc = stanzas(slurp($new));
+    my ($doc, $why) = stanzas(slurp($new));
     if ($doc) {
         $up = 1;
         open(my $h, '>', "$state/info.json.tmp") or die "cannot write $state/info.json.tmp: $!\n";
         print $h slurp($new); close $h or die "cannot write $state/info.json.tmp: $!\n";
         rename "$state/info.json.tmp", "$state/info.json" or die "cannot replace $state/info.json: $!\n";
     } else {
-        $doc = stanzas(slurp("$state/info.json")) // [];
+        print STDERR "pg-backup-metrics: repository unreadable: $why; exporting the last readable backup times\n";
+        ($doc) = stanzas(slurp("$state/info.json"));
+        $doc //= [];
     }
     my (%stop, %took);
     for my $s (@$doc) {
