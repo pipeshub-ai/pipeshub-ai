@@ -184,10 +184,14 @@ export function findVerifyCalls(source: string): VerifyCall[] {
       } else if (callee && isMember(callee)) {
         const pkg = verifyMemberOf(callee);
         if (pkg) report(node, keyOf(node, pkg, false));
-        // jwt.verify.call(null, t, k) / .apply(null, [t, k])
+        // jwt.verify.call(null, t, k) / verify.call(null, t, k) / .apply(null, [t, k])
         const m = memberName(callee);
         const inner = unwrap(callee.expression);
-        const innerPkg = inner && verifyMemberOf(inner);
+        const innerPkg =
+          inner &&
+          (ts.isIdentifier(inner)
+            ? verifiers.get(inner.text)
+            : verifyMemberOf(inner));
         if ((m === 'call' || m === 'apply') && innerPkg) {
           report(node, m === 'call' ? keyOf(node, innerPkg, true) : '(apply)');
         }

@@ -195,6 +195,22 @@ describe('contract: no jsonwebtoken verify outside the allowlist', function () {
         expect(findVerifyCalls(source).map((c) => c.key)).to.deep.equal(['k']);
       }
     });
+    it('reports .call on an imported verify function in a file that may name the library', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jwt-scan-'));
+      try {
+        fs.writeFileSync(
+          path.join(dir, 'auth.middleware.ts'),
+          "import { verify } from 'jsonwebtoken';\nexport const f = (t: string, k: string) => verify.call(null, t, k);",
+        );
+        expect(
+          unlistedVerifyCalls(dir, dir, {}).concat(
+            unlistedLibraryMentions(dir, dir, ['auth.middleware.ts'], {}),
+          ),
+        ).to.deep.equal(['auth.middleware.ts:2 verifies with k']);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
     it('ignores decode, sign and a verify of something else', () => {
       expect(
         findVerifyCalls(
