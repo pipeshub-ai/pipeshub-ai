@@ -74,6 +74,7 @@ from app.modules.agents.service.models import (
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils import error_class
+from app.utils.logging_fields import log_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -156,23 +157,18 @@ class AgentService:
     ) -> CreatedAgent:
         spec = await self._access.enforce_create(actor, spec, origin)
         created = await self._create_once(actor, spec)
-        self._audit_create(created.agent_key, actor, origin, provenance)
+        self._audit_create(created.agent_key, origin, provenance)
         return created
 
     def _audit_create(
-        self, agent_key: str, actor: AgentActor, origin: AgentOrigin, provenance: ChatProvenance | None,
+        self, agent_key: str, origin: AgentOrigin, provenance: ChatProvenance | None,
     ) -> None:
-        """Ids only: no name, prompt or handle ever goes in the log."""
-        self._logger.info(
-            "agent.audit %s",
-            json.dumps({
-                "action": "create",
-                "agentKey": agent_key,
-                "actor": actor.user_id,
-                "orgId": actor.org_id,
-                "createdVia": origin,
-                "sourceConversationId": provenance.conversation_id if provenance else None,
-            }),
+        """Ids only, and all of them fields: no name, prompt or handle ever goes in the log. Who created the agent,
+        and in which org, are the line's own `user_id` and `org_id`: the request's identity."""
+        log_event(
+            self._logger, "agent.audit",
+            action="create", agent_id=agent_key, created_via=origin,
+            source_conversation_id=provenance.conversation_id if provenance else None,
         )
 
     async def _create_once(

@@ -1,6 +1,5 @@
 """Least privilege at create time and the audit line."""
 
-import json
 import logging
 from typing import Any
 
@@ -16,6 +15,7 @@ from app.modules.agents.service.models import (
     ChatProvenance,
 )
 from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+from app.utils.logger import log_record_fields
 from tests.support.agent_routes import (
     AGENTS,
     FakeConfigService,
@@ -208,7 +208,8 @@ class TestAudit:
     @pytest.mark.asyncio
     async def test_ui_create_is_audited_without_provenance(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level(logging.INFO, logger="test.access"):
-            await _service(AccessGraph()).create(ALICE, AgentSpec(name="Plain"))
+            created = await _service(AccessGraph()).create(ALICE, AgentSpec(name="Plain"))
 
-        audit = json.loads(next(r.getMessage() for r in caplog.records if r.getMessage().startswith("agent.audit")).split(" ", 1)[1])
-        assert (audit["createdVia"], audit["sourceConversationId"]) == ("ui", None)
+        # The ids are fields; the message is the event's name alone.
+        audit = log_record_fields(next(r for r in caplog.records if r.getMessage() == "agent.audit"))
+        assert audit == {"action": "create", "agent_id": created.agent_key, "created_via": "ui"}

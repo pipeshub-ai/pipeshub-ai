@@ -646,7 +646,9 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   create answers `partial_success`), `cleanup` (`collection`, `nodes`; tidy-up after a failed save), `rollback`, `enrich_models`,
   `size_knowledge_limit`, `remove_mcp_credentials`, `cancel_refresh`. `agent.skill.skipped` (INFO, `reason` unknown, not_owned or
   inactive, `skill`) is a skill a save named but could not link; `agent.model.unknown` (DEBUG, `model_key`) and
-  `agent.model.default_effort_ignored` (INFO, `model_key`, `error_type`) are read-time notes. A graph provider that answers an
+  `agent.model.default_effort_ignored` (INFO, `model_key`, `error_type`) are read-time notes. `agent.audit` (INFO, `action=create`,
+  `agent_id`, `created_via` `ui` or `chat`, and for an agent drafted from a chat `source_conversation_id`) records a created agent;
+  who created it, and in which org, are the line's `user_id` and `org_id`, and no name, prompt or handle is logged. A graph provider that answers an
   outage with None or `[]` still reads as "not found" or an empty list there.
 
 - Every tool call has exactly one `tool_call.end` at INFO or above, whatever the exit: run, raised, denied, blocked, malformed,
