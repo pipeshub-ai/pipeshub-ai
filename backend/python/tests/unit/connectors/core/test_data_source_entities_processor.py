@@ -51,6 +51,7 @@ from app.models.entities import (
     PullRequestRecord,
     Record,
     RecordGroup,
+    RecordGroupType,
     RecordType,
     RelatedExternalRecord,
     SQLTableRecord,
@@ -2539,7 +2540,7 @@ class TestHandleRecordGroupKeptForTheTrash:
         proc, tx_store = _make_processor(), _make_tx_store()
         tx_store.get_record_group_by_external_id.return_value = self._found(kept=True)
         tx_store.take_back_kept_record_group = AsyncMock(return_value=False)
-        record = _make_record(external_record_group_id="ext-g")
+        record = _make_record(external_record_group_id="ext-g", record_group_type=RecordGroupType.DRIVE)
 
         group_id = await proc._handle_record_group(record, tx_store)
 

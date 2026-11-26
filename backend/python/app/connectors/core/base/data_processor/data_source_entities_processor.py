@@ -1661,6 +1661,16 @@ class DataSourceEntitiesProcessor:
             record_group = None
 
         if record_group is None:
+            if record.record_group_type is None:
+                # A group needs a type to be stored, and the record does not say
+                # which. The record goes in without a group; its next write links
+                # it once the connector has synced the group. Until then it holds
+                # none of the group's access, which hides rather than exposes it.
+                self.logger.warning(
+                    "Record %s is not placed in group %s: its group is not stored and the record has no record_group_type",
+                    record.external_record_id, record.external_record_group_id,
+                )
+                return None
             # Create a new record group
             record_group = RecordGroup(
                 external_group_id=record.external_record_group_id,
