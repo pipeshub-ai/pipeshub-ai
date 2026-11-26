@@ -6979,18 +6979,22 @@ components:
           items:
             type: string
             format: uri
-            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1)(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
+            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|(?!(?:[Jj][Aa][Vv][Aa][Ss][Cc][Rr][Ii][Pp][Tt]|[Dd][Aa][Tt][Aa]|[Ff][Ii][Ll][Ee]|[Vv][Bb][Ss][Cc][Rr][Ii][Pp][Tt]|[Bb][Ll][Oo][Bb]|[Aa][Bb][Oo][Uu][Tt]|[Ff][Ii][Ll][Ee][Ss][Yy][Ss][Tt][Ee][Mm]|[Ff][Tt][Pp]|[Ww][Ss][Ss]?)://)[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1|\[::1\])(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
           description: |
             Allowed redirect URIs (max 10). Required when an effective grant list includes `authorization_code`
             (including the default when `allowedGrantTypes` is omitted).
             Each URI must parse as a URL (`VALIDATION_ERROR` otherwise), and the service then refuses with
-            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost` or
-            `127.0.0.1` (any scheme is let through on those two hosts), or that carries a fragment.
+            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost`,
+            `127.0.0.1` or `[::1]`, or that carries a fragment. On those loopback hosts `http:` and an app's own
+            scheme are accepted, but never `javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
+            `filesystem:`, `ftp:`, `ws:` or `wss:`.
             The one exception is the literal `cursor://anysphere.cursor-mcp/oauth/callback`.
             Both checks use WHATWG `new URL()`, so the scheme and a `localhost` host match in any case,
             `https:` may be followed by any number of `/` or `\` (or none), and surrounding whitespace is
             allowed and trimmed before the URI is stored; the URI is otherwise stored as sent. `https://`
-            with no host does not parse. The pattern approximates these rules.
+            with no host does not parse. The pattern approximates these rules. It does not see a tab or
+            newline inside the scheme, which `new URL()` removes (`java<TAB>script://localhost/x` matches
+            the pattern and is still refused by the service).
           maxItems: 10
           example: ["https://myapp.com/callback", "http://localhost:3000/callback"]
         allowedGrantTypes:
@@ -7074,18 +7078,27 @@ components:
           items:
             type: string
             format: uri
-            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1)(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
+            pattern: '^(?:cursor://anysphere\.cursor-mcp/oauth/callback|[\x00-\x20]*(?:[Hh][Tt][Tt][Pp][Ss]:[/\\]*[^/\\?#\x00-\x20][^#]*#?|(?!(?:[Jj][Aa][Vv][Aa][Ss][Cc][Rr][Ii][Pp][Tt]|[Dd][Aa][Tt][Aa]|[Ff][Ii][Ll][Ee]|[Vv][Bb][Ss][Cc][Rr][Ii][Pp][Tt]|[Bb][Ll][Oo][Bb]|[Aa][Bb][Oo][Uu][Tt]|[Ff][Ii][Ll][Ee][Ss][Yy][Ss][Tt][Ee][Mm]|[Ff][Tt][Pp]|[Ww][Ss][Ss]?)://)[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.0\.0\.1|\[::1\])(?::[0-9]*)?(?:[/?][^#]*)?#?)[\x00-\x20]*)$'
           description: |
             Allowed redirect URIs (up to 10). Required when `authorization_code` grant type is enabled.
             Preserved in the database even if `authorization_code` is removed from grant types.
             Each URI must parse as a URL (`VALIDATION_ERROR` otherwise), and the service then refuses with
-            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost` or
-            `127.0.0.1` (any scheme is let through on those two hosts), or that carries a fragment.
+            `400 OAUTH_INVALID_REDIRECT_URI` any URI that is not `https:` and whose host is not `localhost`,
+            `127.0.0.1` or `[::1]`, or that carries a fragment. On those loopback hosts `http:` and an app's own
+            scheme are accepted, but never `javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
+            `filesystem:`, `ftp:`, `ws:` or `wss:`.
             The one exception is the literal `cursor://anysphere.cursor-mcp/oauth/callback`.
+            A URI the app already has stored is kept on update even when these rules would refuse it as new
+            (for example an `http:` URI on a non-loopback host registered earlier), unless its scheme is one
+            that can run script (`javascript:`, `data:`, `file:`, `vbscript:`, `blob:`, `about:`,
+            `filesystem:`) or it does not parse. The authorize endpoint also refuses a `redirect_uri` with such
+            a scheme, or one that does not parse, even when it is stored (`redirect_uri scheme is not allowed`).
             Both checks use WHATWG `new URL()`, so the scheme and a `localhost` host match in any case,
             `https:` may be followed by any number of `/` or `\` (or none), and surrounding whitespace is
             allowed and trimmed before the URI is stored; the URI is otherwise stored as sent. `https://`
-            with no host does not parse. The pattern approximates these rules.
+            with no host does not parse. The pattern approximates these rules. It does not see a tab or
+            newline inside the scheme, which `new URL()` removes (`java<TAB>script://localhost/x` matches
+            the pattern and is still refused by the service).
           maxItems: 10
         allowedGrantTypes:
           type: array
