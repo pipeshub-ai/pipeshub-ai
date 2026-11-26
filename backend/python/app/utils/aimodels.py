@@ -716,6 +716,11 @@ _SERVER_KEY_HOSTS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Providers built on the OpenAI SDK with a fixed base URL of their own: a blank key makes
+# the SDK send OPENAI_API_KEY to that host, which never owns it.
+_FIXED_FOREIGN_HOST_PROVIDERS = frozenset({"openRouter", "minimax"})
+
+
 def _server_key_would_leave(provider: str, configuration: Mapping[str, Any]) -> bool:
     """True when a blank key would send this server's key to a host that is not the provider's own.
 
@@ -724,6 +729,8 @@ def _server_key_would_leave(provider: str, configuration: Mapping[str, Any]) -> 
     regional hosts) is its own; the trailing-dot form counts, and an endpoint that does
     not parse does not.
     """
+    if provider in _FIXED_FOREIGN_HOST_PROVIDERS:
+        return True
     hosts = _SERVER_KEY_HOSTS.get(provider)
     endpoint = str(configuration.get("endpoint") or "").strip()
     if hosts is None or not endpoint:
