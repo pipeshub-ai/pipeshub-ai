@@ -303,6 +303,8 @@ PYTHON_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
         "connectors/api/user_access_router.py::list_connected_users", refusal_status=404, refusal_words="not found"),
     _py("DELETE", "/api/v1/connectors/:connectorId/user-access/users/:userId",
         "connectors/api/user_access_router.py::remove_connected_user", refusal_status=404, refusal_words="not found"),
+    # Lists every skill of the org (metadata only); an admin's request only reads.
+    _py("GET", "/api/v1/skills/admin/skills", "api/routes/skills.py::list_org_skills"),
 )
 
 # The admin body for rows marked ``admin="admin_body"``: past the admin check,

@@ -35,6 +35,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support.bound_org import bound_like_auth
 from tests.support.skill_stores import skill_store
 
 if TYPE_CHECKING:
@@ -102,7 +103,8 @@ def _app(provider, orgs: dict[str, str], node_up: bool = True) -> FastAPI:
         tok = request.headers.get("authorization", "").removeprefix("Bearer ")
         uid, org = TOKENS[tok]
         request.state.user = {"userId": uid, "orgId": orgs[org], "email": f"{uid}@example.com"}
-        return await call_next(request)
+        with bound_like_auth(request.state.user):
+            return await call_next(request)
 
     app.include_router(skills_routes.router, prefix="/api/v1/skills")
     return app
