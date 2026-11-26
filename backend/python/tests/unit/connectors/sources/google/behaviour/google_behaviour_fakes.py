@@ -447,6 +447,19 @@ class FakeEntitiesProcessor:
             return None
         return group
 
+    async def get_users_on_record_group(self, record_group_id: str) -> set[str]:
+        return {
+            p.email.lower() for external_id, group in self.record_groups.items() if group.id == record_group_id
+            for p in self.record_group_permissions.get(external_id, []) if p.email
+        }
+
+    async def get_record_groups_of_type(self, connector_id: str, group_type: object) -> list[dict]:
+        return [
+            {"externalGroupId": external_id, "groupName": group.name, "description": group.description}
+            for external_id, group in self.record_groups.items()
+            if getattr(group, "connector_id", None) in (None, connector_id) and group.group_type == group_type
+        ]
+
     async def on_record_group_deleted(
         self, external_group_id: str, connector_id: str, *, trash_live_records: bool = False
     ) -> bool:

@@ -222,6 +222,8 @@ FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup"
 SYNCED_SHARED_DRIVES_SYNC_POINT_KEY = "synced_shared_drives"
 # Shared drives users reach that the admin listing lacks (another organization's), with the users who reach them.
 FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY = "foreign_shared_drives"
+# Tells a foreign drive's group from an own drive's in the graph: an own drive that was deleted answers 404 too.
+FOREIGN_SHARED_DRIVE_DESCRIPTION = "Shared Drive of another organization"
 FOREIGN_LIMITED_SUBTREES_SYNC_POINT_KEY = "foreign_limited_subtrees"
 FOREIGN_DRIVE_PAGE_SIZE = 500
 DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX = "shared_drive_restrictions_"
@@ -7309,8 +7311,14 @@ class GoogleDriveTeamConnector(BaseConnector):
             users = {(u.email or "").lower(): u for u in self.synced_users if u.is_active and u.email}
             left: set[tuple[str, str]] = set()
             for drive_id, folder_id in sorted(pending):
-                members = set((drives.get(drive_id) or {}).get("members") or [])
                 try:
+                    if drive_id not in drives:
+                        # No membership stored (the admin's drives.get gave no answer): unknown, not empty. One the
+                        # admin does see is no foreign drive, and the admin path writes its grants.
+                        if drive_id not in self._listed_shared_drive_ids and await self._admin_sees_drive(drive_id) is not True:
+                            left.add((drive_id, folder_id))
+                        continue
+                    members = set(drives[drive_id].get("members") or [])
                     if not await self._check_limited_subtree(folder_id, members, users):
                         left.add((drive_id, folder_id))
                 except Exception as e:
@@ -7391,8 +7399,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         async with self._foreign_drives_lock:
             stored = await self.drive_delta_sync_point.read_sync_point(FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY) or {}
             # Kept as one JSON string: a sync point on Neo4j cannot hold a nested map.
-            raw = stored.get("drives") or "{}"
-            known = json.loads(raw) if isinstance(raw, str) else {}
+            raw = stored.get("drives")
+            # Nothing stored: the first run that stores memberships, or the first since a full sync deleted the
+            # connector's sync points. Who was a member, and who may have left since, is taken from the graph.
+            known = json.loads(raw) if isinstance(raw, str) else await self._foreign_drives_in_graph()
             drives = {
                 drive_id: {
                     "name": entry.get("name") or drive_id,
@@ -7401,6 +7411,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                     "leavers": list(entry.get("leavers") or []),
                     # How far each leaver's cleanup got, when it failed partway.
                     **({"cursors": dict(entry["cursors"])} if entry.get("cursors") else {}),
+                    # Taken from the graph, with the holders of grants on its files still to compare (the prune).
+                    **({"unchecked": True} if entry.get("unchecked") else {}),
                 }
                 for drive_id, entry in known.items()
                 # A drive the admin listing now has is synced, and its grants written, by the admin path.
@@ -7418,12 +7430,15 @@ class GoogleDriveTeamConnector(BaseConnector):
                     dropped.add(drive_id)
                 elif seen_by_admin is None:
                     unknown.add(drive_id)
+            for drive_id, name in reached.items():
+                if drive_id not in drives:
+                    drives[drive_id] = await self._foreign_drive_in_graph(drive_id, name)
             before = {drive_id: set(entry["members"]) for drive_id, entry in drives.items()}
             # A drive is written once a run, as the admin path writes every listed drive, so a full sync in progress
             # sees its group and grants; after that only when its membership changes.
             to_write = (set(reached) | set(drives)) - self._foreign_drives_written - unknown
             for drive_id, name in reached.items():
-                entry = drives.setdefault(drive_id, {"name": name, "members": [], "leavers": []})
+                entry = drives[drive_id]
                 # Back in the drive: a later leave starts its cleanup from the first page, not where an earlier one
                 # stopped, since their syncs since may have written grants before it.
                 if email in entry.get("cursors", {}):
@@ -7454,11 +7469,26 @@ class GoogleDriveTeamConnector(BaseConnector):
             # The membership meant for each drive, a leaver's revocation included, is stored before any group write:
             # a write that fails is retried by the next run's write, and no later rewrite can start from a membership
             # that still holds someone revoked.
+            if email is None and active is not None:
+                # Every user's pass is done, so the members are known: anyone else who holds a grant on the files of a
+                # drive taken from the graph is checked as a leaver is. Google decides what each of them keeps.
+                for drive_id, entry in drives.items():
+                    if drive_id in unknown or not entry.get("unchecked"):
+                        continue
+                    try:
+                        holders = await self._foreign_drive_grant_holders(drive_id)
+                    except Exception as e:
+                        self._sync_ledger.note_incomplete()
+                        self.logger.error(f"Foreign shared drive {drive_id}: grant holders not read: {e}", exc_info=True)
+                        continue
+                    entry.pop("unchecked")
+                    synced_or_inactive = {h for h in holders if h in active or self._is_inactive_email(h)}
+                    entry["leavers"] = sorted((set(entry["leavers"]) | synced_or_inactive) - set(entry["members"]))
             for drive_id in to_write:
                 entry = drives[drive_id]
                 gone = before.get(drive_id, set()) - set(entry["members"])
                 entry["leavers"] = sorted((set(entry["leavers"]) | gone) - set(entry["members"]))
-            await self._save_foreign_drives(known, drives, dropped, unknown)
+            await self._save_foreign_drives(raw, known, drives, dropped, unknown)
             for drive_id in sorted(to_write):
                 entry = drives[drive_id]
                 try:
@@ -7498,16 +7528,60 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if not entry.get("cursors"):
                     entry.pop("cursors", None)
             if changed:
-                await self._save_foreign_drives(known, drives, dropped, unknown)
+                await self._save_foreign_drives(raw, known, drives, dropped, unknown)
 
-    async def _save_foreign_drives(self, known: dict, drives: dict, dropped: set[str], unknown: set[str]) -> None:
+    async def _foreign_drive_in_graph(self, drive_id: str, name: str) -> dict:
+        """What the graph says of a drive whose membership is not stored: the users its group grants. A drive not in
+        the graph yet has nobody, and no grants to check."""
+        group = await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, drive_id)
+        if group is None or not getattr(group, "id", None):
+            return {"name": name, "members": [], "leavers": []}
+        members = await self.data_entities_processor.get_users_on_record_group(group.id)
+        return {"name": name, "members": sorted(members), "leavers": [], "unchecked": True}
+
+    async def _foreign_drives_in_graph(self) -> dict[str, dict]:
+        """The drives written as another organization's that the admin listing does not have, as the graph has them."""
+        groups = await self.data_entities_processor.get_record_groups_of_type(self.connector_id, RecordGroupType.DRIVE)
+        found = {
+            g["externalGroupId"]: g.get("groupName") or g["externalGroupId"] for g in groups
+            if g.get("externalGroupId") and g.get("description") == FOREIGN_SHARED_DRIVE_DESCRIPTION
+            and g["externalGroupId"] not in self._listed_shared_drive_ids
+        }
+        return {drive_id: await self._foreign_drive_in_graph(drive_id, name) for drive_id, name in found.items()}
+
+    async def _foreign_drive_grant_holders(self, drive_id: str) -> set[str]:
+        """Everyone who holds a grant of their own on a file of the drive."""
+        processor = self.data_entities_processor
+        group = await processor.get_record_group_by_external_id(self.connector_id, drive_id)
+        if group is None or not getattr(group, "id", None):
+            return set()
+        holders: set[str] = set()
+        after_key: str | None = None
+        while True:
+            page = await processor.get_records_by_status(
+                self.connector_id, None, limit=FOREIGN_DRIVE_PAGE_SIZE, record_group_id=group.id, after_key=after_key,
+                visibility=RecordVisibility.ALL,
+            )
+            if not isinstance(page, list):
+                raise RuntimeError(f"The records of shared drive {drive_id} could not be listed")
+            for record in page:
+                holders.update((await processor.get_roles_on_record(record.id))[0])
+            if len(page) < FOREIGN_DRIVE_PAGE_SIZE:
+                return holders
+            after_key = getattr(page[-1], "id", None)
+            if not after_key:
+                raise RuntimeError(f"The records of shared drive {drive_id} could not be paged")
+
+    async def _save_foreign_drives(
+        self, raw: str | None, known: dict, drives: dict, dropped: set[str], unknown: set[str]
+    ) -> None:
         """Store the foreign drives' memberships: each drive as meant now, one whose standing is unknown as stored."""
         saved = {
             drive_id: {k: v for k, v in entry.items() if k != "leavers" or v}
             for drive_id, entry in {**known, **{d: e for d, e in drives.items() if d not in unknown}}.items()
             if drive_id not in self._listed_shared_drive_ids and drive_id not in dropped
         }
-        if saved != known:
+        if saved != known or not isinstance(raw, str):
             await self.drive_delta_sync_point.update_sync_point(
                 FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY, {"drives": json.dumps(saved, sort_keys=True)}
             )
@@ -7585,7 +7659,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             name=entry["name"],
             org_id=self.data_entities_processor.org_id,
             external_group_id=drive_id,
-            description="Shared Drive",
+            description=FOREIGN_SHARED_DRIVE_DESCRIPTION,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
             group_type=RecordGroupType.DRIVE,

@@ -586,6 +586,10 @@ class DriveWorld:
             return m.group(1) in (state.meta.get("parents") or [])
         raise AssertionError(f"DriveWorld does not understand query term {atom!r}")
 
+    def _listed_to(self, file_id: str, email: str) -> bool:
+        """Whether a listing shows the item to the caller at all, for a world that models more than membership."""
+        return True
+
     def _files_list(self, req: ApiRequest) -> object:
         if invalid := _invalid_field_selection(req, "files"):
             return invalid
@@ -600,7 +604,7 @@ class DriveWorld:
         roots = {u.root_id for u in self.users.values()} | set(self.drives)
         matches = []
         for file_id, state in self.files.items():
-            if state.deleted or file_id in roots:
+            if state.deleted or file_id in roots or not self._listed_to(file_id, email):
                 continue
             item_drive = state.meta.get("driveId")
             if drive_id:

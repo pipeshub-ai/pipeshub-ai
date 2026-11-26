@@ -79,6 +79,7 @@ from app.models.entities import (
     PullRequestRecord,
     Record,
     RecordGroup,
+    RecordGroupType,
     RecordType,
     RelatedExternalRecord,
     SQLTableRecord,
@@ -6522,6 +6523,24 @@ class DataSourceEntitiesProcessor:
                 f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.BELONGS_TO.value, raise_on_error=True
             )
         return any(record_group_id_from_edge(edge) == record_group_id for edge in edges or [])
+
+    async def get_users_on_record_group(self, record_group_id: str) -> set[str]:
+        """The lowercased email of each user the record group grants directly. A failed read raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            users = await tx_store.get_users_with_permission_to_node(
+                record_group_id, CollectionNames.RECORD_GROUPS.value, raise_on_error=True
+            )
+        return {u.email.lower() for u in users if u.email}
+
+    async def get_record_groups_of_type(self, connector_id: str, group_type: RecordGroupType) -> list[dict]:
+        """The connector's record groups of a type, as externalGroupId, groupName and description. A failed read
+        raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_nodes_by_filters(
+                CollectionNames.RECORD_GROUPS.value,
+                {"connectorId": connector_id, "groupType": group_type.value},
+                ["externalGroupId", "groupName", "description"], raise_on_error=True,
+            ) or []
 
     async def get_record_group_by_external_id(
         self, connector_id: str, external_id: str

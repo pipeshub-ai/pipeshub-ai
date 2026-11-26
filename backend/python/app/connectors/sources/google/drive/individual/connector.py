@@ -135,6 +135,7 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     FolderFailureRuns,
     SharedFolderWalkHolds,
     build_tracked_folder_ids,
+    drive_error_reasons,
     fetch_ancestor_metadata,
     fetch_folder_children,
     has_entered_scope,
@@ -646,7 +647,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
             except Exception as e:
                 if not sharing_optional:
                     raise
-                self.logger.info(f"Sharing of file {file_id} not read ({type(e).__name__}); its stored shares are kept")
+                detail = type(e).__name__
+                if isinstance(e, HttpError):
+                    detail = f"HTTP {e.resp.status} {', '.join(sorted(drive_error_reasons(e)))}".rstrip()
+                self.logger.info(f"Sharing of file {file_id} not read ({detail}); its stored shares are kept")
                 file_record.shared_with = None
             set_drive_people(file_record, people)
 

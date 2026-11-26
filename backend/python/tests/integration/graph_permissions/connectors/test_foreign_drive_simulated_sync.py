@@ -5,6 +5,7 @@ After each run the check is one rule, for every user and file: PipesHub opens a 
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -19,7 +20,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from drive_world import DriveWorld, FileState
 
 from app.config.constants.arangodb import CollectionNames, Connectors
-from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+from app.connectors.core.sync.sync_runner import _unlink_what_full_sync_missed
+from app.connectors.sources.google.drive.team.connector import (
+    FOREIGN_SHARED_DRIVE_DESCRIPTION,
+    FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY,
+    GoogleDriveTeamConnector,
+)
 from app.connectors.sources.google.drive.utils.drive_full_sync_reconciler import (
     DriveSyncIncomplete,
 )
@@ -103,16 +109,11 @@ class FaithfulWorld(DriveWorld):
                     change.update(removed=True, driveId=asked)
         return out
 
+    def _listed_to(self, file_id: str, email: str) -> bool:
+        return self.can_open(file_id, email) or self._cut_out(file_id, email)
+
     def _files_list(self, req: object) -> object:
-        email = self._caller(req)
-        kept = self.files
-        self.files = {
-            f: s for f, s in kept.items() if f in self.drives or self.can_open(f, email) or self._cut_out(f, email)
-        }
-        try:
-            return self._shown(super()._files_list, req)
-        finally:
-            self.files = kept
+        return self._shown(super()._files_list, req)
 
     def limit(self, folder_id: str, *, limited: bool = True) -> None:
         self._mutate(folder_id, lambda: self.files[folder_id].meta.update(inheritedPermissionsDisabled=limited))
@@ -175,10 +176,23 @@ class Sim:
         except DriveSyncIncomplete:
             self.incomplete = True
 
-    async def full_resync(self) -> None:
-        for email in self.world.users:
-            await self.connector.drive_delta_sync_point.delete_sync_point(f"users/{self.world.users[email].user_id}")
-        await self.sync()
+    async def close(self) -> None:
+        if self.connector is not None:
+            await self.connector.cleanup()
+
+    async def full_resync(self, *, unlink: bool = True) -> None:
+        """A full sync as the sync runner does it: every sync point of the connector goes first, and what the run
+        did not write loses its links after it (not when the run skipped part of the source: ``unlink``)."""
+        _, deleted = await self.provider.delete_sync_points_by_connector_id(connector_id=self.connector_id)
+        assert deleted
+        seen = self.processor.begin_full_sync_run(self.connector_id)
+        try:
+            await self.sync()
+            if unlink:
+                await _unlink_what_full_sync_missed(
+                    self.connector, self.connector_id, self.provider, logging.getLogger("drive-sim"), seen)
+        finally:
+            self.processor.end_full_sync_run(self.connector_id, seen)
 
     async def record(self, file_id: str) -> object:
         return await self.processor.get_record_by_external_id(
@@ -217,15 +231,6 @@ async def sim(
     if not os.environ.get("SECRET_KEY"):
         monkeypatch.setenv("SECRET_KEY", "simulated")
     org = uuid.uuid4().hex[:24]
-    db = None
-    if request.param == "postgres":
-        from app.core.db import DbConfig, KernelDB
-        from app.services.graph_db.postgres.provider import PostgresGraphProvider
-        db = KernelDB(DbConfig.from_env("connectors"))
-        await db.start()
-        provider = OrgBound(PostgresGraphProvider(logging.getLogger("pg-graph"), db), org)
-    else:
-        provider = arango_provider if request.param == "arango" else neo4j_provider
     real_sleep = asyncio.sleep
 
     async def no_wait(_delay: float, *_a: object, **_k: object) -> None:
@@ -235,14 +240,21 @@ async def sim(
     http.install(monkeypatch)
     monkeypatch.setattr(asyncio, "sleep", no_wait)
     monkeypatch.setattr(googleapiclient.http, "time", type("T", (), {"sleep": staticmethod(lambda _s: None)}))
-    world = Sim(provider, org, http)
-    with bind(OrgContext(org, None, "job", "job:test", "t")):
-        await world.seed()
-        yield world
-        if world.connector is not None:
-            await world.connector.cleanup()
-    if db is not None:
-        await db.close()
+    async with contextlib.AsyncExitStack() as stack:
+        if request.param == "postgres":
+            from app.core.db import DbConfig, KernelDB
+            from app.services.graph_db.postgres.provider import PostgresGraphProvider
+            db = KernelDB(DbConfig.from_env("connectors"))
+            stack.push_async_callback(db.close)
+            await db.start()
+            provider = OrgBound(PostgresGraphProvider(logging.getLogger("pg-graph"), db), org)
+        else:
+            provider = arango_provider if request.param == "arango" else neo4j_provider
+        world = Sim(provider, org, http)
+        with bind(OrgContext(org, None, "job", "job:test", "t")):
+            stack.push_async_callback(world.close)
+            await world.seed()
+            yield world
 
 
 def foreign(sim: Sim, members: dict[str, str], files: int = 1) -> None:
@@ -436,3 +448,169 @@ async def test_new_files_after_the_first_run(sim: Sim) -> None:
     sim.world.trash("f0")
     await sim.sync()
     assert await sim.wrong(["in", "dir"]) == []
+
+
+@pytest.mark.parametrize("roles", [{ALICE: "reader", BOB: "reader"}, {ALICE: "writer", BOB: "reader"}], ids=["viewers", "writer"])
+async def test_a_member_who_leaves_before_a_full_resync_is_cut_out_by_it(sim: Sim, roles: dict) -> None:
+    foreign(sim, roles, files=2)
+    await sim.sync()
+    del sim.world.drives[FOREIGN]["members"][BOB]
+    await sim.full_resync()
+    assert await sim.wrong() == []
+    await sim.sync()
+    assert await sim.wrong() == []
+
+
+async def test_the_last_member_leaves_before_a_full_resync(sim: Sim) -> None:
+    foreign(sim, {ALICE: "reader"}, files=2)
+    sim.world.add_item("mine", "mine.txt", parent=sim.world.users[BOB].root_id, owner=BOB)
+    await sim.sync()
+    sim.world.drives[FOREIGN]["members"].clear()
+    await sim.full_resync()
+    assert await sim.wrong() == []
+    await sim.sync()
+    assert await sim.wrong() == []
+
+
+@pytest.mark.parametrize("roles", [{ALICE: "reader", BOB: "reader"}, {ALICE: "writer", BOB: "reader"}], ids=["viewers", "writer"])
+async def test_a_full_resync_of_an_unchanged_drive(sim: Sim, roles: dict) -> None:
+    foreign(sim, roles, files=2)
+    sim.world.folder("dir", "dir", parent=FOREIGN)
+    sim.world.add_item("in", "in.txt", parent="dir")
+    await sim.sync()
+    await sim.full_resync()
+    assert await sim.wrong() == []
+
+
+@pytest.mark.parametrize("roles", [{ALICE: "reader", BOB: "reader"}, {ALICE: "writer", BOB: "reader"}], ids=["viewers", "writer"])
+async def test_a_folder_limited_before_a_full_resync_cuts_members_out(sim: Sim, roles: dict) -> None:
+    foreign(sim, roles)
+    sim.world.folder("dir", "dir", parent=FOREIGN)
+    sim.world.add_item("in", "in.txt", parent="dir")
+    await sim.sync()
+    sim.world.limit("dir")
+    await sim.full_resync()
+    assert await sim.wrong() == []
+    await sim.sync()
+    assert await sim.wrong() == []
+
+
+async def test_a_leaver_whose_cleanup_failed_is_cut_out_after_a_full_resync(sim: Sim) -> None:
+    foreign(sim, {ALICE: "reader", BOB: "reader"}, files=2)
+    await sim.sync()
+    del sim.world.drives[FOREIGN]["members"][BOB]
+    real = sim.processor.delete_permission_from_record
+
+    async def fails(*_a: object, **_k: object) -> None:
+        raise RuntimeError("the graph did not answer")
+
+    sim.processor.delete_permission_from_record = fails
+    await sim.sync()
+    assert sim.incomplete
+    sim.processor.delete_permission_from_record = real
+    await sim.full_resync()
+    assert await sim.wrong() == []
+
+
+async def test_the_last_member_leaves_before_a_full_resync_that_unlinks_nothing(sim: Sim) -> None:
+    """A full sync that skipped part of the source removes no links of its own."""
+    foreign(sim, {ALICE: "reader"}, files=2)
+    sim.world.add_item("mine", "mine.txt", parent=sim.world.users[BOB].root_id, owner=BOB)
+    await sim.sync()
+    sim.world.drives[FOREIGN]["members"].clear()
+    await sim.full_resync(unlink=False)
+    assert await sim.wrong() == []
+
+
+@pytest.mark.parametrize("roles", [{ALICE: "reader", BOB: "reader"}, {ALICE: "writer", BOB: "reader"}], ids=["viewers", "writer"])
+async def test_members_keep_access_while_their_pass_fails_in_a_full_resync(
+    sim: Sim, roles: dict, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    foreign(sim, roles, files=2)
+    await sim.sync()
+    real = GoogleDriveTeamConnector._reconcile_foreign_drives
+
+    async def fails_for_bob(self: GoogleDriveTeamConnector, email: str | None, *args: object) -> None:
+        if email == BOB:
+            raise RuntimeError("Google did not answer")
+        await real(self, email, *args)
+
+    monkeypatch.setattr(GoogleDriveTeamConnector, "_reconcile_foreign_drives", fails_for_bob)
+    await sim.full_resync()
+    assert sim.incomplete and await sim.wrong() == []
+    group = await sim.processor.get_record_group_by_external_id(sim.connector_id, FOREIGN)
+    assert BOB in await sim.processor.get_users_on_record_group(group.id)
+
+
+@pytest.mark.parametrize("description", [FOREIGN_SHARED_DRIVE_DESCRIPTION, ""], ids=["written", "stub"])
+async def test_someone_who_left_before_their_membership_was_ever_stored(sim: Sim, description: str) -> None:
+    """What an upgrade finds: grants written by an earlier version, and no record of who held a membership."""
+    foreign(sim, {ALICE: "reader", BOB: "reader"}, files=2)
+    sim.world.add_item("shared", "shared.txt", parent=FOREIGN)
+    sim.world.share("shared", {"type": "user", "role": "reader", "emailAddress": BOB})
+    await sim.sync()
+    del sim.world.drives[FOREIGN]["members"][BOB]
+    await sim.connector.drive_delta_sync_point.delete_sync_point(FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY)
+    # An earlier version stored only a stub of the drive, as its files named it.
+    group = await sim.processor.get_record_group_by_external_id(sim.connector_id, FOREIGN)
+    await sim.provider.update_node(group.id, CollectionNames.RECORD_GROUPS.value, {"description": description})
+    await sim.sync()
+    assert await sim.wrong() == []
+    assert await sim.opens(BOB, "shared")
+
+
+async def test_a_limited_folder_whose_check_failed_is_checked_after_a_full_resync(
+    sim: Sim, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    foreign(sim, {ALICE: "reader", BOB: "reader"})
+    sim.world.folder("dir", "dir", parent=FOREIGN)
+    sim.world.add_item("in", "in.txt", parent="dir")
+    await sim.sync()
+    sim.world.limit("dir")
+    with monkeypatch.context() as m:
+        async def fails(*_a: object, **_k: object) -> bool:
+            raise RuntimeError("the graph did not answer")
+        m.setattr(GoogleDriveTeamConnector, "_check_limited_subtree", fails)
+        await sim.sync()
+    await sim.full_resync()
+    assert await sim.wrong() == []
+
+
+async def test_a_folder_limited_while_the_drives_standing_is_unknown(sim: Sim, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The admin's drives.get gives no answer, so no membership is stored yet: the check waits for one."""
+    foreign(sim, {ALICE: "reader", BOB: "reader"})
+    sim.world.folder("dir", "dir", parent=FOREIGN)
+    sim.world.add_item("in", "in.txt", parent="dir")
+    with monkeypatch.context() as m:
+        async def unknown(*_a: object) -> None:
+            return None
+        m.setattr(GoogleDriveTeamConnector, "_shared_drive_exists", unknown)
+        await sim.sync()
+        sim.world.limit("dir")
+        await sim.sync()
+    await sim.sync()
+    assert await sim.wrong() == []
+
+
+async def test_the_simulated_drive_hides_a_parent_the_reader_cannot_open_everywhere(sim: Sim) -> None:
+    foreign(sim, {ALICE: "reader", BOB: "reader"})
+    sim.world.folder("limited", "limited", parent=FOREIGN)
+    sim.world.folder("inner", "inner", parent="limited")
+    sim.world.add_item("child", "child.txt", parent="inner", perms=[{"type": "user", "role": "reader", "emailAddress": ALICE}])
+    sim.world.limit("limited")
+    await sim.sync()
+    await sim.sync()
+    user = next(u for u in sim.connector.synced_users if u.email == ALICE)
+    source = await sim.connector._build_user_drive_data_source(user)
+    listed, token = {}, None
+    while True:
+        page = await source.files_list(
+            driveId=FOREIGN, corpora="drive", supportsAllDrives=True, includeItemsFromAllDrives=True,
+            q="trashed = false", fields="nextPageToken, files(id, parents)", **({"pageToken": token} if token else {}))
+        listed.update({f["id"]: f.get("parents") for f in page["files"]})
+        if not (token := page.get("nextPageToken")):
+            break
+    got = await source.files_get(fileId="child", supportsAllDrives=True, fields="id, parents")
+    assert "child" in listed and not listed["child"] and "inner" not in listed
+    assert not got.get("parents")
+    assert await sim.wrong() == []

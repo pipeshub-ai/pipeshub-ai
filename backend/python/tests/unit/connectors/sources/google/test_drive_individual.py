@@ -933,7 +933,7 @@ class TestPersonalSharedDriveItemSharedWith:
         assert "LAST_MODIFIED_BY" in result.record.people_unknown
 
     async def test_on_a_reindex_a_failed_sharing_read_leaves_the_shares_unknown_and_keeps_the_item(
-        self, connector
+        self, connector, caplog
     ) -> None:
         """Sharing is optional to a reindex: a changed revision must still be written."""
         from googleapiclient.errors import HttpError
@@ -948,6 +948,9 @@ class TestPersonalSharedDriveItemSharedWith:
 
         assert result is not None and result.record.shared_with is None
         connector._sync_ledger.fail_item.assert_not_called()
+        logged = " ".join(str(c.args[0]) for c in connector.logger.info.call_args_list) if isinstance(
+            connector.logger, MagicMock) else caplog.text
+        assert "HTTP 503" in logged and "busy" not in logged
 
     async def test_a_reindex_reads_items_with_sharing_optional(self, connector) -> None:
         connector._get_fresh_datasource = AsyncMock()
