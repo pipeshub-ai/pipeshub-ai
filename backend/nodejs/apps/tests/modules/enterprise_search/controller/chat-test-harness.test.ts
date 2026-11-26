@@ -4,7 +4,7 @@ import sinon from 'sinon'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { Types } from 'mongoose'
-import { InMemoryChatStore, matchesFilter, oid } from './chat-test-harness'
+import { InMemoryChatStore, matchesFilter, oid, plain } from './chat-test-harness'
 
 describe('chat test harness: the in-memory store only keeps what was really saved', () => {
   afterEach(() => {
@@ -35,6 +35,47 @@ describe('chat test harness: the in-memory store only keeps what was really save
 
     expect(await valid.save()).to.equal(valid)
     expect(store.sessions).to.deep.equal([valid])
+  })
+
+  it('with copies, a conversation that saves is stored as written, not as the caller’s document', async () => {
+    const store = new InMemoryChatStore({ copies: true })
+    store.install()
+    const valid = new ChatSession({ orgId: oid(), userId: oid(), initiator: oid(), title: 'owned' })
+
+    expect(await valid.save()).to.equal(valid)
+    expect(store.sessions.map(plain)).to.deep.equal([plain(valid)])
+    expect(store.sessions[0]).to.not.equal(valid)
+  })
+
+  it('with copies, a read hands back a copy: a change reaches the store only when it is written, and then once', async () => {
+    const store = new InMemoryChatStore({ copies: true })
+    store.install()
+    const stored = store.addSession({ orgId: oid(), userId: oid(), initiator: oid(), title: 'kept' })
+
+    const read = await ChatSession.findById(stored._id)
+    expect(read).to.not.equal(stored)
+    read!.title = 'renamed'
+    read!.conversationErrors.push({ message: 'failed once', errorType: 'internal_error' })
+    expect(store.session(stored._id)?.title, 'an unsaved change').to.equal('kept')
+    expect(store.session(stored._id)?.conversationErrors).to.have.length(0)
+
+    await read!.save()
+    const after = store.session(stored._id)
+    expect(after?.title).to.equal('renamed')
+    expect(after?.conversationErrors.map((e) => e.message), 'the save’s $push lands once').to.deep.equal(['failed once'])
+  })
+
+  it('with copies, what a new conversation’s creator changes after its save reaches the store only by a write', async () => {
+    const store = new InMemoryChatStore({ copies: true })
+    store.install()
+    const created = new ChatSession({ orgId: oid(), userId: oid(), initiator: oid(), title: 'first' })
+    await created.save()
+
+    created.status = 'Failed'
+    expect(store.session(created._id)?.status).to.not.equal('Failed')
+
+    await ChatSession.updateOne({ _id: created._id }, { $set: { status: 'Failed' } })
+    expect(store.session(created._id)?.status).to.equal('Failed')
   })
 
   describe('query operators follow the MongoDB manual', () => {

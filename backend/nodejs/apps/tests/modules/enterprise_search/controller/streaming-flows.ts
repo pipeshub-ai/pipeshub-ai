@@ -157,7 +157,8 @@ export async function startStream(
   before?: (ai: FakeAIBackend) => void,
   options: { wait?: boolean } = {},
 ): Promise<Run> {
-  const store = new InMemoryChatStore()
+  // A run holds its own copy of the conversation, as it does against MongoDB.
+  const store = new InMemoryChatStore({ copies: true })
   const ai = new FakeAIBackend()
   store.install()
   ai.install()

@@ -396,7 +396,11 @@ const bindSession = <D extends StoredDoc>(doc: D, state: QueryState): D => {
   return doc
 }
 
-export const shape = (docs: StoredDoc[], state: QueryState): unknown[] => {
+/** Mongoose hydrates a new document for every read: what a caller changes on one reaches the store only by a write. */
+const copyOf = <D extends StoredDoc>(doc: D): D =>
+  (doc.constructor as unknown as { hydrate(o: unknown): D }).hydrate(doc.toObject())
+
+export const shape = (docs: StoredDoc[], state: QueryState, copies = false): unknown[] => {
   let rows = [...docs]
   const sortEntries = Object.entries(state.sort ?? {})
   if (sortEntries.length > 0) {
@@ -421,7 +425,7 @@ export const shape = (docs: StoredDoc[], state: QueryState): unknown[] => {
   }
   if (state.skip) rows = rows.slice(state.skip)
   if (state.limit) rows = rows.slice(0, state.limit)
-  if (!state.lean) return rows.map((row) => bindSession(row, state))
+  if (!state.lean) return rows.map((row) => bindSession(copies ? copyOf(row) : row, state))
   return rows.map((row) => {
     const object = row.toObject() as Doc
     for (const field of state.exclude ?? []) delete object[field]
@@ -657,8 +661,19 @@ const applyUpdate = (doc: SessionDoc | MessageDoc, update: Doc | Doc[], ctx: Upd
   })
 }
 
+export interface StoreOptions {
+  /**
+   * Every read hands back a new document and a save stores what it wrote, as MongoDB does: a caller's unsaved change to
+   * what it read never reaches the store. Off, a read hands back the stored row itself, which a double that writes by
+   * changing what it read relies on.
+   */
+  copies?: boolean
+}
+
 /** Every chat session and message the controller reads or writes, held in memory. */
 export class InMemoryChatStore {
+  constructor(private readonly options: StoreOptions = {}) {}
+
   readonly sessions: SessionDoc[] = []
   readonly messages: MessageDoc[] = []
   /** Every citation the controller saved, so `populate` can resolve message citations. */
@@ -775,8 +790,10 @@ export class InMemoryChatStore {
   install(): void {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const store = this
+    const copies = this.options.copies === true
+    const handed = <D extends StoredDoc>(doc: D): D => (copies ? copyOf(doc) : doc)
     const one = (doc: StoredDoc | undefined, state: QueryState): unknown =>
-      doc === undefined ? null : state.lean ? doc.toObject() : bindSession(doc, state)
+      doc === undefined ? null : state.lean ? doc.toObject() : bindSession(handed(doc), state)
     const withSession = <T>(query: FakeQuery<T>, options: SessionOption): FakeQuery<T> =>
       options?.session != null ? query.session(options.session) : query
 
@@ -789,23 +806,41 @@ export class InMemoryChatStore {
     }
     for (const collection of [ChatSession.collection, Citation.collection]) {
       sinon.stub(collection, 'insertOne').callsFake(((_doc: unknown, options?: SessionOption) => acknowledge(options)) as never)
-      sinon.stub(collection, 'updateOne').callsFake(((_filter: unknown, _update: unknown, options?: SessionOption) =>
-        acknowledge(options)) as never)
     }
+    sinon.stub(Citation.collection, 'updateOne').callsFake(((_filter: unknown, _update: unknown, options?: SessionOption) =>
+      acknowledge(options)) as never)
+    // A stored row saving itself already holds its change; applying the save's update again would repeat a `$push`.
+    const selfSaves = new Set<SessionDoc>()
+    // `save()` on a document read from the store sends only its changes, as it does to the server.
+    sinon.stub(ChatSession.collection, 'updateOne').callsFake(((filter: Filter, update: Doc, options?: SessionOption) => {
+      assertSessionUsable(options)
+      const doc = store.findSessions(filter)[0]
+      if (doc && !selfSaves.has(doc)) applyUpdate(doc, update, { filter })
+      const matched = doc ? 1 : 0
+      return Promise.resolve({ acknowledged: true, matchedCount: matched, modifiedCount: matched })
+    }) as never)
     const realSessionSave = ChatSession.prototype.save
     sinon.stub(ChatSession.prototype, 'save').callsFake(async function (this: SessionDoc, options?: SessionOption) {
       store.writes.push('chatSession.save')
       // Checked and tracked before the first await, so two creates racing on one key cannot both pass.
       const tracked = store.sessions.includes(this)
-      if (!tracked) {
+      const inserting = !tracked && this.isNew
+      if (inserting) {
         store.assertUniqueCreationKey(this)
         store.sessions.push(this)
       }
+      if (tracked) selfSaves.add(this)
       try {
-        return await realSessionSave.call(this, options as never)
+        const saved = await realSessionSave.call(this, options as never)
+        // The store keeps what was written, not the caller's document.
+        const at = inserting && copies ? store.sessions.indexOf(this) : -1
+        if (at >= 0) store.sessions[at] = copyOf(this)
+        return saved
       } catch (error) {
-        if (!tracked) store.sessions.splice(store.sessions.indexOf(this), 1)
+        if (inserting) store.sessions.splice(store.sessions.indexOf(this), 1)
         throw error
+      } finally {
+        selfSaves.delete(this)
       }
     } as never)
     sinon.stub(ChatSession, 'deleteOne').callsFake(((filter: Filter) => {
@@ -821,7 +856,7 @@ export class InMemoryChatStore {
     sinon.stub(ChatSession, 'findById').callsFake(((id: unknown) =>
       new FakeQuery((state) => one(store.session(id), state))) as never)
     sinon.stub(ChatSession, 'find').callsFake(((filter: Filter) =>
-      new FakeQuery((state) => shape(store.findSessions(filter), state))) as never)
+      new FakeQuery((state) => shape(store.findSessions(filter), state, copies))) as never)
     sinon.stub(ChatSession, 'countDocuments').callsFake(((filter: Filter) =>
       new FakeQuery(() => store.findSessions(filter).length)) as never)
     const asUpdated = (doc: SessionDoc | MessageDoc | undefined, filter: Filter, update: Doc, options: UpdateOptions): FakeQuery<unknown> => {
@@ -878,14 +913,14 @@ export class InMemoryChatStore {
       assertSessionUsable(options)
       const inserted = docs.map((fields) => new ChatSessionMessage(fields))
       for (const doc of inserted) store.assertUniqueKeys(doc)
-      store.messages.push(...inserted)
+      store.messages.push(...inserted.map(handed))
       store.writes.push('message.insert')
       return Promise.resolve(inserted)
     }) as never)
     sinon.stub(ChatSessionMessage, 'find').callsFake(((filter: Filter, _projection?: unknown, options?: SessionOption) => {
       assertSessionUsable(options)
       return withSession(
-        new FakeQuery((state) => store.populated(shape(store.findMessages(filter), state), state)),
+        new FakeQuery((state) => store.populated(shape(store.findMessages(filter), state, copies), state)),
         options,
       )
     }) as never)
@@ -895,7 +930,7 @@ export class InMemoryChatStore {
       assertSessionUsable(options)
       // `findOne(...).sort(...)` returns the first row in that order, as MongoDB does.
       return withSession(
-        new FakeQuery((state) => shape(store.findMessages(filter), { ...state, limit: 1 })[0] ?? null),
+        new FakeQuery((state) => shape(store.findMessages(filter), { ...state, limit: 1 }, copies)[0] ?? null),
         options,
       )
     }) as never)

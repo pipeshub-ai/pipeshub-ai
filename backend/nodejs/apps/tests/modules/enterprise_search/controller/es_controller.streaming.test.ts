@@ -843,10 +843,19 @@ describe('es_controller streaming answers', () => {
   })
 
   it('addMessageStream: a stack trace saved from an earlier failed turn never reaches the browser', async () => {
-    const run = await startStream(flows[1] as Flow)
-    run.conversation().set('conversationErrors', [
-      { message: CHAT_ERROR_MESSAGES.failed, errorType: 'internal_error', stack: 'Error: boom\n    at /srv/pipeshub/secret-internal.ts:42' },
-    ])
+    const addMessage = flows[1] as Flow
+    // The earlier turn's failure is stored before this turn reads the conversation.
+    const afterFailedTurn: Flow = {
+      ...addMessage,
+      prepare: (store) => {
+        const prepared = addMessage.prepare(store)
+        prepared.existing?.set('conversationErrors', [
+          { message: CHAT_ERROR_MESSAGES.failed, errorType: 'internal_error', stack: 'Error: boom\n    at /srv/pipeshub/secret-internal.ts:42' },
+        ])
+        return prepared
+      },
+    }
+    const run = await startStream(afterFailedTurn)
 
     run.ai.send('RUN_FINISHED', finalAnswer('Fine now.'))
     run.ai.finish()
