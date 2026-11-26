@@ -217,6 +217,7 @@ async def test_a_sampled_trail_that_differs_from_the_walk_takes_the_connector_ba
     assert _names(await _trail(pg_provider, org, "b")) == ["b", "a", "f", "g1", "Drive"]     # the walk's, from now on
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_every_trail_statement_is_answered_by_index_searches(pg_provider, pg_db) -> None:
     """EXPLAIN gate: a group of 12,000 members and 12,000 other records, never analysed and then analysed: no trail statement scans a kg or graph table whole (the trail reads
     only the edges up from a node, never a group's members, and each step's document by its own key, never the organisation's nodes)."""

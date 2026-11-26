@@ -391,6 +391,7 @@ async def test_a_sampled_root_that_differs_from_the_walk_takes_the_connector_bac
         assert sorted(_ids(await pg_provider.get_kb_children(KB, 0, 50))) == ["a", "d", "e"]     # the walk's, from now on
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_root_is_answered_by_index_searches(pg_provider, pg_db) -> None:
     """EXPLAIN gate: 3,000 records of the knowledge base in 30 folders beside its root, never analysed and analysed: the candidates are read from records_pc_tops, and no
     statement of the page scans a table (each candidate, its relations, its file and each page folder's children are read by their keys)."""
@@ -581,6 +582,7 @@ async def _listing_of(p, org: str, folder: str) -> dict:
         return await p.get_folder_children(KB, folder, 0, 50)
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_folder_is_answered_by_index_searches(pg_provider, pg_db) -> None:
     """EXPLAIN gate: a folder of 3,000 children (30 subfolders) beside 3,000 records elsewhere, never analysed and analysed: its children are a range of the children index and
     its links, and every other read of the page (each page folder's children, each page row's node and file) is by key."""

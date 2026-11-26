@@ -329,6 +329,7 @@ def _nodes(plan: object) -> list[dict]:
     return found
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
 async def test_every_listing_statement_reads_the_connector_by_an_index_and_never_scans_the_organisation(pg_db, analyzed) -> None:
     p, org = prov(pg_db), new_org()
@@ -367,6 +368,7 @@ async def test_every_listing_statement_reads_the_connector_by_an_index_and_never
         await con.close()
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize("unvouched", [[], [1]], ids=["every_class_vouched", "a_class_unvouched"])
 async def test_the_rows_kg_does_not_decide_are_read_by_their_own_index_never_by_a_range_of_the_connector(pg_db, unvouched) -> None:
     """A page of a connector kg serves asks for the few rows kg does not decide. Read as a range of the connector (records_app) it read every row at 1M records to find none.
@@ -394,6 +396,7 @@ def _joined_reads(node: dict, relation: str, probe: bool = False) -> list[str]:
     return own + [x for c in node.get("Plans", []) for x in _joined_reads(c, relation, probe)]
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
 @pytest.mark.parametrize("admitted", [False, True], ids=["walked", "by_class"])
 async def test_the_indexing_status_filter_probes_each_rows_node_and_never_joins_the_organisations_nodes(pg_db, analyzed, admitted) -> None:
@@ -423,6 +426,7 @@ def _rows_read(plan: object, relation: str) -> int:
     return sum(int((n.get("Actual Rows", 0) + n.get("Rows Removed by Filter", 0)) * n.get("Actual Loops", 1)) for n in plan_gate.scans(plan, relation))
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize(("sort_dir", "direction"), [("ASC", "next"), ("ASC", "prev"), ("DESC", "next"), ("DESC", "prev")])
 async def test_a_name_ordered_window_past_a_boundary_reads_the_rows_up_to_it_not_the_connector(pg_db, sort_dir, direction) -> None:
     """A page by name past a boundary, read as the listing's reader is, under row-level security: a condition on the name prefix (substring(), not leakproof) is never an
@@ -455,6 +459,7 @@ async def test_a_name_ordered_window_past_a_boundary_reads_the_rows_up_to_it_not
     assert _rows_read(plan, "records") <= 60, f"{sort_dir} {direction}: looked at {_rows_read(plan, 'records')} rows of a 600-row connector for a window of 20: {reads}"
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_records_a_viewers_classes_admit_are_read_within_the_connector_never_the_organisation(pg_db) -> None:
     """Search's record-id path reads the records a connector kg serves admits by class, within the connector (with statistics, as kg's tables are once copied:
     kg_0016): never a read of the organisation by records_id or records_pkey."""
@@ -504,6 +509,7 @@ async def _generic_plan(con, sql: str) -> object:
     return json.loads(await con.fetchval("SELECT current_setting('kh.plan')"))
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
 async def test_the_hidden_rows_the_arrows_and_their_sample_read_by_key_and_never_walk_the_organisation(pg_db, analyzed) -> None:
     """On an organisation whose rows mostly lie elsewhere, with groups that hide their children and children that hang by links: the hidden rows, the arrows and the arrows' sample
@@ -855,6 +861,7 @@ async def _page_and_reads(p, org: str, **kw) -> tuple[dict, int]:
             await p.rollback_transaction(snap)
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_search_for_a_rare_word_reads_its_matches_not_the_connector(pg_db) -> None:
     """A connector of 20,300 rows (300 records and 20,000 rows of other names that sort before them) and a search whose one match sorts last: the page walked the
     connector's name index from its start, filtering every row by the search, to find it (a rare word on a large connector read the connector). By the trigram index of

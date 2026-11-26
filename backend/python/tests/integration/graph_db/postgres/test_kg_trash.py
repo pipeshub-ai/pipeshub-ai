@@ -447,6 +447,7 @@ async def test_a_sampled_listing_that_differs_from_the_walk_takes_the_connector_
         assert [i["record"]["id"] for i in (await pg_provider.list_trashed_records(KB, org))["items"]] == ["e"]     # the walk's, from now on
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_every_trash_statement_is_answered_by_index_searches(pg_provider, pg_db, monkeypatch) -> None:
     """EXPLAIN gate: 3,000 trashed records of the connector in kg and in the graph, beside 3,000 live ones, never analysed and analysed: no statement scans a table, the batches
     are read from records_trash and each batch's records from records_trash_batch, and a page's rows read each parent by its to_id."""

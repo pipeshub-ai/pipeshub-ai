@@ -1,5 +1,6 @@
-"""The tests of this folder share one database across xdist workers. A test that takes a lock on a whole table runs alone (``pg_table_lock``, conftest.py): a read
-of another worker queued behind that lock waits out its ``lock_timeout``, the walk answers it, and a test that counts kg's answers fails."""
+"""The tests of this folder share one database across xdist workers. A test that does something to the whole database runs alone (``pg_table_lock``, conftest.py):
+a read of another worker queued behind its table lock waits out its ``lock_timeout`` and the walk answers it, and statistics it clears or rewrites change the plans of
+every other worker, so a test that counts kg's answers or checks a plan fails."""
 from __future__ import annotations
 
 import ast
@@ -16,21 +17,63 @@ from . import conftest
 from .conftest import LOCK_HOLDER, TABLE_LOCK_KEY
 
 pytestmark = pytest.mark.integration
-# statements whose lock blocks every reader or writer of the table, in every org
-TABLE_LOCKS = re.compile(r"LOCK TABLE|DROP INDEX|CREATE (UNIQUE )?INDEX|REINDEX (TABLE|INDEX|SCHEMA|DATABASE)|VACUUM FULL|TRUNCATE (TABLE )?[a-z]|CLUSTER [a-z]|ROW LEVEL SECURITY")
+# What a test does to the whole database, whatever its org: a lock that blocks every reader or writer of a table, or the planner statistics and storage settings
+# of a shared table, which every other worker's plans (and plan gates) read. Matched in the strings of a test and of the helpers, fixtures and constants it uses.
+DATABASE_WIDE = re.compile(r"LOCK TABLE|DROP INDEX|CREATE (UNIQUE )?INDEX|REINDEX (TABLE|INDEX|SCHEMA|DATABASE)|VACUUM FULL|TRUNCATE (TABLE )?[a-z]|CLUSTER [a-z]"
+                           r"|ROW LEVEL SECURITY|pg_statistic|UPDATE pg_class|SET STATISTICS|\bSET \(|\bRESET \(|(?<![(\w])ANALYZE(?=\s+[a-z{%]|\s*;|\s*$)|^analyze$")
 
 
-def test_every_test_that_locks_a_shared_table_runs_alone() -> None:
-    unmarked = []
-    for path in sorted(Path(__file__).parent.glob("test_*.py")):
-        if path.name == Path(__file__).name:
-            continue
-        source = path.read_text()
-        for node in ast.walk(ast.parse(source)):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_") and TABLE_LOCKS.search(ast.get_source_segment(source, node) or ""):
-                marks = {d.attr for d in node.decorator_list if isinstance(d, ast.Attribute)}
-                if "pg_table_lock" not in marks:
-                    unmarked.append(f"{path.name}::{node.name}")
+def _strings(node: ast.AST) -> list[str]:
+    """The string constants under ``node``, docstrings left out."""
+    docs = {id(b[0].value) for b in (getattr(n, "body", None) for n in ast.walk(node)) if isinstance(b, list) and b and isinstance(b[0], ast.Expr)
+            and isinstance(b[0].value, ast.Constant)}
+    return [n.value for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs]
+
+
+def _names(node: ast.AST) -> set[str]:
+    """The names ``node`` uses: those it reads, and the fixtures a function asks for."""
+    out = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        out |= {a.arg for a in node.args.args + node.args.kwonlyargs}
+    return out
+
+
+def unmarked_database_wide_tests(folder: Path) -> list[str]:
+    """``file::test`` of each test of ``folder`` that does something database-wide (``DATABASE_WIDE``) itself, or through a function, fixture, class or constant of
+    the folder it uses, and is not marked ``pg_table_lock``."""
+    defs: dict[tuple[str, str], ast.AST] = {}
+    imports: dict[tuple[str, str], tuple[str, str]] = {}
+    tests = []
+    for path in sorted(folder.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                defs[(path.stem, node.name)] = node
+                if node.name.startswith("test_") and path.name != Path(__file__).name:
+                    tests.append((path, node))
+            elif isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        defs[(path.stem, t.id)] = node
+            elif isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+                for a in node.names:
+                    imports[(path.stem, a.asname or a.name)] = (node.module, a.name)
+    seen: dict[tuple[str, str], bool] = {}
+
+    def wide(key: tuple[str, str]) -> bool:
+        key = imports.get(key, key)
+        if key in seen or key not in defs:
+            return seen.get(key, False)
+        seen[key] = False                                   # a cycle adds nothing
+        node = defs[key]
+        seen[key] = any(DATABASE_WIDE.search(x) for x in _strings(node)) or any(wide((key[0], n)) for n in _names(node))
+        return seen[key]
+    return [f"{path.name}::{node.name}" for path, node in tests
+            if wide((path.stem, node.name)) and "pg_table_lock" not in {d.attr for d in node.decorator_list if isinstance(d, ast.Attribute)}]
+
+
+def test_every_test_that_changes_the_whole_database_runs_alone() -> None:
+    unmarked = unmarked_database_wide_tests(Path(__file__).parent)
     assert unmarked == [], f"mark these @pytest.mark.pg_table_lock: {unmarked}"
 
 
