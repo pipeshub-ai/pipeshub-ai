@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/inbox-feed.schema.json",
+  "title": "InboxFeed",
+  "description": "`GET /api/v1/agent-harness/inbox` (G2, ADR-INBOX-01): asks first (on the first page only), then notices newest first; `cursor` continues the notices; `partial` names sources that did not answer this time (their items are missing, never guessed).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "items",
+    "counts"
+  ],
+  "properties": {
+    "items": {
+      "type": "array",
+      "maxItems": 300,
+      "items": {
+        "$ref": "inbox-item.schema.json"
+      }
+    },
+    "cursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "counts": {
+      "$ref": "inbox-counts.schema.json"
+    },
+    "partial": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "approvals",
+          "questions",
+          "skills",
+          "memories",
+          "reviews"
+        ]
+      },
+      "maxItems": 5
+    }
+  },
+  "examples": [
+    {
+      "items": [
+        {
+          "id": "n:65f1a2b3c4d5e6f708192a3b",
+          "kind": "run_finished",
+          "severity": "success",
+          "waiting": false,
+          "unread": true,
+          "archived": false,
+          "title": "Quarterly report",
+          "description": "Finished. The answer is ready.",
+          "at": 1700000000000,
+          "pointer": {
+            "type": "conversation",
+            "conversationId": "c1",
+            "runId": "r1"
+          },
+          "link": "/chat/?conversationId=c1",
+          "subjectVersion": 1,
+          "subject": {
+            "chat": "Quarterly report",
+            "outcome": "finished"
+          }
+        }
+      ],
+      "counts": {
+        "unread": 1,
+        "waiting": 0,
+        "badge": 1,
+        "paused": false,
+        "pausedUntil": null
+      }
+    },
+    {
+      "items": [
+        {
+          "id": "a:r1:i1",
+          "kind": "approval",
+          "severity": "warning",
+          "waiting": true,
+          "unread": true,
+          "archived": false,
+          "title": "Approve: Create ticket in Jira",
+          "description": "A task is waiting for your decision before it goes on.",
+          "at": 1700000000000,
+          "pointer": {
+            "type": "conversation",
+            "conversationId": "c1",
+            "runId": "r1",
+            "interactionId": "i1"
+          },
+          "link": "/chat/?conversationId=c1",
+          "subjectVersion": 1,
+          "subject": {
+            "action": {
+              "name": "Create ticket",
+              "app": "Jira"
+            }
+          }
+        }
+      ],
+      "counts": {
+        "unread": 3,
+        "waiting": 1,
+        "badge": 4,
+        "paused": false,
+        "pausedUntil": null
+      }
+    }
+  ]
+}

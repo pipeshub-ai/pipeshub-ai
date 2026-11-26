@@ -63,3 +63,4 @@ next-env.d.ts
 
 # local postman collection dump
 kb_swagger.yaml
+tests/e2e/qa/.ux-baselines/

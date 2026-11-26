@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/tool-step.schema.json",
+  "title": "PipeshubToolStep",
+  "description": "What a tool step did, on what, and what came of it (WP-112, WP-115), as its row names it: which page it read, what it searched for, which pattern or file, and a search's hits or a find's files. Built by one builder for the loop's steps and every engine's (app/harness/step_display.py); a tool that is none of these actions carries none. Never a tool id, raw arguments or a result's text: those stay behind the step's Details and Show result.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action"
+  ],
+  "properties": {
+    "action": {
+      "description": "The action a person reads (toolNames.<action> in the chat's i18n).",
+      "enum": [
+        "readPage",
+        "webSearch",
+        "findFiles",
+        "searchFiles",
+        "readFile",
+        "listFiles"
+      ]
+    },
+    "target": {
+      "description": "A page's host, a search's query, a find's pattern, a file's path (relative to the workspace).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "href": {
+      "description": "The page's link: http or https only, never a citation alias.",
+      "type": "string",
+      "pattern": "^https?://",
+      "maxLength": 2048
+    },
+    "title": {
+      "description": "The page's title, once it was read.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "count": {
+      "description": "A search's hits, or the files a find or a search listed.",
+      "$ref": "../../core/common.schema.json#/$defs/UInt"
+    },
+    "sources": {
+      "description": "The links the result offered, without their text fragments: the answer's citations of them point at this step.",
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048
+      }
+    }
+  },
+  "examples": [
+    {
+      "action": "readPage",
+      "target": "onyx.app",
+      "href": "https://onyx.app/pricing",
+      "title": "Onyx pricing",
+      "sources": [
+        "https://onyx.app/pricing"
+      ]
+    },
+    {
+      "action": "webSearch",
+      "target": "PipesHub Reddit",
+      "count": 0
+    }
+  ]
+}

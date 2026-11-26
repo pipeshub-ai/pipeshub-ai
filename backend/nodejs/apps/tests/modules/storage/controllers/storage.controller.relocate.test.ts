@@ -7,6 +7,8 @@ import { StorageController } from '../../../../src/modules/storage/controllers/s
 import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
 import { StorageVendor } from '../../../../src/modules/storage/types/storage.service.types'
 import { AuthenticatedServiceRequest } from '../../../../src/libs/middlewares/types'
+import { StorageUploadError } from '../../../../src/libs/errors/storage.errors'
+import { vendorFailure } from '../../../../src/modules/storage/providers/vendor-failure'
 
 type Row = Record<string, any>
 type Filter = Record<string, any>
@@ -85,6 +87,7 @@ describe('StorageController shared-content handover', () => {
   let controller: StorageController
   let adapter: Record<string, sinon.SinonStub>
   let rows: Row[]
+  let logger: Record<'info' | 'error' | 'warn' | 'debug', sinon.SinonStub>
   const orgId = new mongoose.Types.ObjectId()
   const otherOrg = new mongoose.Types.ObjectId()
   const base = (org = orgId) => `${org}/PipesHub`
@@ -123,7 +126,7 @@ describe('StorageController shared-content handover', () => {
 
   beforeEach(() => {
     rows = []
-    const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
+    logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
     controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any, 's')
     adapter = {
       renameObject: sinon.stub().resolves(),
@@ -182,11 +185,11 @@ describe('StorageController shared-content handover', () => {
         expect(row.customMetadata).to.deep.include({ key: 'compression', value: { algorithm: 'zstd' } })
         expect(row.s3.url).to.equal(`https://bucket/${to}/${moved._id}/${moved.documentName}.json`)
       }
-      expect(adapter.renameObject.firstCall.args).to.deep.equal([
+      expect(adapter.renameObject!.firstCall.args).to.deep.equal([
         `${from}/${record._id}/record_v1.json`,
         `${to}/${record._id}/record_v1.json`,
       ])
-      expect(adapter.deleteTree.calledWith(`${from}/${record._id}`)).to.be.true
+      expect(adapter.deleteTree!.calledWith(`${from}/${record._id}`)).to.be.true
       expect(find(mine._id).documentPath).to.equal(from)
     })
 
@@ -210,12 +213,24 @@ describe('StorageController shared-content handover', () => {
       doc({ documentName: 'record_v1', documentPath: `${base()}/records/conn-a/x`, customMetadata: tagged('conn-a') })
       const move = { virtualRecordId: 'v1', newPath: 'records/conn-b/y', connectorId: 'conn-b' }
       await relocate([move])
-      adapter.renameObject.resetHistory()
+      adapter.renameObject!.resetHistory()
 
       const again = await relocate([move])
 
       expect(again).to.deep.equal({ moved: ['v1'], failed: [], missing: [] })
-      expect(adapter.renameObject.called).to.be.false
+      expect(adapter.renameObject!.called).to.be.false
+    })
+
+    it('logs a copy already at the new path whose record cannot be re-tagged as one WARN with its id', async () => {
+      const row = doc({ documentName: 'record_v1', documentPath: `${base()}/records/v1`, customMetadata: tagged('conn-a') })
+      ;(DocumentModel.updateOne as sinon.SinonStub).rejects(new Error('document store down'))
+
+      const body = await relocate([{ virtualRecordId: 'v1', newPath: 'records/v1', connectorId: 'conn-b' }])
+
+      expect(body.failed).to.deep.equal(['v1'])
+      expect(logger.warn.args).to.deep.equal([
+        ['relocate: could not update a document', { document_id: String(row._id), error: 'document store down' }],
+      ])
     })
 
     it('re-tags a copy that is already at the new path', async () => {
@@ -225,7 +240,7 @@ describe('StorageController shared-content handover', () => {
 
       expect(body.moved).to.deep.equal(['v1'])
       expect(tagOf(find(row._id))).to.equal('conn-b')
-      expect(adapter.renameObject.called).to.be.false
+      expect(adapter.renameObject!.called).to.be.false
     })
 
     it("never moves another organisation's documents, nor another connector's", async () => {
@@ -246,7 +261,7 @@ describe('StorageController shared-content handover', () => {
       expect(body).to.deep.equal({ moved: [], failed: [], missing: ['v1'] })
       expect(find(foreign._id).documentPath).to.equal(`${base(otherOrg)}/records/conn-a/x`)
       expect(tagOf(find(thirdConnector._id))).to.equal('conn-c')
-      expect(adapter.renameObject.called).to.be.false
+      expect(adapter.renameObject!.called).to.be.false
     })
 
     it("cannot move one organisation's copy with another organisation's token", async () => {
@@ -265,7 +280,7 @@ describe('StorageController shared-content handover', () => {
     it('reports a copy whose blob could not move as failed and leaves it where it was', async () => {
       const row = doc({ documentName: 'record_v1', documentPath: `${base()}/records/conn-a/x`, customMetadata: tagged('conn-a') })
       doc({ documentName: 'record_v2', documentPath: `${base()}/records/conn-a/z`, customMetadata: tagged('conn-a') })
-      adapter.renameObject.onFirstCall().rejects(new Error('AccessDenied'))
+      adapter.renameObject!.onFirstCall().rejects(new Error('AccessDenied'))
 
       const body = await relocate([
         { virtualRecordId: 'v1', newPath: 'records/conn-b/y', connectorId: 'conn-b' },
@@ -277,18 +292,51 @@ describe('StorageController shared-content handover', () => {
       expect(tagOf(find(row._id))).to.equal('conn-a')
     })
 
+    it('logs a blob that could not move as one WARN with the vendor status and code, never its text or the paths', async () => {
+      const row = doc({ documentName: 'record_v1', documentPath: `${base()}/records/conn-a/x`, customMetadata: tagged('conn-a') })
+      const sdk = Object.assign(new Error('n5d-vendor-text records/conn-a/x/record_v1.json'), {
+        name: 'NoSuchKey',
+        $metadata: { httpStatusCode: 404 },
+      })
+      adapter.renameObject!.rejects(new StorageUploadError('Failed to rename object in S3', vendorFailure(sdk)))
+
+      await relocate([{ virtualRecordId: 'v1', newPath: 'records/conn-b/y', connectorId: 'conn-b' }])
+
+      expect(logger.warn.args).to.deep.equal([
+        ['moveTree: failed to relocate a blob; leaving it at its old path', { document_id: String(row._id), status: 404, code: 'NoSuchKey' }],
+      ])
+      expect(logger.error.called).to.equal(false)
+    })
+
+    it('logs a blob that moved while its record did not as one ERROR: the document needs a human', async () => {
+      const row = doc({ documentName: 'record_v1', documentPath: `${base()}/records/conn-a/x`, customMetadata: tagged('conn-a') })
+      const stored = new Error('document store down')
+      ;(DocumentModel.updateOne as sinon.SinonStub).rejects(stored)
+
+      const body = await relocate([{ virtualRecordId: 'v1', newPath: 'records/conn-b/y', connectorId: 'conn-b' }])
+
+      expect(body.failed).to.deep.equal(['v1'])
+      expect(logger.error.args).to.deep.equal([
+        [
+          'moveTree: blob relocated but the record update failed; the document needs manual repair',
+          { document_id: String(row._id), error: stored },
+        ],
+      ])
+      expect(JSON.stringify(logger.error.args[0]![0])).to.not.contain(String(row._id))
+    })
+
     it('a handed-over copy survives the connector delete and is still purged by its virtual record id', async () => {
       const shared = doc({ documentName: 'record_v1', documentPath: `${base()}/records/conn-a/x`, customMetadata: tagged('conn-a') })
       const own = doc({ documentName: 'record_v2', documentPath: `${base()}/records/conn-a/z`, customMetadata: tagged('conn-a') })
       await relocate([{ virtualRecordId: 'v1', newPath: 'records/conn-b/y', connectorId: 'conn-b' }])
 
-      await controller.deleteByConnector(request({ params: { connectorId: 'conn-a' } }), makeRes(), sinon.stub())
+      await controller.deleteByConnector(request({ params: { connectorId: 'conn-a' } }), makeRes(), sinon.stub<unknown[]>())
 
       expect(rows.map((r) => String(r._id))).to.deep.equal([String(shared._id)])
       expect(rows.some((r) => String(r._id) === String(own._id))).to.be.false
 
       const res = makeRes()
-      await controller.purgeVirtualRecordDocuments(request({ params: { virtualRecordId: 'v1' } }), res, sinon.stub())
+      await controller.purgeVirtualRecordDocuments(request({ params: { virtualRecordId: 'v1' } }), res, sinon.stub<unknown[]>())
       expect(res.body).to.deep.equal({ purged: 1 })
       expect(rows).to.have.length(0)
     })

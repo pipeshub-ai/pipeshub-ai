@@ -1,0 +1,27 @@
+[
+  {
+    "description": "a label says whether it is complete",
+    "instance": {
+      "sources": []
+    }
+  },
+  {
+    "description": "a web page is never a source",
+    "instance": {
+      "complete": true,
+      "sources": [
+        {
+          "kind": "web"
+        }
+      ]
+    }
+  },
+  {
+    "description": "readers are decided at check time, never stored",
+    "instance": {
+      "complete": true,
+      "sources": [],
+      "readers": "org"
+    }
+  }
+]

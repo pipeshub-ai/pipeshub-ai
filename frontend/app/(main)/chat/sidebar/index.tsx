@@ -21,6 +21,7 @@ import { AgentsSidebar } from './agents-sidebar';
 import { AgentScopedChatSidebar } from './agent-scoped-chat-sidebar';
 import { ProjectConversationsSidebar } from './project-conversations-sidebar';
 import { useSidebarConversations } from './use-sidebar-conversations';
+import { useOpenChatSeenMark } from '@/lib/harness-jobs/use-seen-marks';
 
 /**
  * Chat sidebar — uses SidebarBase shell with header, footer, and custom content.
@@ -83,6 +84,7 @@ function ChatSidebarInner() {
  */
 function ChatSidebarRoot() {
   useSidebarConversations();
+  useOpenChatSeenMark();
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();

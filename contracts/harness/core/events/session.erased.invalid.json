@@ -1,0 +1,264 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 42,
+      "type": "session.deleted",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "by": "p_owner1",
+        "reason": "user_delete",
+        "counts": {
+          "runs": 3,
+          "events": 41,
+          "payloads": 2,
+          "messages": 6,
+          "citations": 4,
+          "artifacts": 1,
+          "blobs": 1,
+          "workspaces": 2,
+          "liveStreams": 3
+        }
+      }
+    }
+  },
+  {
+    "description": "writer allowlist: only node writes session.erased",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 42,
+      "type": "session.erased",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "audit",
+      "data": {
+        "by": "p_owner1",
+        "reason": "user_delete",
+        "counts": {
+          "runs": 3,
+          "events": 41,
+          "payloads": 2,
+          "messages": 6,
+          "citations": 4,
+          "artifacts": 1,
+          "blobs": 1,
+          "workspaces": 2,
+          "liveStreams": 3
+        }
+      }
+    }
+  },
+  {
+    "description": "reason is required",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 42,
+      "type": "session.erased",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "by": "p_owner1",
+        "counts": {
+          "runs": 3,
+          "events": 41,
+          "payloads": 2,
+          "messages": 6,
+          "citations": 4,
+          "artifacts": 1,
+          "blobs": 1,
+          "workspaces": 2,
+          "liveStreams": 3
+        }
+      }
+    }
+  },
+  {
+    "description": "unknown reason",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 42,
+      "type": "session.erased",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "by": "p_owner1",
+        "reason": "admin_purge",
+        "counts": {
+          "runs": 3,
+          "events": 41,
+          "payloads": 2,
+          "messages": 6,
+          "citations": 4,
+          "artifacts": 1,
+          "blobs": 1,
+          "workspaces": 2,
+          "liveStreams": 3
+        }
+      }
+    }
+  },
+  {
+    "description": "by must be a principal reference",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 42,
+      "type": "session.erased",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "by": "owner1",
+        "reason": "user_delete",
+        "counts": {
+          "runs": 3,
+          "events": 41,
+          "payloads": 2,
+          "messages": 6,
+          "citations": 4,
+          "artifacts": 1,
+          "blobs": 1,
+          "workspaces": 2,
+          "liveStreams": 3
+        }
+      }
+    }
+  },
+  {
+    "description": "counts are non-negative integers",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 42,
+      "type": "session.erased",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "by": "p_owner1",
+        "reason": "user_delete",
+        "counts": {
+          "runs": 3,
+          "events": -1,
+          "payloads": 2,
+          "messages": 6,
+          "citations": 4,
+          "artifacts": 1,
+          "blobs": 1,
+          "workspaces": 2,
+          "liveStreams": 3
+        }
+      }
+    }
+  },
+  {
+    "description": "counts carry numbers, never content",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 42,
+      "type": "session.erased",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "by": "p_owner1",
+        "reason": "user_delete",
+        "counts": {
+          "runs": 3,
+          "events": 41,
+          "payloads": 2,
+          "messages": 6,
+          "citations": 4,
+          "artifacts": 1,
+          "blobs": 1,
+          "workspaces": 2,
+          "liveStreams": 3,
+          "title": "quarterly plan"
+        }
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 42,
+      "type": "session.erased",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "by": "p_owner1",
+        "reason": "user_delete",
+        "counts": {
+          "runs": 3,
+          "events": 41,
+          "payloads": 2,
+          "messages": 6,
+          "citations": 4,
+          "artifacts": 1,
+          "blobs": 1,
+          "workspaces": 2,
+          "liveStreams": 3
+        },
+        "sessionTitle": "quarterly plan"
+      }
+    }
+  },
+  {
+    "description": "counts stay within JavaScript's safe integers",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_2",
+      "streamId": "ses_2",
+      "seq": 7,
+      "type": "session.erased",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-03T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "reason": "retention",
+        "counts": {
+          "events": 9007199254740992
+        }
+      }
+    }
+  }
+]

@@ -17,16 +17,18 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
+from app.agent_loop_lib.tools.base import ParameterType, Tag, Tool, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agent_loop_lib.tools.tags import TAG_SINK_EXTERNAL
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
 from app.modules.agents.qna.chat_state import ChatState
 from app.sandbox.artifact_upload import save_query_result_csv
-from app.sandbox.manager import get_executor
+from app.sandbox.manager import get_executor, with_executor_sink
 from app.sandbox.models import SandboxLanguage
 from app.sandbox.redact import redact_sandbox_paths
 from app.services.artifact_registry.models import artifact_owner_id
@@ -59,7 +61,7 @@ class ExecutePostgreSQLInput(BaseModel):
 # Toolset registration
 # -------------------------------------------------------------------
 
-@ToolsetBuilder("Database Sandbox")\
+@ToolsetBuilder("Database Sandbox", provider=ToolProvider.PLATFORM)\
     .in_group("Internal Tools")\
     .with_description("Execute SQL queries in ephemeral SQLite or PostgreSQL sandbox databases for data analysis and exploration")\
     .with_category(ToolsetCategory.DATABASE)\
@@ -75,6 +77,10 @@ class DatabaseSandbox:
     def __init__(self, state: ChatState) -> None:
         self.chat_state = state
 
+    def tools_for_request(self, tools: list[Tool]) -> list[Tool]:
+        """Declared ``sink=external``; ``self`` where the configured executor runs the code offline (SINK2)."""
+        return with_executor_sink(tools)
+
     def _result(self, success: bool, payload: dict[str, Any]) -> tuple[bool, str]:
         return success, json.dumps(payload, default=str)
 
@@ -82,8 +88,10 @@ class DatabaseSandbox:
     # CSV artifact helper
     # ------------------------------------------------------------------
 
-    def _schedule_csv_export(self, rows: list[dict[str, Any]], label: str) -> None:
-        """Export query results as a CSV artifact in the background."""
+    def _schedule_csv_export(self, rows: list[dict[str, Any]], label: str, *, provenance: Any = None) -> None:  # noqa: ANN401
+        """Export query results as a CSV artifact in the background.
+
+        ``provenance`` None leaves the export's sources unknown (hidden from shared viewers)."""
         conversation_id = self.chat_state.get("conversation_id")
         org_id = self.chat_state.get("org_id")
         user_id = artifact_owner_id(self.chat_state)
@@ -114,6 +122,7 @@ class DatabaseSandbox:
                 rows=row_tuples,
                 file_name=f"{label}_{uuid4().hex[:8]}.csv",
                 source_tool=f"database_sandbox.{label.split('_')[0]}",
+                provenance=provenance,
             )
 
         task = asyncio.create_task(_save())
@@ -146,7 +155,8 @@ class DatabaseSandbox:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="code_execution"), Tag(key="type", value="action")],
+        # External as declared: under SANDBOX_MODE=local sqlite3/psql shell escapes (.shell, \!) reach the host network.
+        tags=[Tag(key="category", value="code_execution"), Tag(key="type", value="action"), Tag(key="effect", value="write"), TAG_SINK_EXTERNAL],
     )
     async def execute_sqlite(self, query: str, setup_sql: str | None = None) -> tuple[bool, str]:
         """Execute SQL in an ephemeral SQLite sandbox."""
@@ -167,7 +177,14 @@ class DatabaseSandbox:
             displayed_rows = rows[:DISPLAY_LIMIT]
 
             if rows:
-                self._schedule_csv_export(rows, "sqlite_result")
+                from app.agents.agent_loop.artifact_provenance import request_provenance
+
+                # SQLite holds only the model's own SQL; PostgreSQL (below) is an operator's
+                # database whose rows no record names, so its exports stay unknown.
+                self._schedule_csv_export(
+                    rows, "sqlite_result",
+                    provenance=request_provenance(self.chat_state, task_id="database_sandbox.sqlite"),
+                )
 
             payload: dict[str, Any] = {
                 "message": "Query executed successfully" if result.success else "Query execution failed",
@@ -204,7 +221,7 @@ class DatabaseSandbox:
                 required=True,
             ),
         ],
-        tags=[Tag(key="category", value="code_execution"), Tag(key="type", value="action")],
+        tags=[Tag(key="category", value="code_execution"), Tag(key="type", value="action"), Tag(key="effect", value="write"), TAG_SINK_EXTERNAL],
     )
     async def execute_postgresql(self, query: str) -> tuple[bool, str]:
         """Execute SQL against a PostgreSQL sandbox instance."""

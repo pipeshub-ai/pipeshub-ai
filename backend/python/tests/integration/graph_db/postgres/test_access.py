@@ -4,11 +4,15 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import uuid
 from typing import TYPE_CHECKING
 
 import pytest
 
+import app.core.db.uow as uow_module
+import app.services.graph_db.postgres.access as access_module
 from app.core.org_context import MissingOrgContext, OrgContext, bind, pop, push
 from app.services.graph_db.interface.graph_db_provider import (
     PermissionVerificationUnavailableError,
@@ -156,6 +160,30 @@ async def test_the_virtual_record_lookup_admits_what_the_plain_statement_admitte
     for n, o, a in zip(new, old, asks, strict=True):
         assert (set(n.node_ids), n.placeholder_ids, n.records_by_vrid.keys()) == (set(o.node_ids), o.placeholder_ids, o.records_by_vrid.keys()), a
     assert set(new[0].records_by_vrid) == {"v3"} and new[0].records_by_vrid["v3"] in {"real", "twin"}      # only a live, readable record is cited by its virtual record id
+
+
+async def test_a_record_whose_virtual_record_id_moves_between_pages_is_returned_once(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """In a writable transaction each page of the vetted read is its own statement (read committed): a record moved from the first page's id to the second's,
+    committed between the two, matches both pages and must still come back once, as the one statement returned it."""
+    await w.nodes("records", rec("r", virtualRecordId="v1"))
+    await w.child(("apps", APP), ("records", "r"))
+    monkeypatch.setattr(access_module, "_VRID_IDS", 1)      # one id per page
+    fetch, moved = uow_module.Tx.fetch, []
+
+    async def moved_after_the_first_page(self, sql: str, *args: object) -> list:
+        rows = await fetch(self, sql, *args)
+        if not moved and "pipeshub:graph.records_by_virtual_id" in sql:
+            moved.append(list(args[0]))
+            await _elsewhere(lambda: w.nodes("records", rec("r", virtualRecordId="v2")))
+        return rows
+    monkeypatch.setattr(uow_module.Tx, "fetch", moved_after_the_first_page)
+    tid = await w.p.begin_transaction([], [])
+    try:
+        rows = await w.p._kh_v3_accessible_rows("u", w.org, [], ["v1", "v2"], access=None, transaction=tid)
+    finally:
+        await w.p.rollback_transaction(tid)
+    assert moved == [["v1"]]                                           # the move landed between the two pages
+    assert [r["id"] for r in rows] == ["r"]
 
 
 async def test_a_numeric_connector_id_names_its_app_as_postgresql_reads_it_on_both_arms(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -351,3 +379,171 @@ async def test_a_null_in_a_document_is_a_missing_field_for_the_rule_and_the_flag
     await pg_db.run(lambda tx: set_null(tx, "nullDeleted", "isDeleted"), write=True)
     await pg_db.run(lambda tx: set_null(tx, "nullOrigin", "origin"), write=True)
     assert await w.allowed("u", "nullRule", "nullDeleted", "nullOrigin") == {"nullRule", "nullDeleted", "nullOrigin"}
+
+
+async def test_a_check_given_no_access_reads_the_grants_of_the_nodes_it_decides_not_every_grant(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A check with no ``access`` reads the gate and then the permission edges of the nodes it meets, never every grant the user holds; it admits exactly
+    what the same check does with every grant listed (``get_knowledge_hub_access_v3``), over grants to the user, a group, a team, the organization (of a sharing
+    type and not), a source account and its group, on records of a gated and an ungated connector, deleted, under a seed and of RESTRICTED, PARENT_AND_GRANT and STRICT rules."""
+    await w.nodes("users", {"_key": "src"})
+    await w.nodes("groups", {"_key": "grp"}, {"_key": "srcgrp"})
+    await w.nodes("teams", {"_key": "tm"})
+    await w.nodes("organizations", {"_key": "o1"})
+    await w.nodes("apps", {"_key": "shut", "type": "CONNECTOR"})
+    await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
+    await w.nodes("records", rec("seed"), rec("belowSeed"), rec("pag", accessRule="PARENT_AND_GRANT"), rec("pagUngranted", accessRule="PARENT_AND_GRANT"),
+                  rec("restricted", accessRule="RESTRICTED"), rec("strict", accessRule="STRICT"), rec("byTeam"), rec("orgShared"), rec("orgOther"),
+                  rec("viaSrc"), rec("viaSrcGrp"), rec("gone", isDeleted=True), rec("plain"), {"_key": "elsewhere", "connectorId": "shut"})
+    await w.member("u", "grp")
+    await w.member("u", "tm", "teams")
+    await w.edge("belongsTo", ("users", "u"), ("organizations", "o1"), entityType="ORGANIZATION")
+    await w.edge("authenticatedAs", ("users", "u"), ("users", "src"), connectorId=APP)
+    await w.member("src", "srcgrp")
+    await w.child(("recordGroups", "g"), ("records", "seed"))          # g does not reach the app: only grants open what hangs under it
+    for k in ("belowSeed", "pag", "pagUngranted", "restricted"):
+        await w.child(("records", "seed"), ("records", k))
+    await w.edge("permission", ("groups", "grp"), ("records", "seed"), type="GROUP", role="READER")
+    await w.edge("permission", ("users", "u"), ("records", "pag"), type="USER", role="READER")
+    await w.edge("permission", ("users", "u"), ("records", "strict"), type="USER", role="READER")
+    await w.edge("permission", ("teams", "tm"), ("records", "byTeam"), type="TEAM", role="READER")
+    await w.edge("permission", ("organizations", "o1"), ("records", "orgShared"), type="ORG", role="READER")
+    await w.edge("permission", ("organizations", "o1"), ("records", "orgOther"), type="USER", role="READER")
+    await w.edge("permission", ("users", "src"), ("records", "viaSrc"), type="USER", role="READER")
+    await w.edge("permission", ("groups", "srcgrp"), ("records", "viaSrcGrp"), type="GROUP", role="READER")
+    await w.edge("permission", ("users", "u"), ("records", "gone"), type="USER", role="READER")
+    await w.edge("permission", ("users", "u"), ("records", "elsewhere"), type="USER", role="READER")
+    ids = ["seed", "belowSeed", "pag", "pagUngranted", "restricted", "strict", "byTeam", "orgShared", "orgOther", "viaSrc", "viaSrcGrp", "gone", "plain", "elsewhere"]
+    want = {"seed", "belowSeed", "pag", "byTeam", "orgShared", "viaSrc", "viaSrcGrp"}      # strict: granted, but STRICT is no seed and it reaches no app
+    listed = await w.p.get_knowledge_hub_access_v3("u", w.org)
+    assert await w.allowed("u", *ids, access=listed) == want
+
+    async def every_grant(*_a: object, **_k: object) -> None:
+        raise AssertionError("a check given no access read every grant the user holds")
+    monkeypatch.setattr("app.services.graph_db.postgres.access.granted_targets", every_grant)
+    for one in ids:      # one node at a time too: each is decided from its own edges and its ancestors'
+        assert await w.allowed("u", one) == {one} & want, one
+    assert await w.allowed("u", *ids) == want
+    assert await w.allowed("other", *ids) == set()
+
+
+async def _moved_grant_world(w: World) -> None:
+    """R and C are RESTRICTED: R opens only when R and C are both granted (each hop up needs the node's own grant). The tests move the one grant from R to C."""
+    await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
+    await w.nodes("records", rec("c", accessRule="RESTRICTED"), rec("r", accessRule="RESTRICTED"))
+    await w.child(("apps", APP), ("recordGroups", "g"))
+    await w.child(("recordGroups", "g"), ("records", "c"))
+    await w.child(("records", "c"), ("records", "r"))
+    await w.edge("permission", ("users", "u"), ("records", "r"), type="USER", role="READER")
+
+
+async def _elsewhere(make) -> None:
+    """Commit ``make()`` on connections of its own while a check's unit is open, as another request would (in the check's own context a unit cannot open
+    inside another)."""
+    ctx = contextvars.copy_context()
+    ctx.run(uow_module._current_tx.set, None)
+    await asyncio.get_running_loop().create_task(make(), context=ctx)
+
+
+async def _move_grant(w: World, pg_db) -> None:
+    """Committed between two statements of a check: the grant on R becomes one on C."""
+    async def move() -> None:
+        await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND to_id = 'r'", w.org), write=True)
+        await w.edge("permission", ("users", "u"), ("records", "c"), type="USER", role="READER")
+    await _elsewhere(move)
+
+
+async def test_a_check_reads_one_state_a_grant_moved_between_its_reads_opens_nothing_neither_state_opens(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Grants read per node come from the check's one snapshot: a check that read R's grant before the move and C's after it would join two states and open R."""
+    await _moved_grant_world(w)
+    assert await w.allowed("u", "r") == set()                         # before: R granted, C not
+    see, calls = access_module.Grants.see, []
+
+    async def moved_after_the_first_read(self, tx, org, ids) -> None:
+        await see(self, tx, org, ids)
+        calls.append(list(ids))
+        if len(calls) == 1:
+            await _move_grant(w, pg_db)
+    monkeypatch.setattr(access_module.Grants, "see", moved_after_the_first_read)
+    assert await w.allowed("u", "r") == set()
+    assert len(calls) > 1                                              # the move landed between the check's grant reads
+    monkeypatch.setattr(access_module.Grants, "see", see)
+    assert await w.allowed("u", "r") == set()                         # after: C granted, R not
+    await w.edge("permission", ("users", "u"), ("records", "r"), type="USER", role="READER")
+    assert await w.allowed("u", "r") == {"r"}                         # both granted: the world does open R
+
+
+async def test_a_check_reads_one_state_a_membership_swapped_after_the_gate_opens_nothing(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gate (who the user is) and the grants are one snapshot: a group the user left, granted after the gate was read, opens nothing."""
+    await w.nodes("groups", {"_key": "grp"})
+    await w.nodes("records", rec("r"))
+    await w.member("u", "grp")
+    gate, swapped = type(w.p)._gate, []
+
+    async def swapped_after_the_gate(self, tx, org, user_key) -> tuple | None:
+        out = await gate(self, tx, org, user_key)
+
+        async def swap() -> None:
+            await pg_db.run(lambda t: t.execute("DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND from_id = 'u' AND to_id = 'grp'", w.org), write=True)
+            await w.edge("permission", ("groups", "grp"), ("records", "r"), type="GROUP", role="READER")
+        if not swapped:
+            swapped.append(True)
+            await _elsewhere(swap)
+        return out
+    monkeypatch.setattr(type(w.p), "_gate", swapped_after_the_gate)
+    assert await w.allowed("u", "r") == set()                          # before: a member, no grant; after: a grant, no member
+    monkeypatch.setattr(type(w.p), "_gate", gate)
+    assert await w.allowed("u", "r") == set()
+    await w.member("u", "grp")
+    assert await w.allowed("u", "r") == {"r"}
+
+
+async def test_a_check_inside_a_writable_transaction_reads_every_grant_in_one_statement(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A writable transaction reads at read committed, statement by statement: its check reads the grants whole, once, so a grant moved during the check cannot join
+    two states."""
+    await _moved_grant_world(w)
+    see, calls = access_module.Grants.see, []
+
+    async def moved_after_the_first_read(self, tx, org, ids) -> None:
+        await see(self, tx, org, ids)
+        calls.append(self.probing)
+        if len(calls) == 1:
+            await _move_grant(w, pg_db)
+    monkeypatch.setattr(access_module.Grants, "see", moved_after_the_first_read)
+    tid = await w.p.begin_transaction([], [])
+    try:
+        assert set((await w.p.check_access("u", w.org, node_ids=["r"], transaction=tid)).node_ids) == set()
+    finally:
+        await w.p.rollback_transaction(tid)
+    assert calls and not any(calls)                                    # every grant listed up front, none read per node
+
+
+async def test_a_writable_transactions_check_reads_the_users_and_the_linked_accounts_grants_as_one_state(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """In a writable transaction (read committed: a snapshot per statement) the grants are listed up front. The user's own grant on R and a source account's
+    grant on R's parent C are read as one state: a move of the one grant from the user on R to the linked account on C, committed right after the user's
+    own grants were read, must not leave both in the list (R opens only when R and C are both granted)."""
+    await _moved_grant_world(w)
+    await w.nodes("users", {"_key": "src"})
+    await w.edge("authenticatedAs", ("users", "u"), ("users", "src"), connectorId=APP)
+    fetch, moved = uow_module.Tx.fetch, []
+
+    async def move() -> None:
+        await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND to_id = 'r'", w.org), write=True)
+        await w.edge("permission", ("users", "src"), ("records", "c"), type="USER", role="READER")
+
+    async def moved_after_the_users_grants(self, sql: str, *args: object) -> list:
+        rows = await fetch(self, sql, *args)
+        if not moved and ("pipeshub:graph.access_grant_edges" in sql or "pipeshub:graph.access_grants_all" in sql):
+            moved.append(sql.split("*/")[0])
+            await _elsewhere(move)
+        return rows
+    monkeypatch.setattr(uow_module.Tx, "fetch", moved_after_the_users_grants)
+    tid = await w.p.begin_transaction([], [])
+    try:
+        assert set((await w.p.check_access("u", w.org, node_ids=["r"], transaction=tid)).node_ids) == set()
+    finally:
+        await w.p.rollback_transaction(tid)
+    assert moved                                                       # the move landed right after the user's own grants were read
+    monkeypatch.setattr(uow_module.Tx, "fetch", fetch)
+    assert await w.allowed("u", "r") == set()                         # after: C granted through the account, R not
+    await w.edge("permission", ("users", "u"), ("records", "r"), type="USER", role="READER")
+    assert await w.allowed("u", "r") == {"r"}                         # both: the world does open R

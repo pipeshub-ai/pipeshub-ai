@@ -69,13 +69,36 @@ def answer_delta_min_interval() -> float:
         return 0.25
     return max(value, 0.0) / 1000.0
 
+
+def resolve_streamed_answer(
+    text: str,
+    collector: "CitationCollector",
+    *,
+    ref_to_url: dict[str, str] | None,
+    web_records: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]], str | None]:
+    """The answer streamed so far as it is shown: confidence trailer hidden,
+    citation refs numbered against the sources the collector holds."""
+    answer_text, confidence = parse_confidence_from_answer(text)
+    answer_text = strip_partial_confidence_trailer(answer_text)
+    normalized, citations = normalize_citations_and_chunks(
+        answer_text,
+        collector.final_results,
+        collector.tool_records,
+        ref_to_url=ref_to_url,
+        virtual_record_id_to_result=collector.virtual_records,
+        web_records=web_records,
+    )
+    return normalized, citations, confidence
+
+
 if TYPE_CHECKING:
     from app.agent_loop_lib.events.base import AgentEvent
     from app.agents.agent_loop.context import AgentContext
     from app.agents.agent_loop.hooks.citations import CitationCollector
     from app.modules.agents.event_sink import EventSink
 
-__all__ = ["TerminalAnswerStreamer"]
+__all__ = ["TerminalAnswerStreamer", "resolve_streamed_answer"]
 
 
 class TerminalAnswerStreamer:
@@ -215,15 +238,8 @@ class TerminalAnswerStreamer:
 
     async def _emit_state_delta(self, chunk: str = "", *, discarded: bool = False) -> None:
         self._stale_on_screen = False
-        answer_text, confidence = parse_confidence_from_answer(self._buffer)
-        answer_text = strip_partial_confidence_trailer(answer_text)
-        normalized, citations = normalize_citations_and_chunks(
-            answer_text,
-            self._collector.final_results,
-            self._collector.tool_records,
-            ref_to_url=self._ref_to_url,
-            virtual_record_id_to_result=self._collector.virtual_records,
-            web_records=self._web_records,
+        normalized, citations, confidence = resolve_streamed_answer(
+            self._buffer, self._collector, ref_to_url=self._ref_to_url, web_records=self._web_records,
         )
         for evt in self._context.formatter.answer_delta(
             self._context, chunk=chunk, accumulated=normalized, citations=citations,

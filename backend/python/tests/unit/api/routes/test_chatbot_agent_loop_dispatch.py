@@ -2,7 +2,7 @@
 
 `_generate_chat_stream_via_agent_loop()` is the sole handler for all chat
 modes — the legacy direct-LLM pipeline and the removed
-`PIPESHUB_CHAT_USE_AGENT_LOOP` kill-switch no longer exist.  `tests/unit/agents/chat_modes/test_bridge.py`
+`PIPESHUB_CHAT_USE_AGENT_LOOP` kill-switch no longer exist.  `tests/unit/agents/chat_modes/test_chat_turn.py`
 covers `run_chat_stream()` itself in depth.  This file is the seam between
 the route layer and that package.
 """
@@ -97,7 +97,7 @@ class TestGenerateChatStreamViaAgentLoop:
 
     async def test_builds_query_dict_and_user_info_and_forwards_policy(self):
         """The plain-dict contract `run_chat_stream()` expects -- see
-        `chat_modes/bridge.py`'s module docstring for why it never sees
+        `chat_modes/setup.py`'s module docstring for why it never sees
         `ChatQuery`/`Request` directly."""
         from app.api.routes.chatbot import ChatQuery, _generate_chat_stream_via_agent_loop
 

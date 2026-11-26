@@ -14,6 +14,7 @@ from app.modules.indexing.record_diagnostics import (
     sql_patch,
     with_run_patch,
 )
+from app.modules.pipeline import parser_identity
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
@@ -28,6 +29,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
 from app.services.graph_db.postgres.records import _vis
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
@@ -55,7 +57,7 @@ class SyncStateMixin(PgBase):
                 WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.to_coll = 'apps' ORDER BY e.from_id, e.to_id LIMIT 1""",
                                                       org, user_email, service_type), transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get user sync state failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_user_sync_state")
             return None
         return _relation(r["doc"], r["from_id"], r["to_id"]) if r else None
 
@@ -75,7 +77,8 @@ class SyncStateMixin(PgBase):
                 RETURNING e.doc, e.from_id, e.to_id""",
                                                      org, user_email, service_type, _j(change)), transaction, write=True)
         except Exception as e:
-            self.logger.error(f"❌ Update user sync state failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_user_sync_state")
             return None
         if not rows:
             return None
@@ -88,7 +91,7 @@ class SyncStateMixin(PgBase):
         try:
             d = await self._one("/* pipeshub:graph.get_drive_sync_state */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'drives' AND id = $2", org, drive_id, transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get drive sync state failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_drive_sync_state")
             return None
         return _arango(d, _DRIVES) if d else None
 
@@ -99,7 +102,8 @@ class SyncStateMixin(PgBase):
                 WHERE org_id = $1 AND coll = 'drives' AND id = $2 RETURNING doc""",
                                                       org, drive_id, _j({"sync_state": state, "last_sync_update": get_epoch_timestamp_in_ms()})), transaction, write=True)
         except Exception as e:
-            self.logger.error(f"❌ Update drive sync state failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_drive_sync_state")
             return None
         return _arango(_doc(r["doc"]), _DRIVES) if r else None
 
@@ -114,7 +118,7 @@ class SyncStateMixin(PgBase):
                                             "createdAtTimestamp": get_epoch_timestamp_in_ms(), "expiration": expiration}], _TOKENS, transaction=transaction)
             return await self.get_document(key, _TOKENS, transaction=transaction, raise_on_error=True)
         except Exception as e:
-            self.logger.error(f"❌ Store page token failed: {type(e).__name__}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="store_page_token")
             return None
 
     async def get_page_token_db(self, channel_id: str | None = None, resource_id: str | None = None, user_email: str | None = None,
@@ -126,7 +130,7 @@ class SyncStateMixin(PgBase):
                 AND ($2::text IS NULL OR doc->>'channelId' = $2) AND ($3::text IS NULL OR doc->>'resourceId' = $3) AND ($4::text IS NULL OR doc->>'userEmail' = $4)
                 ORDER BY doc->'createdAtTimestamp' DESC, id LIMIT 1""", org, channel_id or None, resource_id or None, user_email or None, transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get page token failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_page_token_db")
             return None
         return _arango(d, _TOKENS) if d else None
 
@@ -175,6 +179,21 @@ class SyncStateMixin(PgBase):
         except Exception:
             raise
 
+    async def _promote_queued_copies(self, updates: list[dict], transaction: str | None) -> int:
+        """Write each copy's new status only while it is still QUEUED and holds no Force reindex request, in the statement that
+        checks it (a request stored after the copies were read is not overwritten). Returns how many copies were written."""
+        org = current_org_id()
+        items = [{"id": u["id"], "doc": {f: v for f, v in u.items() if f != "id"}} for u in updates]
+        for it in items:
+            _VALIDATOR.validate_node_update("records", it["doc"])
+        if not items:
+            return 0
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.promote_queued_copies */ UPDATE graph.nodes n SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(n.doc || x.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)
+            FROM jsonb_to_recordset($2::jsonb) AS x(id text, doc jsonb)
+            WHERE n.org_id = $1 AND n.coll = 'records' AND n.id = x.id AND n.doc->>'indexingStatus' = 'QUEUED' AND n.doc->>'refreshIntentId' IS NULL
+            RETURNING n.id""", org, _j(items)), transaction, write=True)
+        return len(rows or [])
+
     async def update_queued_duplicates_status(self, record_id: str, new_indexing_status: str, virtual_record_id: str | None = None,
                                               transaction: str | None = None, reason: str | None = None) -> int:
         """Give the QUEUED live records of the same org with the reference record's md5 (and size, when it has one) its new status. The count
@@ -187,24 +206,36 @@ class SyncStateMixin(PgBase):
             extraction_status = promoted_duplicate_extraction_status(new_indexing_status, _arango(ref, "records"))
             if extraction_status is None:
                 return 0
-            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.queued_duplicates */ SELECT n.id FROM graph.nodes n
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.queued_duplicates */ SELECT n.id, n.doc->>'mimeType' AS mime,
+                  n.doc->>'recordName' AS record_name, n.doc->>'recordType' AS record_type, f.doc->>'extension' AS extension
+                FROM graph.nodes n LEFT JOIN graph.nodes f ON f.org_id = n.org_id AND f.coll = 'files' AND f.id = n.id
                 WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'md5Checksum' = $2 AND n.id <> $3 AND n.doc->>'indexingStatus' = 'QUEUED'
                   AND n.doc->>'orgId' = $4 AND coalesce((n.doc->>'isDeleted')::boolean, false) = false
+                  AND n.doc->>'refreshIntentId' IS NULL
                   AND ($5::jsonb IS NULL OR n.doc->'sizeInBytes' = $5::jsonb) ORDER BY n.id""",
                                                   org, ref["md5Checksum"], record_id, ref[_ORG_FIELD],
                                                   None if ref.get("sizeInBytes") is None else _j(ref["sizeInBytes"])), transaction)
             if not rows:
                 return 0
             now = get_epoch_timestamp_in_ms()
+            # A duplicate read by another parser than this copy's stays QUEUED (its own event, or the stranded-record sweep, releases it).
+            queued = [{"id": r["id"], "mimeType": r["mime"], "recordName": r["record_name"], "recordType": r["record_type"]} for r in rows]
+            files = {r["id"]: {"extension": r["extension"]} for r in rows}
+            plan = None
+            if new_indexing_status == "COMPLETED" and parser_identity.identity_write_enabled():
+                plan = parser_identity.plan_promotions(ref, queued, files, at=now, vrid=virtual_record_id)
+            rows = [r for r in rows if plan is None or r["id"] in plan]
+            if not rows:
+                return 0
             updates = [{"id": r["id"], "indexingStatus": new_indexing_status, **indexed_copy_fields(new_indexing_status), "lastIndexTimestamp": now,
                         "isDirty": False, "virtualRecordId": virtual_record_id, "extractionStatus": extraction_status, **({"reason": reason} if reason else {}),
-                        **reference({}, WriteKind.STATUS_VAR, now, status=new_indexing_status)}
+                        **reference({}, WriteKind.STATUS_VAR, now, status=new_indexing_status), **(plan or {}).get(r["id"], {})}
                        for r in rows]
-            if new_indexing_status in _RECONCILED_STATUSES:     # in the same batch as the promotion, so a crash cannot leave copies with nothing to trigger their taxonomy
-                updates.append({"id": record_id, DUPLICATE_RECONCILE_PENDING_FIELD: True, DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
-                                DUPLICATE_RECONCILE_DUE_AT_FIELD: now + DUPLICATE_RECONCILE_GRACE_MS})
-            await self.batch_update_nodes(updates, "records", transaction)
-            return len(rows)
+            if new_indexing_status in _RECONCILED_STATUSES:     # first: a crash between the writes leaves a marker that finds no copies, never promoted copies with nothing to trigger their taxonomy
+                await self.batch_update_nodes([{"id": record_id, DUPLICATE_RECONCILE_PENDING_FIELD: True, DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
+                                                DUPLICATE_RECONCILE_DUE_AT_FIELD: now + DUPLICATE_RECONCILE_GRACE_MS}], "records", transaction)
+            return await self._promote_queued_copies(updates, transaction)
         except Exception as e:
-            self.logger.error(f"❌ Failed to update queued duplicates status: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="update_queued_duplicates_status")
             return -1

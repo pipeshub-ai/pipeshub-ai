@@ -18,9 +18,13 @@
 #   - rollback target resolution: explicit tag, previous-from-history, refusal
 #     when there is no history, and refusal when target == current.
 #   - rollback --dry-run leaves .env untouched.
+#   - rollback warns, and at a terminal asks, before a target older than this
+#     sandbox plane (R43SOCK-FU-5), and says how to keep code execution.
 #   - upgrade_seed response parsing across the shapes the KB list API may return.
 #   - published_hub_smoke and upgrade_smoke input checks for the deploy type and
 #     graph database a run asks for.
+#   - footprint.py (S1): the eval budget check fails over budget, and worker
+#     children are charged to their service.
 #
 # Run: bash deployment/docker-compose/tests/release_tooling_test.sh
 # ==============================================================================
@@ -149,6 +153,16 @@ if [[ "${1:-}" == "manifest" && "${2:-}" == "inspect" ]]; then
   [[ "${MANIFEST_OK:-1}" == "1" ]] && exit 0
   exit 1
 fi
+# The target image's labels (R43SOCK-FU-5): LOCAL_PLANE is a local copy's sandbox-plane label ("" for none, unset
+# for no local copy), REGISTRY_CONFIG the registry's config JSON (unset when it cannot be read).
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
+  [[ -n "${LOCAL_PLANE+x}" ]] || exit 1
+  echo "${LOCAL_PLANE:-<no value>}"; exit 0
+fi
+if [[ "${1:-}" == "buildx" && "${2:-}" == "imagetools" ]]; then
+  [[ -n "${REGISTRY_CONFIG+x}" ]] || exit 1
+  echo "$REGISTRY_CONFIG"; exit 0
+fi
 exit 0
 STUB
 chmod +x "$STUB_BIN/docker"
@@ -205,6 +219,47 @@ if [[ "$before" == "$(cat "$RB/.env")" ]]; then pass "--dry-run leaves .env unto
 
 out="$(bash "$RB/rollback.sh" --bogus 2>&1)"
 check "rejects an unknown option" "$out" "unknown option"
+
+echo
+echo "== rollback: code execution across the R43-SOCK sandbox plane (R43SOCK-FU-5) =="
+plane_label="ai.pipeshub.sandbox-plane.version"
+caps_dockerfile="$(grep -oE '^LABEL ai\.pipeshub\.capabilities="[^"]*"' "$ROOT/Dockerfile" | cut -d'"' -f2)"
+caps_installer="$(grep -oE '^APP_IMAGE_CAPABILITIES_ALL="[^"]*"' "$COMPOSE_DIR/install.sh" | cut -d'"' -f2)"
+check "install.sh's image capabilities are the Dockerfile's label" "${caps_installer:-none}" "${caps_dockerfile:-missing}"
+out="$(LOCAL_PLANE=2 bash "$RB/rollback.sh" --dry-run 0.6.0 2>&1)"
+check_not "no warning when the target speaks this sandbox plane" "$out" "code runs stop"
+out="$(LOCAL_PLANE=1 bash "$RB/rollback.sh" --dry-run 0.6.0 2>&1)"
+check "warns when the target is older than this sandbox plane" "$out" "0.6.0 is older than the release that put the sandbox"
+check "says code execution stops and the app keeps working" "$out" "the app, chat and search keep"
+check "says how to keep code execution" "$out" "git checkout v0.6.0 -- deployment/docker-compose"
+out="$(LOCAL_PLANE= bash "$RB/rollback.sh" --dry-run 0.6.0 2>&1)"
+check "an image with no label is older" "$out" "0.6.0 is older than the release"
+out="$(REGISTRY_CONFIG='{"config":{"Labels":{"'"$plane_label"'": "2"}}}' bash "$RB/rollback.sh" --dry-run 0.6.0 2>&1)"
+check_not "reads the label from the registry without pulling" "$out" "code runs stop"
+out="$(REGISTRY_CONFIG='{"linux/amd64":{"config":{"Labels":{"org.opencontainers.image.version":"0.6.0"}}}}' \
+  bash "$RB/rollback.sh" --dry-run 0.6.0 2>&1)"
+check "a registry image without the label is older" "$out" "0.6.0 is older than the release"
+out="$(bash "$RB/rollback.sh" --dry-run 0.6.0 2>&1)"
+check "says so when it cannot read the target's labels" "$out" "Could not read the labels of pipeshubai/pipeshub-ai:0.6.0"
+check "and still says how to keep code execution" "$out" "./install.sh --yes --upgrade"
+if [[ "$before" == "$(cat "$RB/.env")" ]]; then pass "the warning leaves .env untouched"; else fail "the warning leaves .env untouched"; fi
+# At a terminal it asks first; no is no rollback and no change. (script(1) gives the run a terminal.)
+if command -v script >/dev/null 2>&1; then
+  out="$(printf 'n\n' | LOCAL_PLANE=1 PATH="$PATH" script -qec "bash '$RB/rollback.sh' 0.6.0" /dev/null 2>&1)"
+  check "asks at a terminal and stops on no" "$out" "not rolled back. To keep code execution"
+  if [[ "$before" == "$(cat "$RB/.env")" ]]; then pass "a no leaves .env untouched"; else fail "a no leaves .env untouched"; fi
+  out="$(printf 'y\n' | LOCAL_PLANE=1 PATH="$PATH" script -qec "bash '$RB/rollback.sh' 0.6.0" /dev/null 2>&1)"
+  check "rolls back on yes" "$out" "rolled back to 0.6.0"
+  printf 'IMAGE_TAG=0.7.0\nAPP_PORT=3000\nDATA_STORE=neo4j\n' >"$RB/.env"
+  printf '2026-01-01T00:00:00Z 0.6.0\n2026-02-01T00:00:00Z 0.7.0\n' >"$RB/.pipeshub-image-history"
+fi
+dockerfile_plane="$(sed -nE 's/^LABEL ai\.pipeshub\.sandbox-plane\.version="([0-9]+)"$/\1/p' "$ROOT/Dockerfile")"
+rollback_plane="$(sed -nE 's/^SANDBOX_PLANE_VERSION=([0-9]+)$/\1/p' "$ROLLBACK")"
+if [[ -n "$dockerfile_plane" && "$dockerfile_plane" == "$rollback_plane" ]]; then
+  pass "the image's sandbox-plane label is the one rollback.sh expects ($dockerfile_plane)"
+else
+  fail "the image's sandbox-plane label ($dockerfile_plane) is the one rollback.sh expects ($rollback_plane)"
+fi
 
 rm -f "$RB/.env"
 out="$(bash "$RB/rollback.sh" 0.6.0 2>&1)"
@@ -362,6 +417,49 @@ check "first-run smoke refuses eval with ArangoDB, which eval never runs" "$out"
 
 out="$(PIPESHUB_GRAPH_DB=mysql PIPESHUB_BASE_VERSION=1 PIPESHUB_TARGET_VERSION=2 bash "$UPGRADE" 2>&1)"
 check "upgrade smoke rejects an unknown graph database" "$out" "must be neo4j or arango"
+
+echo
+echo "== footprint (S1): budget check and process attribution =="
+FOOT="$SCRIPT_DIR/footprint.py"
+if bash -n "$SCRIPT_DIR/footprint.sh" 2>/dev/null; then pass "footprint.sh parses"; else fail "footprint.sh parses"; fi
+out="$(PIPESHUB_DEPLOY_TYPE=medium bash "$SCRIPT_DIR/footprint.sh" 2>&1)"
+check "footprint rejects an unknown deploy type" "$out" "must be eval, slim or full"
+
+make_footprint() { # make_footprint <path> <app MiB> <mongo MiB>
+  cat >"$1" <<JSON
+{"label": "eval-test", "containers_mb": {"pipeshub-ai": $2, "mongodb": $3, "redis": 20},
+ "app_processes": {"query": {"rss_mb": 900, "pss_mb": 700, "processes": 2},
+                   "harness-worker": {"rss_mb": 500, "pss_mb": 400, "processes": 1}}}
+JSON
+}
+make_footprint "$TMP_ROOT/fp-ok.json" 4000 1000
+out="$(python3 "$FOOT" check "$TMP_ROOT/fp-ok.json" 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]]; then pass "footprint check passes within the eval budget"; else fail "footprint check passes within the eval budget ($out)"; fi
+make_footprint "$TMP_ROOT/fp-app.json" 4700 500
+out="$(python3 "$FOOT" check "$TMP_ROOT/fp-app.json" 2>&1)"; rc=$?
+if [[ $rc -eq 1 ]]; then pass "footprint check fails when the app is over 4.5 GB"; else fail "footprint check fails when the app is over 4.5 GB"; fi
+check "footprint names the app budget" "$out" "app container"
+make_footprint "$TMP_ROOT/fp-total.json" 4000 3800
+out="$(python3 "$FOOT" check "$TMP_ROOT/fp-total.json" 2>&1)"; rc=$?
+if [[ $rc -eq 1 ]]; then pass "footprint check fails when the total is over 7.5 GB"; else fail "footprint check fails when the total is over 7.5 GB"; fi
+out="$(python3 "$FOOT" render "$TMP_ROOT/fp-ok.json" 2>&1)"
+check "footprint table lists the harness worker" "$out" "| \`harness-worker\` | 400 / 500 |"
+out="$(python3 - "$FOOT" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fp", sys.argv[1])
+fp = importlib.util.module_from_spec(spec); spec.loader.exec_module(fp)
+rows = fp.parse_proc_listing(
+    "1\t0\t4000\t-\t/bin/bash /app/process_monitor.sh\n"
+    "10\t1\t200000\t150000\tpython -m app.query_main\n"
+    "11\t10\t100000\t50000\t/usr/bin/python3 -c from multiprocessing import spawn\n"
+    "12\t1\t300000\t300000\tpython -m app.harness_main\n")
+g = fp.group_processes(rows)
+print(g["query"]["processes"], round(g["query"]["pss_mb"]), round(g["harness-worker"]["pss_mb"]))
+print(round(fp.parse_size_mb("1.5GiB")), round(fp.parse_size_mb("512MiB")))
+PY
+)"
+check "footprint charges a worker child to its service" "$out" "2 195 293"
+check "footprint parses docker stats sizes" "$out" "1536 512"
 
 echo
 P="$(wc -l <"$PASS_FILE" | tr -d ' ')"; F="$(wc -l <"$FAIL_FILE" | tr -d ' ')"

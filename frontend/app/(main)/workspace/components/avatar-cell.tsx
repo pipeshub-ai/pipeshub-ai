@@ -44,7 +44,10 @@ export function AvatarCell({
 
   return (
     <Flex align="center" gap="3" style={{ minWidth: 0, overflow: 'hidden' }}>
-      <UserAvatar fullName={name} email={email} src={profilePicture} size={avatarSize} radius='small'/>
+      {/* Decorative: the name beside it is the accessible name, so initials are not read before it */}
+      <Flex aria-hidden flexShrink="0">
+        <UserAvatar fullName={name} email={email} src={profilePicture} size={avatarSize} radius='small'/>
+      </Flex>
       <Flex direction="column" style={{ overflow: 'hidden', minWidth: 0 }}>
         <Text
           size="2"

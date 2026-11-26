@@ -1,0 +1,4432 @@
+{
+ "journals": [
+  {
+   "name": "agent_artifact_marker_answer",
+   "journal": "journals/agent_artifact_marker_answer.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call-promote",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_ask_user_question",
+   "journal": "journals/agent_ask_user_question.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "needs_input"
+    },
+    "calls": [
+     [
+      1,
+      "call-ask",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_cancel_mid_stream",
+   "journal": "journals/agent_cancel_mid_stream.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "cancelled"
+    },
+    "calls": [
+     [
+      1,
+      "call-export",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_final_answer_with_write",
+   "journal": "journals/agent_final_answer_with_write.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call-export",
+      "ok",
+      false
+     ],
+     [
+      1,
+      "call-final",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_live_file_citation",
+   "journal": "journals/agent_live_file_citation.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call-read",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_pre_run_clarification",
+   "journal": "journals/agent_pre_run_clarification.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "needs_input"
+    },
+    "calls": [],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_quick_final_answer",
+   "journal": "journals/agent_quick_final_answer.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call-search",
+      "ok",
+      false
+     ],
+     [
+      2,
+      "call-final",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_quick_reasoning",
+   "journal": "journals/agent_quick_reasoning.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_quick_tool_call",
+   "journal": "journals/agent_quick_tool_call.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call-search",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_react_planned",
+   "journal": "journals/agent_react_planned.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call-plan-1",
+      "ok",
+      false
+     ],
+     [
+      2,
+      "call-search",
+      "ok",
+      false
+     ],
+     [
+      3,
+      "call-plan-2",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_react_tool_error_then_success",
+   "journal": "journals/agent_react_tool_error_then_success.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call-bad",
+      "error",
+      false
+     ],
+     [
+      2,
+      "call-good",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_search_tools_unavailable",
+   "journal": "journals/agent_search_tools_unavailable.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call-find",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_steered_after_answer",
+   "journal": "journals/agent_steered_after_answer.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [],
+    "approvals": [],
+    "inputs": [
+     1
+    ],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_steered_during_tool",
+   "journal": "journals/agent_steered_during_tool.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call-export",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [
+     1
+    ],
+    "children": []
+   }
+  },
+  {
+   "name": "agent_truncated_response_continued",
+   "journal": "journals/agent_truncated_response_continued.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "chat_answer_with_citations",
+   "journal": "journals/chat_answer_with_citations.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "chat_llm_rejected",
+   "journal": "journals/chat_llm_rejected.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "failed",
+     "detail": "auth_error"
+    },
+    "calls": [],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "chat_llm_unavailable",
+   "journal": "journals/chat_llm_unavailable.journal.json",
+   "runId": "run-golden",
+   "summary": {
+    "end": {
+     "status": "failed",
+     "detail": "llm_initialization_failed"
+    },
+    "calls": [],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "ma1_parent_with_role_child",
+   "journal": "journals/ma1_parent_with_role_child.journal.json",
+   "runId": "run1",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call_0_0",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": [
+     [
+      "1fbeb51b-cfda-772d-ae35-877b4dc91061",
+      "completed"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "u3_engine_run",
+   "journal": "journals/u3_engine_run.journal.json",
+   "runId": "run-u3-engine",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [],
+    "approvals": [
+     [
+      "ix.approve.k0f1e2d3c4b5a69788796a5b4c3d2e1f00112233",
+      "approved"
+     ]
+    ],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "u3_parent_with_engine_child",
+   "journal": "journals/u3_parent_with_engine_child.journal.json",
+   "runId": "run-u3-parent",
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call-ct",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": [
+     [
+      "run-u3-child",
+      "completed"
+     ]
+    ]
+   }
+  },
+  {
+   "name": "library/tool_turn",
+   "runId": "run1",
+   "sessionId": "ses1",
+   "events": [
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 1,
+     "type": "run.admitted",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "runKind": "interactive",
+      "principalRef": "p_user"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 2,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 1,
+      "fence": 1,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 3,
+     "type": "run.spec_pinned",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "specDigest": "sha256:b342ac84244539bb88b1bda958acbbb609c128420a68dbf88fcee799b957313e",
+      "spec": {
+       "schemaVersion": 2,
+       "harnessMajor": 2,
+       "foldVersion": 1,
+       "runKind": "interactive",
+       "principalRef": "p_user",
+       "model": {
+        "policy": [
+         {
+          "provider": "scripted",
+          "model": "scripted-1"
+         }
+        ],
+        "promptVersion": "p-test"
+       },
+       "grants": {
+        "tools": [],
+        "sandboxProfile": "none",
+        "egress": "none"
+       },
+       "budgets": {
+        "maxTurns": 6,
+        "maxTokens": 1000000,
+        "maxCostUsd": 1.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2027-01-01T00:00:00Z",
+        "maxChildren": 0
+       },
+       "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+       "extensions": {}
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 4,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "user",
+      "textRef": {
+       "ref": "cas:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "hash": "sha256:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "size": 11
+      },
+      "isFinal": false
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 5,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 6,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:923184f4acab392df8bc2fa937ac7d91ea506ddf827b81a177757261a214fe43",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 7,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:69096c9e2b3f9d01a536e9e5a4479fbfd2d59da0ee62b71f8ac3438c867e2a15",
+       "hash": "sha256:69096c9e2b3f9d01a536e9e5a4479fbfd2d59da0ee62b71f8ac3438c867e2a15",
+       "size": 131
+      },
+      "toolCalls": [
+       {
+        "callId": "call_t1_0",
+        "modelName": "lookup",
+        "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0"
+       },
+       {
+        "callId": "call_t1_1",
+        "modelName": "create_issue",
+        "argsDigest": "sha256:2bfd14f43d17fc7cea24e0917a8879b4b2f880b8baeec1b9d90fbaad655e71bd"
+       }
+      ],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:76f83e6cf93d8103e58811c3ad37d5d38e3826bd24f22b2a26beb28a80faa90e",
+       "hash": "sha256:76f83e6cf93d8103e58811c3ad37d5d38e3826bd24f22b2a26beb28a80faa90e",
+       "size": 182
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 8,
+     "type": "tool.intent",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "toolId": "local@default/lookup",
+      "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0",
+      "effect": "read",
+      "sink": {
+       "egress": "self",
+       "argsLeaveBoundary": false
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 9,
+     "type": "tool.outcome",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "status": "ok",
+      "resultRef": {
+       "ref": "cas:5351013186951cab636e238361882378165a430cee91fdfdd15ea8cd2f82d431",
+       "hash": "sha256:5351013186951cab636e238361882378165a430cee91fdfdd15ea8cd2f82d431",
+       "size": 42
+      },
+      "labels": {
+       "integrity": "internal"
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 10,
+     "type": "tool.intent",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.1",
+      "toolId": "local@default/create_issue",
+      "argsDigest": "sha256:2bfd14f43d17fc7cea24e0917a8879b4b2f880b8baeec1b9d90fbaad655e71bd",
+      "effect": "write",
+      "sink": {
+       "egress": "external",
+       "argsLeaveBoundary": true
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 11,
+     "type": "tool.outcome",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.1",
+      "status": "ok",
+      "resultRef": {
+       "ref": "cas:c4e72f8fe09876024844cae070f7e227b428743de48a1b78ec8369f95c49aa27",
+       "hash": "sha256:c4e72f8fe09876024844cae070f7e227b428743de48a1b78ec8369f95c49aa27",
+       "size": 54
+      },
+      "labels": {
+       "integrity": "internal"
+      },
+      "receipt": {
+       "id": "create_issue-1"
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 12,
+     "type": "turn.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 13,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 14,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:1248bba79e72acbd482c3105f82480cc4a58e3e2e0695a4ba301a02fb881f788",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 15,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:f926e9d10a4d6d3a2a043d8b9cd1322502dba44993f38f846524803a599d93b1",
+       "hash": "sha256:f926e9d10a4d6d3a2a043d8b9cd1322502dba44993f38f846524803a599d93b1",
+       "size": 30
+      },
+      "toolCalls": [],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:6ecbbfd9b460f3d07e90945d5ba36b284eaeb5d92d3831735b8b131b3eb5c3fb",
+       "hash": "sha256:6ecbbfd9b460f3d07e90945d5ba36b284eaeb5d92d3831735b8b131b3eb5c3fb",
+       "size": 98
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 16,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "assistant",
+      "textRef": {
+       "ref": "cas:a4c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2211",
+       "hash": "sha256:a4c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2211",
+       "size": 4
+      },
+      "isFinal": true
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 17,
+     "type": "turn.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 18,
+     "type": "run.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "outcome": "answered"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    }
+   ],
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call_t1_0",
+      "ok",
+      false
+     ],
+     [
+      1,
+      "call_t1_1",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "library/approval_approved",
+   "runId": "run1",
+   "sessionId": "ses1",
+   "events": [
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 1,
+     "type": "run.admitted",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "runKind": "interactive",
+      "principalRef": "p_user"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 2,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 1,
+      "fence": 1,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 3,
+     "type": "run.spec_pinned",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "specDigest": "sha256:b342ac84244539bb88b1bda958acbbb609c128420a68dbf88fcee799b957313e",
+      "spec": {
+       "schemaVersion": 2,
+       "harnessMajor": 2,
+       "foldVersion": 1,
+       "runKind": "interactive",
+       "principalRef": "p_user",
+       "model": {
+        "policy": [
+         {
+          "provider": "scripted",
+          "model": "scripted-1"
+         }
+        ],
+        "promptVersion": "p-test"
+       },
+       "grants": {
+        "tools": [],
+        "sandboxProfile": "none",
+        "egress": "none"
+       },
+       "budgets": {
+        "maxTurns": 6,
+        "maxTokens": 1000000,
+        "maxCostUsd": 1.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2027-01-01T00:00:00Z",
+        "maxChildren": 0
+       },
+       "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+       "extensions": {}
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 4,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "user",
+      "textRef": {
+       "ref": "cas:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "hash": "sha256:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "size": 11
+      },
+      "isFinal": false
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 5,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 6,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:923184f4acab392df8bc2fa937ac7d91ea506ddf827b81a177757261a214fe43",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 7,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:a02a7d2c2dec0a31008250c337a34e5d6020a0fc0925c8518e644aa7a51dd831",
+       "hash": "sha256:a02a7d2c2dec0a31008250c337a34e5d6020a0fc0925c8518e644aa7a51dd831",
+       "size": 81
+      },
+      "toolCalls": [
+       {
+        "callId": "call_t1_0",
+        "modelName": "post_message",
+        "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0"
+       }
+      ],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:465e2c85d74f75a6a45db0c3f5c1ed8faf5709f0c496f50f15295745c130f1d6",
+       "hash": "sha256:465e2c85d74f75a6a45db0c3f5c1ed8faf5709f0c496f50f15295745c130f1d6",
+       "size": 127
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 8,
+     "type": "interaction.explained",
+     "schemaVersion": 1,
+     "critical": false,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "rule": "writes",
+      "toolId": "local@default/post_message",
+      "conversationGrant": false,
+      "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0",
+      "editable": true,
+      "interactionId": "ix.approve.t1.0"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 9,
+     "type": "interaction.requested",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "interactionId": "ix.approve.t1.0",
+      "kind": "approval",
+      "bindingDigest": "sha256:081eeeef2da86448450d8004768a4e8eb99da967df2f4e95b2f10c2ebb85aec0"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 10,
+     "type": "run.suspended",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "reason": "approval",
+      "interactionId": "ix.approve.t1.0"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 11,
+     "type": "interaction.resolved",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "interactionId": "ix.approve.t1.0",
+      "decision": "approved",
+      "by": "p_user",
+      "channel": "web"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 12,
+     "type": "run.resumed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "cause": "resolved"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 13,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 1,
+      "fence": 2,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 14,
+     "type": "tool.intent",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "toolId": "local@default/post_message",
+      "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0",
+      "effect": "write",
+      "sink": {
+       "egress": "external",
+       "argsLeaveBoundary": true
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 15,
+     "type": "tool.outcome",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "status": "ok",
+      "resultRef": {
+       "ref": "cas:bd7df6d57e51ee26fda1a047f34ec3e5c03df459eaa4812c06b65b05f984e0b6",
+       "hash": "sha256:bd7df6d57e51ee26fda1a047f34ec3e5c03df459eaa4812c06b65b05f984e0b6",
+       "size": 55
+      },
+      "labels": {
+       "integrity": "internal"
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 16,
+     "type": "turn.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 17,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 18,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:31ef02ac46fbab8242127cd315c39a2aa85f77d4aa8a6496607b67672b3f49d4",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 19,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:f926e9d10a4d6d3a2a043d8b9cd1322502dba44993f38f846524803a599d93b1",
+       "hash": "sha256:f926e9d10a4d6d3a2a043d8b9cd1322502dba44993f38f846524803a599d93b1",
+       "size": 30
+      },
+      "toolCalls": [],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:6ecbbfd9b460f3d07e90945d5ba36b284eaeb5d92d3831735b8b131b3eb5c3fb",
+       "hash": "sha256:6ecbbfd9b460f3d07e90945d5ba36b284eaeb5d92d3831735b8b131b3eb5c3fb",
+       "size": 98
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 20,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "assistant",
+      "textRef": {
+       "ref": "cas:a4c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2211",
+       "hash": "sha256:a4c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2211",
+       "size": 4
+      },
+      "isFinal": true
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 21,
+     "type": "turn.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 22,
+     "type": "run.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "outcome": "answered"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    }
+   ],
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call_t1_0",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [
+     [
+      "ix.approve.t1.0",
+      "approved"
+     ]
+    ],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "library/approval_denied",
+   "runId": "run1",
+   "sessionId": "ses1",
+   "events": [
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 1,
+     "type": "run.admitted",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "runKind": "interactive",
+      "principalRef": "p_user"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 2,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 1,
+      "fence": 1,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 3,
+     "type": "run.spec_pinned",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "specDigest": "sha256:b342ac84244539bb88b1bda958acbbb609c128420a68dbf88fcee799b957313e",
+      "spec": {
+       "schemaVersion": 2,
+       "harnessMajor": 2,
+       "foldVersion": 1,
+       "runKind": "interactive",
+       "principalRef": "p_user",
+       "model": {
+        "policy": [
+         {
+          "provider": "scripted",
+          "model": "scripted-1"
+         }
+        ],
+        "promptVersion": "p-test"
+       },
+       "grants": {
+        "tools": [],
+        "sandboxProfile": "none",
+        "egress": "none"
+       },
+       "budgets": {
+        "maxTurns": 6,
+        "maxTokens": 1000000,
+        "maxCostUsd": 1.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2027-01-01T00:00:00Z",
+        "maxChildren": 0
+       },
+       "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+       "extensions": {}
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 4,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "user",
+      "textRef": {
+       "ref": "cas:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "hash": "sha256:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "size": 11
+      },
+      "isFinal": false
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 5,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 6,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:923184f4acab392df8bc2fa937ac7d91ea506ddf827b81a177757261a214fe43",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 7,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:a02a7d2c2dec0a31008250c337a34e5d6020a0fc0925c8518e644aa7a51dd831",
+       "hash": "sha256:a02a7d2c2dec0a31008250c337a34e5d6020a0fc0925c8518e644aa7a51dd831",
+       "size": 81
+      },
+      "toolCalls": [
+       {
+        "callId": "call_t1_0",
+        "modelName": "post_message",
+        "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0"
+       }
+      ],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:465e2c85d74f75a6a45db0c3f5c1ed8faf5709f0c496f50f15295745c130f1d6",
+       "hash": "sha256:465e2c85d74f75a6a45db0c3f5c1ed8faf5709f0c496f50f15295745c130f1d6",
+       "size": 127
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 8,
+     "type": "interaction.explained",
+     "schemaVersion": 1,
+     "critical": false,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "rule": "writes",
+      "toolId": "local@default/post_message",
+      "conversationGrant": false,
+      "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0",
+      "editable": true,
+      "interactionId": "ix.approve.t1.0"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 9,
+     "type": "interaction.requested",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "interactionId": "ix.approve.t1.0",
+      "kind": "approval",
+      "bindingDigest": "sha256:081eeeef2da86448450d8004768a4e8eb99da967df2f4e95b2f10c2ebb85aec0"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 10,
+     "type": "run.suspended",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "reason": "approval",
+      "interactionId": "ix.approve.t1.0"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 11,
+     "type": "interaction.resolved",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "interactionId": "ix.approve.t1.0",
+      "decision": "denied",
+      "by": "p_user",
+      "channel": "web"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 12,
+     "type": "run.resumed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "cause": "resolved"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 13,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 1,
+      "fence": 2,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 14,
+     "type": "tool.denied",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "rule": "interaction_denied"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 15,
+     "type": "tool.outcome",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "status": "error",
+      "resultRef": {
+       "ref": "cas:513f5bc4ae26692cdcc4d7e9d4e4d9d46d6e5cd88ab18eeb76af4846ee97883d",
+       "hash": "sha256:513f5bc4ae26692cdcc4d7e9d4e4d9d46d6e5cd88ab18eeb76af4846ee97883d",
+       "size": 187
+      },
+      "labels": {
+       "integrity": "internal"
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 16,
+     "type": "turn.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 17,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 18,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:40cb1079b0c82b0cccc249f497c1019208261c8493e479fc06795c67da2ed58e",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 19,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:f926e9d10a4d6d3a2a043d8b9cd1322502dba44993f38f846524803a599d93b1",
+       "hash": "sha256:f926e9d10a4d6d3a2a043d8b9cd1322502dba44993f38f846524803a599d93b1",
+       "size": 30
+      },
+      "toolCalls": [],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:6ecbbfd9b460f3d07e90945d5ba36b284eaeb5d92d3831735b8b131b3eb5c3fb",
+       "hash": "sha256:6ecbbfd9b460f3d07e90945d5ba36b284eaeb5d92d3831735b8b131b3eb5c3fb",
+       "size": 98
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 20,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "assistant",
+      "textRef": {
+       "ref": "cas:a4c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2211",
+       "hash": "sha256:a4c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2211",
+       "size": 4
+      },
+      "isFinal": true
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 21,
+     "type": "turn.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 22,
+     "type": "run.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "outcome": "answered"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    }
+   ],
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call_t1_0",
+      "error",
+      true
+     ]
+    ],
+    "approvals": [
+     [
+      "ix.approve.t1.0",
+      "denied"
+     ]
+    ],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "library/crash_after_intent",
+   "runId": "run1",
+   "sessionId": "ses1",
+   "events": [
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 1,
+     "type": "run.admitted",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "runKind": "interactive",
+      "principalRef": "p_user"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 2,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 1,
+      "fence": 1,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 3,
+     "type": "run.spec_pinned",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "specDigest": "sha256:b342ac84244539bb88b1bda958acbbb609c128420a68dbf88fcee799b957313e",
+      "spec": {
+       "schemaVersion": 2,
+       "harnessMajor": 2,
+       "foldVersion": 1,
+       "runKind": "interactive",
+       "principalRef": "p_user",
+       "model": {
+        "policy": [
+         {
+          "provider": "scripted",
+          "model": "scripted-1"
+         }
+        ],
+        "promptVersion": "p-test"
+       },
+       "grants": {
+        "tools": [],
+        "sandboxProfile": "none",
+        "egress": "none"
+       },
+       "budgets": {
+        "maxTurns": 6,
+        "maxTokens": 1000000,
+        "maxCostUsd": 1.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2027-01-01T00:00:00Z",
+        "maxChildren": 0
+       },
+       "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+       "extensions": {}
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 4,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "user",
+      "textRef": {
+       "ref": "cas:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "hash": "sha256:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "size": 11
+      },
+      "isFinal": false
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 5,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 6,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:923184f4acab392df8bc2fa937ac7d91ea506ddf827b81a177757261a214fe43",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 7,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:86514c45d59166f7cefb7f99dae44f854555e1a650f4c9601e398dd067e1a3d6",
+       "hash": "sha256:86514c45d59166f7cefb7f99dae44f854555e1a650f4c9601e398dd067e1a3d6",
+       "size": 81
+      },
+      "toolCalls": [
+       {
+        "callId": "call_t1_0",
+        "modelName": "create_issue",
+        "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0"
+       }
+      ],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:a0028dbdf2db944b084aeff1526a6236a7185e6995b2dc080aa4e0105eecaaec",
+       "hash": "sha256:a0028dbdf2db944b084aeff1526a6236a7185e6995b2dc080aa4e0105eecaaec",
+       "size": 127
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 8,
+     "type": "tool.intent",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "toolId": "local@default/create_issue",
+      "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0",
+      "effect": "write",
+      "sink": {
+       "egress": "external",
+       "argsLeaveBoundary": true
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 9,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 2,
+      "fence": 2,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 10,
+     "type": "tool.outcome",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "status": "ok",
+      "resultRef": {
+       "ref": "cas:c4e72f8fe09876024844cae070f7e227b428743de48a1b78ec8369f95c49aa27",
+       "hash": "sha256:c4e72f8fe09876024844cae070f7e227b428743de48a1b78ec8369f95c49aa27",
+       "size": 54
+      },
+      "labels": {
+       "integrity": "internal"
+      },
+      "receipt": {
+       "id": "create_issue-1"
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 11,
+     "type": "turn.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 12,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 13,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:364b71c626a781660f94510704041483431a3935e5987401de2857af37927078",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 14,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:7d9c1708e2cc882e98f9e438d591cabafa0d7491903ee01ed91cac227f55c038",
+       "hash": "sha256:7d9c1708e2cc882e98f9e438d591cabafa0d7491903ee01ed91cac227f55c038",
+       "size": 75
+      },
+      "toolCalls": [
+       {
+        "callId": "call_t2_0",
+        "modelName": "lookup",
+        "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0"
+       }
+      ],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:e60e0f7358ff84835f16feee36c7ee6e5ebedd2ea71d00fd5b405a69a3cfcea6",
+       "hash": "sha256:e60e0f7358ff84835f16feee36c7ee6e5ebedd2ea71d00fd5b405a69a3cfcea6",
+       "size": 121
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 15,
+     "type": "tool.intent",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t2.0",
+      "toolId": "local@default/lookup",
+      "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0",
+      "effect": "read",
+      "sink": {
+       "egress": "self",
+       "argsLeaveBoundary": false
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 16,
+     "type": "tool.outcome",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t2.0",
+      "status": "ok",
+      "resultRef": {
+       "ref": "cas:5351013186951cab636e238361882378165a430cee91fdfdd15ea8cd2f82d431",
+       "hash": "sha256:5351013186951cab636e238361882378165a430cee91fdfdd15ea8cd2f82d431",
+       "size": 42
+      },
+      "labels": {
+       "integrity": "internal"
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 17,
+     "type": "turn.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 18,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 3
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 19,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:4f750ee458edd8e17513c8e2f250a3544925bdee73b0329d51520863646a39a6",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 20,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:f926e9d10a4d6d3a2a043d8b9cd1322502dba44993f38f846524803a599d93b1",
+       "hash": "sha256:f926e9d10a4d6d3a2a043d8b9cd1322502dba44993f38f846524803a599d93b1",
+       "size": 30
+      },
+      "toolCalls": [],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:6ecbbfd9b460f3d07e90945d5ba36b284eaeb5d92d3831735b8b131b3eb5c3fb",
+       "hash": "sha256:6ecbbfd9b460f3d07e90945d5ba36b284eaeb5d92d3831735b8b131b3eb5c3fb",
+       "size": 98
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 21,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "assistant",
+      "textRef": {
+       "ref": "cas:a4c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2211",
+       "hash": "sha256:a4c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2211",
+       "size": 4
+      },
+      "isFinal": true
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 22,
+     "type": "turn.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 3
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 23,
+     "type": "run.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "outcome": "answered"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    }
+   ],
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call_t1_0",
+      "ok",
+      false
+     ],
+     [
+      2,
+      "call_t2_0",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "library/cancel_mid_run",
+   "runId": "run1",
+   "sessionId": "ses1",
+   "events": [
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 1,
+     "type": "run.admitted",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "runKind": "interactive",
+      "principalRef": "p_user"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 2,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 1,
+      "fence": 1,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 3,
+     "type": "run.spec_pinned",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "specDigest": "sha256:b342ac84244539bb88b1bda958acbbb609c128420a68dbf88fcee799b957313e",
+      "spec": {
+       "schemaVersion": 2,
+       "harnessMajor": 2,
+       "foldVersion": 1,
+       "runKind": "interactive",
+       "principalRef": "p_user",
+       "model": {
+        "policy": [
+         {
+          "provider": "scripted",
+          "model": "scripted-1"
+         }
+        ],
+        "promptVersion": "p-test"
+       },
+       "grants": {
+        "tools": [],
+        "sandboxProfile": "none",
+        "egress": "none"
+       },
+       "budgets": {
+        "maxTurns": 6,
+        "maxTokens": 1000000,
+        "maxCostUsd": 1.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2027-01-01T00:00:00Z",
+        "maxChildren": 0
+       },
+       "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+       "extensions": {}
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 4,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "user",
+      "textRef": {
+       "ref": "cas:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "hash": "sha256:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "size": 11
+      },
+      "isFinal": false
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 5,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 6,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:923184f4acab392df8bc2fa937ac7d91ea506ddf827b81a177757261a214fe43",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 7,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:92f92e9d30027470a7b81e60633ed5f3e9e3d9624caa0a4b8905b50d8334933b",
+       "hash": "sha256:92f92e9d30027470a7b81e60633ed5f3e9e3d9624caa0a4b8905b50d8334933b",
+       "size": 75
+      },
+      "toolCalls": [
+       {
+        "callId": "call_t1_0",
+        "modelName": "lookup",
+        "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0"
+       }
+      ],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:7bc15f58352df4c0226c80c3ff2967f0f7879e10d8ab190ee3b8a9b6bdd7338a",
+       "hash": "sha256:7bc15f58352df4c0226c80c3ff2967f0f7879e10d8ab190ee3b8a9b6bdd7338a",
+       "size": 121
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 8,
+     "type": "run.cancel_requested",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "by": "p_user"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 9,
+     "type": "run.cancelled",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {},
+     "runId": "run1"
+    }
+   ],
+   "summary": {
+    "end": {
+     "status": "cancelled"
+    },
+    "calls": [
+     [
+      1,
+      "call_t1_0",
+      null,
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "library/steered",
+   "runId": "run1",
+   "sessionId": "ses1",
+   "events": [
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 1,
+     "type": "run.admitted",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "runKind": "interactive",
+      "principalRef": "p_user"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 2,
+     "type": "input.queued",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "messageSeq": 1,
+      "textRef": {
+       "ref": "inline:YWxzbyB0aGlz",
+       "hash": "sha256:eb731e2a83e98408c4da7575ba9355fd90f628586bd2191bf391e9131c09f8b0",
+       "size": 9
+      }
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 3,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 1,
+      "fence": 1,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 4,
+     "type": "run.spec_pinned",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "specDigest": "sha256:b342ac84244539bb88b1bda958acbbb609c128420a68dbf88fcee799b957313e",
+      "spec": {
+       "schemaVersion": 2,
+       "harnessMajor": 2,
+       "foldVersion": 1,
+       "runKind": "interactive",
+       "principalRef": "p_user",
+       "model": {
+        "policy": [
+         {
+          "provider": "scripted",
+          "model": "scripted-1"
+         }
+        ],
+        "promptVersion": "p-test"
+       },
+       "grants": {
+        "tools": [],
+        "sandboxProfile": "none",
+        "egress": "none"
+       },
+       "budgets": {
+        "maxTurns": 6,
+        "maxTokens": 1000000,
+        "maxCostUsd": 1.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2027-01-01T00:00:00Z",
+        "maxChildren": 0
+       },
+       "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+       "extensions": {}
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 5,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "user",
+      "textRef": {
+       "ref": "cas:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "hash": "sha256:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "size": 11
+      },
+      "isFinal": false
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 6,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 7,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:923184f4acab392df8bc2fa937ac7d91ea506ddf827b81a177757261a214fe43",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 8,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:92f92e9d30027470a7b81e60633ed5f3e9e3d9624caa0a4b8905b50d8334933b",
+       "hash": "sha256:92f92e9d30027470a7b81e60633ed5f3e9e3d9624caa0a4b8905b50d8334933b",
+       "size": 75
+      },
+      "toolCalls": [
+       {
+        "callId": "call_t1_0",
+        "modelName": "lookup",
+        "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0"
+       }
+      ],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:7bc15f58352df4c0226c80c3ff2967f0f7879e10d8ab190ee3b8a9b6bdd7338a",
+       "hash": "sha256:7bc15f58352df4c0226c80c3ff2967f0f7879e10d8ab190ee3b8a9b6bdd7338a",
+       "size": 121
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 9,
+     "type": "tool.intent",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "toolId": "local@default/lookup",
+      "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0",
+      "effect": "read",
+      "sink": {
+       "egress": "self",
+       "argsLeaveBoundary": false
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 10,
+     "type": "tool.outcome",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "status": "ok",
+      "resultRef": {
+       "ref": "cas:5351013186951cab636e238361882378165a430cee91fdfdd15ea8cd2f82d431",
+       "hash": "sha256:5351013186951cab636e238361882378165a430cee91fdfdd15ea8cd2f82d431",
+       "size": 42
+      },
+      "labels": {
+       "integrity": "internal"
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 11,
+     "type": "input.consumed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageSeq": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 12,
+     "type": "turn.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 13,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 14,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:978ada5b894198c8cc3113528c324ce671f00f7270e813afd971fab615ec2b94",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 15,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:f926e9d10a4d6d3a2a043d8b9cd1322502dba44993f38f846524803a599d93b1",
+       "hash": "sha256:f926e9d10a4d6d3a2a043d8b9cd1322502dba44993f38f846524803a599d93b1",
+       "size": 30
+      },
+      "toolCalls": [],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:6ecbbfd9b460f3d07e90945d5ba36b284eaeb5d92d3831735b8b131b3eb5c3fb",
+       "hash": "sha256:6ecbbfd9b460f3d07e90945d5ba36b284eaeb5d92d3831735b8b131b3eb5c3fb",
+       "size": 98
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 16,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "assistant",
+      "textRef": {
+       "ref": "cas:a4c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2211",
+       "hash": "sha256:a4c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2211",
+       "size": 4
+      },
+      "isFinal": true
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 17,
+     "type": "turn.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 18,
+     "type": "run.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "outcome": "answered"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    }
+   ],
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call_t1_0",
+      "ok",
+      false
+     ]
+    ],
+    "approvals": [],
+    "inputs": [
+     1
+    ],
+    "children": []
+   }
+  },
+  {
+   "name": "library/unknown_effect",
+   "runId": "run1",
+   "sessionId": "ses1",
+   "events": [
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 1,
+     "type": "run.admitted",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "runKind": "interactive",
+      "principalRef": "p_user"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 2,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 1,
+      "fence": 1,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 3,
+     "type": "run.spec_pinned",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "specDigest": "sha256:b342ac84244539bb88b1bda958acbbb609c128420a68dbf88fcee799b957313e",
+      "spec": {
+       "schemaVersion": 2,
+       "harnessMajor": 2,
+       "foldVersion": 1,
+       "runKind": "interactive",
+       "principalRef": "p_user",
+       "model": {
+        "policy": [
+         {
+          "provider": "scripted",
+          "model": "scripted-1"
+         }
+        ],
+        "promptVersion": "p-test"
+       },
+       "grants": {
+        "tools": [],
+        "sandboxProfile": "none",
+        "egress": "none"
+       },
+       "budgets": {
+        "maxTurns": 6,
+        "maxTokens": 1000000,
+        "maxCostUsd": 1.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2027-01-01T00:00:00Z",
+        "maxChildren": 0
+       },
+       "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+       "extensions": {}
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 4,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "user",
+      "textRef": {
+       "ref": "cas:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "hash": "sha256:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "size": 11
+      },
+      "isFinal": false
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 5,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 6,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:923184f4acab392df8bc2fa937ac7d91ea506ddf827b81a177757261a214fe43",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 7,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:ecce209f6724c369917a5bb632abf5c88b4849acbdf1141945a91235e5c9653d",
+       "hash": "sha256:ecce209f6724c369917a5bb632abf5c88b4849acbdf1141945a91235e5c9653d",
+       "size": 80
+      },
+      "toolCalls": [
+       {
+        "callId": "call_t1_0",
+        "modelName": "flaky_write",
+        "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0"
+       }
+      ],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:bbc5331fdc8659e79ae614372af397c90e227404869a74a83b1bc90cd63e2510",
+       "hash": "sha256:bbc5331fdc8659e79ae614372af397c90e227404869a74a83b1bc90cd63e2510",
+       "size": 126
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 8,
+     "type": "tool.intent",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "toolId": "local@default/flaky_write",
+      "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0",
+      "effect": "write",
+      "sink": {
+       "egress": "external",
+       "argsLeaveBoundary": true
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 9,
+     "type": "tool.unknown",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "reason": "effect outcome unknown"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 10,
+     "type": "interaction.requested",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "interactionId": "ix.unknown.t1.0",
+      "kind": "approval",
+      "bindingDigest": "sha256:922af177f8956ecd11fbb24fd16696aa2d2b76a0f48d96b56331537af16bbb84"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 11,
+     "type": "run.suspended",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "reason": "approval",
+      "interactionId": "ix.unknown.t1.0"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 12,
+     "type": "interaction.resolved",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "interactionId": "ix.unknown.t1.0",
+      "decision": "denied",
+      "by": "p_user",
+      "channel": "web"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 13,
+     "type": "run.resumed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "cause": "resolved"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 14,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 1,
+      "fence": 2,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 15,
+     "type": "tool.denied",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "rule": "interaction_denied"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 16,
+     "type": "tool.outcome",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "status": "error",
+      "resultRef": {
+       "ref": "cas:925db0a465606908af57d2163495b0567b2482751fcac1eb8c692214928dd3ed",
+       "hash": "sha256:925db0a465606908af57d2163495b0567b2482751fcac1eb8c692214928dd3ed",
+       "size": 63
+      },
+      "labels": {
+       "integrity": "internal"
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 17,
+     "type": "turn.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 18,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 19,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:b980819ba7767b2de52d7cdea4519069b7fea3faaf35758e37dec4d9dd59e0de",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 20,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:f926e9d10a4d6d3a2a043d8b9cd1322502dba44993f38f846524803a599d93b1",
+       "hash": "sha256:f926e9d10a4d6d3a2a043d8b9cd1322502dba44993f38f846524803a599d93b1",
+       "size": 30
+      },
+      "toolCalls": [],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:6ecbbfd9b460f3d07e90945d5ba36b284eaeb5d92d3831735b8b131b3eb5c3fb",
+       "hash": "sha256:6ecbbfd9b460f3d07e90945d5ba36b284eaeb5d92d3831735b8b131b3eb5c3fb",
+       "size": 98
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 21,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "assistant",
+      "textRef": {
+       "ref": "cas:a4c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2211",
+       "hash": "sha256:a4c3ed04a95a3da14a9d235c83d868bed7c0f45cf7f3faa751ee8f50598d2211",
+       "size": 4
+      },
+      "isFinal": true
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 22,
+     "type": "turn.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 2
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 23,
+     "type": "run.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "outcome": "answered"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    }
+   ],
+   "summary": {
+    "end": {
+     "status": "completed",
+     "detail": "answered"
+    },
+    "calls": [
+     [
+      1,
+      "call_t1_0",
+      "error",
+      true
+     ]
+    ],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "library/quarantined",
+   "runId": "run1",
+   "sessionId": "ses1",
+   "events": [
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 1,
+     "type": "run.admitted",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "runKind": "interactive",
+      "principalRef": "p_user"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 2,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 1,
+      "fence": 1,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 3,
+     "type": "run.spec_pinned",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "specDigest": "sha256:b342ac84244539bb88b1bda958acbbb609c128420a68dbf88fcee799b957313e",
+      "spec": {
+       "schemaVersion": 2,
+       "harnessMajor": 2,
+       "foldVersion": 1,
+       "runKind": "interactive",
+       "principalRef": "p_user",
+       "model": {
+        "policy": [
+         {
+          "provider": "scripted",
+          "model": "scripted-1"
+         }
+        ],
+        "promptVersion": "p-test"
+       },
+       "grants": {
+        "tools": [],
+        "sandboxProfile": "none",
+        "egress": "none"
+       },
+       "budgets": {
+        "maxTurns": 6,
+        "maxTokens": 1000000,
+        "maxCostUsd": 1.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2027-01-01T00:00:00Z",
+        "maxChildren": 0
+       },
+       "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+       "extensions": {}
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 4,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:31.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 2,
+      "fence": 2,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a2",
+     "fence": 2
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 5,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:01:02.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 3,
+      "fence": 3,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a3",
+     "fence": 3
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 6,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:01:33.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 4,
+      "fence": 4,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a4",
+     "fence": 4
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 7,
+     "type": "run.quarantined",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:01:33.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempts": 4,
+      "lastErrorType": "crash_loop"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a4",
+     "fence": 4
+    }
+   ],
+   "summary": {
+    "end": {
+     "status": "quarantined"
+    },
+    "calls": [],
+    "approvals": [],
+    "inputs": [],
+    "children": []
+   }
+  },
+  {
+   "name": "library/waiting_for_approval",
+   "runId": "run1",
+   "sessionId": "ses1",
+   "events": [
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 1,
+     "type": "run.admitted",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "runKind": "interactive",
+      "principalRef": "p_user"
+     },
+     "runId": "run1"
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 2,
+     "type": "run.claimed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "attempt": 1,
+      "fence": 1,
+      "leaseMs": 30000
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 3,
+     "type": "run.spec_pinned",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "specDigest": "sha256:b342ac84244539bb88b1bda958acbbb609c128420a68dbf88fcee799b957313e",
+      "spec": {
+       "schemaVersion": 2,
+       "harnessMajor": 2,
+       "foldVersion": 1,
+       "runKind": "interactive",
+       "principalRef": "p_user",
+       "model": {
+        "policy": [
+         {
+          "provider": "scripted",
+          "model": "scripted-1"
+         }
+        ],
+        "promptVersion": "p-test"
+       },
+       "grants": {
+        "tools": [],
+        "sandboxProfile": "none",
+        "egress": "none"
+       },
+       "budgets": {
+        "maxTurns": 6,
+        "maxTokens": 1000000,
+        "maxCostUsd": 1.0,
+        "activeTimeS": 3600,
+        "calendarDeadline": "2027-01-01T00:00:00Z",
+        "maxChildren": 0
+       },
+       "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+       "extensions": {}
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 4,
+     "type": "message.completed",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "role": "user",
+      "textRef": {
+       "ref": "cas:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "hash": "sha256:2533251a617d8e45a96c41a324cd4b4b340c87af6cd60e5b0152154a9d37aca2",
+       "size": 11
+      },
+      "isFinal": false
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 5,
+     "type": "turn.started",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "turn": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 6,
+     "type": "model.request",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "contextDigest": "sha256:923184f4acab392df8bc2fa937ac7d91ea506ddf827b81a177757261a214fe43",
+      "route": {
+       "provider": "scripted",
+       "model": "scripted"
+      },
+      "modelAttempt": 1
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 7,
+     "type": "model.response",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "messageRef": {
+       "ref": "cas:066c4657a85e4d63f38b21b00e373c4d6491da5e75a295666f86daf46ac52f5f",
+       "hash": "sha256:066c4657a85e4d63f38b21b00e373c4d6491da5e75a295666f86daf46ac52f5f",
+       "size": 131
+      },
+      "toolCalls": [
+       {
+        "callId": "call_t1_0",
+        "modelName": "lookup",
+        "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0"
+       },
+       {
+        "callId": "call_t1_1",
+        "modelName": "post_message",
+        "argsDigest": "sha256:2bfd14f43d17fc7cea24e0917a8879b4b2f880b8baeec1b9d90fbaad655e71bd"
+       }
+      ],
+      "usage": {
+       "inputTokens": 0,
+       "outputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheWriteTokens": 0
+      },
+      "provider": "scripted",
+      "transport": "scripted",
+      "rawRef": {
+       "ref": "cas:3df541e1cef433a573aec100444a94e3ca3a0547cfa68238db1bcae390c5655d",
+       "hash": "sha256:3df541e1cef433a573aec100444a94e3ca3a0547cfa68238db1bcae390c5655d",
+       "size": 182
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 8,
+     "type": "tool.intent",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "toolId": "local@default/lookup",
+      "argsDigest": "sha256:f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0",
+      "effect": "read",
+      "sink": {
+       "egress": "self",
+       "argsLeaveBoundary": false
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 9,
+     "type": "tool.outcome",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "invocationId": "t1.0",
+      "status": "ok",
+      "resultRef": {
+       "ref": "cas:5351013186951cab636e238361882378165a430cee91fdfdd15ea8cd2f82d431",
+       "hash": "sha256:5351013186951cab636e238361882378165a430cee91fdfdd15ea8cd2f82d431",
+       "size": 42
+      },
+      "labels": {
+       "integrity": "internal"
+      }
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 10,
+     "type": "interaction.explained",
+     "schemaVersion": 1,
+     "critical": false,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "rule": "writes",
+      "toolId": "local@default/post_message",
+      "conversationGrant": false,
+      "argsDigest": "sha256:2bfd14f43d17fc7cea24e0917a8879b4b2f880b8baeec1b9d90fbaad655e71bd",
+      "editable": true,
+      "interactionId": "ix.approve.t1.1"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 11,
+     "type": "interaction.requested",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "worker",
+     "visibility": "owner",
+     "data": {
+      "interactionId": "ix.approve.t1.1",
+      "kind": "approval",
+      "bindingDigest": "sha256:b69172c3f76c4552c921de50349a6e90283e64e8818845d4e34c0f43d79c2f84"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    },
+    {
+     "orgId": "org1",
+     "sessionId": "ses1",
+     "streamId": "ses1",
+     "seq": 12,
+     "type": "run.suspended",
+     "schemaVersion": 1,
+     "critical": true,
+     "ts": "2026-01-01T00:00:00.000Z",
+     "writer": "node",
+     "visibility": "owner",
+     "data": {
+      "reason": "approval",
+      "interactionId": "ix.approve.t1.1"
+     },
+     "runId": "run1",
+     "attemptId": "run1.a1",
+     "fence": 1
+    }
+   ],
+   "summary": {
+    "end": null,
+    "calls": [
+     [
+      1,
+      "call_t1_0",
+      "ok",
+      false
+     ],
+     [
+      1,
+      "call_t1_1",
+      null,
+      false
+     ]
+    ],
+    "approvals": [
+     [
+      "ix.approve.t1.1",
+      "pending"
+     ]
+    ],
+    "inputs": [],
+    "children": []
+   }
+  }
+ ]
+}

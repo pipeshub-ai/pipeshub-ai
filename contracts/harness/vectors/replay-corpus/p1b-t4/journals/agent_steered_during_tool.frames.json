@@ -1,0 +1,302 @@
+{
+ "scenario": "agent_steered_during_tool",
+ "frames": [
+  {
+   "type": "CUSTOM",
+   "name": "conversation_created",
+   "value": {
+    "conversationId": "ses-1",
+    "title": "Export the Q3 report"
+   }
+  },
+  {
+   "type": "RUN_STARTED",
+   "threadId": "ses-1",
+   "runId": "run-golden"
+  },
+  {
+   "type": "STATE_SNAPSHOT",
+   "runId": "run-golden",
+   "snapshot": {
+    "run_id": "run-golden",
+    "agent_id": "65f3d98a-8dce-2082-3699-3f562d478db9",
+    "trace_id": "38ee5e94-569b-ae39-ddbe-4440e025b8d3",
+    "parent_run_id": null,
+    "role_name": "pipeshub-agent",
+    "status": "starting",
+    "current_turn": 0,
+    "current_tool": null,
+    "current_child_run_id": null,
+    "hil_request_id": null,
+    "goal_description": "Export the Q3 report",
+    "started_at": "2026-01-01T00:00:00.000Z",
+    "updated_at": "2026-01-01T00:00:00.000Z"
+   }
+  },
+  {
+   "type": "STATE_SNAPSHOT",
+   "runId": "run-golden",
+   "snapshot": {
+    "run_id": "run-golden",
+    "agent_id": "65f3d98a-8dce-2082-3699-3f562d478db9",
+    "trace_id": "38ee5e94-569b-ae39-ddbe-4440e025b8d3",
+    "parent_run_id": null,
+    "role_name": "pipeshub-agent",
+    "status": "calling_llm",
+    "current_turn": 0,
+    "current_tool": null,
+    "current_child_run_id": null,
+    "hil_request_id": null,
+    "goal_description": "Export the Q3 report",
+    "started_at": "2026-01-01T00:00:00.000Z",
+    "updated_at": "2026-01-01T00:00:00.000Z"
+   }
+  },
+  {
+   "type": "TEXT_MESSAGE_START",
+   "messageId": "msg_34a67262f61d",
+   "role": "assistant",
+   "runId": "run-golden"
+  },
+  {
+   "type": "STATE_SNAPSHOT",
+   "runId": "run-golden",
+   "snapshot": {
+    "run_id": "run-golden",
+    "agent_id": "65f3d98a-8dce-2082-3699-3f562d478db9",
+    "trace_id": "38ee5e94-569b-ae39-ddbe-4440e025b8d3",
+    "parent_run_id": null,
+    "role_name": "pipeshub-agent",
+    "status": "calling_llm",
+    "current_turn": 0,
+    "current_tool": null,
+    "current_child_run_id": null,
+    "hil_request_id": null,
+    "goal_description": "Export the Q3 report",
+    "started_at": "2026-01-01T00:00:00.000Z",
+    "updated_at": "2026-01-01T00:00:00.000Z"
+   }
+  },
+  {
+   "type": "TEXT_MESSAGE_END",
+   "messageId": "msg_34a67262f61d",
+   "runId": "run-golden"
+  },
+  {
+   "type": "TOOL_CALL_START",
+   "toolCallId": "call-export",
+   "toolCallName": "goldendocs__export_report",
+   "runId": "run-golden"
+  },
+  {
+   "type": "TOOL_CALL_ARGS",
+   "toolCallId": "call-export",
+   "delta": "{\"name\": \"q3\"}",
+   "runId": "run-golden",
+   "argsSummary": "Export Report: \"q3\""
+  },
+  {
+   "type": "STATE_SNAPSHOT",
+   "runId": "run-golden",
+   "snapshot": {
+    "run_id": "run-golden",
+    "agent_id": "65f3d98a-8dce-2082-3699-3f562d478db9",
+    "trace_id": "38ee5e94-569b-ae39-ddbe-4440e025b8d3",
+    "parent_run_id": null,
+    "role_name": "pipeshub-agent",
+    "status": "running_tool",
+    "current_turn": 0,
+    "current_tool": "goldendocs__export_report",
+    "current_child_run_id": null,
+    "hil_request_id": null,
+    "goal_description": "Export the Q3 report",
+    "started_at": "2026-01-01T00:00:00.000Z",
+    "updated_at": "2026-01-01T00:00:00.000Z"
+   }
+  },
+  {
+   "type": "TOOL_CALL_END",
+   "toolCallId": "call-export",
+   "runId": "run-golden"
+  },
+  {
+   "type": "TOOL_CALL_RESULT",
+   "toolCallId": "call-export",
+   "content": "{\"name\": \"q3\", \"rows\": 3}",
+   "role": "tool",
+   "status": "completed",
+   "runId": "run-golden",
+   "resultSummary": "Completed successfully"
+  },
+  {
+   "type": "CUSTOM",
+   "name": "user_input",
+   "value": {
+    "messageSeq": 1,
+    "content": "Add Q4 too, if it is closed."
+   },
+   "runId": "run-golden"
+  },
+  {
+   "type": "STATE_SNAPSHOT",
+   "runId": "run-golden",
+   "snapshot": {
+    "run_id": "run-golden",
+    "agent_id": "65f3d98a-8dce-2082-3699-3f562d478db9",
+    "trace_id": "38ee5e94-569b-ae39-ddbe-4440e025b8d3",
+    "parent_run_id": null,
+    "role_name": "pipeshub-agent",
+    "status": "calling_llm",
+    "current_turn": 1,
+    "current_tool": null,
+    "current_child_run_id": null,
+    "hil_request_id": null,
+    "goal_description": "Export the Q3 report",
+    "started_at": "2026-01-01T00:00:00.000Z",
+    "updated_at": "2026-01-01T00:00:00.000Z"
+   }
+  },
+  {
+   "type": "TEXT_MESSAGE_START",
+   "messageId": "msg_3e98820967d4",
+   "role": "assistant",
+   "runId": "run-golden"
+  },
+  {
+   "type": "TEXT_MESSAGE_CONTENT",
+   "messageId": "msg_3e98820967d4",
+   "delta": "The Q3 report is exported. ",
+   "runId": "run-golden"
+  },
+  {
+   "type": "TEXT_MESSAGE_CONTENT",
+   "messageId": "msg_3e98820967d4",
+   "delta": "Q4 is not closed yet, so it is not in it.",
+   "runId": "run-golden"
+  },
+  {
+   "type": "TEXT_MESSAGE_END",
+   "messageId": "msg_3e98820967d4",
+   "runId": "run-golden"
+  },
+  {
+   "type": "STATE_DELTA",
+   "runId": "run-golden",
+   "delta": [
+    {
+     "op": "replace",
+     "path": "/citations",
+     "value": []
+    },
+    {
+     "op": "replace",
+     "path": "/normalizedAnswer",
+     "value": "The Q3 report is exported. Q4 is not closed yet, so it is not in it."
+    },
+    {
+     "op": "replace",
+     "path": "/rawLength",
+     "value": 68
+    }
+   ]
+  },
+  {
+   "type": "STATE_SNAPSHOT",
+   "runId": "run-golden",
+   "snapshot": {
+    "run_id": "run-golden",
+    "agent_id": "65f3d98a-8dce-2082-3699-3f562d478db9",
+    "trace_id": "38ee5e94-569b-ae39-ddbe-4440e025b8d3",
+    "parent_run_id": null,
+    "role_name": "pipeshub-agent",
+    "status": "completed",
+    "current_turn": 1,
+    "current_tool": null,
+    "current_child_run_id": null,
+    "hil_request_id": null,
+    "goal_description": "Export the Q3 report",
+    "started_at": "2026-01-01T00:00:00.000Z",
+    "updated_at": "2026-01-01T00:00:00.000Z"
+   }
+  },
+  {
+   "type": "STATE_DELTA",
+   "runId": "run-golden",
+   "delta": [
+    {
+     "op": "replace",
+     "path": "/citations",
+     "value": []
+    },
+    {
+     "op": "replace",
+     "path": "/normalizedAnswer",
+     "value": "The Q3 report is exported. Q4 is not closed yet, so it is not in it."
+    },
+    {
+     "op": "replace",
+     "path": "/rawLength",
+     "value": 68
+    }
+   ]
+  },
+  {
+   "type": "STATE_SNAPSHOT",
+   "runId": "run-golden",
+   "snapshot": {
+    "final": true,
+    "parts": [
+     {
+      "type": "text",
+      "content": "",
+      "runId": "run-golden"
+     },
+     {
+      "type": "tool_call",
+      "toolCallId": "call-export",
+      "toolName": "goldendocs__export_report",
+      "args": "{\"name\": \"q3\"}",
+      "status": "completed",
+      "runId": "run-golden",
+      "argsSummary": "Export Report: \"q3\"",
+      "resultPreview": "{\"name\": \"q3\", \"rows\": 3}",
+      "resultSummary": "Completed successfully"
+     },
+     {
+      "type": "user_input",
+      "content": "Add Q4 too, if it is closed.",
+      "messageSeq": 1,
+      "runId": "run-golden"
+     },
+     {
+      "type": "text",
+      "content": "The Q3 report is exported. Q4 is not closed yet, so it is not in it.",
+      "runId": "run-golden",
+      "isFinal": true
+     }
+    ],
+    "answer": "The Q3 report is exported. Q4 is not closed yet, so it is not in it.",
+    "citations": [],
+    "confidence": null,
+    "succeeded_tool_names": [
+     "goldendocs__export_report"
+    ],
+    "failed_tool_names": []
+   }
+  },
+  {
+   "type": "RUN_FINISHED",
+   "result": {
+    "conversation": {
+     "_id": "conversation",
+     "messages": []
+    },
+    "meta": {
+     "requestId": "r",
+     "timestamp": "t",
+     "duration": 0
+    }
+   }
+  }
+ ]
+}

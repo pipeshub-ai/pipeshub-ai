@@ -70,7 +70,7 @@ class _Transport(VerdictTransport):
         self._stop_after_call = stop_after_call
 
     async def complete(self, messages: list[Message], tools=None, system=None, model=None,
-                       thinking_budget=None, effort=None, system_blocks=None) -> ModelResponse:
+                       thinking_budget=None, effort=None, system_blocks=None, *, tool_choice: object = None) -> ModelResponse:
         response = await super().complete(messages, tools=tools, system=system, model=model)
         if self._token is not None and len(self.calls) - 1 == self._stop_after_call:
             self._token.cancel()

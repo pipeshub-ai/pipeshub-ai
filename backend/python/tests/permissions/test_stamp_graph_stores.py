@@ -9,9 +9,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.core.org_context import for_org
 from app.services.permissions.projector import ScopeProjector
 
 from .graph import compile_world
+from .layers import world_org
 from .scenario import load_all
 from .stamp_world import stamp_graph
 
@@ -49,18 +51,19 @@ async def test_projections_over_the_real_graphs_equal_those_over_the_in_memory_g
                     skipped += 1  # the store cannot hold a node of this world (an unknown access rule on Arango)
                     continue
                 local = stamp_graph(world, "", org=ns.org)
-                for app in (n for n in world.nodes if n.kind == "app" and n.org is None):
-                    records = [n.id for n in world.nodes if n.kind == "record" and n.connector == app.id and n.org is None]
-                    want = await ScopeProjector(local).project(ns.org, app.id, records)
-                    stored_app = await ScopeProjector(view).project(ns.org, ns.id(app.id), [ns.id(r) for r in records])
-                    got = {ns.local(rid): p for rid, p in stored_app.items()}
-                    assert set(got) == set(want)
-                    for rid, w in want.items():
-                        g = got[rid]
-                        assert (g.fields.stamp, g.refused, g.skipped) == (w.fields.stamp, w.refused, w.skipped), (layer.name, rid)
-                        assert tuple(sorted(ns.local(i) for i in g.fields.path_ids)) == w.fields.path_ids, (layer.name, rid)
-                        assert tuple(sorted(ns.local(i) for i in g.fields.acl_scope)) == w.fields.acl_scope, (layer.name, rid)
-                        compared += 1
+                with world_org(ns):
+                    for app in (n for n in world.nodes if n.kind == "app" and n.org is None):
+                        records = [n.id for n in world.nodes if n.kind == "record" and n.connector == app.id and n.org is None]
+                        want = await ScopeProjector(local).project(ns.org, app.id, records)
+                        stored_app = await ScopeProjector(view).project(ns.org, ns.id(app.id), [ns.id(r) for r in records])
+                        got = {ns.local(rid): p for rid, p in stored_app.items()}
+                        assert set(got) == set(want)
+                        for rid, w in want.items():
+                            g = got[rid]
+                            assert (g.fields.stamp, g.refused, g.skipped) == (w.fields.stamp, w.refused, w.skipped), (layer.name, rid)
+                            assert tuple(sorted(ns.local(i) for i in g.fields.path_ids)) == w.fields.path_ids, (layer.name, rid)
+                            assert tuple(sorted(ns.local(i) for i in g.fields.acl_scope)) == w.fields.acl_scope, (layer.name, rid)
+                            compared += 1
             await layer.release(chunk)
         assert compared > 300, (layer.name, compared, skipped)
 
@@ -76,10 +79,12 @@ async def test_the_page_lists_the_records_of_an_app_in_key_order_and_a_failed_re
         await layer.preload([world])
         ns = await layer._ns(world)
         view = layer._provider.permission_stamp_graph()
-        first = await view.record_page(ns.org, ns.id(app), None, 2)
-        rest = await view.record_page(ns.org, ns.id(app), first[-1], 100)
+        with world_org(ns):
+            first = await view.record_page(ns.org, ns.id(app), None, 2)
+            rest = await view.record_page(ns.org, ns.id(app), first[-1], 100)
         assert [ns.local(i) for i in (*first, *rest)] == want and len(first) == min(2, len(want)), layer.name
-        assert await view.record_page("no-such-org", ns.id(app), None, 10) == []
+        with for_org("no-such-org", job="permission-conformance"):      # the job of another org reads none of this one's records
+            assert await view.record_page("no-such-org", ns.id(app), None, 10) == []
         if layer.name == "neo4j":  # the page seeks in the (connectorId, id) index and sorts nothing
             from app.services.graph_db.neo4j.permission_stamps import PAGE
 
@@ -95,11 +100,12 @@ async def test_the_page_lists_the_records_of_an_app_in_key_order_and_a_failed_re
             ops = operators(plan)
             assert not any(o.startswith(("Sort", "Top")) for o in ops) and any("IndexSeek" in o or "IndexScan" in o for o in ops), ops
         store = AppDocCheckpoints(layer._provider)
-        assert await store.load(ns.id(app)) is None
-        await store.save(ns.id(app), Progress("running", first[-1], 5, 3, 2, 1, None))
-        assert await store.load(ns.id(app)) == Progress("running", first[-1], 5, 3, 2, 1, None), layer.name
+        with world_org(ns):
+            assert await store.load(ns.id(app)) is None
+            await store.save(ns.id(app), Progress("running", first[-1], 5, 3, 2, 1, None))
+            assert await store.load(ns.id(app)) == Progress("running", first[-1], 5, 3, 2, 1, None), layer.name
         await layer.release([world])
     broken = graph_layers[0]._provider.permission_stamp_graph()
     broken._get_client = lambda: None  # type: ignore[attr-defined]
-    with pytest.raises(ViewerScopesUnavailable):
+    with for_org("o", job="permission-conformance"), pytest.raises(ViewerScopesUnavailable):
         await broken.record_page("o", "a", None, 1)

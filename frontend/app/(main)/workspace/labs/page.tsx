@@ -11,8 +11,11 @@ import {
   TextField,
   IconButton,
   Switch,
+  Badge,
+  Button,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { BetaBadge } from '@/app/components/ui/beta-badge';
 import {
   ConfirmationDialog,
   SettingsSaveBar,
@@ -20,8 +23,9 @@ import {
   SettingsRow,
 } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
-import { useLabsStore } from './store';
-import { LabsApi, bytesToMb, mbToBytes, type AvailableFlag } from './api';
+import { labsChanges, useLabsStore } from './store';
+import { LabsApi, bytesToMb, isLabsChanged, type AvailableFlag } from './api';
+import { LABS_SETTINGS_CHANGED } from '../components/durable-default-notice';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
@@ -45,7 +49,7 @@ function InfoCallout({ children }: { children: React.ReactNode }) {
         padding: '12px',
       }}
     >
-      <IconButton variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
+      <IconButton aria-hidden variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
         <MaterialIcon name="info" size={16} color="var(--accent-11)" />
       </IconButton>
       <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px' }}>
@@ -59,25 +63,50 @@ function FeatureFlagRow({
   flag,
   checked,
   onCheckedChange,
+  changed = false,
+  conflict = false,
+  onReset,
 }: {
   flag: AvailableFlag;
   checked: boolean;
   onCheckedChange: (value: boolean) => void;
+  /** An admin's override differs from the default: show it and offer the reset. */
+  changed?: boolean;
+  /** Someone else saved this flag since the page loaded. */
+  conflict?: boolean;
+  onReset?: () => void;
 }) {
+  const { t } = useTranslation();
+  const label = flag.label || flag.key;
   return (
     <Flex
       align="center"
       justify="between"
+      data-testid={`labs-flag-${flag.key}`}
       style={{ width: '100%', gap: 'var(--space-4)' }}
     >
-      <Box style={{ flex: 1 }}>
-        <Text
-          size="2"
-          weight="medium"
-          style={{ color: 'var(--slate-12)', display: 'block' }}
-        >
-          {flag.label || flag.key}
-        </Text>
+      {/* minWidth 0 and a wrapping title: on a phone the badge and Reset otherwise pushed the switch off-screen. */}
+      <Box style={{ flex: 1, minWidth: 0 }}>
+        <Flex align="center" gap="2" wrap="wrap">
+          <Text
+            size="2"
+            weight="medium"
+            style={{ color: 'var(--slate-12)', display: 'block' }}
+          >
+            {label}
+          </Text>
+          {flag.requiresAgentHarness ? <BetaBadge /> : null}
+          {changed ? (
+            <Badge color="amber" variant="soft" size="1" data-testid={`labs-changed-${flag.key}`}>
+              {t('workspace.labs.overrides.changed')}
+            </Badge>
+          ) : null}
+          {conflict ? (
+            <Badge color="red" variant="soft" size="1" data-testid={`labs-conflict-${flag.key}`}>
+              {t('workspace.labs.conflict.badge')}
+            </Badge>
+          ) : null}
+        </Flex>
         {flag.description && (
           <Text
             size="1"
@@ -93,25 +122,37 @@ function FeatureFlagRow({
           </Text>
         )}
       </Box>
-      <Switch
-        checked={checked}
-        onCheckedChange={onCheckedChange}
-        aria-label={flag.label || flag.key}
-        style={{ flexShrink: 0, cursor: 'pointer' }}
-        size="1"
-      />
+      <Flex align="center" justify="end" gap="3" wrap="wrap" style={{ flexShrink: 0, maxWidth: '50%' }}>
+        {changed && onReset ? (
+          <Button
+            variant="ghost"
+            size="1"
+            onClick={onReset}
+            aria-label={t('workspace.labs.overrides.resetLabel', { flag: label })}
+          >
+            {t('workspace.labs.overrides.reset', {
+              value: flag.defaultEnabled ? t('workspace.labs.overrides.on') : t('workspace.labs.overrides.off'),
+            })}
+          </Button>
+        ) : null}
+        <Switch
+          checked={checked}
+          onCheckedChange={onCheckedChange}
+          aria-label={label}
+          style={{ cursor: 'pointer' }}
+          size="1"
+        />
+      </Flex>
     </Flex>
   );
 }
 
 function AdvancedFlagsAccordion({
   flags,
-  values,
-  onFlagChange,
+  renderRow,
 }: {
   flags: AvailableFlag[];
-  values: Record<string, boolean>;
-  onFlagChange: (key: string, value: boolean) => void;
+  renderRow: (flag: AvailableFlag) => React.ReactNode;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -190,14 +231,7 @@ function AdvancedFlagsAccordion({
             backgroundColor: 'var(--olive-2)',
           }}
         >
-          {flags.map((flag) => (
-            <FeatureFlagRow
-              key={flag.key}
-              flag={flag}
-              checked={!!values[flag.key]}
-              onCheckedChange={(value) => onFlagChange(flag.key, value)}
-            />
-          ))}
+          {flags.map(renderRow)}
         </Flex>
       )}
     </Flex>
@@ -218,7 +252,7 @@ function PlatformConfigNote() {
         padding: 'var(--space-4)',
       }}
     >
-      <IconButton variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
+      <IconButton aria-hidden variant="soft" size="1" style={{ flexShrink: 0, cursor: 'default', background: 'var(--slate-a2)' }} tabIndex={-1}>
         <MaterialIcon name="info" size={16} color="var(--accent-11)" />
       </IconButton>
       <Flex direction="column" gap="1">
@@ -255,6 +289,8 @@ export default function LabsPage() {
 
   const setFileSizeLimitMb = useLabsStore((s) => s.setFileSizeLimitMb);
   const setFlagValue = useLabsStore((s) => s.setFlagValue);
+  const resetFlag = useLabsStore((s) => s.resetFlag);
+  const overrides = useLabsStore((s) => s.overrides);
   const setForm = useLabsStore((s) => s.setForm);
   const markSaved = useLabsStore((s) => s.markSaved);
   const setErrors = useLabsStore((s) => s.setErrors);
@@ -262,8 +298,22 @@ export default function LabsPage() {
   const setDiscardDialogOpen = useLabsStore((s) => s.setDiscardDialogOpen);
   const setLoading = useLabsStore((s) => s.setLoading);
   const isDirty = useLabsStore((s) => s.isDirty);
+  const conflicts = useLabsStore((s) => s.conflicts);
+  const savedFileUploadBytes = useLabsStore((s) => s.savedFileUploadBytes);
+  const rebaseOnServer = useLabsStore((s) => s.rebaseOnServer);
   const regularFlags = availableFlags.filter((flag) => !flag.advanced);
   const advancedFlags = availableFlags.filter((flag) => !!flag.advanced);
+  const renderFlagRow = (flag: AvailableFlag) => (
+    <FeatureFlagRow
+      key={flag.key}
+      flag={flag}
+      checked={!!form.featureFlags[flag.key]}
+      onCheckedChange={(val) => setFlagValue(flag.key, val)}
+      changed={flag.key in overrides && !form.resets.includes(flag.key)}
+      conflict={conflicts.includes(flag.key)}
+      onReset={() => resetFlag(flag.key)}
+    />
+  );
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
@@ -271,7 +321,14 @@ export default function LabsPage() {
     }
   }, [isProfileInitialized, isAdmin, router]);
 
-  // ── Load config on mount ───────────────────────────────────
+  // ── Load config on mount, and again when the durable-chat notice changes it ──
+  const [reloads, setReloads] = React.useState(0);
+  useEffect(() => {
+    const reload = () => setReloads((n) => n + 1);
+    window.addEventListener(LABS_SETTINGS_CHANGED, reload);
+    return () => window.removeEventListener(LABS_SETTINGS_CHANGED, reload);
+  }, []);
+
   useEffect(() => {
     if (!isProfileInitialized || isAdmin === false) {
       return;
@@ -297,16 +354,22 @@ export default function LabsPage() {
               : !!def.defaultEnabled;
         }
 
-        setForm({
-          fileSizeLimitMb: settings ? bytesToMb(settings.fileUploadMaxSizeBytes) : '',
-          featureFlags,
-        }, flags);
+        setForm(
+          {
+            fileSizeLimitMb: settings ? bytesToMb(settings.fileUploadMaxSizeBytes) : '',
+            featureFlags,
+            resets: [],
+          },
+          flags,
+          settings?.featureFlagOverrides ?? {},
+          settings?.fileUploadMaxSizeBytes ?? null,
+        );
       } catch {
         setLoading(false);
       }
     };
     fetchConfig();
-  }, [isProfileInitialized, isAdmin, setForm, setLoading]);
+  }, [isProfileInitialized, isAdmin, setForm, setLoading, reloads]);
 
   // ── Validation ─────────────────────────────────────────────
   const validate = useCallback((): boolean => {
@@ -332,10 +395,8 @@ export default function LabsPage() {
     const fileSizeDirty = form.fileSizeLimitMb !== savedForm.fileSizeLimitMb;
 
     try {
-      await LabsApi.saveSettings({
-        fileUploadMaxSizeBytes: mbToBytes(Number(form.fileSizeLimitMb)),
-        featureFlags: form.featureFlags,
-      });
+      // Only what the admin changed: a flag nobody touched keeps following its release default (UX1).
+      await LabsApi.saveSettings(labsChanges(form, savedForm, availableFlags, savedFileUploadBytes));
 
       markSaved();
       refreshGlobalFlags();
@@ -348,7 +409,16 @@ export default function LabsPage() {
         });
       }
 
-    } catch {
+    } catch (error) {
+      if (isLabsChanged(error)) {
+        // UX2: another admin saved first. Show what is stored now, keep this admin's edits, and let them decide again.
+        try {
+          rebaseOnServer(await LabsApi.getSettings());
+          return;
+        } catch {
+          // Falls through to the generic failure below.
+        }
+      }
       addToast({
         variant: 'error',
         title: t('workspace.labs.toasts.saveError'),
@@ -359,7 +429,7 @@ export default function LabsPage() {
         },
       });
     }
-  }, [form, savedForm, validate, markSaved, refreshGlobalFlags, addToast]);
+  }, [form, savedForm, availableFlags, savedFileUploadBytes, validate, markSaved, refreshGlobalFlags, addToast, rebaseOnServer]);
 
   handleSaveRef.current = handleSave;
 
@@ -413,10 +483,16 @@ export default function LabsPage() {
           <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
             {t('workspace.sidebar.nav.labs')}
           </Heading>
-          <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
+          <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-1)', display: 'block' }}>
             {t('workspace.labs.manageSubtitle')}
           </Text>
         </Box>
+
+        {conflicts.length > 0 ? (
+          <Box role="alert" data-testid="labs-conflict" style={{ marginBottom: 'var(--space-5)' }}>
+            <InfoCallout>{t('workspace.labs.conflict.message')}</InfoCallout>
+          </Box>
+        ) : null}
 
         {/* ── File Upload Limit Section ── */}
         <Box style={{ marginBottom: 'var(--space-5)' }}>
@@ -484,21 +560,8 @@ export default function LabsPage() {
                 'Toggle experimental capabilities for every agent in this workspace.'
               )}
             >
-              {regularFlags.map((flag) => (
-                <FeatureFlagRow
-                  key={flag.key}
-                  flag={flag}
-                  checked={!!form.featureFlags[flag.key]}
-                  onCheckedChange={(val) => setFlagValue(flag.key, val)}
-                />
-              ))}
-              {advancedFlags.length > 0 && (
-                <AdvancedFlagsAccordion
-                  flags={advancedFlags}
-                  values={form.featureFlags}
-                  onFlagChange={setFlagValue}
-                />
-              )}
+              {regularFlags.map(renderFlagRow)}
+              {advancedFlags.length > 0 && <AdvancedFlagsAccordion flags={advancedFlags} renderRow={renderFlagRow} />}
             </SettingsSection>
           </Box>
         )}

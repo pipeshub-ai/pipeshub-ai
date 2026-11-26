@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import random
-import time
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -83,12 +82,14 @@ def large_store(tmp_path) -> tuple:
     return tmp_path, chunks, chunks[-1][0]
 
 
-def _scan_that_costs_the_store() -> AbstractContextManager[object]:
+def _scan_that_costs_the_store(scans: list[str] | None = None) -> AbstractContextManager[object]:
     from app.agents.actions.storage_search import storage_search
 
     real = storage_search._run_subprocess
 
     async def _run(command: str, *, cwd: str, **kwargs: object) -> tuple[bool, str]:
+        if scans is not None:
+            scans.append(command)
         files = sum(len(names) for _root, _dirs, names in os.walk(cwd))
         await asyncio.sleep(files * _SCAN_SECONDS_PER_FILE)
         return await real(command, cwd=cwd, **kwargs)
@@ -101,24 +102,26 @@ class TestLargeStore:
     async def test_a_hit_the_scan_cannot_reach_in_its_budget_is_found_through_the_index(self, large_store) -> None:
         mount, chunks, needle_vrid = large_store
         assert _STORE_RECORDS * _SCAN_SECONDS_PER_FILE > 2 * _BUDGET_SECONDS
+        scans: list[str] = []
 
         with patch("app.agents.actions.storage_search.storage_search._resolve_mount_root", return_value=str(mount)), \
                 patch("app.utils.pattern_match._PATTERN_MATCH_TOTAL_BUDGET", _BUDGET_SECONDS), \
-                _scan_that_costs_the_store():
+                _scan_that_costs_the_store(scans):
             scan_coverage = PatternMatchCoverage()
             scanned = await run_pattern_match_with_llm_grep(**_kwargs(), coverage=scan_coverage)
+            assert scans, "the scan-only search never scanned"
+            scans.clear()
             index_coverage = PatternMatchCoverage()
             searcher = InvertedIndexSearcher(chunks)
-            started = time.perf_counter()
             looked_up = await run_pattern_match_with_llm_grep(
                 **_kwargs(), coverage=index_coverage, retrieval_service=searcher,
             )
-            index_seconds = time.perf_counter() - started
 
         assert needle_vrid not in {r["virtual_record_id"] for r in scanned}
         assert "time limit" in render_pattern_match_coverage_note(scan_coverage)
         assert [r["virtual_record_id"] for r in looked_up] == [needle_vrid]
-        assert index_seconds < _BUDGET_SECONDS
+        # Answered from the index alone: no file scan to run into the budget, so none to wait out.
+        assert scans == []
         assert index_coverage.complete
         assert "incomplete" not in render_pattern_match_coverage_note(index_coverage)
 

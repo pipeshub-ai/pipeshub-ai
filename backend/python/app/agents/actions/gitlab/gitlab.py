@@ -14,6 +14,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -134,7 +135,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register GitLab toolset
-@ToolsetBuilder("GitLab")\
+@ToolsetBuilder("GitLab", provider=ToolProvider.CONNECTOR)\
     .in_group("Development")\
     .with_description("GitLab integration for repository management, issues, and merge requests")\
     .with_category(ToolsetCategory.APP)\
@@ -253,7 +254,7 @@ class GitLab:
                 default=False,
             ),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     def create_project(
         self,
@@ -290,7 +291,7 @@ class GitLab:
                 description="The ID or path of the project (required)",
             ),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_project(self, project_id: str) -> Tuple[bool, str]:
         """Get details of a specific project from GitLab."""
@@ -330,7 +331,7 @@ class GitLab:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="update")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="update"), Tag(key="effect", value="write")],
     )
     def update_project(
         self,
@@ -365,7 +366,7 @@ class GitLab:
                 description="The ID or path of the project (required)",
             ),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_project(self, project_id: str) -> Tuple[bool, str]:
         """Delete a project from GitLab."""
@@ -416,7 +417,7 @@ class GitLab:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     def create_issue(
         self,
@@ -460,7 +461,7 @@ class GitLab:
                 description="The internal ID of the issue (required)",
             ),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_issue(self, project_id: str, issue_iid: int) -> Tuple[bool, str]:
         """Get details of a specific issue from a GitLab project."""
@@ -519,7 +520,7 @@ class GitLab:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="update")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="update"), Tag(key="effect", value="write")],
     )
     def update_issue(
         self,
@@ -563,7 +564,7 @@ class GitLab:
                 description="The internal ID of the issue (required)",
             ),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_issue(self, project_id: str, issue_iid: int) -> Tuple[bool, str]:
         """Delete an issue from a GitLab project."""
@@ -620,7 +621,7 @@ class GitLab:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     def create_merge_request(
         self,
@@ -666,7 +667,7 @@ class GitLab:
                 description="The internal ID of the merge request (required)",
             ),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_merge_request(self, project_id: str, merge_request_iid: int) -> Tuple[bool, str]:
         """Get details of a specific merge request from a GitLab project."""
@@ -707,7 +708,7 @@ class GitLab:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="update")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="update"), Tag(key="effect", value="write")],
     )
     def merge_merge_request(
         self,
@@ -742,7 +743,7 @@ class GitLab:
                 description="The search query string (required)",
             ),
         ],
-        tags=[Tag(key="category", value="development"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="development"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def search_projects(self, query: str) -> Tuple[bool, str]:
         """Search for projects in GitLab."""

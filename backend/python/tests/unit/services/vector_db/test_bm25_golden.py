@@ -24,6 +24,9 @@ import pytest
 
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 
+# Loads the model from the Hub on a cold cache (and skips when it cannot), so it may dial (the harness's network guard).
+pytestmark = pytest.mark.network
+
 _GOLDEN = json.loads((Path(__file__).parent / "golden" / "bm25_golden.json").read_text(encoding="utf-8"))
 # Under the 30 s pytest-timeout, so a dead Hub skips (or fails) here, not by timeout.
 _LOAD_TIMEOUT_S = 10

@@ -345,7 +345,7 @@ export function SearchableCheckboxDropdown({
               <Text
                 size="2"
                 style={{
-                  color: 'var(--slate-a9)',
+                  color: 'var(--slate-a11)',
                   padding: '2px 4px',
                 }}
               >
@@ -368,7 +368,7 @@ export function SearchableCheckboxDropdown({
           <MaterialIcon
             name={isOpen ? 'expand_less' : 'expand_more'}
             size={16}
-            color="var(--slate-9)"
+            color="var(--slate-11)"
           />
         </Box>
       </Box>
@@ -391,7 +391,7 @@ export function SearchableCheckboxDropdown({
             backgroundColor: 'var(--olive-2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
-            boxShadow: '0 12px 32px -16px var(--slate-a5, rgba(217, 237, 254, 0.15)), 0 12px 60px 0 var(--black-3, rgba(0, 0, 0, 0.15))',
+            boxShadow: '0 12px 32px -16px var(--slate-a5, rgba(217, 237, 254, 0.15)), 0 12px 60px 0 rgba(0, 0, 0, 0.15)',
             zIndex: 100,
           }}
         >
@@ -405,12 +405,12 @@ export function SearchableCheckboxDropdown({
               {hasMore ? (
                 <>
                   <Spinner size={14} />
-                  <Text size="2" style={{ color: 'var(--slate-9)' }}>
+                  <Text size="2" style={{ color: 'var(--slate-11)' }}>
                     Loading...
                   </Text>
                 </>
               ) : (
-                <Text size="2" style={{ color: 'var(--slate-9)' }}>
+                <Text size="2" style={{ color: 'var(--slate-11)' }}>
                   {emptyText}
                 </Text>
               )}
@@ -528,7 +528,7 @@ export function SearchableCheckboxDropdown({
           {isLoadingMore && (
             <Flex align="center" justify="center" gap="2" style={{ padding: '8px' }}>
               <Spinner size={12} />
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>Loading...</Text>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>Loading...</Text>
             </Flex>
           )}
         </Box>

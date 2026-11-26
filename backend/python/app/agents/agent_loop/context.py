@@ -5,7 +5,7 @@ threading a full `ChatState` through `PipesHubToolAdapter`/`PipesHubToolLoader`.
 `ChatState` (`app.modules.agents.qna.chat_state`) still exists and is still
 built by `build_initial_state()` — now the shared state constructor for
 every agent-loop entry point (`stream_bridge.run_agent_loop_stream()`,
-`chat_modes.bridge.run_chat_stream()`) after LangGraph's removal.
+`stream_bridge.run_chat_stream()`) after LangGraph's removal.
 `AgentContext` doesn't replace it — it's a narrower, validated view
 constructed from the same route-handler inputs, carrying only what tool
 execution and prompt assembly need.
@@ -20,9 +20,17 @@ then shared by reference across every tool call for the life of the request.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+
+from harness_core.effects.flow import (
+    FlowRule,  # noqa: TC001 - pydantic resolves the field type at runtime
+)
+from harness_core.security.secrets import EMPTY_SECRETS
+from harness_core.tool_identity import (
+    ToolBinding,  # noqa: TC001 - pydantic resolves the field type at runtime
+)
 
 if TYPE_CHECKING:
     from app.services.artifact_registry.models import Actor
@@ -42,6 +50,11 @@ def _tool_approval_answer(raw: Any) -> Any:  # noqa: ANN401
         return None
 
 
+if TYPE_CHECKING:
+    from app.harness.credentials.tool_credentials import ToolCredentials
+    from harness_core.security.secrets import SecretSet
+
+
 class AgentContext(BaseModel):
     """Per-request context for tool execution and prompt building."""
 
@@ -51,6 +64,7 @@ class AgentContext(BaseModel):
     # and re-renders a few KB of routing text; prompt_builder + domain_agents
     # both need the same catalog in one turn.
     _source_catalog: Any = PrivateAttr(default=None)
+    _credentials: ToolCredentials | None = PrivateAttr(default=None)
     # One ledger per request so `retrieval_context` frames carry only what
     # is new since the last tool call, not the whole accumulated set.
     _retrieval_ledger: Any = PrivateAttr(default=None)
@@ -67,6 +81,15 @@ class AgentContext(BaseModel):
     user_info: dict[str, Any] = Field(default_factory=dict)
     org_info: dict[str, Any] = Field(default_factory=dict)
     is_service_account: bool = False
+    # Whose connections the request's tools use: the user, or a service-account agent (SS2).
+    credential_owner: str | None = None
+    # The Agent Builder agent this turn runs as; None for plain chat and Universal Agent Mode (FG2 and main's
+    # per-tool approvals: its approval rules).
+    agent_key: str | None = None
+    # What the conversation's history read, as Node labelled it (FG2); None: nobody can vouch for it.
+    history_label: dict[str, Any] | None = None
+    # The flow rules Node resolved for this turn (its verified X-PipesHub-Resolved); None: the request carried none.
+    resolved_flow_rules: tuple[FlowRule, ...] | None = None
     send_user_info: bool = True
 
     # Services (injected, not serializable)
@@ -81,9 +104,15 @@ class AgentContext(BaseModel):
     agent_toolsets: list[dict[str, Any]] = Field(default_factory=list)
     tool_to_toolset_map: dict[str, str] = Field(default_factory=dict)
     toolset_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Harness runs only: what an extension point (the write identity port, OWD-18) keeps for the run, by its own key.
+    # Empty in this build and in today's loop.
+    extension_state: dict[str, Any] = Field(default_factory=dict)
     web_search_config: dict[str, Any] | None = None
     # Deep research: the research method in the prompt, more turns and a larger web budget.
     deep_research: bool = False
+    # Whose web allowance the web tools draw on: one chat answer's, or a long-running run's (a coding engine run,
+    # whose USD budget is the real limit: ``app.web.budget``). Set before the tools load.
+    web_scope: Literal["answer", "run"] = "answer"
     # No provider is set up org-wide: the prompt says so, so the model answers instead of hunting for a web tool.
     web_search_unset: bool = False
 
@@ -107,7 +136,7 @@ class AgentContext(BaseModel):
     # (`AGENT_HAS_SKILL` edges — see `_parse_skills`/`_create_skill_edges`
     # in `api/routes/agent.py`). Empty/None means no explicit assignment:
     # `skills_wiring.build_skill_manager` then leaves the manager
-    # unwrapped, preserving today's full creator+builtin catalog. Non-empty
+    # unwrapped: the running user's own skills and the builtins. Non-empty
     # triggers a `ScopedSkillManager` wrap that narrows the catalog/search/
     # activation surface to exactly this allowlist.
     agent_skills: list[str] | None = None
@@ -166,14 +195,24 @@ class AgentContext(BaseModel):
     project_tools_selected: bool = False
     timezone: str | None = None
     current_time: str | None = None
+    # G-52: the person's locale (BCP 47), which sets the answer's language unless they write in another.
+    locale: str | None = None
 
     # Mutable per-request state
     conversation_id: str | None = None
+    # Server-owned durable run identity. Public request bodies cannot set it.
+    durable_run_id: str | None = None
+    durable_checkpoint_store: Any = None
+    # A run the agent harness assembled (``ToolEnvironment``): its MCP servers go through the MCP hub when MCP_HUB is
+    # unset (D-MCP-1); a classic chat's do only when an operator sets it.
+    harness_run: bool = False
+    # Whose call a connector toolset makes against the vendor budget it shares with sync (G-31,
+    # ``app.services.rate_budget``): a classic chat is a person waiting; the harness sets it from the run kind.
+    rate_priority: str = "interactive"
     has_ui_client: bool = False
     # Per-tool approvals (`tool_approvals.py`): the client (only the web app can answer a card), the
     # agent, and the person's answer to an approval card, when this request carries one.
     client_name: str | None = None
-    agent_key: str | None = None
     is_assistant: bool = False
     chat_streaming: bool = True
     tool_approval: Any = None
@@ -204,6 +243,8 @@ class AgentContext(BaseModel):
     # MCP servers whose sign-in lacked a scope this request, for the reply's sign-in card
     # (`mcp_sign_in.py`).
     mcp_sign_in_needed: list[dict[str, Any]] = Field(default_factory=list)
+    # A durable run started in the web app: Node draws the card, so the run has no client name of its own.
+    durable_web_app: bool = False
 
     # `{"instanceId", "name", "instructions"}` for each loaded MCP server whose `initialize`
     # result carried instructions, for the capability summary.
@@ -218,6 +259,12 @@ class AgentContext(BaseModel):
     # pin list, so these toolsets stay visible from turn 0 under lazy tool
     # disclosure regardless of whatever else got grouped this request.
     essential_toolset_names: list[str] = Field(default_factory=list)
+
+    # Populated by `PipesHubToolLoader.load()`: each connector tool's registered
+    # name -> the configured toolset (type, instance) it was built for, and its
+    # own tool name. The durable catalog maps tools to their pinned ids from
+    # this, never from a name or path (P2.2).
+    tool_bindings: dict[str, ToolBinding] = Field(default_factory=dict)
 
     # `EventSink` (`app.modules.agents.event_sink`) for hooks that must push
     # SSE events mid-run (e.g. Phase 5's `ask_user_question_sse` hook) — the
@@ -245,7 +292,7 @@ class AgentContext(BaseModel):
 
     # The top-level agent's `run_ctx.run_id` — set here BEFORE `factory.
     # create()` runs (from the client-supplied/generated `runId`, by
-    # `stream_bridge.py`/`bridge.py`) so `factory.create()` can pass it
+    # `stream_bridge.py`) so `factory.create()` can pass it
     # into `Agent(..., run_id=...)` and get the SAME value back on
     # `agent.run_ctx.run_id`; re-assigned (a no-op when already set, or
     # filled in for callers that never set it) right after `Agent()`
@@ -274,6 +321,12 @@ class AgentContext(BaseModel):
     # down in its `finally` block without widening the `(Agent, AgentRuntime)`
     # contract `test_factory_wiring.py` asserts throughout.
     sandbox_manager: Any = None
+
+    # Durable harness filesystem for resumed/dispatched runs. These injected
+    # services are excluded from serialization so neither blob bytes nor
+    # storage credentials can accidentally enter a checkpoint.
+    virtual_filesystem: Any = Field(default=None, exclude=True)
+    workspace_manifest: Any = Field(default=None, exclude=True)
 
     # Flipped to True by `sandbox_bridge.py::coding_sandbox_artifact_bridge`
     # the moment ANY `run_code` call (top-level or from a spawned
@@ -458,6 +511,10 @@ class AgentContext(BaseModel):
             user_info=state.get("user_info") or {},
             org_info=state.get("org_info") or {},
             is_service_account=bool(state.get("is_service_account", False)),
+            credential_owner=state.get("credential_owner"),
+            agent_key=state.get("agent_key"),
+            history_label=state.get("history_label"),
+            resolved_flow_rules=state.get("resolved_flow_rules"),
             send_user_info=state.get("send_user_info", True) is not False,
             retrieval_service=state.get("retrieval_service"),
             graph_provider=state.get("graph_provider"),
@@ -498,18 +555,22 @@ class AgentContext(BaseModel):
             project_tools_selected=bool(state.get("project_tools_selected", False)),
             timezone=state.get("timezone"),
             current_time=state.get("current_time"),
+            locale=state.get("locale"),
             conversation_id=state.get("conversation_id"),
+            durable_run_id=state.get("harness_run_id"),
+            durable_checkpoint_store=state.get("harness_checkpoint_store"),
             has_ui_client=bool(state.get("has_ui_client", False)),
             client_name=(
                 state["client_name"]
                 if isinstance(state.get("client_name"), str)
                 else None
             ),
-            agent_key=state.get("agent_key"),
             is_assistant=bool(state.get("is_assistant_chat", False)),
             chat_streaming=state.get("chat_streaming", True) is not False,
             tool_approval=_tool_approval_answer(state.get("tool_approval")),
             previous_conversations=state.get("previous_conversations") or [],
+            virtual_filesystem=state.get("virtual_filesystem"),
+            workspace_manifest=state.get("workspace_manifest"),
             event_sink=event_sink,
             protocol=protocol,
             llm_provider=llm_provider,
@@ -525,6 +586,31 @@ class AgentContext(BaseModel):
         for key, value in self._seed_tool_state().items():
             self.tool_state.setdefault(key, value)
 
+    def tool_credentials(self) -> ToolCredentials:
+        """This request's ``ToolCredentials``: connector records resolved by handle at the
+        effect boundary (P2.4a). Held here, never in ``tool_state``."""
+        if self._credentials is None:
+            from app.harness.credentials.service import credential_service_for
+            from app.harness.credentials.tool_credentials import ToolCredentials
+
+            self._credentials = ToolCredentials(
+                credential_service_for(self.config_service),
+                tenant=self.org_id,
+                run_id=self.durable_run_id or self.run_id or self.conversation_id or "request",
+                principal=self.user_id,
+                credential_owner=self.credential_owner,
+            )
+        return self._credentials
+
+    def resolved_secrets(self) -> SecretSet:
+        """What this request's connections resolved so far: the effect boundary masks it exactly (SEC4)."""
+        return EMPTY_SECRETS if self._credentials is None else self._credentials.resolved_secrets()
+
+    async def close_credentials(self) -> int:
+        """Revokes every handle this context issued; the next use fails at once."""
+        if self._credentials is None:
+            return 0
+        return await self._credentials.close()
     @property
     def retrieval_ledger(self) -> Any:  # noqa: ANN401
         from app.agents.agent_loop.retrieval_ledger import RetrievalContextLedger
@@ -552,8 +638,9 @@ class AgentContext(BaseModel):
     def citation_ref_to_url(self) -> dict[str, str] | None:
         """This request's citation refs and the URLs they stand for, read at
         call time: the mapper in `tool_state` can be replaced mid-request."""
-        mapper = self.tool_state.get("citation_ref_mapper")
-        return mapper.ref_to_url if mapper is not None else None
+        from app.agents.agent_loop.protocol.transcript_collector import request_refs
+
+        return request_refs(self.tool_state)
 
     def get_source_catalog(self) -> Any:
         """Return the per-request `SourceCatalog`, building it once on first use."""
@@ -570,11 +657,11 @@ class AgentContext(BaseModel):
         creating (`final_results`, `tool_records`, ...) beyond their empty
         defaults, so `.setdefault()` never clobbers accumulated state on a
         second call into `_seed_tool_state`."""
-        from app.utils.image_admission import (  # noqa: PLC0415
+        from app.utils.image_admission import (
             ImageAdmission,
             ImageBudget,
         )
-        from app.utils.image_policy import resolve_image_policy  # noqa: PLC0415
+        from app.utils.image_policy import resolve_image_policy
 
         # One budget instance, and one arbiter that composes it. The budget is
         # the conversation-wide ceiling every image source debits; the
@@ -609,6 +696,7 @@ class AgentContext(BaseModel):
             "is_service_account": self.is_service_account,
             "send_user_info": self.send_user_info,
             "conversation_id": self.conversation_id,
+            "harness_run_id": self.durable_run_id,
             "has_ui_client": self.has_ui_client,
             "agent_toolsets": self.agent_toolsets,
             "tool_to_toolset_map": self.tool_to_toolset_map,
@@ -644,6 +732,7 @@ class AgentContext(BaseModel):
             "project_tools_selected": self.project_tools_selected,
             "timezone": self.timezone,
             "current_time": self.current_time,
+            "locale": self.locale,
             "previous_conversations": self.previous_conversations,
             "final_results": [],
             "virtual_record_id_to_result": {},

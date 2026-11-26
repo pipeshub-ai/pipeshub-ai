@@ -11,20 +11,19 @@ older_code_compatible = "replaces one function's body with one that answers alik
 
 REPLACED = {"records_by_virtual_id": "text[]"}
 FUNCTIONS = {"record_by_issue_url": "text, text"}
-# (name, columns, predicate, access method): the address of each ticket record, by trigram, for a pattern match on the issue key
-INDEXES = [
-    ("nodes_record_ticket_url", "(doc->>'webUrl') ext.gin_trgm_ops", "coll = 'records' AND (doc->>'recordType') = 'TICKET'", "gin"),
+# The address of each ticket record, by trigram, for a pattern match on the issue key
+ONLINE_INDEXES = [
+    {"table": "graph.nodes", "name": "nodes_record_ticket_url", "cols": "(doc->>'webUrl') ext.gin_trgm_ops",
+     "where": "coll = 'records' AND (doc->>'recordType') = 'TICKET'", "using": "gin"},
 ]
 
 
 def upgrade():
-    for name, args in REPLACED.items():
-        op.execute(f"DROP FUNCTION IF EXISTS graph.{name}({args})")
+    op.execute("DROP FUNCTION IF EXISTS graph.records_by_virtual_id(text[])")
     op.execute("DELETE FROM kernel.function_registry WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")
-    # Built inside the upgrade's one transaction, so the writers of a leaf wait for its build (as graph_0006 does).
-    # shortcut: a build reads a whole leaf, with writers blocked: run this upgrade on a graph that holds many records in a maintenance window.
-    for name, cols, where, using in INDEXES:
-        ensure_partitioned_index(op.get_bind(), "graph.nodes", name, cols, where=where, blocking=True, using=using)
+    # db.migrate builds ONLINE_INDEXES before this transaction without blocking writers; here they are found valid (a new install builds them, empty)
+    for ix in ONLINE_INDEXES:
+        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)
     run_vetted(__file__, *REPLACED, *FUNCTIONS)
 
 
@@ -33,5 +32,5 @@ def downgrade():
     for name, args in FUNCTIONS.items():
         op.execute(f"DROP FUNCTION IF EXISTS graph.{name}({args})")
     op.execute("DELETE FROM kernel.function_registry WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")
-    for name, *_ in INDEXES:
-        op.execute(f"DROP INDEX IF EXISTS graph.{name}")
+    for ix in ONLINE_INDEXES:
+        op.execute(f"DROP INDEX IF EXISTS graph.{ix['name']}")
