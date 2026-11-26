@@ -86,10 +86,21 @@ def unmarked_database_wide_tests(modules: dict[str, str], conftests: list[str]) 
                 for a in node.names:
                     imports[(mod, a.asname or a.name)] = (node.module, a.name)
 
-    def resolve(mod: str, name: str) -> tuple[str, str] | None:
-        for key in ((mod, name), imports.get((mod, name)), *((c, name) for c in conftests)):
-            if key in defs:
-                return key
+    def resolve(mod: str, name: str) -> tuple | None:
+        """The node a name of ``mod`` stands for: its definition there, its import (an alias node), or a conftest's definition."""
+        if (mod, name) in defs:
+            return ("def", (mod, name))
+        if (mod, name) in imports:
+            return ("alias", (mod, name))
+        return next((("def", (c, name)) for c in conftests if (c, name) in defs), None)
+
+    def definition(mod: str, name: str) -> tuple[str, str] | None:
+        """The definition a name of ``mod`` comes to through its imports (for a base class); None for a name defined nowhere in ``modules``."""
+        node = resolve(mod, name)
+        for _ in range(len(imports) + 1):                   # each hop is a distinct import, so a longer chain is a cycle
+            if node is None or node[0] == "def":
+                return node and node[1]
+            node = resolve(*imports[node[1]])
         return None
 
     def mro(cls: tuple[str, str]) -> list[tuple[str, str]]:
@@ -101,7 +112,7 @@ def unmarked_database_wide_tests(modules: dict[str, str], conftests: list[str]) 
             if c in out:
                 continue
             out.append(c)
-            todo[:0] = [b for base in defs[c].bases if isinstance(base, ast.Name) and (b := resolve(c[0], base.id)) and isinstance(defs[b], ast.ClassDef)]
+            todo[:0] = [b for base in defs[c].bases if isinstance(base, ast.Name) and (b := definition(c[0], base.id)) and isinstance(defs[b], ast.ClassDef)]
         return out
 
     def methods(cls: tuple[str, str]) -> dict[str, tuple[str, ast.AST]]:
@@ -113,15 +124,19 @@ def unmarked_database_wide_tests(modules: dict[str, str], conftests: list[str]) 
                     out.setdefault(m.name, (c[0], m))
         return out
 
-    # nodes: ("def", key) for a module-level definition, ("method", receiver class, name) for a method run on that class
+    # nodes: ("def", key) for a module-level definition, ("alias", key) for an import (an edge to what it imports, a definition or another import), and
+    # ("method", receiver class, name) for a method run on that class
     callers: dict[tuple, set[tuple]] = {}
     hits: list[tuple] = []
 
     def add(node_id: tuple, node: ast.AST, mod: str, uses: set) -> None:
         if any(DATABASE_WIDE.search(x) for x in _strings(node)):
             hits.append(node_id)
-        for used in uses | {("def", k) for n in _names(node) if (k := resolve(mod, n))}:
+        for used in uses | {k for n in _names(node) if (k := resolve(mod, n))}:
             callers.setdefault(used, set()).add(node_id)
+    for key, (imod, iname) in imports.items():
+        if (target := resolve(imod, iname)) is not None:
+            callers.setdefault(target, set()).add(("alias", key))
     for key, node in defs.items():
         if isinstance(node, ast.ClassDef):
             own = methods(key)
@@ -184,6 +199,16 @@ def test_the_guard_resolves_self_against_the_test_class_that_runs_an_inherited_h
                          'class TestPlans(Base):\n    def analyze(self):\n        run("ANALYZE kg.records")\n    def test_one(self):\n        self.prepare()\n'
                          'class TestQuiet(Base):\n    def test_two(self):\n        self.prepare()\n'}
     assert unmarked_database_wide_tests(modules, []) == ["test_a::TestPlans::test_one"]
+
+
+def test_the_guard_follows_imports_through_re_exports_and_survives_an_import_cycle() -> None:
+    """test_a imports prepare from helpers, which imports it from operations, where it analyses; two modules importing a name from each other define it nowhere."""
+    modules = {"operations": 'def prepare():\n    run("ANALYZE kg.records")\n',
+               "helpers": "from .operations import prepare\n",
+               "test_a": "from .helpers import prepare\nfrom .operations import prepare as direct\nfrom .loop_a import ghost\n"
+                         "def test_through_the_re_export():\n    prepare()\ndef test_direct():\n    direct()\ndef test_ghost():\n    ghost()\n",
+               "loop_a": "from .loop_b import ghost\n", "loop_b": "from .loop_a import ghost\n"}
+    assert sorted(unmarked_database_wide_tests(modules, [])) == ["test_a::test_direct", "test_a::test_through_the_re_export"]
 
 
 def test_the_guard_is_reachability_whatever_the_cycles_and_the_order() -> None:
