@@ -1,0 +1,18 @@
+[
+  {
+    "description": "an MCP instance carrying a secret field",
+    "instance": {"schemaVersion": 1, "orgId": "o1", "toolsetInstances": [], "mcpInstances": [{"instanceId": "m1", "name": "x", "typeId": null, "authMode": "headers", "createdBy": null, "updatedAt": 1, "manifest": null, "headerValue": "Bearer abc"}], "agents": [], "nextAgent": null}
+  },
+  {
+    "description": "an approved tool with an unknown effect",
+    "instance": {"schemaVersion": 1, "orgId": "o1", "toolsetInstances": [], "mcpInstances": [{"instanceId": "m1", "name": "x", "typeId": null, "authMode": "none", "createdBy": null, "updatedAt": 1, "manifest": {"tools": {"t": {"digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "effect": "delete"}}, "approvedBy": null, "approvedAt": 1}}], "agents": [], "nextAgent": null}
+  },
+  {
+    "description": "an agent without its skills list",
+    "instance": {"schemaVersion": 1, "orgId": "o1", "toolsetInstances": [], "mcpInstances": [], "agents": [{"agentKey": "a7", "createdBy": null, "toolsets": [], "mcpServers": []}], "nextAgent": null}
+  },
+  {
+    "description": "a personal toolset instance whose owner is not a key",
+    "instance": {"schemaVersion": 1, "orgId": "o1", "toolsetInstances": [{"instanceId": "t1", "instanceName": "x", "toolsetType": "jira", "authType": "NONE", "createdBy": "u1", "updatedAt": 1, "ownerId": "user u1"}], "mcpInstances": [], "agents": [], "nextAgent": null}
+  }
+]

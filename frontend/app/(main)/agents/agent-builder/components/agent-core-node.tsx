@@ -8,8 +8,13 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import type { ReasoningEffort } from '@/chat/types';
+import { skillDisplayName } from '@/chat/utils/tool-display';
 import { REASONING_EFFORT_OPTIONS } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
-import { useFeatureFlagsStore, selectSkillsEnabled } from '@/lib/store/feature-flags-store';
+import {
+  useFeatureFlagsStore,
+  selectAgentHarnessOn,
+  selectSkillsEnabled,
+} from '@/lib/store/feature-flags-store';
 import { McpServerIcon } from '@/app/(main)/workspace/mcp-servers/components';
 import type { FlowNodeData } from '../types';
 import {
@@ -23,6 +28,18 @@ import {
   resolveNodeHeaderIconUrl,
 } from '../display-utils';
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL } from '../flow-theme';
+import { AgentRuntimeExtras, AgentRuntimeTailExtras } from '@/config';
+import { AgentCodingEngine } from './agent-coding-engine';
+import { AgentSchedules } from './agent-schedules';
+import { AgentRuntimeGroup } from './agent-runtime-group';
+import { Section } from './core-node-section';
+import { SubAgentModelsSection } from './sub-agent-models';
+import { AgentSafetyChecks } from './agent-safety-checks';
+import { AgentEnvironmentSection } from './agent-environment-section';
+import { agentEnvironmentOf } from '../../agent-environment';
+import { agentGatesOf } from '../../agent-gates';
+import { toRoleModels } from '../role-models';
+import { useInstructionsDraft } from '../instructions-draft';
 
 type ChipIconKind = 'knowledge' | 'toolset' | 'llm';
 
@@ -101,7 +118,7 @@ function mcpChipIcon(n: FlowNodeData): React.ReactNode {
 function skillConnectionChipLabel(n: FlowNodeData): string {
   const c = (n.config || {}) as Record<string, unknown>;
   const name = String(c.skillName ?? '').trim();
-  return normalizeDisplayName(name || n.label);
+  return name ? skillDisplayName(name) : normalizeDisplayName(n.label);
 }
 
 type CoreInboundHandle = 'input' | 'llms' | 'knowledge' | 'toolsets' | 'skills' | 'mcpServers';
@@ -314,6 +331,8 @@ export function AgentCoreNode({
   const storeNodes = useStore((s) => s.nodes);
   const storeEdges = useStore((s) => s.edges);
   const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
+  // A coding engine, gates and environment came with the agent harness: only where it is on for the org (ADR-OPS-08).
+  const harnessOn = useFeatureFlagsStore(selectAgentHarnessOn);
 
   const [promptOpen, setPromptOpen] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState(
@@ -382,7 +401,9 @@ export function AgentCoreNode({
     setPromptOpen(false);
   }, [data.id, defaultReasoningEffort, instructions, sendUserContext, setNodes, startMessage, systemPrompt]);
 
+  const [drafted, setDrafted] = useState(false);
   const openPrompts = () => {
+    setDrafted(false);
     setSystemPrompt((data.config?.systemPrompt as string) || t('agentBuilder.defaultSystemPrompt'));
     setInstructions((data.config?.instructions as string) || '');
     setStartMessage((data.config?.startMessage as string) || t('agentBuilder.defaultStartMessage'));
@@ -390,6 +411,20 @@ export function AgentCoreNode({
     setSendUserContext(data.config?.sendUserContext !== false);
     setPromptOpen(true);
   };
+
+  // `/init` (SLASH2 C4) drafted instructions in a chat: open them here, unsaved, for this agent's editor.
+  const openPromptsRef = useRef(openPrompts);
+  openPromptsRef.current = openPrompts;
+  useEffect(() => {
+    // The edit page's own query param; read here, not with useSearchParams, so /agents/new needs no Suspense.
+    const agentKey = new URLSearchParams(window.location.search).get('agentKey');
+    if (readOnly || !agentKey) return;
+    const draft = useInstructionsDraft.getState().take(agentKey);
+    if (draft === null) return;
+    openPromptsRef.current();
+    setInstructions(draft);
+    setDrafted(true);
+  }, [readOnly]);
 
   return (
     <>
@@ -538,21 +573,54 @@ export function AgentCoreNode({
             </Box>
           </Box>
 
-          <Section title={t('agentBuilder.modelSection')} icon="psychology">
-            <CoreHandle type="target" position={Position.Left} id="llms" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
-            {connected.llms.length ? (
-              <ConnectedChips
-                nodes={connected.llms}
-                max={MAX_VISIBLE.models}
-                labelOf={(n) => getModelLabel(n.config) || n.label}
-                chipIconKind="llm"
+          <AgentRuntimeGroup>
+            <Section title={t('agentBuilder.modelSection')} icon="psychology">
+              {/* Inside the group the section is inset by its padding and border: the handle still sits on the card edge. */}
+              <CoreHandle type="target" position={Position.Left} id="llms" nodeDataId={data.id} offsetStyle={{ left: -17 }} />
+              {connected.llms.length ? (
+                <ConnectedChips
+                  nodes={connected.llms}
+                  max={MAX_VISIBLE.models}
+                  labelOf={(n) => getModelLabel(n.config) || n.label}
+                  chipIconKind="llm"
+                />
+              ) : (
+                <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
+                  {t('agentBuilder.usingOrgDefault')}
+                </Text>
+              )}
+            </Section>
+
+            {harnessOn ? (
+              <AgentCodingEngine nodeId={data.id} stored={data.config?.engineProfile} readOnly={readOnly} />
+            ) : null}
+            <AgentRuntimeExtras readOnly={readOnly} />
+            <AgentSchedules readOnly={readOnly} />
+            <AgentRuntimeTailExtras readOnly={readOnly} />
+          </AgentRuntimeGroup>
+
+          {harnessOn && (!readOnly || agentGatesOf(data.config?.gates) !== null) ? (
+            <Section title={t('agentBuilder.gates.title')} icon="verified_user">
+              <AgentSafetyChecks nodeId={data.id} stored={data.config?.gates} readOnly={readOnly} />
+            </Section>
+          ) : null}
+
+          {harnessOn && (!readOnly || agentEnvironmentOf(data.config?.environment) !== null) ? (
+            <Section title={t('agentBuilder.environment.title')} icon="build">
+              <AgentEnvironmentSection nodeId={data.id} stored={data.config?.environment} readOnly={readOnly} />
+            </Section>
+          ) : null}
+
+          {!readOnly || Object.keys(toRoleModels(data.config?.roleModels)).length > 0 ? (
+            <Section title={t('agentBuilder.subAgentModels.title')} icon="account_tree">
+              <SubAgentModelsSection
+                nodeId={data.id}
+                stored={data.config?.roleModels}
+                readOnly={readOnly}
+                startsSubAgents={data.config?.maxChildren !== 0}
               />
-            ) : (
-              <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
-                {t('agentBuilder.usingOrgDefault')}
-              </Text>
-            )}
-          </Section>
+            </Section>
+          ) : null}
 
           <Section title={t('agentBuilder.knowledge')} icon="library_books">
             <CoreHandle type="target" position={Position.Left} id="knowledge" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
@@ -684,6 +752,11 @@ export function AgentCoreNode({
               showAllLabel={(n) => t('agentBuilder.showAll', { count: n })}
               showLessLabel={t('agentBuilder.showLess')}
             />
+            {drafted ? (
+              <Text size="1" color="amber" role="status" data-testid="init-draft-note">
+                {t('agentBuilder.initDraftNote')}
+              </Text>
+            ) : null}
             <PromptSection
               title={t('agentBuilder.instructionsLabel')}
               value={instructions}
@@ -746,67 +819,6 @@ export function AgentCoreNode({
         </Dialog.Content>
       </Dialog.Root>
     </>
-  );
-}
-
-function Section({
-  title,
-  icon,
-  children,
-}: {
-  title: string;
-  icon: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <Box
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        width: '100%',
-        minWidth: 0,
-        boxSizing: 'border-box',
-        borderRadius: 'var(--radius-2)',
-        border: '1px solid var(--agent-flow-node-border)',
-        background: FLOW_NODE_PANEL_BG,
-        boxShadow: '0 1px 0 var(--gray-a4)',
-        overflow: 'visible',
-        position: 'relative',
-      }}
-    >
-      <Flex
-        align="center"
-        gap="2"
-        px="2"
-        py="1"
-        style={{
-          borderBottom: '1px solid var(--agent-flow-node-border)',
-          background: 'var(--agent-flow-section-header-bg)',
-        }}
-      >
-        <Box
-          style={{
-            width: 24,
-            height: 24,
-            borderRadius: 'var(--radius-1)',
-            background: 'var(--gray-a2)',
-            border: '1px solid var(--gray-6)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0,
-          }}
-        >
-          <MaterialIcon name={icon} size={14} color="var(--agent-flow-text-muted)" />
-        </Box>
-        <Text size="1" weight="medium" style={{ color: 'var(--agent-flow-text)', lineHeight: '18px' }}>
-          {title}
-        </Text>
-      </Flex>
-      <Box px="2" py="2" style={{ display: 'flex', flexDirection: 'column', gap: 8, position: 'relative' }}>
-        {children}
-      </Box>
-    </Box>
   );
 }
 
@@ -877,7 +889,7 @@ function PromptSection({
             border: 'none',
             padding: 0,
             cursor: 'pointer',
-            color: 'var(--accent-9)',
+            color: 'var(--accent-11)',
             fontSize: 12,
             fontWeight: 500,
             display: 'flex',

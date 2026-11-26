@@ -50,6 +50,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.local_folder import scan
 from app.models.entities import (
     AppUser,
@@ -62,7 +63,10 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.modules.parsers.code_parser.file_role import should_index_code_file
+from app.modules.parsers.code_parser.file_role import (
+    is_sensitive_path,
+    should_index_code_file,
+)
 from app.modules.parsers.code_parser.lang_config import detect_language
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -164,6 +168,7 @@ class FolderConnector(BaseConnector):
     CONNECTOR = Connectors.LOCAL_REPO
     FILTER_KEY = "localrepository"
     DEFAULT_IGNORES = scan.DEFAULT_IGNORES
+    _sync_incomplete = False
 
     def __init__(
         self,
@@ -372,7 +377,12 @@ class FolderConnector(BaseConnector):
             raise
         return scan.sha256_fd(fd), binary
 
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that could not name the records it held back for unreadable files has not read everything, so it unlinks nothing."""
+        return FullSyncCoverage(complete=not self._sync_incomplete)
+
     async def run_sync(self) -> None:
+        self._sync_incomplete = False
         try:
             await self._load_config()
         except scan.PathRefused as exc:
@@ -420,7 +430,14 @@ class FolderConnector(BaseConnector):
         # A directory counts only if a file survived; those are known after the loop,
         # so files are collected and written in a second pass.
         pending: list[tuple[scan.Entry, str]] = []
+        left_out = 0
         for e in entries:
+            if is_sensitive_path(e.rel):
+                # A credential file never gets a record, whatever its type, and is never read; a record it had is retired below as gone.
+                manifest[e.rel] = (e.mtime_ns, e.size, "")
+                self._left_out(e.rel, "sensitive")
+                left_out += 1
+                continue
             old = prev.get(e.rel)
             if old and old[0] == e.mtime_ns and old[1] == e.size:
                 manifest[e.rel] = old
@@ -475,12 +492,19 @@ class FolderConnector(BaseConnector):
 
         # Every run: records for paths the walk no longer sees (old root, an earlier instance, a lost delete).
         # Paths that failed to read this run are kept, so a transient error never deletes.
-        keep = live | dirs | unreadable | {a for u in unreadable for a in _ancestors(u)} | set(undeleted)
+        held = unreadable | {a for u in unreadable for a in _ancestors(u)}
+        keep = live | dirs | held | set(undeleted)
         deleted_fail += len(await self._prune_unseen(keep, stored))
+        if stored is not None:
+            kept = [stored[x] for x in {external_id(r) for r in held} if x in stored]
+            if kept:
+                self.data_entities_processor.note_kept_records(self.connector_id, kept)
+        elif unreadable:
+            self._sync_incomplete = True
 
         self.logger.info(
-            "Folder sync of %s: %d walked, %d changed, %d removed, %d unreadable, %d delete failures",
-            self.root, len(entries), changed, len(gone) + len(gone_dirs) - deleted_fail, failed, deleted_fail,
+            "Folder sync of %s: %d walked, %d changed, %d removed, %d unreadable, %d delete failures, %d credential files left out",
+            self.root, len(entries), changed, len(gone) + len(gone_dirs) - deleted_fail, failed, deleted_fail, left_out,
         )
         await self._sync_finished({r: manifest[r][1] for r in live if r in manifest}, set(manifest))
         await self.record_sync_point.update_sync_point(self._sync_key(), {
@@ -498,6 +522,9 @@ class FolderConnector(BaseConnector):
     def _may_index_code(self, entry: scan.Entry, name: str) -> tuple[bool, Any]:  # noqa: ANN401, RUF100
         """Whether a code file gets a record, and its role; a connector with more to go on than the path overrides it."""
         return should_index_code_file(entry.rel, name)
+
+    def _left_out(self, rel: str, why: str) -> None:
+        """A file the sync gives no record on purpose, and why; a connector that reports these overrides it."""
 
     def _in_index_order(self, pending: list[tuple[scan.Entry, str]]) -> list[tuple[scan.Entry, str]]:
         return pending
@@ -525,9 +552,9 @@ class FolderConnector(BaseConnector):
                 self.logger.error("Folder: could not delete record for %s", x, exc_info=True)
         return failed
 
-    async def _stored_ids(self) -> set[str] | None:
-        """External ids of every record the store holds for this connector, or None if it cannot be listed."""
-        ids: set[str] = set()
+    async def _stored_ids(self) -> dict[str, str] | None:
+        """The record id of every record the store holds for this connector by external id, or None if they cannot be listed."""
+        ids: dict[str, str] = {}
         offset = 0
         statuses = [s.value for s in ProgressStatus]
         try:
@@ -538,7 +565,8 @@ class FolderConnector(BaseConnector):
                 )
                 if not page:
                     return ids
-                ids.update(r.external_record_id for r in page)
+                for r in page:
+                    ids[r.external_record_id] = r.id
                 offset += len(page)
         except asyncio.CancelledError:
             raise
@@ -546,7 +574,7 @@ class FolderConnector(BaseConnector):
             self.logger.warning("Folder: could not list stored records; skipping reconcile", exc_info=True)
             return None
 
-    async def _prune_unseen(self, seen: set[str], stored: set[str] | None) -> list[str]:
+    async def _prune_unseen(self, seen: set[str], stored: dict[str, str] | None) -> list[str]:
         """After a first full walk, retire records the walk did not see (an earlier instance left them)."""
         seen_ids = {external_id(s) for s in seen}
         return await self._delete([x for x in (stored or ()) if x not in seen_ids])

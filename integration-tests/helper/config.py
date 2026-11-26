@@ -15,7 +15,7 @@ def _get_env(key: str, default: str = "") -> str:
 # ------------------------------------------------------------------ #
 # MongoDB
 # ------------------------------------------------------------------ #
-MONGO_URI: str = _get_env("TEST_MONGO_URI", "mongodb://admin:password@localhost:27017/?authSource=admin")
+MONGO_URI: str = _get_env("TEST_MONGO_URI", "mongodb://admin:password@localhost:27017/?authSource=admin&directConnection=true")
 MONGO_DB_NAME: str = _get_env("TEST_MONGO_DB_NAME", "es")
 
 # ------------------------------------------------------------------ #

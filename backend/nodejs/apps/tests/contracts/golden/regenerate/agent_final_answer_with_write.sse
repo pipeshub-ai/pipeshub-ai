@@ -1,0 +1,78 @@
+event: CUSTOM
+data: {"type":"CUSTOM","name":"conversation_created","value":{"message":"SSE connection established"}}
+
+event: RUN_STARTED
+data: {"type": "RUN_STARTED", "threadId": "conv-golden", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "starting", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Export the Q3 report", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Export the Q3 report", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_START
+data: {"type": "TEXT_MESSAGE_START", "messageId": "msg-4", "role": "assistant", "runId": "uuid-1"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "calling_llm", "current_turn": 0, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Export the Q3 report", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-4", "delta": "The", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-4", "delta": " Q3 report i", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_CONTENT
+data: {"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-4", "delta": "s exported.", "runId": "uuid-1"}
+
+event: TEXT_MESSAGE_END
+data: {"type": "TEXT_MESSAGE_END", "messageId": "msg-4", "runId": "uuid-1"}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "The"}, {"op": "replace", "path": "/rawLength", "value": 3}]}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-export", "toolCallName": "goldendocs__export_report", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-export", "delta": "{\"name\": \"q3\"}", "runId": "uuid-1", "argsSummary": "Export Report: \"q3\"", "argsPreview": "{\"name\": \"q3\"}"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "running_tool", "current_turn": 0, "current_tool": "goldendocs__export_report", "current_child_run_id": null, "hil_request_id": null, "goal_description": "Export the Q3 report", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TOOL_CALL_START
+data: {"type": "TOOL_CALL_START", "toolCallId": "call-final", "toolCallName": "final_answer", "runId": "uuid-1"}
+
+event: TOOL_CALL_ARGS
+data: {"type": "TOOL_CALL_ARGS", "toolCallId": "call-final", "delta": "{\"answer_markdown\": \"The Q3 report is exported.\", \"confidence\": \"High\"}", "runId": "uuid-1", "argsSummary": "Final Answer \u2014 answer_markdown: \"The Q3 report is exported.\", confidence: \"High\"", "argsPreview": "{\"answer_markdown\": \"The Q3 report is exported.\", \"confidence\": \"High\"}"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "running_tool", "current_turn": 0, "current_tool": "final_answer", "current_child_run_id": null, "hil_request_id": null, "goal_description": "Export the Q3 report", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-final", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-final", "content": "{\"answer_markdown\": \"The Q3 report is exported.\", \"sources_used\": [], \"unavailable_sources\": [], \"confidence\": \"High\", \"confidence_reason\": null}", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Completed successfully"}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": ""}, {"op": "replace", "path": "/rawLength", "value": 0}]}
+
+event: TOOL_CALL_END
+data: {"type": "TOOL_CALL_END", "toolCallId": "call-export", "runId": "uuid-1"}
+
+event: TOOL_CALL_RESULT
+data: {"type": "TOOL_CALL_RESULT", "toolCallId": "call-export", "content": "{\"name\": \"q3\", \"rows\": 3}", "role": "tool", "status": "completed", "runId": "uuid-1", "resultSummary": "Completed successfully"}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"run_id": "uuid-1", "agent_id": "uuid-2", "trace_id": "uuid-3", "parent_run_id": null, "role_name": "pipeshub-agent", "status": "completed", "current_turn": 1, "current_tool": null, "current_child_run_id": null, "hil_request_id": null, "goal_description": "Export the Q3 report", "started_at": "<timestamp>", "updated_at": "<timestamp>"}}
+
+event: STATE_DELTA
+data: {"type": "STATE_DELTA", "runId": "uuid-1", "delta": [{"op": "replace", "path": "/citations", "value": []}, {"op": "replace", "path": "/normalizedAnswer", "value": "The Q3 report is exported."}, {"op": "replace", "path": "/rawLength", "value": 26}, {"op": "replace", "path": "/confidence", "value": "High"}]}
+
+event: STATE_SNAPSHOT
+data: {"type": "STATE_SNAPSHOT", "runId": "uuid-1", "snapshot": {"final": true, "parts": [{"type": "text", "content": "The Q3 report is exported.", "runId": "uuid-1", "isFinal": true}, {"type": "tool_call", "toolCallId": "call-export", "toolName": "goldendocs__export_report", "args": "{\"name\": \"q3\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Export Report: \"q3\"", "resultPreview": "{\"name\": \"q3\", \"rows\": 3}", "resultSummary": "Completed successfully"}, {"type": "tool_call", "toolCallId": "call-final", "toolName": "final_answer", "args": "{\"answer_markdown\": \"The Q3 report is exported.\", \"confidence\": \"High\"}", "status": "completed", "runId": "uuid-1", "argsSummary": "Final Answer \u2014 answer_markdown: \"The Q3 report is exported.\", confidence: \"High\"", "resultPreview": "{\"answer_markdown\": \"The Q3 report is exported.\", \"sources_used\": [], \"unavailable_sources\": [], \"confidence\": \"High\", \"confidence_reason\": null}", "resultSummary": "Completed successfully"}], "answer": "The Q3 report is exported.", "citations": [], "confidence": "High", "succeeded_tool_names": ["final_answer", "goldendocs__export_report"], "failed_tool_names": []}}
+
+event: RUN_FINISHED
+data: {"type":"RUN_FINISHED","result":{"conversation":{"userId":"oid-2","orgId":"oid-3","title":"Earlier chat","initiator":"oid-2","isShared":false,"isDeleted":false,"isArchived":false,"lastActivityAt":"<clock>","status":"Complete","modelInfo":{"chatMode":"quick"},"agentKey":"agent-1","conversationSource":"agent_chat","_id":"oid-4","sharedWith":[],"conversationErrors":[],"activeRunId":"node-uuid-1","createdAt":"<timestamp>","updatedAt":"<timestamp>","__v":0,"messages":[{"messageType":"bot_response","content":"The Q3 report is exported.","contentFormat":"MARKDOWN","citations":[],"confidence":"High","followUpQuestions":[],"modelInfo":{"chatMode":"quick"},"appliedFilters":{"apps":[],"kb":[],"recordGroups":[],"records":[],"recordsExact":[]},"parts":[{"type":"text","content":"The Q3 report is exported.","runId":"uuid-1","isFinal":true},{"type":"tool_call","toolCallId":"call-export","toolName":"goldendocs__export_report","args":"{\"name\": \"q3\"}","status":"completed","runId":"uuid-1","argsSummary":"Export Report: \"q3\"","resultPreview":"{\"name\": \"q3\", \"rows\": 3}","resultSummary":"Completed successfully"},{"type":"tool_call","toolCallId":"call-final","toolName":"final_answer","args":"{\"answer_markdown\": \"The Q3 report is exported.\", \"confidence\": \"High\"}","status":"completed","runId":"uuid-1","argsSummary":"Final Answer — answer_markdown: \"The Q3 report is exported.\", confidence: \"High\"","resultPreview":"{\"answer_markdown\": \"The Q3 report is exported.\", \"sources_used\": [], \"unavailable_sources\": [], \"confidence\": \"High\", \"confidence_reason\": null}","resultSummary":"Completed successfully"}],"_id":"oid-5","createdAt":"<timestamp>","updatedAt":"<timestamp>","feedback":[],"attachments":[],"referenceData":[],"tools":[],"reasoning":[]}]},"recordsUsed":0,"meta":{"requestId":"req-stream","timestamp":"<timestamp>","duration":"<clock>","recordsUsed":0}}}
+

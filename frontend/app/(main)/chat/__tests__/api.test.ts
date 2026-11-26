@@ -1,6 +1,26 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { apiClient, streamSSERequest } from '@/lib/api';
+import { apiClient, streamSSEGet, streamSSERequest } from '@/lib/api';
 import { ChatApi } from '../api';
+import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { ANSWER, completedRun } from './durable-frames';
+
+type FeatureState = {
+  flags: Record<string, boolean>;
+  agentHarness: { useHarness: boolean; resumeInFlightRuns: boolean; harnessOn: boolean } | null;
+};
+
+const featureState = vi.hoisted(
+  (): FeatureState => ({ flags: {}, agentHarness: null }),
+);
+
+// Real selectors, fake state: the chat API must follow the server's decision.
+vi.mock('@/lib/store/feature-flags-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/store/feature-flags-store')>()),
+  useFeatureFlagsStore: {
+    getState: () => featureState,
+    setState: (next: Partial<FeatureState>) => Object.assign(featureState, next),
+  },
+}));
 import { CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS, type StreamChatRequest } from '../types';
 
 vi.mock('@/lib/api', () => ({
@@ -12,15 +32,28 @@ vi.mock('@/lib/api', () => ({
     delete: vi.fn(),
   },
   streamSSERequest: vi.fn(),
+  streamSSEGet: vi.fn(),
 }));
 
 const mockedGet = vi.mocked(apiClient.get);
 const mockedPost = vi.mocked(apiClient.post);
+const mockedStream = vi.mocked(streamSSERequest);
+const mockedStreamGet = vi.mocked(streamSSEGet);
 const mockedPatch = vi.mocked(apiClient.patch);
+
+/** The run's stream answers with a whole completed run. */
+function serveCompletedRun(): void {
+  mockedStreamGet.mockImplementation(async (_url, options) => {
+    options.onOpen?.();
+    completedRun().forEach((frame) => options.onEvent(frame));
+  });
+}
 
 describe('ChatApi.fetchOrgLlmCatalog', () => {
   beforeEach(() => {
     mockedGet.mockReset();
+    mockedPost.mockReset();
+    useFeatureFlagsStore.setState({ flags: {}, agentHarness: null });
   });
 
   it('returns the models array on a well-formed response', async () => {
@@ -54,6 +87,9 @@ describe('ChatApi.fetchOrgLlmCatalog', () => {
     expect(result).toEqual([]);
   });
 });
+
+/** Admission refusals are shown in the reply, never as a generic toast (UX3 AR-1). */
+const ADMISSION_CONFIG = expect.objectContaining({ suppressErrorToast: true });
 
 describe('ChatApi.cancelStream', () => {
   beforeEach(() => {
@@ -96,6 +132,121 @@ describe('ChatApi.cancelStream', () => {
       { runId: 'run-123' },
       { suppressErrorToast: true },
     );
+  });
+});
+
+describe('ChatApi durable agent transport', () => {
+  beforeEach(() => {
+    mockedGet.mockReset();
+    mockedPost.mockReset();
+    mockedStreamGet.mockReset();
+    useFeatureFlagsStore.setState({
+      flags: {},
+      agentHarness: { useHarness: true, resumeInFlightRuns: true, harnessOn: true },
+    });
+  });
+
+  // F-4: with the harness off, agent and assistant chat never touch the durable transport.
+  it.each([
+    ['agent chat', { agentId: 'agent-1', chatMode: 'agent:auto' }, '/api/v1/agents/agent-1/conversations/stream'],
+    ['assistant chat', { chatMode: 'quick' }, '/api/v1/conversations/stream'],
+  ])('uses the legacy stream for %s when the rollout has no harness', async (_name, extra, endpoint) => {
+    mockedStream.mockReset();
+    useFeatureFlagsStore.setState({ flags: { ENABLE_AGENT_HARNESS: true }, agentHarness: null });
+
+    await ChatApi.streamMessage(
+      {
+        query: 'Question',
+        modelKey: 'model-1',
+        modelName: 'Model',
+        modelFriendlyName: 'Model',
+        filters: { apps: [], kb: [] },
+        ...extra,
+      },
+      {},
+    );
+
+    expect(mockedStream).toHaveBeenCalledWith(endpoint, expect.any(Object), expect.any(Object));
+    expect(mockedPost).not.toHaveBeenCalled();
+    expect(mockedStreamGet).not.toHaveBeenCalled();
+    expect(mockedGet).not.toHaveBeenCalled();
+  });
+
+  it('ignores the raw Labs flag and follows the server rollout decision', async () => {
+    mockedStream.mockReset();
+    useFeatureFlagsStore.setState({
+      flags: { ENABLE_AGENT_HARNESS: true },
+      agentHarness: { useHarness: false, resumeInFlightRuns: true, harnessOn: false },
+    });
+
+    await ChatApi.streamMessage(
+      {
+        query: 'Question',
+        modelKey: 'model-1',
+        modelName: 'Model',
+        modelFriendlyName: 'Model',
+        chatMode: 'quick',
+        filters: { apps: [], kb: [] },
+      },
+      {},
+    );
+
+    expect(mockedPost).not.toHaveBeenCalled();
+    expect(mockedStream).toHaveBeenCalledWith(
+      '/api/v1/conversations/stream',
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
+  it('reattaches to an existing run without submitting another turn', async () => {
+    serveCompletedRun();
+    const onChunk = vi.fn();
+    const onComplete = vi.fn();
+    const onDurableRunAccepted = vi.fn();
+
+    await ChatApi.resumeDurableAgentRun('agent-2', 'session-2', 'run-2', {
+      onChunk,
+      onComplete,
+      onDurableRunAccepted,
+    });
+
+    expect(mockedPost).not.toHaveBeenCalled();
+    expect(mockedStreamGet).toHaveBeenCalledWith(
+      '/api/v1/agents/agent-2/conversations/session-2/runs/run-2/stream',
+      expect.any(Object),
+    );
+    expect(onDurableRunAccepted).toHaveBeenCalledWith({
+      agentId: 'agent-2',
+      sessionId: 'session-2',
+      runId: 'run-2',
+    });
+    expect(onChunk).toHaveBeenLastCalledWith(expect.objectContaining({ accumulated: ANSWER }));
+    expect(onComplete).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['a new chat linked to a project', { projectId: 'project-1' }],
+    ['a later turn in a project conversation', { conversationId: 'chat-4' }],
+  ])('sends %s as one request, asking the server nothing first', async (_name, extra) => {
+    mockedStream.mockReset();
+
+    await ChatApi.streamMessage(
+      {
+        query: 'Question',
+        modelKey: 'model-1',
+        modelName: 'Model',
+        modelFriendlyName: 'Model',
+        chatMode: 'internal_search',
+        filters: { apps: [], kb: [] },
+        ...extra,
+      },
+      {},
+    );
+
+    expect(mockedPost).not.toHaveBeenCalled();
+    expect(mockedStreamGet).not.toHaveBeenCalled();
+    expect(mockedStream).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -195,6 +346,41 @@ describe('ChatApi.uploadAttachments', () => {
     const config = mockedPost.mock.calls[0][2] as { timeout?: number };
     expect(config.timeout).toBe(CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS);
     expect(CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS).toBeGreaterThan(90_000);
+  });
+});
+
+describe('ChatApi.listWorkspaceVersions', () => {
+  beforeEach(() => {
+    mockedGet.mockReset();
+  });
+
+  it("raises no global toast: a shared chat's participant is refused (404) on open, and callers show nothing", async () => {
+    mockedGet.mockResolvedValueOnce({ data: { workspaceId: 'ws:conv-1', head: 0, versions: [] } });
+
+    await ChatApi.listWorkspaceVersions({ sessionId: 'conv-1' }, { limit: 50 });
+
+    const config = mockedGet.mock.calls[0][1] as { params?: unknown; suppressErrorToast?: boolean };
+    expect(config).toMatchObject({ params: { limit: 50 }, suppressErrorToast: true });
+  });
+});
+
+describe('ChatApi.uploadWorkspaceFiles', () => {
+  beforeEach(() => {
+    mockedPost.mockReset();
+  });
+
+  it('sends multipart, not the client default JSON that turns each file into {}', async () => {
+    mockedPost.mockResolvedValueOnce({ data: { revision: 2, paths: ['uploads/a.csv'], replaced: [] } });
+    const file = new File(['a,b\n'], 'a.csv', { type: 'text/csv' });
+
+    await ChatApi.uploadWorkspaceFiles(
+      { agentId: 'agent-1', sessionId: 'conv-1' },
+      { files: [file], folder: 'uploads', baseRevision: 1, idempotencyKey: 'k1', replace: false },
+    );
+
+    const [, body, config] = mockedPost.mock.calls[0] as [string, FormData, { headers?: Record<string, unknown> }];
+    expect(body).toBeInstanceOf(FormData);
+    expect(config.headers).toHaveProperty('Content-Type', undefined);
   });
 });
 

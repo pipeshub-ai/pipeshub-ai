@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import contextvars
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 from app.agent_loop_lib.context.protection import current_request_text
-from app.agent_loop_lib.core.exceptions import ToolError, spawn_refusal
+from app.agent_loop_lib.core.exceptions import (
+    ToolError,
+    spawn_failure_text,
+    spawn_refusal,
+)
 from app.agent_loop_lib.core.types import Goal, ToolCall
 from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
@@ -20,6 +24,8 @@ from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.agent_loop_lib.agent.spec import AgentSpec
     from app.agent_loop_lib.core.types import AgentResult
     from app.agent_loop_lib.runtime.runtime import AgentRuntime
@@ -126,6 +132,10 @@ class AgentTool(Tool):
                 required=False, default=None,
             ),
         ]
+
+    def time_bound_s(self, arguments: Mapping[str, Any]) -> float | None | Literal["default"]:
+        # Waits on a domain agent's own loop, every step of which is bounded on its own.
+        return None
 
     @property
     def log_kind(self) -> str:
@@ -285,7 +295,7 @@ class AgentTool(Tool):
                 )
         except Exception as e:
             return CoreToolResult(
-                tool_call_id=call.id, name=call.name, content=str(e), is_error=True,
+                tool_call_id=call.id, name=call.name, content=spawn_failure_text(e), is_error=True,
                 cause=e, end_fields={"reason": "exception", **(spawn_refusal(e) or {})},
             )
         if not result.success:

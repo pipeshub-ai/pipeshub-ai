@@ -71,7 +71,7 @@ describe('mcp_servers/routes/mcp_client_metadata', () => {
       const store = keyValueStore(JSON.stringify({ frontend: { publicEndpoint: 'https://pipeshub.example.com/' } }))
       const res = response()
 
-      await createMcpClientMetadataHandler(store)({} as any, res, sinon.stub())
+      await createMcpClientMetadataHandler(store)({} as any, res, sinon.stub<unknown[]>())
 
       expect(store.get.calledWith('/services/endpoints')).to.be.true
       expect(res.json.firstCall.args[0].client_id).to.equal(
@@ -83,11 +83,11 @@ describe('mcp_servers/routes/mcp_client_metadata', () => {
     it('reads the address on each request, so a change applies at once', async () => {
       const store = keyValueStore(JSON.stringify({ frontend: { publicEndpoint: 'https://old.example.com' } }))
       const handler = createMcpClientMetadataHandler(store)
-      await handler({} as any, response(), sinon.stub())
+      await handler({} as any, response(), sinon.stub<unknown[]>())
 
       store.get.callsFake(async () => JSON.stringify({ frontend: { publicEndpoint: 'https://new.example.com' } }))
       const res = response()
-      await handler({} as any, res, sinon.stub())
+      await handler({} as any, res, sinon.stub<unknown[]>())
 
       expect(res.json.firstCall.args[0].client_uri).to.equal('https://new.example.com')
     })
@@ -95,7 +95,7 @@ describe('mcp_servers/routes/mcp_client_metadata', () => {
     it('is not found without a configured address', async () => {
       for (const stored of [null, '{}', JSON.stringify({ frontend: { publicEndpoint: '  ' } })]) {
         const res = response()
-        await createMcpClientMetadataHandler(keyValueStore(stored))({} as any, res, sinon.stub())
+        await createMcpClientMetadataHandler(keyValueStore(stored))({} as any, res, sinon.stub<unknown[]>())
         expect(res.status.calledWith(404)).to.be.true
         expect(res.json.called).to.be.false
       }

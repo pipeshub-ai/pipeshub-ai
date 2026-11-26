@@ -18,7 +18,7 @@ export function CharCount({ id, length, max }: { id?: string; length: number; ma
       id={id}
       size="1"
       aria-live={nearLimit ? 'polite' : undefined}
-      style={{ color: nearLimit ? 'var(--amber-11)' : 'var(--slate-10)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}
+      style={{ color: nearLimit ? 'var(--amber-11)' : 'var(--slate-11)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}
     >
       {t('chat.projects.charCount', { length, max })}
     </Text>

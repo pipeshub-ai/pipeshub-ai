@@ -70,7 +70,7 @@ async def test_pg_the_envelope_event_id_reaches_the_handler_and_survives_a_hand_
         return (key,)
 
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
-    envelope.configure(keys, None, key)
+    envelope.configure(keys, key)
     seen: list[tuple[str | None, str | None]] = []
 
     async def handler(m: StreamMessage) -> AsyncIterator[PipelineEvent]:
@@ -91,7 +91,7 @@ async def test_pg_the_envelope_event_id_reaches_the_handler_and_survives_a_hand_
             await p.send_event(pg.topic, "newRecord", {"recordId": "rec-1", "orgId": "org-1", "_event_id": "forged"})
         await until(lambda: len(seen) >= 2, timeout=30.0)
     finally:
-        envelope.configure(None, None, None)
+        envelope.configure(None)
     (e1, d1), (e2, d2) = seen[:2]
     assert e1 and e1 != "forged"
     uuid.UUID(e1)

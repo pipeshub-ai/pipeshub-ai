@@ -1,0 +1,568 @@
+{
+  "description": "ADR-OWD-07 D-LAZY-8 (R31-HOT): a child's MCP grant when its parent holds a server whole (x.pipeshub.mcp[].tools: at_first_use, ADR-OWD-07 D-LAZY-2), whose tools the parent's tool grants name none of. One table for Node (domain/child-runs.ts childGrants + childRunSpec) and Python (harness_core.journal.children child_grants + child_spec). `parentSpec` is child-grants.json's with mcp-rovo held whole. `tools` is the checked grant (a server whole is `mcp@<instance>/*`), `childTools` the child spec's grants.tools, `mcp` its x.pipeshub.mcp. A child never holds more than its parent: a server held whole stays whole only when the request omits tools or names it whole; named tools of it are pinned to exactly those. R31HOT2 (ADR-OWD-07 D-LAZY-5): `pins` is what the parent's worker carries into the spawn (`mcpPins`), its first-use pins by instance; `parentSpecPins` sets `x.pipeshub.mcp[].pins` on the parent's own spec (a child that inherited a pin, spawning in turn). A child keeps the parent's pin narrowed to what it holds (`mcp[].pins`); a server held whole that the parent has listed holds only the tools its pin names; the spec's own pin wins over a carried one; a pin for a server the parent does not hold is never carried.",
+  "parentSpec": {
+    "schemaVersion": 3,
+    "harnessMajor": 2,
+    "foldVersion": 8,
+    "runKind": "interactive",
+    "executor": {
+      "kind": "loop"
+    },
+    "principalRef": "p_user-1",
+    "model": {
+      "policy": [
+        {
+          "provider": "anthropic",
+          "model": "claude-x"
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-5",
+          "access": {
+            "route": "gateway",
+            "accountKind": "user_api_key",
+            "accountId": "users/user-1/openAI",
+            "pays": "user"
+          }
+        }
+      ],
+      "promptVersion": "pipeshub-agent-2026-09",
+      "reasoningEffort": "medium"
+    },
+    "grants": {
+      "tools": [
+        {
+          "toolId": "jira@inst-42/search_issues",
+          "descriptorDigest": "sha256:fdbf5f7bc57ea918d3e373fca784cc93f6333a092d340584477e622d56ae6a08"
+        },
+        {
+          "toolId": "mcp@mcp-9/list_prs",
+          "descriptorDigest": "sha256:3fb8976a44727ad7004290a5f14d2768b93783dda3cc5b69a0d7c4b3fe0defb2"
+        },
+        {
+          "toolId": "web@serper/web_search",
+          "descriptorDigest": "sha256:c453413bebe51e6a4f2463b716d18dca6cddce6f429aedf639ceda1c7d43a964"
+        }
+      ],
+      "sandboxProfile": "none",
+      "egress": "none"
+    },
+    "budgets": {
+      "maxTurns": 15,
+      "maxTokens": 1000000,
+      "maxCostUsd": 5,
+      "maxChildren": 4,
+      "activeTimeS": 3600,
+      "calendarDeadline": "2026-10-01T12:00:00.000Z"
+    },
+    "capabilitiesDigest": "sha256:e5effe383d3c0278463ad885854012d09c2d44c8fdee3d622bc761e394749933",
+    "extensions": {
+      "x.pipeshub": {
+        "agent": {
+          "agentKey": "agent-1",
+          "definitionVersion": 7,
+          "mode": "react"
+        },
+        "model": {
+          "modelKey": "model-2",
+          "modelName": "claude-x"
+        },
+        "knowledge": {
+          "apps": [
+            "app-drive",
+            "app-jira"
+          ],
+          "kb": [
+            "kb-1"
+          ],
+          "strictScope": true
+        },
+        "mcp": [
+          {
+            "instanceId": "mcp-9",
+            "manifestDigest": "sha256:f82bce4f53016e1527a1d693a8dc87f4854d389bcdd1157eeb62a06472561c48"
+          },
+          {
+            "instanceId": "mcp-rovo",
+            "manifestDigest": "sha256:390de11310a3e9a59e68e837962ecb76d87e07faf3dcc603ad6ff0262bf4ff80",
+            "tools": "at_first_use"
+          }
+        ],
+        "skills": [
+          {
+            "name": "xlsx",
+            "bundleDigest": "sha256:60120e5e125ee8715bfe17de4de8540124e6e4e1e2a30e3427f7ccfeb45b6a06"
+          }
+        ],
+        "mounts": [
+          "/workspace",
+          "/inputs"
+        ],
+        "via": "pat"
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "CM-1",
+      "behaviour": "request omits tools: every tool grant, and the server held whole stays whole",
+      "request": {},
+      "expect": {
+        "refusal": null,
+        "tools": [
+          "jira@inst-42/search_issues",
+          "mcp@mcp-9/list_prs",
+          "mcp@mcp-rovo/*",
+          "web@serper/web_search"
+        ],
+        "childTools": [
+          {
+            "toolId": "jira@inst-42/search_issues",
+            "descriptorDigest": "sha256:fdbf5f7bc57ea918d3e373fca784cc93f6333a092d340584477e622d56ae6a08"
+          },
+          {
+            "toolId": "mcp@mcp-9/list_prs",
+            "descriptorDigest": "sha256:3fb8976a44727ad7004290a5f14d2768b93783dda3cc5b69a0d7c4b3fe0defb2"
+          },
+          {
+            "toolId": "web@serper/web_search",
+            "descriptorDigest": "sha256:c453413bebe51e6a4f2463b716d18dca6cddce6f429aedf639ceda1c7d43a964"
+          }
+        ],
+        "mcp": [
+          {
+            "instanceId": "mcp-9",
+            "manifestDigest": "sha256:f82bce4f53016e1527a1d693a8dc87f4854d389bcdd1157eeb62a06472561c48"
+          },
+          {
+            "instanceId": "mcp-rovo",
+            "manifestDigest": "sha256:390de11310a3e9a59e68e837962ecb76d87e07faf3dcc603ad6ff0262bf4ff80",
+            "tools": "at_first_use"
+          }
+        ]
+      }
+    },
+    {
+      "id": "CM-2",
+      "behaviour": "named tools of other sources only: no MCP server, the whole one included",
+      "request": {
+        "tools": [
+          "web@serper/web_search"
+        ]
+      },
+      "expect": {
+        "refusal": null,
+        "tools": [
+          "web@serper/web_search"
+        ],
+        "childTools": [
+          {
+            "toolId": "web@serper/web_search",
+            "descriptorDigest": "sha256:c453413bebe51e6a4f2463b716d18dca6cddce6f429aedf639ceda1c7d43a964"
+          }
+        ],
+        "mcp": []
+      }
+    },
+    {
+      "id": "CM-3",
+      "behaviour": "a named tool of the server held whole: pinned to that tool alone, never the server",
+      "request": {
+        "tools": [
+          "mcp@mcp-rovo/createJiraIssue"
+        ]
+      },
+      "expect": {
+        "refusal": null,
+        "tools": [
+          "mcp@mcp-rovo/createJiraIssue"
+        ],
+        "childTools": [
+          {
+            "toolId": "mcp@mcp-rovo/createJiraIssue",
+            "descriptorDigest": "sha256:b89a79cc2c1a45cf3072b9cc3329567552ef0f9433f4a5ae4452a1c07ac48f79"
+          }
+        ],
+        "mcp": [
+          {
+            "instanceId": "mcp-rovo",
+            "manifestDigest": "sha256:26f04a9ec7e7629b099105edba8d0b66742f45bd20cb55b8c89a2d8aa0cdb124"
+          }
+        ]
+      }
+    },
+    {
+      "id": "CM-4",
+      "behaviour": "the server held whole, asked whole: whole",
+      "request": {
+        "tools": [
+          "mcp@mcp-rovo/*"
+        ]
+      },
+      "expect": {
+        "refusal": null,
+        "tools": [
+          "mcp@mcp-rovo/*"
+        ],
+        "childTools": [],
+        "mcp": [
+          {
+            "instanceId": "mcp-rovo",
+            "manifestDigest": "sha256:390de11310a3e9a59e68e837962ecb76d87e07faf3dcc603ad6ff0262bf4ff80",
+            "tools": "at_first_use"
+          }
+        ]
+      }
+    },
+    {
+      "id": "CM-5",
+      "behaviour": "whole and one of its tools, with a server pinned by its tools: whole wins, the pinned server follows its tool",
+      "request": {
+        "tools": [
+          "mcp@mcp-rovo/*",
+          "mcp@mcp-rovo/getJiraIssue",
+          "mcp@mcp-9/list_prs"
+        ]
+      },
+      "expect": {
+        "refusal": null,
+        "tools": [
+          "mcp@mcp-9/list_prs",
+          "mcp@mcp-rovo/*",
+          "mcp@mcp-rovo/getJiraIssue"
+        ],
+        "childTools": [
+          {
+            "toolId": "mcp@mcp-9/list_prs",
+            "descriptorDigest": "sha256:3fb8976a44727ad7004290a5f14d2768b93783dda3cc5b69a0d7c4b3fe0defb2"
+          }
+        ],
+        "mcp": [
+          {
+            "instanceId": "mcp-9",
+            "manifestDigest": "sha256:f82bce4f53016e1527a1d693a8dc87f4854d389bcdd1157eeb62a06472561c48"
+          },
+          {
+            "instanceId": "mcp-rovo",
+            "manifestDigest": "sha256:390de11310a3e9a59e68e837962ecb76d87e07faf3dcc603ad6ff0262bf4ff80",
+            "tools": "at_first_use"
+          }
+        ]
+      }
+    },
+    {
+      "id": "CM-6",
+      "behaviour": "a server the parent does not hold: refused",
+      "request": {
+        "tools": [
+          "mcp@mcp-other/search"
+        ]
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "tools",
+          "items": [
+            "mcp@mcp-other/search"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CM-7",
+      "behaviour": "a server held only by named tools, asked whole: refused (never widened)",
+      "request": {
+        "tools": [
+          "mcp@mcp-9/*"
+        ]
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "tools",
+          "items": [
+            "mcp@mcp-9/*"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CM-8",
+      "behaviour": "a tool a server held by named tools does not grant: refused",
+      "request": {
+        "tools": [
+          "mcp@mcp-9/merge_pr"
+        ]
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "tools",
+          "items": [
+            "mcp@mcp-9/merge_pr"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CM-9",
+      "behaviour": "request omits tools, the parent listed both servers: each keeps the parent's pin whole, a pin of a server the parent does not hold is dropped",
+      "pins": {
+        "mcp-rovo": {
+          "getJiraIssue": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "createJiraIssue": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "mcp-9": {
+          "list_prs": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "mcp-other": {
+          "search": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+        }
+      },
+      "request": {},
+      "expect": {
+        "refusal": null,
+        "tools": [
+          "jira@inst-42/search_issues",
+          "mcp@mcp-9/list_prs",
+          "mcp@mcp-rovo/*",
+          "web@serper/web_search"
+        ],
+        "childTools": [
+          {
+            "toolId": "jira@inst-42/search_issues",
+            "descriptorDigest": "sha256:fdbf5f7bc57ea918d3e373fca784cc93f6333a092d340584477e622d56ae6a08"
+          },
+          {
+            "toolId": "mcp@mcp-9/list_prs",
+            "descriptorDigest": "sha256:3fb8976a44727ad7004290a5f14d2768b93783dda3cc5b69a0d7c4b3fe0defb2"
+          },
+          {
+            "toolId": "web@serper/web_search",
+            "descriptorDigest": "sha256:c453413bebe51e6a4f2463b716d18dca6cddce6f429aedf639ceda1c7d43a964"
+          }
+        ],
+        "mcp": [
+          {
+            "instanceId": "mcp-9",
+            "manifestDigest": "sha256:f82bce4f53016e1527a1d693a8dc87f4854d389bcdd1157eeb62a06472561c48",
+            "pins": {
+              "list_prs": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            }
+          },
+          {
+            "instanceId": "mcp-rovo",
+            "manifestDigest": "sha256:390de11310a3e9a59e68e837962ecb76d87e07faf3dcc603ad6ff0262bf4ff80",
+            "tools": "at_first_use",
+            "pins": {
+              "createJiraIssue": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "getJiraIssue": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "CM-10",
+      "behaviour": "a named tool of the server held whole, in the parent's pin: pinned to that tool at the parent's digest",
+      "pins": {
+        "mcp-rovo": {
+          "getJiraIssue": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "createJiraIssue": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      "request": {
+        "tools": [
+          "mcp@mcp-rovo/createJiraIssue"
+        ]
+      },
+      "expect": {
+        "refusal": null,
+        "tools": [
+          "mcp@mcp-rovo/createJiraIssue"
+        ],
+        "childTools": [
+          {
+            "toolId": "mcp@mcp-rovo/createJiraIssue",
+            "descriptorDigest": "sha256:b89a79cc2c1a45cf3072b9cc3329567552ef0f9433f4a5ae4452a1c07ac48f79"
+          }
+        ],
+        "mcp": [
+          {
+            "instanceId": "mcp-rovo",
+            "manifestDigest": "sha256:26f04a9ec7e7629b099105edba8d0b66742f45bd20cb55b8c89a2d8aa0cdb124",
+            "pins": {
+              "createJiraIssue": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "CM-11",
+      "behaviour": "a tool of the server held whole that the parent's first listing did not serve: refused (the pin is what the parent holds)",
+      "pins": {
+        "mcp-rovo": {
+          "getJiraIssue": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "createJiraIssue": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      "request": {
+        "tools": [
+          "mcp@mcp-rovo/deleteJiraIssue"
+        ]
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "tools",
+          "items": [
+            "mcp@mcp-rovo/deleteJiraIssue"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CM-12",
+      "behaviour": "the server held whole, asked whole, with the parent's pin: whole, pinned to every tool the parent's listing served",
+      "pins": {
+        "mcp-rovo": {
+          "getJiraIssue": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "createJiraIssue": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "mcp-9": {
+          "list_prs": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        }
+      },
+      "request": {
+        "tools": [
+          "mcp@mcp-rovo/*"
+        ]
+      },
+      "expect": {
+        "refusal": null,
+        "tools": [
+          "mcp@mcp-rovo/*"
+        ],
+        "childTools": [],
+        "mcp": [
+          {
+            "instanceId": "mcp-rovo",
+            "manifestDigest": "sha256:390de11310a3e9a59e68e837962ecb76d87e07faf3dcc603ad6ff0262bf4ff80",
+            "tools": "at_first_use",
+            "pins": {
+              "createJiraIssue": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "getJiraIssue": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "CM-13",
+      "behaviour": "named tools of other sources only, with pins carried: no MCP server and no pin",
+      "pins": {
+        "mcp-rovo": {
+          "createJiraIssue": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "mcp-9": {
+          "list_prs": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        }
+      },
+      "request": {
+        "tools": [
+          "web@serper/web_search"
+        ]
+      },
+      "expect": {
+        "refusal": null,
+        "tools": [
+          "web@serper/web_search"
+        ],
+        "childTools": [
+          {
+            "toolId": "web@serper/web_search",
+            "descriptorDigest": "sha256:c453413bebe51e6a4f2463b716d18dca6cddce6f429aedf639ceda1c7d43a964"
+          }
+        ],
+        "mcp": []
+      }
+    },
+    {
+      "id": "CM-14",
+      "behaviour": "the parent's own spec pins the server (it inherited the pin): a wider carried pin does not widen it",
+      "parentSpecPins": {
+        "mcp-rovo": {
+          "getJiraIssue": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "pins": {
+        "mcp-rovo": {
+          "getJiraIssue": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "createJiraIssue": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      "request": {
+        "tools": [
+          "mcp@mcp-rovo/createJiraIssue"
+        ]
+      },
+      "expect": {
+        "refusal": {
+          "code": "CHILD_GRANT_TOO_LARGE",
+          "dimension": "tools",
+          "items": [
+            "mcp@mcp-rovo/createJiraIssue"
+          ]
+        }
+      }
+    },
+    {
+      "id": "CM-15",
+      "behaviour": "the parent's own spec pins the server and its worker carries none: the child inherits the spec's pin",
+      "parentSpecPins": {
+        "mcp-rovo": {
+          "getJiraIssue": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "request": {},
+      "expect": {
+        "refusal": null,
+        "tools": [
+          "jira@inst-42/search_issues",
+          "mcp@mcp-9/list_prs",
+          "mcp@mcp-rovo/*",
+          "web@serper/web_search"
+        ],
+        "childTools": [
+          {
+            "toolId": "jira@inst-42/search_issues",
+            "descriptorDigest": "sha256:fdbf5f7bc57ea918d3e373fca784cc93f6333a092d340584477e622d56ae6a08"
+          },
+          {
+            "toolId": "mcp@mcp-9/list_prs",
+            "descriptorDigest": "sha256:3fb8976a44727ad7004290a5f14d2768b93783dda3cc5b69a0d7c4b3fe0defb2"
+          },
+          {
+            "toolId": "web@serper/web_search",
+            "descriptorDigest": "sha256:c453413bebe51e6a4f2463b716d18dca6cddce6f429aedf639ceda1c7d43a964"
+          }
+        ],
+        "mcp": [
+          {
+            "instanceId": "mcp-9",
+            "manifestDigest": "sha256:f82bce4f53016e1527a1d693a8dc87f4854d389bcdd1157eeb62a06472561c48"
+          },
+          {
+            "instanceId": "mcp-rovo",
+            "manifestDigest": "sha256:390de11310a3e9a59e68e837962ecb76d87e07faf3dcc603ad6ff0262bf4ff80",
+            "tools": "at_first_use",
+            "pins": {
+              "getJiraIssue": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

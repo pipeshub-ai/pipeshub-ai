@@ -315,7 +315,7 @@ export function ConnectedUsers({
               }}
             >
               <TextField.Slot>
-                <MaterialIcon name="person_search" size={16} color="var(--slate-9)" />
+                <MaterialIcon name="person_search" size={16} color="var(--slate-11)" />
               </TextField.Slot>
             </TextField.Root>
             {open ? (

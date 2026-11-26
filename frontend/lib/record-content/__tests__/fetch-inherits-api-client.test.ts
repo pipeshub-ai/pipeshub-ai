@@ -22,7 +22,6 @@ vi.mock('@/config', async () => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
   return {
     useAuthStore: auth.useAuthStore,
-    readStoredRefreshToken: auth.readStoredRefreshToken,
     logoutAndRedirect: () => {
       logoutAndRedirect();
       auth.useAuthStore.getState().logout();
@@ -30,7 +29,8 @@ vi.mock('@/config', async () => {
   };
 });
 
-const { useAuthStore, REFRESH_TOKEN_STORAGE_KEY } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/lib/store/auth-store');
+const { markSignedIn } = await import('@/lib/auth/session-credential');
 const { fakeApi } = await import('@/lib/api/__tests__/fake-api');
 const { fetchRecordContent } = await import('../fetch');
 const { setSessionApiBaseUrl } = await import('@/lib/electron');
@@ -56,8 +56,10 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'log').mockImplementation(() => {});
-  storage.set(REFRESH_TOKEN_STORAGE_KEY, 'refresh-a');
-  useAuthStore.setState({ accessToken: jwtExpiringIn(3600, { orgId: 'o1', userId: 'u1' }), refreshToken: 'refresh-a', isAuthenticated: true });
+  const accessToken = jwtExpiringIn(3600, { orgId: 'o1', userId: 'u1' });
+  // The refresh token is the session's HttpOnly cookie (ADR-WEB-02); the page keeps only who is signed in.
+  markSignedIn(accessToken);
+  useAuthStore.setState({ accessToken, isAuthenticated: true });
 });
 
 afterEach(() => {

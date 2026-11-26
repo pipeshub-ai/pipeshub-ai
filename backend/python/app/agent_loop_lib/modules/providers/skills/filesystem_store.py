@@ -9,6 +9,7 @@ from app.agent_loop_lib.modules.providers.skills.base import (
     Skill,
     SkillFilter,
     SkillMetadata,
+    SkillProvenance,
     SkillStatus,
     matches_filter,
 )
@@ -195,7 +196,7 @@ class FilesystemSkillStore(SkillStore):
 
     async def create_skill(
         self, name: str, content: str, category: str | None = None, subcategory: str | None = None,
-        resources: dict[str, str] | None = None,
+        resources: dict[str, str] | None = None, *, provenance: SkillProvenance | None = None,
     ) -> SkillMetadata:
         if name in self._locations:
             raise RegistryError(f"Skill {name!r} already exists")

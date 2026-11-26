@@ -1,0 +1,1317 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/policy/policy-layer.schema.json",
+  "title": "PolicyLayer",
+  "description": "One layer of a run's policy (R2 CP3, 02-lld §2.4): a partial document, every section optional, at one scope of the precedence chain. Each value is a dimension of policy-dimensions.json: a ceiling narrows the layers above it, a choice picks inside its ceiling, an operator row is set by the deployment only. A layer names a dimension by setting it; nothing in a layer is null.",
+  "type": "object",
+  "additionalProperties": false,
+  "x-extensible": true,
+  "required": [
+    "schemaVersion",
+    "scope"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "scope": {
+      "$ref": "#/$defs/LayerScope"
+    },
+    "engineProfile": {
+      "description": "Narrows the engine profile (E4a).",
+      "$ref": "../engine-profile-narrowing.schema.json"
+    },
+    "approvals": {
+      "description": "Per-call approval rules (P2.6c, P2.11e); layers meet as the strictest of them.",
+      "$ref": "../approval-rules.schema.json"
+    },
+    "models": {
+      "$ref": "#/$defs/ModelPolicy"
+    },
+    "budgets": {
+      "$ref": "#/$defs/BudgetPolicy"
+    },
+    "rollout": {
+      "$ref": "#/$defs/RolloutPolicy"
+    },
+    "operator": {
+      "$ref": "#/$defs/OperatorPolicy"
+    },
+    "memory": {
+      "description": "The org's governed-memory policy (P7.3). Not a dimension yet: Node reads it at admission and settlement.",
+      "$ref": "#/$defs/LayerMemory"
+    },
+    "retention": {
+      "description": "How long the org's conversations are kept before they are erased (E7). Not a dimension: the retention sweeper reads it.",
+      "$ref": "#/$defs/LayerRetention"
+    },
+    "locks": {
+      "description": "Dimensions this layer locks (C4.02): a layer below may not set a locked choice or operator row to another value, nor widen a locked ceiling (refused as `locked`, naming the dimension and the layer that tried). A locked ceiling may still be narrowed: a stricter value never overrides the admin's limit. A layer below carries the lock's authority for a section its `lockedBy` gives to the locking layer or one above it. Each entry is a row of policy-dimensions.json this layer may set.",
+      "type": "array",
+      "maxItems": 500,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][A-Za-z0-9]*(?:\\.[A-Za-z][A-Za-z0-9_]*){0,7}$"
+      }
+    },
+    "lockedBy": {
+      "description": "Sections of this layer owned by a layer above it (02-lld §11.1: an org's rules for an agent sit in the agent layer, locked by the org, so the agent's builder cannot remove an admin's asks). Section name → the layer whose admins write it; such a section carries that layer's authority over a dimension it `locks` (C4.02).",
+      "type": "object",
+      "additionalProperties": false,
+      "x-extensible": true,
+      "properties": {
+        "engineProfile": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "approvals": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "models": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "memory": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "retention": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "rollout": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "budgets": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "toolDisclosure": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "snapshots": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "triggers": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "quotas": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "toolResults": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "interactions": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "recovery": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "ui": {
+          "$ref": "#/$defs/LayerName"
+        }
+      }
+    },
+    "updated": {
+      "description": "Who last saved each section and when (shown to editors; not policy, never resolved).",
+      "type": "object",
+      "additionalProperties": false,
+      "x-extensible": true,
+      "properties": {
+        "engineProfile": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "budgets": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "catalog": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "approvals": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "models": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "memory": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "retention": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "rollout": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "toolDisclosure": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "locks": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "snapshots": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "triggers": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "websites": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "repositories": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "quotas": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "toolResults": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "interactions": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "recovery": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "ui": {
+          "$ref": "#/$defs/SectionUpdate"
+        },
+        "access": {
+          "$ref": "#/$defs/SectionUpdate"
+        }
+      }
+    },
+    "catalog": {
+      "$ref": "#/$defs/CatalogPolicy"
+    },
+    "toolDisclosure": {
+      "$ref": "#/$defs/ToolDisclosurePolicy"
+    },
+    "snapshots": {
+      "description": "How long engine sandbox snapshots are kept (OWD-12).",
+      "$ref": "#/$defs/SnapshotPolicy"
+    },
+    "triggers": {
+      "description": "Webhook limits and where completion notices may go, for scheduled and triggered runs (TR-04, TR-07).",
+      "$ref": "#/$defs/TriggerPolicy"
+    },
+    "websites": {
+      "description": "Allowed websites (WP-63, C6.11, C11.04): the named sites an agent's sandbox may reach through the egress proxy, https only. Off by default: absent at the org, no site is reachable. Not a dimension: the worker folds the deployment's, the org's and the agent's sections from the org's live layer at each engine turn. The deployment's section caps what any org may list; an org's lists its sites; an agent's may only narrow its org's (fewer sites, narrower paths, read for read-write), never widen. Absent at the deployment: no cap; absent at an agent: its org's sites.",
+      "$ref": "#/$defs/WebsitePolicy"
+    },
+    "repositories": {
+      "description": "Allowed git hosts for repository_fetch (WP-63 part A): the hosts whose public repositories an agent may ask to clone, each clone approved by a person and fetched by the worker outside the sandbox, never with a credential. Absent at the org: the release's default presets (github.com, gitlab.com and bitbucket.org public repositories) on a run with web access, none without it (ADR-REPO-01); a saved section, even an empty one, replaces them. Not a dimension: the worker folds the org's and the agent's sections from the org's live layer at each call. An org's lists hosts, optionally limited to owner or owner/repo prefixes; an agent's may only narrow its org's. Absent at an agent: its org's hosts.",
+      "$ref": "#/$defs/RepositoryPolicy"
+    },
+    "quotas": {
+      "description": "Concurrency caps per org and per person (C4.10).",
+      "$ref": "#/$defs/QuotaPolicy"
+    },
+    "toolResults": {
+      "description": "The inline tool-result cap and the response_format default (C4.10).",
+      "$ref": "#/$defs/ToolResultPolicy"
+    },
+    "interactions": {
+      "description": "How long a run waits for a person and whether an answer may cover the conversation (C4.10).",
+      "$ref": "#/$defs/InteractionPolicy"
+    },
+    "recovery": {
+      "description": "Whether a run whose worker was lost resumes (C4.10).",
+      "$ref": "#/$defs/RecoveryPolicy"
+    },
+    "sandbox": {
+      "description": "An engine run's sandbox resources (C4.10).",
+      "$ref": "#/$defs/SandboxResourcePolicy"
+    },
+    "ui": {
+      "description": "What a conversation shows: reasoning and the terminal (C4.10).",
+      "$ref": "#/$defs/UiPolicy"
+    },
+    "access": {
+      "description": "Who may use the harness, each coding engine and each configured model, as the org's user groups (G-41, GA-21; the groups an IdP or SCIM sync would write). Org layer only, saved and read by org admins only. Not a dimension: admission re-reads the actor's live group membership at every admission and readmission (submit, the next-run drain, schedules and triggers), so a removal refuses the next run at once; a run already admitted runs to its end. Absent, or a subject left out: no group restriction on it. A listed subject admits a member of any of its groups; org admins are not exempt.",
+      "$ref": "#/$defs/AccessGroupsPolicy"
+    }
+  },
+  "$defs": {
+    "LayerName": {
+      "description": "A layer of the precedence chain (02-lld §3.1), top to bottom.",
+      "x-constant": "LAYERS",
+      "enum": [
+        "release",
+        "deployment",
+        "org",
+        "team",
+        "agent",
+        "user",
+        "trigger",
+        "parent",
+        "request",
+        "live"
+      ]
+    },
+    "LayerScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/LayerName"
+        },
+        "id": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        }
+      }
+    },
+    "ModelRoute": {
+      "description": "A model the run may call, as the deployment names its configured models.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "ModelPolicy": {
+      "description": "Which models a run may call (`routes`, a ceiling) and which it calls (`primary`, and one per named sub-agent role in `roles`), each inside `routes`; `roleCostCeilings` bounds what a role's model may cost (MA1). `disabledRules` and `consumerPlans` are the org's narrowing of the vendor rules (A1): rules it switched off, and whether consumer plans may be used.",
+      "type": "object",
+      "additionalProperties": false,
+      "x-extensible": true,
+      "required": [],
+      "properties": {
+        "routes": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ModelRoute"
+          }
+        },
+        "primary": {
+          "$ref": "#/$defs/ModelRoute"
+        },
+        "roles": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/ModelRoute"
+          }
+        },
+        "roleCostCeilings": {
+          "description": "The most a sub-agent role's model may cost, USD per 1M tokens (input plus output list price); `default` bounds every role.",
+          "type": "object",
+          "maxProperties": 65,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"
+          },
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000
+          }
+        },
+        "disabledRules": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "consumerPlans": {
+          "type": "boolean"
+        }
+      }
+    },
+    "RolloutPolicy": {
+      "description": "Features as the Labs settings switch them per org (flags.json `labs` rows), which turns take the durable path (`durable`), and whether the org's capabilities are migrated to the control plane; a deployment may hold one off for every org.",
+      "type": "object",
+      "additionalProperties": false,
+      "x-extensible": true,
+      "required": [],
+      "properties": {
+        "ENABLE_AGENT_HARNESS": {
+          "type": "boolean"
+        },
+        "AGENT_HARNESS_KILL_SWITCH": {
+          "type": "boolean"
+        },
+        "ENABLE_SCHEDULED_RUNS": {
+          "type": "boolean"
+        },
+        "ENABLE_KNOWLEDGE_PUBLICATIONS": {
+          "type": "boolean"
+        },
+        "ENABLE_SKILLS": {
+          "type": "boolean"
+        },
+        "ENABLE_USER_CONTEXT": {
+          "type": "boolean"
+        },
+        "durable": {
+          "$ref": "#/$defs/DurableRollout"
+        },
+        "ENABLE_ACTIONS": {
+          "type": "boolean"
+        },
+        "ENABLE_MCP": {
+          "type": "boolean"
+        },
+        "ENABLE_NAMED_ENTITY_EXTRACTION": {
+          "type": "boolean"
+        },
+        "CONTROL_PLANE_CAPABILITIES": {
+          "type": "boolean"
+        }
+      }
+    },
+    "DurableRollout": {
+      "description": "Which turns take the durable path (CPD-10): each list narrows the release's; a turn outside one stays on today's loop.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "modes": {
+          "description": "Agent chat modes.",
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "../common.schema.json#/$defs/Name"
+          }
+        },
+        "assistantModes": {
+          "description": "The built-in assistant's chat modes.",
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "../common.schema.json#/$defs/Name"
+          }
+        },
+        "modelFamilies": {
+          "description": "Model families (the configured model's provider, lower-case); an empty list admits none.",
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "../common.schema.json#/$defs/Name"
+          }
+        }
+      }
+    },
+    "OperatorPolicy": {
+      "description": "Operator-only settings (R2 §2.3): the deployment layer sets them from env and Helm values; no layer below may.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "SANDBOX_MODE": {
+          "description": "The sandbox backend (flags.json lists its values).",
+          "$ref": "../common.schema.json#/$defs/Name"
+        },
+        "EGRESS_CONNECT_TUNNELS": {
+          "type": "boolean"
+        },
+        "MCP_ALLOW_CUSTOM_STDIO": {
+          "type": "boolean"
+        },
+        "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": {
+          "type": "boolean"
+        },
+        "HARNESS_PROVIDER_STATE": {
+          "type": "boolean"
+        },
+        "AGENT_HARNESS_OFFERING": {
+          "$ref": "../common.schema.json#/$defs/Offering"
+        }
+      }
+    },
+    "LayerMemory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "review"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "off",
+            "user",
+            "agent"
+          ]
+        },
+        "review": {
+          "enum": [
+            "auto",
+            "always"
+          ]
+        }
+      }
+    },
+    "LayerRetention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "days"
+      ],
+      "properties": {
+        "days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3650
+        }
+      }
+    },
+    "SectionUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "at",
+        "by"
+      ],
+      "properties": {
+        "at": {
+          "$ref": "../common.schema.json#/$defs/UInt"
+        },
+        "by": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "BudgetPolicy": {
+      "description": "Run budgets (CPD-5): ceilings a layer narrows; an engine profile's limits narrow the same values (budgets and engine limits are one dimension). null is unbounded.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxTurns": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "../common.schema.json#/$defs/PosInt"
+            }
+          ]
+        },
+        "maxTokens": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "../common.schema.json#/$defs/PosInt"
+            }
+          ]
+        },
+        "maxCostUsd": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "../common.schema.json#/$defs/Usd"
+            }
+          ]
+        },
+        "activeTimeS": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "../common.schema.json#/$defs/PosInt"
+            }
+          ]
+        }
+      }
+    },
+    "CatalogPolicy": {
+      "description": "Configuration-time policy for catalog items (02-lld §2.4): who approves a change and what an org delegates to team admins. Dimensions `catalog.approval`, `catalog.delegation`.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "approval": {
+          "description": "Approver per change rule `{change}:{kind}`; `*` stands for every kind.",
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^(install|descriptor_change|url_change|upgrade|scope_widening|publish|plugin_install|enable_engine):(\\*|[a-z][a-z0-9-]{0,31})$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/ApproverLevel"
+          }
+        },
+        "delegation": {
+          "description": "Actions a team's admins may take on the team's own objects.",
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/DelegableAction"
+          }
+        }
+      }
+    },
+    "ApproverLevel": {
+      "description": "Who approves, from the loosest up. An edition's overlay may add stricter levels after these.",
+      "x-constant": "APPROVER_LEVELS",
+      "x-extensible-enum": true,
+      "enum": [
+        "none",
+        "owner",
+        "teamAdmin",
+        "orgAdmin"
+      ]
+    },
+    "DelegableAction": {
+      "description": "A control-plane action an org may delegate to team admins.",
+      "x-constant": "DELEGABLE_ACTIONS",
+      "enum": [
+        "installation.create",
+        "installation.update",
+        "installation.delete",
+        "grant.write",
+        "approval.decide",
+        "policy.write:team"
+      ]
+    },
+    "ToolDisclosureMode": {
+      "description": "How a run's tools reach the model (checklist §5): eager lists every granted tool; lazy lists the most-used and finds the rest through search_tools and call_tool; filesystem lists the meta tools only and describes every tool in /pipeshub/tools (engines; the native loop reads it as lazy).",
+      "x-constant": "TOOL_DISCLOSURE_MODES",
+      "enum": [
+        "eager",
+        "lazy",
+        "filesystem"
+      ]
+    },
+    "ToolDisclosurePolicy": {
+      "description": "Tool disclosure (C5.01): `modes` the org allows (a ceiling), `mode` the agent's pick inside it (a choice). Unset, each executor keeps its own default (the native loop lazy above PIPESHUB_LAZY_TOOLS_THRESHOLD tools, an engine above PIPESHUB_ENGINE_LAZY_TOOLS_THRESHOLD).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "modes": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ToolDisclosureMode"
+          }
+        },
+        "mode": {
+          "$ref": "#/$defs/ToolDisclosureMode"
+        }
+      }
+    },
+    "SnapshotTtlDays": {
+      "description": "Days an engine sandbox snapshot is kept (OWD-12).",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3650
+    },
+    "SnapshotPolicy": {
+      "description": "Engine sandbox snapshots (OWD-12): `ttlDays` how long one is kept. A snapshot older than its org's ttlDays is deleted by the retention sweeper and never restored.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "ttlDays": {
+          "$ref": "#/$defs/SnapshotTtlDays"
+        }
+      }
+    },
+    "WriteAction": {
+      "description": "The kinds of external write an identity is chosen for (OWD-18).",
+      "x-constant": "WRITE_ACTIONS",
+      "enum": [
+        "email",
+        "message",
+        "ticket",
+        "document",
+        "event",
+        "commit"
+      ]
+    },
+    "NotifyChannel": {
+      "description": "Where a schedule's actor is told that a run ended (TR-07).",
+      "x-constant": "NOTIFY_CHANNELS",
+      "enum": [
+        "in_app",
+        "email",
+        "slack"
+      ]
+    },
+    "WebhookMaxBytes": {
+      "description": "The largest webhook trigger body accepted, in bytes (TR-04).",
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 262144
+    },
+    "WebhookPerMinute": {
+      "description": "Authenticated deliveries a webhook trigger takes per minute (TR-04).",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 600
+    },
+    "TriggerPolicy": {
+      "description": "Triggers (TR-04, TR-07): `webhookMaxBytes` and `webhookPerMinute` bound what one webhook trigger takes; `notifyChannels` where completion notices may go.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "webhookMaxBytes": {
+          "$ref": "#/$defs/WebhookMaxBytes"
+        },
+        "webhookPerMinute": {
+          "$ref": "#/$defs/WebhookPerMinute"
+        },
+        "notifyChannels": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/NotifyChannel"
+          }
+        }
+      }
+    },
+    "WebsitePolicy": {
+      "description": "A layer's allowed websites; an empty list allows none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sites"
+      ],
+      "properties": {
+        "sites": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/AllowedWebsite"
+          }
+        },
+        "orgOnlyAddresses": {
+          "description": "Addresses only this organization can reach (WP83-FU-3): host names (intranet.acme.com, or *.corp.acme.com for its subdomains), IP addresses or CIDR ranges that answer only the organization's own callers, such as an IP-allowlisted intranet or a self-hosted git server on a public address. Content fetched from them (a fetch_url page, a repository_fetch clone) is never treated as public, so a later send outside the organization still asks. Set at the org layer only; absent: none. PipesHub never probes an address from outside to decide this.",
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/OrgOnlyAddress"
+          }
+        }
+      }
+    },
+    "AllowedWebsite": {
+      "description": "One allowed website: a host name, or *. and a domain for its subdomains (never a public suffix such as *.com or *.github.io), reached over https on port 443. Never an IP address, a private or metadata name, PipesHub's own host, or a git host (github.com, gitlab.com...).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "access"
+      ],
+      "properties": {
+        "host": {
+          "description": "Lower-case host name, or *.domain for every subdomain of domain (not domain itself).",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 253,
+          "pattern": "^(?:\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+        },
+        "access": {
+          "$ref": "#/$defs/WebsiteAccess"
+        },
+        "readWriteConfirmed": {
+          "description": "Set when an admin confirmed read-write access; required for read-write, absent for read.",
+          "const": true
+        },
+        "paths": {
+          "description": "Path prefixes the site is limited to (docs.example.com /api/ for its API reference); absent: the whole site. A prefix matches itself and what follows it after a slash.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^/[A-Za-z0-9._~!$&'()*+,;=:@-][A-Za-z0-9._~!$&'()*+,;=:@/-]{0,199}$"
+          }
+        },
+        "opaque": {
+          "description": "Host-level only: the proxy cannot inspect this site (a pinned client, an internal mirror), so it opens an opaque tunnel and the agent can send data to it. Read-write only, never a read-only-listed host or a preset's host.",
+          "const": true
+        },
+        "preset": {
+          "description": "The preset this entry was added from (shown to admins); it grants nothing by itself.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,39}$"
+        },
+        "note": {
+          "description": "Why the site is allowed, shown to admins and in the agent's instructions.",
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    },
+    "WebsiteAccess": {
+      "description": "read: GET, HEAD and OPTIONS only. read-write: every method; an admin confirms it. Neither is ever git: a git host is never a website, and git's smart-HTTP is refused at every site.",
+      "x-constant": "WEBSITE_ACCESS",
+      "enum": [
+        "read",
+        "read-write"
+      ]
+    },
+    "RepositoryPolicy": {
+      "description": "A layer's allowed git hosts; an empty list allows none.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hosts"
+      ],
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "$ref": "#/$defs/AllowedRepositoryHost"
+          }
+        }
+      }
+    },
+    "AllowedRepositoryHost": {
+      "description": "One git host whose public repositories may be cloned over https (port 443): a host name, never a wildcard, an IP address, a private or metadata name or PipesHub's own host.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host"
+      ],
+      "properties": {
+        "host": {
+          "description": "Lower-case host name, like github.com.",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 253,
+          "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+        },
+        "prefixes": {
+          "description": "Owner or owner/repo prefixes the host is limited to (acme/ for one owner, acme/widgets for one repository); absent: every public repository on the host.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 200,
+            "pattern": "^[A-Za-z0-9_.-]+(?:/(?:[A-Za-z0-9_.-]+)?)?$"
+          }
+        },
+        "publicReadable": {
+          "description": "Whether anyone on the internet can read this host's public repositories (WP83-FU-3). Off (absent) for a host an admin adds by hand, so a clone from it is never treated as public and a later send outside the organization asks. An entry added from a repository preset (github-public) is public-readable whatever this says.",
+          "type": "boolean"
+        },
+        "preset": {
+          "description": "The repository preset this entry was added from (github-public); it grants nothing by itself.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,39}$"
+        },
+        "note": {
+          "description": "Why the host is allowed, shown to admins.",
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    },
+    "QuotaPolicy": {
+      "description": "Concurrency caps (C4.10, P1.14): `activeRunsPerOrg` and `activeRunsPerUser` bound the runs queued or running at once.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "activeRunsPerOrg": {
+          "$ref": "#/$defs/ActiveRunsPerOrg"
+        },
+        "activeRunsPerUser": {
+          "$ref": "#/$defs/ActiveRunsPerUser"
+        }
+      }
+    },
+    "ActiveRunsPerOrg": {
+      "description": "Runs one org may have queued or running at once.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000
+    },
+    "ActiveRunsPerUser": {
+      "description": "Runs one person may have queued or running at once.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    },
+    "ResponseFormat": {
+      "description": "How much a knowledge search returns (WP-12): concise or detailed.",
+      "x-constant": "RESPONSE_FORMATS",
+      "enum": [
+        "concise",
+        "detailed"
+      ]
+    },
+    "ToolResultMaxChars": {
+      "description": "Characters of one tool result the model reads inline (C4.10).",
+      "type": "integer",
+      "minimum": 2000,
+      "maximum": 1000000
+    },
+    "ToolResultPolicy": {
+      "description": "Tool results (C4.10): `maxChars` the inline cap (null: each executor's own); `formats` the response_format values allowed, `format` the default.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "maxChars": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/ToolResultMaxChars"
+            }
+          ]
+        },
+        "formats": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ResponseFormat"
+          }
+        },
+        "format": {
+          "$ref": "#/$defs/ResponseFormat"
+        }
+      }
+    },
+    "PersonWaitS": {
+      "description": "Seconds a run waits for a person's answer (C4.10).",
+      "type": "integer",
+      "minimum": 60,
+      "maximum": 2592000
+    },
+    "InteractionPolicy": {
+      "description": "Approvals and questions (C4.10): `waitS` how long a run waits for an answer (null: the deployment's); `conversationGrants` whether an answer may cover the rest of the conversation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "waitS": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/PersonWaitS"
+            }
+          ]
+        },
+        "conversationGrants": {
+          "type": "boolean"
+        }
+      }
+    },
+    "RecoveryPolicy": {
+      "description": "Crash recovery (C4.10): `autoResume` whether a run whose worker was lost resumes from its checkpoint.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "autoResume": {
+          "type": "boolean"
+        }
+      }
+    },
+    "SandboxCpus": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 64
+    },
+    "SandboxMemoryMb": {
+      "type": "integer",
+      "minimum": 128,
+      "maximum": 262144
+    },
+    "SandboxPids": {
+      "type": "integer",
+      "minimum": 16,
+      "maximum": 65536
+    },
+    "SandboxScratchMb": {
+      "type": "integer",
+      "minimum": 16,
+      "maximum": 1048576
+    },
+    "SandboxInputMaxMb": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576
+    },
+    "SandboxResourcePolicy": {
+      "description": "An engine run's sandbox resources (C4.10): each lowers the engine template's value, never raises it; null: the template's; inputMaxMb lowers the deployment's largest input (J-26).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "cpus": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/SandboxCpus"
+            }
+          ]
+        },
+        "memoryMb": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/SandboxMemoryMb"
+            }
+          ]
+        },
+        "pids": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/SandboxPids"
+            }
+          ]
+        },
+        "scratchMb": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/SandboxScratchMb"
+            }
+          ]
+        },
+        "inputMaxMb": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/SandboxInputMaxMb"
+            }
+          ]
+        }
+      }
+    },
+    "UiPolicy": {
+      "description": "What a conversation shows (C4.10): `reasoning` the model's reasoning, `terminal` an engine run's read-only terminal.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "reasoning": {
+          "type": "boolean"
+        },
+        "terminal": {
+          "type": "boolean"
+        }
+      }
+    },
+    "AccessGroupIds": {
+      "description": "Org user group ids; a member of any of them is admitted.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "AccessGroupsPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "harness": {
+          "description": "Who may start harness runs (agent chats, the assistant's Agent mode, schedules and triggers). Someone outside them keeps classic chat where a turn can fall back to it.",
+          "$ref": "#/$defs/AccessGroupIds"
+        },
+        "engines": {
+          "description": "Coding engine kind (`claude_code`, `codex`, `opencode`) → the groups that may use it. Someone outside them gets no hand-off to that engine; the turn still runs.",
+          "type": "object",
+          "maxProperties": 20,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/AccessGroupIds"
+          }
+        },
+        "models": {
+          "description": "Configured model key (an AI models entry) → the groups that may run on it. A turn on a model whose groups do not include the actor is refused; the org default counts as the entry it resolves to.",
+          "type": "object",
+          "maxProperties": 200,
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/AccessGroupIds"
+          }
+        }
+      }
+    },
+    "OrgOnlyAddress": {
+      "description": "A lower-case host name, *. and a domain for every subdomain of it, an IP address, or a CIDR range (10.20.0.0/16, 2001:db8::/32).",
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 253,
+      "pattern": "^(?:(?:\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?|[0-9a-f:.]{2,45}(?:/[0-9]{1,3})?)$"
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "engineProfile": {
+        "engines": [
+          "opencode"
+        ],
+        "limits": {
+          "maxSteps": 30
+        }
+      },
+      "approvals": {
+        "writes": "ask"
+      },
+      "models": {
+        "routes": [
+          "azure:gpt-5",
+          "azure:gpt-5-mini"
+        ],
+        "primary": "azure:gpt-5"
+      },
+      "rollout": {
+        "ENABLE_AGENT_HARNESS": true,
+        "durable": {
+          "modes": [
+            "auto",
+            "quick"
+          ],
+          "modelFamilies": [
+            "openai"
+          ]
+        }
+      },
+      "budgets": {
+        "maxCostUsd": 3,
+        "maxTurns": 10
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "agent",
+        "id": "agent-a"
+      },
+      "models": {
+        "roles": {
+          "researcher": "azure:gpt-5-mini"
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "deployment"
+      },
+      "operator": {
+        "AGENT_HARNESS_OFFERING": "managed",
+        "MCP_ALLOW_CUSTOM_STDIO": false
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-2"
+      },
+      "approvals": {
+        "writes": "ask"
+      },
+      "memory": {
+        "mode": "user",
+        "review": "always"
+      },
+      "retention": {
+        "days": 30
+      },
+      "models": {
+        "disabledRules": [
+          "rule-1"
+        ],
+        "consumerPlans": false
+      },
+      "updated": {
+        "memory": {
+          "at": 1767225600000,
+          "by": "p_admin"
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "agent",
+        "id": "agent-b"
+      },
+      "approvals": {
+        "classes": {
+          "execute": "deny"
+        }
+      },
+      "lockedBy": {
+        "approvals": "org"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "catalog": {
+        "approval": {
+          "install:mcp": "orgAdmin",
+          "descriptor_change:*": "orgAdmin",
+          "publish:skill": "teamAdmin"
+        },
+        "delegation": [
+          "installation.create",
+          "grant.write"
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "team",
+        "id": "team-9"
+      },
+      "catalog": {
+        "approval": {
+          "install:mcp": "orgAdmin"
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-3"
+      },
+      "models": {
+        "routes": [
+          "azure:gpt-5"
+        ],
+        "primary": "azure:gpt-5"
+      },
+      "toolDisclosure": {
+        "modes": [
+          "lazy",
+          "filesystem"
+        ],
+        "mode": "lazy"
+      },
+      "locks": [
+        "models.primary",
+        "toolDisclosure.mode"
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "agent",
+        "id": "agent-c"
+      },
+      "toolDisclosure": {
+        "mode": "filesystem"
+      },
+      "lockedBy": {
+        "toolDisclosure": "org"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "websites": {
+        "sites": [
+          {
+            "host": "docs.example.com",
+            "access": "read",
+            "paths": [
+              "/api/"
+            ],
+            "note": "Product API reference"
+          },
+          {
+            "host": "*.docs.example.com",
+            "access": "read"
+          },
+          {
+            "host": "mirror.example.com",
+            "access": "read-write",
+            "readWriteConfirmed": true,
+            "opaque": true
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "scope": {
+        "kind": "org",
+        "id": "org-1"
+      },
+      "repositories": {
+        "hosts": [
+          {
+            "host": "github.com",
+            "preset": "github-public"
+          },
+          {
+            "host": "git.example.com",
+            "prefixes": [
+              "platform/"
+            ],
+            "note": "Internal mirror"
+          }
+        ]
+      }
+    }
+  ]
+}

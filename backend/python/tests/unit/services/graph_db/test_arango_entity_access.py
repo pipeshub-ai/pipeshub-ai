@@ -436,7 +436,8 @@ class TestFilterNodesWithPermissionRoleRaiseOnError:
             )
         assert isinstance(raised.value.__cause__, RuntimeError)
         assert str(raised.value.__cause__) == "boom" and "boom" not in str(raised.value)
-        provider.logger.error.assert_called()
+        # no client recorded it (the client is a mock), so check_access writes its line, at our bug's level
+        assert provider.logger.log.call_args.args[0] == logging.ERROR
         provider.logger.warning.assert_not_called()
 
     @pytest.mark.asyncio

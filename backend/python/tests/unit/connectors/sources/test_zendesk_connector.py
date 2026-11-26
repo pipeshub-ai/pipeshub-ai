@@ -25,6 +25,8 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
 )
+from app.connectors.core.sync import sync_runner
+from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
 from app.connectors.sources.zendesk.connector import (
     ALL_TICKETS_GROUP_ID,
     ARTICLES_SYNC_POINT_KEY,
@@ -76,6 +78,7 @@ def mock_data_entities_processor(mock_tx_store):
     proc.reap_external_app_users = AsyncMock()
     proc.ensure_team_app_edge = AsyncMock()
     proc.on_user_group_deleted = AsyncMock(return_value=True)
+    proc.note_kept_user_group = AsyncMock()
     proc.on_records_deleted_cascade = AsyncMock()
     proc.on_record_group_deleted = AsyncMock(return_value=True)
     proc.on_updated_record_permissions = AsyncMock()
@@ -1955,6 +1958,38 @@ class TestIncrementalCursor:
         args = zendesk_connector.records_sync_point.update_sync_point.await_args
         assert args.args[0] == SYNC_POINT_KEY
         assert args.args[1]["lastEndTime"] == 1767312000
+
+    async def test_a_ticket_export_superseded_midway_is_reported_unread(self, zendesk_connector) -> None:
+        datasource = _ready(zendesk_connector)
+        datasource.incremental_tickets = AsyncMock(side_effect=[
+            _make_response(data={"tickets": [{"id": 1}], "end_of_stream": False, "after_cursor": "c1"}),
+            _make_response(data={"tickets": [{"id": 2}], "end_of_stream": True}),
+        ])
+        _stateful_sync_points(zendesk_connector)
+        zendesk_connector._sync_reset_is_current = AsyncMock(return_value=False)
+        zendesk_connector._process_ticket_batch = AsyncMock(return_value=(1, 0, []))
+
+        synced = await zendesk_connector._sync_tickets()
+
+        assert synced == 1
+        assert zendesk_connector.full_sync_coverage().complete is False
+        assert "tickets" in zendesk_connector._skipped_this_sync
+
+    async def test_a_ticket_export_superseded_after_the_last_page_reads_everything(
+        self, zendesk_connector
+    ) -> None:
+        datasource = _ready(zendesk_connector)
+        datasource.incremental_tickets = AsyncMock(
+            return_value=_make_response(data={"tickets": [{"id": 1}], "end_of_stream": True})
+        )
+        _stateful_sync_points(zendesk_connector)
+        zendesk_connector._sync_reset_is_current = AsyncMock(return_value=False)
+        zendesk_connector._process_ticket_batch = AsyncMock(return_value=(1, 0, []))
+
+        await zendesk_connector._sync_tickets()
+
+        assert zendesk_connector.full_sync_coverage().complete is True
+        assert zendesk_connector._skipped_this_sync == []
 
 
 # ===========================================================================
@@ -5610,6 +5645,7 @@ class TestOrganizationsMissingFromTheExport:
         assert [g.source_user_group_id for g, _ in groups] == ["org_21"]
         assert zendesk_connector._org_id_to_data["21"]["shared_tickets"] is True
         mock_data_entities_processor.on_user_group_deleted.assert_not_awaited()
+        mock_data_entities_processor.note_kept_user_group.assert_not_awaited()
 
     async def test_one_zendesk_no_longer_has_loses_its_groups(
         self, zendesk_connector, mock_tx_store, mock_data_entities_processor
@@ -5624,6 +5660,7 @@ class TestOrganizationsMissingFromTheExport:
 
         deleted = [c.args[0] for c in mock_data_entities_processor.on_user_group_deleted.await_args_list]
         assert deleted == ["org_21", "orgagents_21"]
+        mock_data_entities_processor.note_kept_user_group.assert_not_awaited()
 
     async def test_one_zendesk_does_not_answer_about_is_left_alone(
         self, zendesk_connector, mock_tx_store, mock_data_entities_processor
@@ -5636,6 +5673,47 @@ class TestOrganizationsMissingFromTheExport:
 
         assert await zendesk_connector._add_organizations_missing_from_export([]) == []
         mock_data_entities_processor.on_user_group_deleted.assert_not_awaited()
+        mock_data_entities_processor.note_kept_user_group.assert_awaited_once_with(
+            "zd-conn-1", "org_21"
+        )
+
+    async def test_one_whose_lookup_raises_is_kept(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ) -> None:
+        _ready(zendesk_connector)
+        self._stored(mock_tx_store, "org_21", "orgagents_21")
+        zendesk_connector._call_api_with_retry = AsyncMock(side_effect=RuntimeError("boom"))
+
+        assert await zendesk_connector._add_organizations_missing_from_export([]) == []
+        mock_data_entities_processor.on_user_group_deleted.assert_not_awaited()
+        mock_data_entities_processor.note_kept_user_group.assert_awaited_once_with(
+            "zd-conn-1", "org_21"
+        )
+
+    @pytest.mark.parametrize("unanswered", ["lookup_raises", "unreadable"])
+    async def test_one_whose_group_cannot_be_kept_leaves_the_run_incomplete(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor, unanswered
+    ) -> None:
+        """Nothing is unlinked then, and the sync goes on to the next organization."""
+        datasource = _ready(zendesk_connector)
+        self._stored(mock_tx_store, "org_21", "org_22")
+        if unanswered == "lookup_raises":
+            zendesk_connector._call_api_with_retry = AsyncMock(side_effect=RuntimeError("boom"))
+        else:
+            datasource.show_organization = AsyncMock(
+                return_value=_make_response(success=False, status_code=403, error="Forbidden")
+            )
+        mock_data_entities_processor.note_kept_user_group = AsyncMock(
+            side_effect=RuntimeError("store unavailable")
+        )
+
+        assert await zendesk_connector._add_organizations_missing_from_export([]) == []
+
+        assert [
+            c.args for c in mock_data_entities_processor.note_kept_user_group.await_args_list
+        ] == [("zd-conn-1", "org_21"), ("zd-conn-1", "org_22")]
+        mock_data_entities_processor.on_user_group_deleted.assert_not_awaited()
+        assert zendesk_connector.full_sync_coverage().complete is False
 
     async def test_exported_organizations_are_not_asked_about(self, zendesk_connector, mock_tx_store) -> None:
         datasource = _ready(zendesk_connector)
@@ -5662,6 +5740,22 @@ class TestHelpCenterExportPaging:
         assert sorted(a["id"] for a in articles) == [1, 2, 3]
         assert (complete, end_time) == (True, 300)
         assert [c.kwargs["start_time"] for c in datasource.incremental_articles.await_args_list] == [1, 100, 200]
+        assert zendesk_connector.full_sync_coverage().complete is True
+
+    async def test_a_same_second_article_page_step_is_reported_unread(self, zendesk_connector) -> None:
+        """Items of that second past the page are left unwritten, so the run read only part."""
+        datasource = _ready(zendesk_connector)
+        datasource.incremental_articles = AsyncMock(side_effect=[
+            _make_response(data={"articles": [{"id": 1}], "end_time": 1000, "next_page": "x"}),
+            _make_response(data={"articles": [{"id": 2}], "end_time": 2000, "next_page": None}),
+        ])
+
+        articles, complete, _ = await zendesk_connector._fetch_incremental_articles(1000)
+
+        assert sorted(a["id"] for a in articles) == [1, 2]
+        assert complete is True
+        assert zendesk_connector.full_sync_coverage().complete is False
+        assert "Help Center articles" in zendesk_connector._skipped_this_sync
 
     async def test_a_page_ending_where_it_began_steps_one_second_on(self, zendesk_connector) -> None:
         datasource = _ready(zendesk_connector)
@@ -5864,3 +5958,932 @@ class TestConverterReachesTheBlock:
         assert payload["block_groups"][0]["data"] == (
             "## Before you start\n\nSee also: SSO\n\nClick *Reset*.\n"
         )
+
+
+# ===========================================================================
+# What a full sync unlinks when it ends
+# ===========================================================================
+
+
+class _ZendeskTenant:
+    """A Zendesk account behind every datasource call a full ``run_sync`` makes.
+
+    ``fail`` names calls that answer 400, which is not retried: the export or list
+    reads as cut short.
+    """
+
+    def __init__(self) -> None:
+        stamp = {"created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z"}
+        self.users = [
+            {"id": 1, "email": "admin@acme.com", "name": "Admin", "role": "admin"},
+            {"id": 2, "email": "agent@acme.com", "name": "Agent", "role": "agent"},
+        ]
+        self.customer = {
+            "id": 50, "email": "cust@client.com", "name": "Cust", "role": "end-user",
+            "organization_id": 9,
+        }
+        self.groups = [{"id": 7, "name": "Support", **stamp}]
+        self.memberships = [{"id": 1, "group_id": 7, "user_id": 2}]
+        self.orgs = {9: {"id": 9, "name": "Client", "shared_tickets": True, **stamp}}
+        self.exported_orgs = {9}
+        self.tickets = {
+            ticket_id: {
+                "id": ticket_id, "subject": f"Ticket {ticket_id}", "group_id": 7,
+                "status": "open", "requester_id": 50, "organization_id": 9, **stamp,
+            }
+            for ticket_id in (101, 102)
+        }
+        self.comments = {
+            101: [{"id": 5, "public": True, "attachments": [{
+                "id": 88, "file_name": "trace.log", "content_type": "text/plain",
+                "content_url": "https://acme.zendesk.com/attachments/88",
+            }]}],
+            102: [{"id": 6, "public": True, "attachments": []}],
+        }
+        self.categories = [{"id": 1, "name": "General", **stamp}]
+        self.sections = [{"id": 31, "name": "FAQ", "category_id": 1, **stamp}]
+        self.articles = {
+            article_id: {
+                "id": article_id, "title": f"Article {article_id}", "section_id": 31,
+                "body": "<p>Hi</p>", **stamp,
+            }
+            for article_id in (55, 56)
+        }
+        self.article_attachments = {
+            55: [{
+                "id": 77, "file_name": "guide.pdf", "content_type": "application/pdf",
+                "content_url": "https://acme.zendesk.com/hc/article_attachments/77",
+            }],
+            56: [],
+        }
+        # Changed within the minute before the request: the ticket export leaves them out.
+        self.just_changed: set[int] = set()
+        # People only the by-id ticket lookup names: no export page or user list does.
+        self.named_only_by_id: list[dict] = []
+        self.fail: set[str] = set()
+        self.fail_comments_of: set[int] = set()
+        self.fail_attachments_of: set[int] = set()
+
+    def wire(self, datasource) -> None:
+        for name in (
+            "list_users", "list_groups", "list_group_memberships", "incremental_organizations",
+            "show_organization", "list_organization_users", "incremental_tickets",
+            "list_comments", "show_ticket", "show_multiple_tickets", "list_categories", "list_sections",
+            "incremental_articles", "list_articles", "show_article", "list_article_attachments",
+            "list_custom_roles",
+        ):
+            setattr(datasource, name, AsyncMock(side_effect=getattr(self, f"_{name}")))
+
+    def _answer(self, name, data, **kwargs):
+        if name in self.fail:
+            return _make_response(success=False, status_code=400, error=f"{name} failed")
+        return _make_response(data=data, **kwargs)
+
+    async def _list_users(self, **_):
+        return self._answer("list_users", {"users": self.users, "next_page": None})
+
+    async def _list_groups(self, **_):
+        return self._answer("list_groups", {"groups": self.groups, "next_page": None})
+
+    async def _list_group_memberships(self, **_):
+        return self._answer(
+            "list_group_memberships", {"group_memberships": self.memberships, "next_page": None}
+        )
+
+    async def _incremental_organizations(self, **_):
+        orgs = [self.orgs[org_id] for org_id in sorted(self.exported_orgs) if org_id in self.orgs]
+        return self._answer(
+            "incremental_organizations", {"organizations": orgs, "end_of_stream": True}
+        )
+
+    async def _show_organization(self, organization_id, **_):
+        if organization_id not in self.orgs:
+            return _make_response(success=False, status_code=404, error="Not Found")
+        return self._answer("show_organization", {"organization": self.orgs[organization_id]})
+
+    async def _list_organization_users(self, organization_id, **_):
+        users = [self.customer] if self.customer["organization_id"] == organization_id else []
+        return self._answer("list_organization_users", {"users": users, "next_page": None})
+
+    async def _incremental_tickets(self, **_):
+        return self._answer("incremental_tickets", {
+            "tickets": [
+                ticket for ticket_id, ticket in self.tickets.items()
+                if ticket_id not in self.just_changed
+            ],
+            "users": [self.customer],
+            "end_of_stream": True,
+        })
+
+    async def _show_multiple_tickets(self, ids, **_):
+        wanted = [int(ticket_id) for ticket_id in str(ids).split(",") if ticket_id]
+        return self._answer("show_multiple_tickets", {
+            "tickets": [self.tickets[ticket_id] for ticket_id in wanted if ticket_id in self.tickets],
+            "users": [self.customer, *self.named_only_by_id],
+        })
+
+    async def _list_comments(self, ticket_id, **_):
+        if ticket_id in self.fail_comments_of:
+            return _make_response(success=False, status_code=400, error="comments failed")
+        return self._answer(
+            "list_comments", {"comments": self.comments.get(ticket_id, []), "next_page": None}
+        )
+
+    async def _show_ticket(self, ticket_id, **_):
+        if ticket_id not in self.tickets:
+            return _make_response(success=False, status_code=404, error="Not Found")
+        return self._answer("show_ticket", {"ticket": self.tickets[ticket_id], "users": [self.customer]})
+
+    async def _list_categories(self, **_):
+        return self._answer("list_categories", {"categories": self.categories, "next_page": None})
+
+    async def _list_sections(self, **_):
+        return self._answer("list_sections", {"sections": self.sections, "next_page": None})
+
+    async def _incremental_articles(self, **_):
+        return self._answer(
+            "incremental_articles", {"articles": list(self.articles.values()), "next_page": None}
+        )
+
+    async def _list_articles(self, **_):
+        return self._answer(
+            "list_articles", {"articles": list(self.articles.values()), "next_page": None}
+        )
+
+    async def _show_article(self, article_id, **_):
+        if article_id not in self.articles:
+            return _make_response(success=False, status_code=404, error="Not Found")
+        return self._answer("show_article", {"article": self.articles[article_id]})
+
+    async def _list_custom_roles(self, **_):
+        return self._answer("list_custom_roles", {"custom_roles": []})
+
+    async def _list_article_attachments(self, article_id, **_):
+        if article_id in self.fail_attachments_of:
+            return _make_response(success=False, status_code=400, error="attachments failed")
+        return self._answer("list_article_attachments", {
+            "article_attachments": self.article_attachments.get(article_id, []),
+            "next_page": None,
+        })
+
+
+class _ZendeskGraph:
+    """The connector's nodes as the processor stores them, and what one full sync wrote.
+
+    ``full_sync`` runs ``run_sync`` the way a full sync does (sync points deleted first)
+    and then the runner's own end-of-sync step, ``_unlink_what_full_sync_missed``,
+    against a graph that unlinks every stored node the run did not note as seen.
+    Nodes are named ``record:<external id>``, ``recordGroup:<id>``, ``userGroup:<id>``.
+    """
+
+    def __init__(self, connector, proc, tx_store, states) -> None:
+        self.connector = connector
+        self.states = states
+        self.records: dict[str, object] = {}
+        self.record_groups: set[str] = set()
+        self.user_groups: dict[str, AppUserGroup] = {}
+        # external record id -> the permissions the last write of it carried
+        self.permissions: dict[str, list] = {}
+        # record id -> the group external ids its stored permission edges come from
+        self.stored_grants: dict[str, set[str]] = {}
+        self.seen = FullSyncSeen()
+
+        def note(collection, node_id) -> None:
+            self.seen.add(collection, node_id)
+
+        def store_grants(record, permissions) -> None:
+            self.permissions[record.external_record_id] = list(permissions)
+            self.stored_grants[record.id] = {
+                p.external_id for p in permissions
+                if p.external_id and p.external_id in self.user_groups
+            }
+
+        async def on_new_records(batch) -> None:
+            for record, permissions in batch:
+                self.records[record.external_record_id] = record
+                store_grants(record, permissions)
+                note(CollectionNames.RECORDS.value, record.id)
+                note(CollectionNames.RECORD_GROUPS.value, record.external_record_group_id)
+
+        async def on_updated_record_permissions(record, permissions) -> None:
+            store_grants(record, permissions)
+            note(CollectionNames.RECORDS.value, record.id)
+
+        async def on_new_record_groups(batch) -> None:
+            for group, _ in batch:
+                self.record_groups.add(group.external_group_id)
+                note(CollectionNames.RECORD_GROUPS.value, group.external_group_id)
+
+        async def on_new_user_groups(batch, replace_members=True) -> None:
+            for group, _ in batch:
+                self.user_groups[group.source_user_group_id] = group
+                note(CollectionNames.GROUPS.value, group.source_user_group_id)
+
+        async def on_records_deleted_cascade(record_ids, _connector_id) -> None:
+            self.records = {
+                external_id: record for external_id, record in self.records.items()
+                if record.id not in record_ids
+            }
+
+        async def on_record_group_deleted(external_id, _connector_id) -> bool:
+            self.record_groups.discard(external_id)
+            return True
+
+        async def on_user_group_deleted(external_id, _connector_id) -> bool:
+            self.user_groups.pop(external_id, None)
+            return True
+
+        async def get_records_by_parent(_connector_id, parent_external_id, record_type=None):
+            return [
+                record for record in self.records.values()
+                if record.parent_external_record_id == parent_external_id
+            ]
+
+        async def get_record_by_external_id(connector_id, external_id):
+            return self.records.get(external_id)
+
+        async def get_user_groups(_connector_id, _org_id):
+            return list(self.user_groups.values())
+
+        async def get_records_by_record_type(_connector_id, record_type):
+            return [
+                record for record in self.records.values()
+                if getattr(record.record_type, "value", record.record_type) == record_type
+            ]
+
+        async def get_record_group_by_external_id(connector_id, external_id):
+            return MagicMock(id=external_id) if external_id in self.record_groups else None
+
+        async def get_nodes_by_filters(collection, filters, **_):
+            assert collection == CollectionNames.GROUPS.value
+            external_id = filters["externalGroupId"]
+            return [{"_key": external_id}] if external_id in self.user_groups else []
+
+        async def get_edge(from_id, _from_collection, to_id, _to_collection, collection, **_):
+            assert collection == CollectionNames.PERMISSION.value
+            return {} if from_id in self.stored_grants.get(to_id, set()) else None
+
+        def note_kept_records(_connector_id, record_ids) -> None:
+            for record_id in record_ids:
+                note(CollectionNames.RECORDS.value, record_id)
+
+        def note_kept_user_groups(_connector_id, groups) -> None:
+            for group in groups:
+                note(CollectionNames.GROUPS.value, group.source_user_group_id)
+
+        async def note_kept_user_group(_connector_id, external_id) -> None:
+            note(CollectionNames.GROUPS.value, external_id)
+
+        async def note_kept_record_group(_connector_id, external_id) -> None:
+            note(CollectionNames.RECORD_GROUPS.value, external_id)
+
+        proc.on_new_records = AsyncMock(side_effect=on_new_records)
+        proc.on_updated_record_permissions = AsyncMock(side_effect=on_updated_record_permissions)
+        proc.on_new_record_groups = AsyncMock(side_effect=on_new_record_groups)
+        proc.on_new_user_groups = AsyncMock(side_effect=on_new_user_groups)
+        proc.on_records_deleted_cascade = AsyncMock(side_effect=on_records_deleted_cascade)
+        proc.on_record_group_deleted = AsyncMock(side_effect=on_record_group_deleted)
+        proc.on_user_group_deleted = AsyncMock(side_effect=on_user_group_deleted)
+        proc.get_records_by_parent = AsyncMock(side_effect=get_records_by_parent)
+        proc.get_record_group_by_external_id = AsyncMock(side_effect=get_record_group_by_external_id)
+        proc.note_kept_records = MagicMock(side_effect=note_kept_records)
+        proc.note_kept_user_groups = MagicMock(side_effect=note_kept_user_groups)
+        proc.note_kept_user_group = AsyncMock(side_effect=note_kept_user_group)
+        proc.note_kept_record_group = AsyncMock(side_effect=note_kept_record_group)
+        proc.finish_full_sync_memberships = AsyncMock()
+        tx_store.get_record_by_external_id = AsyncMock(side_effect=get_record_by_external_id)
+        tx_store.get_user_groups = AsyncMock(side_effect=get_user_groups)
+        tx_store.get_records_by_record_type = AsyncMock(side_effect=get_records_by_record_type)
+        tx_store.get_record_group_by_external_id = AsyncMock(
+            side_effect=get_record_group_by_external_id
+        )
+        tx_store.get_nodes_by_filters = AsyncMock(side_effect=get_nodes_by_filters)
+        tx_store.get_edge = AsyncMock(side_effect=get_edge)
+
+    def _stored(self) -> dict[str, dict[str, str]]:
+        """collection -> {node id the run notes: name in these tests}."""
+        return {
+            CollectionNames.RECORDS.value: {
+                record.id: f"record:{external_id}" for external_id, record in self.records.items()
+            },
+            CollectionNames.RECORD_GROUPS.value: {
+                external_id: f"recordGroup:{external_id}" for external_id in self.record_groups
+            },
+            CollectionNames.GROUPS.value: {
+                external_id: f"userGroup:{external_id}" for external_id in self.user_groups
+            },
+        }
+
+    async def full_sync(self) -> tuple[bool, set[str]]:
+        """Returns (whether no further full sync is owed, the nodes unlinked)."""
+        self.states.clear()
+        self.seen = FullSyncSeen()
+        self.permissions = {}
+        await self.connector.run_sync()
+        stored = self._stored()
+        unlinked: set[str] = set()
+
+        async def unlink(_connector_id, seen_by_collection, **_):
+            for collection, names in stored.items():
+                seen_ids = seen_by_collection.get(collection) or set()
+                unlinked.update(name for node_id, name in names.items() if node_id not in seen_ids)
+            return len(unlinked), True
+
+        graph_provider = AsyncMock()
+        graph_provider.unlink_nodes_missed_by_full_sync = AsyncMock(side_effect=unlink)
+        done = await sync_runner._unlink_what_full_sync_missed(
+            self.connector, "zd-conn-1", graph_provider, logging.getLogger("test.zendesk"), self.seen
+        )
+        return done, unlinked
+
+
+def _users_unread(tenant: _ZendeskTenant) -> None:
+    tenant.fail.add("list_users")
+
+
+def _memberships_unread(tenant: _ZendeskTenant) -> None:
+    tenant.fail.add("list_group_memberships")
+
+
+def _organizations_unread(tenant: _ZendeskTenant) -> None:
+    tenant.fail.add("incremental_organizations")
+
+
+def _ticket_export_cut_short(tenant: _ZendeskTenant) -> None:
+    tenant.fail.add("incremental_tickets")
+
+
+def _ticket_set_aside(tenant: _ZendeskTenant) -> None:
+    tenant.fail_comments_of.add(101)
+
+
+def _help_center_categories_unread(tenant: _ZendeskTenant) -> None:
+    tenant.fail.add("list_categories")
+
+
+def _help_center_sections_unread(tenant: _ZendeskTenant) -> None:
+    tenant.fail.add("list_sections")
+
+
+def _article_export_cut_short(tenant: _ZendeskTenant) -> None:
+    tenant.fail.add("incremental_articles")
+
+
+def _article_attachments_unread(tenant: _ZendeskTenant) -> None:
+    tenant.fail_attachments_of.add(55)
+
+
+class TestFullSyncUnlinksOnlyWhatIsGone:
+    """After a full sync returns, the runner unlinks every stored node the run did not
+    write, unless ``full_sync_coverage()`` says the run read only part of Zendesk.
+    Ticket 102 is purged at the source between the syncs; everything else is still there.
+    """
+
+    GONE = frozenset({"record:102"})
+
+    @pytest.fixture()
+    def graph(
+        self, zendesk_connector, mock_data_entities_processor, mock_tx_store, monkeypatch
+    ):
+        monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", set())
+        monkeypatch.setattr(
+            "app.connectors.sources.zendesk.connector.load_connector_filters",
+            AsyncMock(return_value=({}, {})),
+        )
+        zendesk_connector.notify = AsyncMock()
+        tenant = _ZendeskTenant()
+        tenant.wire(_ready(zendesk_connector))
+        graph = _ZendeskGraph(
+            zendesk_connector,
+            mock_data_entities_processor,
+            mock_tx_store,
+            _stateful_sync_points(zendesk_connector),
+        )
+        graph.tenant = tenant
+        return graph
+
+    async def _seed(self, graph) -> None:
+        done, unlinked = await graph.full_sync()
+        assert (done, unlinked) == (True, set())
+        assert {"record:101", "record:102", "record:article_55", "record:article_56"} <= {
+            f"record:{external_id}" for external_id in graph.records
+        }
+        del graph.tenant.tickets[102]
+        graph.tenant.comments.pop(102)
+
+    async def test_a_full_sync_that_read_everything_unlinks_only_what_is_gone(self, graph) -> None:
+        await self._seed(graph)
+
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert (sorted(unlinked - self.GONE), sorted(unlinked & self.GONE)) == ([], ["record:102"])
+
+    @pytest.mark.parametrize("break_source", [
+        _users_unread,
+        _memberships_unread,
+        _organizations_unread,
+        _ticket_export_cut_short,
+        _ticket_set_aside,
+        _help_center_categories_unread,
+        _help_center_sections_unread,
+        _article_export_cut_short,
+        _article_attachments_unread,
+    ])
+    async def test_a_full_sync_that_read_part_of_zendesk_unlinks_nothing_still_there(
+        self, graph, break_source
+    ) -> None:
+        await self._seed(graph)
+        break_source(graph.tenant)
+
+        done, unlinked = await graph.full_sync()
+
+        # wrongly unlinked: still at the source; really gone: left for the retry owed.
+        assert (sorted(unlinked - self.GONE), sorted(unlinked & self.GONE)) == ([], [])
+        assert done is False
+
+        graph.tenant.fail.clear()
+        graph.tenant.fail_comments_of.clear()
+        graph.tenant.fail_attachments_of.clear()
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert (sorted(unlinked - self.GONE), sorted(unlinked & self.GONE)) == ([], ["record:102"])
+
+    async def test_an_organization_zendesk_does_not_answer_about_keeps_its_group_through_the_unlink(
+        self, graph
+    ) -> None:
+        """Missing from a complete export (edited moments ago) and its lookup fails."""
+        await self._seed(graph)
+        graph.tenant.exported_orgs.discard(9)
+        graph.tenant.fail.add("show_organization")
+
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert (sorted(unlinked - self.GONE), sorted(unlinked & self.GONE)) == ([], ["record:102"])
+        assert "org_9" in graph.user_groups
+        # Its ticket is rewritten with the group's grant still on it.
+        assert "org_9" in {p.external_id for p in graph.permissions["101"]}
+
+    @pytest.mark.parametrize("unanswered", ["lookup_raises", "unreadable"])
+    async def test_an_organization_whose_group_cannot_be_kept_unlinks_nothing(
+        self, graph, unanswered
+    ) -> None:
+        """A failed keep reports the run incomplete instead of stopping the sync."""
+        await self._seed(graph)
+        graph.tenant.exported_orgs.discard(9)
+        if unanswered == "lookup_raises":
+            graph.connector.data_source.show_organization = AsyncMock(
+                side_effect=RuntimeError("boom")
+            )
+        else:
+            graph.tenant.fail.add("show_organization")
+        graph.connector.data_entities_processor.note_kept_user_group = AsyncMock(
+            side_effect=RuntimeError("store unavailable")
+        )
+
+        done, unlinked = await graph.full_sync()
+
+        assert {"101", "article_55", "article_56"} <= graph.permissions.keys()
+        assert graph.connector.full_sync_coverage().complete is False
+        assert (done, sorted(unlinked)) == (False, [])
+        assert "org_9" in graph.user_groups
+
+    async def test_an_unanswered_organization_does_not_keep_its_grant_once_deleted(
+        self, graph
+    ) -> None:
+        """Unanswered in one sync, then 404 in the next: its tickets lose the grant."""
+        await self._seed(graph)
+        graph.tenant.exported_orgs.discard(9)
+        graph.tenant.fail.add("show_organization")
+        await graph.full_sync()
+        assert "org_9" in {p.external_id for p in graph.permissions["101"]}
+
+        graph.tenant.fail.discard("show_organization")
+        del graph.tenant.orgs[9]
+        await graph.full_sync()
+
+        assert "org_9" not in {p.external_id for p in graph.permissions["101"]}
+
+    @staticmethod
+    def _add_ticket(graph, ticket_id: int, organization_id: int) -> None:
+        graph.tenant.tickets[ticket_id] = {
+            **graph.tenant.tickets[101], "id": ticket_id, "subject": f"Ticket {ticket_id}",
+            "organization_id": organization_id,
+        }
+        graph.tenant.comments[ticket_id] = [{"id": ticket_id, "public": True, "attachments": []}]
+
+    @staticmethod
+    def _grants(graph, external_id: str) -> set[str]:
+        return {p.external_id for p in graph.permissions[external_id]}
+
+    async def test_a_new_ticket_of_an_unanswered_organization_gets_no_org_grant(
+        self, graph
+    ) -> None:
+        """The organization may have stopped sharing tickets: no new access is opened."""
+        await self._seed(graph)
+        graph.tenant.exported_orgs.discard(9)
+        graph.tenant.fail.add("show_organization")
+        self._add_ticket(graph, 103, 9)
+
+        await graph.full_sync()
+
+        assert "org_9" in self._grants(graph, "101")
+        assert "org_9" not in self._grants(graph, "103")
+
+    async def test_a_ticket_moved_into_an_unanswered_organization_gets_no_org_grant(
+        self, graph
+    ) -> None:
+        """Its stored copy carries another organization's grant, not this one's."""
+        graph.tenant.orgs[10] = {**graph.tenant.orgs[9], "id": 10, "name": "Other"}
+        graph.tenant.exported_orgs.add(10)
+        self._add_ticket(graph, 103, 10)
+        await self._seed(graph)
+        assert {"org_10"} <= self._grants(graph, "103")
+        graph.tenant.exported_orgs.discard(9)
+        graph.tenant.fail.add("show_organization")
+        graph.tenant.tickets[103] = {
+            **graph.tenant.tickets[103], "organization_id": 9,
+            "updated_at": "2026-01-03T00:00:00Z",
+        }
+
+        await graph.full_sync()
+
+        assert "org_9" in self._grants(graph, "101")
+        assert not {"org_9", "org_10"} & self._grants(graph, "103")
+
+    @pytest.mark.parametrize("failing_read", ["get_nodes_by_filters", "get_edge"])
+    async def test_a_failed_stored_grant_read_keeps_the_stored_ticket_as_it_is(
+        self, graph, mock_tx_store, failing_read
+    ) -> None:
+        """A store error neither grants nor revokes: the ticket is set aside and retried."""
+        await self._seed(graph)
+        stored_record = graph.records["101"]
+        stored_grants = set(graph.stored_grants[stored_record.id])
+        assert "org_9" in stored_grants
+        graph.tenant.exported_orgs.discard(9)
+        graph.tenant.fail.add("show_organization")
+        working = getattr(mock_tx_store, failing_read)
+
+        async def store_down(*args: object, raise_on_error: bool = False, **kwargs: object) -> object:
+            # As the real stores: a failed read raises only when asked to, and otherwise reads as absent.
+            if raise_on_error:
+                raise RuntimeError("store down")
+            return [] if failing_read == "get_nodes_by_filters" else None
+
+        setattr(mock_tx_store, failing_read, AsyncMock(side_effect=store_down))
+
+        done, unlinked = await graph.full_sync()
+
+        assert graph.records["101"] is stored_record
+        assert graph.stored_grants[stored_record.id] == stored_grants
+        assert "101" not in graph.permissions
+        assert graph.states[SYNC_POINT_KEY]["pendingTicketIds"] == ["101"]
+        assert graph.connector.full_sync_coverage().complete is False
+        assert (done, sorted(unlinked)) == (False, [])
+
+        # Once the store answers again the ticket is written with its grant kept.
+        setattr(mock_tx_store, failing_read, working)
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert (sorted(unlinked - self.GONE), sorted(unlinked & self.GONE)) == ([], ["record:102"])
+        assert "org_9" in self._grants(graph, "101")
+
+    async def test_the_grant_on_any_stored_copy_of_the_org_group_is_kept(
+        self, graph, mock_tx_store
+    ) -> None:
+        """Older syncs left several copies of org_9; only the second has the grant."""
+        await self._seed(graph)
+        graph.tenant.exported_orgs.discard(9)
+        graph.tenant.fail.add("show_organization")
+        mock_tx_store.get_nodes_by_filters = AsyncMock(
+            return_value=[{"_key": "org_9_stale"}, {"_key": "org_9"}]
+        )
+
+        done, _ = await graph.full_sync()
+
+        assert done is True
+        assert "org_9" in self._grants(graph, "101")
+        assert [call.args[0] for call in mock_tx_store.get_edge.await_args_list] == [
+            "org_9_stale", "org_9"
+        ]
+
+    async def test_a_new_ticket_of_a_readable_organization_gets_its_org_grant(
+        self, graph
+    ) -> None:
+        await self._seed(graph)
+        self._add_ticket(graph, 103, 9)
+
+        await graph.full_sync()
+
+        assert "org_9" in self._grants(graph, "101")
+        assert "org_9" in self._grants(graph, "103")
+
+    async def test_an_organization_deleted_at_the_source_loses_its_groups(self, graph) -> None:
+        await self._seed(graph)
+        del graph.tenant.orgs[9]
+        graph.tenant.exported_orgs.discard(9)
+
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert (sorted(unlinked - self.GONE), sorted(unlinked & self.GONE)) == ([], ["record:102"])
+        assert {"org_9", "orgagents_9"}.isdisjoint(graph.user_groups)
+        graph.connector.data_entities_processor.note_kept_user_group.assert_not_awaited()
+
+    @pytest.mark.parametrize("unread", ["list_custom_roles", "list_articles"])
+    async def test_skips_that_leave_nothing_unwritten_still_unlink_what_is_gone(
+        self, graph, unread
+    ) -> None:
+        """Custom roles only narrow who joins the all-tickets group, which is still
+        written; the article list only feeds the vanished-article check."""
+        await self._seed(graph)
+        graph.tenant.fail.add(unread)
+        graph.connector.notify.reset_mock()
+
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert (sorted(unlinked - self.GONE), sorted(unlinked & self.GONE)) == ([], ["record:102"])
+        assert [
+            call.kwargs["title"] for call in graph.connector.notify.await_args_list
+            if call.kwargs["severity"] == NotificationSeverity.WARNING
+        ] == ["Zendesk sync skipped some data"]
+
+    @staticmethod
+    def _change_in_the_last_minute(graph, *ticket_ids: int) -> None:
+        for ticket_id in ticket_ids:
+            graph.tenant.tickets[ticket_id] = {
+                **graph.tenant.tickets[ticket_id], "updated_at": "2026-01-03T00:00:00Z",
+            }
+        graph.tenant.just_changed.update(ticket_ids)
+
+    async def test_a_ticket_changed_in_the_last_minute_keeps_its_links(self, graph) -> None:
+        """The export leaves out the last minute; the ticket and its attachment are still there."""
+        await self._seed(graph)
+        self._change_in_the_last_minute(graph, 101)
+
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert (sorted(unlinked - self.GONE), sorted(unlinked & self.GONE)) == ([], ["record:102"])
+        assert "org_9" in self._grants(graph, "101")
+
+    async def test_tickets_left_out_of_the_export_are_looked_up_a_hundred_at_a_time(
+        self, graph
+    ) -> None:
+        for ticket_id in range(201, 351):
+            self._add_ticket(graph, ticket_id, 9)
+        await self._seed(graph)
+        self._change_in_the_last_minute(graph, *range(201, 351))
+
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert (sorted(unlinked - self.GONE), sorted(unlinked & self.GONE)) == ([], ["record:102"])
+        assert graph.connector.data_source.show_multiple_tickets.await_count == 2
+        graph.connector.data_source.show_ticket.assert_not_awaited()
+
+    async def test_a_failed_lookup_of_a_ticket_left_out_of_the_export_unlinks_nothing_still_there(
+        self, graph
+    ) -> None:
+        await self._seed(graph)
+        stored_record = graph.records["101"]
+        self._change_in_the_last_minute(graph, 101)
+        graph.tenant.fail.update({"show_multiple_tickets", "show_ticket"})
+
+        done, unlinked = await graph.full_sync()
+
+        # 102 was in the same unanswered lookup, so nothing says it is gone yet.
+        assert done is True
+        assert sorted(unlinked) == []
+        assert graph.records["101"] is stored_record
+
+        graph.tenant.fail.clear()
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert (sorted(unlinked - self.GONE), sorted(unlinked & self.GONE)) == ([], ["record:102"])
+
+    async def test_a_ticket_looked_up_by_id_grants_the_people_only_that_answer_names(
+        self, graph
+    ) -> None:
+        await self._seed(graph)
+        graph.tenant.named_only_by_id.append({
+            "id": 60, "email": "cc@client.com", "name": "CC", "role": "end-user",
+            "organization_id": 9,
+        })
+        graph.tenant.tickets[101]["collaborator_ids"] = [60]
+        self._change_in_the_last_minute(graph, 101)
+        on_new_user_groups = graph.connector.data_entities_processor.on_new_user_groups
+        on_new_user_groups.reset_mock()
+
+        done, unlinked = await graph.full_sync()
+
+        assert (done, sorted(unlinked)) == (True, ["record:102"])
+        assert {p.email for p in graph.permissions["101"]} >= {"cc@client.com", "cust@client.com"}
+        assert "cc@client.com" in {
+            user.email
+            for call in on_new_user_groups.await_args_list
+            if call.kwargs.get("replace_members") is False
+            for group, users in call.args[0]
+            if group.source_user_group_id == "org_9"
+            for user in users
+        }
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param(lambda ticket: {"users": []}, id="no-tickets-key"),
+            pytest.param(lambda ticket: {"tickets": None}, id="tickets-null"),
+            pytest.param(lambda ticket: {"tickets": ticket}, id="tickets-not-a-list"),
+            pytest.param(lambda ticket: {"tickets": [ticket, None]}, id="null-entry"),
+            pytest.param(lambda ticket: {"tickets": [ticket, "102"]}, id="non-object-entry"),
+            pytest.param(
+                lambda ticket: {"tickets": [ticket, {"subject": "x"}]}, id="entry-without-id"
+            ),
+            pytest.param(
+                lambda ticket: {"tickets": [ticket, {"id": None}]}, id="entry-with-null-id"
+            ),
+        ],
+    )
+    async def test_a_malformed_lookup_answer_unlinks_nothing_still_there(
+        self, graph, answer
+    ) -> None:
+        """An answer that cannot be read whole says nothing about the tickets it was asked for."""
+        await self._seed(graph)
+        stored_record = graph.records["101"]
+        self._change_in_the_last_minute(graph, 101)
+        graph.connector.data_source.show_multiple_tickets = AsyncMock(
+            return_value=_make_response(data=answer(graph.tenant.tickets[101]))
+        )
+
+        done, unlinked = await graph.full_sync()
+
+        # 102 is gone at the source, but this answer does not say so.
+        assert (done, unlinked) == (True, set())
+        assert graph.records["101"] is stored_record
+
+    async def test_an_empty_lookup_answer_means_the_tickets_are_gone(self, graph) -> None:
+        await self._seed(graph)
+        self._change_in_the_last_minute(graph, 101)
+        graph.connector.data_source.show_multiple_tickets = AsyncMock(
+            return_value=_make_response(data={"tickets": []})
+        )
+
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert sorted(unlinked) == [
+            "record:101", "record:102", "record:ticket_101_comment_5_attachment_88",
+        ]
+
+    async def test_a_pending_ticket_the_retry_rewrote_is_not_looked_up_again(self, graph) -> None:
+        await self._seed(graph)
+        self._change_in_the_last_minute(graph, 101)
+        graph.states.clear()
+        graph.states[SYNC_POINT_KEY] = {"pendingTicketIds": ["101"]}
+
+        await graph.connector.run_sync()
+
+        assert graph.connector._rebuild_ticket_edges is True
+        show_many = graph.connector.data_source.show_multiple_tickets
+        assert [call.kwargs["ids"] for call in show_many.await_args_list] == ["102"]
+
+    async def test_a_stored_ticket_with_a_non_numeric_id_is_left_to_the_unlink(
+        self, graph
+    ) -> None:
+        await self._seed(graph)
+        graph.records["legacy-1"] = graph.records["101"].model_copy(
+            update={"id": "rec-legacy-1", "external_record_id": "legacy-1"}
+        )
+        self._change_in_the_last_minute(graph, 101)
+
+        done, unlinked = await graph.full_sync()
+
+        assert (done, sorted(unlinked)) == (True, ["record:102", "record:legacy-1"])
+        show_many = graph.connector.data_source.show_multiple_tickets
+        assert [call.kwargs["ids"] for call in show_many.await_args_list] == ["101,102"]
+
+    async def test_a_ticket_looked_up_by_id_and_now_deleted_is_removed(self, graph) -> None:
+        await self._seed(graph)
+        self._change_in_the_last_minute(graph, 101)
+        graph.tenant.tickets[101]["status"] = "deleted"
+        graph.connector.data_entities_processor.note_kept_records.reset_mock()
+
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert {"101", "ticket_101_comment_5_attachment_88"}.isdisjoint(graph.records)
+        assert sorted(unlinked) == ["record:102"]
+        graph.connector.data_entities_processor.note_kept_records.assert_not_called()
+
+    async def test_comments_failing_for_a_ticket_looked_up_by_id_owes_a_full_sync(
+        self, graph
+    ) -> None:
+        await self._seed(graph)
+        self._change_in_the_last_minute(graph, 101)
+        graph.tenant.fail_comments_of.add(101)
+        graph.connector.notify.reset_mock()
+
+        done, unlinked = await graph.full_sync()
+
+        assert (done, sorted(unlinked)) == (False, [])
+        assert "101" in graph.states[SYNC_POINT_KEY]["pendingTicketIds"]
+        assert [
+            call.kwargs["title"] for call in graph.connector.notify.await_args_list
+            if call.kwargs["severity"] == NotificationSeverity.WARNING
+        ] == ["Zendesk sync skipped some data"]
+
+    async def test_a_failed_keep_of_an_unanswered_ticket_unlinks_nothing(self, graph) -> None:
+        await self._seed(graph)
+        self._change_in_the_last_minute(graph, 101)
+        graph.tenant.fail.add("show_multiple_tickets")
+        graph.connector.data_entities_processor.note_kept_records = MagicMock(
+            side_effect=RuntimeError("store unavailable")
+        )
+
+        done, unlinked = await graph.full_sync()
+
+        assert graph.connector.full_sync_coverage().complete is False
+        assert (done, sorted(unlinked)) == (False, [])
+
+    async def test_an_unreadable_ticket_listing_unlinks_nothing(
+        self, graph, mock_tx_store
+    ) -> None:
+        await self._seed(graph)
+        self._change_in_the_last_minute(graph, 101)
+        working = mock_tx_store.get_records_by_record_type.side_effect
+
+        async def tickets_unreadable(connector_id, record_type):
+            if record_type == RecordType.TICKET.value:
+                raise RuntimeError("store down")
+            return await working(connector_id, record_type)
+
+        mock_tx_store.get_records_by_record_type = AsyncMock(side_effect=tickets_unreadable)
+
+        done, unlinked = await graph.full_sync()
+
+        assert (done, sorted(unlinked)) == (False, [])
+        graph.connector.data_source.show_multiple_tickets.assert_not_awaited()
+
+    async def test_a_ticket_left_out_and_gone_at_lookup_is_still_unlinked(self, graph) -> None:
+        self._add_ticket(graph, 103, 9)
+        await self._seed(graph)
+        self._change_in_the_last_minute(graph, 101, 103)
+        del graph.tenant.tickets[103]
+        graph.connector.data_entities_processor.note_kept_records.reset_mock()
+
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert sorted(unlinked) == ["record:102", "record:103"]
+        show_many = graph.connector.data_source.show_multiple_tickets
+        assert [call.kwargs["ids"] for call in show_many.await_args_list] == ["101,102,103"]
+        graph.connector.data_entities_processor.note_kept_records.assert_not_called()
+
+    async def test_tickets_the_export_returned_are_not_looked_up_again(self, graph) -> None:
+        assert (await graph.full_sync()) == (True, set())
+
+        done, unlinked = await graph.full_sync()
+
+        assert (done, unlinked) == (True, set())
+        graph.connector.data_source.show_multiple_tickets.assert_not_awaited()
+
+    async def test_an_incremental_sync_does_not_look_up_stored_tickets(
+        self, graph, mock_tx_store
+    ) -> None:
+        await self._seed(graph)
+        self._change_in_the_last_minute(graph, 101)
+        mock_tx_store.get_records_by_record_type.reset_mock()
+
+        await graph.connector.run_sync()
+
+        assert graph.connector._rebuild_ticket_edges is False
+        assert RecordType.TICKET.value not in [
+            call.args[1] for call in mock_tx_store.get_records_by_record_type.await_args_list
+        ]
+        graph.connector.data_source.show_multiple_tickets.assert_not_awaited()
+
+    async def test_coverage_resets_each_run(self, graph) -> None:
+        graph.tenant.fail.add("list_categories")
+        await graph.connector.run_sync()
+        assert graph.connector.full_sync_coverage().complete is False
+
+        graph.tenant.fail.clear()
+        await graph.connector.run_sync()
+
+        assert graph.connector.full_sync_coverage().complete is True
+
+
+def test_full_sync_coverage_is_complete_before_any_skip(zendesk_connector) -> None:
+    assert zendesk_connector.full_sync_coverage().complete is True
+
+    zendesk_connector._skip("custom role access", left_unread=False)
+    assert zendesk_connector.full_sync_coverage().complete is True
+
+    zendesk_connector._skip("tickets")
+    assert zendesk_connector.full_sync_coverage().complete is False
+    assert zendesk_connector._skipped_this_sync == ["custom role access", "tickets"]

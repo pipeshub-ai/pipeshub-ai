@@ -12,6 +12,7 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { InternalServerError } from '../../../../src/libs/errors/http.errors'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
+import { assertNotLogged } from '../../../helpers/mock-logger'
 import { oid, settle } from './chat-test-harness'
 import { AGENT_KEY, RUN, delta, finalAnswer, flows, startStream, Flow, appConfig } from './streaming-flows'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
@@ -174,6 +175,27 @@ describe('N3: chat stream end line', () => {
         const handlerLines = recs.filter((r) => /^Failed to save (complete conversation|AI response|regenerated)/.test(r.message))
         expect(handlerLines).to.deep.equal([])
       })
+
+      if (!flow.regenerate) {
+        it("a failure write that fails after Python's RUN_ERROR: this route's mark function logs it, then this route's own catch line", async () => {
+          const run = await startStream(flow)
+          const write = ChatSessionMessage.insertMany as unknown as sinon.SinonStub
+          write.onCall(write.callCount).rejects(new Error('E11000 duplicate key error collection: es.chatSessionMessages'))
+          run.ai.send('RUN_ERROR', { runId: RUN, message: ERROR_TEXT, code: 'rate_limited' })
+          await finish(run)
+
+          // The mark function names itself (chat vs agent); the route's .catch line follows it.
+          const lines = recs.filter((r) => r.level === 'error' && /mark/i.test(r.message))
+          expect(lines.map((r) => r.message)).to.deep.equal(
+            flow.agent
+              ? ['Failed to mark agent conversation as failed', 'Failed to mark agent conversation from AI RUN_ERROR SSE']
+              : ['Error marking conversation as failed', 'Failed to mark conversation from AI RUN_ERROR SSE'],
+          )
+          expect(lines[1]?.meta.error).to.be.instanceOf(Error)
+          // util.inspect, not JSON.stringify: an Error's message and stack are not enumerable.
+          assertNotLogged(Logger.prototype as never, 'nightjar')
+        })
+      }
 
       it('a malformed final frame is logged without its data', async () => {
         const run = await startStream(flow)

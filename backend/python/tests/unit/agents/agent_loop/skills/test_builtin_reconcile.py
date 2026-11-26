@@ -83,7 +83,7 @@ def _graph_with_orgs(*orgs: dict[str, object]) -> FakeGraphProvider:
 
 
 def _context(graph: object, org: str = "org-1") -> SimpleNamespace:
-    return SimpleNamespace(graph_provider=graph, org_id=org, user_id="u", retrieval_service=MagicMock())
+    return SimpleNamespace(graph_provider=graph, org_id=org, user_id="u", user_info={}, agent_skills=None, retrieval_service=MagicMock())
 
 
 async def test_request_path_never_awaits_the_seeder(packs_root_v1: str) -> None:

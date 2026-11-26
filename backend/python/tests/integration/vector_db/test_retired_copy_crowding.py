@@ -24,6 +24,7 @@ import uuid
 import numpy as np
 import pytest
 
+from tests.support import it_backends
 from tests.support.require_service import missing
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(900)]
@@ -38,7 +39,11 @@ from qdrant_client.models import (  # noqa: E402
     VectorParams,
 )
 
-URL = os.environ.get("QDRANT_REST_URL") or f"http://{os.environ.get('QDRANT_IT_HOST', 'localhost')}:{os.environ.get('QDRANT_IT_PORT', '6343')}"
+
+def _qdrant_url() -> str:
+    """QDRANT_REST_URL, else the integration Qdrant on QDRANT_IT_HOST (no default host: unset skips)."""
+    return os.environ.get("QDRANT_REST_URL") or f"http://{it_backends.endpoint('QDRANT_IT_HOST')}:{os.environ.get('QDRANT_IT_PORT', '6343')}"
+
 N = int(os.environ.get("KEEP_OLD_COPY_CROWDING_N", "4000"))
 RATE = float(os.environ.get("KEEP_OLD_COPY_CROWDING_RATE", "5"))
 GRACE, INFLIGHT, DIM, FETCH, QUERIES, CHUNKS = 330, 7, 96, 30, 400, 3
@@ -113,13 +118,14 @@ def _measure(client, kind: str, chunks: np.ndarray) -> dict:
 
 
 def test_search_with_the_old_copy_kept_is_no_worse_than_without_it_during_a_bulk_reindex() -> None:
+    url = _qdrant_url()
     try:
-        client = qdrant_client.QdrantClient(url=URL, timeout=60, prefer_grpc=False)
+        client = qdrant_client.QdrantClient(url=url, timeout=60, prefer_grpc=False)
         client.get_collections()
     except Exception as exc:
         if not (os.environ.get("QDRANT_REST_URL") or os.environ.get("QDRANT_IT_HOST")):
             pytest.skip("no Qdrant is configured for this job (QDRANT_REST_URL or QDRANT_IT_HOST)")  # the offline job; a job that names one must reach it
-        missing(f"Qdrant is not reachable at {URL}: {exc}")
+        missing(f"Qdrant is not reachable at {url}: {exc}")
     chunks = _corpus()
     off, swap, control = (_measure(client, kind, chunks) for kind in ("off", "swap", "control"))
     print(f"N={N} rate={RATE}/s off={off} swap={swap} control={control}")

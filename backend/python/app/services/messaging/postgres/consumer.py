@@ -14,15 +14,19 @@ import asyncio
 import contextlib
 import json
 import os
+import socket
 import time
 import uuid
 from collections import Counter
 from logging import Logger
 from typing import TYPE_CHECKING, Any, override
 
+from app.core.db.errors import CommitOutcomeUnknown, ConnectionLost, PoolTimeout
 from app.core.envelope import (
+    INBOX_ERRORS,
     DuplicateEnvelope,
     EnvelopeRejected,
+    Inbox,
     configured_admission_valid,
     ctx_of,
     decode_message,
@@ -30,6 +34,7 @@ from app.core.envelope import (
     new_admission,
     open_configured,
     open_stream_message,
+    record_processed,
     refresh_envelope,
     within_lifetime,
 )
@@ -37,6 +42,7 @@ from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
 from app.core.org_context import push as push_org
 from app.modules.indexing.embed_resume import stamp_delivery_id
+from app.services.messaging import record_budget
 from app.services.messaging.config import (
     IndexingEvent,
     MessageHandler,
@@ -56,6 +62,7 @@ from app.services.messaging.error_classifier import (
     MessageErrorType,
     is_expected_outcome,
 )
+from app.services.messaging.inbox import PgInbox
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.membership import register_group
 from app.services.messaging.message_log import bound_message
@@ -64,12 +71,13 @@ from app.services.messaging.storage_protocol import tagged
 from app.services.pg_runtime import QUEUE_CHANNEL, PgListener, listen_dsn
 from app.utils import error_class
 from app.utils import indexing_timing as timing
-from app.utils.logging_fields import log_fields
+from app.utils.logging_fields import log_fields, log_once
 from app.utils.request_context import bind_context, context_from_envelope, reset_context
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Iterator
 
+    from app.core.org_context import OrgContext
     from app.services.distributed.interface import IDistributedLeaseManager
     from app.services.messaging.consumer_concurrency import PriorityLane, StageAdmission
     from app.services.messaging.disposition import AbandonedMessageSink
@@ -81,6 +89,7 @@ _SWEEP_EVERY_S = 60.0
 _INDEX_POOL = "pg-queue-indexing"
 _SAFETY_NET_S = 300.0  # longest an idle consumer with a LISTEN connection sleeps
 _HANDBACK_CAP_S = 60.0   # longest the per-message back-off of hand-backs grows to
+_NACK_RETRY_S = (1.0, 10.0)   # first and longest wait between tries of an outage hand-back's nack while the database is still away
 _HANDBACK_TABLE_MAX = 10_000   # hand-back counts kept in memory
 
 
@@ -120,6 +129,40 @@ def _retry_base_s() -> float:
     return float(os.getenv("PG_QUEUE_RETRY_BASE_S", "5"))
 
 
+class DatabaseUnavailable(RequeueWithoutAttempt):
+    """The handler failed only because the database could not be reached: handed back without an attempt, so a failover or a run of
+    dropped connections cannot dead-letter good work. Its hand-backs count toward the backstop, which ends a handler that never recovers."""
+
+    pauses_consumer = False
+
+
+def _database_unavailable(e: BaseException) -> bool:
+    """Whether ``e`` is a lost connection or a pool wait, itself or through explicit ``raise ... from`` wrappers that say nothing else.
+
+    A commit whose outcome is unknown may have applied, so a rerun can repeat its effect: it keeps counting attempts, as a statement
+    timeout does. A wrapper that is a bug type or is stamped with another class decides the failure itself. A misconfigured address is
+    no outage and keeps counting: a wrong password or database name never becomes a ConnectionLost (the kernel re-raises those), and a
+    host name that does not resolve is excluded here.
+    """
+    seen: set[int] = set()
+    link: BaseException | None = e
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        if isinstance(link, CommitOutcomeUnknown):
+            return False
+        if isinstance(link, (ConnectionLost, PoolTimeout)):
+            # a host name that does not resolve is a wrong address, not an outage: waiting cannot fix it (EAI_AGAIN is the resolver's own outage)
+            cause = link.__cause__
+            return not (isinstance(cause, socket.gaierror) and cause.errno != socket.EAI_AGAIN)
+        # a query log stamps a wrapper with the class of its chain, so a pool wait's wrapper can read "timeout"
+        if isinstance(link, (ValueError, *error_class.OUR_BUGS)):
+            return False
+        if getattr(link, "log_error_class", None) not in (None, "unavailable", "timeout"):
+            return False
+        link = link.__cause__
+    return False
+
+
 @contextlib.contextmanager
 def _queue_write(reason: str) -> "Iterator[None]":
     """A nack or dead update that raised settled nothing: index.end says so, and the error propagates (the claim expires and
@@ -150,7 +193,9 @@ class PgMessagingConsumer(IMessagingConsumer):
         worker: "WorkerLoop | None" = None,
         precision_filter: "PrecisionHandBack | None" = None,
         fairness: "IndexingFairness | None" = None,
+        inbox: Inbox | None = None,
     ) -> None:
+        self.inbox = inbox  # simple consumers: skips events this group already finished (see app.services.messaging.inbox)
         self.precision_filter = precision_filter  # hands back events that would write vectors of the wrong precision
         self._fairness = fairness  # claim steps: which topics to claim from, in what order and amounts
         self._worker = worker  # the loop the indexing handler runs on; claims, heartbeats and settling stay on this one
@@ -201,8 +246,8 @@ class PgMessagingConsumer(IMessagingConsumer):
             created = await self.queue.ensure_group(
                 topic,
                 self.config.group_id,
-                from_start=not self.config.ephemeral_group,
-                ephemeral=self.config.ephemeral_group,
+                from_start=not self.config.broadcast,
+                ephemeral=self.config.broadcast,
             )
             if created:
                 self.logger.info(
@@ -215,7 +260,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if self._listener is not None:
             await self._listener.stop()
             self._listener = None
-        if self.config.ephemeral_group:
+        if self.config.broadcast:
             for topic in self.config.topics:
                 try:
                     await self.queue.drop_group(topic, self.config.group_id)
@@ -388,7 +433,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         """Keep the claims being worked on hidden, keep an ephemeral group alive, and sweep (whether or not the consumer is idle)."""
         while self.running:
             # an idle consumer with nothing held wakes only for the sweep; claiming something wakes it at once
-            busy = bool(self._held) or self.config.ephemeral_group
+            busy = bool(self._held) or self.config.broadcast
             self._beat_wake.clear()
             woken = True
             try:
@@ -407,7 +452,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                         self.config.group_id, held, self._visibility_s
                     )
                 await self._renew_leases()
-                if self.config.ephemeral_group:
+                if self.config.broadcast:
                     await self.queue.touch(self.config.group_id, self.config.topics)
                 if time.monotonic() - self._last_sweep > _SWEEP_EVERY_S:
                     self._last_sweep = time.monotonic()
@@ -451,7 +496,7 @@ class PgMessagingConsumer(IMessagingConsumer):
 
     async def _settle_timed(self, d: Delivery) -> None:
         if not self.indexing:
-            await self._decide(d)
+            await self._decide(d, {})
             return
         # One record delivery, one index.end (as the Redis and Kafka indexing consumers): the decision below notes on it,
         # and the line is written in the message's root, org and ids, as P8's bound_message gives the other two.
@@ -476,7 +521,7 @@ class PgMessagingConsumer(IMessagingConsumer):
 
     async def _decide(self, d: Delivery, seen: "dict[str, Any] | None" = None) -> str:
         """Process ``d`` and ack, nack or dead-letter it; returns the indexing timeline's outcome."""
-        group, max_attempts = self.config.group_id, messaging_env.max_delivery_attempts
+        max_attempts = messaging_env.max_delivery_attempts
         if (
             d.attempts > max_attempts
         ):  # handed out past the limit (a consumer that keeps dying mid-handler)
@@ -526,7 +571,10 @@ class PgMessagingConsumer(IMessagingConsumer):
                     timing.note(disposition="retry", reason="claim_lost")
                 return "failed"
             with _queue_write("nack_failed"):
-                nacked = await self._nack(d, delay, str(e), refund=True, reissue=True)
+                if isinstance(e, DatabaseUnavailable):
+                    nacked = await self._nack_through_outage(d, delay, str(e))
+                else:
+                    nacked = await self._nack(d, delay, str(e), refund=True, reissue=True)
             if nacked:
                 timing.note(disposition="retry")
             else:
@@ -535,7 +583,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         self._handbacks.pop((d.topic, d.message_id), None)
         if success:
             try:
-                acked = await self.queue.ack(group, d)
+                acked = await self._ack(d, (seen or {}).get("ctx"))
             except Exception as e:
                 # Indexed: the expired claim redelivers it and the redelivery is deduped. In a record's run its index.end says it.
                 if not timing.note(disposition="retry", reason="ack_failed", exc=e):
@@ -574,6 +622,21 @@ class PgMessagingConsumer(IMessagingConsumer):
                     delay,
                 )
         return "failed"
+
+    async def _ack(self, d: Delivery, ctx: "OrgContext | None") -> bool:
+        """Ack a delivery whose handler succeeded, recording its event in the inbox in the same transaction. A record that cannot be
+        written does not hold the ack back: the message is acknowledged on its own, and a redelivery of it would run again."""
+        group = self.config.group_id
+        if not isinstance(self.inbox, PgInbox) or ctx is None or not ctx.event_id:
+            await record_processed(self.inbox, group, ctx)
+            return await self.queue.ack(group, d)
+        try:
+            return await self.inbox.record_and_ack(group, ctx, self.queue, group, d)
+        except Exception as e:
+            INBOX_ERRORS.inc("record")
+            if log_once(f"inbox-ack:{group}", 30):    # the counter carries the exact count
+                self.logger.warning("Could not record %s in the consumer inbox; acknowledging it alone: %s", d.message_id, type(e).__name__)
+            return await self.queue.ack(group, d)
 
     @staticmethod
     def _remember(parsed: StreamMessage, seen: "dict[str, Any] | None") -> None:
@@ -615,12 +678,52 @@ class PgMessagingConsumer(IMessagingConsumer):
         await self._nack(d, delay, "waiting for the embedding precision", refund=True, reissue=True)
         return True
 
-    async def _nack(self, d: Delivery, delay: float, error: str, *, refund: bool = False, reissue: bool = False) -> bool:
+    async def _nack_through_outage(self, d: Delivery, delay: float, error: str) -> bool:
+        """The refunding nack of an outage hand-back, tried again while the outage also fails it. Left to expire instead, the claim
+        would hand the row out again with the attempt it counted still spent, and repeated outages would dead-letter good work long
+        before the hand-back backstop. The nack is conditional on this claim, as always: False (another consumer took the row once
+        its claim lapsed) ends the tries."""
+        wait, longest = _NACK_RETRY_S
+        current: dict | None = None
+        while True:
+            # signed again from the last signature this made, so an outage longer than the envelope's lifetime still stores a fresh one
+            current = await self._reissued(d, current) or current
+            try:
+                return await self._nack(d, delay, error, refund=True, reissue=True, reissued=current)
+            except Exception as e:
+                if not self.running or not _database_unavailable(e):
+                    raise
+            await asyncio.sleep(wait)
+            wait = min(longest, max(wait * 2, 0.1)) if longest else 0.0
+
+    async def _reissued(self, d: Delivery, base: "dict | None" = None) -> "dict | None":
+        """The message signed again now, from ``base`` or the stored value; None when it is not renewed (see ``_nack``)."""
+        mode = self._opened.get((d.topic, d.message_id, d.attempts))
+        if mode == "stored":
+            return None
+        raw = base
+        if raw is None:
+            try:
+                raw = decode_message(d.value)
+            except Exception:
+                return None
+        if not isinstance(raw, dict):
+            return None
+        try:
+            return await refresh_envelope(d.topic, raw, admitted=mode == "aged")
+        except Exception as e:
+            self.logger.warning("Could not renew the envelope of %s before its hand-back: %s", d.message_id, type(e).__name__)
+            return None
+
+    async def _nack(
+        self, d: Delivery, delay: float, error: str, *, refund: bool = False, reissue: bool = False, reissued: "dict | None" = None
+    ) -> bool:
         """Send a delivery back. A delivery this process opened renews its admission in the same statement.
 
         ``reissue``: store the message signed again, for a delivery handed back without an attempt, so an older consumer that
         claims it later still finds a fresh signature. Only a message that passed the age check itself is signed again; one that
         was admitted by a stored admission alone keeps the value it has (an admission must never turn into a fresh signature).
+        ``reissued``: that value, already signed again by the caller (``_reissued``).
         """
         mode = self._opened.get((d.topic, d.message_id, d.attempts))
         kwargs: dict[str, Any] = {}
@@ -631,12 +734,8 @@ class PgMessagingConsumer(IMessagingConsumer):
             except Exception:
                 raw = None
         message: Any = raw
-        if reissue and isinstance(raw, dict) and mode != "stored":
-            try:
-                fresh = await refresh_envelope(d.topic, raw, admitted=mode == "aged")
-            except Exception as e:
-                self.logger.warning("Could not renew the envelope of %s before its hand-back: %s", d.message_id, type(e).__name__)
-                fresh = None
+        if reissue:
+            fresh = reissued or await self._reissued(d)
             if fresh is not None:
                 kwargs["value"] = json.dumps(fresh)
                 message = fresh
@@ -761,6 +860,8 @@ class PgMessagingConsumer(IMessagingConsumer):
                         d, raw, lambda admitted: open_stream_message(d.topic, raw, StreamMessage, admitted=admitted)
                     )
                 except AdmissionWriteError as e:
+                    if _database_unavailable(e.__cause__):
+                        raise e.__cause__ from e     # the outage, not the message: handed back below
                     return False, False, None, f"admission could not be recorded: {e}"
                 except DuplicateEnvelope:
                     timing.note(outcome="skipped", reason="duplicate_envelope")
@@ -779,8 +880,12 @@ class PgMessagingConsumer(IMessagingConsumer):
                 await self._drive_indexing(parsed, f"message:{d.message_id}")
                 return True, False, parsed, ""
             try:
-                opened = await self._open(d, raw, lambda admitted: open_configured(d.topic, raw, admitted=admitted))
+                opened = await self._open(
+                    d, raw, lambda admitted: open_configured(d.topic, raw, inbox=self.inbox, consumer=self.config.group_id, admitted=admitted)
+                )
             except AdmissionWriteError as e:
+                if _database_unavailable(e.__cause__):
+                    raise e.__cause__ from e     # the outage, not the message: handed back below
                 return False, False, None, f"admission could not be recorded: {e}"
             except DuplicateEnvelope:
                 return True, False, None, ""
@@ -790,34 +895,40 @@ class PgMessagingConsumer(IMessagingConsumer):
             parsed.is_final_failure = final
             with bind_optional(opened.ctx):
                 ok = await self.message_handler(parsed)
+            if ok and seen is not None:
+                seen["ctx"] = opened.ctx  # recorded in the inbox with the ack
             return bool(ok), False, parsed, "" if ok else "handler returned false"
         except (RequeueWithoutAttempt, ClaimLost):
             raise
         except Exception as e:
-            expected = is_expected_outcome(e)
-            # In a record's run (the indexing consumer) its index.end writes the failure once.
-            if not timing.note(exc=e):
-                if expected:
-                    # Expected (deleted while indexed, refused by the source): the handler
-                    # already logged it once, so no traceback at error level here.
-                    self.logger.info(
-                        "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
-                    )
-                else:
-                    # No error text: a pydantic ValidationError quotes the payload, and the handler's own line names the failure.
-                    error_class.log_failure(
-                        self.logger, "message.handler_failed", e, include_error_text=False, message_id=d.message_id
-                    )
-            terminal = (
-                MessageErrorClassifier.classify_by_exception(e)
-                == MessageErrorType.TERMINAL
-            )
-            if terminal and parsed is not None:
-                parsed.is_final_failure = True
-            reason = f"{error_class.classify_error(e)}: {type(e).__name__}"  # kept in last_error: no text, as above
-            return False, terminal, parsed, _ExpectedOutcome(reason) if expected else reason
+            if not _database_unavailable(e):
+                expected = is_expected_outcome(e)
+                # In a record's run (the indexing consumer) its index.end writes the failure once.
+                if not timing.note(exc=e):
+                    if expected:
+                        # Expected (deleted while indexed, refused by the source): the handler
+                        # already logged it once, so no traceback at error level here.
+                        self.logger.info(
+                            "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
+                        )
+                    else:
+                        # No error text: a pydantic ValidationError quotes the payload, and the handler's own line names the failure.
+                        error_class.log_failure(
+                            self.logger, "message.handler_failed", e, include_error_text=False, message_id=d.message_id
+                        )
+                terminal = (
+                    MessageErrorClassifier.classify_by_exception(e)
+                    == MessageErrorType.TERMINAL
+                )
+                if terminal and parsed is not None:
+                    parsed.is_final_failure = True
+                reason = f"{error_class.classify_error(e)}: {type(e).__name__}"  # kept in last_error: no text, as above
+                return False, terminal, parsed, _ExpectedOutcome(reason) if expected else reason
+            unavailable = e  # handed back below; the per-minute hand-back summary counts it, by reason
         finally:
             reset_context(token)
+        first = compute_retry_backoff_seconds(1) if self.indexing else min(_retry_base_s(), 30.0)
+        raise DatabaseUnavailable(f"{error_class.classify_error(unavailable)}: {type(unavailable).__name__}", delay_s=first) from unavailable
 
     async def _renew_leases(self) -> None:
         """Renew every held lease; a record lease the manager says is no longer ours cancels the delivery that holds it."""
@@ -862,7 +973,8 @@ class PgMessagingConsumer(IMessagingConsumer):
                 return complete
 
             try:
-                async with asyncio.timeout(timeout):
+                # On the claim loop, beside the lease renewal: the handler on the worker loop grows it by posting the move here.
+                async with asyncio.timeout(timeout) as budget, record_budget.armed(budget, timeout):
                     complete = await self._on_worker(drain)
             except asyncio.CancelledError:
                 if record_slot is not None and record_slot in self._lost_leases:

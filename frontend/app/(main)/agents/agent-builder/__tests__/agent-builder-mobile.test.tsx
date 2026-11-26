@@ -24,7 +24,8 @@ vi.mock('next/navigation', () => ({
 }));
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
-vi.mock('@/config', () => ({
+vi.mock('@/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/config')>()),
   useUserPermission: (key: string) => !permissions.denied.has(key),
   PermissionLockIcon: () => <span>Locked</span>,
   InheritedConfigNotice: () => null,
@@ -43,8 +44,8 @@ const agentsApi = vi.hoisted(() => ({
   createAgent: vi.fn(),
   updateAgent: vi.fn(),
   deleteAgent: vi.fn(),
-  getAllKnowledgeBasesForBuilder: vi.fn(),
-  getAllKnowledgeHubAppNodes: vi.fn(),
+  knowledgeBasePage: vi.fn(),
+  knowledgeHubAppPage: vi.fn(),
 }));
 vi.mock('../../api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api')>()),
@@ -58,8 +59,8 @@ vi.mock('@/chat/utils/fetch-models-for-context', () => ({
 }));
 
 const toolsetsApi = vi.hoisted(() => ({
-  getAllMyToolsets: vi.fn(),
-  getAllAgentToolsets: vi.fn(),
+  getMyToolsets: vi.fn(),
+  getAgentToolsets: vi.fn(),
   getToolsetRegistrySchema: vi.fn(),
   findAgentToolsetByInstanceId: vi.fn(),
   authenticateAgentToolset: vi.fn(),
@@ -92,11 +93,11 @@ beforeEach(() => {
   installBrowserShims();
   clearSessionCache();
   useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false, ENABLE_SKILLS: false } });
-  agentsApi.getAllKnowledgeBasesForBuilder.mockResolvedValue({ knowledgeBases: [knowledgeBase()] });
-  agentsApi.getAllKnowledgeHubAppNodes.mockResolvedValue([]);
+  agentsApi.knowledgeBasePage.mockResolvedValue({ items: [knowledgeBase()], next: null });
+  agentsApi.knowledgeHubAppPage.mockResolvedValue({ items: [], next: null });
   fetchOrgModels.mockResolvedValue([model()]);
-  toolsetsApi.getAllMyToolsets.mockResolvedValue({ toolsets: [toolset()] });
-  toolsetsApi.getAllAgentToolsets.mockResolvedValue([]);
+  toolsetsApi.getMyToolsets.mockResolvedValue({ toolsets: [toolset()] });
+  toolsetsApi.getAgentToolsets.mockResolvedValue({ toolsets: [] });
   getUsersByIds.mockResolvedValue([]);
 });
 

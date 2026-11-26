@@ -87,7 +87,7 @@ export function MoveToProjectDialog({
                   </label>
                 </Flex>
                 {projects.length === 0 ? (
-                  <Text size="2" style={{ color: 'var(--slate-10)', padding: 'var(--space-2)' }}>
+                  <Text size="2" style={{ color: 'var(--slate-11)', padding: 'var(--space-2)' }}>
                     {t('chat.projects.moveDialog.noProjects')}
                   </Text>
                 ) : (

@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/policy/website-rules.schema.json",
+  "title": "WebsiteRules",
+  "description": "The release's allowed-website data (WP-63), generated as WEBSITE_RULES in every target: presets an admin turns on explicitly (nothing is allowed by default), git hosts that are never websites (a repository reaches a sandbox only through repository_fetch), and hosts that are never reached read-write or as a host-level tunnel because data sent to them can be read back by anyone (paste and gist sites, shared storage, CDN fronts, webhook catchers, link shorteners). Data, not code: adding a host needs no code change. It also holds the repository presets (repositoryPresets): git hosts whose public repositories repository_fetch may clone (WP-63 part A); those marked default are on for an org whose admin has not set its git hosts, on a run with web access (ADR-REPO-01).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "presets",
+    "readOnlyHosts",
+    "gitHosts",
+    "registryHosts",
+    "relayHosts"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "presets": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/WebsitePreset"
+      }
+    },
+    "readOnlyHosts": {
+      "description": "Hosts never allowed read-write or host-level only, whatever an admin lists; a wildcard covers every subdomain. They may still be read.",
+      "type": "array",
+      "maxItems": 500,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/RuleHost"
+      }
+    },
+    "gitHosts": {
+      "description": "Git hosting services, never an allowed website in any mode; a wildcard covers every subdomain.",
+      "type": "array",
+      "maxItems": 200,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/RuleHost"
+      }
+    },
+    "registryHosts": {
+      "description": "SEC-A-01: package registries that serve fixed files from their own storage and fetch nothing on a request's behalf. After a conversation reads private data every other allowed website waits for the person (the flow rule, FG2), but a read here without a query string still goes out, so package installs keep working; each entry says why it is safe to keep open. What remains is the registry's own logs, never an attacker's server. Every preset site must be one; none may be a relay host.",
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/RegistryHost"
+      }
+    },
+    "relayHosts": {
+      "description": "SEC-A-01: hosts that fetch arbitrary addresses for whoever asks (a module proxy, a CORS proxy, a URL shortener, an archive's save page) or let anyone read the requests sent to them (webhook catchers, tunnels, Workers and Pages). Every request to one is an upload, whatever its method: never a read-only site, never in a preset, never a registry. A wildcard covers every subdomain.",
+      "type": "array",
+      "maxItems": 500,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/RuleHost"
+      }
+    },
+    "repositoryPresets": {
+      "description": "Repository presets (WP-63 part A): each names one git host whose public repositories agents may ask to clone through repository_fetch, the person approving each clone. A preset marked default is on for an org whose admin has not set its git hosts, on a run with web access (ADR-REPO-01); a saved list, even an empty one, replaces the defaults.",
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/RepositoryPreset"
+      }
+    }
+  },
+  "$defs": {
+    "RuleHost": {
+      "type": "string",
+      "pattern": "^(?:\\*\\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "RegistryHost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "reason"
+      ],
+      "properties": {
+        "host": {
+          "description": "The registry's host, by name (no wildcard).",
+          "type": "string",
+          "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+        },
+        "reason": {
+          "description": "Why a read here cannot carry data to anyone but the registry.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        }
+      }
+    },
+    "WebsitePreset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "sites"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,39}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "sites": {
+          "description": "Every preset site is read-only and one of the release's registry hosts: a preset never opens a write, and never a site that relays.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 40,
+          "items": {
+            "$ref": "#/$defs/RuleHost"
+          }
+        }
+      }
+    },
+    "RepositoryPreset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "host"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,39}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "host": {
+          "description": "The git host, by name (no wildcard).",
+          "type": "string",
+          "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+        },
+        "default": {
+          "description": "On for an org whose admin has not set its git hosts, on a run with web access (ADR-REPO-01). Absent: off until an admin turns it on.",
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "presets": [
+        {
+          "id": "package-registries",
+          "name": "Package registries",
+          "description": "Install packages.",
+          "sites": [
+            "pypi.org"
+          ]
+        }
+      ],
+      "readOnlyHosts": [
+        "pastebin.com",
+        "*.s3.amazonaws.com"
+      ],
+      "gitHosts": [
+        "github.com",
+        "*.githubusercontent.com"
+      ],
+      "registryHosts": [
+        {
+          "host": "pypi.org",
+          "reason": "Serves package indexes and files from its own storage."
+        }
+      ],
+      "relayHosts": [
+        "proxy.golang.org",
+        "*.workers.dev"
+      ],
+      "repositoryPresets": [
+        {
+          "id": "github-public",
+          "name": "github.com public repos",
+          "description": "Clone public repositories.",
+          "host": "github.com"
+        }
+      ]
+    }
+  ]
+}

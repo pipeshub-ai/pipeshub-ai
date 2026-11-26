@@ -117,6 +117,7 @@ def test_a_priority_lane_parse_is_not_starved_behind_queued_large_ones(remote: N
         await asyncio.gather(*tasks)
         return next(w for kind, w in out if kind == "priority")
 
+    # wall-clock-ok: about one large hold, against the queue of eight it must not wait behind
     assert asyncio.run(run()) < 2.0  # about one large hold, not the queue of eight
 
 
@@ -176,4 +177,5 @@ def test_a_big_remote_parse_behind_a_full_gate_is_handed_back_after_the_big_wait
     took, err = asyncio.run(run())
     assert isinstance(err, cc.BigAdmissionTimeout)
     assert err.counts_toward_backstop is False and err.parse_enqueued_at_ms is not None
+    # wall-clock-ok: 0.3 s plus a poll, against the caller's 60 s it must not wait out
     assert took < 5.0  # 0.3 s plus a poll, not the caller's 60 s

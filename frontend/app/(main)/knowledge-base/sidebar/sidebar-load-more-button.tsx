@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 const BUTTON_STYLE: React.CSSProperties = {
   background: 'none',
   border: 'none',
-  color: 'var(--olive-9)',
+  color: 'var(--olive-11)',
   fontSize: 12,
   padding: 0,
   textAlign: 'left',

@@ -644,8 +644,11 @@ class TestScheduleArtifactUploadEdit:
     @pytest.mark.asyncio
     async def test_first_image_bumps_existing_artifact_version(self):
         from app.agents.actions.image_generator import image_generator as mod
-        from app.services.artifact_registry.models import ArtifactMetadata, ArtifactVersion
         from app.models.entities import ArtifactType
+        from app.services.artifact_registry.models import (
+            ArtifactMetadata,
+            ArtifactVersion,
+        )
 
         state = _make_state()
         tool = mod.ImageGenerator(state)

@@ -16,6 +16,7 @@ on:
       - 'deployment/docker-compose/install.sh'
       - 'deployment/docker-compose/env.template'
       - 'deployment/docker-compose/tests/published_hub_smoke.sh'
+      - 'deployment/docker-compose/tests/footprint.py'
       - 'install.sh'
       - '.github/workflows/published-hub-smoke.yml'
   schedule:
@@ -59,6 +60,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: First-run smoke
@@ -90,6 +92,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
 
       - name: First-run smoke
@@ -114,11 +117,14 @@ jobs:
       PIPESHUB_DEPLOY_TYPE: eval
       PIPESHUB_VERSION: slim
       PIPESHUB_SMOKE_PORT: 3995
+      # S1 (P0.9): fail when the eval stack is over its 7.5 GB / 4.5 GB app budget.
+      PIPESHUB_SMOKE_FOOTPRINT: '1'
       PUBLISHED_HUB_SMOKE_DIAG: ${{ github.workspace }}/published-hub-smoke-diag
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: First-run smoke
@@ -149,6 +155,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
 
       - name: First-run smoke

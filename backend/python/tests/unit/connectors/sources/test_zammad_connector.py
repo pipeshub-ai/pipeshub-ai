@@ -3346,6 +3346,9 @@ class TestFetchKBAnswerAttachments:
         parent.inherit_permissions = False
 
         connector._transform_attachment_to_file_record = AsyncMock(side_effect=Exception("bad"))
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=Exception("graph down")
+        )
 
         answer_data = {
             "id": 5,
@@ -3353,8 +3356,63 @@ class TestFetchKBAnswerAttachments:
             "translations": [],
         }
 
+        with pytest.raises(Exception, match="graph down"):
+            await connector._fetch_kb_answer_attachments(answer_data, parent, [])
+
+    @pytest.mark.parametrize("stored", [True, False])
+    async def test_an_attachment_that_fails_to_build_keeps_its_stored_record(self, connector, stored) -> None:
+        from app.connectors.core.registry.filters import FilterCollection
+        connector.indexing_filters = FilterCollection()
+
+        parent = MagicMock(spec=WebpageRecord)
+        parent.external_record_id = "kb_answer_5"
+        parent.inherit_permissions = False
+
+        connector._transform_attachment_to_file_record = AsyncMock(side_effect=Exception("bad"))
+        stored_record = MagicMock(id="att-rec-1") if stored else None
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=stored_record)
+        connector.data_entities_processor.note_kept_records = MagicMock()
+
+        answer_data = {
+            "id": 5,
+            "attachments": [{"id": 1, "filename": "bad.pdf", "size": 0, "preferences": {}}],
+            "translations": [],
+        }
+
+        assert await connector._fetch_kb_answer_attachments(answer_data, parent, []) == []
+        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(
+            connector.connector_id, "kb_answer_5_attachment_1", raise_on_error=True
+        )
+        if stored:
+            connector.data_entities_processor.note_kept_records.assert_called_once_with(
+                connector.connector_id, ["att-rec-1"]
+            )
+        else:
+            connector.data_entities_processor.note_kept_records.assert_not_called()
+
+    async def test_skips_an_entry_that_is_not_an_attachment(self, connector) -> None:
+        from app.connectors.core.registry.filters import FilterCollection
+        connector.indexing_filters = FilterCollection()
+
+        parent = MagicMock(spec=WebpageRecord)
+        parent.id = "p1"
+        parent.external_record_id = "kb_answer_5"
+        parent.external_record_group_id = "cat_10"
+        parent.record_group_type = RecordGroupType.KB
+        parent.weburl = ""
+        parent.source_created_at = 0
+        parent.source_updated_at = 0
+        parent.inherit_permissions = False
+
+        answer_data = {
+            "id": 5,
+            "attachments": ["bad", {"id": 1, "filename": "doc.pdf", "size": 10, "preferences": {"Content-Type": "application/pdf"}}],
+            "translations": [],
+        }
+
         result = await connector._fetch_kb_answer_attachments(answer_data, parent, [])
-        assert result == []
+        assert len(result) == 1
+        assert result[0][0].external_record_id == "kb_answer_5_attachment_1"
 
 
 class TestBuildTicketAttachmentChildRecords:
@@ -3733,6 +3791,48 @@ class TestFetchTicketAttachmentsAutoResponse:
 
         result = await connector._fetch_ticket_attachments({"id": 42}, parent)
         assert len(result) == 0
+
+    @staticmethod
+    def _one_attachment_that_fails_to_build(connector) -> MagicMock:
+        ds = _mock_ds()
+        ds.list_ticket_articles = AsyncMock(return_value=_resp(
+            success=True,
+            data=[{"id": 1, "sender": "Customer", "from": "user@test.com", "preferences": {}, "attachments": [{"id": 10}]}],
+        ))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector._transform_attachment_to_file_record = AsyncMock(side_effect=Exception("bad"))
+        connector.data_entities_processor.note_kept_records = MagicMock()
+        parent = MagicMock(spec=TicketRecord)
+        parent.external_record_id = "42"
+        return parent
+
+    @pytest.mark.parametrize("stored", [True, False])
+    async def test_an_attachment_that_fails_to_build_keeps_its_stored_record(self, connector, stored) -> None:
+        parent = self._one_attachment_that_fails_to_build(connector)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=MagicMock(id="att-rec-1") if stored else None
+        )
+        kept: set[str] = set()
+
+        assert await connector._fetch_ticket_attachments({"id": 42}, parent, kept) == []
+        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(
+            connector.connector_id, "42_1_10", raise_on_error=True
+        )
+        if stored:
+            connector.data_entities_processor.note_kept_records.assert_called_once_with(
+                connector.connector_id, ["att-rec-1"]
+            )
+            assert kept == {"42_1_10"}
+        else:
+            connector.data_entities_processor.note_kept_records.assert_not_called()
+            assert kept == set()
+
+    async def test_a_failed_lookup_of_an_attachment_that_fails_to_build_fails_the_ticket(self, connector) -> None:
+        parent = self._one_attachment_that_fails_to_build(connector)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=Exception("graph down"))
+
+        with pytest.raises(Exception, match="graph down"):
+            await connector._fetch_ticket_attachments({"id": 42}, parent, set())
 
 
 class TestFetchTicketLinksEdgeCases:

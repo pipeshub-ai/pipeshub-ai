@@ -40,6 +40,8 @@ function principalMatchesType(
 ] {
   return [
     (value: unknown, ctx: z.RefinementCtx) => {
+      // Runs even when the row failed its object check; a null row has no id.
+      if (value === null || typeof value !== 'object') return;
       const { id, type } = read(value);
       if (typeof id !== 'string' || !PRINCIPAL_ID_REGEX.test(id)) return;
       const pattern = type === 'team' ? TEAM_ID_REGEX : OBJECT_ID_REGEX;
