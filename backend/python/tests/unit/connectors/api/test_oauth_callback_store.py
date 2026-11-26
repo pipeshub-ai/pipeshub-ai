@@ -76,7 +76,9 @@ class RecordingGraph:
         self.flags: list[bool] = []
         self.fail_writes = False
 
-    async def get_document(self, key: str, _collection: str, transaction: object = None) -> dict[str, Any] | None:
+    async def get_document(
+        self, key: str, _collection: str, transaction: object = None, *, raise_on_error: bool = False
+    ) -> dict[str, Any] | None:
         return dict(self.doc) if key == self.doc["_key"] else None
 
     async def update_node(self, key: str, _collection: str, updates: dict[str, Any], transaction: object = None) -> None:
