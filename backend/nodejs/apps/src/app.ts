@@ -112,6 +112,11 @@ import { DesktopProxyContainer } from './modules/desktop_proxy/container/desktop
 import { createDesktopProxyRouter } from './modules/desktop_proxy/routes/desktop-proxy.routes';
 import { registerDesktopPresence } from './libs/services/desktop-presence.provider';
 import {
+  createInternalRouteGuard,
+  parseTrustedCidrs,
+  resolveInternalRouteMode,
+} from './libs/middlewares/internal-route-guard.middleware';
+import {
   createGlobalRateLimiter,
   createSlackEventsRateLimiter,
   slackEventsRateLimitPerMinute,
@@ -692,6 +697,22 @@ export class Application {
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(xssSanitizationMiddleware);
+
+    // Before the rate limiter (which skips /internal/ paths) and every router.
+    // Default `log`; `deny` (any case) refuses public requests; an unknown value warns at boot.
+    this.app.use(
+      createInternalRouteGuard(
+        this.logger,
+        resolveInternalRouteMode(
+          process.env.INTERNAL_ROUTES_PUBLIC_ACCESS,
+          this.logger,
+        ),
+        parseTrustedCidrs(
+          process.env.INTERNAL_ROUTES_TRUSTED_CIDRS,
+          this.logger,
+        ),
+      ),
+    );
 
     // Global rate limiter - applies to all routes
     this.app.use(
