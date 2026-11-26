@@ -14,7 +14,7 @@ class KhListingStateMigrationService:
     ``IGraphDBProvider.stamp_kh_listing_state``) on nodes written before the
     write paths kept it. The listing reads that state only once this flag is set,
     and derives everything per request until then, so a failed or partial run
-    changes nothing a user sees; the next startup runs it again.
+    changes nothing a user sees; it is retried until its flag is written.
     """
 
     MIGRATION_FLAG_KEY = KH_LISTING_STATE_FLAG
@@ -54,9 +54,10 @@ class KhListingStateMigrationService:
                 {"done": True, "stamped": stamped, "timestamp": get_epoch_timestamp_in_ms()},
             )
         except Exception as e:
-            self.logger.warning(
-                f"⚠️ Failed to set the {self.NAME} flag: {e}; it will re-run (harmlessly)"
-            )
+            # The flag is what the reads wait for: a step whose flag is unwritten has not finished, so the caller retries it (the stamp
+            # writes the same values again).
+            self.logger.warning(f"⚠️ Failed to set the {self.NAME} flag: {e}; the step will be retried")
+            return {"success": False, "stamped": stamped, "error": str(e)}
         return {"success": True, "stamped": stamped}
 
 

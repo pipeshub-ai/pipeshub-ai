@@ -138,8 +138,10 @@ Each difference is where legacy breaks the definition above and the split browse
   (`test_provider_v3_arrow_matches_expansion.py`).
 - **A stub whose readable child lies past legacy's sample.** Legacy leaves the stub out. The split browse lists it, because opening it lists the
   child (`test_conformance_kh.py`, CAPSTUB).
-- **No time budget.** Legacy ends a page at the last child it had time to ask about and resumes there. The split browse lists a start's children
-  in one page sequence, within the bound above.
+- **No time budget for a start held whole.** Legacy ends a page at the last child it had time to ask about and resumes there. The split
+  browse lists the children of a start it holds whole in one page sequence, within the bound above. A wide start's pages are read in
+  windows with legacy's budget (`_KH_UNDECIDED_BUDGET_S`): a page that spends it ends at the last child asked, says its total is a lower
+  bound, and resumes there, as legacy's does.
 
 ## Correctness
 
@@ -164,7 +166,8 @@ Each difference is where legacy breaks the definition above and the split browse
 - **`shadow`:** answers with legacy. For a sampled fraction of browses (`KH_BROWSE_SHADOW_SAMPLE`, default 0.1), it also runs the split browse in
   a detached task and compares them. It logs counts (rows only in one side, arrow and total differences), never ids. At most
   `_KH_SHADOW_MAX_RUNNING` (2) comparisons run at once per process; a sampled browse past that is not compared, so shadow adds a bounded
-  load however busy the server is. A legacy page cut by its time budget is not compared: split has no budget, so they differ by construction.
+  load however busy the server is. A page cut by its time budget is not compared, legacy's (split holds no budget for a start it decides
+  whole, so they differ by construction) or split's at a wide start (where each page stops depends on timing).
   Nor is a page split would hand to legacy (past its bounds): its replay runs as `split-compare`, which reports that instead of answering
   with legacy. Arrow and stub flags are compared on every row both pages hold.
 

@@ -270,16 +270,61 @@ async def test_a_wide_folders_window_reads_its_edges_in_order_from_the_children_
 
     monkeypatch.setattr(w.g.client, "execute_query", capture)
     items, _, _ = await nodes(w, w.n("BIG"), "folder", flattened=False, depth=1, limit=1000)
-    assert len({i.id for i in items}) == BIG
+    assert [i.id for i in items] == sorted(w.n(f"c{i}") for i in range(BIG))      # each child once, in the name order
     assert ran, "the windows were read from the index"
     monkeypatch.setattr(w.g.client, "execute_query", execute)
     query, parameters = ran[0]
     async with w.g.client.driver.session(database="neo4j") as s:
         prof = (await (await s.run("PROFILE " + query.replace("CYPHER replan=skip", "", 1), parameters)).consume()).profile
     ops = list(_plan_ops(prof))
+    plan = "; ".join(f"{o['operatorType']} {o.get('rows')} {(o.get('args') or {}).get('Details', '')[:100]}" for o in ops)
     seeks = [o for o in ops if o["operatorType"].startswith("DirectedRelationshipIndexSeek")]
-    assert seeks and all(o["rows"] <= parameters["kh_uread"] + 1 for o in seeks), [(o["operatorType"], o["rows"]) for o in ops]
+    assert seeks and all(o["rows"] <= parameters["kh_uread"] + 1 for o in seeks), plan
     assert not [o for o in ops if o["operatorType"].startswith(("Sort", "Top", "PartialSort"))], [o["operatorType"] for o in ops]
+
+
+async def test_a_window_with_two_edges_to_one_child_is_not_taken_for_the_last(w, monkeypatch) -> None:
+    """Two hierarchy edges join the folder to its first children (a parent-child and an attachment edge, as a graph written before the
+    writers merged edges by their ends can hold). The index holds one entry per edge, so a window of edges reads fewer children than it
+    asked for: that must not read as the folder's end, or the children after the window are never listed."""
+    await w.g.client.execute_query(
+        "MATCH (p:Record {id: $p}) UNWIND $kids AS kid MATCH (c:Record {id: kid}) CREATE (p)-[:NODE_RELATION {relationshipType: 'ATTACHMENT'}]->(c)",
+        parameters={"p": w.n("BIG"), "kids": [w.n("c0"), w.n("c1")]})
+    await w.g.stamp_kh_children_order()
+
+    async def ready(_self: Neo4jProvider) -> bool:
+        return True
+    monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
+    monkeypatch.setattr(Neo4jProvider, "_KH_UNDECIDED_WINDOW_MAX", 4)
+    page = await KnowledgeHubService(log, w.g).get_nodes(
+        user_id=f"uid-{w.user}", org_id=w.org, parent_id=w.n("BIG"), parent_type="folder", flattened=False, depth=1, limit=60,
+        sort_by="name", sort_order="asc")
+    assert page.success, page.error
+    assert [i.id for i in page.items] == sorted(w.n(f"c{i}") for i in range(BIG))[:60] and page.pagination.hasNext
+
+
+async def test_a_stub_whose_order_stamp_is_stale_is_still_listed(w, monkeypatch) -> None:
+    """A stub of the folder whose edge still carries a named child's order (a stale stamp): the index's stub read misses it and a window
+    meets it. The page is then read again without the index from its start, so the stub, which leads to a record the viewer may read, is
+    listed."""
+    stub, below = w.n("c5"), w.n("c6")
+    now = get_epoch_timestamp_in_ms()
+    assert await w.g.batch_create_edges([{"from_id": stub, "from_collection": REC, "to_id": below, "to_collection": REC,
+                                          "relationshipType": "PARENT_CHILD", "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+                                        collection=CollectionNames.NODE_RELATIONS.value)
+    await w.g.update_node(stub, REC, {"isPlaceholder": True})
+    await w.g.stamp_kh_children_order()
+    # The stamp a write path that missed the stub flag would have left.
+    await w.g.client.execute_query("MATCH (:Record {id: $p})-[e:NODE_RELATION]->(:Record {id: $s}) SET e.khOrd = '0' + toLower($s)",
+                                   parameters={"p": w.n("BIG"), "s": stub})
+
+    async def ready(_self: Neo4jProvider) -> bool:
+        return True
+    monkeypatch.setattr(Neo4jProvider, "_kh_children_order_ready", ready)
+    monkeypatch.setattr(Neo4jProvider, "_KH_SPLIT_START_MAX", 1)
+    items, _, _ = await nodes(w, w.n("BIG"), "folder", flattened=False, depth=1, limit=1000)
+    assert [i.id for i in items] == sorted(w.n(f"c{i}") for i in range(BIG))
 
 
 # A seek on an index that holds the id beside the org or App (`Record(orgId, id)`, `RecordGroup(connectorId, id)`): the planner chose it

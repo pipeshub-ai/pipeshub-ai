@@ -303,3 +303,13 @@ async def test_a_read_before_a_page_split_cannot_decide_is_read_by_legacy_a_page
         if token is not None:
             KH_SKIP_READS.reset(token)
     assert [(a["limit"], a["browse_mode"]) for a in asked] == [(limit, "legacy")]
+
+
+def test_an_edge_handed_out_carries_no_children_order_stamp() -> None:
+    """The stamps the children order index reads are the backend's own: an edge document read back for a caller, which may write it
+    again through strict validation, holds none of them."""
+    p = object.__new__(Neo4jProvider)
+    edge = p._neo4j_to_arango_edge({"id": "e", "from_id": "a", "to_id": "b", "from_collection": "records", "to_collection": "records",
+                                    "relationshipType": "PARENT_CHILD", "khFrom": "a", "khOrd": "0b", "khChild": "b"}, "nodeRelations")
+    assert not {"khFrom", "khOrd", "khChild"} & set(edge)
+    assert edge["relationshipType"] == "PARENT_CHILD" and edge["_from"] == "records/a"

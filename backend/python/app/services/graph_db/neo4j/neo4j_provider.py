@@ -21,6 +21,7 @@ import time
 import unicodedata
 import uuid
 from collections.abc import Awaitable, Collection, Sequence
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from functools import lru_cache
 from logging import Logger
@@ -616,6 +617,12 @@ def _record_insert_split(doc: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
 KH_CHILDREN_ORDER_INDEX = "kh_children_order"
 _KH_CHILDREN_ORDER_DDL = (f"CREATE INDEX {KH_CHILDREN_ORDER_INDEX} IF NOT EXISTS FOR ()-[r:NODE_RELATION]-() "
                           "ON (r.khFrom, r.khOrd, r.khChild)")
+# The children order index, sought by the wide browse's window (`kh_ur`) and stub (`kh_r`) reads: every server then reads them the same way
+# whatever its statistics. Each has its unhinted twin, run where the index is refused (`_execute_hinted`).
+_KH_WINDOW_ORDER_HINT = "USING INDEX SEEK kh_ur:NODE_RELATION(khFrom, khOrd, khChild)"
+_KH_STUBS_ORDER_HINT = "USING INDEX SEEK kh_r:NODE_RELATION(khFrom, khOrd, khChild)"
+# The order stamps on an edge; never part of an edge document handed out (`node_validator.INTERNAL_PROPERTIES` lists them too).
+_KH_EDGE_INTERNAL_PROPERTIES = frozenset({"khFrom", "khOrd", "khChild"})
 
 
 def _cypher_kh_child_ord(v: str) -> str:
@@ -975,6 +982,10 @@ _KH_SPLIT_COMPARE = "split-compare"
 def _warn_unknown_kh_browse_mode(value: str) -> None:
     # Once per value: the mode is read on every browse.
     logging.getLogger(__name__).warning("KH_BROWSE_MODE=%r is not legacy, split or shadow; browsing with split", value)
+
+
+# Set while a page is read again without the children order index (`Neo4jProvider._kh_split_without_order_index`), for that read alone.
+_KH_ORDER_INDEX_OFF: ContextVar[bool] = ContextVar("kh_order_index_off", default=False)
 
 
 class _KhOrderStale(Exception):
@@ -2187,7 +2198,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             Edge in ArangoDB format (with _key, _from, _to)
         """
-        arango_edge = neo4j_edge.copy()
+        arango_edge = {k: v for k, v in neo4j_edge.items() if k not in _KH_EDGE_INTERNAL_PROPERTIES}
 
         # If we have from_id and to_id, construct _from and _to
         if "from_id" in arango_edge and "to_id" in arango_edge:
@@ -16118,10 +16129,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None,
         *,
         index: str,
+        run: Callable[..., Awaitable[list[dict[str, Any]]]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Run *hinted*; if its hinted *index* is not ready, run *unhinted* and log that once per index."""
+        """Run *hinted*; if its hinted *index* is not ready, run *unhinted* and log that once per index. ``run``: what runs a statement
+        (the client's, or the knowledge hub's ``_kh_query``)."""
+        run = run or self.client.execute_query
         try:
-            rows = await self.client.execute_query(hinted, parameters=parameters, txn_id=transaction)
+            rows = await run(hinted, parameters=parameters, txn_id=transaction)
         except ClientError as exc:
             # Raised only where the server sets dbms.cypher.hints_error; elsewhere a
             # missing or building index is a notification and the plan goes without it.
@@ -16132,7 +16146,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 error_class.log_failure(self.logger, "graph.provider.step_failed", exc, include_error_text=False,
                                         level=logging.WARNING, op="_execute_hinted", step="unhinted_fallback", index=index)
                 self._hint_indexes_missing.add(index)
-            return await self.client.execute_query(unhinted, parameters=parameters, txn_id=transaction)
+            return await run(unhinted, parameters=parameters, txn_id=transaction)
         self._hint_indexes_missing.discard(index)
         return rows
 
@@ -22434,7 +22448,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         placeholder flags, the total and the counts. Only counts are logged (an id the split path listed could be one the viewer
         may not read)."""
         if legacy.get("totalCapped") or legacy.get("resume"):
-            # Legacy ended this page at its time budget, and split has none: the pages differ by construction, so neither is run.
+            # Legacy ended this page at its time budget, and split decides a start held whole without one: the pages differ by
+            # construction, so neither is run.
             self.logger.info("kh browse shadow: legacy page cut by its time budget, not compared")
             return
         try:
@@ -22446,6 +22461,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
                                     op="_kh_shadow_compare", step="shadow_split")
+            return
+        if split.get("totalCapped") or split.get("resume"):
+            # A wide start's split page has legacy's budget and ended at it: where each stopped depends on timing, not on what they list.
+            log_event(self.logger, "kh.browse.shadow_skipped", reason="split_cut_by_budget")
             return
         def rows(page: dict[str, Any]) -> list[tuple[Any, ...]]:
             return [(r.get("id"), bool(r.get("hasChildren")), bool(r.get("isPlaceholder"))) for r in page.get("rows") or []]
@@ -22464,7 +22483,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             len(ids_a - ids_b), len(ids_b - ids_a), not same_rows and ids_a == ids_b, arrows, totals,
             legacy.get("total"), split.get("total"))
 
-    def _kh_split_children_cypher(self, *, stubs_only: bool = False, indexed: bool = False) -> str:
+    def _kh_split_children_cypher(self, *, stubs_only: bool = False, indexed: bool = False, hint: str = "") -> str:
         """The live hierarchy children of the nodes ``$ids`` that belong to ``$app_id``, less a group that carries access only (never a row,
         `_cypher_read_by_app`), each with whether a group that hides its
         children holds it or lies above it (`kh_layer.hidden_by_navigation`): a display flag the check ignores and a browse honours.
@@ -22473,8 +22492,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         as a stub's (`KH_CHILDREN_ORDER_INDEX`), read from the index without reading the other children; the stub test is left to the caller,
         which so sees an edge whose stamp has gone stale."""
         stubs = " AND coalesce(kh_c.isPlaceholder, false)" if stubs_only and not indexed else ""
-        read = ("MATCH ()-[kh_r:NODE_RELATION]->(kh_c:Record|RecordGroup) WHERE kh_r.khFrom = kh_p.id AND kh_r.khOrd >= '2' "
-                "AND kh_r.khChild IS NOT NULL" if indexed else "MATCH (kh_p)-[kh_r:NODE_RELATION]->(kh_c:Record|RecordGroup)")
+        read = (f"MATCH ()-[kh_r:NODE_RELATION]->(kh_c:Record|RecordGroup) {hint} "
+                "WHERE kh_r.khFrom = kh_p.id AND kh_r.khOrd >= '2' AND kh_r.khChild IS NOT NULL AND startNode(kh_r) = kh_p" if indexed else "MATCH (kh_p)-[kh_r:NODE_RELATION]->(kh_c:Record|RecordGroup)")
         return f"""
         {_cypher_by_ids("kh_p", "App|RecordGroup|Record", "$ids")}
         WITH kh_p WHERE kh_p.orgId = $org_id
@@ -22502,9 +22521,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not asked:
             return out
         # One past the bound, so a caller can tell a node that has more.
-        rows = await self._kh_query(self._kh_split_children_cypher(stubs_only=stubs_only, indexed=indexed), parameters={
-            "ids": asked, "app_id": app_id, "org_id": org_id, "per_parent": (self._KH_SPLIT_MAX_CHILDREN if most is None else most) + 1},
-            txn_id=transaction)
+        parameters = {"ids": asked, "app_id": app_id, "org_id": org_id, "per_parent": (self._KH_SPLIT_MAX_CHILDREN if most is None else most) + 1}
+        if indexed:
+            rows = await self._execute_hinted(
+                self._kh_split_children_cypher(stubs_only=stubs_only, indexed=True, hint=_KH_STUBS_ORDER_HINT),
+                self._kh_split_children_cypher(stubs_only=stubs_only, indexed=True), parameters, transaction,
+                index=KH_CHILDREN_ORDER_INDEX, run=self._kh_query)
+        else:
+            rows = await self._kh_query(self._kh_split_children_cypher(stubs_only=stubs_only), parameters=parameters, txn_id=transaction)
         for r in rows:
             out.setdefault(r["parent"], []).append(r)
         return out
@@ -22622,6 +22646,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for i in todo:
                 memo[i] = i in found
         return {i for i in ids if memo.get(i)}
+
+    async def _kh_split_without_order_index(self, app_id: str, args: dict[str, Any], browse_mode: str) -> dict[str, Any]:
+        """The page read again without the children order index, from its start: a stale stamp can hide a child from any read the index
+        served (a stub stamped as a named child is missing from the stubs, a named child stamped as a stub from the windows), so nothing
+        that read decided is kept."""
+        log_event(self.logger, "kh.browse.children_order_stale", level=logging.WARNING, connector_id=app_id)
+        token = _KH_ORDER_INDEX_OFF.set(True)
+        try:
+            return await self.get_knowledge_hub_connector_page_v3(**args, browse_mode=browse_mode)
+        finally:
+            _KH_ORDER_INDEX_OFF.reset(token)
 
     async def _kh_split_answered_by_legacy(
         self, undecided: _KhSplitUndecided, app_id: str, args: dict[str, Any], browse_mode: str,
@@ -22778,23 +22813,29 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         in its order from the boundary, so a window reads about ``n`` edges whatever the start holds. Its order (stamp, then child id) is the
         page's: nullRank, the lowercased name, the id. A child whose stamp disagrees with it raises `_KhOrderStale`. The boundary is one range
         on the index and a list comparison past it, never an OR (nor a negated AND, which the planner rewrites into one): with an OR the
-        planner seeks twice and sorts every child."""
+        planner seeks twice and sorts every child. The seek is a hint (`_KH_WINDOW_ORDER_HINT`)."""
         e = edge or {}
         if not e:
             lo, lo_id = "", ""
         else:
             lo, lo_id = ("1" if e.get("nullRank") else "0" + (e.get("sortKey") or "")), e.get("id") or ""
         name = "toLower(coalesce(kh_u.name, kh_u.recordName, kh_u.groupName))"
-        rows = await self._kh_query(f"""
+        def window(hint: str) -> str:
+            return f"""
         MATCH ()-[kh_ur:NODE_RELATION]->(kh_u:Record|RecordGroup)
+        {hint}
         WHERE kh_ur.khFrom = $start_id AND kh_ur.khOrd >= $kh_lo AND kh_ur.khOrd < '2' AND kh_ur.khChild IS NOT NULL
           AND [kh_ur.khOrd, kh_ur.khChild] > [$kh_lo, $kh_lo_id]
           AND kh_ur.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND kh_u.orgId = $org_id AND kh_u.connectorId = $app_id
           AND NOT coalesce(kh_u.accessOnly, false) AND NOT coalesce(kh_u.isDeleted, false) AND kh_u.id IS NOT NULL AND kh_u.id <> $start_id
-          AND NOT kh_u.id IN $kh_listed
-        WITH kh_ur, kh_u ORDER BY kh_ur.khFrom, kh_ur.khOrd, kh_ur.khChild LIMIT $kh_uread
+          AND NOT kh_u.id IN $kh_listed AND startNode(kh_ur).id = $start_id
+        // Two hierarchy edges between the start and one child are one child, made one before the limit: a window counted in edges would
+        // hold fewer children than it asked for, and a short window reads as the start's last. Both edges sit side by side in the index's
+        // order, so the distinct keeps that order.
+        WITH DISTINCT kh_ur.khFrom AS kh_f, kh_ur.khOrd AS kh_o, kh_ur.khChild AS kh_cid, kh_u
+        ORDER BY kh_f, kh_o, kh_cid LIMIT $kh_uread
         WITH collect({{id: kh_u.id, sortKey: {name}, nullRank: CASE WHEN {name} IS NULL THEN 1 ELSE 0 END,
-                       fresh: kh_ur.khOrd = {_cypher_kh_child_ord("kh_u")} AND kh_ur.khChild = kh_u.id}}) AS kh_win
+                       fresh: kh_o = {_cypher_kh_child_ord("kh_u")} AND kh_cid = kh_u.id}}) AS kh_win
         CALL (kh_win) {{
             UNWIND kh_win AS kh_w
             WITH kh_w.id AS kh_wid
@@ -22803,15 +22844,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN collect(kh_c.id) AS hidden
         }}
         RETURN kh_win, hidden
-        """, parameters={"start_id": start_id, "app_id": app_id, "org_id": org_id, "kh_listed": listed, "kh_uread": n, "kh_lo": lo,
-                         "kh_lo_id": lo_id}, txn_id=transaction)
+        """
+        rows = await self._execute_hinted(
+            window(_KH_WINDOW_ORDER_HINT), window(""), {"start_id": start_id, "app_id": app_id, "org_id": org_id, "kh_listed": listed,
+                                                        "kh_uread": n, "kh_lo": lo, "kh_lo_id": lo_id},
+            transaction, index=KH_CHILDREN_ORDER_INDEX, run=self._kh_query)
         row = (rows or [{}])[0]
         win = row.get("kh_win") or []
         if not all(u.pop("fresh") for u in win):
             raise _KhOrderStale(start_id)
         hidden = set(row.get("hidden") or [])
-        # Two hierarchy edges between the same pair are one child.
-        return [{**u, "hidden": u["id"] in hidden} for u in {u["id"]: u for u in reversed(win)}.values()][::-1]
+        return [{**u, "hidden": u["id"] in hidden} for u in win]
 
     async def _kh_split_wide_page(
         self, payload: dict[str, Any], query: str, params: dict[str, Any], start_id: str, *, order: str, sidebar: bool, state: bool,
@@ -22819,28 +22862,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None, memo: dict[str, bool], indexed: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """The page of a wide start (`_kh_split_listed`): ``payload`` is the page statement's read of what that listed (its stubs and
-        chain-tops); the start's other children are read past the boundary in the page's order a window at a time and asked of the check
-        (`_kh_v3_browse_undecided`), and the page is read again with those it admits. The sidebar keeps an admitted record only where its arrow is
-        on, decided before the page is read. Returns the payload and the last child asked when some were left unasked. ``indexed``: the
-        windows are read through the children order index; a stale stamp met there reads this page again without it."""
-        if indexed:
-            try:
-                # A copy of the payload and the parameters: the read without the index starts from them as they came.
-                return await self._kh_split_wide_windows(
-                    copy.deepcopy(payload), query, {**params}, start_id, order=order, sidebar=sidebar, state=state, after=after,
-                    limit=limit, descending=descending, direction=direction, org_id=org_id, access=access, transaction=transaction,
-                    memo=memo, indexed=True)
-            except _KhOrderStale:
-                log_event(self.logger, "kh.browse.children_order_stale", level=logging.WARNING, connector_id=params.get("app_id"))
-        return await self._kh_split_wide_windows(payload, query, params, start_id, order=order, sidebar=sidebar, state=state, after=after,
-                                                 limit=limit, descending=descending, direction=direction, org_id=org_id, access=access,
-                                                 transaction=transaction, memo=memo, indexed=False)
-
-    async def _kh_split_wide_windows(
-        self, payload: dict[str, Any], query: str, params: dict[str, Any], start_id: str, *, order: str, sidebar: bool, state: bool,
-        after: dict[str, Any] | None, limit: int, descending: bool, direction: str, org_id: str, access: dict[str, Any],
-        transaction: str | None, memo: dict[str, bool], indexed: bool,
-    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        chain-tops), or empty when it was not read; the start's other children are read past the boundary in the page's order a window at a
+        time and asked of the check (`_kh_v3_browse_undecided`), and the page is read again with those it admits. The sidebar keeps an
+        admitted record only where its arrow is on, decided before the page is read. Returns the payload and the last child asked when some
+        were left unasked. ``indexed``: the windows are read through the children order index, and a stale stamp there raises
+        `_KhOrderStale`."""
         base, base_arrows = list(params["kh_listed"]), set(params["kh_arrows"])
         lit: set[str] = set()
         decided: set[str] = set()
@@ -23980,18 +24006,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         elif split:
             # A wide start's children are read in order from the children order index for the name order, ascending, once it is stamped.
             indexed = (sort_field == "name" and direction == "next" and self._kh_v2_sort_direction(sort_dir) == "ASC"
-                       and await self._kh_children_order_ready())
+                       and not _KH_ORDER_INDEX_OFF.get() and await self._kh_children_order_ready())
             try:
                 try:
                     listed, wide = await self._kh_split_listed(
                         start_id if scoped_start else app_id, app_id=app_id, org_id=org_id, access=split_access, placed=placed_ids,
                         transaction=transaction, memo=split_memo, indexed=indexed)
                 except _KhOrderStale:
-                    log_event(self.logger, "kh.browse.children_order_stale", level=logging.WARNING, connector_id=app_id)
-                    indexed = False
-                    listed, wide = await self._kh_split_listed(
-                        start_id if scoped_start else app_id, app_id=app_id, org_id=org_id, access=split_access, placed=placed_ids,
-                        transaction=transaction, memo=split_memo)
+                    return await self._kh_split_without_order_index(app_id, shadow_args, browse_mode)
                 params["kh_listed"] = listed
                 # The sidebar keeps a row exactly where its arrow is on, and decides that before the page is cut.
                 if sidebar:
@@ -24005,7 +24027,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # A wide start's listing follows the boundary each read starts from, so no other read reuses it.
             if skip_reads is not None and not wide:
                 skip_reads[decided_for] = (params["kh_listed"], params["kh_arrows"])
-        # A wide start's page statement is read with its windows (`_kh_split_wide_windows`), once they have admitted something.
+        # A wide start's page statement is read with its windows (`_kh_split_wide_page`), once they have admitted something.
         if not use_scope and not wide:
             try:
                 walk_started = time.monotonic()
@@ -24036,6 +24058,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         transaction=transaction, memo=split_memo, indexed=indexed)
                 except _KhSplitUndecided as undecided:
                     return await self._kh_split_answered_by_legacy(undecided, app_id, shadow_args, browse_mode)
+                except _KhOrderStale:
+                    return await self._kh_split_without_order_index(app_id, shadow_args, browse_mode)
                 resume = self._kh_v3_end_at(payload, cut, limit=limit, descending=descending, direction=direction)
             rows_ = payload.get("rows") or []
             for r in rows_:
