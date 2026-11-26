@@ -3486,10 +3486,16 @@ const persistFailedTurn = async (
       conversationId: conversation._id,
     });
   } catch (error: unknown) {
-    logger.error(`Error marking ${noun} as failed`, {
-      conversationId: conversation._id,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    // Each family keeps the line its own mark function has always logged.
+    logger.error(
+      options.agent
+        ? 'Failed to mark agent conversation as failed'
+        : 'Error marking conversation as failed',
+      {
+        conversationId: conversation._id,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
     throw error;
   }
 };

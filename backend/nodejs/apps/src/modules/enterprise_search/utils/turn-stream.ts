@@ -933,7 +933,7 @@ export class TurnStreamPump {
       logger.error(label, {
         requestId: this.o.requestId,
         conversationId: this.o.conversation._id,
-        error: messageOf(error),
+        error,
       });
     });
   }
@@ -1009,13 +1009,17 @@ export class TurnStreamPump {
         typeof parsed.message === 'string' && parsed.message !== ''
           ? parsed.message
           : CHAT_ERROR_MESSAGES.failed;
-      this.enqueue('Failed to mark conversation from AI RUN_ERROR SSE', () =>
-        this.markFailed(
-          message,
-          aguiErrorCodeFromPayload(parsed),
-          typeof parsed.stack === 'string' ? parsed.stack : undefined,
-          parsed.provenance,
-        ),
+      this.enqueue(
+        this.o.agent
+          ? 'Failed to mark agent conversation from AI RUN_ERROR SSE'
+          : 'Failed to mark conversation from AI RUN_ERROR SSE',
+        () =>
+          this.markFailed(
+            message,
+            aguiErrorCodeFromPayload(parsed),
+            typeof parsed.stack === 'string' ? parsed.stack : undefined,
+            parsed.provenance,
+          ),
       );
       return forward();
     }
