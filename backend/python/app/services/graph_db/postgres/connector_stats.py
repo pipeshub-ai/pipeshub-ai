@@ -2,9 +2,10 @@
 
 ``graph.stats_records`` holds, per counted record and per app that counts it, the key it is counted under (record type, indexing, extraction and entities state), and
 ``graph.stats_counts`` those rows summed per (app, key). A trigger logs every write that may change them (``graph.stats_changes``); :func:`run`, a phase of the kg worker
-in the connectors service, recounts what the log names (:func:`drain`) and counts each app whole once (:func:`seed`). Both hold the org's stats lock, so they never
-interleave. :func:`read` answers from the counts plus the change of the records still logged, all in one snapshot: the walk's answer at that snapshot. It answers None
-(the caller walks) for an app not counted whole yet, while a record group or an app is logged (they move whole subtrees), or while more than ``CAP`` records are logged.
+in the connectors service, recounts what the log names (:func:`drain`; until an app is counted whole there is nothing to recount, and the log is dropped) and counts
+each app whole once (:func:`seed`). Both hold the org's stats lock, so they never interleave. :func:`read` answers from the counts plus the change of the records still
+logged, all in one snapshot: the walk's answer at that snapshot. It answers None (the caller walks) for an app not counted whole yet, while a record group or an app is
+logged (they move whole subtrees), or while more than ``CAP`` records are logged.
 
 Membership is the walk's: a collection (an app of type KB) counts the records that belong to it; any other app the records of the record groups that chain up to it,
 ten groups at most. A record counted by two apps has a row for each.
@@ -17,6 +18,7 @@ from typing import TYPE_CHECKING
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, Connectors
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.kg.locks import LOCK_CLASS
+from app.services.graph_db.postgres.kg.reader import seeks
 
 if TYPE_CHECKING:
     import asyncio
@@ -25,6 +27,7 @@ if TYPE_CHECKING:
 
 CAP = 5000              # logged records a read corrects for, and records one apply recounts
 LOG_ROWS = 200          # log rows one drain unit takes
+DROP_ROWS = 5000        # log rows one statement drops while no app is counted whole
 UNITS_PER_PASS = 25     # drain units one pass runs for an org
 SEED_PARTS = 16         # statements one seed splits an app's records into (the hash mask in SEED_KB / SEED_CONNECTOR)
 KB = Connectors.KNOWLEDGE_BASE.value
@@ -32,6 +35,9 @@ KB = Connectors.KNOWLEDGE_BASE.value
 _LOCK = "/* pipeshub:graph.stats_lock */ SELECT pg_try_advisory_xact_lock($1::int, hashtext($2))"
 # The current rows of the records $2 (one per app that counts each), as the walk counts them (lookups.STATS_KB / STATS_CONNECTOR): up from each record, ten groups at
 # most, to an app that is not a collection, or straight to an app that is one. The collections come from ``k`` (OFFSET 0) for the reason STATS_KB gives.
+# Every link is read by its source, a range of one value in the primary key's order (as hierarchy.py spells a key), run under kg.reader.seeks: only that index returns
+# it so. As joins, PostgreSQL 18 costed the primary key as a skip scan over to_id (to_coll is bounded, to_id is not) and read the org's whole link table once per hop
+# instead (five sequential scans a statement: 1.3 s for 5,000 records on an org of 3M links, past the 60 s statement timeout at 80M).
 LIVE = """/* pipeshub:graph.stats_live */ WITH RECURSIVE k AS (SELECT 'records'::text AS rec, 'stageStates'::text AS st OFFSET 0),
   r AS MATERIALIZED (SELECT n.id, n.doc, (n.doc->>'virtualRecordId') || ':' || (n.doc->>'contentRev') || ':entities' AS sid
     FROM (SELECT DISTINCT q FROM unnest($2::text[]) q) q CROSS JOIN k
@@ -39,16 +45,18 @@ LIVE = """/* pipeshub:graph.stats_live */ WITH RECURSIVE k AS (SELECT 'records':
     WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
       AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($3::text[])),
   up(rid, gid, depth) AS (
-    SELECT r.id, e.to_id, 1 FROM r JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.from_id = r.id AND e.to_coll = 'recordGroups'
-    UNION SELECT up.rid, e.to_id, up.depth + 1 FROM up JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups' AND e.from_id = up.gid
-      AND e.to_coll = 'recordGroups' WHERE up.depth < 10),
-  m AS (SELECT up.rid, e.to_id AS app_id, false AS direct FROM up JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
-          AND e.from_id = up.gid AND e.to_coll = 'apps'
-        UNION SELECT r.id, e.to_id, true FROM r JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.from_id = r.id AND e.to_coll = 'apps')
+    SELECT r.id, e.to_id, 1 FROM r CROSS JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_id >= r.id
+        AND e.from_id <= r.id AND e.from_coll = 'records' AND e.to_coll = 'recordGroups' ORDER BY e.from_id OFFSET 0) e
+    UNION SELECT up.rid, e.to_id, up.depth + 1 FROM up CROSS JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
+        AND e.from_id >= up.gid AND e.from_id <= up.gid AND e.from_coll = 'recordGroups' AND e.to_coll = 'recordGroups' ORDER BY e.from_id OFFSET 0) e WHERE up.depth < 10),
+  m AS (SELECT up.rid, e.to_id AS app_id, false AS direct FROM up CROSS JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
+          AND e.from_id >= up.gid AND e.from_id <= up.gid AND e.from_coll = 'recordGroups' AND e.to_coll = 'apps' ORDER BY e.from_id OFFSET 0) e
+        UNION SELECT r.id, e.to_id, true FROM r CROSS JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_id >= r.id
+          AND e.from_id <= r.id AND e.from_coll = 'records' AND e.to_coll = 'apps' ORDER BY e.from_id OFFSET 0) e)
 SELECT n.id AS record_id, m.app_id, coalesce(n.doc->>'recordType', '') AS record_type, coalesce(n.doc->>'indexingStatus', '') AS indexing,
     coalesce(n.doc->>'extractionStatus', '') AS extraction, coalesce(s.doc->>'status', '') AS entities, n.sid
   FROM m JOIN r n ON n.id = m.rid CROSS JOIN k
-  LEFT JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'apps' AND a.id = m.app_id
+  LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = 'apps' AND x.id = m.app_id LIMIT 1) a ON true
   LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.st AND x.id = n.sid LIMIT 1) s ON true
   WHERE m.direct = coalesce(a.doc->>'type' = $4, false)"""
 APPLY_OLD = """/* pipeshub:graph.stats_apply_old */ DELETE FROM graph.stats_records WHERE org_id = $1 AND record_id = ANY($2::text[])
@@ -60,6 +68,9 @@ ADD_COUNTS = """/* pipeshub:graph.stats_add_counts */ INSERT INTO graph.stats_co
     ON CONFLICT (org_id, app_id, record_type, indexing, extraction, entities) DO UPDATE SET n = c.n + excluded.n"""
 PENDING = "/* pipeshub:graph.stats_pending */ SELECT id, keys FROM graph.stats_changes WHERE org_id = $1 ORDER BY id LIMIT $2"
 DONE = "/* pipeshub:graph.stats_done */ DELETE FROM graph.stats_changes WHERE org_id = $1 AND id = ANY($2::bigint[])"
+ANY_SEEDED = "/* pipeshub:graph.stats_any_seeded */ SELECT EXISTS (SELECT 1 FROM graph.stats_apps WHERE org_id = $1)"
+DROP = """/* pipeshub:graph.stats_drop */ WITH d AS (DELETE FROM graph.stats_changes WHERE org_id = $1
+    AND id IN (SELECT id FROM graph.stats_changes WHERE org_id = $1 ORDER BY id LIMIT $2) RETURNING 1) SELECT count(*) FROM d"""
 BY_SID = "/* pipeshub:graph.stats_by_sid */ SELECT DISTINCT record_id FROM graph.stats_records WHERE org_id = $1 AND sid = ANY($2::text[])"
 BY_APP = "/* pipeshub:graph.stats_by_app */ SELECT record_id FROM graph.stats_records WHERE org_id = $1 AND app_id = ANY($2::text[])"
 # Every record a changed record group or app may have moved in or out: those of the groups up to ten below it (a record further down cannot reach an app through it), and
@@ -130,7 +141,8 @@ async def _apply(tx: Tx, org: str, ids: list[str]) -> None:
         diff: Counter = Counter()
         for r in await tx.fetch(APPLY_OLD, org, chunk):
             diff[tuple(r)] -= 1
-        live = await tx.fetch(LIVE, org, chunk, FOLDER_MIME_TYPES, KB)
+        async with seeks(tx):
+            live = await tx.fetch(LIVE, org, chunk, FOLDER_MIME_TYPES, KB)
         if live:
             await tx.execute(APPLY_NEW, org, *map(list, zip(*live, strict=True)))
         for r in live:
@@ -141,10 +153,18 @@ async def _apply(tx: Tx, org: str, ids: list[str]) -> None:
 
 
 async def drain(db: KernelDB, org: str) -> int:
-    """Recount what up to ``LOG_ROWS`` log rows of the org name, in one unit; the rows taken (0: none, or another unit holds the org)."""
+    """Recount what up to ``LOG_ROWS`` log rows of the org name, in one unit (while no app of the org is counted whole, drop the log instead); the rows taken (0: none,
+    or another unit holds the org)."""
     async def go(tx: Tx) -> int:
         if not await _locked(tx, org):
             return 0
+        if not await tx.fetchval(ANY_SEEDED, org):
+            # Nothing is read from the counts, and each app's first count (seed) reads the graph after this unit commits (it takes the same lock): the log, every
+            # row of a new install's or a restore's whole graph, names nothing that count will miss. Recounted, it was the whole org a record at a time first.
+            n = 0
+            while (k := await tx.fetchval(DROP, org, DROP_ROWS)) == DROP_ROWS:
+                n += k
+            return n + k
         rows = await tx.fetch(PENDING, org, LOG_ROWS)
         if not rows:
             return 0
@@ -220,7 +240,9 @@ async def read(tx: Tx, org: str, app_id: str) -> list[dict] | None:
     if ids:
         for r in await tx.fetch(KEPT, org, app_id, sorted(ids)):
             rows[tuple(r)] -= 1
-        for r in await tx.fetch(LIVE, org, sorted(ids), FOLDER_MIME_TYPES, KB):
+        async with seeks(tx):
+            live = await tx.fetch(LIVE, org, sorted(ids), FOLDER_MIME_TYPES, KB)
+        for r in live:
             if r["app_id"] == app_id:
                 rows[(r["record_type"], r["indexing"], r["extraction"], r["entities"])] += 1
     return [{"recordType": k[0] or None, "indexingStatus": k[1] or None, "extractionStatus": k[2] or None, "entitiesStatus": k[3] or None, "cnt": n}
