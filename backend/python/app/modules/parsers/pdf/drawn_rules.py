@@ -85,8 +85,9 @@ def crossings(words_by_id: dict[int, dict[str, Any]], cells: list[dict[str, Any]
 def _crosses_h(ws: list[dict[str, Any]], y: float, a: float, d: float, x0: float, x1: float, t0: float, b0: float) -> bool:
     if not (t0 + 1 < y < b0 - 1 and a <= x0 + 2 and d >= x1 - 2):
         return False
+    # each word on one side only: a short word touching the rule must not stand in for a word the rule cuts
     up = [w for w in ws if w["bottom"] <= y + 1.0]
-    dn = [w for w in ws if w["top"] >= y - 1.0]
+    dn = [w for w in ws if w["bottom"] > y + 1.0 and w["top"] >= y - 1.0]
     return bool(up and dn and len(up) + len(dn) == len(ws))
 
 
@@ -94,5 +95,5 @@ def _crosses_v(ws: list[dict[str, Any]], x: float, a: float, d: float, x0: float
     if not (x0 + 1 < x < x1 - 1 and a <= t0 + 2 and d >= b0 - 2):
         return False
     le = [w for w in ws if w["x1"] <= x + 1.0]
-    ri = [w for w in ws if w["x0"] >= x - 1.0]
+    ri = [w for w in ws if w["x1"] > x + 1.0 and w["x0"] >= x - 1.0]
     return bool(le and ri and len(le) + len(ri) == len(ws))

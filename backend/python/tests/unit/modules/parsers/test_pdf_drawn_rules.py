@@ -133,3 +133,16 @@ def test_a_header_rule_drawn_as_a_bar_is_spooled_and_a_cell_that_straddles_it_is
              {"r0": 0, "r1": 1, "c0": 1, "c1": 2, "tokens": [texts.index("Value"), texts.index("12")]}]
     out = flow.analyse_table(rec, TableResult(id="t", status="ok", n_rows=1, n_cols=2, cells=cells), None)
     assert (out["rule_crossings_h"], out["rule_crossings_v"], out["rule_crossings"]) == (2, 0, 2)
+
+
+def test_a_rule_through_a_word_is_no_crossing_even_when_a_short_word_touches_both_sides() -> None:
+    def w(t: float, b: float, x0: float = 0.0, x1: float = 40.0) -> dict:
+        return {"top": t, "bottom": b, "x0": x0, "x1": x1}
+
+    # at y=10: one word above, one below, a short one on the rule, and one the rule cuts through
+    ws = [w(0, 5), w(15, 20), w(9.5, 10.5), w(7, 13)]
+    assert not dr._crosses_h(ws, 10.0, -10.0, 60.0, 0.0, 40.0, 0.0, 20.0)
+    turned = [{"x0": d["top"], "x1": d["bottom"], "top": 0.0, "bottom": 40.0} for d in ws]
+    assert not dr._crosses_v(turned, 10.0, -10.0, 60.0, 0.0, 20.0, 0.0, 40.0)
+    # without the cut word the rule does separate the cell's words
+    assert dr._crosses_h(ws[:3], 10.0, -10.0, 60.0, 0.0, 40.0, 0.0, 20.0)
