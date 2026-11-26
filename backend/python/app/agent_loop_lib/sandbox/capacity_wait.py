@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextvars import ContextVar
@@ -35,6 +36,10 @@ class CapacityWait:
 _current: ContextVar[CapacityWait | None] = ContextVar("sandbox_capacity_wait", default=None)
 
 
+def _left(wait: CapacityWait) -> float:
+    return math.inf if wait.deadline is None else wait.deadline - time.monotonic()
+
+
 @contextlib.contextmanager
 def capacity_wait(wait: CapacityWait) -> Iterator[None]:
     token = _current.set(wait)
@@ -55,15 +60,18 @@ async def retry_while_full(attempt: Callable[[], Awaitable[T]], is_full: Callabl
             try:
                 return await attempt()
             except Exception as exc:
-                if wait is None or not is_full(exc):
-                    raise
-                left = None if wait.deadline is None else wait.deadline - time.monotonic()
-                if left is not None and left <= 0:
+                if wait is None or not is_full(exc) or _left(wait) <= 0:
                     raise
                 if not shown:
                     shown = True
                     await wait.note(True)
-                await asyncio.sleep(delay if left is None else min(delay, left))
+                # Read again after the note, which may itself take a while: no retry starts past the deadline.
+                left = _left(wait)
+                if left <= 0:
+                    raise
+                await asyncio.sleep(min(delay, left))
+                if _left(wait) <= 0:
+                    raise
                 delay = min(delay * 2, _MAX_POLL_S)
     finally:
         if shown:

@@ -147,9 +147,12 @@ and 240 s, about 8 minutes in all); `sandbox.capacity_reached` (`sandbox_capacit
 3. The host's memory and CPU against the limits in [sizing.md](sizing.md#how-the-code-shares-a-host-out). The
    broker admits by count only: a new sandbox is refused once the live ones reach its ceiling, which its log's
    `sandbox capacity:` line shows. That ceiling is `SANDBOX_MAX_TOTAL` when set; when it is empty, the broker sizes
-   it from the daemon, which keeps it within `floor(memory × 0.75 ÷ 1,024 MiB)` and the CPU and process limits. An
-   explicit `SANDBOX_MAX_TOTAL` is not checked against memory, so size it for the engine sandboxes' memory as well
-   as the code runs'.
+   it from the daemon as the smallest of its memory term, `floor(memory × SANDBOX_MEMORY_SHARE ÷ one run's memory
+   limit)` (the share is 0.25 by default, 0.05 to 0.95 allowed), and its CPU and process terms, but never below 2
+   (the default `SANDBOX_MIN_TOTAL`; a larger minimum is held to what the machine supports), so on a small host
+   those 2 can exceed what memory allows. An explicit
+   `SANDBOX_MAX_TOTAL` is not checked against memory at all, so size it for the engine sandboxes' memory as well as
+   the code runs'.
 4. Warm pool: the dashboard's "Pool depth (warm pool)" and "Warm sandbox claims" panels
    (`pipeshub_harness_sandbox_warm_pool_depth`, `pipeshub_harness_sandbox_warm_claims_total{outcome}`; outcome
    `org_capped` means one org used its share while another waited).

@@ -12,11 +12,15 @@ from app.agent_loop_lib.sandbox.capacity_wait import (
     capacity_wait,
     retry_while_full,
 )
-from harness_core.sandbox.errors import BrokerUnavailable, SandboxError
+from harness_core.sandbox.errors import (
+    BrokerUnavailable,
+    SandboxCapacityReached,
+    SandboxError,
+)
 
 
 def _full(exc: BaseException) -> bool:
-    return isinstance(exc, BrokerUnavailable)
+    return isinstance(exc, SandboxCapacityReached)
 
 
 class _Broker:
@@ -29,7 +33,7 @@ class _Broker:
     async def acquire(self) -> str:
         self.attempts += 1
         if self.attempts <= self.full:
-            raise BrokerUnavailable("sandbox capacity reached: 4 of 4 live")
+            raise SandboxCapacityReached("sandbox capacity reached: 4 of 4 live")
         return "sandbox"
 
 
@@ -50,7 +54,7 @@ async def test_a_full_broker_is_waited_out_with_the_queued_note() -> None:
 
 async def test_past_the_wait_the_refusal_is_the_answer() -> None:
     broker, notes = _Broker(full=1_000), []
-    with capacity_wait(_wait(0.6, notes)), pytest.raises(BrokerUnavailable):
+    with capacity_wait(_wait(0.6, notes)), pytest.raises(SandboxCapacityReached):
         await retry_while_full(broker.acquire, _full)
     # Polled at 0.5 s, then cut short at the deadline: tried more than once, never until the broker gave in.
     assert 2 <= broker.attempts < 1_000
@@ -59,7 +63,7 @@ async def test_past_the_wait_the_refusal_is_the_answer() -> None:
 
 async def test_outside_a_slot_the_first_refusal_is_the_answer() -> None:
     broker = _Broker(full=1)
-    with pytest.raises(BrokerUnavailable):
+    with pytest.raises(SandboxCapacityReached):
         await retry_while_full(broker.acquire, _full)
     assert broker.attempts == 1
 
@@ -73,6 +77,47 @@ async def test_other_refusals_are_not_waited_for() -> None:
     with capacity_wait(_wait(10, notes)), pytest.raises(SandboxError):
         await retry_while_full(refused, _full)
     assert notes == []
+
+
+async def test_a_slow_note_that_outlasts_the_wait_starts_no_retry() -> None:
+    broker, notes = _Broker(full=1_000), []
+
+    async def slow_note(waiting: bool) -> None:
+        notes.append(waiting)
+        if waiting:
+            # The note took longer than the wait had left.
+            object.__setattr__(wait, "deadline", time.monotonic() - 1)
+
+    wait = CapacityWait(deadline=time.monotonic() + 60, note=slow_note)
+    with capacity_wait(wait), pytest.raises(SandboxCapacityReached):
+        await retry_while_full(broker.acquire, _full)
+    assert broker.attempts == 1
+    assert notes == [True, False]
+
+
+async def test_an_outage_is_not_a_full_broker() -> None:
+    notes: list[bool] = []
+    attempts: list[int] = []
+
+    async def down() -> str:
+        attempts.append(1)
+        raise BrokerUnavailable("could not create sandbox: APIError")
+
+    with capacity_wait(_wait(None, notes)), pytest.raises(BrokerUnavailable):
+        await retry_while_full(down, _full)
+    assert (attempts, notes) == ([1], [])
+
+
+def test_the_capacity_signal_survives_the_wire_and_reads_as_an_outage_to_an_older_client() -> None:
+    from harness_core.sandbox.remote.wire import error_body, error_from, status_for
+
+    full = SandboxCapacityReached("sandbox capacity reached: 4 of 4 live")
+    body = error_body(full)
+    assert body == {"error": {"code": "unavailable", "message": str(full), "reason": "capacity"}}
+    assert status_for(full) == 503
+    assert type(error_from(body, status=503)) is SandboxCapacityReached
+    outage = error_body(BrokerUnavailable("could not create sandbox: APIError"))
+    assert type(error_from(outage, status=503)) is BrokerUnavailable
 
 
 async def test_the_slot_sets_the_wait_for_the_call_inside_it() -> None:

@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING, cast
 
 from pydantic import TypeAdapter
 
-from harness_core.sandbox.errors import ERROR_TYPES, SandboxError, SandboxRefusal
+from harness_core.sandbox.errors import (
+    ERROR_TYPES,
+    BrokerUnavailable,
+    SandboxCapacityReached,
+    SandboxError,
+    SandboxRefusal,
+)
 from harness_core.sandbox.types import BrokerHealth, LeaseRef, RuntimeMode, SandboxSpec
 
 if TYPE_CHECKING:
@@ -89,6 +95,8 @@ def error_body(error: SandboxError) -> JsonObject:
     body: JsonObject = {"code": error.code, "message": str(error)}
     if isinstance(error, SandboxRefusal):
         body["reason"] = error.reason
+    elif isinstance(error, SandboxCapacityReached):
+        body["reason"] = SandboxCapacityReached.reason_code
     return {"error": body}
 
 
@@ -103,6 +111,8 @@ def error_from(body: object, *, status: int) -> SandboxError:
     text = message if isinstance(message, str) else f"broker returned HTTP {status}"
     if issubclass(cls, SandboxRefusal):
         return cls(text, reason=reason if isinstance(reason, str) else "unspecified")
+    if cls is BrokerUnavailable and reason == SandboxCapacityReached.reason_code:
+        return SandboxCapacityReached(text)
     return cls(text)
 
 

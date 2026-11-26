@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 from typing import TYPE_CHECKING
 
-from harness_core.sandbox.errors import BrokerUnavailable
+from harness_core.sandbox.errors import SandboxCapacityReached
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -36,7 +36,7 @@ class SandboxCap:
 
     @contextlib.asynccontextmanager
     async def admit(self) -> AsyncGenerator[None]:
-        """One more live sandbox, or ``BrokerUnavailable``: capacity, which a run waits out (QA31F)."""
+        """One more live sandbox, or ``SandboxCapacityReached``: capacity, which a run waits out (QA31F)."""
         limit = self.limit
         if limit is None:
             yield
@@ -44,7 +44,7 @@ class SandboxCap:
         async with self._lock:
             live = await self._live() + self._inflight
             if live >= limit:
-                raise BrokerUnavailable(f"sandbox capacity reached: {live} of {limit} live")
+                raise SandboxCapacityReached(f"sandbox capacity reached: {live} of {limit} live")
             self._inflight += 1
         try:
             yield

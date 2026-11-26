@@ -50,7 +50,7 @@ from app.harness.sandbox.egress_credentials import (
 )
 from harness_core.activity import current_command_recorder
 from harness_core.sandbox.errors import (
-    BrokerUnavailable,
+    SandboxCapacityReached,
     SandboxError,
     SandboxPathNotFound,
 )
@@ -151,8 +151,8 @@ class BrokerCodingSandbox(DockerCodingSandbox):
 
         try:
             # A full install (engine sandboxes count too) waits out the call's slot wait, as a full governor does.
-            handle = await retry_while_full(attempt, lambda exc: isinstance(exc, BrokerUnavailable))
-        except BrokerUnavailable as exc:
+            handle = await retry_while_full(attempt, lambda exc: isinstance(exc, SandboxCapacityReached))
+        except SandboxCapacityReached as exc:
             raise CodingSandboxBusy(f"no sandbox came free in time: {exc}") from exc
         except SandboxError as exc:
             raise CodingSandboxError(f"sandbox broker refused the run: {exc}") from exc
