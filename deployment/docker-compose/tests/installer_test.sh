@@ -1075,21 +1075,28 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
     check "--reconfigure keeps ${kv%%=*}" "$(cat "$work/.env")" $'\n'"$kv"$'\n'
   done
 
-  # PostgreSQL sizing exported for a scripted fresh install is written to .env;
+  # Datastore tuning exported for a scripted fresh install is written to .env;
   # a value already saved in .env still wins over the environment.
-  pg_sizing=(PG_MEMORY_LIMIT=16G PG_SHARED_BUFFERS=4GB PG_SHM=2g)
+  tuning=("${sizing[@]}" MONGO_MEMORY_LIMIT=3G MONGO_CACHE_GB=2 MONGO_IMAGE_TAG=8.0.99
+             MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=0)
+  env_tuning=(NEO4J_HEAP_INITIAL=128M NEO4J_HEAP_MAX=512M NEO4J_PAGECACHE=128M
+              NEO4J_MEMORY_LIMIT=1G NEO4J_MEMORY_RESERVATION=512M
+              MONGO_MEMORY_RESERVATION=128M QDRANT_MEMORY_RESERVATION=256M
+              PG_MEMORY_LIMIT=2G PG_SHARED_BUFFERS=512MB PG_SHM=256m
+              MONGO_MEMORY_LIMIT=1G MONGO_CACHE_GB=1 MONGO_IMAGE_TAG=8.0.1
+              MONGO_GLIBC_TUNABLES=glibc.pthread.rseq=1)
   rm -f "$work/.env"
-  run_installer "a fresh install with PostgreSQL sizing exported" PIPESHUB_DEPLOY_TYPE=slim \
-    PIPESHUB_IMAGE_SOURCE=prebuilt PIPESHUB_VERSION=0.7.0-slim PIPESHUB_PROJECT=installer-test-pg \
-    PIPESHUB_GVISOR=skip "${pg_sizing[@]}" -- --yes
-  for kv in "${pg_sizing[@]}"; do
+  run_installer "a fresh install with datastore tuning exported" PIPESHUB_DEPLOY_TYPE=slim \
+    PIPESHUB_IMAGE_SOURCE=prebuilt PIPESHUB_VERSION=0.7.0-slim PIPESHUB_PROJECT=installer-test-tuning \
+    PIPESHUB_GVISOR=skip "${tuning[@]}" -- --yes
+  for kv in "${tuning[@]}"; do
     check "a fresh install writes the exported ${kv%%=*}" "$(cat "$work/.env")" $'\n'"$kv"$'\n'
   done
   seed_env "0.6.0-slim"
-  printf '%s\n' "${pg_sizing[@]}" >>"$work/.env"
-  run_installer "--reconfigure with PostgreSQL sizing in .env and the environment" \
-    PG_MEMORY_LIMIT=2G PG_SHARED_BUFFERS=512MB PG_SHM=256m -- --reconfigure --yes
-  for kv in "${pg_sizing[@]}"; do
+  printf '%s\n' "${tuning[@]}" >>"$work/.env"
+  run_installer "--reconfigure with datastore tuning in .env and the environment" \
+    "${env_tuning[@]}" -- --reconfigure --yes
+  for kv in "${tuning[@]}"; do
     check "the saved ${kv%%=*} wins over the environment" "$(cat "$work/.env")" $'\n'"$kv"$'\n'
   done
 
