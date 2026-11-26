@@ -567,7 +567,9 @@ async def test_the_limit_stays_after_a_licensed_incremental_sync_and_lifts_after
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["skipped_during_run", "incomplete", "wrote_nothing", "unlicensed_at_end"])
+@pytest.mark.parametrize(
+    "case", ["skipped_during_run", "incomplete", "wrote_nothing", "unlicensed_at_end", "sync_points_not_reset"],
+)
 async def test_a_full_sync_that_may_not_have_rewritten_everything_keeps_the_limit(case: str) -> None:
     app = _app(limit=AccessLimit.CREATOR.value)
     proc, _ = _gate_processor(LICENSED, app)
@@ -590,7 +592,10 @@ async def test_a_full_sync_that_may_not_have_rewritten_everything_keeps_the_limi
 
     # An incomplete run may owe its retry; it never lifts either way.
     with contextlib.suppress(Exception):
-        await run_sync_task(connector, CONNECTOR, gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+        await run_sync_task(
+            connector, CONNECTOR, gp, _LOG, start_status=AppStatus.FULL_SYNCING.value,
+            sync_points_reset=case != "sync_points_not_reset",
+        )
 
     proc.clear_access_limit.assert_not_awaited()
 
