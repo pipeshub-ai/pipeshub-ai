@@ -1,8 +1,8 @@
 """One user group the graph server's memory pool refuses must not take the others with it.
 
-``on_new_user_groups`` writes the whole call in one transaction. When a group's member
-replace fails with ``GraphMemoryLimitError`` that transaction rolls back, and the call is
-written again group by group, each in a transaction of its own.
+``on_new_user_groups`` writes each group in a transaction of its own, so concurrent syncs of
+groups that share members do not deadlock. A group whose member replace fails with
+``GraphMemoryLimitError`` is skipped and named; the others commit.
 """
 from __future__ import annotations
 
@@ -31,11 +31,9 @@ class _Store:
         *,
         contended: frozenset[str] = frozenset(),
         full_at: int | None = None,
-        broken_on_retry: frozenset[str] = frozenset(),
     ) -> None:
         self.refused = refused
         self.broken = broken
-        self.broken_on_retry = broken_on_retry
         self.attempts: dict[str, int] = {}
         # groups whose write the pool refuses with the driver's own error (not marked as bulk)
         self.contended = contended
@@ -91,8 +89,6 @@ def _processor(store: _Store) -> DataSourceEntitiesProcessor:
         # to_id is the group's id: the upsert stub below records which group this is
         name = tx_store.current
         store.attempts[name] = store.attempts.get(name, 0) + 1
-        if name in store.broken_on_retry and store.attempts[name] > 1:
-            raise RuntimeError(f"{name} broke on its second write")
         if name in store.refused:
             raise GraphMemoryLimitError(f"{name} too large", operation="group replace", size=9)
         if name in store.contended or (store.full_at is not None and len(tx_store.written) >= store.full_at):
@@ -129,12 +125,12 @@ class TestIsolation:
         assert store.committed == ["A", "C"]
         assert raised.value.groups == ["B"]
         assert "B" in str(raised.value) and "NEO4J_HEAP_MAX" in str(raised.value)
-        # one transaction for the fast path, then one per group
-        assert store.transactions == 1 + 3
+        # one transaction per group
+        assert store.transactions == 3
         # access is re-evaluated for the connector of the groups that did commit
         proc._access_changed.assert_awaited_once_with({"conn-1"})
-        # not a retry loop: A and C are written once each in the fallback, B tried twice (fast path, alone)
-        assert store.replaces == 2 + 3
+        # not a retry loop: each group is written once
+        assert store.replaces == 3
         # nothing in the aggregated error looks transient to a retry loop
         assert raised.value.__cause__ is None and raised.value.__context__ is None
         assert not is_attempt_lost(raised.value)
@@ -154,31 +150,32 @@ class TestIsolation:
         proc._access_changed.assert_awaited_once_with({"conn-1"})
 
     @pytest.mark.asyncio
-    async def test_access_written_by_the_combined_attempt_is_dropped_even_if_the_fallback_fails(self) -> None:
-        """Without explicit transactions each statement commits on its own, so a group the combined
-        attempt wrote before the refusal stays written; its access must drop even when the fallback
-        fails before rewriting it."""
-        store = _Store({"B"}, broken_on_retry=frozenset({"A"}))
+    async def test_access_of_a_group_written_before_another_error_is_dropped(self) -> None:
+        """A group that committed before another group's error stays written, so its connector's
+        access must drop even though the call raised."""
+        store = _Store(set(), broken=frozenset({"B"}))
         proc = _processor(store)
         _wire(proc)
 
-        with pytest.raises(RuntimeError, match="A broke on its second write"):
+        with pytest.raises(RuntimeError, match="B broke"):
             await proc.on_new_user_groups([(_group("A", "conn-a"), []), (_group("B", "conn-b"), [])])
 
-        proc._access_changed.assert_awaited_once()
-        assert "conn-a" in proc._access_changed.await_args.args[0]
+        assert store.committed == ["A"]
+        proc._access_changed.assert_awaited_once_with({"conn-a"})
 
     @pytest.mark.asyncio
-    async def test_without_an_error_the_call_is_one_transaction(self) -> None:
+    async def test_each_group_is_written_in_a_transaction_of_its_own(self) -> None:
+        """Groups share members: a transaction holding several groups' member locks deadlocked
+        with another sync's, which took them in a different order."""
         store = _Store(set())
         proc = _processor(store)
         _wire(proc)
 
         await proc.on_new_user_groups([(_group("A"), []), (_group("B"), []), (_group("C"), [])])
 
-        assert store.transactions == 1
+        assert store.transactions == 3
         assert store.committed == ["A", "B", "C"]
-        proc._access_changed.assert_awaited_once()
+        proc._access_changed.assert_awaited_once_with({"conn-1"})
 
     @pytest.mark.asyncio
     async def test_one_group_alone_raises_and_writes_nothing_else(self) -> None:
@@ -191,7 +188,8 @@ class TestIsolation:
 
         assert store.transactions == 1
         assert store.committed == []
-        proc._access_changed.assert_not_awaited()
+        # nothing was written, so no connector's access changes
+        proc._access_changed.assert_awaited_once_with(set())
         proc.logger.error.assert_called_once()
 
     @pytest.mark.asyncio
@@ -208,11 +206,12 @@ class TestIsolation:
 
 
 class TestPoolFilledBySmallGroups:
-    """Many groups under the bulk size can add up to a refusal of their combined transaction. That
+    """Many groups under the bulk size added up to a refusal when they shared one transaction. That
     refusal carries the driver's error, not ``GraphMemoryLimitError``."""
 
     @pytest.mark.asyncio
-    async def test_an_unmarked_refusal_of_the_combined_write_falls_back_to_one_transaction_per_group(self) -> None:
+    async def test_small_groups_never_add_up_in_one_transaction(self) -> None:
+        # The pool refuses a transaction that has already written two groups.
         store = _Store(set(), full_at=2)
         proc = _processor(store)
         _wire(proc)
@@ -220,12 +219,11 @@ class TestPoolFilledBySmallGroups:
         await proc.on_new_user_groups([(_group("A"), []), (_group("B"), []), (_group("C"), [])])
 
         assert store.committed == ["A", "B", "C"]
-        # the combined transaction once, then one per group; never the combined one again
-        assert store.transactions == 1 + 3
+        assert store.transactions == 3
         proc._access_changed.assert_awaited_once_with({"conn-1"})
 
     @pytest.mark.asyncio
-    async def test_an_unmarked_refusal_inside_the_fallback_propagates_and_is_retried_a_bounded_number_of_times(
+    async def test_an_unmarked_refusal_of_one_group_propagates_and_is_retried_a_bounded_number_of_times(
         self,
     ) -> None:
         store = _Store(set(), contended=frozenset({"B"}))
@@ -240,8 +238,8 @@ class TestPoolFilledBySmallGroups:
             with pytest.raises(TransientError):
                 await proc.on_new_user_groups([(_group("A"), []), (_group("B"), []), (_group("C"), [])])
 
-        # six attempts; each is the combined transaction, then A alone (committed), then B alone (refused)
-        assert store.transactions == 6 * 3
+        # six attempts; each writes A alone (committed), then B alone (refused)
+        assert store.transactions == 6 * 2
         assert store.committed == ["A"] * 6
         # access dropped for the written group on every attempt, error or not
         assert proc._access_changed.await_count == 6

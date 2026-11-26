@@ -4,6 +4,11 @@ from __future__ import annotations
 import pytest
 
 from app.services.graph_db.postgres.kg.model import (
+    FILE_DIR,
+    FILE_FILE,
+    FILE_OTHER,
+    FILE_UNSAID,
+    KB_COLS,
     LINK_GROUP,
     LINK_HIERARCHY,
     LINK_PARENT_CHILD,
@@ -15,6 +20,7 @@ from app.services.graph_db.postgres.kg.model import (
     derive,
     edge_ends,
     flag,
+    kb_listing,
     listing_ts,
     sql_true,
 )
@@ -118,7 +124,8 @@ def test_a_node_that_is_gone_is_reported_and_derives_no_row() -> None:
     ("permission", ("users", "u"), ("blocks", "b"), {}, {("users", "u")}),
     ("userAppRelation", ("users", "u"), ("apps", "a"), {}, {("apps", "a")}),
     ("authenticatedAs", ("users", "u"), ("users", "acct"), {}, {("users", "u")}),
-    ("isOfType", ("records", "r"), ("files", "r"), {}, set()),
+    ("isOfType", ("records", "r"), ("files", "r"), {}, {("records", "r")}),       # the file a record is typed as: its listing columns (kg_0026)
+    ("isOfType", ("records", "r"), ("mails", "r"), {}, set()),
 ])
 def test_the_ends_an_edge_changes(coll: str, frm: tuple, to: tuple, doc: dict, ends: set) -> None:
     assert edge_ends(coll, frm, to, doc) == ends
@@ -213,8 +220,8 @@ def test_a_record_row_has_exactly_the_columns_the_writer_takes() -> None:
     from app.services.graph_db.postgres.kg.writers import RECORD_COLS
     snap = basic()
     row = derive({CHILD}, snap).records[snap.sk[CHILD]]
-    # the listing columns, the trash columns and pc_top have writers of their own (w_listing_set, w_trash_set, w_pc_top_set)
-    assert set(row) == set(RECORD_COLS) - {"sk"} | {"folder", "hide_children", "alien", "name_sort", "deleted_ms", "delete_batch", "pc_top"}
+    # the listing columns, the trash columns, pc_top and the knowledge-base listing's have writers of their own (w_listing_set, w_trash_set, w_pc_top_set, w_kb_listing_set)
+    assert set(row) == set(RECORD_COLS) - {"sk"} | {"folder", "hide_children", "alien", "name_sort", "deleted_ms", "delete_batch", "pc_top", *KB_COLS}
 
 
 def test_pc_top_is_a_record_with_no_parent_child_parent_that_is_a_record() -> None:
@@ -295,3 +302,37 @@ def test_the_name_sort_orders_names_by_utf16_code_unit_not_by_code_point() -> No
     assert by_sort.index("\U00010000x") < by_sort.index("x") < by_sort.index("�x")
     assert sorted(names, key=str.lower).index("\U00010000x") > sorted(names, key=str.lower).index("�x")      # by code point it is the other way round
 
+
+
+def test_the_knowledge_base_listing_columns_are_what_the_walk_orders_and_filters_by() -> None:
+    """A record's status, connector name and own created/updated times, and the kind and size of the file it is typed as (kg_0026), from the documents a snapshot loads."""
+    doc = {"connectorId": "a", "recordName": "R", "indexingStatus": "COMPLETED", "connectorName": "KB", "createdAtTimestamp": 5, "updatedAtTimestamp": 7.0,
+           "sourceCreatedAtTimestamp": 1}
+    nodes = {APP: {}, REC: doc, CHILD: {"connectorId": "a", "recordName": "Kid"}}
+    snap = world(nodes, [])
+    snap.files = {REC: [{"isFile": True, "sizeInBytes": 42}]}
+    rows = derive(set(nodes), snap).records
+    assert {c: rows[snap.sk[REC]][c] for c in KB_COLS} == {"indexing_status": "COMPLETED", "connector_name": "KB", "doc_created_ms": 5, "doc_updated_ms": 7, "file_size": 42,
+                                                            "file_kind": FILE_FILE, "kb_odd": False}
+    assert {c: rows[snap.sk[CHILD]][c] for c in KB_COLS} == {**dict.fromkeys(KB_COLS, None), "kb_odd": False}           # typed as no file
+    assert {c: rows[snap.sk[APP]][c] for c in KB_COLS} == {**dict.fromkeys(KB_COLS, None), "kb_odd": False}
+
+
+@pytest.mark.parametrize(("files", "kind"), [([{"isFile": "false"}], FILE_DIR), ([{"isFile": False}], FILE_DIR), ([{"isFile": "true"}], FILE_FILE),
+                                             ([{"isFile": 1}], FILE_OTHER), ([{}], FILE_UNSAID), ([None], None), ([], None)])
+def test_the_file_kind_is_the_file_documents_is_file_as_the_walk_reads_its_text(files: list, kind: int | None) -> None:
+    assert kb_listing({"recordName": "n"}, files, "n") == {**dict.fromkeys(KB_COLS, None), "file_kind": kind, "kb_odd": False}
+
+
+@pytest.mark.parametrize("doc", [{"recordName": "n", "createdAtTimestamp": "5"}, {"recordName": "n", "updatedAtTimestamp": 1.5}, {"recordName": "n", "createdAtTimestamp": True},
+                                 {"recordName": "n", "createdAtTimestamp": 2 ** 63}, {"recordName": "n", "indexingStatus": 3}, {"recordName": "n", "connectorName": "x" * 257},
+                                 {"recordName": "n", "recordType": ["FILE"]}, {"recordName": "n", "externalRecordId": 7}, {"recordName": 5}, {"recordName": "other"}])
+def test_a_value_the_columns_cannot_hold_as_the_walk_reads_it_marks_the_row_odd(doc: dict) -> None:
+    """A listing that meets such a record is the walk's: kg's bigint or text would order, filter or match it differently."""
+    assert kb_listing(doc, [], "n") == {**dict.fromkeys(KB_COLS, None), "kb_odd": True}
+
+
+def test_a_record_typed_as_two_files_or_a_file_of_an_odd_size_is_odd() -> None:
+    assert kb_listing({"recordName": "n"}, [{"isFile": True}, {"isFile": False}], "n")["kb_odd"]
+    assert kb_listing({"recordName": "n"}, [{"isFile": True, "sizeInBytes": "12"}], "n")["kb_odd"]
+    assert not kb_listing({"recordName": "n"}, [{"isFile": True, "sizeInBytes": 12.0}], "n")["kb_odd"]

@@ -116,6 +116,7 @@ from app.connectors.sources.microsoft.sharepoint_online.container_tracker import
 )
 from app.connectors.sources.microsoft.sharepoint_online.drive_reconciler import (
     DriveReconciler,
+    Unlisted,
 )
 from app.connectors.sources.microsoft.sharepoint_online.everyone_groups import (
     everyone_group_for_claim,
@@ -163,6 +164,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.microsoft.send_safe_middleware import credential_graph_adapter
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -172,6 +174,9 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # A composite site ID has the format: "hostname,site-id,web-id"
 COMPOSITE_SITE_ID_COMMA_COUNT = 2
 COMPOSITE_SITE_ID_PARTS_COUNT = 3
+
+# Stored records of a kept record group read per page while noting them kept
+KEPT_RECORDS_PAGE_SIZE = 1000
 
 
 def _sharepoint_filter_options_graph_batch_size(filtered_page_limit: int) -> int:
@@ -1237,11 +1242,20 @@ class SharePointConnector(BaseConnector):
         return subsites
 
     async def _remove_deleted_sites(self) -> None:
-        """Remove the sites the last complete discovery had and Graph now answers 404 for."""
+        """Remove the sites the last complete discovery had and Graph now answers 404 for.
+
+        On a full sync, which forgets the remembered sites, the stored ones stand in for them, and one kept
+        is noted kept.
+        """
         if not getattr(self, '_discovery_complete', False):
             return
         tracker = ContainerTracker(self.drive_delta_sync_point, SITES_SYNC_POINT_KEY)
         known = await tracker.known()
+        if self.data_entities_processor.full_sync_running(self.connector_id) is True:
+            try:
+                known |= (await self._stored_record_groups({"groupType": RecordGroupType.SHAREPOINT_SITE.value})).keys()
+            except Exception as e:
+                self._health.skipped("stored sites", e)
         keep = set(self._discovered_site_ids)
         for site_id in known - self._discovered_site_ids:
             if await self._graph_says_gone(lambda s=site_id: self.client.sites.by_site_id(s).get()):
@@ -1249,7 +1263,37 @@ class SharePointConnector(BaseConnector):
                 await self.data_entities_processor.on_record_group_deleted(site_id, self.connector_id)
             else:
                 keep.add(site_id)
+                if self._pass_site_ids_filters(site_id):
+                    await self._keep_stored_site(site_id)
         await tracker.remember(keep)
+
+    async def _keep_stored_site(self, site_id: str) -> None:
+        """Note a stored site as seen by a full sync in progress: its record group with its pages, its stored
+        libraries with their records, and its SharePoint groups. When they cannot be noted, the run is marked
+        incomplete so nothing is unlinked."""
+        if self.data_entities_processor.full_sync_running(self.connector_id) is not True:
+            return
+        await self._keep_stored_record_group(site_id)
+        try:
+            libraries = await self._stored_record_groups(
+                {"groupType": RecordGroupType.DRIVE.value, "parentExternalGroupId": site_id}
+            )
+            for drive_id, url in libraries.items():
+                if not self._stored_library_filtered_out(url):
+                    await self._keep_stored_record_group(drive_id)
+            groups = await self.data_entities_processor.get_nodes_by_filters(
+                CollectionNames.GROUPS.value,
+                {"connectorId": self.connector_id},
+                return_fields=["externalGroupId"],
+                raise_on_error=True,
+            )
+            for group in groups:
+                external_id = group.get("externalGroupId") or ""
+                # The ids _site_groups_with_members gives a site's SharePoint groups.
+                if external_id.startswith(f"{site_id}-"):
+                    await self.data_entities_processor.note_kept_user_group(self.connector_id, external_id)
+        except Exception as e:
+            self._health.skipped(f"stored site {site_id}", e)
 
     async def _sync_site_content(self, site_record_group: RecordGroup) -> None:
         """Sync a site's libraries and pages.
@@ -1352,12 +1396,17 @@ class SharePointConnector(BaseConnector):
 
     async def _graph_says_gone(self, call: Callable[[], Any]) -> bool:
         """Whether Graph answers 404 for a container: the one answer that lets a missing container be removed."""
+        gone, _ = await self._graph_probe(call)
+        return gone
+
+    async def _graph_probe(self, call: Callable[[], Any]) -> tuple[bool, Any]:
+        """Graph's answer for something a listing left out: (gone, payload). Gone is a 404; the payload is
+        what the read returned, None when it failed, so the sync filters can be applied to what is still there."""
         try:
             async with self.rate_limiter:
-                await call()
+                return False, await call()
         except Exception as e:
-            return getattr(e, 'response_status_code', None) == GRAPH_NOT_FOUND
-        return False
+            return getattr(e, 'response_status_code', None) == GRAPH_NOT_FOUND, None
 
     async def _remove_filtered_out(
         self, tracker_key: str, excluded_ids: set[str], forget: Callable[[str], Awaitable[None]]
@@ -1389,10 +1438,56 @@ class SharePointConnector(BaseConnector):
             await self._forget_library(site_id, drive_id)
         await tracker.remember(set())
 
+    async def _stored_record_groups(self, filters: dict) -> dict[str, str | None]:
+        """The stored record groups of this connector that match ``filters``, as external id to web URL."""
+        nodes = await self.data_entities_processor.get_nodes_by_filters(
+            CollectionNames.RECORD_GROUPS.value,
+            {"connectorId": self.connector_id, **filters},
+            return_fields=["externalGroupId", "webUrl"],
+            raise_on_error=True,
+        )
+        return {node["externalGroupId"]: node.get("webUrl") for node in nodes if node.get("externalGroupId")}
+
+    async def _keep_stored_record_group(self, external_group_id: str) -> None:
+        """Note a stored record group and all its records as seen by a full sync in progress.
+
+        Soft-deleted records too, so a restored item comes back with its edges. When they cannot be noted,
+        the run is marked incomplete so nothing is unlinked.
+        """
+        try:
+            if self.data_entities_processor.full_sync_running(self.connector_id) is not True:
+                return
+            await self.data_entities_processor.note_kept_record_group(self.connector_id, external_group_id)
+            page_size = KEPT_RECORDS_PAGE_SIZE
+            after_key: str | None = None
+            while True:
+                page = await self.data_entities_processor.get_records_in_record_group(
+                    self.connector_id, external_group_id, page_size, after_key, visibility=RecordVisibility.ALL,
+                )
+                self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
+                if len(page) < page_size:
+                    return
+                after_key = page[-1].id
+        except Exception as e:
+            self._health.skipped(f"stored record group {external_group_id}", e)
+
     async def _remove_deleted_libraries(self, site_id: str, listed_drive_ids: set[str]) -> None:
-        """Remove the libraries of a site that its last listing had and Graph now says are gone."""
+        """Remove the libraries of a site that its last listing had and Graph now says are gone.
+
+        On a full sync, which forgets the remembered libraries, the stored ones stand in for them, and one
+        kept is noted kept.
+        """
         tracker = ContainerTracker(self.drive_delta_sync_point, f"sharepoint-known-libraries/{site_id}")
         known = await tracker.known()
+        stored: dict[str, str | None] = {}
+        if self.data_entities_processor.full_sync_running(self.connector_id) is True:
+            try:
+                stored = await self._stored_record_groups(
+                    {"groupType": RecordGroupType.DRIVE.value, "parentExternalGroupId": site_id}
+                )
+                known |= stored.keys()
+            except Exception as e:
+                self._health.skipped(f"stored libraries of site {site_id}", e)
         keep = set(listed_drive_ids)
         for drive_id in known - listed_drive_ids:
             if await self._graph_says_gone(lambda d=drive_id: self.client.drives.by_drive_id(d).get()):
@@ -1400,7 +1495,14 @@ class SharePointConnector(BaseConnector):
                 await self.data_entities_processor.on_record_group_deleted(drive_id, self.connector_id)
             else:
                 keep.add(drive_id)
+                if not self._stored_library_filtered_out(stored.get(drive_id)):
+                    await self._keep_stored_record_group(drive_id)
         await tracker.remember(keep)
+
+    def _stored_library_filtered_out(self, url: str | None) -> bool:
+        """Whether the current drive filters exclude a stored library, judged by its stored URL. One with
+        no stored URL cannot be judged and is not excluded."""
+        return bool(url) and not self._pass_drive_key_filters(self._normalize_document_library_url(url))
 
     @staticmethod
     def _is_site_pages_library(drive: object) -> bool:
@@ -1559,7 +1661,7 @@ class SharePointConnector(BaseConnector):
                 continue
             if listing_everything:
                 await DriveReconciler(self.data_entities_processor, self.connector_id, self.logger).remove_unlisted(
-                    drive_id, listed, lambda external_id: self._drive_item_gone(drive_id, external_id)
+                    drive_id, listed, lambda external_id: self._probe_unlisted_drive_item(drive_id, external_id)
                 )
             if listing_everything and not item_failed:
                 await self._remove_root_placeholder(drive_id)
@@ -1589,10 +1691,24 @@ class SharePointConnector(BaseConnector):
         if stale is not None and stale.is_placeholder:
             await self.data_entities_processor.on_record_deleted(record_id=stale.id)
 
-    async def _drive_item_gone(self, drive_id: str, external_id: str) -> bool:
+    async def _probe_unlisted_drive_item(self, drive_id: str, external_id: str) -> Unlisted:
+        """An item a complete listing left out: gone on a 404, out of scope when the item Graph returns is one
+        the sync filters exclude, kept otherwise (also when the read fails)."""
         item_id = external_id.split(":root:")[-1]
-        return await self._graph_says_gone(
+        gone, item = await self._graph_probe(
             lambda: self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).get()
+        )
+        if gone:
+            return Unlisted.GONE
+        if item is not None and self._drive_item_out_of_scope(item):
+            return Unlisted.OUT_OF_SCOPE
+        return Unlisted.KEPT
+
+    def _drive_item_out_of_scope(self, item: DriveItem) -> bool:
+        """Whether the sync filters (dates, extensions) exclude the item, or it is a file with no extension."""
+        is_root = getattr(item, 'root', None) is not None
+        return not self._pass_drive_date_filters(item) or not self._pass_extension_filter(item) or (
+            getattr(item, 'folder', None) is None and not is_root and '.' not in (getattr(item, 'name', None) or '')
         )
 
     async def _process_drive_item(self, item: DriveItem, site_id: str, drive_id: str, users: List[AppUser], modified_after: Optional[str] = None, modified_before: Optional[str] = None, created_after: Optional[str] = None, created_before: Optional[str] = None) -> Optional[RecordUpdate]:
@@ -1617,10 +1733,7 @@ class SharePointConnector(BaseConnector):
         existing_record = await self.data_entities_processor.get_record_by_external_id(
             self.connector_id, external_record_id
         )
-        out_of_scope = not self._pass_drive_date_filters(item) or not self._pass_extension_filter(item) or (
-            getattr(item, 'folder', None) is None and not is_root and '.' not in (getattr(item, 'name', None) or '')
-        )
-        if out_of_scope:
+        if self._drive_item_out_of_scope(item):
             if existing_record:
                 # The item is still there but no longer in the sync's scope (a rename to an excluded
                 # extension, say): it leaves PipesHub like a deleted one.
@@ -2241,7 +2354,11 @@ class SharePointConnector(BaseConnector):
         return pages
 
     async def _remove_deleted_pages(self, site_id: str, listed_page_ids: set[str]) -> None:
-        """Remove the stored pages of a site that its complete page listing no longer has."""
+        """Remove the stored pages of a site that its complete page listing no longer has.
+
+        One the source still has is noted kept for a full sync in progress, unless the date filters or the
+        system-page rule now exclude it, as they exclude a listed page.
+        """
         stored = []
         after_key = None
         while True:
@@ -2257,9 +2374,17 @@ class SharePointConnector(BaseConnector):
             if record.record_type != RecordType.SHAREPOINT_PAGE or record.external_record_id in listed_page_ids:
                 continue
             # Out of the listing is a candidate; only Graph's 404 for the page itself removes it.
-            if await self._graph_says_gone(lambda p=record.external_record_id: pages.by_base_site_page_id(p).get()):
+            gone, source_page = await self._graph_probe(
+                lambda p=record.external_record_id: pages.by_base_site_page_id(p).get()
+            )
+            if gone:
                 self.logger.info(f"🗑️ Page {record.record_name} is gone at the source; removing it")
                 await self.data_entities_processor.on_record_deleted(record_id=record.id)
+            elif source_page is None or self._page_in_scope(source_page):
+                self.data_entities_processor.note_kept_records(self.connector_id, [record.id])
+
+    def _page_in_scope(self, page: SitePage) -> bool:
+        return self._pass_page_date_filters(page) and not self._is_system_page(page)
 
     @staticmethod
     def _is_system_page(page: SitePage) -> bool:
@@ -2283,9 +2408,9 @@ class SharePointConnector(BaseConnector):
             page_name = getattr(page, 'title', getattr(page, 'name', 'unknown'))
             if not page_id:
                 continue
-            if not self._pass_page_date_filters(page) or self._is_system_page(page):
-                continue
             listed.add(page_id)
+            if not self._page_in_scope(page):
+                continue
 
             existing_record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, page_id)
             is_new = existing_record is None
@@ -3897,6 +4022,7 @@ class SharePointConnector(BaseConnector):
             for site in sites:
                 if not site.name and not site.display_name:
                     self.logger.warning(f"Site name is empty: '{site.id}'")
+                    await self._keep_stored_site(site.id)
                     continue
                 source_created_at = int(site.created_date_time.timestamp() * 1000) if site.created_date_time else None
                 source_updated_at = int(site.last_modified_date_time.timestamp() * 1000) if site.last_modified_date_time else source_created_at

@@ -422,12 +422,12 @@ describe('OAuthDeviceService', () => {
     )
     await realService.createAuthorization('pipeshub-agent', 'user:read code:write', 'http://localhost:3000')
     await realService.createAuthorization('pipeshub-agent', undefined, 'http://localhost:3000')
-    expect(create.firstCall.args[0].scopes).to.deep.equal(['user:read'])
-    expect(create.secondCall.args[0].scopes).to.deep.equal(['user:read'])
+    expect(create.firstCall.args[0]!.scopes).to.deep.equal(['user:read'])
+    expect(create.secondCall.args[0]!.scopes).to.deep.equal(['user:read'])
     // Another app keeps its own list.
     mockOAuthAppService.getAppByClientId.resolves({ ...app, allowedScopes: ['user:read', 'code:write'] })
     await realService.createAuthorization('cid', 'user:read code:write', 'http://localhost:3000')
-    expect(create.thirdCall.args[0].scopes).to.deep.equal(['user:read', 'code:write'])
+    expect(create.thirdCall.args[0]!.scopes).to.deep.equal(['user:read', 'code:write'])
   })
 
   it('should not mint a scope MCP_SCOPES dropped between creating a first-party code and its poll', async () => {
@@ -443,7 +443,7 @@ describe('OAuthDeviceService', () => {
     mockFirstPartyDeviceAppService.resolveScopes.returns(['user:read', 'code:write'])
     const create = sinon.stub(OAuthDeviceCode, 'create').resolves({} as any)
     await realService.createAuthorization('pipeshub-agent', 'user:read code:write', 'http://localhost:3000')
-    const stored = create.firstCall.args[0].scopes
+    const stored = create.firstCall.args[0]!.scopes
     expect(stored).to.deep.equal(['user:read', 'code:write'])
 
     // The operator narrows MCP_SCOPES (and restarts) before the person approves and the agent polls.

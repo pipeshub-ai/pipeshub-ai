@@ -15,6 +15,7 @@ from app.core.org_context import current_org_id
 from app.schema.node_validator import SchemaValidationError
 from app.services.graph_db.postgres.base import PgBase, _arango, _doc
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
+from app.services.graph_db.postgres.kg import kb_folder as kg_kb_folder
 from app.services.graph_db.postgres.kg import kb_root as kg_kb_root
 from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -171,14 +172,15 @@ class KbListingsMixin(PgBase):
                         origins: list[str] | None, connectors: list[str] | None, indexing_status: list[str] | None, sort_by: str, sort_order: str,
                         transaction: str | None) -> dict:
         """The folders and then the records directly in the collection (``folder_id`` None) or in the folder, folders first: the page takes folders from ``skip``
-        and fills what is left of ``limit`` with records. The collection's root takes its candidates from the typed graph for a connector it serves (``kg.kb_root``)."""
+        and fills what is left of ``limit`` with records. For a connector the typed graph serves, the collection's root takes its candidates from it (``kg.kb_root``) and a
+        folder is listed from its children's rows there (``kg.kb_folder``)."""
         org = current_org_id()
         try:
             skip, limit = max(skip, 0), max(limit, 0)
             key, asc = _SORT_KEYS.get(sort_by, 1), sort_order.upper() != "DESC"
 
-            async def read(tx: Tx, ids: list[str] | None) -> dict:
-                """The page, from the root candidates ``ids`` (the typed graph's) or, with None, from every record of the organisation (the walk)."""
+            async def read(tx: Tx, ids: list[str] | None, fold: tuple[int, int, bool] | None = None) -> dict:
+                """The page, from the root candidates ``ids`` or the folder's row ``fold`` (sk, app sk, typed as a folder: the typed graph's), or with neither from the graph (the walk)."""
                 if folder_id is None:
                     kb = await tx.fetchrow("/* pipeshub:graph.children_kb */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = $2", org, kb_id)
                     if not kb:
@@ -190,7 +192,10 @@ class KbListingsMixin(PgBase):
                            "webUrl": f"/kb/{container.get('id')}", "recordGroupId": container.get("id")}
                 else:
                     box = None
-                    rows = await tx.fetch(_FOLDER_FOLDERS, org, folder_id, search or None, skip, limit)
+                    rows = await (tx.fetch(_FOLDER_FOLDERS, org, folder_id, search or None, skip, limit) if fold is None else
+                                  tx.fetch(kg_kb_folder.FOLDERS, org, fold[0], fold[1], search or None, skip, limit, fold[2]))
+                    if fold:
+                        kg_kb_folder.checked(rows, "odd", "sub_odd")
                 total_folders = rows[0]["total"]
                 folders = [_folder_item(r["doc"], r["subs"], r["recs"], folder_id, r["path"] if folder_id else None) for r in rows if r["doc"] is not None]
                 if skip < total_folders:
@@ -199,7 +204,9 @@ class KbListingsMixin(PgBase):
                     rskip, rlimit = skip - total_folders, limit
                 filters = (search or None, record_types or None, origins or None, connectors or None, indexing_status or None, key, asc, rskip, rlimit)
                 if folder_id is not None:
-                    recs = await tx.fetch(_FOLDER_RECORDS, org, folder_id, *filters)
+                    recs = await (tx.fetch(_FOLDER_RECORDS, org, folder_id, *filters) if fold is None else tx.fetch(kg_kb_folder.RECORDS_PAGE, org, fold[0], fold[1], *filters))
+                    if fold:
+                        kg_kb_folder.checked(recs, "odd")
                 else:
                     args = (org, kb_id, FOLDER_MIME_TYPES, *filters, _KB)
                     recs = await (tx.fetch(_ROOT_RECORDS, *args) if ids is None else tx.fetch(kg_kb_root.RECORDS, *args, ids))
@@ -216,9 +223,11 @@ class KbListingsMixin(PgBase):
             async def walk(tx: Tx) -> dict:
                 return await read(tx, None)
 
-            async def typed(tx: Tx) -> dict:      # the candidates and the page in one snapshot
-                return await read(tx, await kg_kb_root.candidates(tx, org, kb_id))
-            if folder_id is None and (got := await kg_hier.answer(self, "kb_root", transaction, typed, walk=walk)) is not None:
+            async def typed(tx: Tx) -> dict:      # what kg holds and the page in one snapshot
+                if folder_id is None:
+                    return await read(tx, await kg_kb_root.candidates(tx, org, kb_id))
+                return await read(tx, None, await kg_kb_folder.folder(tx, org, kb_id, folder_id))
+            if (got := await kg_hier.answer(self, "kb_folder" if folder_id else "kb_root", transaction, typed, walk=walk)) is not None:
                 return got
             return await self._q(walk, transaction)
         except Exception as e:
