@@ -6655,7 +6655,8 @@ def _inject_hyperlinks_into_region(
         before = _grid_to_text(region.table_grid)
         region.table_grid = [
             [
-                _inject_hyperlinks_into_text(
+                # a model grid's None marks a slot a spanning cell covers: it stays None
+                None if cell is None and region.from_model_grid else _inject_hyperlinks_into_text(
                     str(cell or ""), hyperlinks, region_words,
                 )
                 for cell in row

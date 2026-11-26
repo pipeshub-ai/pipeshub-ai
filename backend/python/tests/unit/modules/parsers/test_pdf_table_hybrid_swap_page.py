@@ -334,3 +334,10 @@ def test_a_page_sent_back_to_the_evidence_result_gives_words_to_text_blocks_as_e
     parse("hybrid", monkeypatch, FakeModelClient())
     # the five table pages conflict: each rerun owns words as evidence does, every first pass as hybrid does
     assert flags.count(False) == 5 and flags.count(True) == len(flags) - 5
+
+
+def test_link_injection_keeps_the_span_slots_of_a_model_grid() -> None:
+    words = [{"text": "docs", "x0": 5, "x1": 25, "top": 5, "bottom": 15}, {"text": "other", "x0": 55, "x1": 85, "top": 5, "bottom": 15}]
+    r = model_region(grid=[["docs", None], ["c", "d"]])  # a cell spanning two columns: the slot it covers is None
+    ola._inject_hyperlinks_into_region(r, [{"x0": 4, "x1": 26, "top": 4, "bottom": 16, "uri": "https://example.com/x"}], words)
+    assert r.table_grid == [["docs (https://example.com/x)", None], ["c", "d"]]
