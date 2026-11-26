@@ -29165,30 +29165,34 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if mcp_server_ids:
                 result = await self.client.execute_query(
                     f"""
-                    MATCH (server:{mcp_label})-[:{mcp_tool_rel}]->(tool:{tool_label})
+                    MATCH (server:{mcp_label})-[r:{mcp_tool_rel}]->(tool:{tool_label})
                     WHERE server.id IN $isolated_ids AND NOT EXISTS {{ MATCH (server)<-[:{has_mcp_rel}]-() }}
                       AND NOT EXISTS {{ MATCH (tool)<-[:{mcp_tool_rel}]-(other) WHERE other <> server }}
-                    WITH DISTINCT tool
+                    WITH tool, count(r) as rels
                     DETACH DELETE tool
-                    RETURN count(tool) as deleted_count
+                    RETURN count(tool) as deleted_count, sum(rels) as rel_count
                     """,
                     parameters={"isolated_ids": mcp_server_ids},
                     txn_id=transaction
                 )
                 if result:
                     tools_deleted += result[0].get("deleted_count", 0) or 0
+                    edges_deleted += result[0].get("rel_count", 0) or 0
                 result = await self.client.execute_query(
                     f"""
                     MATCH (server:{mcp_label})
                     WHERE server.id IN $isolated_ids AND NOT EXISTS {{ MATCH (server)<-[:{has_mcp_rel}]-() }}
+                    OPTIONAL MATCH (server)-[r:{mcp_tool_rel}]->()
+                    WITH server, count(r) as rels
                     DETACH DELETE server
-                    RETURN count(server) as deleted_count
+                    RETURN count(server) as deleted_count, sum(rels) as rel_count
                     """,
                     parameters={"isolated_ids": mcp_server_ids},
                     txn_id=transaction
                 )
                 if result:
                     mcp_servers_deleted = result[0].get("deleted_count", 0) or 0
+                    edges_deleted += result[0].get("rel_count", 0) or 0      # its links to tools another server still holds
 
             # ── Step 8: DETACH DELETE the agent node ──
             # This removes the agent AND any remaining relationships (permissions,
@@ -29406,6 +29410,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     f"""
                     MATCH (server:{mcp_label})-[r:{mcp_tool_rel}]->(tool:{tool_label})
                     WHERE server.id IN $server_ids
+                      AND NOT EXISTS {{ MATCH (tool)<-[:{mcp_tool_rel}]-(other) WHERE NOT other.id IN $server_ids }}
                     WITH tool, count(r) as rels
                     DETACH DELETE tool
                     RETURN sum(rels) as rel_count, count(tool) as tool_count
@@ -29430,14 +29435,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     f"""
                     MATCH (server:{mcp_label})
                     WHERE server.id IN $server_ids
+                    OPTIONAL MATCH (server)-[r:{mcp_tool_rel}]->()
+                    WITH server, count(r) as rels
                     DETACH DELETE server
-                    RETURN count(server) as server_count
+                    RETURN count(server) as server_count, sum(rels) as rel_count
                     """,
                     parameters={"server_ids": server_ids},
                     txn_id=transaction
                 )
                 if result:
                     mcp_servers_deleted = result[0].get("server_count", 0) or 0
+                    edges_deleted += result[0].get("rel_count", 0) or 0      # its links to tools a server outside the set still holds
                     self.logger.debug(f"Deleted {mcp_servers_deleted} MCP server nodes")
 
             # Step 10: Delete all permission relationships pointing to agents

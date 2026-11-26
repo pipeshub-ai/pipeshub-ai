@@ -14821,9 +14821,7 @@ class TestHardDeleteAgent:
             [{"_key": "e1"}],
             # deleted_toolsets from step 7
             [{"_key": "ts1"}],
-            # mcp_server_ids (no MCP servers attached)
-            [],
-            # deleted_mcp_server_edges (none)
+            # agent -> MCP server edges removed (none attached)
             [],
             # deleted_permissions from step 8
             [{"_key": "p1"}, {"_key": "p2"}],
@@ -14846,8 +14844,7 @@ class TestHardDeleteAgent:
             [],    # no knowledge_ids
             [],    # no toolset_ids
             [],    # no toolset edges deleted
-            [],    # no mcp_server_ids
-            [],    # no deleted_mcp_server_edges
+            [],    # no agent -> MCP server edges (none removed, no server re-checked)
             [],    # no permissions
             [{"_key": "a1"}],  # agent deleted
         ])
@@ -14867,8 +14864,7 @@ class TestHardDeleteAgent:
             [],                       # no deleted_knowledge (still referenced)
             [],                       # no toolsets
             [],                       # no toolset edges
-            [],                       # no mcp_server_ids
-            [],                       # no deleted_mcp_server_edges
+            [],                       # no agent -> MCP server edges (none removed, no server re-checked)
             [],                       # no permissions
             [{"_key": "a1"}],         # agent deleted
         ])
@@ -14887,8 +14883,7 @@ class TestHardDeleteAgent:
             [],                      # no deleted_tools (still referenced)
             [{"_key": "e1"}],        # toolset edges deleted
             [],                      # no deleted_toolsets (still referenced)
-            [],                      # no mcp_server_ids
-            [],                      # no deleted_mcp_server_edges
+            [],                      # no agent -> MCP server edges (none removed, no server re-checked)
             [],                      # no permissions
             [{"_key": "a1"}],        # agent deleted
         ])
@@ -14898,6 +14893,30 @@ class TestHardDeleteAgent:
         assert result["tools_deleted"] == 0
         assert result["toolsets_deleted"] == 0
         assert result["mcp_servers_deleted"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_server_is_rechecked_after_the_agents_own_links_are_gone(self, connected_provider) -> None:
+        """The agent's server links go first; every server they named is then re-checked, so a server another agent let go of
+        concurrently (its link already removed) goes with this delete, tools and all."""
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [],                                  # no knowledge
+            [],                                  # no toolsets
+            [],                                  # no toolset edges
+            ["agentMcpServers/s1"],              # the agent's server links, removed
+            ["agentMcpServers/s1"],              # re-check: no agent is attached to s1 any more
+            ["agentTools/t1"],                   # s1's tool links, removed
+            [{"_key": "t1"}],                    # t1, held by no other server
+            [{"_key": "s1"}],                    # s1
+            [],                                  # no permissions
+            [{"_key": "a1"}],                    # agent deleted
+        ])
+
+        result = await connected_provider.hard_delete_agent("a1")
+
+        queries = [c.args[0] for c in connected_provider.execute_query.await_args_list]
+        assert "REMOVE edge IN agentHasMcpServer" in queries[3] and "RETURN OLD._to" in queries[3]
+        assert connected_provider.execute_query.await_args_list[4].kwargs["bind_vars"] == {"server_ids": ["agentMcpServers/s1"]}
+        assert (result["mcp_servers_deleted"], result["tools_deleted"], result["edges_deleted"], result["agents_deleted"]) == (1, 1, 2, 1)
 
     @pytest.mark.asyncio
     async def test_exception_returns_zeros(self, connected_provider):
@@ -14917,8 +14936,7 @@ class TestHardDeleteAgent:
             [],                      # no knowledge
             [],                      # no toolsets
             [{"_key": "te1"}],       # toolset edges deleted
-            [],                      # no mcp_server_ids
-            [],                      # no deleted_mcp_server_edges
+            [],                      # no agent -> MCP server edges (none removed, no server re-checked)
             [{"_key": "p1"}, {"_key": "p2"}, {"_key": "p3"}],  # 3 permissions deleted
             [{"_key": "a1"}],        # agent deleted
         ])

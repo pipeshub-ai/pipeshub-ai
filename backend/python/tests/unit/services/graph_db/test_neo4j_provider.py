@@ -988,8 +988,8 @@ class TestHardDeleteAgent:
                 [{"rel_count": 2}],  # step 6 agent->toolset rel delete
                 [{"deleted_count": 2}],  # step 7 toolset delete
                 [{"sid_list": ["m1"], "rel_count": 1}],  # step 7b agent->MCP server rel delete
-                [{"deleted_count": 1}],  # step 7b orphaned MCP tool delete
-                [{"deleted_count": 1}],  # step 7b orphaned MCP server delete
+                [{"deleted_count": 1, "rel_count": 1}],  # step 7b orphaned MCP tool delete, with its server->tool rel
+                [{"deleted_count": 1, "rel_count": 1}],  # step 7b orphaned MCP server delete, with its rel to a tool another server holds
                 [{"deleted_count": 1}],  # step 8 delete agent
             ]
         )
@@ -1001,7 +1001,7 @@ class TestHardDeleteAgent:
             "toolsets_deleted": 2,
             "tools_deleted": 3,  # 2 toolset tools + 1 MCP tool
             "knowledge_deleted": 2,
-            "edges_deleted": 8,  # 2 + 3 + 2 + 1
+            "edges_deleted": 10,  # 2 + 3 + 2 + 1 agent->server + 2 server->tool
             "mcp_servers_deleted": 1,
         }
         assert neo4j_provider.client.execute_query.await_count == 11
@@ -1076,7 +1076,7 @@ class TestHardDeleteAllAgents:
                 [{"server_ids": ["m1"]}],  # step 9b MCP servers of agents
                 [{"rel_count": 1, "tool_count": 1}],  # step 9b MCP server -> tool rels and tools
                 [{"rel_count": 1}],  # step 9b agent -> MCP server rels
-                [{"server_count": 1}],  # step 9b MCP servers
+                [{"server_count": 1, "rel_count": 1}],  # step 9b MCP servers, with a rel to a tool a server outside the set holds
                 [{"perm_count": 4}],  # step 10
                 [{"agent_count": 5}],  # step 11 count
                 [],  # step 11 detach delete
@@ -1090,7 +1090,7 @@ class TestHardDeleteAllAgents:
             "toolsets_deleted": 1,
             "tools_deleted": 3,  # 2 toolset tools + 1 MCP tool
             "knowledge_deleted": 2,
-            "edges_deleted": 12,  # 3 + 2 + 1 + 1 + 1 + 4
+            "edges_deleted": 13,  # 3 + 2 + 1 + 1 + 1 + 1 + 4
             "mcp_servers_deleted": 1,
         }
 
@@ -2582,13 +2582,15 @@ class TestUserAndOrganizationLookups:
                 [{"deleted_count": 1}],  # step 2 knowledge deleted only one -> warn
                 [{"toolset_ids": []}],  # step 3
                 [{"rel_count": 0}],  # step 6
+                [{"sid_list": [], "rel_count": 0}],  # step 7b: no MCP server
                 [{"deleted_count": 1}],  # step 8
             ]
         )
 
-        await neo4j_provider.hard_delete_agent("agent-1")
+        result = await neo4j_provider.hard_delete_agent("agent-1")
 
         assert neo4j_provider.logger.warning.called
+        assert result["agents_deleted"] == 1      # the cleanup went on to delete the agent
 
     @pytest.mark.asyncio
     async def test_returns_zero_counts_on_exception(self, neo4j_provider: Neo4jProvider):
