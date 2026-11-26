@@ -13,10 +13,12 @@ from typing import Any
 from app.agent_loop_lib.tools.base import Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.agent_loop.lazy_tools_wiring import (
+    HARNESS_TOOLSET,
     MCP_PARENT,
     META_TOOL_NAMES,
     PipesHubGlobalCatalogFallback,
     group_connector_toolsets,
+    harness_granted,
     lazy_tools_enabled,
     lazy_tools_scope,
     lazy_tools_threshold,
@@ -400,6 +402,65 @@ class TestMakeLazyToolsDecider:
 
         assert names.count("list_toolsets") == 1
 
+    def test_ds3_a_second_decision_on_a_grouped_registry_is_still_lazy(self, monkeypatch) -> None:
+        """P4.10 DS-3: the answer depends on the grant, not on which decision grouped the registry first
+        (a domain child's before the top level's; the durable loop deciding again)."""
+        monkeypatch.setenv("PIPESHUB_ENABLE_LAZY_TOOLS", "true")
+        monkeypatch.setenv("PIPESHUB_LAZY_TOOLS_THRESHOLD", "1")
+        registry = _registry_with_connectors()
+        decide = make_lazy_tools_decider(apply=True)
+        grant = ["jira_create_issue", "jira_search_issues", "slack_send_message"]
+
+        _, first = decide(registry, grant)
+        _, second = decide(registry, [*grant, "write_todos"])
+
+        assert (first, second) == ("lazy", "lazy")
+        assert group_connector_toolsets(registry, grant) is True
+
+
+
+def _registry_with_internal_tools(*internal: str) -> ToolRegistry:
+    """The connector registry plus the internal-tools toolset the harness grants on every turn."""
+    registry = _registry_with_connectors()
+    for name in internal:
+        registry.register_tool(_ConnectorTool("internaltools", name))
+    registry.register_toolset(HARNESS_TOOLSET, "Internal tools", [f"internaltools_{n}" for n in internal])
+    return registry
+
+
+class TestHarnessGrantedToolsAreNotCounted:
+    """FIX-MS2 (ADR-OWD-07 D-DISC-1): the threshold counts the person's own tools. A tool the harness grants on
+    every turn (the internal-tools question cards, the lazy meta tools, the artifact reader, the plan tool) never
+    moves a turn between eager and lazy disclosure."""
+
+    CONNECTORS = ["jira_create_issue", "jira_search_issues", "slack_send_message"]
+
+    def _mode(self, monkeypatch, threshold: int, *internal: str) -> str:
+        monkeypatch.setenv("PIPESHUB_ENABLE_LAZY_TOOLS", "true")
+        monkeypatch.setenv("PIPESHUB_LAZY_TOOLS_THRESHOLD", str(threshold))
+        grant = [*self.CONNECTORS, *(f"internaltools_{n}" for n in internal), *META_TOOL_NAMES,
+                 "retrieve_artifact_content", "write_todos"]
+        return make_lazy_tools_decider(apply=True)(_registry_with_internal_tools(*internal), grant)[1]
+
+    def test_a_grant_at_the_threshold_stays_eager_with_every_harness_tool(self, monkeypatch) -> None:
+        assert self._mode(monkeypatch, 3, "ask_user_question", "another_card", "a_third_card") == "eager"
+
+    def test_another_always_granted_internal_tool_leaves_the_mode_unchanged(self, monkeypatch) -> None:
+        for threshold, expected in ((3, "eager"), (2, "lazy")):
+            before = self._mode(monkeypatch, threshold, "ask_user_question", "another_card")
+            after = self._mode(monkeypatch, threshold, "ask_user_question", "another_card", "propose_next_thing")
+            assert before == after == expected
+
+    def test_the_persons_own_tools_still_cross_it(self, monkeypatch) -> None:
+        assert self._mode(monkeypatch, 2, "ask_user_question") == "lazy"
+
+    def test_harness_granted_names_the_internal_toolset_and_the_harness_tools(self) -> None:
+        registry = _registry_with_internal_tools("ask_user_question")
+        grant = [*self.CONNECTORS, "internaltools_ask_user_question", "search_tools", "retrieve_artifact_content"]
+        assert harness_granted(registry, grant) == frozenset(
+            {"internaltools_ask_user_question", "search_tools", "retrieve_artifact_content"}
+        )
+
 
 class _FakeToolsetRegistry:
     def __init__(self, toolsets: dict[str, dict[str, Any]]) -> None:
@@ -410,7 +471,12 @@ class _FakeToolsetRegistry:
 
 
 def _toolset_meta(*, tools: list[dict[str, str]], is_internal: bool = False) -> dict[str, Any]:
-    return {"isInternal": is_internal, "class": None, "tools": tools}
+    return {
+        "isInternal": is_internal,
+        "provider": "platform" if is_internal else "connector",
+        "class": None,
+        "tools": tools,
+    }
 
 
 class TestPipesHubGlobalCatalogFallback:

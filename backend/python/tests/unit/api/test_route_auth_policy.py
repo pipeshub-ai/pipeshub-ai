@@ -26,6 +26,8 @@ _ROUTERS = {
     "skills": ("app.api.routes.skills", "router"),
     "toolsets": ("app.api.routes.toolsets", "router"),
     "health": ("app.api.routes.health", "router"),
+    "record_access": ("app.api.routes.record_access", "router"),
+    "control_plane_drivers": ("app.api.routes.control_plane_drivers", "router"),
     "ai_models_registry": ("app.api.routes.ai_models_registry", "router"),
     "code_graph": ("app.api.routes.code_graph", "router"),
     "graph_view": ("app.api.routes.graph_view", "router"),
@@ -49,11 +51,39 @@ _ROUTERS = {
 _SERVICE_TOKEN_ROUTES = {
     ("agent", "POST", "/{agent_id}/chat/stream"): {"conversation:create"},
     ("agent", "GET", "/{agent_id}/internal/service-account"): {"conversation:create"},
+    # The Slack bot's durable admission of a service-account agent (P1b C-5).
+    ("agent", "GET", "/{agent_id}/run-definition"): {"conversation:create"},
+    # Node's agent-erasure sweeper (H5): an agent's tombstone, before it erases the agent's memories.
+    ("agent", "GET", "/{agent_id}/internal/deletion"): {"agent:erase"},
+    # WP-51: the usage report and budget notices name agents by key, for the token's org only.
+    ("agent", "POST", "/internal/names"): {"agent:names"},
+    # Node's control plane (CPD-7): one org's legacy capability facts for its migration and sync.
+    ("control_plane_drivers", "GET", "/legacy/capabilities"): {"capabilities:read"},
+    ("control_plane_drivers", "GET", "/directory/users/{userId}/teams"): {"directory:read"},
+    # Node's classification approver routing (OWD-15): whether a team of the token's org has an admin besides the
+    # requester. A count only, org from the token.
+    ("control_plane_drivers", "GET", "/directory/teams/{teamId}/owners"): {"directory:read"},
     ("chatbot", "POST", "/chat/attachments/upload"): {"conversation:create"},
     ("chatbot", "POST", "/chat/attachments/permissions"): {"conversation:permissions"},
     ("chatbot", "DELETE", "/chat/attachments/permissions"): {"conversation:permissions"},
     ("chatbot", "POST", "/chat/artifacts/permissions"): {"conversation:permissions"},
     ("chatbot", "DELETE", "/chat/artifacts/permissions"): {"conversation:permissions"},
+    # Node's erasure job (E7): a deleted conversation's artifacts, discarded drafts.
+    ("chatbot", "POST", "/chat/artifacts/erase"): {"conversation:erase"},
+    # ...and the chat attachments its messages carried (QA15-F4).
+    ("chatbot", "POST", "/chat/attachments/erase"): {"conversation:erase"},
+    # Node's unsent-upload collector (CLEANUP-G5): the token's org's uploads waiting for a message, and marking
+    # those a message carries as sent. Org from the token, never the body.
+    ("chatbot", "POST", "/chat/attachments/unsent"): {"conversation:erase"},
+    ("chatbot", "POST", "/chat/attachments/sent"): {"conversation:erase"},
+    # Node's org erasure (CLEANUP-G1): one page of the token's org's uploads, artifacts and
+    # skill drafts; the body names no org.
+    ("chatbot", "POST", "/chat/org/erase"): {"conversation:erase"},
+    # Node's session erasure step `traces` (CLEANUP-OPIK): a conversation's traces in Opik, ids checked against
+    # the token's org's conversation and runs.
+    ("chatbot", "POST", "/chat/traces/erase"): {"conversation:erase"},
+    # "Continue privately" (SS3): a conversation's artifact versions copied into the forker's copy.
+    ("chatbot", "POST", "/chat/artifacts/copy"): {"conversation:fork"},
     ("chatbot", "POST", "/chat/records/access"): {"conversation:permissions"},
     (
         "connectors",
@@ -70,6 +100,8 @@ _SERVICE_TOKEN_ROUTES = {
     ("parsing", "GET", "/api/v1/parse/providers"): {"document:parse"},
     ("extraction", "POST", "/api/v1/extract/classify"): {"document:classify"},
     ("entity", "PATCH", "/api/v1/entity/user/email"): {"entity:user:write"},
+    # Node user and org deletion (C-14): a deleted principal's personal toolset and MCP instances.
+    ("entity", "POST", "/api/v1/entity/internal/personal-instances/erase"): {"principal:erase"},
     ("entity", "POST", "/api/v1/entity/internal/user-node"): {"entity:user:ensure"},
     ("extraction", "POST", "/api/v1/extract/entities"): {"document:classify"},
 }

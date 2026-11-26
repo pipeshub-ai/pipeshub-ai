@@ -7,16 +7,22 @@ The compiler itself (``permissions.classes``) is held to the oracle by its own g
 from __future__ import annotations
 
 import json
+import os
 import random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+import asyncpg
 import pytest
 
 from app.services.graph_db.postgres.kg import project as project_mod
+from app.services.graph_db.postgres.kg import stampgraph
 from app.services.graph_db.postgres.kg.drainer import drain_org
 from app.services.graph_db.postgres.kg.locks import NeedLocks
+from app.services.graph_db.postgres.kg.model import HIERARCHY
+from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.kg.stamp import StampStats, stamp, stamp_app
 from app.services.graph_db.postgres.kg.writers import KgWriter
+from tests.support import plan_gate
 
 from .kg_fresh import fresh_with_stamps
 from .pg_support import new_org
@@ -30,6 +36,14 @@ if TYPE_CHECKING:
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(180)]
 
 STAMPS = "SELECT sk, path, class_id, self_lit, seed, own_grant, under_deleted, legacy_reason, leaf, r13 FROM kg.records WHERE org_id = $1"
+
+
+async def _admin(sql: str, *args: object) -> None:
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await con.execute(sql, *args)
+    finally:
+        await con.close()
 
 
 @pytest.fixture(autouse=True)
@@ -502,3 +516,49 @@ async def test_a_restamp_page_counts_a_write_for_every_connector_it_rewrites(pg_
     with ctx(org):
         await pg_db.run(page, write=True)
     assert locks.written(org, "app1") > before                                # the parent of the page's child is app1's row
+
+
+async def test_the_stampers_facts_are_read_by_key_on_an_org_the_statistics_do_not_know(pg_db) -> None:
+    """The graph is analysed before this org's 20,000 records, 200 groups and 2,000 users are written (its first load, before autovacuum reaches it), so
+    the planner puts the org at a row. Each fact the stamper reads for 500 records is read by the record's key and each edge's other end by its own: joined,
+    the planner read every node of the org's collections once per edge (2.2 s for these 500 records). Plans as the connectors service runs them, under
+    reader.seeks as the stamper does; and the facts read are the graph's. The org's rows are removed after, as other tests read every org's apps."""
+    org, n = new_org(), 20_000
+    try:
+        await _stamper_plans(pg_db, org, n)
+    finally:
+        await _admin("DELETE FROM graph.edges WHERE org_id = $1", org)
+        await _admin("DELETE FROM graph.nodes WHERE org_id = $1", org)
+        await _admin("DELETE FROM kg.graph_changes WHERE org_id = $1", org)       # the capture of these writes: no drainer has this org to read
+
+
+async def _stamper_plans(pg_db, org: str, n: int) -> None:
+    await _admin("ANALYZE graph.nodes; ANALYZE graph.edges")
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'r' || g, jsonb_build_object('id', 'r' || g, 'orgId', $1::text, 'connectorId', 'app1') FROM generate_series(1, $2) g", org, n)
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'recordGroups', 'g' || g, jsonb_build_object('id', 'g' || g, 'orgId', $1::text, 'connectorId', 'app1') FROM generate_series(1, 200) g", org)
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'users', 'u' || g, jsonb_build_object('id', 'u' || g, 'orgId', $1::text) FROM generate_series(1, 2000) g", org)
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES ($1, 'apps', 'app1', jsonb_build_object('id', 'app1', 'orgId', $1::text, 'type', 'DRIVE'))", org)
+    await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'records', 'r' || (g / 10 + 1), 'records', 'r' || g, '',
+        '{"relationshipType": "PARENT_CHILD"}'::jsonb FROM generate_series(11, $2) g""", org, n)
+    await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'belongsTo', 'records', 'r' || g, 'recordGroups', 'g' || (g % 200 + 1), '',
+        '{}'::jsonb FROM generate_series(1, $2) g""", org, n)
+    await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'permission', 'users', 'u' || (g % 2000 + 1), 'records', 'r' || g, '',
+        '{"type": "USER", "role": "READER"}'::jsonb FROM generate_series(1, $2) g""", org, n)
+    await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'inheritPermissions', 'records', 'r' || g, 'recordGroups', 'g' || (g % 200 + 1), '',
+        '{}'::jsonb FROM generate_series(1, $2, 7) g""", org, n)
+    ids = [f"r{i}" for i in range(5000, 5500)]
+    keyed = {"nodes": r"\bid = ", "edges": r"\b(to_id|from_id) >= "}
+
+    async def go(tx) -> tuple[dict[str, Any], dict]:
+        plans = {}
+        async with seeks(tx):
+            for name, sql, args in (("parents", stampgraph.PARENTS, (org, ids, list(HIERARCHY), stampgraph._NODE_COLLS)), ("inherits", stampgraph.INHERITS, (org, ids)),
+                                    ("belongs", stampgraph.BELONGS, (org, ids, ["recordGroups", "apps"])), ("granted", stampgraph.GRANTED, (org, ids, list(stampgraph.PRINCIPAL_COLLS)))):
+                plans[name] = await tx.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args)
+        return plans, await stampgraph.nodes(tx, org, [stampgraph.nk("records", i) for i in ids])
+    with ctx(org):
+        plans, facts = await pg_db.run(go, custom_plan=True)
+    assert not (bad := {name: v for name, plan in plans.items() if (v := plan_gate.violations(plan, keyed))}), bad
+    r = facts["records/r5006"]
+    assert (r.parents, r.groups, r.inherits, r.granted) == (("records/r501",), ("recordGroups/g7",), frozenset({"recordGroups/g7"}), True), r
+    assert len(facts) == 500 and all(f.granted and f.groups for f in facts.values())

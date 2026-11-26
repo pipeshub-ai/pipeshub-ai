@@ -94,6 +94,7 @@ async def test_a_storage_without_the_cutoff_route_is_not_a_cache_that_is_off(
 ) -> None:
     """A 404 from purge-cutoff (a storage of an earlier release) leaves the routes on and reports no cutoff, with one warning."""
     store = _store(storage)
+    storage.cutoff_route = False
 
     with caplog.at_level(logging.WARNING, logger="paid-store-test"):
         assert await store.purge_cutoff("org-1", "rec-1") is None

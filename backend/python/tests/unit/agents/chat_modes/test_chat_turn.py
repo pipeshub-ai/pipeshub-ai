@@ -1,0 +1,1794 @@
+"""Unit tests for the built-in assistant's turn (`app.agents.chat_modes.setup`)
+and its legacy stream (`stream_bridge.run_chat_stream`), for ALL THREE
+`/chat/stream` modes. Mirrors the mocking style of
+`tests/unit/agents/adapter/test_sse_bridge.py::TestRunAgentLoopStream`
+(same `PipesHubAgentFactory.create`/`AnswerFinalizer.run` patch points,
+same fake-agent helpers): both routes stream through one producer.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+from collections.abc import AsyncIterator, Callable, Iterator
+from typing import Any, Never
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from app.agent_loop_lib.core.responses import TokenUsage
+from app.agent_loop_lib.core.types import AgentResult, Goal
+from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext
+from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
+from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_SUMMARIES_ENV_VAR
+from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+from app.agents.agent_loop.stream_bridge import run_chat_stream
+from app.agents.chat_modes.custom_instructions import (
+    resolve_custom_instructions as _resolve_custom_instructions,
+)
+from app.agents.chat_modes.policy import (
+    AGENT_POLICY,
+    INTERNAL_SEARCH_POLICY,
+    WEB_SEARCH_POLICY,
+    ChatModePolicy,
+)
+from app.agents.chat_modes.prefetch import PrefetchResult
+from app.agents.chat_modes.setup import (
+    apply_mode_instructions,
+)
+from app.agents.chat_modes.setup import (
+    apply_policy_to_chat_state as _apply_policy_to_chat_state,
+)
+from app.agents.chat_modes.setup import (
+    fetch_available_connectors as _fetch_available_connectors,
+)
+from app.agents.chat_modes.setup import (
+    with_mode_instructions as _with_mode_instructions,
+)
+from app.config.constants.arangodb import Connectors
+from app.utils.chat_helpers import CitationRefMapper
+from app.utils.logger import log_record_fields
+from tests.support.bound_org import bind_test_org
+from tests.unit.agents.chat_modes.test_internal_search_prompt import (
+    _BEFORE_THE_SWITCHES,
+)
+
+
+def _stream_agent(result: Any) -> MagicMock:
+    """Same shape `test_sse_bridge.py` uses: `.stream(goal)` yields nothing,
+    leaves `.last_stream_result` set to `result`."""
+    agent = MagicMock()
+    agent.last_stream_result = None
+
+    async def _fake_stream(goal, **kwargs):
+        agent.last_stream_result = result
+        return
+        yield  # pragma: no cover - marks this an async generator
+
+    agent.stream = _fake_stream
+    return agent
+
+
+def _patch_connectors(
+    has_sql: bool = False, has_slack: bool = False, has_code: bool = False
+):
+    """Stub the single connector-instance query `run_chat_stream` issues, and
+    the connector prefetch beside it.
+
+    Returns instance dicts rather than booleans so the real
+    `connector_instances_have_sql`/`_have_slack`/`_have_code` predicates run
+    over them — the flags used to come from one query each, and this is what
+    pins them to one.
+    """
+    instances = []
+    if has_sql:
+        instances.append({"type": Connectors.POSTGRESQL.value, "isConfigured": True})
+    if has_slack:
+        instances.append({"type": Connectors.SLACK.value, "isConfigured": True})
+    if has_code:
+        instances.append({"type": Connectors.GITLAB.value, "isConfigured": True})
+    return (
+        patch(
+            "app.agents.chat_modes.setup.fetch_user_connector_instances",
+            new=AsyncMock(return_value=instances),
+        ),
+        patch(
+            "app.agents.chat_modes.setup.fetch_available_connectors",
+            new=AsyncMock(return_value=[]),
+        ),
+    )
+
+
+class TestModeInstructions:
+    def test_known_mode_appends_addendum_to_base_instructions(self) -> None:
+        result = _with_mode_instructions("Base prompt.", INTERNAL_SEARCH_POLICY)
+        assert result.startswith("Base prompt.")
+        assert "internal knowledge base" in result
+
+    def test_known_mode_with_no_base_instructions_returns_addendum_alone(self) -> None:
+        result = _with_mode_instructions(None, WEB_SEARCH_POLICY)
+        assert "web search" in result.lower()
+        assert not result.startswith("\n")
+
+    def test_blank_base_instructions_treated_as_absent(self) -> None:
+        result = _with_mode_instructions("   ", AGENT_POLICY)
+        assert result == _with_mode_instructions(None, AGENT_POLICY)
+
+
+_MON_0300_UTC = 1785121200000
+
+
+def _record_header_created_at() -> str:
+    """The `Created At:` line a tool renders for a record, as the model sees it."""
+    from app.config.constants.arangodb import OriginTypes
+    from app.models.entities import Record, RecordType
+
+    record = Record(
+        record_name="r", record_type=RecordType.FILE, external_record_id="e", version=1,
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_DRIVE, connector_id="c",
+        source_created_at=_MON_0300_UTC,
+    )
+    return next(line for line in record.to_llm_context().splitlines() if line.startswith("Created At:"))
+
+
+SetEnv = Callable[..., None]
+
+
+_ANSWER_RULE_ENV = ("HIGH_ACCURACY_MODE", "ANSWER_COMPOSITION_RULES", "THOROUGH_RETRIEVAL", "MULTI_STEP_ANSWER_RULES")
+
+
+_COMPOSITION_MARKER = "Compose the answer so it stands on its own"
+
+
+_THOROUGH_MARKER = "read in full the records your answer will rest on"
+
+
+_ENTITY_MARKER = "`knowledgegraph__search_entities`"
+
+
+_SWITCH_MATRIX = [
+    (None, None, False),
+    ("false", None, False),
+    ("true", None, True),
+    ("true", "", True),
+    ("true", "  ", True),
+    ("true", "false", False),
+    ("true", "0", False),
+    (None, "true", True),
+    ("false", "TRUE", True),
+    (None, "1", False),
+]
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The chat route's auth binds the token's org; these tests call the stream below it, so they bind it here."""
+    yield from bind_test_org("org-1")
+
+
+@pytest.fixture
+def answer_rule_env(monkeypatch: pytest.MonkeyPatch) -> SetEnv:
+    for name in _ANSWER_RULE_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+    def _set(**values: str | None) -> None:
+        for name, value in values.items():
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+
+    return _set
+
+
+def _mode_state(policy: ChatModePolicy, **state: object) -> dict[str, Any]:
+    chat_state: dict[str, Any] = dict(state)
+    apply_mode_instructions(chat_state, policy)
+    return chat_state
+
+
+class TestWebSearchUnset:
+    """An org with no provider: the prompt must say so in the modes that would have used the web."""
+
+    @pytest.mark.parametrize(
+        ("policy", "config", "expected"),
+        [
+            (WEB_SEARCH_POLICY, None, True),
+            (AGENT_POLICY, None, True),
+            (INTERNAL_SEARCH_POLICY, None, False),
+            (WEB_SEARCH_POLICY, {"provider": "serper"}, False),
+        ],
+        ids=["web-mode", "agent-mode", "internal-mode-never-wanted-the-web", "provider-set-up"],
+    )
+    def test_flag(self, policy: ChatModePolicy, config: dict | None, expected: bool) -> None:
+        chat_state: dict[str, Any] = {}
+        _apply_policy_to_chat_state(chat_state, policy, config)
+        assert chat_state["web_search_unset"] is expected
+
+
+class TestAnswerRuleSwitches:
+    def test_off_is_the_text_from_before_the_switches(self, answer_rule_env: SetEnv) -> None:
+        chat_state = _mode_state(INTERNAL_SEARCH_POLICY, entity_vector_store=MagicMock())
+        assert chat_state["instructions"] == _BEFORE_THE_SWITCHES
+        assert chat_state[READ_RECORDS_IN_FULL_STATE_KEY] is False
+
+    @pytest.mark.parametrize(("high_accuracy", "switch", "expected"), _SWITCH_MATRIX)
+    def test_composition_rules_follow_their_switch_then_the_mode(
+        self, answer_rule_env: SetEnv, high_accuracy: str | None, switch: str | None, expected: bool,
+    ) -> None:
+        answer_rule_env(
+            HIGH_ACCURACY_MODE=high_accuracy, ANSWER_COMPOSITION_RULES=switch,
+            THOROUGH_RETRIEVAL="false",
+        )
+        chat_state = _mode_state(INTERNAL_SEARCH_POLICY)
+
+        assert (_COMPOSITION_MARKER in chat_state["instructions"]) is expected
+        assert _THOROUGH_MARKER not in chat_state["instructions"]
+        assert chat_state[READ_RECORDS_IN_FULL_STATE_KEY] is False
+
+    @pytest.mark.parametrize(("high_accuracy", "switch", "expected"), _SWITCH_MATRIX)
+    def test_thorough_retrieval_follows_its_switch_then_the_mode(
+        self, answer_rule_env: SetEnv, high_accuracy: str | None, switch: str | None, expected: bool,
+    ) -> None:
+        answer_rule_env(
+            HIGH_ACCURACY_MODE=high_accuracy, THOROUGH_RETRIEVAL=switch,
+            ANSWER_COMPOSITION_RULES="false",
+        )
+        chat_state = _mode_state(INTERNAL_SEARCH_POLICY)
+
+        assert (_THOROUGH_MARKER in chat_state["instructions"]) is expected
+        assert _COMPOSITION_MARKER not in chat_state["instructions"]
+        assert chat_state[READ_RECORDS_IN_FULL_STATE_KEY] is expected
+
+    @pytest.mark.parametrize("policy", [WEB_SEARCH_POLICY, AGENT_POLICY])
+    def test_other_modes_are_untouched_by_every_switch(self, answer_rule_env: SetEnv, policy: ChatModePolicy) -> None:
+        off = _mode_state(policy, instructions="Base.")
+        answer_rule_env(HIGH_ACCURACY_MODE="true", ANSWER_COMPOSITION_RULES="true", THOROUGH_RETRIEVAL="true")
+        on = _mode_state(policy, instructions="Base.", entity_vector_store=MagicMock())
+
+        assert on["instructions"] == off["instructions"] == _with_mode_instructions("Base.", policy)
+        assert on[READ_RECORDS_IN_FULL_STATE_KEY] is False
+
+    def test_entity_tools_are_named_only_with_an_entity_store(self, answer_rule_env: SetEnv) -> None:
+        answer_rule_env(THOROUGH_RETRIEVAL="true")
+
+        assert _ENTITY_MARKER not in _mode_state(INTERNAL_SEARCH_POLICY)["instructions"]
+        assert _ENTITY_MARKER not in _mode_state(INTERNAL_SEARCH_POLICY, entity_vector_store=None)["instructions"]
+        assert _ENTITY_MARKER in _mode_state(
+            INTERNAL_SEARCH_POLICY, entity_vector_store=MagicMock(),
+        )["instructions"]
+
+    @pytest.mark.parametrize("chat_mode", [None, "standard", "analysis", "deep_research", "unknown"])
+    def test_legacy_and_unknown_chat_modes_get_the_enterprise_search_rules(
+        self, answer_rule_env: SetEnv, chat_mode: str | None,
+    ) -> None:
+        from app.agents.chat_modes.policy import resolve_chat_mode_policy
+
+        answer_rule_env(HIGH_ACCURACY_MODE="true")
+        chat_state = _mode_state(resolve_chat_mode_policy(chat_mode))
+
+        assert _COMPOSITION_MARKER in chat_state["instructions"]
+        assert chat_state[READ_RECORDS_IN_FULL_STATE_KEY] is True
+
+    def test_the_text_is_the_same_for_every_user_and_org(self, answer_rule_env: SetEnv) -> None:
+        """It sits in the cached prefix and carries no request data."""
+        answer_rule_env(HIGH_ACCURACY_MODE="true")
+        store = MagicMock()
+        first = _mode_state(INTERNAL_SEARCH_POLICY, org_id="org-1", user_id="user-1", entity_vector_store=store)
+        second = _mode_state(INTERNAL_SEARCH_POLICY, org_id="org-2", user_id="user-9", entity_vector_store=store)
+
+        assert first["instructions"] == second["instructions"]
+        assert "org-" not in first["instructions"]
+        assert "user-" not in first["instructions"]
+
+    def test_base_instructions_stay_first(self, answer_rule_env: SetEnv) -> None:
+        answer_rule_env(HIGH_ACCURACY_MODE="true")
+        chat_state = _mode_state(INTERNAL_SEARCH_POLICY, instructions="  Base prompt.  ")
+
+        assert chat_state["instructions"].startswith("Base prompt.\n\nAnswer ONLY from")
+
+
+class TestApplyPolicyToChatState:
+    def test_internal_search_forces_knowledge_true_web_search_off(self) -> None:
+        chat_state: dict[str, Any] = {"has_sql_connector": True, "has_slack_connector": True}
+        _apply_policy_to_chat_state(chat_state, INTERNAL_SEARCH_POLICY, web_search_config=None)
+
+        assert chat_state["has_knowledge"] is True
+        assert chat_state["has_sql_knowledge"] is True
+        assert chat_state["has_slack_knowledge"] is True
+        assert chat_state["web_search_config"] is None
+        assert chat_state["chat_mode"] == "internal_search"
+
+    def test_web_search_disables_knowledge_even_with_connectors_present(self) -> None:
+        chat_state: dict[str, Any] = {"has_sql_connector": True, "has_slack_connector": True}
+        web_cfg = {"provider": "tavily", "configuration": {}}
+        _apply_policy_to_chat_state(chat_state, WEB_SEARCH_POLICY, web_search_config=web_cfg)
+
+        assert chat_state["has_knowledge"] is False
+        assert chat_state["has_sql_knowledge"] is False
+        assert chat_state["has_slack_knowledge"] is False
+        assert chat_state["web_search_config"] == web_cfg
+
+    def test_knowledge_true_but_no_connector_present_keeps_sql_slack_off(self) -> None:
+        chat_state: dict[str, Any] = {"has_sql_connector": False, "has_slack_connector": False}
+        _apply_policy_to_chat_state(chat_state, AGENT_POLICY, web_search_config=None)
+
+        assert chat_state["has_knowledge"] is True
+        assert chat_state["has_sql_knowledge"] is False
+        assert chat_state["has_slack_knowledge"] is False
+
+    def test_sql_allowlist_is_the_users_sql_connectors_when_sql_is_enabled(self) -> None:
+        chat_state: dict[str, Any] = {"has_sql_connector": True, "has_slack_connector": False}
+        _apply_policy_to_chat_state(
+            chat_state, INTERNAL_SEARCH_POLICY, web_search_config=None,
+            sql_connector_ids=frozenset({"pg-1"}),
+        )
+
+        assert chat_state["allowed_sql_connector_ids"] == {"pg-1"}
+
+    def test_sql_allowlist_is_empty_when_policy_disables_knowledge(self) -> None:
+        chat_state: dict[str, Any] = {"has_sql_connector": True, "has_slack_connector": False}
+        _apply_policy_to_chat_state(
+            chat_state, WEB_SEARCH_POLICY, web_search_config={"provider": "tavily"},
+            sql_connector_ids=frozenset({"pg-1"}),
+        )
+
+        assert chat_state["allowed_sql_connector_ids"] == frozenset()
+
+    def test_code_knowledge_follows_the_connector_like_sql_and_slack(self) -> None:
+        """Chat modes have no per-agent knowledge scope, so code-tool
+        availability mirrors connector presence — same as SQL and Slack."""
+        chat_state: dict[str, Any] = {"has_code_connector": True}
+        _apply_policy_to_chat_state(chat_state, INTERNAL_SEARCH_POLICY, web_search_config=None)
+        assert chat_state["has_code_knowledge"] is True
+
+    def test_web_search_mode_turns_code_tools_off(self) -> None:
+        chat_state: dict[str, Any] = {"has_code_connector": True}
+        _apply_policy_to_chat_state(
+            chat_state, WEB_SEARCH_POLICY, web_search_config={"provider": "tavily"}
+        )
+        assert chat_state["has_code_knowledge"] is False
+
+
+class TestResolveCustomInstructions:
+    """`_resolve_custom_instructions` -- the workspace "Custom Instructions"
+    settings page (`customSystemPrompt`/`customSystemPromptWebSearch`/
+    `customSystemPromptAgent` on `SystemPromptsConfig`), mode-resolved so each
+    of the three `/chat/stream` modes picks its own configured prompt."""
+
+    def test_internal_search_reads_custom_system_prompt_key(self) -> None:
+        system_prompts_config = {"customSystemPrompt": "Always answer in French."}
+        result = _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY)
+        assert result == "Always answer in French."
+
+    def test_web_search_reads_custom_system_prompt_web_search_key(self) -> None:
+        system_prompts_config = {"customSystemPromptWebSearch": "Always cite sources."}
+        result = _resolve_custom_instructions(system_prompts_config, WEB_SEARCH_POLICY)
+        assert result == "Always cite sources."
+
+    def test_agent_reads_custom_system_prompt_agent_key(self) -> None:
+        system_prompts_config = {"customSystemPromptAgent": "Prefer internal knowledge first."}
+        result = _resolve_custom_instructions(system_prompts_config, AGENT_POLICY)
+        assert result == "Prefer internal knowledge first."
+
+    def test_modes_do_not_cross_read_each_others_key(self) -> None:
+        """Setting only the web-search prompt must not leak into internal_search
+        or agent mode -- each mode's admin-configured prompt is independent."""
+        system_prompts_config = {"customSystemPromptWebSearch": "Web-only instructions."}
+        assert _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY) is None
+        assert _resolve_custom_instructions(system_prompts_config, AGENT_POLICY) is None
+
+    def test_missing_config_returns_none(self) -> None:
+        assert _resolve_custom_instructions({}, INTERNAL_SEARCH_POLICY) is None
+
+    def test_blank_or_whitespace_prompt_returns_none(self) -> None:
+        """An org that saved then cleared the field must omit the prompt
+        builder section entirely, not render an empty '## Custom
+        Instructions' header."""
+        system_prompts_config = {"customSystemPrompt": "   "}
+        assert _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY) is None
+
+    def test_result_is_stripped(self) -> None:
+        system_prompts_config = {"customSystemPrompt": "  Be concise.  "}
+        assert _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY) == "Be concise."
+
+
+class TestRunChatStream:
+    @staticmethod
+    def _base_kwargs(policy=None) -> dict[str, Any]:
+        config_service = AsyncMock()
+        # `config_service.get_config` is itself an `AsyncMock` attribute
+        # (child attrs of an `AsyncMock` propagate async-ness), so its
+        # return value must be a concrete dict, not the default child
+        # mock -- otherwise `resolve_web_search`'s `.get("providers")`
+        # silently returns an unawaited coroutine instead of a list.
+        config_service.get_config.return_value = {"providers": []}
+        return {
+            "query_info": {"query": "hello", "chatMode": "agent", "filters": {}},
+            "user_info": {"userId": "user-1", "orgId": "org-1"},
+            "llm": MagicMock(),
+            "policy": policy or AGENT_POLICY,
+            "log": MagicMock(),
+            "retrieval_service": AsyncMock(),
+            "graph_provider": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": config_service,
+        }
+
+    async def test_build_initial_state_failure_yields_error_event(self) -> None:
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                side_effect=RuntimeError("boom"),
+            ),
+            sql_patch,
+            slack_patch,
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs())]
+
+        assert len(events) == 1
+        assert events[0].startswith("event: error\n")
+        payload = json.loads(events[0].split("data: ", 1)[1].strip())
+        assert "boom" not in payload["message"]
+
+    async def test_a_failed_agent_mode_run_is_answered_from_its_raw_error(self) -> None:
+        """As in the agent route: the answer is classified from `error_detail`, not the text-free `error`."""
+        from app.agent_loop_lib.core.types import AgentResult, Goal
+
+        raw = "LLM call failed: LangChain transport error (complete): RateLimitError: Error code: 429 - slow down"
+        failed = AgentResult(goal=Goal(description="q"), success=False,
+                             error="LLM call failed: rate_limited (RateLimitError, HTTP 429)").with_error_detail(raw)
+        seen: dict[str, object] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, ...]:
+            return _stream_agent(failed), MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, **kwargs: object) -> dict[str, str]:
+            seen.update(kwargs)
+            return {"answer": "x"}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch("app.modules.agents.qna.chat_state.build_initial_state",
+                  return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"}),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=AGENT_POLICY))]
+
+        assert (seen["agent_success"], seen["agent_error"]) == (False, raw)
+
+    async def test_successful_agent_mode_run_streams_to_completion(self) -> None:
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            agent = _stream_agent(MagicMock(success=True, error=None, output="42"))
+            return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=AGENT_POLICY))]
+
+        assert len(events) == 1
+        assert events[0].startswith("event: complete\n")
+        assert json.loads(events[0].split("data: ", 1)[1].strip()) == {"answer": "42"}
+
+    async def test_a_failed_run_leaves_no_conversation_tasks_behind(self) -> None:
+        from app.utils import conversation_tasks as ct
+
+        pending = asyncio.ensure_future(asyncio.sleep(60))
+
+        async def _fake_create(
+            self: object, context: object, llm: object, chat_mode: object, *,
+            query: object, model_name: str = "", model_key: object = None,
+        ) -> Never:
+            ct.register_task("conv-bridge-err", pending)
+            raise RuntimeError("boom")
+
+        sql_patch, slack_patch = _patch_connectors()
+        kwargs = self._base_kwargs()
+        kwargs["query_info"]["conversationId"] = "conv-bridge-err"
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={
+                    "org_id": "org-1", "user_id": "user-1", "query": "hello",
+                    "conversation_id": "conv-bridge-err",
+                },
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+        ):
+            _ = [chunk async for chunk in run_chat_stream(**kwargs)]
+        await asyncio.sleep(0.05)
+
+        assert "conv-bridge-err" not in ct._conversation_tasks
+        assert pending.cancelled()
+    async def test_sql_and_slack_flags_come_from_one_connector_query(self) -> None:
+        """Both flags are derived from a single `get_user_connector_instances`
+        call — they used to be two identical queries."""
+        captured_kwargs: dict[str, Any] = {}
+
+        def _capture_state(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return {"org_id": "org-1", "user_id": "user-1", "query": "hello"}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        kwargs = self._base_kwargs(policy=AGENT_POLICY)
+        graph_provider = kwargs["graph_provider"]
+        graph_provider.get_user_connector_instances = AsyncMock(
+            return_value=[
+                {"type": Connectors.POSTGRESQL.value, "isConfigured": True},
+                {"type": Connectors.SLACK.value, "isConfigured": True},
+            ]
+        )
+
+        with (
+            patch("app.modules.agents.qna.chat_state.build_initial_state", new=_capture_state),
+            patch(
+                "app.agents.chat_modes.setup.fetch_available_connectors",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_chat_stream(**kwargs)]
+
+        assert graph_provider.get_user_connector_instances.await_count == 1
+        assert captured_kwargs["has_sql_connector"] is True
+        assert captured_kwargs["has_slack_connector"] is True
+
+    async def test_available_connectors_reuses_user_key_from_route(self) -> None:
+        """`user_info["userKey"]` (resolved by `chatbot.py`) skips the repeat
+        `get_user_by_user_id` lookup the prefetch used to make."""
+        graph_provider = MagicMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "should-not-be-used"})
+        graph_provider.get_knowledge_hub_filter_options = AsyncMock(
+            return_value={"apps": [{"id": "a1", "name": "Drive", "type": "DRIVE"}]}
+        )
+
+        result = await _fetch_available_connectors(
+            graph_provider=graph_provider, user_key="user-key-1",
+            user_id="user-1", org_id="org-1", log=MagicMock(),
+        )
+
+        assert result == [{"id": "a1", "name": "Drive", "type": "DRIVE"}]
+        graph_provider.get_user_by_user_id.assert_not_awaited()
+        assert graph_provider.get_knowledge_hub_filter_options.await_args.kwargs["user_key"] == "user-key-1"
+
+    async def test_web_search_mode_resolves_provider_config_before_run(self) -> None:
+        """`WEB_SEARCH_POLICY.include_web_search=True` must trigger the
+        config lookup, and the resolved config must land on `ChatState`
+        before `build_initial_state`'s state is handed to the factory."""
+        captured_chat_state: dict[str, Any] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            captured_chat_state.update(context.tool_state)
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        kwargs = self._base_kwargs(policy=WEB_SEARCH_POLICY)
+        kwargs["config_service"].get_config.return_value = {
+            "providers": [{"provider": "serper", "isDefault": True, "configuration": {"apiKey": "x"}}]
+        }
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**kwargs)]
+
+        kwargs["config_service"].get_config.assert_awaited()
+        assert events[-1].startswith("event: complete\n")
+
+    async def test_custom_instructions_land_on_tool_state_before_factory_create(self) -> None:
+        """The org-level "Custom Instructions" prompt for the active mode
+        must be resolved and set on `ChatState`/`AgentContext.tool_state`
+        before `PipesHubAgentFactory.create()` builds the prompt builder,
+        so `PipesHubPromptBuilder` can render it in the same turn."""
+        captured_context: Any = None
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            nonlocal captured_context
+            captured_context = context
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        kwargs = self._base_kwargs(policy=AGENT_POLICY)
+        kwargs["system_prompts_config"] = {"customSystemPromptAgent": "Prefer internal knowledge first."}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**kwargs)]
+
+        assert events[-1].startswith("event: complete\n")
+        assert captured_context.custom_instructions == "Prefer internal knowledge first."
+        assert captured_context.tool_state["custom_instructions"] == "Prefer internal knowledge first."
+
+    async def test_no_custom_instructions_configured_leaves_field_none(self) -> None:
+        """A brand-new org that never touched the "Custom Instructions" page
+        must not render an empty prompt section (see `PipesHubPromptBuilder`'s
+        `custom_instructions` handling)."""
+        captured_context: Any = None
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            nonlocal captured_context
+            captured_context = context
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=AGENT_POLICY))]
+
+        assert events[-1].startswith("event: complete\n")
+        assert captured_context.custom_instructions is None
+
+    async def test_a_user_who_can_read_nothing_in_scope_is_answered_at_once(self) -> None:
+        """Bug-bash 002: the loop would retry its search until the time budget ran out."""
+        from app.agents.agent_loop.protocol.stream_collector import (
+            collect_stream_outcome,
+        )
+
+        create = AsyncMock()
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            sql_patch,
+            slack_patch,
+            patch(
+                "app.modules.retrieval.selection_scope.unreadable_scope_error",
+                new=AsyncMock(return_value=("selection_empty", "Nothing in your selection is available.")),
+            ),
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=create),
+        ):
+            events = [
+                chunk async for chunk in run_chat_stream(
+                    **self._base_kwargs(policy=INTERNAL_SEARCH_POLICY), protocol="agui",
+                )
+            ]
+
+        create.assert_not_called()
+        assert len(events) == 1
+
+        async def _replay() -> AsyncIterator[dict[str, Any]]:
+            for event in events:
+                yield event
+
+        response = (await collect_stream_outcome(_replay(), AsyncMock(return_value=False))).to_response()
+        assert response.status_code == 422
+        assert json.loads(response.body)["message"] == "Nothing in your selection is available."
+
+    async def test_a_user_with_readable_sources_still_runs_the_loop(self) -> None:
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        check = AsyncMock(return_value=None)
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.modules.retrieval.selection_scope.unreadable_scope_error", new=check),
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.setup.prefetch_retrieval", new=AsyncMock(return_value=None)),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))]
+
+        check.assert_awaited_once()
+        assert events[-1].startswith("event: complete\n")
+
+    async def test_a_scope_check_that_raises_is_one_classed_line_and_the_turn_runs(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.utils.logger import log_record_fields
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        caplog.set_level(logging.DEBUG)
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.modules.retrieval.selection_scope.unreadable_scope_error", new=AsyncMock(side_effect=TimeoutError("graph slow"))),
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.setup.prefetch_retrieval", new=AsyncMock(return_value=None)),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**{**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY), "log": logging.getLogger("test.bridge")})]
+
+        assert events[-1].startswith("event: complete\n")
+        (failed,) = [r for r in caplog.records if r.getMessage() == "turn_scope.check_failed"]
+        assert (failed.levelno, log_record_fields(failed)["error_class"]) == (logging.WARNING, "timeout")
+
+    async def test_internal_search_prefetch_merges_into_goal_and_tool_state(self) -> None:
+        """`INTERNAL_SEARCH_POLICY.prefetch_retrieval=True` -- a non-empty
+        `PrefetchResult` must be folded into `context.tool_state` and
+        `goal.constraints`."""
+        prefetch_result = PrefetchResult(
+            formatted_context="Refunds are processed within 5 business days.",
+            final_results=[{"virtual_record_id": "vr1"}],
+            virtual_record_id_to_result={"vr1": {"recordId": "r1"}},
+            tool_records=[{"recordId": "r1"}],
+            citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+        )
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            goal = MagicMock(constraints=[])
+            captured["context"] = context
+            captured["goal"] = goal
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), goal, []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch(
+                "app.agents.chat_modes.setup.prefetch_retrieval",
+                new=AsyncMock(return_value=prefetch_result),
+            ),
+        ):
+            events = [
+                chunk
+                async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))
+            ]
+
+        assert events[-1].startswith("event: complete\n")
+        assert captured["context"].tool_state["final_results"] == prefetch_result.final_results
+        assert any(
+            "Refunds are processed" in str(c) for c in captured["goal"].constraints
+        )
+
+    async def test_record_dates_in_the_run_use_the_users_time_zone(self) -> None:
+        """Tools run inside the run's task render record dates in the user's
+        zone, weekday included; nothing outside the run is affected."""
+        seen: dict[str, str] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            # As a tool would: in a task started by the run.
+            seen["header"] = await asyncio.create_task(asyncio.to_thread(_record_header_created_at))
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, **kwargs) -> dict[str, str]:
+            return {"answer": "ok"}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={
+                    "org_id": "org-1", "user_id": "user-1", "query": "hello",
+                    "timezone": "America/Los_Angeles",
+                },
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=AGENT_POLICY))]
+
+        assert seen["header"] == "Created At: 2026-07-27 03:00:00 UTC (Sun, Jul 26, 2026, 8:00 PM PDT)"
+        assert _record_header_created_at().endswith("(Mon, Jul 27, 2026, 3:00 AM UTC)")
+
+    async def _prefetch_ran_for(self, query: str) -> bool:
+        prefetch = AsyncMock(return_value=PrefetchResult(
+            formatted_context="", final_results=[], virtual_record_id_to_result={},
+            tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=True,
+        ))
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, ...]:
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        kwargs = self._base_kwargs(policy=INTERNAL_SEARCH_POLICY)
+        kwargs["query_info"]["query"] = query
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": query},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.setup.prefetch_retrieval", new=prefetch),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**kwargs)]
+        assert events[-1].startswith("event: complete\n")
+        return prefetch.await_count > 0
+
+    @pytest.mark.parametrize(("switch", "query", "prefetched"), [
+        ("true", "Between March and May 2026, what problems came up with the Slack bot?", False),
+        ("true", "What is the redirect URI for the Dropbox team app?", True),
+        # On when unset.
+        (None, "Between March and May 2026, what problems came up with the Slack bot?", False),
+        ("false", "Between March and May 2026, what problems came up with the Slack bot?", True),
+    ])
+    async def test_a_span_question_skips_the_upfront_search_only_with_the_timeline_on(
+        self, monkeypatch: pytest.MonkeyPatch, switch: str | None, query: str, prefetched: bool,
+    ) -> None:
+        """The upfront search is the top matches overall, bunched around one
+        moment; with the timeline tool on, a span question is left to it."""
+        if switch is None:
+            monkeypatch.delenv(TIMELINE_SUMMARIES_ENV_VAR, raising=False)
+        else:
+            monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, switch)
+        assert await self._prefetch_ran_for(query) is prefetched
+
+    async def _goal_constraints_for(self, prefetch_result: PrefetchResult) -> list[str]:
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, ...]:
+            goal = MagicMock(constraints=[])
+            captured["goal"] = goal
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), goal, []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.setup.prefetch_retrieval", new=AsyncMock(return_value=prefetch_result)),
+        ):
+            events = [
+                chunk
+                async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))
+            ]
+        assert events[-1].startswith("event: complete\n")
+        return [str(c) for c in captured["goal"].constraints]
+
+    async def test_a_failed_prefetch_tells_the_model_the_search_failed(self) -> None:
+        """Without this the model read an empty context as "nothing matched"."""
+        notice = "The search index took too long to respond, so no results are shown. Please try again in a minute."
+        constraints = await self._goal_constraints_for(PrefetchResult(
+            formatted_context="", final_results=[], virtual_record_id_to_result={},
+            tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=True,
+            error_message=notice, failure_notice=notice,
+        ))
+
+        failure = [c for c in constraints if notice in c]
+        assert len(failure) == 1
+        assert "Search again with the search tool" in failure[0]
+        assert "Do not answer as if no documents matched" in failure[0]
+
+    async def test_an_empty_prefetch_that_ran_adds_no_failure_note(self) -> None:
+        constraints = await self._goal_constraints_for(PrefetchResult(
+            formatted_context="", final_results=[], virtual_record_id_to_result={},
+            tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=True,
+        ))
+
+        assert not any("did not complete" in c for c in constraints)
+
+    async def test_a_prefetch_from_part_of_the_index_says_what_is_missing(self) -> None:
+        notice = "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
+        constraints = await self._goal_constraints_for(PrefetchResult(
+            formatted_context="Refunds are processed within 5 business days.",
+            final_results=[{"virtual_record_id": "vr1"}],
+            virtual_record_id_to_result={"vr1": {"recordId": "r1"}},
+            tool_records=[{"recordId": "r1"}],
+            citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+            incomplete_notice=notice,
+        ))
+
+        context = next(c for c in constraints if "Refunds are processed" in c)
+        assert notice in context
+        assert context.index(notice) < context.index("Refunds are processed")
+
+    @pytest.mark.parametrize("high_accuracy", [False, True])
+    async def test_internal_search_answer_rules_reach_the_agent_context(
+        self, answer_rule_env: SetEnv, high_accuracy: bool,
+    ) -> None:
+        """The mode text and the full-read flag are on the context the
+        factory builds the prompt from, decided by the deployment's switches
+        and the entity store this request was given."""
+        answer_rule_env(HIGH_ACCURACY_MODE="true" if high_accuracy else None)
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(
+            self: object, context: Any, llm: object, chat_mode: str, *, query: str, **_: object,  # noqa: ANN401
+        ) -> tuple[Any, ...]:
+            captured["context"] = context
+            captured["chat_mode"] = chat_mode
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(
+            self: object, *, event_sink: Any, agent_output: Any = None, **_: object,  # noqa: ANN401
+        ) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        empty_prefetch = PrefetchResult(
+            formatted_context="", final_results=[], virtual_record_id_to_result={},
+            tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=True,
+        )
+        kwargs = self._base_kwargs(policy=INTERNAL_SEARCH_POLICY)
+        kwargs["entity_vector_store"] = MagicMock()
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                side_effect=lambda *a, **kw: {
+                    "org_id": "org-1", "user_id": "user-1", "query": "hello",
+                    "entity_vector_store": kw.get("entity_vector_store"),
+                },
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.setup.prefetch_retrieval", new=AsyncMock(return_value=empty_prefetch)),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**kwargs)]
+
+        assert events[-1].startswith("event: complete\n")
+        context = captured["context"]
+        assert captured["chat_mode"] == INTERNAL_SEARCH_POLICY.loop_chat_mode
+        assert context.tool_state[READ_RECORDS_IN_FULL_STATE_KEY] is high_accuracy
+        if high_accuracy:
+            for marker in (_COMPOSITION_MARKER, _THOROUGH_MARKER, _ENTITY_MARKER):
+                assert marker in context.instructions
+        else:
+            assert context.instructions == _BEFORE_THE_SWITCHES
+
+    async def test_prefetched_records_are_remembered_in_rank_order(self) -> None:
+        """An unknown-id fetch lists the 20 most recent records; for a prefetch
+        those must be the ones the search ranked highest, not the first by
+        virtual record id."""
+        top = "8a2cfb7d-04fc-4647-a5db-4602ab67b1f0"
+        ranked_ids = [top] + [f"{i:08x}-1111-4222-8333-944445555666" for i in range(1, 30)]
+        vr_map = {f"vr-{29 - rank:02d}": {"id": rid, "record_name": f"Rank {rank}"}
+                  for rank, rid in enumerate(ranked_ids)}
+        ranked = [{"virtual_record_id": f"vr-{29 - rank:02d}"} for rank in range(30)]
+        prefetch_result = PrefetchResult(
+            formatted_context="Excerpts.",
+            final_results=sorted(ranked, key=lambda r: r["virtual_record_id"]),
+            virtual_record_id_to_result=vr_map,
+            tool_records=list(vr_map.values()),
+            citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+            ranked_results=ranked,
+        )
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(
+            self: object, context: Any, llm: object, chat_mode: object, *,  # noqa: ANN401
+            query: str, model_name: str = "", model_key: str | None = None,
+        ) -> tuple[Any, Any, Any, list[Any]]:
+            captured["context"] = context
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self: object, *, event_sink: Any, agent_output: Any = None, **_: object) -> dict[str, Any]:  # noqa: ANN401
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch(
+                "app.agents.chat_modes.setup.prefetch_retrieval",
+                new=AsyncMock(return_value=prefetch_result),
+            ),
+        ):
+            [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))]
+
+        mistyped = "8a2cfb7d-04fc-4647-8d43-5d0527800009"
+        hint = unresolved_id_hint(
+            [mistyped], requested=[mistyped],
+            known_record_names=captured["context"].tool_state.get("known_record_names"),
+        )
+        bullets = [line[2:] for line in hint.splitlines() if line.startswith("- ")]
+        assert bullets == [f"{ranked_ids[r]} (Rank {r})" for r in range(20)]
+        assert f"The closest to the id you used is {top} (Rank 0)." in hint
+
+    @pytest.mark.parametrize("thorough", [False, True])
+    async def test_prefetch_candidate_list_follows_the_full_read_policy(
+        self, answer_rule_env: SetEnv, thorough: bool,
+    ) -> None:
+        """Under THOROUGH_RETRIEVAL the list beside the prefetched blocks must
+        not offer "one visible fact is enough" while the prompt asks for full
+        reads; off, it is unchanged."""
+        answer_rule_env(THOROUGH_RETRIEVAL="true" if thorough else None)
+        record_obj = {
+            "id": "rec-1", "record_name": "AcmeMSA.pdf",
+            "block_containers": {"blocks": [{"type": "TEXT"} for _ in range(10)]},
+        }
+        prefetch_result = PrefetchResult(
+            formatted_context="[block 2 content]",
+            final_results=[{"virtual_record_id": "vr1", "block_index": 2}],
+            virtual_record_id_to_result={"vr1": record_obj},
+            tool_records=[record_obj],
+            citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+        )
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(
+            self: object, context: Any, llm: object, chat_mode: str, *, query: str, **_: object,  # noqa: ANN401
+        ) -> tuple[Any, ...]:
+            goal_obj = MagicMock(constraints=[])
+            captured["goal"] = goal_obj
+            agent = _stream_agent(MagicMock(success=True, error=None, output="done"))
+            return agent, MagicMock(), goal_obj, []
+
+        async def _fake_finalizer_run(
+            self: object, *, event_sink: Any, agent_output: Any = None, **_: object,  # noqa: ANN401
+        ) -> None:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "When does the MSA renew?"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.setup.prefetch_retrieval", new=AsyncMock(return_value=prefetch_result)),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))]
+
+        assert events[-1].startswith("event: complete\n")
+        constraint_text = " ".join(str(c) for c in captured["goal"].constraints)
+        assert "1 of 10 blocks" in constraint_text
+        assert ("single specific fact already visible" in constraint_text) is not thorough
+        assert ("A fact seen in one block still needs the rest of the record" in constraint_text) is thorough
+        assert ("read in full the records your answer rests on" in constraint_text) is thorough
+
+    async def test_prefetch_appends_candidate_list_when_records_are_incomplete(self) -> None:
+        """In prefetch mode the retrieval tool never runs, so candidate-list
+        computation must happen in chat_modes/setup.py.  Without it the model is handed
+        document blocks but has no coverage count ("you have 4 of 87 blocks")
+        and therefore no basis to judge whether a full fetch would add anything.
+
+        Regression test: "Summarize the document" in quick/internal-search mode
+        must yield a goal constraint that includes the candidate list."""
+        # Record with 10 blocks total; prefetch retrieved 2.
+        record_obj = {
+            "id": "rec-1",
+            "record_name": "AcmeMSA.pdf",
+            "block_containers": {
+                "blocks": [{"type": "TEXT"} for _ in range(10)]
+            },
+        }
+        final_results = [
+            {"virtual_record_id": "vr1", "block_index": 2},
+            {"virtual_record_id": "vr1", "block_index": 5},
+        ]
+        vr_map = {"vr1": record_obj}
+
+        prefetch_result = PrefetchResult(
+            formatted_context="[block 2 content]\n[block 5 content]",
+            final_results=final_results,
+            virtual_record_id_to_result=vr_map,
+            tool_records=[record_obj],
+            citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+        )
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            goal_obj = MagicMock(constraints=[])
+            captured["context"] = context
+            captured["goal"] = goal_obj
+            # Simulate what router.py would set for "summarize this document"
+            context.needs_whole_document = True
+            context.tool_state["needs_whole_document"] = True
+            agent = _stream_agent(MagicMock(success=True, error=None, output="done"))
+            return agent, MagicMock(), goal_obj, []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "Summarize this document"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch(
+                "app.agents.chat_modes.setup.prefetch_retrieval",
+                new=AsyncMock(return_value=prefetch_result),
+            ),
+        ):
+            events = [
+                chunk
+                async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))
+            ]
+
+        assert events[-1].startswith("event: complete\n")
+        constraint_text = " ".join(str(c) for c in captured["goal"].constraints)
+        # The candidate list must be present: the model cannot decide whether to
+        # fetch without knowing it holds 2 of 10 blocks.
+        assert "rec-1" in constraint_text, "candidate record_id must appear"
+        assert "2 of 10 blocks" in constraint_text, "coverage counts are the load-bearing part"
+        # Header must reflect the whole-document framing.
+        assert "whole-document content" in constraint_text
+
+    async def test_prefetch_candidate_list_appears_even_without_whole_document_bit(self) -> None:
+        """The coverage list must be visible regardless of needs_whole_document,
+        because a model blind to its own coverage cannot judge a fetch either way.
+        The bit only changes the header framing, not whether the list appears."""
+        record_obj = {
+            "id": "rec-2",
+            "record_name": "Spec.pdf",
+            "block_containers": {"blocks": [{"type": "TEXT"} for _ in range(20)]},
+        }
+        final_results = [{"virtual_record_id": "vr2", "block_index": 1}]
+        vr_map = {"vr2": record_obj}
+
+        prefetch_result = PrefetchResult(
+            formatted_context="[block 1 content]",
+            final_results=final_results,
+            virtual_record_id_to_result=vr_map,
+            tool_records=[record_obj],
+            citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+        )
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            goal_obj = MagicMock(constraints=[])
+            captured["context"] = context
+            captured["goal"] = goal_obj
+            # Bit is False — pinpoint query, but the list must still appear.
+            context.needs_whole_document = False
+            context.tool_state["needs_whole_document"] = False
+            agent = _stream_agent(MagicMock(success=True, error=None, output="done"))
+            return agent, MagicMock(), goal_obj, []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+            await event_sink.write({"event": "complete", "data": {"answer": "done"}})
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "who is the CEO"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch(
+                "app.agents.chat_modes.setup.prefetch_retrieval",
+                new=AsyncMock(return_value=prefetch_result),
+            ),
+        ):
+            events = [
+                chunk
+                async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))
+            ]
+
+        constraint_text = " ".join(str(c) for c in captured["goal"].constraints)
+        assert "rec-2" in constraint_text, "list must appear even without whole_document bit"
+        assert "1 of 20 blocks" in constraint_text
+        # Coverage is 5% (< low-coverage threshold), so the low-coverage header
+        # applies regardless of the whole-document bit being False.
+        assert "Coverage is incomplete (as low as 5%)" in constraint_text
+
+    async def test_prefetch_collected_images_extend_attachment_image_blocks(self) -> None:
+        """Prefetch has no tool result to carry a multipart `ToolMessage`, so
+        its `collected_images` must be merged into `context.
+        attachment_image_blocks` for the existing `shape_image_injection`
+        PRE_MODEL hook to deliver -- and the shared per-request `ImageBudget`
+        (from `context.tool_state`) must be the one handed to
+        `prefetch_retrieval`, not a fresh one, so the 50-image cap holds
+        across prefetch + search + fetch + attachments together."""
+        collected_images = [{
+            "ref": "ref1", "block_index": 0,
+            "image_url": {"url": "data:image/png;base64,xx"},
+            "virtual_record_id": "vr1",
+        }]
+        prefetch_result = PrefetchResult(
+            formatted_context="[image block]",
+            final_results=[{"virtual_record_id": "vr1"}],
+            virtual_record_id_to_result={"vr1": {"recordId": "r1"}},
+            tool_records=[{"recordId": "r1"}],
+            citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+            collected_images=collected_images,
+        )
+        captured: dict[str, Any] = {}
+        captured_prefetch_kwargs: dict[str, Any] = {}
+
+        async def _fake_prefetch_retrieval(**kwargs):
+            captured_prefetch_kwargs.update(kwargs)
+            return prefetch_result
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            goal = MagicMock(constraints=[])
+            captured["context"] = context
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), goal, []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch(
+                "app.agents.chat_modes.setup.prefetch_retrieval",
+                new=_fake_prefetch_retrieval,
+            ),
+        ):
+            events = [
+                chunk
+                async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))
+            ]
+
+        assert events[-1].startswith("event: complete\n")
+        assert captured["context"].attachment_image_blocks == collected_images
+        assert captured_prefetch_kwargs["image_budget"] is captured["context"].tool_state["image_budget"]
+
+    async def test_agent_run_failure_emits_error_event(self) -> None:
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            raise RuntimeError("transport exploded")
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs())]
+
+        assert len(events) == 1
+        assert events[0].startswith("event: error\n")
+        payload = json.loads(events[0].split("data: ", 1)[1].strip())
+        assert "transport exploded" not in payload["message"]
+
+    async def test_sandbox_manager_destroyed_on_completion(self) -> None:
+        sandbox_manager = MagicMock()
+        sandbox_manager.destroy_all = AsyncMock()
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            context.sandbox_manager = sandbox_manager
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+            await event_sink.write({"event": "complete", "data": {"answer": "ok"}})
+            return {"answer": "ok"}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs())]
+
+        assert events[-1].startswith("event: complete\n")
+        sandbox_manager.destroy_all.assert_awaited_once()
+
+    async def test_a_sandbox_cleanup_that_fails_is_one_classed_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.utils.logger import log_record_fields
+
+        sandbox_manager = MagicMock()
+        sandbox_manager.destroy_all = AsyncMock(side_effect=RuntimeError("container stuck"))
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            context.sandbox_manager = sandbox_manager
+            return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": "ok"}})
+            return {"answer": "ok"}
+
+        caplog.set_level(logging.DEBUG)
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**{**self._base_kwargs(), "log": logging.getLogger("test.bridge")})]
+
+        assert events[-1].startswith("event: complete\n")
+        (failed,) = [r for r in caplog.records if r.getMessage() == "agent_turn.cleanup_failed"]
+        assert (log_record_fields(failed)["step"], log_record_fields(failed)["error_class"]) == ("sandbox", "internal")
+
+
+    async def test_client_disconnect_mid_stream_cancels_producer_and_running_agent(self) -> None:
+        """Mirrors `run_agent_loop_stream()`'s disconnect-cancellation
+        contract (see `test_sse_bridge.py`'s "detached_and_orphaned_spawn_
+        tasks" regression tests): when the SSE consumer stops pulling
+        (client disconnect -> FastAPI cancels the task awaiting `body_
+        iterator.__anext__()`), `run_chat_stream()`'s `finally` block must
+        cancel the still-running `_produce()` task rather than let the
+        agent keep executing against an abandoned request."""
+        agent_stream_started = asyncio.Event()
+        agent_stream_cancelled = asyncio.Event()
+
+        async def _hanging_stream(goal, **kwargs):
+            agent_stream_started.set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                agent_stream_cancelled.set()
+                raise
+            return
+            yield  # pragma: no cover - marks this an async generator
+
+        agent = MagicMock()
+        agent.last_stream_result = None
+        agent.stream = _hanging_stream
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+            return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+        ):
+            agen = run_chat_stream(**self._base_kwargs())
+            pull_task = asyncio.ensure_future(agen.__anext__())
+            await asyncio.wait_for(agent_stream_started.wait(), timeout=2)
+
+            # Simulate the client going away: cancel the task that was
+            # awaiting the next SSE frame, exactly as Starlette does when
+            # the connection drops mid-response.
+            pull_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pull_task
+
+            await asyncio.wait_for(agent_stream_cancelled.wait(), timeout=2)
+            await agen.aclose()
+
+
+class TestConnectorFlagsReachChatState:
+    """Every flag the tool gates read must actually be PASSED to
+    `build_initial_state`, not just computed.
+
+    `has_code_connector` was a keyword-only parameter with a `False` default
+    that no caller ever supplied, so `tool_loader`'s
+    `has_code_connector and has_code_knowledge` gate was `False and ...` on
+    every request and the code-graph toolset never loaded — for an org with an
+    indexed GitLab repo and the tools plainly configured. The gate's own tests
+    passed throughout: they built the context with `has_code_connector=True`
+    by hand, which is the half that was never true in production.
+    """
+
+    @staticmethod
+    def _kwargs() -> dict[str, Any]:
+        config_service = AsyncMock()
+        config_service.get_config.return_value = {"providers": []}
+        return {
+            "query_info": {"query": "hello", "chatMode": "agent", "filters": {}},
+            "user_info": {"userId": "user-1", "orgId": "org-1"},
+            "llm": MagicMock(),
+            "policy": AGENT_POLICY,
+            "log": MagicMock(),
+            "retrieval_service": AsyncMock(),
+            "graph_provider": MagicMock(),
+            "reranker_service": MagicMock(),
+            "config_service": config_service,
+        }
+
+    async def _captured_kwargs(self, **connectors) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+
+        def _capture(*args, **kwargs) -> Never:
+            seen.update(kwargs)
+            raise RuntimeError("stop here — the call is what is under test")
+
+        instances_patch, prefetch_patch = _patch_connectors(**connectors)
+        with (
+            patch("app.modules.agents.qna.chat_state.build_initial_state", new=_capture),
+            instances_patch,
+            prefetch_patch,
+        ):
+            [_ async for _ in run_chat_stream(**self._kwargs())]
+        return seen
+
+    async def test_a_configured_repo_connector_reaches_build_initial_state(self) -> None:
+        seen = await self._captured_kwargs(has_code=True)
+        assert seen["has_code_connector"] is True
+
+    async def test_no_repo_connector_leaves_the_flag_off(self) -> None:
+        seen = await self._captured_kwargs(has_sql=True, has_slack=True)
+        assert seen["has_code_connector"] is False
+        assert seen["has_sql_connector"] is True, "the other flags still work"
+        assert seen["has_slack_connector"] is True
+
+    async def test_all_three_flags_come_from_the_one_instance_query(self) -> None:
+        """Three predicates, one round trip — adding the code flag must not
+        reintroduce a per-flag lookup on the pre-first-token path."""
+        seen = await self._captured_kwargs(has_sql=True, has_slack=True, has_code=True)
+        assert (seen["has_sql_connector"], seen["has_slack_connector"],
+                seen["has_code_connector"]) == (True, True, True)
+
+
+_TURN_LOG = logging.getLogger("tests.chat_bridge")
+_RUN_ID = "5d1e2f3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
+
+
+def _turn_kwargs(policy: ChatModePolicy = AGENT_POLICY, **overrides: object) -> dict[str, Any]:
+    kwargs = TestRunChatStream._base_kwargs(policy=policy)
+    kwargs["query_info"] = {**kwargs["query_info"], "runId": _RUN_ID, "query": "query-sentinel"}
+    kwargs["log"] = _TURN_LOG
+    return {**kwargs, **overrides}
+
+
+def _turn_ends(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    return [
+        {**log_record_fields(r), "level": r.levelno}
+        for r in caplog.records if r.getMessage() == "agent_turn.end"
+    ]
+
+
+async def _finalize(self, *, event_sink, agent_output=None, **kwargs) -> dict[str, Any]:
+    await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+    return {"answer": agent_output}
+
+
+def _event(event_type: EventType, payload: dict[str, Any], *, child: bool = False) -> AgentEvent:
+    root = RunContext(role_name="assistant", model="gpt-4")
+    return AgentEvent(event_type=event_type, run_context=root.child(role_name="sub") if child else root, payload=payload)
+
+
+# Two model turns, one tool call that failed; a sub-agent's turn inside it is not counted.
+_ONE_TOOL_TURN = (
+    _event(EventType.TURN_START, {"turn_index": 0}),
+    _event(EventType.TOOL_CALL, {"tool": "retrieval", "tool_call_id": "c1"}),
+    _event(EventType.TURN_START, {"turn_index": 0}, child=True),
+    _event(EventType.TOOL_RESULT, {"tool": "retrieval", "tool_call_id": "c1", "is_error": True}),
+    _event(EventType.TURN_START, {"turn_index": 1}),
+)
+
+
+def _creating(  # noqa: ANN202
+    result: AgentResult | None, clarifying: list[Any] | None = None, events: tuple[AgentEvent, ...] = (),
+):
+    def _agent() -> MagicMock:
+        agent = MagicMock()
+
+        async def _fake_stream(goal, **kwargs) -> AsyncIterator[AgentEvent]:
+            for event in events:
+                logging.getLogger("tests.chat_bridge.tool").info("tool ran")
+                yield event
+            agent.last_stream_result = result
+
+        agent.stream = _fake_stream
+        return agent
+
+    async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple:
+        context.usage_ledger.add("main", TokenUsage(input_tokens=50, output_tokens=5))
+        return _agent(), MagicMock(), MagicMock(constraints=[], description="g"), clarifying or []
+
+    return _fake_create
+
+
+@contextlib.contextmanager
+def _a_built_turn(create: Any) -> Iterator[None]:  # noqa: ANN401
+    sql_patch, slack_patch = _patch_connectors()
+    with (
+        patch(
+            "app.modules.agents.qna.chat_state.build_initial_state",
+            return_value={"org_id": "org-1", "user_id": "user-1", "query": "query-sentinel"},
+        ),
+        sql_patch,
+        slack_patch,
+        patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=create),
+        patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_finalize),
+        patch("app.agents.agent_loop.stream_bridge.emit_pre_run_clarification", new=AsyncMock()),
+    ):
+        yield
+
+
+@pytest.fixture
+def turn_caplog(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
+    caplog.set_level(logging.DEBUG)
+    return caplog
+
+
+class TestTheAssistantTurnEndLine:
+    """`run_chat_stream` ends every turn with one `agent_turn.end`, like the agent route."""
+
+    async def test_a_finished_turn(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        result = AgentResult(goal=Goal(description="g"), output="42", end_event="agent_complete")
+        with _a_built_turn(_creating(result, events=_ONE_TOOL_TURN)):
+            events = [chunk async for chunk in run_chat_stream(**_turn_kwargs(), model_name="gpt-4")]
+        _TURN_LOG.info("after the stream")
+
+        assert events[-1].startswith("event: complete\n")
+        [end] = _turn_ends(turn_caplog)
+        assert {k: end[k] for k in (
+            "stop_reason", "run_id", "mode", "model", "llm_calls", "tokens_in", "turns", "tool_calls", "tool_errors",
+            "level",
+        )} == {
+            "stop_reason": "done", "run_id": _RUN_ID, "mode": "agent", "model": "gpt-4",
+            "llm_calls": 1, "tokens_in": 50, "turns": 2, "tool_calls": 1, "tool_errors": 1, "level": logging.INFO,
+        }
+        assert "query-sentinel" not in str(end)
+        by_message = {r.getMessage(): log_record_fields(r) for r in turn_caplog.records}
+        assert by_message["tool ran"]["run_id"] == _RUN_ID  # bound inside the run
+        assert "run_id" not in by_message["after the stream"]  # and nowhere else
+
+    async def test_a_frame_that_cannot_be_written_ends_the_turn_as_an_error(
+        self, turn_caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        agent = MagicMock()
+
+        async def _stream(goal, **kwargs) -> AsyncIterator[Any]:
+            await _sink.write({"event": "status", "data": object()})
+            await asyncio.sleep(30)
+            return
+            yield  # pragma: no cover - marks this an async generator
+
+        agent.stream = _stream
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple:
+            nonlocal _sink
+            _sink = context.event_sink
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        _sink: Any = None
+        with _a_built_turn(_fake_create), pytest.raises(TypeError):
+            _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs())]
+
+        assert [(e["stop_reason"], e["error_class"]) for e in _turn_ends(turn_caplog)] == [("error", "internal")]
+
+    async def test_a_clarifying_question_is_awaiting_input(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        with _a_built_turn(_creating(None, clarifying=[MagicMock()])):
+            _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs())]
+
+        assert [e["stop_reason"] for e in _turn_ends(turn_caplog)] == ["awaiting_input"]
+
+    async def test_a_crash_is_one_failure_line_and_one_end(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> Never:
+            raise RuntimeError("transport exploded")
+
+        with _a_built_turn(_fake_create):
+            _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs())]
+
+        failed = [r for r in turn_caplog.records if r.getMessage() == "agent_turn.failed"]
+        assert [r.levelno for r in failed] == [logging.ERROR]
+        assert [(e["stop_reason"], e["error_class"], e["run_id"]) for e in _turn_ends(turn_caplog)] == [
+            ("error", "internal", _RUN_ID),
+        ]
+
+    async def test_a_build_failure_before_the_stream(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch("app.modules.agents.qna.chat_state.build_initial_state", side_effect=RuntimeError("boom")),
+            sql_patch,
+            slack_patch,
+        ):
+            _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs())]
+
+        [end] = _turn_ends(turn_caplog)
+        assert (end["stop_reason"], end["run_id"], end["level"]) == ("error", _RUN_ID, logging.INFO)
+        assert "code" in end
+
+    async def test_a_scope_the_user_cannot_read(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            sql_patch,
+            slack_patch,
+            patch(
+                "app.modules.retrieval.selection_scope.unreadable_scope_error",
+                new=AsyncMock(return_value=("selection_empty", "Nothing in your selection is available.")),
+            ),
+        ):
+            _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs(INTERNAL_SEARCH_POLICY))]
+
+        [end] = _turn_ends(turn_caplog)
+        assert (end["stop_reason"], end["error_class"], end["code"], end["level"]) == (
+            "error", "forbidden", "selection_empty", logging.WARNING,
+        )
+
+    async def test_a_selection_too_large(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        from app.modules.retrieval.selection_scope import SelectionTooLargeError
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            sql_patch,
+            slack_patch,
+            patch(
+                "app.modules.retrieval.selection_scope.prepare_turn_scope",
+                new=AsyncMock(side_effect=SelectionTooLargeError()),
+            ),
+        ):
+            _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs())]
+
+        [end] = _turn_ends(turn_caplog)
+        assert (end["stop_reason"], end["error_class"]) == ("error", "bad_request")
+
+    async def test_a_disconnect_mid_run_is_logged_once(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        started = asyncio.Event()
+        agent = MagicMock()
+        agent.last_stream_result = None
+
+        async def _hanging_stream(goal, **kwargs) -> AsyncIterator[Any]:
+            started.set()
+            await asyncio.sleep(10)
+            return
+            yield  # pragma: no cover - marks this an async generator
+
+        agent.stream = _hanging_stream
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple:
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        with _a_built_turn(_fake_create):
+            agen = run_chat_stream(**_turn_kwargs())
+            pull = asyncio.ensure_future(agen.__anext__())
+            await asyncio.wait_for(started.wait(), timeout=2)
+            pull.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pull
+            await agen.aclose()
+
+        assert [e["stop_reason"] for e in _turn_ends(turn_caplog)] == ["client_disconnect"]
+
+    async def test_a_disconnect_before_the_stream_starts(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        started = asyncio.Event()
+
+        async def _slow(*args: object, **kwargs: object) -> list[Any]:
+            started.set()
+            await asyncio.sleep(30)
+            return []
+
+        with (
+            patch("app.agents.chat_modes.setup.fetch_user_connector_instances", new=_slow),
+            patch("app.agents.chat_modes.setup.fetch_available_connectors", new=AsyncMock(return_value=[])),
+        ):
+            agen = run_chat_stream(**_turn_kwargs())
+            pull = asyncio.ensure_future(agen.__anext__())
+            await asyncio.wait_for(started.wait(), timeout=2)
+            pull.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pull
+
+        assert [(e["stop_reason"], e["run_id"]) for e in _turn_ends(turn_caplog)] == [("client_disconnect", _RUN_ID)]

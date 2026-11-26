@@ -7,6 +7,7 @@ import '@/lib/__tests__/test-i18n';
 import type { ArtifactListItem } from '../types';
 import { useArtifactsStore } from '../store';
 import ArtifactsPage from '../page';
+import { FilePreviewRenderer } from '@/app/components/file-preview/renderers/file-preview-renderer';
 
 // jsdom has no matchMedia; the artifacts header uses it for the mobile layout.
 Object.defineProperty(window, 'matchMedia', {
@@ -133,10 +134,10 @@ describe('artifact pptx preview', () => {
     await openArtifact(artifact({}));
 
     await waitFor(() => {
-      expect(api.streamRecord).toHaveBeenCalledWith('art-1', {
+      expect(api.streamRecord).toHaveBeenCalledWith('art-1', expect.objectContaining({
         version: 2,
         convertTo: 'application/pdf',
-      });
+      }));
     });
     await screen.findByText('preview-type:application/pdf');
     fireEvent.click(screen.getByRole('button', { name: 'Download preview' }));
@@ -149,11 +150,42 @@ describe('artifact pptx preview', () => {
     await openArtifact(artifact({ name: 'Quarterly deck', mimeType: 'application/vnd.ms-powerpoint' }));
 
     await waitFor(() => {
-      expect(api.streamRecord).toHaveBeenCalledWith('art-1', {
+      expect(api.streamRecord).toHaveBeenCalledWith('art-1', expect.objectContaining({
         version: 2,
         convertTo: 'application/pdf',
-      });
+      }));
     });
+  });
+
+  it('offers the original deck for download when the server cannot convert it (PPTXPREV)', async () => {
+    const unavailable = {
+      message: "Preview isn't available on this server",
+      statusCode: 503,
+      originalError: { response: { data: { error: { reasonCode: 'converter_unavailable' } } } },
+    };
+    api.streamRecord
+      .mockRejectedValueOnce(unavailable)
+      .mockResolvedValueOnce(new Blob(['PK'], { type: PPTX_MIME }));
+
+    await openArtifact(artifact({}));
+
+    await screen.findByText(`preview-type:${PPTX_MIME}`);
+    expect(api.streamRecord).toHaveBeenLastCalledWith('art-1', { version: 2 });
+    // The panel says it; the conversion's own failure is not toasted on top.
+    const { suppressErrorToast } = api.streamRecord.mock.calls[0][1];
+    expect(suppressErrorToast(unavailable)).toBe(true);
+    expect(suppressErrorToast({ statusCode: 500, message: 'boom' })).toBe(false);
+  });
+
+  it('shows the download state, not a PDF viewer, for a deck that was not converted', () => {
+    render(
+      <Theme>
+        <FilePreviewRenderer fileUrl="blob:deck" fileName="deck.pptx" fileType={PPTX_MIME} />
+      </Theme>,
+    );
+
+    expect(screen.getByText('Preview conversion failed. You can still download the file.')).toBeTruthy();
+    expect(screen.getByRole('link', { name: /Download File/ }).getAttribute('href')).toBe('blob:deck');
   });
 
   it('does not request conversion for a file the browser can preview as-is', async () => {

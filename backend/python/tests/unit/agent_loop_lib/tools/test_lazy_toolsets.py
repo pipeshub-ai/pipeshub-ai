@@ -124,7 +124,8 @@ class TestFetchToolsGrantCeiling:
         result = await tool.handle(ToolCall(id="c1", name="fetch_tools", arguments={"toolset": "jira"}), ctx)
 
         assert result.is_error is False
-        assert agent.visible_tools == {"jira_create_issue", "jira_search_issues"}
+        assert {t["name"] for t in result.content["tools"]} == {"jira_create_issue", "jira_search_issues"}
+        assert agent.visible_tools is None, "R4: the tool list never grows; tools are called through call_tool"
         assert "denied" not in result.content
 
     async def test_lazy_grant_ceiling_drops_ungranted_tools_from_response(self) -> None:
@@ -136,7 +137,7 @@ class TestFetchToolsGrantCeiling:
 
         result = await tool.handle(ToolCall(id="c1", name="fetch_tools", arguments={"toolset": "jira"}), ctx)
 
-        assert agent.visible_tools == {"jira_create_issue"}
+        assert agent.visible_tools is None
         returned_names = {t["name"] for t in result.content["tools"]}
         assert returned_names == {"jira_create_issue"}
         assert result.content["denied"] == {
@@ -151,7 +152,7 @@ class TestFetchToolsGrantCeiling:
 
         result = await tool.handle(ToolCall(id="c1", name="fetch_tools", arguments={"toolset": "jira"}), ctx)
 
-        assert agent.visible_tools is None  # nothing allowed -> never grown
+        assert agent.visible_tools is None
         assert result.content["tools"] == []
         assert set(result.content["denied"]["tools"]) == {"jira_create_issue", "jira_search_issues"}
 
@@ -174,7 +175,7 @@ class TestFetchToolsGrantCeiling:
             "message": "jira_search_issues is not callable yet. It becomes callable once "
                        "jira_create_issue creates an issue.",
         }]
-        assert agent.visible_tools == {"jira_create_issue"}
+        assert agent.visible_tools is None
 
     async def test_a_deferred_tool_whose_unlocking_tool_is_not_granted_stays_denied(self) -> None:
         registry = _registry_with_jira_and_slack()
@@ -202,7 +203,7 @@ class TestFetchToolsGrantCeiling:
 
         assert registry.is_materialized("mcp_create_issue")
         assert [t["name"] for t in result.content["tools"]] == ["mcp_create_issue"]
-        assert agent.visible_tools == {"mcp_create_issue"}
+        assert agent.visible_tools is None
 
 
 class TestSearchToolsGrantCeiling:
@@ -219,7 +220,7 @@ class TestSearchToolsGrantCeiling:
         assert result.content["denied"] == {
             "reason": "not_granted_to_this_agent", "tools": ["jira_search_issues"],
         }
-        assert agent.visible_tools == {"jira_create_issue"}
+        assert agent.visible_tools is None
 
     async def test_a_deferred_match_says_what_unlocks_it(self) -> None:
         registry = _registry_with_jira_and_slack()
@@ -235,7 +236,7 @@ class TestSearchToolsGrantCeiling:
         assert [d["tool"] for d in result.content["deferred"]] == ["jira_search_issues"]
         assert result.content["deferred"][0]["message"].endswith("once jira_create_issue creates an issue.")
 
-    async def test_eager_grant_none_makes_matches_visible(self) -> None:
+    async def test_matches_carry_their_input_schema_and_never_grow_the_list(self) -> None:
         registry = _registry_with_jira_and_slack()
         agent = _FakeAgent(_spec(tool_names=[]))
         ctx = _FakeRouteContext(agent=agent, spec=agent.spec)
@@ -244,8 +245,23 @@ class TestSearchToolsGrantCeiling:
         result = await tool.handle(ToolCall(id="c1", name="search_tools", arguments={"query": "jira issue"}), ctx)
 
         assert result.content["matches"]
-        matched_names = {m["name"] for m in result.content["matches"]}
-        assert matched_names.issubset(agent.visible_tools)
+        assert all(m["inputSchema"]["type"] == "object" for m in result.content["matches"])
+        assert agent.visible_tools is None
+        assert "how_to_call" not in result.content, "no call_tool registered: nothing to call through"
+
+    async def test_with_call_tool_registered_a_match_says_how_to_call_it(self) -> None:
+        from app.agent_loop_lib.tools.builtin.lazy_toolsets import CallToolTool
+
+        registry = _registry_with_jira_and_slack()
+        registry.register_tool(CallToolTool())
+        agent = _FakeAgent(_spec(tool_names=["jira_create_issue", "call_tool"]))
+        ctx = _FakeRouteContext(agent=agent, spec=agent.spec)
+
+        result = await SearchToolsTool(registry).handle(
+            ToolCall(id="c1", name="search_tools", arguments={"query": "jira issue"}), ctx,
+        )
+
+        assert "call_tool" in result.content["how_to_call"]
 
 
 class _FakeGlobalFallback:
@@ -319,9 +335,7 @@ class TestSearchToolsGlobalFallback:
 class _SlowMaterializeProvider:
     """A provider-backed toolset whose `materialize()` has a genuine
     `await` point, gated by an `asyncio.Event` — lets a test force two
-    `fetch_tools`/`search_tools` calls to have their `agent.visible_tools`
-    update land in an interleaved order, exercising the `|=`-not-stale-
-    snapshot fix (fix-registry-races)."""
+    `fetch_tools` calls to materialize in an interleaved order."""
 
     def __init__(self, name: str, tools: list[Tool]) -> None:
         from app.agent_loop_lib.tools.provider import ToolsetSummary
@@ -344,8 +358,8 @@ class _SlowMaterializeProvider:
         return self._tools_by_name[name]
 
 
-class TestConcurrentVisibilityGrowth:
-    async def test_two_concurrent_fetch_tools_calls_both_land_in_visible_tools(self) -> None:
+class TestConcurrentFetches:
+    async def test_two_concurrent_fetch_tools_calls_both_answer_their_tools(self) -> None:
         registry = ToolRegistry()
         jira_provider = _SlowMaterializeProvider("jira_mcp", [_SimpleTool("jira_create_issue", "/mcp/jira/create")])
         slack_provider = _SlowMaterializeProvider("slack_mcp", [_SimpleTool("slack_send_message", "/mcp/slack/send")])
@@ -365,9 +379,12 @@ class TestConcurrentVisibilityGrowth:
         await asyncio.sleep(0)
         jira_provider.release()
         slack_provider.release()
-        await asyncio.gather(task_jira, task_slack)
+        jira, slack = await asyncio.gather(task_jira, task_slack)
 
-        assert agent.visible_tools == {"jira_create_issue", "slack_send_message"}
+        assert [t["name"] for t in jira.content["tools"]] == ["jira_create_issue"]
+        assert [t["name"] for t in slack.content["tools"]] == ["slack_send_message"]
+        assert registry.is_materialized("jira_create_issue") and registry.is_materialized("slack_send_message")
+        assert agent.visible_tools is None
 
 
 class TestSearchToolsQueryGuidance:
@@ -399,3 +416,49 @@ class TestListToolsetsTool:
         result = await tool.execute(toolset="does_not_exist")
         assert "error" in result.data
         assert result.data["toolsets"]
+
+
+class _RefusingProvider:
+    """A server listed at first use whose listing admitted ``echo`` only: its other tools are refused, each with why."""
+
+    def __init__(self) -> None:
+        from app.agent_loop_lib.tools.provider import ToolsetSummary
+
+        self._summary = ToolsetSummary(name="echo_mcp", description="Echo server")
+        self._tools = {
+            "mcp_echo_echo": _SimpleTool("mcp_echo_echo", "/mcp/echo/echo", "Echo the text back"),
+            "mcp_echo_env_digest": _SimpleTool("mcp_echo_env_digest", "/mcp/echo/env_digest", "Echo env digest where"),
+            "mcp_echo_where": _SimpleTool("mcp_echo_where", "/mcp/echo/where", "Echo where env digest"),
+        }
+
+    def summary(self) -> Any:  # noqa: ANN401
+        return self._summary
+
+    def list_tools(self) -> list[Any]:
+        return [tool.to_summary() for tool in self._tools.values()]
+
+    async def materialize(self, name: str) -> Tool:
+        from harness_core.tools.provider import MaterializeRefused
+
+        if name != "mcp_echo_echo":
+            raise MaterializeRefused(name, "not_approved", f"{name} isn't approved for this chat.")
+        return self._tools[name]
+
+
+class TestSearchToolsHeldMatches:
+    """DOCK-R26-FU-1, on the loop: a refused or ungranted match never takes the place of a tool that can run, and a
+    refused one is named with why."""
+
+    async def test_refused_and_ungranted_matches_never_displace_the_allowed_tool(self) -> None:
+        registry = ToolRegistry()
+        registry.register_toolset_provider(_RefusingProvider())
+        for i in range(6):
+            registry.register_tool(_SimpleTool(f"env_digest_where_{i}", f"/other/{i}", "env digest where echo"))
+        grant = {"mcp_echo_echo", "mcp_echo_env_digest", "mcp_echo_where"}
+        result, _ = await SearchToolsTool(registry).resolve(
+            ToolCall(id="c1", name="search_tools", arguments={"query": "echo env digest where", "limit": 1}),
+            grant=grant,
+        )
+        assert [m["name"] for m in result.content["matches"]] == ["mcp_echo_echo"]
+        held = {h["tool"]: h["message"] for h in result.content["held"]}
+        assert "isn't approved" in next(iter(held.values()))

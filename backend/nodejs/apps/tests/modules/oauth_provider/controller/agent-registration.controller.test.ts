@@ -82,6 +82,7 @@ describe('agent registration HTTP surface', () => {
             claim_attempt_token: 't',
             user_code: '123456',
             action: 'approve',
+            scopes: ['org:read'],
             userId: 'evil',
             orgId: 'evil',
           },
@@ -95,6 +96,7 @@ describe('agent registration HTTP surface', () => {
         '123456',
         'approve',
         user,
+        ['org:read'],
       ]);
       expect(r.json.firstCall.args[0]).to.deep.equal({
         ok: true,
@@ -248,7 +250,7 @@ describe('agent registration HTTP surface', () => {
         { getAlgorithm: () => 'HS256' } as any,
         { getAllScopes: () => [] } as any,
         { oauthIssuer: 'https://pipeshub.test', mcpScopes: [] } as any,
-        { getOrCreate: sinon.stub().resolves(clientId) } as any,
+        { getOrCreate: sinon.stub().resolves(clientId), capScopes: (a: any) => a.allowedScopes } as any,
         false,
       );
     const config = async (c: OIDCProviderController) => {

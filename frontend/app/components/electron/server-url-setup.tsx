@@ -3,10 +3,8 @@
 import React, { useState, useLayoutEffect, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Heading, Button } from '@radix-ui/themes';
-import {
-  ELECTRON_SERVER_URL_NAVIGATION_EVENT,
-  requestElectronServerUrlChange,
-} from '@/lib/store/auth-store';
+import { requestElectronServerUrlChange } from '@/lib/store/auth-store';
+import { ELECTRON_SERVER_URL_NAVIGATION_EVENT } from '@/config';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import {
   isElectron,

@@ -25,6 +25,13 @@ from app.agent_loop_lib.sandbox.coding.base import (
     SandboxRef,
 )
 
+# Contract tests run real sandbox processes (node, npm install, containers).
+# `pytest-timeout`'s default signal method fires inside asyncio's selector on
+# macOS/Linux and breaks them, so they use the thread method. Set here, not in
+# conftest.py: pytest reads `pytestmark` from test modules only, and in the
+# conftest it left these tests on the suite's 30 s signal timeout.
+pytestmark = pytest.mark.timeout(180, method="thread")
+
 _SECRET_MARKERS = ("api_key", "secret", "password", "token", "credential")
 
 
@@ -279,7 +286,7 @@ class TestCapabilitiesMatchTheirFactory:
     the instance answers it at run time. Two literals would drift apart
     silently — the middleware decision is made from the factory's copy."""
 
-    @pytest.mark.parametrize("backend_name", ["local", "docker", "e2b"])
+    @pytest.mark.parametrize("backend_name", ["local", "docker", "e2b", "broker"])
     def test_factory_and_instance_agree(self, backend_name: str) -> None:
         from app.agent_loop_lib.sandbox.coding.factories import build_factory
 

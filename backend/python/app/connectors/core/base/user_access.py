@@ -28,6 +28,9 @@ STATUS_REVOKED = "revoked"
 # How the user connected: a token they pasted, or the source's own sign-in (OAuth).
 METHOD_TOKEN = "token"
 METHOD_OAUTH = "oauth"
+# Connected through the connector's own OAuth sign-in, which the user completed: no token of its own,
+# reads with the connector's credential (one token, refreshed by the connector; Notion rotates refresh tokens).
+METHOD_CONNECTOR = "connector"
 
 # A user whose last complete listing is older than this loses access until one completes.
 STALE_AFTER_MS = 48 * 60 * 60 * 1000
@@ -139,9 +142,13 @@ class UserConnection:
         }
 
     def public(self) -> dict[str, Any]:
-        """What the API may return: everything but the credential."""
+        """What the API may return: everything but the credential. The connector's sign-in is an OAuth
+        sign-in to the API, flagged by ``viaConnector``, so ``method`` keeps the values clients know."""
         data = self.to_dict()
         del data["token"], data["refreshToken"]
+        data["viaConnector"] = self.method == METHOD_CONNECTOR
+        if data["viaConnector"]:
+            data["method"] = METHOD_OAUTH
         return data
 
     @classmethod
@@ -172,16 +179,32 @@ async def get_connection(
     data = await config_service.get_config(
         connection_path(connector_id, user_id), use_cache=False, keep_in_cache=False, raise_on_error=True
     )
-    connection = UserConnection.from_dict(data) if isinstance(data, dict) and data.get("token") else None
+    connection = UserConnection.from_dict(data) if _holds_connection(data) else None
     if connection is not None and _removed(connection, await _removed_at(config_service, connector_id, user_id)):
         return None
     return connection
 
 
+def _after(key: str, prefix: str) -> str:
+    """What follows ``prefix`` in a listed key. A store may list keys under a scope of its own
+    (``{org}/services/...``), so the prefix is found, not assumed to start the key."""
+    at = key.find(prefix)
+    return key[at + len(prefix):] if at >= 0 else key
+
+
+def _holds_connection(data: object) -> bool:
+    return isinstance(data, dict) and bool(data.get("token") or data.get("method") == METHOD_CONNECTOR)
+
+
+async def was_removed(config_service: ConfigurationService, connector_id: str, user_id: str) -> bool:
+    """Whether the user's connection was ever removed (by them or an admin)."""
+    return bool(await _removed_at(config_service, connector_id, user_id))
+
+
 async def _removed_at(config_service: ConfigurationService, connector_id: str, user_id: str) -> int:
     """The user's latest removal (epoch ms), 0 when there was none."""
     prefix = f"{removals_prefix(connector_id)}{user_id}/"
-    times = [key.removeprefix(prefix) for key in await config_service.list_keys_in_directory(prefix)]
+    times = [_after(key, prefix) for key in await config_service.list_keys_in_directory(prefix)]
     return max((int(t) for t in times if t.isdigit()), default=0)
 
 
@@ -231,12 +254,12 @@ async def list_connections(config_service: ConfigurationService, connector_id: s
     connections: list[UserConnection] = []
     for key in await config_service.list_keys_in_directory(connections_prefix(connector_id)):
         data = await config_service.get_config(key, use_cache=False, keep_in_cache=False, raise_on_error=True)
-        if isinstance(data, dict) and data.get("token"):
+        if _holds_connection(data):
             connections.append(UserConnection.from_dict(data))
     # Removals listed after the connections were read: a stale write needs its removal marked before it,
     # so every marker that can make a connection read above stale is in this list.
     removed_users = {
-        key.removeprefix(removals_prefix(connector_id)).split("/", 1)[0]
+        _after(key, removals_prefix(connector_id)).split("/", 1)[0]
         for key in await config_service.list_keys_in_directory(removals_prefix(connector_id))
     }
     return [

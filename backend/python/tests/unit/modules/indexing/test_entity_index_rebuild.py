@@ -1079,7 +1079,6 @@ class TestAModelSwitchReRunsThePasses:
 
     async def test_points_are_rewritten_with_the_new_model(self) -> None:
         from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
-        from app.modules.transformers import entity_vectorstore
         from app.modules.transformers.entity_vectorstore import (
             EMBEDDING_MODEL_FIELD,
             EntityVectorStore,
@@ -1106,7 +1105,7 @@ class TestAModelSwitchReRunsThePasses:
         graph.sources[(RECORDS, "app-1")] = [_rec("r1", name="Q3 plan", group=None)]
 
         with embedding_models({"text-embedding-3-small": small}), \
-                patch.object(entity_vectorstore, "get_default_embedding_model", return_value=bge):
+                patch("app.utils.llm.get_default_embedding_model", return_value=bge):
             await _run_until_idle(_rebuilder(graph, store))
             first_stamp = db.stamp
             old = entity_index_marker(f"default:{DEFAULT_EMBEDDING_MODEL}:4", first_stamp)
@@ -1130,7 +1129,6 @@ class TestAModelSwitchReRunsThePasses:
         embeds with the old model. Its write lands after the pass has moved
         past the row, so the pass would never repair it."""
         from app.models.entities import EntityRecord
-        from app.modules.transformers import entity_vectorstore
         from app.modules.transformers.entity_vectorstore import (
             EMBEDDING_MODEL_FIELD,
             EntityVectorStore,
@@ -1162,7 +1160,7 @@ class TestAModelSwitchReRunsThePasses:
         graph.docs[APPS]["app-1"] = _app()
         graph.sources[(RECORDS, "app-1")] = [_rec("r1", name="Q3 plan", group=None)]
         models = {"text-embedding-3-small": small, "text-embedding-ada-002": ada}
-        with embedding_models(models), patch.object(entity_vectorstore, "get_default_embedding_model"):
+        with embedding_models(models), patch("app.utils.llm.get_default_embedding_model"):
             await _run_until_idle(_rebuilder(graph, leader))
             await other.embedding_fingerprint()
 
@@ -1298,11 +1296,9 @@ class TestACollectionEmptiedFromOutside:
 
     @staticmethod
     def _default_model() -> Any:  # noqa: ANN401
-        from app.modules.transformers import entity_vectorstore
         from tests.support.entity_vector_db import FakeEmbeddingModel
 
-        return patch.object(
-            entity_vectorstore, "get_default_embedding_model", return_value=FakeEmbeddingModel(1.0, 4),
+        return patch("app.utils.llm.get_default_embedding_model", return_value=FakeEmbeddingModel(1.0, 4),
         )
 
     @staticmethod

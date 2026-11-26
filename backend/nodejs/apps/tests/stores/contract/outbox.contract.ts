@@ -27,6 +27,11 @@ export interface OutboxFixture {
   setRow(id: string, set: Record<string, unknown>): Promise<void>;
   mailLogRows?(): Promise<Record<string, unknown>[]>;
   newId(): string;
+  /**
+   * Appends an event as the org would (PostgreSQL: in the org's unit; MongoDB names the org only in the event's
+   * value); absent: `repo.append`.
+   */
+  appendIn?(orgId: string, event: NewOutboxEvent): Promise<void>;
   /** What a row id looks like in this store (an ObjectId by default; a database sequence number on PostgreSQL). */
   idPattern?: RegExp;
 }
@@ -60,9 +65,9 @@ export function describeOutboxContract(fx: OutboxFixture): void {
     it('stores a pending event with string id and its headers', async () => {
       await repo.append(ev({ key: 'k1', value: '{"a":1}' }));
       const [row] = await fx.allRows();
-      expect(row._id).to.match(fx.idPattern ?? /^[0-9a-f]{24}$/);
+      expect(row!._id).to.match(fx.idPattern ?? /^[0-9a-f]{24}$/);
       expect(row).to.include({ topic: 'entity-events', key: 'k1', value: '{"a":1}', status: 'pending', attempts: 0 });
-      expect(row.headers).to.deep.equal({ eventType: 'userAdded' });
+      expect(row!.headers).to.deep.equal({ eventType: 'userAdded' });
     });
 
     it('is stored with the change that caused it: a rolled-back unit of work leaves no event (replica set)', async () => {
@@ -85,14 +90,35 @@ export function describeOutboxContract(fx: OutboxFixture): void {
     });
   });
 
+  describe('eraseDeliveredForOrg (WP114-FU-OUTBOX)', () => {
+    it("removes the org's delivered events in batches, never one still on its way, nor another org's", async () => {
+      const [org, elsewhere] = [fx.newId(), fx.newId()];
+      const append = (orgId: string, key: string) =>
+        (fx.appendIn ?? ((_o: string, e: NewOutboxEvent) => repo.append(e)))(
+          orgId,
+          ev({ key, orderingKey: `org:${orgId}`, value: JSON.stringify({ eventType: key, payload: { orgId } }) }),
+        );
+      for (const key of ['sent-1', 'sent-2', 'on-its-way']) await append(org, key);
+      await append(elsewhere, 'theirs');
+      for (const row of await fx.allRows()) {
+        if (row.key !== 'on-its-way') await fx.setRow(row._id, { status: 'published' });
+      }
+      expect(await repo.eraseDeliveredForOrg(org, 1)).to.equal(1);
+      expect(await repo.eraseDeliveredForOrg(org, 1)).to.equal(1);
+      expect(await repo.eraseDeliveredForOrg(org, 1)).to.equal(0);
+      expect((await fx.allRows()).map((row) => row.key).sort()).to.deep.equal(['on-its-way', 'theirs']);
+      expect((await repo.claimNext(OPTS))?.key).to.equal('on-its-way');
+    });
+  });
+
   describe('claimNext', () => {
     it('takes the oldest due event first and marks it publishing', async () => {
       const [a, b] = await appendAll([ev({ key: 'a', orderingKey: 'o1' }), ev({ key: 'b', orderingKey: 'o2' })]);
       const first = await repo.claimNext(OPTS);
-      expect(first?._id).to.equal(a._id);
+      expect(first?._id).to.equal(a!._id);
       expect(first?.status).to.equal('publishing');
       expect(first?.claimedAt).to.be.instanceOf(Date);
-      expect((await repo.claimNext(OPTS))?._id).to.equal(b._id);
+      expect((await repo.claimNext(OPTS))?._id).to.equal(b!._id);
       expect(await repo.claimNext(OPTS)).to.equal(null);
     });
 
@@ -107,25 +133,25 @@ export function describeOutboxContract(fx: OutboxFixture): void {
         ev({ key: 'second', orderingKey: 'user-1' }),
         ev({ key: 'other', orderingKey: 'user-2' }),
       ]);
-      expect((await repo.claimNext(OPTS))?._id).to.equal(free._id);
+      expect((await repo.claimNext(OPTS))?._id).to.equal(free!._id);
       expect(await repo.claimNext(OPTS)).to.equal(null);
-      await fx.setRow(blocker._id, { nextAttemptAt: new Date(Date.now() - 1) });
-      expect((await repo.claimNext(OPTS))?._id).to.equal(blocker._id);
+      await fx.setRow(blocker!._id, { nextAttemptAt: new Date(Date.now() - 1) });
+      expect((await repo.claimNext(OPTS))?._id).to.equal(blocker!._id);
       expect(await repo.claimNext(OPTS)).to.equal(null);
-      await repo.markPublished(blocker._id);
-      expect((await repo.claimNext(OPTS))?._id).to.equal(blocked._id);
+      await repo.markPublished(blocker!._id);
+      expect((await repo.claimNext(OPTS))?._id).to.equal(blocked!._id);
     });
 
     it('events of one entity created at the same instant are delivered in id order: the second waits for the first', async () => {
       const [first, second] = await appendAll([ev({ key: 'one', orderingKey: 'user-t' }), ev({ key: 'two', orderingKey: 'user-t' })]);
       const same = new Date(Date.now() - 100_000);
-      await fx.setCreatedAt(first._id, same);
-      await fx.setCreatedAt(second._id, same);
-      expect((await repo.claimNext(OPTS))?._id).to.equal(first._id);
+      await fx.setCreatedAt(first!._id, same);
+      await fx.setCreatedAt(second!._id, same);
+      expect((await repo.claimNext(OPTS))?._id).to.equal(first!._id);
       // the first is still publishing, so the second must not be handed to another dispatcher
       expect(await repo.claimNext(OPTS)).to.equal(null);
-      await repo.markPublished(first._id);
-      expect((await repo.claimNext(OPTS))?._id).to.equal(second._id);
+      await repo.markPublished(first!._id);
+      expect((await repo.claimNext(OPTS))?._id).to.equal(second!._id);
     });
 
     it('walks past a full batch of blocked rows to reach an unblocked one', async () => {
@@ -136,7 +162,7 @@ export function describeOutboxContract(fx: OutboxFixture): void {
         ev({ key: 'b3', orderingKey: 'u1' }),
         ev({ key: 'free', orderingKey: 'u2' }),
       ]);
-      expect((await repo.claimNext(OPTS))?._id).to.equal(rows[4]._id);
+      expect((await repo.claimNext(OPTS))?._id).to.equal(rows[4]!._id);
     });
 
     it('of several instances claiming at once, no event goes to two of them', async () => {
@@ -154,8 +180,8 @@ export function describeOutboxContract(fx: OutboxFixture): void {
       const [a] = await appendAll([ev()]);
       await repo.claimNext(OPTS);
       expect(await repo.claimNext(OPTS)).to.equal(null);
-      await fx.setRow(a._id, { claimedAt: new Date(Date.now() - 120_000) });
-      expect((await repo.claimNext(OPTS))?._id).to.equal(a._id);
+      await fx.setRow(a!._id, { claimedAt: new Date(Date.now() - 120_000) });
+      expect((await repo.claimNext(OPTS))?._id).to.equal(a!._id);
     });
   });
 
@@ -163,12 +189,12 @@ export function describeOutboxContract(fx: OutboxFixture): void {
     it('markPublished records the time and clears the claim and error', async () => {
       const [a] = await appendAll([ev()]);
       await repo.claimNext(OPTS);
-      await repo.markFailed(a._id, { attempts: 1, nextAttemptAt: new Date(Date.now() - 1), lastError: 'boom' });
+      await repo.markFailed(a!._id, { attempts: 1, nextAttemptAt: new Date(Date.now() - 1), lastError: 'boom' });
       await repo.claimNext(OPTS);
-      await repo.markPublished(a._id);
+      await repo.markPublished(a!._id);
       const [row] = await fx.allRows();
-      expect(row.status).to.equal('published');
-      expect(row.publishedAt).to.be.instanceOf(Date);
+      expect(row!.status).to.equal('published');
+      expect(row!.publishedAt).to.be.instanceOf(Date);
       expect(row).to.not.have.property('claimedAt');
       expect(row).to.not.have.property('lastError');
     });
@@ -177,10 +203,10 @@ export function describeOutboxContract(fx: OutboxFixture): void {
       const [a] = await appendAll([ev()]);
       await repo.claimNext(OPTS);
       const later = new Date(Date.now() + 3600_000);
-      await repo.markFailed(a._id, { attempts: 2, nextAttemptAt: later, lastError: 'broker down' });
+      await repo.markFailed(a!._id, { attempts: 2, nextAttemptAt: later, lastError: 'broker down' });
       const [row] = await fx.allRows();
       expect(row).to.include({ status: 'pending', attempts: 2, lastError: 'broker down' });
-      expect(row.nextAttemptAt.getTime()).to.equal(later.getTime());
+      expect(row!.nextAttemptAt.getTime()).to.equal(later.getTime());
       expect(row).to.not.have.property('claimedAt');
       expect(await repo.claimNext(OPTS)).to.equal(null);
     });
@@ -189,8 +215,8 @@ export function describeOutboxContract(fx: OutboxFixture): void {
       expect(await repo.statusCounts()).to.deep.equal({ pending: 0, publishing: 0, published: 0, failed: 0 });
       const rows = await appendAll([ev({ orderingKey: 'a' }), ev({ orderingKey: 'b' }), ev({ orderingKey: 'c' }), ev({ orderingKey: 'd' })]);
       await repo.claimNext(OPTS);
-      await repo.markPublished(rows[2]._id);
-      await fx.setRow(rows[3]._id, { status: 'failed' });
+      await repo.markPublished(rows[2]!._id);
+      await fx.setRow(rows[3]!._id, { status: 'failed' });
       expect(await repo.statusCounts()).to.deep.equal({ pending: 1, publishing: 1, published: 1, failed: 1 });
     });
   });

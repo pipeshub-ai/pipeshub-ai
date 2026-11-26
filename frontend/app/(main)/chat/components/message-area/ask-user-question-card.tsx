@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Badge,
   Button,
@@ -14,6 +14,8 @@ import {
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useInteractionFocus } from '../../hooks/use-interaction-focus';
+import { cardWords, groundingCardOf } from './grounding-card';
 import type {
   AskUserQuestionAnswer,
   AskUserQuestionItem,
@@ -22,7 +24,7 @@ import type {
   PendingAskUserQuestion,
 } from '../../types';
 
-const SOMETHING_ELSE_ID = '__something_else__';
+export const SOMETHING_ELSE_ID = '__something_else__';
 const NO_PREFERENCE_ID = '__no_preference__';
 const NO_PREFERENCE_LABEL = '[No preference]';
 const MAX_TYPED_ANSWER_CHARS = 1000;
@@ -89,11 +91,13 @@ export function normalizeAskUserQuestionPayload(
       ...(header ? { header } : {}),
     };
   });
+  const grounding = groundingCardOf(raw.grounding);
   return {
     name: 'ask_user_question',
     ...(raw.userIntent ? { userIntent: raw.userIntent } : {}),
     ...(raw.expiresAt ? { expiresAt: raw.expiresAt } : {}),
     ...(raw.repliedInChat ? { repliedInChat: true } : {}),
+    ...(grounding ? { grounding } : {}),
     questions,
   };
 }
@@ -292,7 +296,8 @@ export function parseAnswerMessage(
   return result;
 }
 
-function answerForQuestion(
+/** A question's answer from a card's answers: by its id, else (answers built against another payload) by its options. */
+export function answerForQuestion(
   q: AskUserQuestionItem,
   answers: Record<string, AskUserQuestionAnswer>,
   siblings: AskUserQuestionItem[],
@@ -364,6 +369,30 @@ function answeredOptions(
   return rows;
 }
 
+/**
+ * What the person chose, as one line for the question's receipt ("You answered: Ancient seven"): each question's
+ * chosen labels, questions apart by " · "; empty when nothing was chosen.
+ */
+export function answerSummary(
+  payload: AskUserQuestionPayload,
+  answers: Record<string, AskUserQuestionAnswer>,
+  somethingElseLabel: string,
+  noPreferenceLabel: string,
+  /** How an option's label reads (a grounding card's, in the reader's language: `cardWords`). */
+  shown: (label: string) => string = (label) => label,
+): string {
+  const questions = normalizeAskUserQuestionPayload(payload).questions;
+  return questions
+    .map((q) =>
+      answeredOptions(q, answerForQuestion(q, answers, questions), somethingElseLabel, noPreferenceLabel)
+        .filter((row) => row.selected)
+        .map((row) => shown(row.label))
+        .join(', '),
+    )
+    .filter(Boolean)
+    .join(' · ');
+}
+
 function validateQuestion(
   q: AskUserQuestionItem,
   a: AskUserQuestionAnswer | undefined,
@@ -384,6 +413,15 @@ function validateQuestion(
     }
   }
   return true;
+}
+
+/** Whether a question has a usable answer: one pick (any for a multi-select), and words wherever a pick asks for them. */
+export function isQuestionAnswered(
+  q: AskUserQuestionItem,
+  answers: Record<string, AskUserQuestionAnswer>,
+  siblings: AskUserQuestionItem[],
+): boolean {
+  return validateQuestion(q, answerForQuestion(q, answers, siblings), [SOMETHING_ELSE_OPTION]);
 }
 
 function firstUnansweredStep(
@@ -457,12 +495,19 @@ function hasVisibleSelections(
 export interface AskUserQuestionCardProps {
   payload: AskUserQuestionPayload;
   initialAnswers: Record<string, AskUserQuestionAnswer>;
-  status: 'pending' | 'submitted' | 'persisted';
+  status: 'pending' | 'submitted' | 'persisted' | 'skipped';
   sentAnswers?: Record<string, AskUserQuestionAnswer>;
   onAnswersChange?: (answers: Record<string, AskUserQuestionAnswer>) => void;
   onSubmit?: (message: string, answers: Record<string, AskUserQuestionAnswer>) => void;
+  /** The reply's one call to action (UXINT-4): it takes focus and answers Enter and Escape. */
+  active?: boolean;
   /** Question to open on. Defaults to the first one without an answer. */
   initialStep?: number;
+  /**
+   * CARDFAIL: the answer is being sent again after a failure: the card stays open on the person's choice, which
+   * cannot be changed or sent a second time meanwhile.
+   */
+  sending?: boolean;
 }
 
 export function AskUserQuestionCard({
@@ -472,11 +517,17 @@ export function AskUserQuestionCard({
   sentAnswers,
   onAnswersChange,
   onSubmit,
+  active = false,
   initialStep,
+  sending = false,
 }: AskUserQuestionCardProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const ids = useId().replace(/:/g, '');
+  const headingRef = useRef<HTMLHeadingElement>(null);
   const normalized = useMemo(() => normalizeAskUserQuestionPayload(payload), [payload]);
   const questions = normalized.questions;
+  // FU-2: a grounding card reads in the reader's language; its answer still sends the English it was asked in.
+  const words = useMemo(() => cardWords(normalized, t, i18n.language), [normalized, t, i18n.language]);
   const [answers, setAnswers] = useState<Record<string, AskUserQuestionAnswer>>(() => ({
     ...initialAnswers,
   }));
@@ -676,7 +727,15 @@ export function AskUserQuestionCard({
       ? t('askUserQuestion.expired')
       : null;
 
-  if (status === 'submitted' || status === 'persisted' || expired) {
+
+  const isActive = active && status === 'pending' && !expired;
+  const { onKeyDown } = useInteractionFocus(
+    isActive,
+    headingRef,
+    stepValid ? (isLast ? handleSubmit : handleContinue) : null,
+  );
+
+  if (status === 'submitted' || status === 'persisted' || status === 'skipped' || expired) {
     const heading =
       status === 'submitted'
         ? questions.length === 1
@@ -691,7 +750,7 @@ export function AskUserQuestionCard({
           <Flex direction="column" gap="1">
             {normalized.userIntent ? (
               <Text size="2" color="gray">
-                {normalized.userIntent}
+                {words.intent(normalized.userIntent)}
               </Text>
             ) : null}
             <Flex align="center" justify="between" gap="3" wrap="wrap">
@@ -744,7 +803,7 @@ export function AskUserQuestionCard({
                 return (
                   <Flex key={q.uuid} direction="column" gap="2">
                     <Text size="2" weight="medium">
-                      {i + 1}. {q.question}
+                      {i + 1}. {words.question(q.question)}
                     </Text>
                     <Flex direction="column" gap="2">
                       {rows.map((row) => (
@@ -756,14 +815,14 @@ export function AskUserQuestionCard({
                                 : (q.multiSelect ? 'check_box_outline_blank' : 'radio_button_unchecked')
                             }
                             size={18}
-                            color={row.selected ? 'var(--jade-11)' : 'var(--slate-8)'}
+                            color={row.selected ? 'var(--jade-11)' : 'var(--slate-11)'}
                           />
                           <Text
                             size="2"
                             weight={row.selected ? 'medium' : 'regular'}
                             color={row.selected ? undefined : 'gray'}
                           >
-                            {row.label}
+                            {words.label(row.label)}
                           </Text>
                         </Flex>
                       ))}
@@ -799,7 +858,7 @@ export function AskUserQuestionCard({
   const optionText = (opt: AskUserQuestionOption) => (
     <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
       <Text weight="medium">
-        {opt.id === SOMETHING_ELSE_ID ? t('askUserQuestion.somethingElse') : opt.label}
+        {opt.id === SOMETHING_ELSE_ID ? t('askUserQuestion.somethingElse') : words.label(opt.label)}
       </Text>
       {opt.description ? (
         <Text size="1" color="gray">
@@ -813,16 +872,36 @@ export function AskUserQuestionCard({
     <Card
       size="2"
       variant="surface"
+      role="region"
+      aria-labelledby={`${ids}-title`}
+      aria-describedby={isActive ? `${ids}-keys` : undefined}
+      data-testid="question-card"
+      data-status={status}
+      data-interaction-active={isActive ? 'true' : undefined}
+      onKeyDown={onKeyDown}
       style={{
-        marginTop: 'var(--space-4)',
+        marginTop: 'var(--space-2)',
         borderRadius: 'var(--radius-4)',
         border: '1px solid var(--accent-a6)',
+        ...(isActive ? { boxShadow: '0 0 0 2px var(--amber-7)' } : {}),
       }}
     >
+      {isActive ? (
+        <span id={`${ids}-keys`} style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' }}>
+          {t('interaction.keysHintQuestion')}
+        </span>
+      ) : null}
       <Flex direction="column" gap="4" p="4">
         <Flex direction="column" gap="1">
           <Flex align="center" justify="between" gap="3" wrap="wrap">
-            <Heading size="4" style={{ margin: 0 }}>
+            <Heading
+              size="4"
+              id={`${ids}-title`}
+              ref={headingRef}
+              tabIndex={-1}
+              data-testid="interaction-heading"
+              style={{ margin: 0, outlineOffset: 2, outlineColor: 'var(--accent-8)', borderRadius: 4 }}
+            >
               {total === 1
                 ? t('askUserQuestion.quickQuestionSingular')
                 : t('askUserQuestion.quickQuestionPlural')}
@@ -833,7 +912,7 @@ export function AskUserQuestionCard({
           </Flex>
           {normalized.userIntent ? (
             <Text size="2" color="gray">
-              {normalized.userIntent}
+              {words.intent(normalized.userIntent)}
             </Text>
           ) : null}
 
@@ -842,11 +921,11 @@ export function AskUserQuestionCard({
         <Flex direction="column" gap="1">
           {currentQ.header ? (
             <Badge size="1" variant="soft" color="gray" style={{ alignSelf: 'flex-start' }}>
-              {currentQ.header}
+              {words.header(currentQ.header)}
             </Badge>
           ) : null}
           <Heading as="h3" size="3" id={questionHeadingId} style={{ margin: 0 }}>
-            {step + 1}. {currentQ.question}
+            {step + 1}. {words.question(currentQ.question)}
           </Heading>
           <Flex align="center" gap="2">
             <Text size="1" color="gray">
@@ -865,7 +944,7 @@ export function AskUserQuestionCard({
             {augmentedOptions.map((opt, idx) => {
               const checked = selectedIds.includes(opt.id);
               const isSynthetic = opt.id === SOMETHING_ELSE_ID;
-              const isDisabled = false;
+              const isDisabled = sending;
               return (
                 <Flex key={`${opt.id}-${idx}`} direction="column" gap="2">
                   <label
@@ -905,12 +984,13 @@ export function AskUserQuestionCard({
           <RadioGroup.Root
             value={singleValue}
             onValueChange={(v) => handleRadioChange(currentQ, v)}
+            disabled={sending}
             aria-labelledby={questionHeadingId}
           >
             <Flex direction="column" gap="3">
               {augmentedOptions.map((opt, idx) => {
                 const isSynthetic = opt.id === SOMETHING_ELSE_ID;
-                const isDisabled = isSomethingElseSelected && !isSynthetic;
+                const isDisabled = sending || (isSomethingElseSelected && !isSynthetic);
                 const radioValue = String(idx);
                 const isSelected = singleValue === radioValue;
                 return (
@@ -954,12 +1034,12 @@ export function AskUserQuestionCard({
         )}
 
         <Flex align="center" justify="between" gap="3" wrap="wrap">
-          <Button type="button" variant="soft" onClick={handleBack} disabled={step === 0}>
+          <Button type="button" variant="soft" onClick={handleBack} disabled={step === 0 || sending} style={{ minHeight: 44 }}>
             {t('askUserQuestion.back')}
           </Button>
           <Flex gap="2" wrap="wrap">
             {total > 1 ? (
-              <Button type="button" variant="outline" color="gray" onClick={handleSkipAll}>
+              <Button type="button" variant="outline" color="gray" onClick={handleSkipAll} disabled={sending}>
                 {t('askUserQuestion.skipAll')}
               </Button>
             ) : null}
@@ -968,6 +1048,8 @@ export function AskUserQuestionCard({
               variant="outline"
               color="gray"
               onClick={handleSkip}
+              disabled={sending}
+              style={{ minHeight: 44 }}
             >
               {t('askUserQuestion.skip')}
             </Button>
@@ -975,7 +1057,8 @@ export function AskUserQuestionCard({
               <Button
                 type="button"
                 onClick={handleContinue}
-                disabled={!stepValid}
+                disabled={!stepValid || sending}
+                style={{ minHeight: 44 }}
               >
                 {t('askUserQuestion.next')}
               </Button>
@@ -983,7 +1066,8 @@ export function AskUserQuestionCard({
               <Button
                 type="button"
                 onClick={handleSubmit}
-                disabled={!stepValid}
+                disabled={!stepValid || sending}
+                style={{ minHeight: 44 }}
               >
                 {t('askUserQuestion.submit')}
               </Button>

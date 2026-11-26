@@ -1,3 +1,5 @@
+import type { TurnLabel } from '../../agent-harness/domain/turn-labels';
+import { historyLabel } from '../../../libs/repositories/agent-harness/history-source/mongo';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { unansweredCallError } from '../../../libs/errors/backend-error';
@@ -44,6 +46,7 @@ import {
   saveCompleteConversation,
   searchDegradedMeta,
 } from './utils';
+import { envFlag } from '../../../libs/utils/env-flags';
 
 /**
  * A non-streaming chat turn runs in three separate units of work:
@@ -62,8 +65,7 @@ const logger = Logger.getInstance({ service: 'Non-streaming chat' });
 export const CONVERSATION_ID_HEADER = 'X-Conversation-Id';
 
 // Read per call: tests and the replica-set suite toggle it without reloading this module.
-const isReplicaSet = (): boolean =>
-  process.env.REPLICA_SET_AVAILABLE === 'true';
+const isReplicaSet = (): boolean => envFlag('REPLICA_SET_AVAILABLE');
 
 const inShortTransaction = <T>(work: (tx: Tx) => Promise<T>): Promise<T> =>
   createUnitOfWork(isReplicaSet()).run(work);
@@ -80,6 +82,8 @@ export interface ContinuedConversation {
   conversation: ChatSessionDto;
   /** History before this turn, in the shape the AI backend expects. */
   previousConversations: ReturnType<typeof formatPreviousConversations>;
+  /** What that history read (FG2). */
+  historyLabel: TurnLabel;
   /** What this turn's history check settled, so the response check does not ask again. */
   access: Readable;
 }
@@ -111,7 +115,7 @@ export const continueConversation = async (
     // Read before the new question is appended, so the history is this turn's.
     const rows = (await getMessages(
       found._id,
-      { orgId: found.orgId },
+      { orgId: found.orgId, withLabels: true },
       tx,
     )) as Array<Record<string, unknown>>;
     await appendMessages(found._id, found.orgId, [userMessage], tx);
@@ -137,6 +141,7 @@ export const continueConversation = async (
         access,
       ),
     ),
+    historyLabel: historyLabel(rows as unknown as IMessage[]),
     access,
   };
 };

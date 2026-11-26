@@ -25,7 +25,7 @@ describe('Knowledge Base Routes', () => {
       (l: any) => l.route && l.route.path === path && l.route.methods[method],
     );
     if (!layer?.route) return null;
-    return layer.route.stack[layer.route.stack.length - 1].handle;
+    return layer.route.stack[layer.route.stack.length - 1]!.handle;
   }
 
   function findRouteStack(path: string, method: string) {
@@ -241,6 +241,7 @@ describe('Knowledge Base Routes', () => {
       sinon.stub(configurationUtil, 'getPlatformSettingsFromStore').resolves({
         fileUploadMaxSizeBytes: platformBytes,
         featureFlags: {},
+        agentHarness: { modelFamilies: null },
       });
 
       const handler = findHandler('/limits', 'get');
@@ -282,6 +283,7 @@ describe('Knowledge Base Routes', () => {
       sinon.stub(configurationUtil, 'getPlatformSettingsFromStore').resolves({
         fileUploadMaxSizeBytes: 1024,
         featureFlags: {},
+        agentHarness: { modelFamilies: null },
       });
 
       const handler = findHandler('/limits', 'get');
@@ -343,6 +345,7 @@ describe('Knowledge Base Routes', () => {
       sinon.stub(configurationUtil, 'getPlatformSettingsFromStore').resolves({
         fileUploadMaxSizeBytes: 2048,
         featureFlags: {},
+        agentHarness: { modelFamilies: null },
       });
 
       const processMiddleware = sinon
@@ -373,6 +376,7 @@ describe('Knowledge Base Routes', () => {
       sinon.stub(configurationUtil, 'getPlatformSettingsFromStore').resolves({
         fileUploadMaxSizeBytes: 2048,
         featureFlags: {},
+        agentHarness: { modelFamilies: null },
       });
 
       const uploadError = new Error('upload failed');
@@ -399,6 +403,7 @@ describe('Knowledge Base Routes', () => {
       sinon.stub(configurationUtil, 'getPlatformSettingsFromStore').resolves({
         fileUploadMaxSizeBytes: 2048,
         featureFlags: {},
+        agentHarness: { modelFamilies: null },
       });
 
       const setupError = new Error('setup failed');

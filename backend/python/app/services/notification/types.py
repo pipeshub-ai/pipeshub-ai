@@ -33,6 +33,10 @@ class NotificationType(str, Enum):
     # Agent toolsets ("Actions") — distinct from connectors.
     TOOLSET_AUTH_ERROR = "TOOLSET_AUTH_ERROR"
     ARTIFACT_SHARED = "ARTIFACT_SHARED"
+    # Code runs in chat kept waiting for a sandbox, were refused, or recovered.
+    SANDBOX_CAPACITY_WARNING = "SANDBOX_CAPACITY_WARNING"
+    SANDBOX_CAPACITY_CRITICAL = "SANDBOX_CAPACITY_CRITICAL"
+    SANDBOX_CAPACITY_RESOLVED = "SANDBOX_CAPACITY_RESOLVED"
     # Indexing: a model provider key put on hold after several documents kept failing on it, and its end.
     INDEXING_PROVIDER_ON_HOLD = "INDEXING_PROVIDER_ON_HOLD"
     INDEXING_PROVIDER_HOLD_RELEASED = "INDEXING_PROVIDER_HOLD_RELEASED"
@@ -46,6 +50,11 @@ class NotificationRecipientRole(str, Enum):
     ADMIN = "admin"
     STANDARD = "standard"
     EVERYONE = "everyone"
+
+class NotificationAudience(str, Enum):
+    """Who an event is for when it names no org. Node resolves the users."""
+
+    PLATFORM_ADMINS = "platformAdmins"
 
 class NotificationOutcome(str, Enum):
     """What ``BaseConnector.notify_and_wait`` did with a notification."""

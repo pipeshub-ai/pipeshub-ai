@@ -4,7 +4,8 @@ import { render, screen, cleanup } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import type { FlowNodeData } from '../../types';
 
-vi.mock('react-i18next', () => ({
+vi.mock('react-i18next', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-i18next')>()),
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 

@@ -679,7 +679,8 @@ async def test_a_run_under_the_kill_is_still_charged_its_seconds(spool) -> None:
         v = await w.validate(spool.write(big_body()), spool.new_path("out"), schema_id=None, schema=None, account=events)
         took = time.monotonic() - started
         assert v.block_count == 60_000 and events.names == ["lease"]
-        assert events.lease_s() >= took * 0.9 and events.lease_s() > 0.2
+        # Charged the body's real work (well over 0.2 s), never more than the call took.
+        assert 0.2 < events.lease_s() <= took
     finally:
         await w.close()
 

@@ -11,7 +11,7 @@ export type McpEditCredentialImpact = 'none' | 'all_credentials' | 'shared_crede
 
 type ConnectionTarget = Pick<
   McpServerInstancePayload,
-  'typeId' | 'transport' | 'url' | 'command' | 'args' | 'authMode' | 'tokenUrl' | 'useAdminAuth'
+  'typeId' | 'transport' | 'url' | 'command' | 'args' | 'authMode' | 'tokenUrl' | 'useAdminAuth' | 'egressHosts'
 >;
 
 // Mirrors `_CONNECTION_TARGET_FIELDS` in backend/python/app/api/routes/mcp_servers.py.
@@ -26,13 +26,17 @@ function comparable(value: unknown): string | null {
 
 /** Mirrors the update route's `_connection_target_changed` and `_settle_shared_credential`. */
 export function mcpEditCredentialImpact(
-  existing: Pick<McpMyServerEntry, keyof ConnectionTarget>,
+  existing: Pick<McpMyServerEntry, Exclude<keyof ConnectionTarget, 'egressHosts'> | 'declaredEgressHosts'>,
   next: ConnectionTarget
 ): McpEditCredentialImpact {
   const sameCatalogType = Boolean(next.typeId) && existing.typeId === next.typeId;
   // A catalog server connects to its template's target whatever the stored copy says.
   const fields = sameCatalogType ? (['authMode'] as const) : CONNECTION_TARGET_FIELDS;
   if (fields.some((field) => comparable(existing[field]) !== comparable(next[field]))) {
+    return 'all_credentials';
+  }
+  // The runner hands a STDIO server's secrets to every host it may reach (`declaredEgressHosts` on the backend).
+  if (!sameCatalogType && comparable(existing.declaredEgressHosts) !== comparable(next.egressHosts)) {
     return 'all_credentials';
   }
   const sharedBefore = usesSharedCredential(existing);

@@ -1,0 +1,14 @@
+id: quick-09-web-fetch-allowlisted
+category: quick
+chat_mode: quick
+task: Is the PipesHub status page at https://docs.pipeshub.test/status reporting any incident?
+fixtures:
+  web:
+    "https://docs.pipeshub.test/status": "All systems operational."
+script:
+  turns:
+    - reply: {tool_calls: [{id: c1, name: web__fetch_url, args: {url: "https://docs.pipeshub.test/status"}}]}
+    - reply: {text: "No incident: all systems operational."}
+grader:
+  - contains: operational
+  - effect: {op: web.fetch, count: 1, payload_contains: {host: docs.pipeshub.test}}

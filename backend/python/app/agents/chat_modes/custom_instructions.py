@@ -1,6 +1,6 @@
 """Org-level "Custom Instructions" resolver for Chat Assistant modes.
 
-Shared by `chat_modes.bridge` (`/chat/stream` Internal / Web Search) and the
+Shared by `chat_modes.setup` (`/chat/stream` Internal / Web Search) and the
 Universal Agent Mode path (`agentIdPlaceholder` → `run_agent_loop_stream`).
 Agent Builder agents (real agent IDs) skip this — they use their own
 `systemPrompt` / `instructions` instead.

@@ -1,0 +1,153 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "turn.aborted",
+      "data": {
+        "callId": "call_1",
+        "artifactId": "art_1",
+        "fileName": "q3.csv",
+        "mimeType": "text/csv",
+        "sizeBytes": 2048,
+        "artifactType": "SPREADSHEET",
+        "isTemporary": false,
+        "recordId": "art_1",
+        "documentId": "doc_1",
+        "version": 2,
+        "visibility": "VISIBLE"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes x.pipeshub.artifact.presented",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.artifact.presented",
+      "data": {
+        "callId": "call_1",
+        "artifactId": "art_1",
+        "fileName": "q3.csv",
+        "mimeType": "text/csv",
+        "sizeBytes": 2048,
+        "artifactType": "SPREADSHEET",
+        "isTemporary": false,
+        "recordId": "art_1",
+        "documentId": "doc_1",
+        "version": 2,
+        "visibility": "VISIBLE"
+      }
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.artifact.presented",
+      "data": {
+        "callId": "call_1",
+        "artifactId": "art_1",
+        "fileName": "q3.csv",
+        "mimeType": "text/csv",
+        "sizeBytes": 2048,
+        "artifactType": "SPREADSHEET",
+        "isTemporary": false,
+        "recordId": "art_1",
+        "documentId": "doc_1",
+        "version": 2,
+        "visibility": "VISIBLE",
+        "unexpected": true
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "sizeBytes cannot be negative",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.artifact.presented",
+      "data": {
+        "artifactId": "art_1",
+        "fileName": "q3.csv",
+        "mimeType": "text/csv",
+        "sizeBytes": -1,
+        "artifactType": "SPREADSHEET",
+        "isTemporary": false,
+        "visibility": "VISIBLE"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "unknown lifecycle",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.artifact.presented",
+      "data": {
+        "callId": "call_1",
+        "artifactId": "art_1",
+        "fileName": "q3.csv",
+        "mimeType": "text/csv",
+        "sizeBytes": 2048,
+        "artifactType": "SPREADSHEET",
+        "isTemporary": false,
+        "recordId": "art_1",
+        "documentId": "doc_1",
+        "version": 2,
+        "visibility": "VISIBLE",
+        "lifecycle": "pending"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  }
+]

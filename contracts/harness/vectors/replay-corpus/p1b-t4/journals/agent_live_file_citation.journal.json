@@ -1,0 +1,797 @@
+{
+ "scenario": "agent_live_file_citation",
+ "query": "What does the Q3 plan say?",
+ "runId": "run-golden",
+ "sessionId": "ses-1",
+ "events": [
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 1,
+   "type": "run.admitted",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "runKind": "interactive",
+    "principalRef": "p_user"
+   },
+   "runId": "run-golden"
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 2,
+   "type": "run.claimed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "attempt": 1,
+    "fence": 1,
+    "leaseMs": 30000
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 3,
+   "type": "run.spec_pinned",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "specDigest": "sha256:2f57d0816eae42c1ed12263b802d8b8ce009d669271e6d707a781f11cdbdee46",
+    "spec": {
+     "schemaVersion": 2,
+     "harnessMajor": 2,
+     "foldVersion": 1,
+     "runKind": "interactive",
+     "principalRef": "p_user-1",
+     "model": {
+      "policy": [
+       {
+        "provider": "openai",
+        "model": "gpt-x"
+       }
+      ],
+      "promptVersion": "pipeshub-agent-2026-09"
+     },
+     "grants": {
+      "tools": [],
+      "sandboxProfile": "none",
+      "egress": "none"
+     },
+     "budgets": {
+      "maxTurns": 15,
+      "maxTokens": 1000000,
+      "maxCostUsd": 5.0,
+      "activeTimeS": 3600,
+      "calendarDeadline": "2027-01-01T00:00:00Z",
+      "maxChildren": 0
+     },
+     "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "extensions": {
+      "x.pipeshub": {
+       "model": {
+        "modelKey": "model-1",
+        "modelName": "gpt-x"
+       },
+       "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": true
+       },
+       "mcp": [],
+       "skills": [],
+       "mounts": [],
+       "via": "session",
+       "agent": {
+        "agentKey": "agent-1",
+        "definitionVersion": 7,
+        "mode": "quick"
+       }
+      }
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 4,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "capabilities.observed": {}
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 5,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "pre_run.goal": {
+      "description": "What does the Q3 plan say?",
+      "requirements": [],
+      "successCriteria": [],
+      "constraints": [
+       "<original_query>What does the Q3 plan say?</original_query>"
+      ],
+      "gaps": [],
+      "mode": "quick",
+      "loopKind": "react",
+      "composeDomainAgents": false,
+      "wholeDocument": false,
+      "clarifyingQuestions": []
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 6,
+   "type": "x.pipeshub.goal.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "description": "What does the Q3 plan say?"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 7,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "user",
+    "textRef": {
+     "ref": "inline:V2hhdCBkb2VzIHRoZSBRMyBwbGFuIHNheT8=",
+     "hash": "sha256:2927c48d5a6846b5af798148b3af311381210b9925cbf604c0e16f6d02b13d5c",
+     "size": 26
+    },
+    "isFinal": false
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 8,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 9,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:f5fe3c1acc52e1816e2acf70d0527c436c01257ab8607e75bf296f5386e60d63",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 10,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiIiwidG9vbENhbGxzIjpbeyJhcmdzIjp7ImZpbGVfaWQiOiJmaWxlLXEzIn0sImlkIjoiY2FsbC1yZWFkIiwibmFtZSI6ImdvbGRlbmRyaXZlX19yZWFkX2ZpbGUifV19",
+     "hash": "sha256:0e3646a21721fcf821a50bcc05d2b920b73bd8ce32d47201081fa73159b85970",
+     "size": 105
+    },
+    "toolCalls": [
+     {
+      "callId": "call-read",
+      "modelName": "goldendrive__read_file",
+      "argsDigest": "sha256:21dfdfac5b55c81a96dbb53034979cf233a65793c2b265a1f5a9aa78943a10c6"
+     }
+    ],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W10sInRvb2xfY2FsbHMiOlt7ImlkIjoiY2FsbC1yZWFkIiwibmFtZSI6ImdvbGRlbmRyaXZlX19yZWFkX2ZpbGUiLCJhcmd1bWVudHMiOnsiZmlsZV9pZCI6ImZpbGUtcTMifX1dLCJ0cnVuY2F0ZWQiOmZhbHNlfQ==",
+     "hash": "sha256:69b96d3604bb4960163e1765cbeb9430aa40755571f127f88d62c2ffbcb62ccd",
+     "size": 151
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 11,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": ""
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 12,
+   "type": "x.pipeshub.tool.call_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-read",
+    "toolName": "goldendrive__read_file",
+    "argsJson": "{\"file_id\": \"file-q3\"}",
+    "argsSummary": "Read File"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 13,
+   "type": "tool.intent",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "toolId": "pipeshub@goldendrive/read_file",
+    "argsDigest": "sha256:21dfdfac5b55c81a96dbb53034979cf233a65793c2b265a1f5a9aa78943a10c6",
+    "effect": "read",
+    "sink": {
+     "egress": "external",
+     "argsLeaveBoundary": true
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 14,
+   "type": "tool.outcome",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "status": "ok",
+    "resultRef": {
+     "ref": "inline:eyJjb250ZW50IjoiW3tcInR5cGVcIjogXCJ0ZXh0XCIsIFwidGV4dFwiOiBcIjxyZWNvcmQ-XFxuUmVjb3JkIElEOiBsaXZlOjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAxXFxuTmFtZTogUTMgcGxhbi50eHRcXG5Db25uZWN0b3I6IERSSVZFXFxuVHlwZTogRklMRVxcbkV4dGVybmFsIElEOiBmaWxlLXEzXFxuQ3JlYXRlZCBBdDogTi9BXFxuTGFzdCBVcGRhdGVkIEF0OiBOL0FcXG5Db25uZWN0b3IgSUQ6IE4vQVxcbkV4dGVybmFsIFBhcmVudCBJRDogTi9BXFxuTUlNRSBUeXBlOiB0ZXh0L3BsYWluXFxuRmlsZSBJbmZvcm1hdGlvbjpcXG4qIEV4dGVuc2lvbjogdHh0XFxuXFxuUmVjb3JkIGJsb2NrcyAoc29ydGVkKTpcXG5cXG5cIn0sIHtcInR5cGVcIjogXCJ0ZXh0XCIsIFwidGV4dFwiOiBcIltyZWYxXSBUaGUgUTMgbGF1bmNoIG1vdmVzIHRvIE1heS5cXG5cXG5cIn0sIHtcInR5cGVcIjogXCJ0ZXh0XCIsIFwidGV4dFwiOiBcIltyZWYyXSBUaGUgUTMgYnVkZ2V0IGlzIHVuY2hhbmdlZC5cXG5cXG5cIn0sIHtcInR5cGVcIjogXCJ0ZXh0XCIsIFwidGV4dFwiOiBcIlxcbjwvcmVjb3JkPlxcblwifSwge1widHlwZVwiOiBcInRleHRcIiwgXCJ0ZXh0XCI6IFwiXFxuXFxuQ2l0ZSBmYWN0cyBmcm9tIHRoZSBhYm92ZSB1c2luZyBlYWNoIGJsb2NrJ3MgYFtyZWZOXWAgaWQgYXMgYSBtYXJrZG93biBsaW5rLCBlLmcuIFtzb3VyY2VdKHJlZjIpLiBEbyBOT1QgdXNlIGV4dGVybmFsIFVSTHMgYXMgY2l0YXRpb25zLlwifV0iLCJpc0Vycm9yIjpmYWxzZX0=",
+     "hash": "sha256:d7d74edf71e2784669dd726bba428e523fe5a93ba62eb47ff8f09f8e52679532",
+     "size": 776
+    },
+    "labels": {
+     "integrity": "internal"
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 15,
+   "type": "x.pipeshub.tool.result_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-read",
+    "status": "completed",
+    "content": "[{\"type\": \"text\", \"text\": \"<record>\\nRecord ID: live:00000000000000000000000000000001\\nName: Q3 plan.txt\\nConnector: DRIVE\\nType: FILE\\nExternal ID: file-q3\\nCreated At: N/A\\nLast Updated At: N/A\\nCon",
+    "resultSummary": "Completed successfully — 5 items"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 16,
+   "type": "x.pipeshub.citations.recorded",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "refs": [
+     {
+      "url": "/record/live:00000000000000000000000000000001/preview#blockIndex=0",
+      "ref": "ref1"
+     },
+     {
+      "url": "/record/live:00000000000000000000000000000001/preview#blockIndex=1",
+      "ref": "ref2"
+     }
+    ],
+    "toolRecords": [
+     {
+      "id": "live:00000000000000000000000000000001",
+      "org_id": "org-golden",
+      "record_name": "Q3 plan.txt",
+      "record_type": "FILE",
+      "record_status": "NOT_STARTED",
+      "external_record_id": "file-q3",
+      "version": 1,
+      "origin": "CONNECTOR",
+      "connector_name": "DRIVE",
+      "connector_id": "",
+      "mime_type": "text/plain",
+      "inherit_permissions": true,
+      "parsing_status": "NOT_STARTED",
+      "indexing_status": "QUEUED",
+      "extraction_status": "NOT_STARTED",
+      "preview_renderable": false,
+      "is_shared": false,
+      "shared_with_me_record_group_ids": [],
+      "hide_weburl": false,
+      "is_internal": false,
+      "is_placeholder": false,
+      "is_vlm_ocr_processed": false,
+      "block_containers": {
+       "block_groups": [],
+       "blocks": [
+        {
+         "id": "block-0",
+         "index": 0,
+         "type": "text",
+         "format": "txt",
+         "comments": [],
+         "data": "The Q3 launch moves to May."
+        },
+        {
+         "id": "block-1",
+         "index": 1,
+         "type": "text",
+         "format": "txt",
+         "comments": [],
+         "data": "The Q3 budget is unchanged."
+        }
+       ]
+      },
+      "child_record_ids": [],
+      "related_record_ids": [],
+      "related_external_records": [],
+      "is_dependent_node": false,
+      "is_file": true,
+      "extension": "txt",
+      "context_metadata": "Record ID: live:00000000000000000000000000000001\nName: Q3 plan.txt\nConnector: DRIVE\nType: FILE\nExternal ID: file-q3\nCreated At: N/A\nLast Updated At: N/A\nConnector ID: N/A\nExternal Parent ID: N/A\nMIME Type: text/plain\nFile Information:\n* Extension: txt",
+      "frontend_url": ""
+     }
+    ],
+    "callId": "call-read"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 17,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 18,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 2
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 19,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:1ae48b1b6a251e5d710b98d7c9309f5ff68332824a9fd95c40f5c58f142a7893",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 2
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 20,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiVGhlIFEzIGxhdW5jaCBtb3ZlcyB0byBNYXkgW3NvdXJjZV0ocmVmMSkgYW5kIHRoZSBidWRnZXQgaXMgdW5jaGFuZ2VkIFtzb3VyY2VdKHJlZjIpLiIsInRvb2xDYWxscyI6W119",
+     "hash": "sha256:78e96eb73596ebba9c37658d096aa42cc9d76936652c398f4d6b7f34df618bd5",
+     "size": 111
+    },
+    "toolCalls": [],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiVGhlIFEzIGxhdW5jaCBtb3ZlcyB0byBNYXkgW3NvdXJjZV0ocmVmMSkgYW5kIHRoZSBidWRnZXQgaXMgdW5jaGFuZ2VkIFtzb3VyY2VdKHJlZjIpLiJ9XSwidG9vbF9jYWxscyI6bnVsbCwidHJ1bmNhdGVkIjpmYWxzZX0=",
+     "hash": "sha256:21920cad3bc42f9bfa125577d9238d08e94c00ec2c410fe0c992a6da01a30b28",
+     "size": 179
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 21,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": "The Q3 launch moves to May [source](ref1) and the budget is unchanged [source](ref2)."
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 22,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "assistant",
+    "textRef": {
+     "ref": "inline:VGhlIFEzIGxhdW5jaCBtb3ZlcyB0byBNYXkgW3NvdXJjZV0ocmVmMSkgYW5kIHRoZSBidWRnZXQgaXMgdW5jaGFuZ2VkIFtzb3VyY2VdKHJlZjIpLg==",
+     "hash": "sha256:5a43464cc1c1df74a53297e44ce6db13166dbf77f1b62b4f5d22e9a501a849df",
+     "size": 85
+    },
+    "isFinal": true
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 23,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 2
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 24,
+   "type": "x.pipeshub.answer.finalized",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "outcome": "answered",
+    "answer": "The Q3 launch moves to May [1](/record/live:00000000000000000000000000000001/preview#blockIndex=0) and the budget is unchanged [2](/record/live:00000000000000000000000000000001/preview#blockIndex=1).",
+    "partTexts": [
+     "",
+     "The Q3 launch moves to May [1](/record/live:00000000000000000000000000000001/preview#blockIndex=0) and the budget is unchanged [2](/record/live:00000000000000000000000000000001/preview#blockIndex=1)."
+    ],
+    "citations": [
+     {
+      "content": "The Q3 launch moves to May.",
+      "chunkIndex": 1,
+      "metadata": {
+       "orgId": "org-golden",
+       "recordId": "live:00000000000000000000000000000001",
+       "virtualRecordId": "",
+       "recordName": "Q3 plan.txt",
+       "recordType": "FILE",
+       "recordVersion": 1,
+       "origin": "CONNECTOR",
+       "connector": "DRIVE",
+       "connectorId": "",
+       "blockText": "The Q3 launch moves to May.",
+       "blockType": "text",
+       "bounding_box": null,
+       "pageNum": [
+        null
+       ],
+       "extension": "txt",
+       "mimeType": "text/plain",
+       "blockNum": [
+        1
+       ],
+       "webUrl": "",
+       "previewRenderable": false,
+       "hideWeburl": false,
+       "updatedAt": null,
+       "sourceKind": "live",
+       "externalRecordId": "file-q3"
+      },
+      "citationType": "vectordb|document"
+     },
+     {
+      "content": "The Q3 budget is unchanged.",
+      "chunkIndex": 2,
+      "metadata": {
+       "orgId": "org-golden",
+       "recordId": "live:00000000000000000000000000000001",
+       "virtualRecordId": "",
+       "recordName": "Q3 plan.txt",
+       "recordType": "FILE",
+       "recordVersion": 1,
+       "origin": "CONNECTOR",
+       "connector": "DRIVE",
+       "connectorId": "",
+       "blockText": "The Q3 budget is unchanged.",
+       "blockType": "text",
+       "bounding_box": null,
+       "pageNum": [
+        null
+       ],
+       "extension": "txt",
+       "mimeType": "text/plain",
+       "blockNum": [
+        2
+       ],
+       "webUrl": "",
+       "previewRenderable": false,
+       "hideWeburl": false,
+       "updatedAt": null,
+       "sourceKind": "live",
+       "externalRecordId": "file-q3"
+      },
+      "citationType": "vectordb|document"
+     }
+    ],
+    "confidence": null
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 25,
+   "type": "run.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "outcome": "answered"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  }
+ ],
+ "live": [
+  {
+   "afterSeq": 6,
+   "frameId": "d:run-golden:1:1:1",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 1,
+    "n": 1,
+    "kind": "tool_call",
+    "data": {
+     "text": "arguments"
+    }
+   }
+  },
+  {
+   "afterSeq": 16,
+   "frameId": "d:run-golden:1:2:1",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 2,
+    "n": 1,
+    "kind": "text_delta",
+    "data": {
+     "text": "The Q3 launch moves to May [source](ref1) "
+    }
+   }
+  },
+  {
+   "afterSeq": 16,
+   "frameId": "d:run-golden:1:2:2",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 2,
+    "n": 2,
+    "kind": "text_delta",
+    "data": {
+     "text": "and the budget is unchanged [source](ref2)."
+    }
+   }
+  }
+ ]
+}

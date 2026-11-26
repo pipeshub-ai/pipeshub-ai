@@ -1,0 +1,26 @@
+[
+  {
+    "description": "an item without the viewer's authority",
+    "instance": {"items": [{"runId": "r1", "sessionId": "s1", "actorId": "u1", "runStatus": "waiting_approval", "runUpdatedAt": 1, "interactionId": "i1", "toolName": "t", "argsHidden": true}]}
+  },
+  {
+    "description": "a run status that does not exist",
+    "instance": {"items": [{"runId": "r1", "sessionId": "s1", "actorId": "u1", "runStatus": "sleeping", "runUpdatedAt": 1, "interactionId": "i1", "toolName": "t", "argsHidden": true, "authority": {"approve": false, "deny": true}}]}
+  },
+  {
+    "description": "a reason with an unknown sensitivity",
+    "instance": {"items": [{"runId": "r1", "sessionId": "s1", "actorId": "u1", "runStatus": "waiting_approval", "runUpdatedAt": 1, "interactionId": "i1", "toolName": "t", "argsHidden": true, "reason": {"rule": "flow", "sensitivity": "secret"}, "authority": {"approve": false, "deny": true}}]}
+  },
+  {
+    "description": "a destination's grant key leaking into the reason",
+    "instance": {"items": [{"runId": "r1", "sessionId": "s1", "actorId": "u1", "runStatus": "waiting_approval", "runUpdatedAt": 1, "interactionId": "i1", "toolName": "t", "argsHidden": false, "reason": {"rule": "flow", "sensitivity": "private", "grantKey": "k"}, "authority": {"approve": true, "deny": true}}]}
+  },
+  {
+    "description": "a pattern that is not a digest",
+    "instance": {"items": [{"runId": "r1", "sessionId": "s1", "actorId": "u1", "runStatus": "waiting_approval", "runUpdatedAt": 1, "interactionId": "i1", "toolName": "t", "argsHidden": false, "pattern": "jira.create_issue", "authority": {"approve": true, "deny": true}}]}
+  },
+  {
+    "description": "a question without its text",
+    "instance": {"items": [], "questions": [{"runId": "r1", "sessionId": "s1", "runUpdatedAt": 1, "callId": "c1", "options": [], "multiSelect": false, "moreQuestions": 0}]}
+  }
+]

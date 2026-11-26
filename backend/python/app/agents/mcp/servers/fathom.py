@@ -1,6 +1,12 @@
 """Fathom MCP server template — official remote server (Streamable HTTP), OAuth + DCR."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -30,6 +36,13 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Sign in with your Fathom account.",
         ),
         tags=["meetings", "transcripts", "notes"],
+        category=MCPCategory.MEETINGS,
+        capabilities=[
+            "Find what was said in a meeting",
+            "Get meeting summaries",
+            "List action items from calls",
+        ],
+        read_only=True,
     )
 )
 class FathomMCPServer:

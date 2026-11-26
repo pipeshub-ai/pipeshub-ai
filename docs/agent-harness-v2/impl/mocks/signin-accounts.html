@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Engine account sign-in</title>
+<style>
+:root {
+  --bg: #fbfbfa; --surface: #ffffff; --surface-2: #f3f4f1; --border: #dfe2dc; --text: #1d211c; --muted: #646b62;
+  --accent: #0f7a5c; --accent-ink: #ffffff; --accent-soft: #e2f3ec; --warn: #9a5b00; --warn-soft: #fdf1dc;
+  --danger: #b4231f; --bad-soft: #fde8e8; --focus: #2b6cd8; --code-bg: #eef0ec;
+  --shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141614; --surface: #1c1f1c; --surface-2: #232723; --border: #343a33; --text: #e8ebe6; --muted: #a2aa9f;
+    --accent: #3fbf93; --accent-ink: #0b1a14; --accent-soft: #173229; --warn: #f0b555; --warn-soft: #34290f;
+    --danger: #f06b66; --bad-soft: #3a1b1b; --focus: #7aa7ff; --code-bg: #2a2f29; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141614; --surface: #1c1f1c; --surface-2: #232723; --border: #343a33; --text: #e8ebe6; --muted: #a2aa9f;
+  --accent: #3fbf93; --accent-ink: #0b1a14; --accent-soft: #173229; --warn: #f0b555; --warn-soft: #34290f;
+  --danger: #f06b66; --bad-soft: #3a1b1b; --focus: #7aa7ff; --code-bg: #2a2f29; --shadow: none;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header.top { padding: 16px; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+header.top h1 { font-size: 17px; margin: 0; flex: 1 1 240px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tabs button { font: inherit; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 6px 12px; min-height: 36px; cursor: pointer; }
+.tabs button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+main { padding: 16px; max-width: 1080px; margin: 0 auto; }
+.intro { color: var(--muted); max-width: 760px; margin: 0 0 14px; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; align-items: start; }
+.frame { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+.frame > .cap { padding: 8px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.frame.phone { max-width: 390px; width: 100%; margin: 0 auto; }
+.page { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.page h2 { font-size: 16px; margin: 0; }
+.page .sub { color: var(--muted); margin: 0; font-size: 13px; }
+.section { border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.section h3 { font-size: 14px; margin: 0; }
+.acct { border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.acct:first-of-type { border-top: 0; padding-top: 0; }
+.acct .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.acct .name { font-weight: 600; flex: 1 1 auto; }
+.chip { font-size: 11px; border-radius: 999px; padding: 2px 8px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+.chip.ok { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.chip.wait { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.chip.bad { background: var(--bad-soft); color: var(--danger); border-color: transparent; }
+.what { font-size: 13px; color: var(--muted); margin: 0; }
+.box { background: var(--surface-2); border-radius: 8px; padding: 10px; font-size: 13px; }
+.box ul { margin: 4px 0 0; padding-left: 18px; }
+.code { font: 600 20px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 2px; background: var(--code-bg); border-radius: 6px; padding: 6px 10px; display: inline-block; }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn { font: inherit; border-radius: 8px; padding: 6px 12px; min-height: 36px; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.danger { color: var(--danger); }
+.btn[disabled] { opacity: .55; cursor: not-allowed; }
+a { color: var(--accent); }
+.switch-row { display: flex; gap: 10px; align-items: flex-start; border-top: 1px solid var(--border); padding-top: 8px; }
+.switch-row:first-of-type { border-top: 0; padding-top: 0; }
+.switch-row input { margin-top: 3px; width: 18px; height: 18px; accent-color: var(--accent); }
+.switch-row label { flex: 1; }
+.switch-row .hint { display: block; color: var(--muted); font-size: 12px; }
+.legend { margin-top: 18px; color: var(--muted); font-size: 12px; }
+@media (max-width: 420px) { main { padding: 16px 16px; } .code { font-size: 17px; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Connect your own Claude or ChatGPT account (mock)</h1>
+  <div class="tabs" role="group" aria-label="Account state">
+    <button type="button" data-s="off" aria-pressed="false">Not allowed by org</button>
+    <button type="button" data-s="available" aria-pressed="true">Available</button>
+    <button type="button" data-s="connecting" aria-pressed="false">Connecting</button>
+    <button type="button" data-s="connected" aria-pressed="false">Connected</button>
+    <button type="button" data-s="expired" aria-pressed="false">Expired</button>
+    <button type="button" data-s="disconnected" aria-pressed="false">Disconnected</button>
+  </div>
+</header>
+<main>
+  <p class="intro">SIGNIN mock. Left: <b>My AI accounts</b> (<code>/workspace/ai-accounts</code>), a new section above "Your API keys". Right: the admin switches on <b>AI accounts and access</b> (<code>/workspace/ai-access</code>). Pick a state above. Copy is the proposed English source text; all of it goes through i18n keys.</p>
+  <div class="cols">
+    <section class="frame phone" aria-label="My AI accounts, phone width">
+      <div class="cap">My AI accounts · 390 px</div>
+      <div class="page">
+        <h2>My AI accounts</h2>
+        <p class="sub">Use your own subscription for coding tasks you run. Your organization's accounts are used otherwise.</p>
+        <div class="section">
+          <h3>Coding engine sign-in</h3>
+          <div class="acct" id="claude"></div>
+          <div class="acct" id="chatgpt"></div>
+        </div>
+      </div>
+    </section>
+    <section class="frame" aria-label="Admin switches">
+      <div class="cap">AI accounts and access · admins</div>
+      <div class="page">
+        <h2>Personal subscriptions for coding engines</h2>
+        <p class="sub">Off by default. Personal plans are billed and governed by the vendor's consumer or workspace terms, not your organization's agreement.</p>
+        <div class="section">
+          <div class="switch-row"><input type="checkbox" id="a1" checked><label for="a1">Claude accounts in Claude Code<span class="hint">People sign in on Anthropic's page inside their own sandbox. PipesHub never receives the login. Requires Claude Code to be installed (admin-supplied image).</span></label></div>
+          <div class="switch-row"><input type="checkbox" id="a2"><label for="a2">ChatGPT accounts in Codex<span class="hint" id="a2hint">Waiting for OpenAI to approve this deployment. You cannot switch it on yet.</span></label></div>
+          <div class="switch-row"><input type="checkbox" id="a3"><label for="a3">Allow Pro / Plus / Max (consumer) plans<span class="hint">Off: only Team, Enterprise, Business and Edu plans can connect. Consumer plans may allow the vendor to train on your code.</span></label></div>
+        </div>
+        <div class="box">Claude sign-ins are refused for shared conversations, scheduled runs and other people's turns. Disconnecting someone is done from their row in Members; the sandbox is wiped at once.</div>
+      </div>
+    </section>
+  </div>
+  <p class="legend">States: not allowed by org · available · connecting (vendor page or device code) · connected as &lt;email · plan&gt; · expired (sign in again) · disconnected. "Claude Code" appears only as plain text naming the engine, never as a PipesHub feature name (Anthropic's branding rule).</p>
+</main>
+<script>
+const COPY = {
+  claude: {
+    title: 'Claude account', engine: 'You sign in to Claude Code itself, inside your own sandbox',
+    can: ['Run Claude Code with your Claude plan, only for tasks you start', 'Show your plan name and when the sign-in expires'],
+    cannot: ['See, keep or copy your password or login: Claude Code holds it inside your sandbox only', 'Use it for anyone else, shared conversations or scheduled runs', 'Keep it after the sandbox ends: you sign in again in a new conversation'],
+    vendor: "Anthropic", manage: 'https://claude.ai/settings', email: 'ada@example.com', plan: 'Claude Max',
+    code: '', step: 'Claude Code in your sandbox asked you to sign in. Open Anthropic\'s page, approve, then paste the code Anthropic shows you. It goes straight to Claude Code.'
+  },
+  chatgpt: {
+    title: 'ChatGPT account', engine: 'Used by Codex',
+    can: ['Run Codex with your ChatGPT plan, only for tasks you start', 'Show "Using your ChatGPT plan" on those tasks'],
+    cannot: ['See your password: you sign in on OpenAI\'s page', 'Use it for anyone else, shared conversations or scheduled runs'],
+    vendor: "OpenAI", manage: 'https://chatgpt.com/settings', email: 'ada@example.com', plan: 'ChatGPT Business',
+    code: 'WDJB-MJHT', step: 'Open OpenAI\'s page and enter this code. This page updates by itself.'
+  }
+};
+function list(items){ return '<ul>' + items.map(i => '<li>' + i + '</li>').join('') + '</ul>'; }
+function render(id, s){
+  const c = COPY[id]; let chip, body, btns;
+  const head = (cls, txt) => `<div class="head"><span class="name">${c.title}</span><span class="chip ${cls}">${txt}</span></div><p class="what">${c.engine}.</p>`;
+  switch (s) {
+    case 'off':
+      chip = head('', 'Not allowed by your organization');
+      body = `<p class="what">Your admin has not allowed personal ${c.vendor} accounts. Tasks use your organization's account.</p>`;
+      btns = `<button class="btn" disabled aria-disabled="true">Connect</button>`; break;
+    case 'available':
+      chip = head('', 'Not connected');
+      body = `<div class="box"><b>PipesHub can</b>${list(c.can)}<b>PipesHub cannot</b>${list(c.cannot)}</div><p class="what">Usage counts against your ${c.vendor} plan limits, not your organization's budget. ${c.vendor}'s terms for your plan apply.</p>`;
+      btns = `<button class="btn primary">${id === 'claude' ? 'Use my Claude account for my tasks' : 'Connect ChatGPT account'}</button>`; break;
+    case 'connecting':
+      chip = head('wait', 'Waiting for you to sign in');
+      body = `<div class="box">${c.step}<div style="margin:8px 0">${id === 'chatgpt' ? '<span class="code">' + c.code + '</span>' : '<label>Code from Anthropic <input type="password" autocomplete="off" style="font:inherit;width:100%;margin-top:4px;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text)"></label>'}</div><a href="#" onclick="return false">Open ${c.vendor} sign-in ↗</a> · expires in 14:52</div>`;
+      btns = `<button class="btn">Cancel</button>`; break;
+    case 'connected':
+      chip = head('ok', 'Connected');
+      body = `<p class="what">Signed in as <b>${c.email}</b> · ${c.plan}. Connected 18 Oct 2026. ${id === 'claude' ? 'Signed in inside 2 open conversations; each sandbox keeps its own sign-in until it ends.' : 'Renews automatically.'}</p><p class="what">Usage: see <a href="${c.manage}" target="_blank" rel="noopener">${c.vendor} usage ↗</a></p>`;
+      btns = `<button class="btn">Use for my tasks: On</button><button class="btn danger">Disconnect</button>`; break;
+    case 'expired':
+      chip = head('bad', 'Sign-in expired');
+      body = `<p class="what">${c.vendor} ended this sign-in (expired, or revoked from your ${c.vendor} settings). New tasks use your organization's account until you sign in again; a task that was running stopped at its next model call.</p>`;
+      btns = `<button class="btn primary">Sign in again</button><button class="btn danger">Remove</button>`; break;
+    case 'disconnected':
+      chip = head('', 'Disconnected');
+      body = `<p class="what">Disconnected 18 Oct 2026 15:02. The login was ${id === 'claude' ? 'wiped from your sandbox' : 'revoked at OpenAI and deleted'}. To also remove PipesHub from your ${c.vendor} account, see <a href="${c.manage}" target="_blank" rel="noopener">${c.vendor} settings ↗</a>.</p>`;
+      btns = `<button class="btn primary">Connect again</button>`; break;
+  }
+  document.getElementById(id).innerHTML = chip + body + `<div class="btns">${btns}</div>`;
+}
+function show(s){
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.s === s)));
+  render('claude', s); render('chatgpt', s);
+}
+document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => show(b.dataset.s)));
+show('available');
+</script>
+</body>
+</html>

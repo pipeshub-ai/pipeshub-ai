@@ -1,0 +1,72 @@
+{"id": "evt_001", "type": "server.connected", "properties": {}}
+{"id": "evt_002", "type": "session.created", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "playful-moon", "version": "1.18.34", "projectID": "<SHA1>", "directory": "<SCRATCH>/run/wsf", "path": "", "title": "New session - 2026-10-02T11:01:40.656Z", "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938900656, "updated": 1790938900656}}}}
+{"id": "evt_003", "type": "session.updated", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "playful-moon", "projectID": "<SHA1>", "directory": "<SCRATCH>/run/wsf", "path": "", "title": "New session - 2026-10-02T11:01:40.656Z", "agent": "pipeshub", "model": {"id": "fake-model", "providerID": "pipeshub", "variant": "default"}, "version": "1.18.34", "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938900656, "updated": 1790938900677}}}}
+{"id": "evt_004", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_001", "role": "user", "sessionID": "ses_001", "time": {"created": 1790938900677}, "agent": "pipeshub", "model": {"providerID": "pipeshub", "modelID": "fake-model"}}}}
+{"id": "evt_005", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"type": "text", "text": "summarise the repo", "messageID": "msg_001", "sessionID": "ses_001", "id": "prt_001"}, "time": 1790938900682}}
+{"id": "evt_006", "type": "session.updated", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "playful-moon", "projectID": "<SHA1>", "directory": "<SCRATCH>/run/wsf", "path": "", "title": "New session - 2026-10-02T11:01:40.656Z", "agent": "pipeshub", "model": {"id": "fake-model", "providerID": "pipeshub", "variant": "default"}, "version": "1.18.34", "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938900656, "updated": 1790938900684}}}}
+{"id": "evt_007", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "busy"}}}
+{"id": "evt_008", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_002", "parentID": "msg_001", "role": "assistant", "mode": "pipeshub", "agent": "pipeshub", "path": {"cwd": "<SCRATCH>/run/wsf", "root": "<SCRATCH>/run/wsf"}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "modelID": "fake-model", "providerID": "pipeshub", "time": {"created": 1790938900936}, "sessionID": "ses_001"}}}
+{"id": "evt_009", "type": "session.updated", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "playful-moon", "projectID": "<SHA1>", "directory": "<SCRATCH>/run/wsf", "path": "", "title": "New session - 2026-10-02T11:01:40.656Z", "agent": "pipeshub", "model": {"id": "fake-model", "providerID": "pipeshub", "variant": "default"}, "version": "1.18.34", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938900656, "updated": 1790938900957}}}}
+{"id": "evt_010", "type": "session.diff", "properties": {"sessionID": "ses_001", "diff": []}}
+{"id": "evt_011", "type": "plugin.added", "properties": {"id": "core/config-reference"}}
+{"id": "evt_012", "type": "plugin.added", "properties": {"id": "agent"}}
+{"id": "evt_013", "type": "plugin.added", "properties": {"id": "command"}}
+{"id": "evt_014", "type": "plugin.added", "properties": {"id": "skill"}}
+{"id": "evt_015", "type": "plugin.added", "properties": {"id": "models-dev"}}
+{"id": "evt_016", "type": "plugin.added", "properties": {"id": "config-agent"}}
+{"id": "evt_017", "type": "plugin.added", "properties": {"id": "config-command"}}
+{"id": "evt_018", "type": "plugin.added", "properties": {"id": "config-skill"}}
+{"id": "evt_019", "type": "plugin.added", "properties": {"id": "alibaba"}}
+{"id": "evt_020", "type": "plugin.added", "properties": {"id": "amazon-bedrock"}}
+{"id": "evt_021", "type": "plugin.added", "properties": {"id": "anthropic"}}
+{"id": "evt_022", "type": "plugin.added", "properties": {"id": "azure-cognitive-services"}}
+{"id": "evt_023", "type": "plugin.added", "properties": {"id": "azure"}}
+{"id": "evt_024", "type": "plugin.added", "properties": {"id": "cerebras"}}
+{"id": "evt_025", "type": "plugin.added", "properties": {"id": "cloudflare-ai-gateway"}}
+{"id": "evt_026", "type": "plugin.added", "properties": {"id": "cloudflare-workers-ai"}}
+{"id": "evt_027", "type": "plugin.added", "properties": {"id": "cohere"}}
+{"id": "evt_028", "type": "plugin.added", "properties": {"id": "deepinfra"}}
+{"id": "evt_029", "type": "plugin.added", "properties": {"id": "gateway"}}
+{"id": "evt_030", "type": "plugin.added", "properties": {"id": "github-copilot"}}
+{"id": "evt_031", "type": "plugin.added", "properties": {"id": "gitlab"}}
+{"id": "evt_032", "type": "plugin.added", "properties": {"id": "google"}}
+{"id": "evt_033", "type": "plugin.added", "properties": {"id": "google-vertex-anthropic"}}
+{"id": "evt_034", "type": "plugin.added", "properties": {"id": "google-vertex"}}
+{"id": "evt_035", "type": "plugin.added", "properties": {"id": "groq"}}
+{"id": "evt_036", "type": "plugin.added", "properties": {"id": "kilo"}}
+{"id": "evt_037", "type": "plugin.added", "properties": {"id": "llmgateway"}}
+{"id": "evt_038", "type": "plugin.added", "properties": {"id": "mistral"}}
+{"id": "evt_039", "type": "plugin.added", "properties": {"id": "nvidia"}}
+{"id": "evt_040", "type": "plugin.added", "properties": {"id": "opencode"}}
+{"id": "evt_041", "type": "plugin.added", "properties": {"id": "snowflake-cortex"}}
+{"id": "evt_042", "type": "plugin.added", "properties": {"id": "openai-compatible"}}
+{"id": "evt_043", "type": "plugin.added", "properties": {"id": "openai"}}
+{"id": "evt_044", "type": "plugin.added", "properties": {"id": "openrouter"}}
+{"id": "evt_045", "type": "plugin.added", "properties": {"id": "perplexity"}}
+{"id": "evt_046", "type": "plugin.added", "properties": {"id": "sap-ai-core"}}
+{"id": "evt_047", "type": "plugin.added", "properties": {"id": "togetherai"}}
+{"id": "evt_048", "type": "catalog.updated", "properties": {}}
+{"id": "evt_049", "type": "plugin.added", "properties": {"id": "vercel"}}
+{"id": "evt_050", "type": "plugin.added", "properties": {"id": "venice"}}
+{"id": "evt_051", "type": "plugin.added", "properties": {"id": "xai"}}
+{"id": "evt_052", "type": "plugin.added", "properties": {"id": "zenmux"}}
+{"id": "evt_053", "type": "plugin.added", "properties": {"id": "dynamic-provider"}}
+{"id": "evt_054", "type": "plugin.added", "properties": {"id": "config-plugin"}}
+{"id": "evt_055", "type": "plugin.added", "properties": {"id": "config-provider"}}
+{"id": "evt_056", "type": "plugin.added", "properties": {"id": "variant"}}
+{"id": "evt_057", "type": "reference.updated", "properties": {}}
+{"id": "evt_058", "type": "integration.updated", "properties": {}}
+{"id": "evt_059", "type": "catalog.updated", "properties": {}}
+{"id": "evt_060", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "busy"}}}
+{"id": "evt_061", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_002", "messageID": "msg_002", "sessionID": "ses_001", "type": "step-start"}, "time": 1790938901542}}
+{"id": "evt_062", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_003", "messageID": "msg_002", "sessionID": "ses_001", "type": "text", "text": "", "time": {"start": 1790938901544}}, "time": 1790938901544}}
+{"id": "evt_063", "type": "message.part.delta", "properties": {"sessionID": "ses_001", "messageID": "msg_002", "partID": "prt_003", "field": "text", "delta": "ok"}}
+{"id": "evt_064", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_003", "messageID": "msg_002", "sessionID": "ses_001", "type": "text", "text": "ok", "time": {"start": 1790938901544, "end": 1790938901546}}, "time": 1790938901546}}
+{"id": "evt_065", "type": "message.part.updated", "properties": {"sessionID": "ses_001", "part": {"id": "prt_004", "reason": "stop", "messageID": "msg_002", "sessionID": "ses_001", "type": "step-finish", "tokens": {"total": 15, "input": 10, "output": 5, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "cost": 0}, "time": 1790938901548}}
+{"id": "evt_066", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_002", "parentID": "msg_001", "role": "assistant", "mode": "pipeshub", "agent": "pipeshub", "path": {"cwd": "<SCRATCH>/run/wsf", "root": "<SCRATCH>/run/wsf"}, "cost": 0, "tokens": {"total": 15, "input": 10, "output": 5, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "modelID": "fake-model", "providerID": "pipeshub", "time": {"created": 1790938900936, "completed": 1790938901550}, "sessionID": "ses_001", "finish": "stop"}}}
+{"id": "evt_067", "type": "message.updated", "properties": {"sessionID": "ses_001", "info": {"id": "msg_002", "parentID": "msg_001", "role": "assistant", "mode": "pipeshub", "agent": "pipeshub", "path": {"cwd": "<SCRATCH>/run/wsf", "root": "<SCRATCH>/run/wsf"}, "cost": 0, "tokens": {"total": 15, "input": 10, "output": 5, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "modelID": "fake-model", "providerID": "pipeshub", "time": {"created": 1790938900936, "completed": 1790938901550}, "sessionID": "ses_001", "finish": "stop"}}}
+{"id": "evt_068", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "busy"}}}
+{"id": "evt_069", "type": "session.status", "properties": {"sessionID": "ses_001", "status": {"type": "idle"}}}
+{"id": "evt_070", "type": "session.idle", "properties": {"sessionID": "ses_001"}}
+{"id": "evt_071", "type": "session.updated", "properties": {"sessionID": "ses_001", "info": {"id": "ses_001", "slug": "playful-moon", "projectID": "<SHA1>", "directory": "<SCRATCH>/run/wsf", "path": "", "title": "New session - 2026-10-02T11:01:40.656Z", "agent": "pipeshub", "model": {"id": "fake-model", "providerID": "pipeshub", "variant": "default"}, "version": "1.18.34", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 10, "output": 5, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1790938900656, "updated": 1790938901551}}}}
+{"id": "evt_072", "type": "session.diff", "properties": {"sessionID": "ses_001", "diff": []}}

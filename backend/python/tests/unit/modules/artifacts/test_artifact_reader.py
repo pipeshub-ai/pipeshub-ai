@@ -52,6 +52,7 @@ from app.modules.transformers.blob_storage import (
 )
 from app.modules.transformers.stored_write import write_id
 from app.modules.transformers.transformer import TransformContext
+from harness_core.testing.virtual_time import run_on_virtual_time
 from tests.unit.modules.artifacts.fake_storage import FakeStorage
 
 if TYPE_CHECKING:
@@ -588,30 +589,37 @@ class TestShadowReader:
         assert served is STORED
         assert shadow_outcomes == [("unavailable", None)]
 
-    async def test_a_slow_artifact_read_is_cut_off_at_the_grace(
+    def test_a_slow_artifact_read_is_cut_off_at_the_grace(
         self, shadow_outcomes: list[tuple[str, str | None]],
     ) -> None:
         artifact = _Artifact(STORED, delay=5)
-        loop = asyncio.get_running_loop()
-        start = loop.time()
 
-        served = await _shadow(_Legacy(STORED), artifact, grace_seconds=0.05).read_record(VRID, ORG)
-        await asyncio.sleep(0)
+        async def main() -> tuple[dict[str, Any] | None, float]:
+            loop = asyncio.get_running_loop()
+            start = loop.time()
+            served = await _shadow(_Legacy(STORED), artifact, grace_seconds=0.05).read_record(VRID, ORG)
+            await asyncio.sleep(0)
+            return served, loop.time() - start
+
+        served, elapsed = run_on_virtual_time(main)
 
         assert served is STORED
-        assert loop.time() - start < 1
+        assert elapsed == pytest.approx(0.05)
         assert shadow_outcomes == [("timeout", None)]
         assert artifact.cancelled
 
-    async def test_the_artifact_read_runs_beside_the_stored_record_read(
+    def test_the_artifact_read_runs_beside_the_stored_record_read(
         self, shadow_outcomes: list[tuple[str, str | None]],
     ) -> None:
-        loop = asyncio.get_running_loop()
-        start = loop.time()
+        async def main() -> float:
+            loop = asyncio.get_running_loop()
+            start = loop.time()
+            await _shadow(_Legacy(STORED, delay=0.2), _Artifact(STORED, delay=0.2), grace_seconds=0.05).read_record(
+                VRID, ORG,
+            )
+            return loop.time() - start
 
-        await _shadow(_Legacy(STORED, delay=0.2), _Artifact(STORED, delay=0.2), grace_seconds=0.05).read_record(VRID, ORG)
-
-        assert loop.time() - start < 0.35
+        assert run_on_virtual_time(main) == pytest.approx(0.2)
         assert shadow_outcomes == [("match", None)]
 
     async def test_a_failing_stored_record_read_still_fails(
