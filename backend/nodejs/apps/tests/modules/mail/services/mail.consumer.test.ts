@@ -4,9 +4,19 @@ import sinon from 'sinon';
 import { MailConsumer } from '../../../../src/modules/mail/services/mail.consumer';
 import { SmtpSettingsUnreadableError } from '../../../../src/modules/mail/services/mail.sender.service';
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
+import { setUserRepository } from '../../../../src/libs/repositories/user';
 import { classifyMailError } from '../../../../src/modules/mail/types/mail-event.types';
 
 describe('MailConsumer - asynchronous mail delivery', () => {
+  // The store's view of the link's user: the consumer takes the address from here, not from the job.
+  beforeEach(() => {
+    setUserRepository({
+      getLive: async (o: string, id: string) =>
+        o === '507f1f77bcf86cd799439012' && id === 'u1' ? { _id: id, orgId: o, email: 'user@example.com' } : null,
+    } as never);
+  });
+  afterEach(() => setUserRepository());
+
   let consumer: MailConsumer;
   let mockConsumer: any;
   let mockLogger: any;
@@ -281,10 +291,9 @@ describe('MailConsumer - asynchronous mail delivery', () => {
         throw new Error('config unavailable');
       },
     );
-    // A link is only minted for a user of the job's org, into a mail addressed to that user alone.
+    // A link is only minted for a live user of the job's org, into a mail addressed to that user's stored address.
     const event = payload({
-      mail: { ...payload().mail, sendEmailTo: ['a@b.co'] },
-      passwordResetLinkFor: { userId: 'u1', orgId: '507f1f77bcf86cd799439012', email: 'a@b.co' },
+      passwordResetLinkFor: { userId: 'u1', orgId: '507f1f77bcf86cd799439012', email: 'user@example.com' },
     });
 
     await (failing as any).deliver(event);

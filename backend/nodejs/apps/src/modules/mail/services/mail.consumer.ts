@@ -10,6 +10,7 @@ import {
   runWithOrgContext,
 } from '../../../libs/context/orgContext';
 import { Logger } from '../../../libs/services/logger.service';
+import { getUserRepository } from '../../../libs/repositories/user';
 import {
   NotificationProducer,
   EventType as NotificationEventType,
@@ -92,6 +93,9 @@ interface SuppressedFailures {
  * redelivery: the consumer base auto-commits offsets and swallows handler
  * errors, so throwing would drop the job instead of replaying it.
  */
+/** Every recipient list a mail can carry besides `sendEmailTo` (a link may go to no one else). */
+const MAIL_RECIPIENT_LISTS = ['sendCcTo', 'sendBccTo'] as const;
+
 /** A job asked for a set-password link it may not have (another org, or other recipients): nothing is sent. */
 class PasswordLinkRefused extends Error {
   constructor() {
@@ -288,7 +292,7 @@ export class MailConsumer {
 
     let mail: MailBody;
     try {
-      mail = this.withPasswordResetLink(payload);
+      mail = await this.withPasswordResetLink(payload);
     } catch (error) {
       if (error instanceof PasswordLinkRefused) {
         this.end(job, 'failure', { reason: 'link_refused', errorClass: 'forbidden', error });
@@ -378,37 +382,36 @@ export class MailConsumer {
     await this.notifyFailure(payload, failure.error);
   }
 
-  private withPasswordResetLink(payload: MailEventPayload): MailBody {
-    const target = payload.passwordResetLinkFor;
+  private async withPasswordResetLink(payload: MailEventPayload): Promise<MailBody> {
+    let target = payload.passwordResetLinkFor;
     if (!target) {
       return payload.mail;
     }
-    // A set-password link is a credential: it is minted only for a user of the org this delivery is bound to, and only
-    // into a mail addressed to that user alone. A job that asks otherwise was not written by our producer.
-    // With no org bound there is nothing to hold the target to, so no link either.
+    // A set-password link is a credential. It is minted only for a live user of the org this delivery is bound to,
+    // into a mail addressed to that user's stored address alone, and with that stored address: never with anything
+    // the job says (a job is not proof of who the user is). With no org bound, no link.
     const bound = getCurrentOrgId();
-    const to = payload.mail.sendEmailTo ?? [];
-    const onlyTarget =
-      to.length === 1 &&
-      typeof to[0] === 'string' &&
-      to[0].trim().toLowerCase() === String(target.email).trim().toLowerCase();
-    // No copy to anyone else: CC, or any other recipient list a mail may carry now or later.
-    const otherRecipients = Object.entries(payload.mail).some(
-      ([field, value]) =>
-        field !== 'sendEmailTo' &&
-        /(to|cc|bcc)$/i.test(field) &&
-        field !== 'replyTo' &&
-        Array.isArray(value) &&
-        value.length > 0,
-    );
-    if (
-      bound === undefined ||
-      String(target.orgId) !== bound ||
-      !onlyTarget ||
-      otherRecipients
-    ) {
+    if (bound === undefined || String(target.orgId) !== bound) {
       throw new PasswordLinkRefused();
     }
+    const user = await getUserRepository().getLive(bound, String(target.userId));
+    const stored = typeof user?.email === 'string' ? user.email.trim().toLowerCase() : '';
+    const to = payload.mail.sendEmailTo ?? [];
+    const onlyTheUser =
+      stored !== '' &&
+      !/[,;<>\s]/.test(stored) &&
+      to.length === 1 &&
+      typeof to[0] === 'string' &&
+      to[0].trim().toLowerCase() === stored;
+    // No copy to anyone else: CC, or any other recipient list a mail may carry.
+    const otherRecipients = MAIL_RECIPIENT_LISTS.some((field) => {
+      const value = (payload.mail as unknown as Record<string, unknown>)[field];
+      return Array.isArray(value) && value.length > 0;
+    });
+    if (!onlyTheUser || otherRecipients) {
+      throw new PasswordLinkRefused();
+    }
+    target = { ...target, email: stored };
     const config = this.getAppConfig();
     return {
       ...payload.mail,

@@ -12,6 +12,7 @@ import {
   signMessage,
 } from '../../../../src/libs/context/envelope';
 import { BrokerTopic } from '../../../../src/libs/types/messaging.types';
+import { setUserRepository } from '../../../../src/libs/repositories/user';
 
 // A queued mail (an invite, an alert) must reach a consumer that enforces the signed envelope: with ENVELOPE_SIGN on it
 // was published in a shape that cannot be signed, and the consumer dropped it as a stripped message.
@@ -39,8 +40,17 @@ describe('mail/services/mail.signed', () => {
     ...(eventId ? { eventId } : {}),
   });
 
+  // The users the store knows, by org: a link's user and address come from here, never from the job.
+  const usersByOrg: Record<string, Record<string, string>> = {
+    [org]: { '6b08000000000000000000a1': 'new.person@example.com' },
+    '6b0800000000000000000002': { '6b08000000000000000000b1': 'victim@b.example' },
+  };
+
   /** The real MailConsumer, behind the envelope check the Redis Streams consumer runs. */
   const consume = async (messages: Array<Record<string, unknown>>) => {
+    setUserRepository({
+      getLive: async (o: string, id: string) => (usersByOrg[o]?.[id] ? { _id: id, orgId: o, email: usersByOrg[o][id] } : null),
+    } as never);
     const sent: Array<{ to: string; org?: string }> = [];
     const sender = {
       getSmtpConfig: sinon.stub().returns({ host: 'mailpit', port: 1025, fromEmail: 'no-reply@example.com' }),
@@ -77,6 +87,7 @@ describe('mail/services/mail.signed', () => {
 
   afterEach(() => {
     configureEnvelope(null);
+    setUserRepository();
     if (savedSign === undefined) delete process.env.ENVELOPE_SIGN;
     else process.env.ENVELOPE_SIGN = savedSign;
   });
@@ -171,8 +182,10 @@ describe('mail/services/mail.signed', () => {
     it('gets no set-password link for another org, nor one addressed to anyone else (unsigned path too)', async () => {
       process.env.ENVELOPE_SIGN = 'false';
       const otherOrg = { ...job(), passwordResetLinkFor: victimB };
+      // The link's user is real, but the mail goes to someone else.
       const otherTo = {
         ...job(),
+        mail: { ...job().mail, sendEmailTo: ['someone.else@example.com'] },
         passwordResetLinkFor: { userId: '6b08000000000000000000a1', orgId: org, email: 'someone.else@example.com' },
       };
 
@@ -208,6 +221,35 @@ describe('mail/services/mail.signed', () => {
       };
 
       const { sent } = await consume([unbound]);
+
+      expect(sent).to.deep.equal([]);
+    });
+
+    it("gets no link by naming its own address as the user's (the job is not proof of the address)", async () => {
+      process.env.ENVELOPE_SIGN = 'false';
+      const victimOrgJob = (to: string) => ({
+        mail: { emailTemplateType: 'appuserInvite', sendEmailTo: [to], subject: 'x', templateData: {} },
+        orgId: victimB.orgId,
+        passwordResetLinkFor: { ...victimB, email: to },
+      });
+
+      const { sent } = await consume([
+        victimOrgJob('attacker@evil.example'),
+        victimOrgJob('victim@b.example, attacker@evil.example'),
+      ]);
+
+      expect(sent).to.deep.equal([]);
+    });
+
+    it("a link for a user the org does not have (or no longer has) is refused", async () => {
+      process.env.ENVELOPE_SIGN = 'false';
+      const ghost = {
+        ...job(),
+        mail: { ...job().mail, sendEmailTo: ['ghost@example.com'] },
+        passwordResetLinkFor: { userId: '6b08000000000000000000ff', orgId: org, email: 'ghost@example.com' },
+      };
+
+      const { sent } = await consume([ghost]);
 
       expect(sent).to.deep.equal([]);
     });
