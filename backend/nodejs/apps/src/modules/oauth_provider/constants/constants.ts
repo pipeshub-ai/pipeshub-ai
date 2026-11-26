@@ -25,6 +25,11 @@ export const PAT_TOKEN_PREFIX = 'phpat_'
  */
 export const PAT_APP_CLIENT_ID_PREFIX = 'pat-system:'
 
+/** Whether a token's client is an org's personal-access-token app. Takes the
+ * claim as it arrived: a token signed without one is simply not a PAT. */
+export const isPatClientId = (clientId: unknown): boolean =>
+  typeof clientId === 'string' && clientId.startsWith(PAT_APP_CLIENT_ID_PREFIX);
+
 /**
  * clientId of the instance-wide first-party device app ("PipesHub agent").
  * Public client, device_code + refresh_token only. Advertised as

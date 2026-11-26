@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from app.modules.parsers.excel import excel_parser as module
+from app.modules.parsers.excel import workbook_model
 from app.modules.parsers.excel.workbook_model import (
     CELL_DICT_BYTES,
     OUTPUT_BUDGET_FACTOR,
@@ -58,13 +57,15 @@ def test_many_small_merges_just_under_the_cap_load() -> None:
     assert _load(refs).sheetnames
 
 
-def test_many_small_merges_just_over_the_cap_are_refused_fast() -> None:
+def test_many_small_merges_just_over_the_cap_are_refused_fast(monkeypatch: pytest.MonkeyPatch) -> None:
     refs = [f"A{r}:B{r}" for r in range(2, 2 + CAP // 2 + 1)]  # CAP + 2 positions
-    started = time.monotonic()
+    extracted: list[bytes] = []
+    real_extract = workbook_model._extract
+    monkeypatch.setattr(workbook_model, "_extract", lambda data: extracted.append(data) or real_extract(data))
     with pytest.raises(WorkbookRefused) as raised:
         _load(refs)
     assert raised.value.too_large
-    assert time.monotonic() - started < 5
+    assert extracted == []  # refused by the precheck, before openpyxl reads and expands a single range
 
 
 @pytest.mark.parametrize("spelling", ["$A$1:$Z$1000", "a1:z1000", "A1:Z1000", "S!A1:Z1000", "'S'!$A$1:$Z$1000"])

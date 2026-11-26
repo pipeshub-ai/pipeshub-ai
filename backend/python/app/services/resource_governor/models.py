@@ -49,6 +49,8 @@ class LimitRule(StrEnum):
     GROW_BAND = "grow_band"
     CONFIRMING = "confirming"
     DOWNSTREAM_HOLDOFF = "downstream_holdoff"
+    HOST_YIELD = "host_yield"
+    YIELD_HOLDOFF = "yield_holdoff"
     LATENCY_HOLD = "latency_hold"
     NO_DEMAND = "no_demand"
     RESOURCE_DELTA = "resource_delta"
@@ -287,6 +289,13 @@ class PoolState:
     hold_ewma: float | None = None
     hold_baseline: float | None = None
     downstream_holdoff: int = 0
+    # Heavy parse and the index pools: how many samples without the code
+    # sandbox's yield signal growth still has to wait for after it shrank them.
+    yield_holdoff: int = 0
+    # The holdoff the last yield set, and when it last ran out: a yield that
+    # comes back soon after growth resumed makes heavy parse's next one longer.
+    yield_holdoff_set: int = 0
+    yield_released_at: float | None = None
     # Observability only (see LimitRule): the rule that produced or held the
     # current limit, since when (the controller clock), what started each
     # cooldown that is still open (``(cause, expiry)`` pairs, one per cause, so

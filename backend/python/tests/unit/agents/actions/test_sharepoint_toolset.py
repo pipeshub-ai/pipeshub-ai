@@ -986,7 +986,7 @@ class TestGetFileContent:
         })
         captured_record = {}
 
-        async def fake_parse(file_record, raw, model_name, model_key, cfg):
+        async def fake_parse(file_record, raw, model_name, model_key, cfg, *, citations):
             captured_record["ext"] = file_record.extension
             captured_record["name"] = file_record.record_name
             return True, [parsed_block]

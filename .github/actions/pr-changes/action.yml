@@ -15,6 +15,9 @@ outputs:
   redis_cluster:
     description: "'true' when the redis_cluster check should run"
     value: ${{ steps.decide.outputs.redis_cluster }}
+  sandbox_live:
+    description: "'true' when the sandbox_live check should run"
+    value: ${{ steps.decide.outputs.sandbox_live }}
   frontend:
     description: "'true' when the frontend check should run"
     value: ${{ steps.decide.outputs.frontend }}

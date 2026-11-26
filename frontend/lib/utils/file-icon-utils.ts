@@ -67,6 +67,41 @@ export function isFileIconAvailable(extension: string): boolean {
   return normalized in FILE_ICON_MAP;
 }
 
+const OCTET_STREAM = 'application/octet-stream';
+
+/** Types by extension, mirroring the backend's `harness_core/mime.py`: a file stored before its type was
+ * detected (octet-stream) still opens, labels and badges as what it is. */
+const EXTENSION_TO_MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  svg: 'image/svg+xml',
+  webp: 'image/webp',
+  pdf: 'application/pdf',
+  csv: 'text/csv',
+  json: 'application/json',
+  html: 'text/html',
+  txt: 'text/plain',
+  md: 'text/markdown',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  xml: 'application/xml',
+  zip: 'application/zip',
+};
+
+/** `mimeType` when it names a type; otherwise the type of `fileName`'s extension, else octet-stream. */
+export function effectiveMimeType(fileName: string, mimeType?: string | null): string {
+  const given = mimeType?.trim();
+  if (given && given !== OCTET_STREAM) return given;
+  const ext = getFileExtension(fileName || '');
+  return (ext && EXTENSION_TO_MIME[ext]) || OCTET_STREAM;
+}
+
 /**
  * Extract file extension from MIME type
  * @param mimeType - MIME type (e.g., 'application/pdf', 'image/jpeg')

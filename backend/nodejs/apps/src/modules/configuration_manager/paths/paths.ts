@@ -97,4 +97,34 @@ export const configPaths = {
   },
   deployment: '/services/deployment',
   inheritance: '/services/inheritance',
+  // Encrypted like secretKeys. Only the harness worker reads workerCredential;
+  // only Node reads attemptSigningKeys; verifiers read attemptPublicKeys.
+  agentHarness: {
+    workerCredential: '/services/agentHarness/workerCredential',
+    // SEC-C-10: one credential set per machine role besides the worker's, encrypted like it.
+    roleCredentialScrape: '/services/agentHarness/roleCredentials/scrape',
+    roleCredentialEgressProxy:
+      '/services/agentHarness/roleCredentials/egressProxy',
+    roleCredentialSandboxBroker:
+      '/services/agentHarness/roleCredentials/sandboxBroker',
+    // ADR-KEY-02: what Node seals for each sandbox-plane component, under that component's own key (never SECRET_KEY).
+    componentEgressProxy: '/services/agentHarness/components/egressProxy',
+    componentSandboxBroker: '/services/agentHarness/components/sandboxBroker',
+    attemptSigningKeys: '/services/agentHarness/attemptSigningKeys',
+    attemptPublicKeys: '/services/agentHarness/attemptPublicKeys',
+    // Per-org conversation retention periods (E7); absent: no automatic expiry.
+    sessionRetention: '/services/agentHarness/sessionRetention',
+    // Gateway tokens (E2): a keyring of their own; the tool gateway reads gatewayPublicKeys.
+    gatewaySigningKeys: '/services/agentHarness/gatewaySigningKeys',
+    gatewayPublicKeys: '/services/agentHarness/gatewayPublicKeys',
+    // Approval rules per org and agent (P2.6c), and the org entries of an edition's approval-policy sections.
+    approvals: '/services/agentHarness/approvals',
+    // Org engine profile ceilings (E4a); admission and the worker read them for engine runs.
+    engineProfiles: '/services/agentHarness/engineProfiles',
+    modelAccess: '/services/agentHarness/modelAccess',
+    // Each org's governed-memory policy (P7.3); absent: memory off.
+    memory: '/services/agentHarness/memory',
+    // WP-63: the worker's repository cache (sizes, use, low disk) for the admins' git hosts screen; the worker writes it.
+    repositoryCache: '/services/agentHarness/repositoryCache',
+  },
 };

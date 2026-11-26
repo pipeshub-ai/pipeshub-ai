@@ -1,0 +1,164 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 6,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "turn.aborted",
+      "data": {
+        "entries": [
+          {
+            "memoryId": "mem_1",
+            "scope": "user",
+            "kind": "preference",
+            "label": {
+              "complete": true,
+              "sources": []
+            }
+          }
+        ],
+        "chars": 312,
+        "truncated": false
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes x.pipeshub.memory.recalled",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 6,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "type": "x.pipeshub.memory.recalled",
+      "data": {
+        "entries": [
+          {
+            "memoryId": "mem_1",
+            "scope": "user",
+            "kind": "preference",
+            "label": {
+              "complete": true,
+              "sources": []
+            }
+          }
+        ],
+        "chars": 312,
+        "truncated": false
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "content is never journaled",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 6,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.memory.recalled",
+      "data": {
+        "entries": [
+          {
+            "memoryId": "mem_1",
+            "scope": "user",
+            "kind": "preference",
+            "label": {
+              "complete": true,
+              "sources": []
+            },
+            "content": "likes tea"
+          }
+        ],
+        "chars": 312,
+        "truncated": false
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "label is required",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 6,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.memory.recalled",
+      "data": {
+        "entries": [
+          {
+            "memoryId": "mem_1",
+            "scope": "user",
+            "kind": "preference"
+          }
+        ],
+        "chars": 312,
+        "truncated": false
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  },
+  {
+    "description": "unknown scope",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 6,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.memory.recalled",
+      "data": {
+        "entries": [
+          {
+            "memoryId": "mem_1",
+            "scope": "org",
+            "kind": "preference",
+            "label": {
+              "complete": true,
+              "sources": []
+            }
+          }
+        ],
+        "chars": 312,
+        "truncated": false
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  }
+]

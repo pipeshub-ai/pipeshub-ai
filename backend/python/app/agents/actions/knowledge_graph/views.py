@@ -223,7 +223,7 @@ def render_navigation_view_with_ids(
                 if cur.id in cite_refs:
                     lines.append(f"Citation ID: {cite_refs[cur.id]}")
                 if is_not_indexed(view.indexing_status):
-                    lines.extend(not_indexed_note(view.indexing_status).split("\n"))
+                    lines.extend(not_indexed_note(view.indexing_status, name=cur.name).split("\n"))
             else:
                 lines.append(f"Node: {_trunc(cur.name)}")
                 type_str = f"{cur.node_type}/{cur.sub_type}" if cur.sub_type else cur.node_type
@@ -245,7 +245,7 @@ def render_navigation_view_with_ids(
                 if unindexed:
                     # Same note as with a context block: the read hint is
                     # withheld below, so this is what explains why.
-                    lines.extend(not_indexed_note(view.indexing_status).split("\n"))
+                    lines.extend(not_indexed_note(view.indexing_status, name=cur.name).split("\n"))
 
     # Children listing
     pag = view.pagination
@@ -365,7 +365,7 @@ def _render_match(
         # The record exists; only its content is missing. Pointing at a read
         # that cannot succeed sends the model to search instead, which cannot
         # find it either, and "not found" then reads as "does not exist".
-        lines.append(not_indexed_note(m.indexing_status))
+        lines.append(not_indexed_note(m.indexing_status, name=m.name))
         lines.append(next_hint)
     else:
         lines.append(f"{next_hint} | {_read_hint([m.id], shortener)}")

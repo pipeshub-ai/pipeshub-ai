@@ -30,14 +30,49 @@ git push origin v0.7.1
 ```
 
 The `Release — build, publish, verify` workflow
-then does four things in order, and stops at the first failure.
+then does five things in order, stops at the first failure, and promotes
+nothing unless every one passed.
 
 | Stage | What happens | What it proves |
 |-------|--------------|----------------|
 | Resolve | The tag is parsed as semver, and the epochs in `backend/db/released_heads.json` must equal the tree's migration heads (on a tag push, a manual run with **promote**, or a manual run of a pre-release version) | A typo cannot publish `pipeshubai/pipeshub-ai:oops`; a release cannot ship without recording its migration heads |
 | Build | Both variants built for amd64 and arm64, pushed under a **candidate** tag | The image builds reproducibly from the tag |
 | Verify | First-run install, then upgrade from the previous release — both variants, on amd64 and arm64 | A user can install it, and an existing user can move to it, on either architecture |
+| Security | The harness security gate on the tag's commit (below) | No known security regression, leaked canary or denylisted dependency ships |
 | Promote | Candidate copied by digest onto the release tags | `:latest` only ever points at an image that passed |
+
+### The security gate
+
+`Security` runs `harness-security-gate.yml`, the workflow every harness pull
+request runs. Its stages are defined once, in `scripts/security_gate.py`:
+
+| Stage | What fails it |
+|-------|---------------|
+| `supply-chain` | A denylisted release in a lock, or an install not from a hashed lock (`scripts/supply_chain.py check`) |
+| `security` | A failed sandbox, egress, secret or red-team regression |
+| `canary` | A QA14 canary planted in a run reaching a log, trace, the activity stream or a stored key name |
+| `c13` | A sandbox reaching anything but the two gateways |
+| `docker-lane` | A failed Docker-marked case (real sandboxes, egress proxy, broker) |
+| `engines` | A failed engine lane or tools-layer licence scan, or one skipped for want of its built image |
+
+A stage also fails when a case skips that may not, when fewer cases ran than it
+holds, or when pytest wrote no report. A skip is how a gate reads green without
+testing anything: C-13 once did, for want of an image.
+
+Run the same stages before tagging:
+
+```bash
+python3 scripts/security_gate.py list          # what each stage runs
+python3 scripts/security_gate.py run supply-chain security
+REDIS_IT_URL=redis://127.0.0.1:6379 python3 scripts/security_gate.py run canary
+python3 scripts/security_gate.py run all       # the Docker stages need the sandbox and engine images
+```
+
+Build those images first, as the workflow does:
+`docker compose -f deployment/docker-compose/docker-compose.yml --profile sandbox build sandbox-image`,
+then `docker tag pipeshubai/pipeshub-sandbox:local pxh-sandbox:x1`, and
+`python3 scripts/engines/release_images.py build`. gVisor (runsc) is not on the
+runners yet, so the gate does not cover the gVisor runtime.
 
 Because promotion copies by digest, the image a user pulls is byte-identical to
 the one the tests passed against — not a rebuild that happens to come from the
@@ -133,6 +168,13 @@ of `.env`, and restores it if the downgrade fails.
 **A rollback undoes code, not data.** If the release you are undoing migrated
 data, the older image may not understand it and the correct recovery is
 restoring a backup. The script says so before proceeding.
+
+**A rollback keeps these Compose files.** A target image older than the release
+that put the sandbox broker behind the Docker API proxy (R43-SOCK) runs the app
+with them but not code execution. The script reads the target's
+`ai.pipeshub.sandbox-plane.version` label, says so, asks at a terminal, and
+gives the way to keep code execution: run `./install.sh --yes --upgrade` from
+that release's own `deployment/docker-compose` with this `.env`.
 
 ## Watching a deployment
 

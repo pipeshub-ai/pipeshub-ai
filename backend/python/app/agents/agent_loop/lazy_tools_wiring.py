@@ -48,6 +48,7 @@ be insufficient for orgs with very many connectors.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -55,12 +56,17 @@ from typing import TYPE_CHECKING
 from app.agent_loop_lib.hooks.events import HookEvent
 from app.agent_loop_lib.hooks.middleware.builtin.tool_preloading import tool_preloading
 from app.agent_loop_lib.tools.builtin.lazy_toolsets import (
+    CallToolTool,
     FetchToolsTool,
     ListToolsetsTool,
     SearchToolsTool,
 )
-from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToolPathError
+from app.agent_loop_lib.tools.errors import (
+    DuplicateToolNameError,
+    DuplicateToolPathError,
+)
 from app.agent_loop_lib.tools.index import ToolsetAwareToolIndex
+from app.agents.agent_loop.connected_sources import MCP_PARENT as CONNECTED_MCP_PARENT
 from app.utils.logging_fields import log_event
 from app.utils.user_messages import where_to_authenticate
 
@@ -83,6 +89,10 @@ __all__ = [
     "register_tool_preloading",
     "make_lazy_tools_decider",
     "META_TOOL_NAMES",
+    "LAZY_ONLY_TOOL_NAMES",
+    "HARNESS_TOOLSET",
+    "HARNESS_TOOL_NAMES",
+    "harness_granted",
     "CONNECTORS_PARENT",
     "MCP_PARENT",
 ]
@@ -110,12 +120,31 @@ CONNECTORS_PARENT = "connectors"
 # which `_decide` reads as "nothing to gain from going lazy" and pins to
 # `"eager"` — binding every MCP tool's full schema on every turn no matter
 # how many were attached. `group_connector_toolsets` now checks for MCP
-# activity independently of `candidates` (see `has_mcp_activity` there) so
+# activity independently of `candidates` (see `has_nested_activity` there) so
 # that case can still flip to lazy without re-parenting anything under
 # `MCP_PARENT`.
-MCP_PARENT = "mcp"
+MCP_PARENT = CONNECTED_MCP_PARENT
 
-META_TOOL_NAMES: tuple[str, ...] = ("list_toolsets", "fetch_tools", "search_tools")
+META_TOOL_NAMES: tuple[str, ...] = ("list_toolsets", "fetch_tools", "search_tools", "call_tool")
+# Meta-tools only a lazy grant lists: under eager disclosure every tool the agent may call is already in its list.
+LAZY_ONLY_TOOL_NAMES: tuple[str, ...] = ("list_toolsets", "fetch_tools", "call_tool")
+
+# What the harness grants on every turn, whatever the person attached (ADR-OWD-07 D-DISC-1): every tool of the
+# internal-tools toolset (the question card ask_user_question, ...), the meta
+# tools, the artifact reader, the plan tool and final_answer. Left out of the threshold count on every call site, so
+# a new harness tool never moves the person's own tools behind fetch_tools.
+HARNESS_TOOLSET = "internaltools"
+HARNESS_TOOL_NAMES: frozenset[str] = frozenset(
+    {*META_TOOL_NAMES, "retrieve_artifact_content", "write_todos", "final_answer"}
+)
+
+
+def harness_granted(tool_registry: "ToolRegistry", tool_names: list[str]) -> frozenset[str]:
+    """The names in ``tool_names`` the harness grants on every turn (``HARNESS_TOOLSET``'s and ``HARNESS_TOOL_NAMES``)."""
+    internal = {
+        name for group in tool_registry.toolsets() if group.name == HARNESS_TOOLSET for name in group.tool_names
+    }
+    return frozenset(name for name in tool_names if name in HARNESS_TOOL_NAMES or name in internal)
 
 
 def lazy_tools_enabled() -> bool:
@@ -186,9 +215,9 @@ def group_connector_toolsets(
     docstring), so it's excluded from `candidates` above, but an MCP-only
     agent with zero connector toolsets would otherwise make this return
     `False` regardless of how many MCP tools/schemas it's carrying, pinning
-    it to eager disclosure with no way to ever go lazy. `has_mcp_activity`
-    below answers the real question directly: does an already-`MCP_PARENT`-
-    nested group have a member in THIS turn's grant, independent of
+    it to eager disclosure with no way to ever go lazy. `has_nested_activity`
+    below answers the real question directly: does a group already nested under `MCP_PARENT` or
+    `CONNECTORS_PARENT` have a member in THIS turn's grant, independent of
     `candidates`/re-parenting.
     """
     tool_name_set = set(tool_names)
@@ -200,13 +229,16 @@ def group_connector_toolsets(
         and group.name not in exclude
         and any(name in tool_name_set for name in group.tool_names)
     ]
-    has_mcp_activity = any(
-        group.parent == MCP_PARENT and any(name in tool_name_set for name in group.tool_names)
+    # A group an earlier call already nested (a domain child's decision before the top level's, or the
+    # durable loop deciding again) still hides tools of this grant: the answer depends on the grant, never
+    # on which call grouped first (P4.10 FB-7).
+    has_nested_activity = any(
+        group.parent in (MCP_PARENT, CONNECTORS_PARENT) and any(name in tool_name_set for name in group.tool_names)
         for group in tool_registry.toolsets()
     )
 
     if not candidates:
-        return has_mcp_activity
+        return has_nested_activity
 
     tool_registry.register_toolset(
         CONNECTORS_PARENT,
@@ -262,8 +294,12 @@ class PipesHubGlobalCatalogFallback:
 
     async def search(self, query: str, limit: int) -> list["GlobalToolHit"]:
         from app.agent_loop_lib.tools.global_fallback import GlobalToolHit
-        from app.agents.agent_loop.tool_loader import _has_tool_decorated_methods, _infer_path_prefix
+        from app.agents.agent_loop.tool_loader import (
+            _has_tool_decorated_methods,
+            _infer_path_prefix,
+        )
         from app.agents.registry.toolset_registry import get_toolset_registry
+        from app.connectors.core.registry.tool_builder import ToolProvider
 
         query_terms = [t for t in query.lower().split() if t]
         failures = self._context.toolset_load_failures if self._context is not None else {}
@@ -273,9 +309,8 @@ class PipesHubGlobalCatalogFallback:
             return hits[:limit]
 
         for ts_name, ts_meta in get_toolset_registry().get_all_toolsets().items():
-            if ts_meta.get("isInternal", False):
-                # Never a user-facing "go attach/authenticate this" suggestion —
-                # there's nothing for the user to configure.
+            if ts_meta.get("provider") != ToolProvider.CONNECTOR.value:
+                # Only a connector's toolset is something a user attaches or authenticates.
                 continue
 
             ts_class = ts_meta.get("class")
@@ -379,7 +414,7 @@ class PipesHubGlobalCatalogFallback:
 def register_lazy_tool_meta_tools(
     tool_registry: "ToolRegistry", context: "AgentContext | None" = None,
 ) -> None:
-    """Registers `list_toolsets`/`fetch_tools`/`search_tools` if not
+    """Registers `list_toolsets`/`fetch_tools`/`search_tools`/`call_tool` if not
     already present on `tool_registry` — a no-op for a name that's already
     registered (e.g. a second call within the same request, once for the
     top-level grant and once for a domain child sharing the same registry).
@@ -405,19 +440,18 @@ def register_lazy_tool_meta_tools(
         unlocked_by=SEARCH_ENTITIES_TOOL_NAME,
         condition="returns at least one entity",
     )
+    already = (DuplicateToolNameError, DuplicateToolPathError)
     for tool_cls in (ListToolsetsTool, FetchToolsTool):
-        try:
+        with contextlib.suppress(*already):
             tool_registry.register_tool(tool_cls(tool_registry))
-        except (DuplicateToolNameError, DuplicateToolPathError):
-            continue
-    try:
+    with contextlib.suppress(*already):
+        tool_registry.register_tool(CallToolTool())
+    with contextlib.suppress(*already):
         # The model names the app as often as the action ("search ClickUp tasks"); preloading keeps
         # the plain index its thresholds are tuned to.
         tool_registry.register_tool(SearchToolsTool(
             tool_registry, index=ToolsetAwareToolIndex(), global_fallback=PipesHubGlobalCatalogFallback(context),
         ))
-    except (DuplicateToolNameError, DuplicateToolPathError):
-        pass
 
 
 def register_tool_preloading(hooks: "HookRegistry") -> None:
@@ -439,6 +473,7 @@ def make_lazy_tools_decider(
     essential_names: frozenset[str] = frozenset(),
     context: "AgentContext | None" = None,
     uncounted_names: frozenset[str] = frozenset(),
+    mode: str | None = None,
 ) -> "Callable[[ToolRegistry, list[str]], tuple[list[str], str]]":
     """Builds the `(tool_names, tool_disclosure)` decision function used at
     BOTH the top-level `AgentSpec` construction site (`factory.py`, called
@@ -455,16 +490,25 @@ def make_lazy_tools_decider(
     `context` is threaded into `PipesHubGlobalCatalogFallback` for
     auth-aware `search_tools` reasons. `uncounted_names` are left out of the
     threshold count (still granted): a tool a deployment switch adds must not
-    by itself move a request from eager to lazy disclosure.
+    by itself move a request from eager to lazy disclosure. Whatever the caller passes, the tools the harness grants
+    on every turn (`harness_granted`) are never counted either.
 
     `apply=False` (this scope wasn't selected, or the env flag is off)
     always returns `(tool_names, "eager")` unchanged — zero behavior
     change.
+
+    `mode` is the agent's tool-disclosure choice (C5.01, the pin's
+    `toolDisclosure.mode`): `eager` lists every tool, `lazy` (and
+    `filesystem`, which the loop has no files for) goes lazy whatever the
+    count; `None` keeps the threshold.
     """
 
     def _decide(tool_registry: "ToolRegistry", tool_names: list[str]) -> tuple[list[str], str]:
-        counted = sum(1 for name in tool_names if name not in uncounted_names)
-        if not apply or not should_apply_lazy_tools(counted):
+        uncounted = uncounted_names | harness_granted(tool_registry, tool_names)
+        counted = sum(1 for name in tool_names if name not in uncounted)
+        if not apply or mode == "eager":
+            return tool_names, "eager"
+        if mode not in ("lazy", "filesystem") and not should_apply_lazy_tools(counted):
             return tool_names, "eager"
         if not group_connector_toolsets(tool_registry, tool_names, exclude=essential_names):
             return tool_names, "eager"

@@ -345,23 +345,45 @@ describe('ConnectorPanel: members and OAuth apps', () => {
     expect(api.createConnectorInstance).not.toHaveBeenCalled();
   });
 
-  it('tells a member to ask an admin when no OAuth app exists for a personal connector', async () => {
+  it('lets a member enter their own OAuth app on a personal connector', async () => {
     signInAs('member');
     api.getConnectorSchema.mockResolvedValue({ success: true, schema: oauthOnly() });
     useConnectorsStore.getState().openPanel(makeConnector({ scope: 'personal' }), undefined, 'personal');
     renderInTheme(<ConnectorPanel />);
-    await screen.findByText(/No OAuth apps are registered yet/);
+    await waitFor(() => expect(screen.queryByText('Loading OAuth configurations…')).toBeNull());
+    expect(screen.queryByText(/No OAuth apps are registered yet/)).toBeNull();
+    expect(screen.getByText('Only you can see and use this OAuth app. You can choose it again for your other connectors of this type.')).toBeTruthy();
     fillCredentials({ name: 'My Jira' });
+    fireEvent.change(inputByLabel('Client ID'), { target: { value: 'my-client' } });
 
     fireEvent.click(nextButton());
 
-    await waitFor(() => expect(toasts()).toHaveLength(1));
-    expect(toasts()[0]).toMatchObject({
-      variant: 'warning',
-      title: 'No OAuth apps are available for this connector',
-      description: 'Ask your workspace administrator to create an OAuth app for Jira first, then try again.',
+    await waitFor(() => expect(api.createConnectorInstance).toHaveBeenCalledTimes(1));
+    expect(api.createConnectorInstance.mock.calls[0][0]).toMatchObject({
+      scope: 'personal',
+      config: { auth: { clientId: 'my-client', oauthInstanceName: 'Jira' } },
     });
-    expect(api.createConnectorInstance).not.toHaveBeenCalled();
+    expect(toasts().filter((toast) => toast.variant === 'warning')).toEqual([]);
+  });
+
+  it("hides a member's own OAuth app on a team connector", async () => {
+    signInAs('member');
+    api.getConnectorSchema.mockResolvedValue({ success: true, schema: oauthOnly() });
+    api.listOAuthConfigs.mockResolvedValue({
+      oauthConfigs: [
+        { _id: 'org-1', oauthInstanceName: 'Acme Jira' },
+        { _id: 'own-1', oauthInstanceName: 'My Jira app', personal: true },
+      ],
+    });
+    useConnectorsStore.getState().openPanel(makeConnector({ scope: 'personal' }), undefined, 'personal');
+    const view = renderInTheme(<ConnectorPanel />);
+    await waitFor(() => expect(useConnectorsStore.getState().oauthAppsList).toHaveLength(2));
+    view.unmount();
+
+    useConnectorsStore.getState().reset();
+    startCreate();
+    await waitFor(() => expect(useConnectorsStore.getState().oauthAppsListPhase).toBe('ready'));
+    expect(useConnectorsStore.getState().oauthAppsList.map((app) => app._id)).toEqual(['org-1']);
   });
 });
 
@@ -449,7 +471,7 @@ describe('ConnectorPanel: editing saved credentials', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
 
       await waitFor(() => expect(api.saveAuthConfig).toHaveBeenCalledTimes(1));
-      expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync');
+      expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', false);
       expect(api.toggleConnector.mock.invocationCallOrder[0]).toBeLessThan(
         api.saveAuthConfig.mock.invocationCallOrder[0]
       );
@@ -621,7 +643,7 @@ describe('ConnectorPanel: saving the sync configuration', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
 
-    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync'));
+    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', false));
     await waitFor(() => expect(api.saveFiltersSyncConfig).toHaveBeenCalledTimes(1));
     expect(api.toggleConnector.mock.invocationCallOrder[0]).toBeLessThan(
       api.saveFiltersSyncConfig.mock.invocationCallOrder[0]

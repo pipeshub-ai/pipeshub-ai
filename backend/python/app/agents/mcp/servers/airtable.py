@@ -4,6 +4,7 @@ from app.agents.mcp.mcp_server_decorator import mcp_server
 from app.agents.mcp.models import (
     AuthHint,
     MCPAuthMode,
+    MCPCategory,
     MCPServerTemplate,
     MCPTransport,
 )
@@ -32,6 +33,12 @@ from app.agents.mcp.models import (
             help_text="Sign in with Airtable and choose the bases to connect.",
         ),
         tags=["database", "productivity"],
+        category=MCPCategory.DATA,
+        capabilities=[
+            "Look up records in a base",
+            "Update rows in a table",
+            "See a table's fields",
+        ],
     )
 )
 class AirtableMCPServer:

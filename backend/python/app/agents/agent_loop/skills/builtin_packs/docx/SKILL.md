@@ -11,7 +11,7 @@ metadata:
     source: builtin
     requires: [office-utils]
     pack_name: docx
-    pack_version: 1.1.1
+    pack_version: 1.2.0
 ---
 
 # Word documents (.docx)
@@ -51,3 +51,7 @@ Both are already installed in the sandbox — no `install_packages` call needed.
 ## Not supported in this environment
 
 - `.doc` → `.docx` conversion, and `.docx` → PDF rendering — both require LibreOffice, which is not installed in the sandbox yet. Tell the user this rather than attempting a workaround that will silently produce a wrong result.
+
+## Check before you deliver (required)
+
+Word lays out a document's flowing text itself, and nothing here can render it, so the checks are what can still overflow the page. After writing the file, run `python skills/office-utils/scripts/check_layout.py report.docx` (`/skills/...` for a coding engine): it flags tables and images wider than the text width and an empty document, and exits 1 while anything is flagged. Fix and rerun until it prints `layout: clean`; tell the user what it checked and that the pages were not rendered.

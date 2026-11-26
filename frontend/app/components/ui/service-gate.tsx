@@ -67,7 +67,7 @@ export function ServiceGate({ children, services }: ServiceGateProps) {
             backgroundColor: 'var(--red-a2)',
           }}
         >
-          <MaterialIcon name="cloud_off" size={32} color="var(--red-9)" />
+          <MaterialIcon name="cloud_off" size={32} color="var(--red-11)" />
         </Flex>
 
         <Heading size="5" style={{ color: 'var(--slate-12)' }}>
@@ -78,14 +78,14 @@ export function ServiceGate({ children, services }: ServiceGateProps) {
             and the status page they point at is admin-only. Unknown (profile
             still loading) counts as a member. */}
         {isAdmin === true ? (
-          <Text size="2" style={{ color: 'var(--slate-10)', lineHeight: 1.6 }}>
+          <Text size="2" style={{ color: 'var(--slate-11)', lineHeight: 1.6 }}>
             {t('healthGate.serviceGate.requires', {
               count: labels.length,
               services: new Intl.ListFormat(i18n.language, { type: 'conjunction' }).format(labels),
             })}
           </Text>
         ) : (
-          <Text size="2" style={{ color: 'var(--slate-10)', lineHeight: 1.6 }}>
+          <Text size="2" style={{ color: 'var(--slate-11)', lineHeight: 1.6 }}>
             {t('healthGate.serviceGate.memberBody')}
           </Text>
         )}

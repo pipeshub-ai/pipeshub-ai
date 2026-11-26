@@ -90,6 +90,7 @@ export function SelectRecordsPage() {
         }}
       >
         <IconButton
+          aria-label={t('common.back')}
           variant="ghost"
           color="gray"
           size="2"
@@ -102,7 +103,7 @@ export function SelectRecordsPage() {
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {connectorName}
           </Text>
-          <MaterialIcon name="chevron_right" size={16} color="var(--gray-9)" />
+          <MaterialIcon name="chevron_right" size={16} color="var(--gray-11)" />
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.connectors.selectRecords.title')}
           </Text>
@@ -119,7 +120,7 @@ export function SelectRecordsPage() {
           style={{ width: '100%' }}
         >
           <TextField.Slot>
-            <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+            <MaterialIcon name="search" size={16} color="var(--gray-11)" />
           </TextField.Slot>
         </TextField.Root>
       </Box>
@@ -138,7 +139,7 @@ export function SelectRecordsPage() {
           </Flex>
         ) : filteredRecords.length === 0 ? (
           <Flex align="center" justify="center" style={{ padding: 32 }}>
-            <Text size="2" style={{ color: 'var(--gray-10)' }}>
+            <Text size="2" style={{ color: 'var(--gray-11)' }}>
               {searchQuery ? t('message.noResults') : t('workspace.connectors.selectRecords.emptyState')}
             </Text>
           </Flex>

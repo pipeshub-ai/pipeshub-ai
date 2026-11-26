@@ -9,6 +9,7 @@ import pytest
 
 from app.services.messaging.distributed_concurrency import DistributedLeaseSet
 from app.services.messaging.lease import LeaseRenewer
+from tests.support.settle import settle
 
 LEASE_SECONDS = 1.2
 INTERVAL = 0.02
@@ -210,7 +211,9 @@ class TestLeaseRenewer:
             assert call.args[0] == []
 
     @pytest.mark.asyncio
-    async def test_a_renew_that_swallows_cancellation_does_not_outlive_stop(self, logger) -> None:
+    async def test_a_renew_that_swallows_cancellation_does_not_outlive_stop(self, logger, monkeypatch) -> None:
+        # stop() returns either because the loop ended or because it gave up waiting; only the first may pass here.
+        monkeypatch.setattr(LeaseRenewer, "STOP_TIMEOUT_S", 3600.0)
         started = asyncio.Event()
         calls = 0
 
@@ -230,10 +233,10 @@ class TestLeaseRenewer:
         renewer = _renewer(logger, _manager(side_effect=swallowing), _Clock())
         renewer.add("owner-1", "pool")
         renewer.start()
-        await asyncio.wait_for(started.wait(), 1)
+        await settle(started.wait())
 
         at_stop = calls
-        await asyncio.wait_for(renewer.stop(), 1)
+        await settle(renewer.stop())
         # stop() returned only once the loop ended, so no later round can start: had it
         # renewed again, that round's sleep would have kept stop() from returning.
         assert calls == at_stop
@@ -255,9 +258,9 @@ class TestLeaseRenewer:
         renewer = _renewer(logger, manager, _Clock())
         renewer.add("owner-1", "pool")
         renewer.start()
-        await asyncio.wait_for(started.wait(), 1)
+        await settle(started.wait())
 
-        await asyncio.wait_for(renewer.stop(), 1)
+        await settle(renewer.stop())
         release.set()
         await asyncio.sleep(INTERVAL * 3)
         # The stuck call finished after stop() gave up on it; the generation guard kept

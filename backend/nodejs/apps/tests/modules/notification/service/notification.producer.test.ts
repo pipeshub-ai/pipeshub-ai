@@ -115,7 +115,7 @@ describe('notification/service/notification.producer', () => {
       expect(message.headers.timestamp).to.equal('9999999999')
     })
 
-    it('should log success after publish', async () => {
+    it('should log success after publish, at DEBUG', async () => {
       const event: any = {
         eventType: EventType.NewNotificationEvent,
         timestamp: Date.now(),
@@ -123,7 +123,8 @@ describe('notification/service/notification.producer', () => {
       }
 
       await producer.publishEvent(event)
-      expect(mockLogger.info.calledOnce).to.be.true
+      expect(mockLogger.info.called).to.be.false
+      expect(mockLogger.debug.calledOnceWith('broker.event.published', sinon.match({ event_type: EventType.NewNotificationEvent }))).to.be.true
     })
   })
 })

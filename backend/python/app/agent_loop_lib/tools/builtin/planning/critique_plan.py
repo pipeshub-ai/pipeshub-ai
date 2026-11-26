@@ -8,6 +8,7 @@ from app.agent_loop_lib.core.types import ToolCall
 from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.special_route import RouteContext
+from app.utils.error_class import failure_reason
 
 """`critique_plan` — exposes `critic.plan_critic.PlanCritic` as a tool call
 (see `.claude/rules/principles.md`'s gap map: "Double-critique loop ... Not
@@ -164,7 +165,7 @@ class CritiquePlanTool(Tool):
             content = critique.model_dump()
             is_error = False
         except Exception as e:
-            content = str(e)
+            content = failure_reason(e)
             is_error = True
 
         return CoreToolResult(tool_call_id=call.id, name=call.name, content=content, is_error=is_error)

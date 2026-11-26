@@ -30,6 +30,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support import it_backends
 from tests.support.require_service import missing
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
@@ -49,7 +50,12 @@ if TYPE_CHECKING:
 
 RECORDS = CollectionNames.RECORDS.value
 ORG = "org-search-it"
-URL = os.environ.get("QDRANT_REST_URL") or f"http://{os.environ.get('QDRANT_IT_HOST', 'localhost')}:{os.environ.get('QDRANT_IT_PORT', '6343')}"
+
+
+def _qdrant_url() -> str:
+    """QDRANT_REST_URL, else the integration Qdrant on QDRANT_IT_HOST (no default host: unset skips)."""
+    return os.environ.get("QDRANT_REST_URL") or f"http://{it_backends.endpoint('QDRANT_IT_HOST')}:{os.environ.get('QDRANT_IT_PORT', '6343')}"
+
 logger = logging.getLogger("keep-old-copy-search-it")
 OLD_TEXT, NEW_TEXT = "the old copy of the document", "the new copy of the document"
 
@@ -77,13 +83,14 @@ class _Qdrant:
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple]:
+    url = _qdrant_url()
     try:
-        client = qdrant_client.QdrantClient(url=URL, timeout=30, prefer_grpc=False)
+        client = qdrant_client.QdrantClient(url=url, timeout=30, prefer_grpc=False)
         client.get_collections()
     except Exception as exc:
         if not (os.environ.get("QDRANT_REST_URL") or os.environ.get("QDRANT_IT_HOST")):
             pytest.skip("no Qdrant is configured for this job (QDRANT_REST_URL or QDRANT_IT_HOST)")  # the offline job; a job that names one must reach it
-        missing(f"Qdrant is not reachable at {URL}: {exc}")
+        missing(f"Qdrant is not reachable at {url}: {exc}")
     try:
         graph = await (connect_neo4j(logger, monkeypatch) if request.param == "neo4j" else connect_arango(logger, "keep_old_copy_search_it"))
     except Exception as exc:
