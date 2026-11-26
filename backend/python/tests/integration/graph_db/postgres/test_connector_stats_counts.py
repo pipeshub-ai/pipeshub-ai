@@ -5,13 +5,16 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import Counter
 
+import asyncpg
 import pytest
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, Connectors
 from app.services.graph_db.postgres import connector_stats
+from app.services.graph_db.postgres.kg.locks import LOCK_CLASS
 from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.lookups import STATS_CONNECTOR, STATS_KB
 from tests.support import plan_gate
@@ -248,6 +251,35 @@ async def test_the_drop_of_a_new_install_log_is_one_batch_a_unit_and_no_app_is_c
         assert await kept(w, APP) is None and await kept(w, KB_APP) is None
         passes += 1
         assert passes <= logged, "the drop did not end"
+    await settle(w, pg_db)
+    for app in (APP, KB_APP):
+        assert await kept(w, app) == await walk(w, app), app
+
+
+async def test_a_pass_whose_drain_finds_the_org_held_counts_no_app(w: World, pg_db, monkeypatch) -> None:
+    """A drain that finds another unit holding the org (another worker, perhaps dropping the log) reports that, not an empty log: the pass ends without counting an app,
+    even if the holder lets go before the pass would seed. Counted then, the rest of a new install's log would be recounted a record at a time."""
+    await world(w, pg_db)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    holder = con.transaction()
+    await holder.start()
+    await con.execute("SELECT pg_advisory_xact_lock($1::int, hashtext($2))", LOCK_CLASS, f"{w.org}|stats")
+    drain, released = connector_stats.drain, []
+
+    async def contended(db, org):  # noqa: ANN202
+        n = await drain(db, org)
+        await holder.commit()                                                     # the other unit ends right after
+        released.append(True)
+        return n
+    monkeypatch.setattr(connector_stats, "drain", contended)
+    try:
+        await connector_stats.run(pg_db, w.org)
+    finally:
+        if not released:
+            await holder.rollback()
+        await con.close()
+    monkeypatch.setattr(connector_stats, "drain", drain)
+    assert await pg_db.run(lambda tx: tx.fetchval("SELECT count(*) FROM graph.stats_apps WHERE org_id = $1", w.org)) == 0
     await settle(w, pg_db)
     for app in (APP, KB_APP):
         assert await kept(w, app) == await walk(w, app), app
