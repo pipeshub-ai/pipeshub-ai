@@ -349,12 +349,13 @@ def defects(c: Cand, words: list[Word], hrules: Sequence[Rule], vrules: Sequence
     lines as rows) and a column the header shows but the grid does not cut."""
     f = c.f or features(c, words, hrules, vrules, box)
     lines = band_lines(words)
-    split = 0
+    split_lines: set[int] = set()  # a line on the edge of two rows is checked in both and counts once
     for (top, bot), row in zip(c.rows, c.cells):
         cuts = [x1 for (_, x1, _) in row[:-1]]
-        for ln in lines:
+        for i, ln in enumerate(lines):
             if top - 1 <= ln["cy"] <= bot + 1 and any(float(w["x0"]) < x - 0.5 and float(w["x1"]) > x + 0.5 for w in ln["w"] for x in cuts):
-                split += 1
+                split_lines.add(i)
+    split = len(split_lines)
     frag = sum(1 for row in c.cells[1:] if row and not row[0][2].strip() and any(t.strip() for _, _, t in row[1:]))
     under = 0
     hch: list[tuple[float, float]] = []
