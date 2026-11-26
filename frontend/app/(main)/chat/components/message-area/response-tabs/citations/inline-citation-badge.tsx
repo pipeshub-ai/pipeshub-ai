@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
 import { CitationNumberCircle } from './citation-number-circle';
 import { CitationSourceLinkRow } from './citation-source-link-row';
+import { CitationUnavailableBadge } from './citation-unavailable';
 import type { CitationData, CitationCallbacks } from './types';
 
 interface InlineCitationBadgeProps {
@@ -27,6 +28,10 @@ function InlineCitationBadgeImpl({
   callbacks,
 }: InlineCitationBadgeProps) {
   const [isHovered, setIsHovered] = useState(false);
+
+  if (citation?.unavailable) {
+    return <CitationUnavailableBadge chunkIndex={chunkIndex} />;
+  }
 
   const connector = citation?.connector || '';
 

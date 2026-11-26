@@ -2220,6 +2220,21 @@ class TestOnEventDoclingFallback:
         assert MessageErrorClassifier.classify_by_exception(raised) == MessageErrorType.TRANSIENT
 
     @pytest.mark.asyncio
+    async def test_docling_never_receiving_the_file_is_raised_as_the_same_hand_back(self) -> None:
+        """The consumer hands the record back (no attempt counted) only if the subtype survives the fallback."""
+        from app.exceptions.indexing_exceptions import DocumentProcessingError
+        from app.services.docling.client import DoclingNotServing
+        from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
+
+        down = DoclingNotServing("Docling is not serving")
+        raised = await self._layout_fails_after(
+            down, DocumentProcessingError("Failed to process document"), parsed=False
+        )
+
+        assert raised is down
+        assert isinstance(raised, RequeueWithoutAttempt)
+
+    @pytest.mark.asyncio
     async def test_a_layout_failure_after_its_parse_completed_keeps_its_own_error(self) -> None:
         """Past PARSING_COMPLETE the failure is block building or indexing, not a parse Docling could redo."""
         from app.exceptions.indexing_exceptions import DocumentProcessingError

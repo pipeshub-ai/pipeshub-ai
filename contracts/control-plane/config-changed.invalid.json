@@ -1,0 +1,18 @@
+[
+  {
+    "description": "a value instead of field paths",
+    "instance": {"orgId": "o1", "scope": "org:o1", "object": {"type": "policy-section", "id": "approvals"}, "revisionFrom": null, "revisionTo": null, "changeDigest": "sha256:9f2c1f0e6b5a4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c", "changed": ["org"], "actor": "user:u3", "approvalRef": null, "headRevision": 1, "value": {"writes": "ask"}}
+  },
+  {
+    "description": "an actor that is not a user, a service or the system",
+    "instance": {"orgId": "o1", "scope": "org:o1", "object": {"type": "policy-section", "id": "approvals"}, "revisionFrom": null, "revisionTo": null, "changeDigest": "sha256:9f2c1f0e6b5a4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c", "changed": [], "actor": "p_u3", "approvalRef": null, "headRevision": 1}
+  },
+  {
+    "description": "a change digest that is not a digest",
+    "instance": {"orgId": "o1", "scope": "org:o1", "object": {"type": "policy-section", "id": "approvals"}, "revisionFrom": null, "revisionTo": null, "changeDigest": "the new rules", "changed": [], "actor": "user:u3", "approvalRef": null, "headRevision": 1}
+  },
+  {
+    "description": "no head revision",
+    "instance": {"orgId": "o1", "scope": "org:o1", "object": {"type": "policy-section", "id": "approvals"}, "revisionFrom": null, "revisionTo": null, "changeDigest": "sha256:9f2c1f0e6b5a4d3c2b1a0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c", "changed": [], "actor": "user:u3", "approvalRef": null}
+  }
+]

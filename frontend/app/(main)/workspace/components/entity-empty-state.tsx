@@ -11,12 +11,12 @@ export interface EntityEmptyStateProps {
   title: string;
   /** Empty state description */
   description: string;
-  /** CTA button label */
-  ctaLabel: string;
+  /** CTA button label; the button shows only with `onCtaClick` */
+  ctaLabel?: string;
   /** CTA button Material icon name */
-  ctaIcon: string;
+  ctaIcon?: string;
   /** Callback when CTA is clicked */
-  onCtaClick: () => void;
+  onCtaClick?: () => void;
 }
 
 /**
@@ -54,7 +54,7 @@ export function EntityEmptyState({
           backgroundColor: 'var(--slate-3)',
         }}
       >
-        <MaterialIcon name={icon} size={28} color="var(--slate-9)" />
+        <MaterialIcon name={icon} size={28} color="var(--slate-11)" />
       </Flex>
 
       <Flex direction="column" align="center" gap="2" style={{ maxWidth: '420px', textAlign: 'center' }}>
@@ -66,10 +66,12 @@ export function EntityEmptyState({
         </Text>
       </Flex>
 
-      <Button size="2" className="touch-hit" onClick={onCtaClick} style={{ marginTop: 'var(--space-2)' }}>
-        <MaterialIcon name={ctaIcon} size={16} color="currentColor" />
-        {ctaLabel}
-      </Button>
+      {onCtaClick && (
+        <Button size="2" className="touch-hit" onClick={onCtaClick} style={{ marginTop: 'var(--space-2)' }}>
+          {ctaIcon && <MaterialIcon name={ctaIcon} size={16} color="currentColor" />}
+          {ctaLabel}
+        </Button>
+      )}
     </Flex>
   );
 }

@@ -1262,10 +1262,11 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
             if ticket_key in written and written[ticket_key] == updated_at:
                 continue
             version = f"{ticket_key}@{updated_at}"
+            kept: set[str] = set()
             try:
-                records = await self._ticket_records(ticket_data)
+                records = await self._ticket_records(ticket_data, kept)
                 batch_records.extend(records)
-                self._written_attachments[ticket_key] = {
+                self._written_attachments[ticket_key] = kept | {
                     r.external_record_id for r, _ in records if isinstance(r, FileRecord)
                 }
                 written[ticket_key] = updated_at
@@ -1382,15 +1383,20 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
             "burst_next_id": burst.next_id if burst else 0,
         })
 
-    async def _ticket_records(self, ticket_data: dict[str, Any]) -> list[tuple[Record, list[Permission]]]:
-        """A ticket and its attachments, ready for ``on_new_records``; raises if its articles can't be read."""
+    async def _ticket_records(
+        self, ticket_data: dict[str, Any], kept: set[str] | None = None,
+    ) -> list[tuple[Record, list[Permission]]]:
+        """A ticket and its attachments, ready for ``on_new_records``; raises if its articles can't be read.
+
+        The external ids of attachments kept as stored (their build failed) are added to ``kept``.
+        """
         ticket_record = await self._transform_ticket_to_ticket_record(ticket_data)
         if not ticket_record:
             return []
         if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.TICKETS):
             ticket_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         # Records inherit permissions from the group's RecordGroup.
-        return [(ticket_record, []), *await self._fetch_ticket_attachments(ticket_data, ticket_record)]
+        return [(ticket_record, []), *await self._fetch_ticket_attachments(ticket_data, ticket_record, kept)]
 
     @staticmethod
     def _ticket_id_of(record: Record) -> str | None:
@@ -1553,13 +1559,16 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
         only when Zammad says it is gone or an applied filter leaves it out; a
         ticket now in another synced group is written there. One now in a group
         that isn't synced (inactive or nameless) has no RecordGroup to sit in
-        and no sync that would reach it again, so it is removed too. Returns
-        False when a read or a delete failed and the next sync must try again.
+        and no sync that would reach it again, so it is removed too. A ticket
+        kept as stored is noted kept, so the unlink after a full sync leaves it
+        alone. Returns False when a read or a delete failed and the next sync
+        must try again.
         """
         read, ticket = await self._read_back_ticket(ticket_id)
         if not read:
             return False
         if ticket is not None and ticket.get("group_id") is None:
+            self.data_entities_processor.note_kept_records(self.connector_id, record_ids)
             return True
         if ticket is None or not self._is_group_allowed_by_filter(str(ticket["group_id"])) \
                 or not self._passes_date_filters(ticket):
@@ -1572,6 +1581,7 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
                 record_ids, f"{reason}; it is in group {ticket['group_id']}, which is not synced"
             )
         if f"group_{ticket['group_id']}" == held_in_group:
+            self.data_entities_processor.note_kept_records(self.connector_id, record_ids)
             return True
         await self.data_entities_processor.on_new_records(await self._ticket_records(ticket))
         return True
@@ -1756,7 +1766,8 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
     async def _fetch_ticket_attachments(
         self,
         ticket_data: Dict[str, Any],
-        ticket_record: TicketRecord
+        ticket_record: TicketRecord,
+        kept: set[str] | None = None,
     ) -> List[Tuple[Record, List[Permission]]]:
         """
         Fetch attachments for a ticket from its articles.
@@ -1764,6 +1775,7 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
         Args:
             ticket_data: Raw ticket data
             ticket_record: Parent TicketRecord
+            kept: Gets the external ids of attachments whose build failed and that are kept as stored
 
         Returns:
             List of (FileRecord, permissions) tuples
@@ -1798,12 +1810,12 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
             article_attachments = article.get("attachments") or []
 
             for attachment in article_attachments:
+                attachment_id = attachment.get("id") if isinstance(attachment, dict) else None
+                if not attachment_id:
+                    continue
+                # Ticket attachment external_record_id format: {ticket_id}_{article_id}_{attachment_id}
+                external_record_id = f"{ticket_id}_{article_id}_{attachment_id}"
                 try:
-                    attachment_id = attachment.get("id") if isinstance(attachment, dict) else None
-                    if not attachment_id:
-                        continue
-                    # Ticket attachment external_record_id format: {ticket_id}_{article_id}_{attachment_id}
-                    external_record_id = f"{ticket_id}_{article_id}_{attachment_id}"
                     file_record = await self._transform_attachment_to_file_record(
                         attachment_data=attachment,
                         external_record_id=external_record_id,
@@ -1811,11 +1823,26 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
                         parent_record_type=RecordType.TICKET,
                         indexing_filter_key=IndexingFilterKey.ISSUE_ATTACHMENTS
                     )
-                    if file_record:
-                        # FileRecords inherit permissions from parent
-                        attachments.append((file_record, []))
                 except Exception as e:
-                    self.logger.warning(f"Failed to process attachment: {e}")
+                    # A full sync resets the read-failure counts, so failing the ticket here
+                    # would leave every full sync incomplete while the build keeps failing.
+                    # The stored attachment is kept instead, and goes in ``kept`` so it is not
+                    # deleted as gone from the ticket; only a failed lookup fails the ticket.
+                    stored = await self.data_entities_processor.get_record_by_external_id(
+                        self.connector_id, external_record_id, raise_on_error=True
+                    )
+                    if stored is not None:
+                        self.data_entities_processor.note_kept_records(self.connector_id, [stored.id])
+                        if kept is not None:
+                            kept.add(external_record_id)
+                    self.logger.warning(
+                        f"Ticket {ticket_id} attachment {attachment_id} could not be built, "
+                        f"so {'its stored record is kept' if stored else 'it is not written'}: {e}"
+                    )
+                    continue
+                if file_record:
+                    # FileRecords inherit permissions from parent
+                    attachments.append((file_record, []))
 
         return attachments
 
@@ -1876,16 +1903,18 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
             return attachments
 
         for attachment in answer_attachments:
+            if not isinstance(attachment, dict):
+                continue
+            attachment_id = attachment.get("id")
+            if not attachment_id:
+                continue
+            # KB answer attachment external_record_id format: kb_answer_{answer_id}_attachment_{attachment_id}
+            external_record_id = f"kb_answer_{answer_id}_attachment_{attachment_id}"
+            # Use the same inherit_permissions value as the parent answer
+            # PUBLIC/ARCHIVED/DRAFT: inherit_permissions=False (explicit permissions)
+            # INTERNAL: inherit_permissions=True (inherits from category)
+            answer_inherit_permissions = answer_record.inherit_permissions if hasattr(answer_record, 'inherit_permissions') else False
             try:
-                attachment_id = attachment.get("id")
-                if not attachment_id:
-                    continue
-                # KB answer attachment external_record_id format: kb_answer_{answer_id}_attachment_{attachment_id}
-                external_record_id = f"kb_answer_{answer_id}_attachment_{attachment_id}"
-                # Use the same inherit_permissions value as the parent answer
-                # PUBLIC/ARCHIVED/DRAFT: inherit_permissions=False (explicit permissions)
-                # INTERNAL: inherit_permissions=True (inherits from category)
-                answer_inherit_permissions = answer_record.inherit_permissions if hasattr(answer_record, 'inherit_permissions') else False
                 file_record = await self._transform_attachment_to_file_record(
                     attachment_data=attachment,
                     external_record_id=external_record_id,
@@ -1894,14 +1923,26 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
                     indexing_filter_key=IndexingFilterKey.KNOWLEDGE_BASE,
                     inherit_permissions=answer_inherit_permissions
                 )
-                if file_record:
-                    # Pass the same permissions as the parent answer
-                    # For PUBLIC: ORG permission, inherit_permissions=False
-                    # For ARCHIVED/DRAFT: Editor role permissions, inherit_permissions=False
-                    # For INTERNAL: Empty list, inherit_permissions=True will handle category inheritance
-                    attachments.append((file_record, answer_permissions))
             except Exception as e:
-                self.logger.warning(f"Failed to process KB answer attachment: {e}")
+                # KB answers have no give-up limit, so failing the answer here would leave every
+                # sync incomplete while the build keeps failing. The stored attachment is kept
+                # instead; only a failed lookup of it fails the answer, which raises from here.
+                stored = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, external_record_id, raise_on_error=True
+                )
+                if stored is not None:
+                    self.data_entities_processor.note_kept_records(self.connector_id, [stored.id])
+                self.logger.warning(
+                    f"KB answer {answer_id} attachment {attachment_id} could not be built, "
+                    f"so {'its stored record is kept' if stored else 'it is not written'}: {e}"
+                )
+                continue
+            if file_record:
+                # Pass the same permissions as the parent answer
+                # For PUBLIC: ORG permission, inherit_permissions=False
+                # For ARCHIVED/DRAFT: Editor role permissions, inherit_permissions=False
+                # For INTERNAL: Empty list, inherit_permissions=True will handle category inheritance
+                attachments.append((file_record, answer_permissions))
 
         return attachments
 
@@ -2363,7 +2404,7 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
         visible to the token), and, if it is a draft or archived (granted to the
         category's editor roles by name), when those roles changed. An answer
         held but no longer listed is read back, and removed only when Zammad says
-        it is gone or not visible to the token.
+        it is gone (404).
         """
         last_sync_time = await self._get_kb_sync_checkpoint()
         datasource = await self._get_fresh_datasource()
@@ -2498,13 +2539,16 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
 
         The answer is read back: only 404 (deleted) removes it, with its
         attachments. A 403 keeps it: Zammad does not say it is gone, only that
-        the token may not see it. Any other answer keeps it and marks the sync
-        incomplete, so the next one tries again.
+        the token may not see it. An answer kept on a 200 or a 403 is noted kept,
+        with its category, so the unlink after a full sync leaves it alone. Any
+        other answer keeps it and marks the sync incomplete, so the next one
+        tries again.
         """
         if not answer_ids:
             return
         datasource = await self._get_fresh_datasource()
         removed = 0
+        noted_categories: set[str] = set()
         for answer_id in answer_ids:
             try:
                 response = await datasource.get_kb_answer(id=int(answer_id), kb_id=kb_id)
@@ -2512,13 +2556,19 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
                 self._incomplete.append(f"the check of knowledge base answer {answer_id}")
                 self.logger.warning(f"Could not read back KB answer {answer_id}: {e}")
                 continue
-            if response.success:
-                # Listed nowhere yet readable: keep it; it is written when the listing has it again.
-                continue
-            if response.status_code == HttpStatusCode.FORBIDDEN.value:
+            forbidden = response.status_code == HttpStatusCode.FORBIDDEN.value
+            if forbidden:
                 self.logger.warning(
                     f"KB answer {answer_id} is no longer listed and the token may not read it; keeping it"
                 )
+            if response.success or forbidden:
+                # Listed nowhere yet readable, or hidden from the token: kept as stored until
+                # the listing has it again.
+                try:
+                    await self._note_kb_answer_kept(answer_id, noted_categories)
+                except Exception as e:
+                    self._incomplete.append(f"the check of knowledge base answer {answer_id}")
+                    self.logger.warning(f"Could not note KB answer {answer_id} kept: {e}")
                 continue
             if response.status_code != HttpStatusCode.NOT_FOUND.value:
                 self._incomplete.append(f"the check of knowledge base answer {answer_id}")
@@ -2543,6 +2593,27 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
                 self._incomplete.append(f"the removal of knowledge base answer {answer_id}")
         if removed:
             self.logger.info(f"🗑️ Removed {removed} KB answer(s) no longer in Zammad")
+
+    async def _note_kb_answer_kept(self, answer_id: str, noted_categories: set[str]) -> None:
+        """Note a held answer, its attachments and its category kept for a full sync in progress.
+
+        The category is noted too: an internal answer inherits its access from it,
+        and a category the token no longer lists would otherwise lose its grants.
+        """
+        external_id = f"kb_answer_{answer_id}"
+        record = await self.data_entities_processor.get_record_by_external_id(self.connector_id, external_id)
+        if record is None:
+            return
+        children = await self.data_entities_processor.get_records_by_parent(
+            self.connector_id, external_id, visibility=RecordVisibility.ALL,
+        )
+        self.data_entities_processor.note_kept_records(
+            self.connector_id, [child.id for child in children] + [record.id]
+        )
+        category_id = record.external_record_group_id
+        if category_id and category_id not in noted_categories:
+            await self.data_entities_processor.note_kept_record_group(self.connector_id, category_id)
+            noted_categories.add(category_id)
 
     async def _read_kb_listing(self, datasource: ZammadDataSource) -> dict[str, Any]:
         """Every knowledge base, category and answer Zammad lists, keyed by asset type.
@@ -2854,19 +2925,19 @@ class ZammadConnector(ZammadPermissionsMixin, BaseConnector):
                         # revision, same inheritance) would keep its organisation-wide grant.
                         needs_permission_update = existing_record is not None
 
-                        batch_records.append((answer_record, permissions, needs_permission_update))
-                        total_synced += 1
-
-                        # Fetch attachments for the answer
+                        # Built before the answer is queued: when the stored record of an
+                        # attachment that fails to build can't be looked up, the answer fails
+                        # and is not written, so the next sync reads it again.
                         attachment_records = await self._fetch_kb_answer_attachments(
                             answer_data=answer_data,
                             answer_record=answer_record,
                             answer_permissions=permissions
                         )
-                        if attachment_records:
-                            # Attachments also need permission update if parent does
-                            for att_record, att_perms in attachment_records:
-                                batch_records.append((att_record, att_perms, needs_permission_update))
+                        batch_records.append((answer_record, permissions, needs_permission_update))
+                        total_synced += 1
+                        # Attachments also need permission update if parent does
+                        for att_record, att_perms in attachment_records:
+                            batch_records.append((att_record, att_perms, needs_permission_update))
 
                 except Exception as e:
                     self.logger.warning(f"Failed to process KB answer {answer_id}: {e}", exc_info=True)

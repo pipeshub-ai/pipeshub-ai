@@ -23,6 +23,7 @@ from app.connectors.core.registry.connector_registry import ConnectorRegistry
 APP_LEVEL_CONNECTORS = [
     "app.connectors.sources.s3.connector",
     "app.connectors.sources.minio.connector",
+    "app.connectors.sources.cloudflare_r2.connector",
     "app.connectors.sources.google_cloud_storage.connector",
     "app.connectors.sources.azure_blob.connector",
     "app.connectors.sources.azure_files.connector",

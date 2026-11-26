@@ -121,6 +121,22 @@ describe('readDocumentWithFingerprint', () => {
     expect(err).to.be.instanceOf(ServiceUnavailableError)
   })
 
+  it('a store failure is not logged here: the 503 carries the vendor status and code as its cause, never its text', async () => {
+    const w = world()
+    w.statError = Object.assign(new Error('n5d-vendor-text bucket/key'), { name: 'SlowDown', $metadata: { httpStatusCode: 503 } })
+    const logged: unknown[] = []
+    const logger = { warn: (...args: unknown[]) => logged.push(args), error: (...args: unknown[]) => logged.push(args) }
+    let err: any
+    try {
+      await readDocumentWithFingerprint({ repo: w.repo, stat: w.statFn, logger }, 'o1', 'd1', true)
+    } catch (e) {
+      err = e
+    }
+    expect(err).to.be.instanceOf(ServiceUnavailableError)
+    expect(err.cause).to.deep.equal({ status: 503, code: 'SlowDown' })
+    expect(logged).to.deep.equal([])
+  })
+
   it('only the S3 key parse failure is "cannot be verified"; any other validation error is not converted', async () => {
     const w = world()
     w.statError = new StorageUrlParseError('Invalid S3 URL format')

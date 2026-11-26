@@ -20,6 +20,7 @@ on:
       - 'Dockerfile'
       - 'deployment/sandbox/**'
       - 'backend/python/pyproject.toml'
+      - 'backend/python/requirements/**'
       - 'backend/nodejs/apps/package.json'
       - 'backend/nodejs/apps/package-lock.json'
       - 'frontend/package.json'

@@ -190,7 +190,9 @@ class InProcMaterialiser:
             if refusal is not None:
                 raise refusal
         try:
-            out = await child.run_task({**task, "allow_loopback": True, "listed_origins": [], "request_timeout_s": task.get("request_timeout_s", 3)})
+            # A loopback fetch on a loaded test host can take seconds; these tests judge decisions, not speed, and the
+            # timeout test sets its own short value.
+            out = await child.run_task({**task, "allow_loopback": True, "listed_origins": [], "request_timeout_s": task.get("request_timeout_s", 60)})
         except child.Refused as r:
             raise PushRefusal(r.status, r.reason, r.message, extra=r.extra) from None
         return Materialised(out["size"], out["content_rev"])

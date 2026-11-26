@@ -1,0 +1,726 @@
+{
+  "uid": "pxh-agent-harness",
+  "title": "PipesHub agent harness",
+  "tags": [
+    "pipeshub",
+    "agent-harness"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "editable": false,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active sessions",
+      "description": "Conversations with a durable run that has not ended",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "max(pipeshub_agent_harness_active_sessions)",
+          "legendFormat": "sessions"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Pool depth",
+      "description": "Warm sandboxes waiting for a coding-engine run",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "max(pipeshub_harness_sandbox_warm_pool_depth)",
+          "legendFormat": "warm sandboxes"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Cost per minute",
+      "description": "Metered model spend of durable runs",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "sum(rate(pipeshub_agent_harness_model_cost_usd_total[5m])) * 60",
+          "legendFormat": "USD/min"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Cache ratio",
+      "description": "Share of prompt tokens served from the provider's cache",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "sum(rate(pipeshub_agent_harness_model_usage_tokens_total{kind=\"cache_read\"}[15m])) / sum(rate(pipeshub_agent_harness_model_usage_tokens_total{kind=\"input\"}[15m]))",
+          "legendFormat": "cached share of input"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Runs by status",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "max by (status) (pipeshub_agent_harness_runs)",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Claim latency (admission to first claim)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(pipeshub_agent_harness_run_claim_wait_seconds_bucket[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(pipeshub_agent_harness_run_claim_wait_seconds_bucket[5m])))",
+          "legendFormat": "p50"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Gateway errors",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "sum by (gateway, route) (rate(pipeshub_harness_gateway_requests_total{outcome=\"error\"}[5m]))",
+          "legendFormat": "{{gateway}} {{route}} errors"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "sum by (gateway, reason) (rate(pipeshub_harness_gateway_refusals_total[5m]))",
+          "legendFormat": "{{gateway}} refused: {{reason}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Warm sandbox claims",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "sum by (outcome) (rate(pipeshub_harness_sandbox_warm_claims_total[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Sandbox seconds",
+      "description": "Sandbox-seconds metered per second of wall time: about the number of sandboxes held",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "sum by (phase) (rate(pipeshub_harness_sandbox_seconds_total[5m]))",
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Model tokens by kind",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "sum by (kind) (rate(pipeshub_agent_harness_model_usage_tokens_total[5m]))",
+          "legendFormat": "{{kind}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Stuck and failed runs",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "max(pipeshub_agent_harness_runs_lease_expired)",
+          "legendFormat": "lease expired, not re-queued"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "sum(increase(pipeshub_agent_harness_quarantined_runs_total[1h]))",
+          "legendFormat": "quarantined (1h)"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "sum(increase(pipeshub_agent_harness_stranded_runs_total{outcome=\"failed\"}[1h]))",
+          "legendFormat": "stranded, failed (1h)"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Oldest running run",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "max(pipeshub_agent_harness_oldest_running_run_age_seconds)",
+          "legendFormat": "age"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Services read",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "max by (harness_service) (pipeshub_harness_metrics_scrape_up)",
+          "legendFormat": "{{harness_service}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      }
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Availability (30 days)",
+      "description": "Durable chat turns that did not fail, over 30 days (SLO.md: 99.9% on Helm with three Mongo members, 99.5% on Compose). Cancelled and waiting turns count as good.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "1 - (sum(increase(pipeshub_agent_chat_turns_total{path=\"durable\",outcome=\"failed\"}[30d])) / sum(increase(pipeshub_agent_chat_turns_total{path=\"durable\"}[30d])))",
+          "legendFormat": "available"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 48
+      }
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Error budget left (30 days, 99.9%)",
+      "description": "Share of the 0.1% failure budget not yet spent in the last 30 days; below zero the budget is overspent and releases carry fixes only (SLO.md error budget policy).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "1 - (sum(increase(pipeshub_agent_chat_turns_total{path=\"durable\",outcome=\"failed\"}[30d])) / sum(increase(pipeshub_agent_chat_turns_total{path=\"durable\"}[30d]))) / 0.001",
+          "legendFormat": "budget left"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 48
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Per-run cache-read share",
+      "description": "Each ended run's cache_read / input (SLO #11): median and the worst tenth; the alert fires when the median stays under 70%.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(pipeshub_agent_harness_run_cache_read_ratio_bucket[1h])))",
+          "legendFormat": "median run"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "histogram_quantile(0.1, sum by (le) (rate(pipeshub_agent_harness_run_cache_read_ratio_bucket[1h])))",
+          "legendFormat": "worst tenth"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      }
+    },
+    {
+      "id": 17,
+      "type": "stat",
+      "title": "Session API good minutes (30 days)",
+      "description": "Minutes in which at most 1% of the session API's requests answered 5xx, over 30 days (SLO.md \"Targets\": a minute is bad above 1%; a minute with no request is good). The canary's failures are not in it: it runs outside Prometheus.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "1 - avg_over_time((sum(rate(pipeshub_agent_harness_session_api_requests_total{outcome=\"server_error\"}[1m])) / sum(rate(pipeshub_agent_harness_session_api_requests_total[1m])) > bool 0.01)[30d:1m])",
+          "legendFormat": "good minutes"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 56
+      }
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Session API 5xx share",
+      "description": "Share of the session API's requests that answered 5xx, by surface; the burn alerts fire on this over 0.1% (99.9%).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "pxh-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "pxh-prometheus"
+          },
+          "expr": "sum by (surface) (rate(pipeshub_agent_harness_session_api_requests_total{outcome=\"server_error\"}[5m])) / sum by (surface) (rate(pipeshub_agent_harness_session_api_requests_total[5m]))",
+          "legendFormat": "{{surface}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 18,
+        "x": 6,
+        "y": 56
+      }
+    }
+  ]
+}

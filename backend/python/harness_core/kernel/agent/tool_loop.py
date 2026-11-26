@@ -1,0 +1,530 @@
+# pyright: basic
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from harness_core.kernel.agent import observability as obs
+from harness_core.kernel.core.finish_moves import finish_move
+from harness_core.kernel.core.messages import (
+    ImagePart,
+    TextPart,
+    malformed_call_error,
+)
+from harness_core.kernel.core.scope import StateSlot, ToolScope
+from harness_core.kernel.core.types import (
+    Artifact,
+    Confidence,
+    Goal,
+    Message,
+    ToolCall,
+    ToolResult,
+)
+from harness_core.kernel.durable.effects import classify_tool_effect
+from harness_core.kernel.events import EventType, ToolCallStatus
+from harness_core.tools.budget import MAX_TOOLS_PER_REQUEST
+from harness_core.tools.call_tool import CALL_TOOL, unwrapped
+from harness_core.tools.executor import log_tool_call_end
+from harness_core.tools.special_route import RouteContext, SpecialRouteRegistry
+from harness_core.tools.tags import TAG_DEDUP_EXACT, TAG_LIFECYCLE_TERMINAL
+from harness_core.tools.task_complete import TerminalTool
+
+logger = logging.getLogger(__name__)
+
+# Internal tools whose execution should not produce frontend-visible events.
+# The tool still runs and its result enters the conversation; only the
+# TOOL_CALL / TOOL_RESULT emissions are skipped.
+_NO_EMIT_TOOLS: frozenset[str] = frozenset({"retrieve_artifact_content"})
+
+# Upper bound on the tool output a TOOL_RESULT event carries. The transcript
+# (`TranscriptCollector`) and the frontend's live handler keep the same cap,
+# so what is shown live is what is shown after reload.
+RESULT_PREVIEW_CHARS = 2000
+
+
+def _result_preview(content: Any) -> str:
+    """Bounded, readable preview of a tool result for the UI.
+
+    Structured content is shown as JSON rather than Python's repr, and a
+    truncated preview says so, including the full length.
+    """
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list) and content and all(isinstance(p, (TextPart, ImagePart)) for p in content):
+        text = "\n".join(p.text if isinstance(p, TextPart) else "[image]" for p in content)
+    else:
+        try:
+            text = json.dumps(content, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            text = str(content)
+    if len(text) <= RESULT_PREVIEW_CHARS:
+        return text
+    marker = f"… [truncated: {len(text)} chars total]"
+    return text[: RESULT_PREVIEW_CHARS - len(marker)] + marker
+
+
+if TYPE_CHECKING:
+    from harness_core.kernel.agent.spec import AgentSpec
+    from harness_core.kernel.core.scope import TurnScope
+    from harness_core.kernel.core.tool_schema import ToolSchema
+    from harness_core.kernel.hooks.middleware.decisions import PendingApproval
+    from harness_core.kernel.runtime import AgentRuntime
+    from harness_core.tools.registry import ToolRegistry
+
+
+
+"""Per-tool-call dispatch, extracted from `Agent.step()`.
+
+Handles exactly one `ToolCall`: duplicate-search detection, looking up a
+`SpecialRouteHandler` for tools that need Agent-level state (spawn_agent,
+best_of_n, clarify, replan, handoff, write_todos, fetch_tools — see
+`tools/special_route.py`), and delegating the whole resolve -> PreToolUse
+-> execute -> PostToolUse sequence to `ToolExecutor.call_tool()` — one call
+per tool call, regardless of which route it takes, so permission/mode/
+approval/audit-log middleware apply uniformly.
+"""
+
+
+def compute_duplicate_flags(
+    calls: list[ToolCall], seen_tool_calls: set[str], registry: "ToolRegistry"
+) -> dict[str, bool]:
+    """Synchronous pre-pass over one `asyncio.gather()` wave of calls, run
+    BEFORE any of them starts its own coroutine — so `seen_tool_calls` is
+    fully updated before any call's `await` points exist.
+
+    This check-then-add used to live inline inside `execute_tool_call`,
+    AFTER that function's own `await agent.emit(...)`. Two identical
+    calls gathered into the same wave could both reach the check before
+    either had added its own signature, and both would execute. Doing the
+    whole check-then-add loop here, synchronously, makes that interleaving
+    structurally impossible.
+
+    Only calls to a tool tagged `TAG_DEDUP_EXACT` (builtin `web_search`/
+    `web_scrape`, or any host-defined tool that opts in) are ever flagged
+    — every OTHER repeated call still updates `seen_tool_calls` for
+    bookkeeping, but is never treated as a duplicate, since a non-idempotent
+    tool repeated on purpose (e.g. re-reading a file after writing it)
+    must still run.
+    """
+    flags: dict[str, bool] = {}
+    for call in calls:
+        call_sig = f"{call.name}:{json.dumps(call.arguments, sort_keys=True)}"
+        is_dedupable = TAG_DEDUP_EXACT in registry.tags_for_name(call.name)
+        flags[call.id] = call_sig in seen_tool_calls and is_dedupable
+        seen_tool_calls.add(call_sig)
+    return flags
+
+
+def _resolve_quietly(agent, name: str):
+    """Best-effort tool lookup for summarization only — never raises. A
+    name that doesn't resolve (special routes, malformed-call sentinel
+    names, mid-registration edge cases) just means "no tool-declared
+    summarizer available", not an error."""
+    try:
+        return agent._executor.registry.resolve_by_name(name)
+    except Exception:
+        return None
+
+
+def _args_summary(agent, runtime: "AgentRuntime", call: ToolCall) -> str | None:
+    """Precedence: the resolved tool's own declared summarizer (`@tool(
+    args_summary=...)` — see `tools/decorators.py`) first, since that's
+    colocated with the tool definition and always the most specific;
+    `runtime.summarizer` (the platform-owned registry for tools that
+    aren't defined via `@tool`, e.g. dynamic per-request adapters) next;
+    `None` otherwise. Every layer is fail-safe — `Tool.summarize_args`'s
+    default implementations already swallow formatter exceptions, but
+    this function must never raise either, since a missing summary is
+    always a safe fallback (emitters/`TranscriptCollector`/the frontend
+    treat it as "use the raw preview") while an exception here would not
+    be."""
+    tool = _resolve_quietly(agent, call.name)
+    if tool is not None:
+        try:
+            summary = tool.summarize_args(call.arguments)
+            if summary is not None:
+                return summary
+        except Exception:
+            pass
+    if runtime.summarizer is None:
+        return None
+    try:
+        return runtime.summarizer.summarize_args(call.name, call.arguments)
+    except Exception:
+        return None
+
+
+def _result_summary(agent, runtime: "AgentRuntime", call: ToolCall, tr: ToolResult) -> str | None:
+    """Same precedence and fail-safe contract as `_args_summary`. Must be
+    called with the FULL `tr` (before the preview truncation in `_result_preview`) — that's
+    the entire reason this lives in `tool_loop.py` rather than in an
+    emitter, which only ever sees the already-truncated preview."""
+    tool = _resolve_quietly(agent, call.name)
+    if tool is not None:
+        try:
+            summary = tool.summarize_result(call.arguments, tr)
+            if summary is not None:
+                return summary
+        except Exception:
+            pass
+    if runtime.summarizer is None:
+        return None
+    try:
+        return runtime.summarizer.summarize_result(call.name, call.arguments, tr).result_summary
+    except Exception:
+        return None
+
+
+def _result_view(agent, call: ToolCall, tr: ToolResult) -> dict[str, Any] | None:
+    """The tool's own view of the FULL result, if it has one. A failure only loses the view."""
+    tool = _resolve_quietly(agent, call.name)
+    if tool is None:
+        return None
+    try:
+        view = tool.result_view(call.arguments, tr)
+    except Exception:
+        return None
+    return view if isinstance(view, dict) else None
+
+
+def _result_failed(agent, call: ToolCall, tr: ToolResult) -> bool:
+    """Whether the step card shows the call as failed. A failure to decide leaves it as `tr` says."""
+    if tr.is_error:
+        return True
+    tool = _resolve_quietly(agent, call.name)
+    if tool is None:
+        return False
+    try:
+        return tool.result_failed(call.arguments, tr) is True
+    except Exception:
+        return False
+
+
+class _PendingApprovalHolder:
+    """Shared by reference across a spawn tree (`inherit=True`): when any run in it leaves a call
+    waiting for a person, every run above it ends its turn too, instead of carrying on without
+    the answer."""
+
+    def __init__(self) -> None:
+        self.pending: PendingApproval | None = None
+
+
+PENDING_APPROVAL: StateSlot[_PendingApprovalHolder] = StateSlot(
+    key="tool_loop.pending_approval", default_factory=_PendingApprovalHolder, inherit=True,
+)
+
+
+@dataclass
+class ToolCallOutcome:
+    result: ToolResult
+    task_done: bool = False
+    final_output: object = None
+    artifacts: list[Artifact] = None  # type: ignore[assignment]
+    # Optional typed sub-agent output contract, mirrored from whatever
+    # `TerminalTool.extract_outcome` returned — see `AgentResult`
+    # (`core/types.py`) for what each field means; `None`/`[]` here just
+    # means "this terminal call didn't set it", not an error.
+    confidence: Confidence | None = None
+    record_ids: list[str] = None  # type: ignore[assignment]
+    needs_input: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.artifacts is None:
+            self.artifacts = []
+        if self.record_ids is None:
+            self.record_ids = []
+
+
+def initial_visible_tools(spec: "AgentSpec", runtime: "AgentRuntime") -> set[str]:
+    """Essentials + pinned toolsets, per the lazy-toolsets design tenet:
+    only overviews + meta-tools + role-pinned essentials ship upfront.
+    Anything not assigned to any toolset is an "essential" by definition.
+
+    When `spec.tool_names` is non-empty, the result is intersected with it
+    — a permission ceiling (see `AgentSpec.tool_disclosure`) can only ever
+    narrow the starting visibility, never widen it beyond what the agent
+    is actually allowed to call. Harmless when `tool_disclosure == "eager"`
+    too: that branch of `tool_schemas_for_turn` never consults this set."""
+    registry = runtime.tool_registry
+    all_names = set(registry.names())  # pyright: ignore[reportOptionalMemberAccess]
+    grouped = registry.grouped_tool_names()  # pyright: ignore[reportOptionalMemberAccess]
+    essentials = all_names - grouped
+    for toolset_name in spec.pinned_toolsets:
+        essentials.update(registry.tools_in_toolset(toolset_name))  # pyright: ignore[reportOptionalMemberAccess]
+    if spec.tool_names:
+        essentials &= set(spec.tool_names)
+    return essentials
+
+
+def tool_schemas_for_turn(agent, spec: "AgentSpec", runtime: "AgentRuntime") -> list["ToolSchema"]:
+    """Which tool schemas the model sees this turn — all of them, unless
+    the registry opts into lazy toolsets, in which case it's essentials
+    plus what the run's start hooks put in `agent.visible_tools` (preloading).
+    fetch_tools and search_tools answer schemas and never grow it; a tool they
+    answer is called through call_tool, and the durable kernel fixes the list
+    for the chat session at its first request (R4).
+    Never more than `MAX_TOOLS_PER_REQUEST`: past it the provider refuses
+    the whole request."""
+    registry = runtime.tool_registry
+    if registry is None:
+        return []
+    schemas = _schemas_for_turn(agent, spec, runtime)
+    if len(schemas) <= MAX_TOOLS_PER_REQUEST:
+        return schemas
+    # Preloading keeps within the limit; this catches the rest (an eager grant that large, tools seeded from
+    # history). Essentials stay.
+    essentials = initial_visible_tools(spec, runtime)
+    ordered = [s for s in schemas if s.name in essentials] + [s for s in schemas if s.name not in essentials]
+    kept = {s.name for s in ordered[:MAX_TOOLS_PER_REQUEST]}
+    logger.warning(
+        "tool_schemas_for_turn: %d tools is over the %d one request can carry; sending %d",
+        len(schemas), MAX_TOOLS_PER_REQUEST, len(kept),
+    )
+    return [s for s in schemas if s.name in kept]
+
+
+def _schemas_for_turn(agent, spec: "AgentSpec", runtime: "AgentRuntime") -> list["ToolSchema"]:
+    registry = runtime.tool_registry
+    if registry is None:
+        return []
+    if not registry.has_toolsets():
+        return registry.schemas(spec.tool_names or None)
+
+    visible = agent.visible_tools
+    if visible is None:
+        visible = initial_visible_tools(spec, runtime)
+        # Kept only once a run has its scope; before it (a request built ahead of the run) this turn's set stands.
+        agent.visible_tools = visible
+
+    if spec.tool_names:
+        if spec.tool_disclosure == "lazy":
+            # tool_names is a permission CEILING here, not an eager grant:
+            # visibility starts at essentials/pinned (already intersected
+            # with the ceiling above) and only grows through the start
+            # hooks, which enforce the same ceiling — so this intersection
+            # is a defensive no-op in the common case, not the only
+            # enforcement point.
+            return registry.schemas(sorted(visible & set(spec.tool_names)))
+        # eager (default): the explicit tool grant is ALL named tools,
+        # fully visible from the start. Lazy disclosure (grouping tools
+        # into toolsets and hiding them until fetch_tools loads them) only
+        # applies to tools BEYOND what the spec explicitly lists. Without
+        # this, a child agent spawned with a focused tool list (e.g.
+        # ['web_search', 'web_scrape', 'task_complete']) would be
+        # permanently locked out of grouped tools it was explicitly given,
+        # since it lacks the list_toolsets/fetch_tools meta-tools needed
+        # to discover and unlock them.
+        return registry.schemas(spec.tool_names)
+
+    # Sorted, not set order: that differs between processes, and the tool
+    # list opens every request's cached prefix.
+    return registry.schemas(sorted(visible))
+
+
+def _failure_payload(call: ToolCall, tr: ToolResult, runtime: "AgentRuntime") -> dict[str, Any]:
+    """A failed call as the stream shows it: its code, never its detail (ERR-UX); the model's tool message keeps
+    the detail. A write's definite failure sent nothing, as the durable projection says from the call's intent."""
+    payload: dict[str, Any] = {
+        "tool": tr.name, "is_error": True, "content": "", "tool_call_id": call.id,
+        "error_code": tr.error_code or "failed", "status": ToolCallStatus.ERROR,
+    }
+    registry = runtime.tool_registry
+    tags = registry.tags_for_name(call.name) if registry is not None and registry.has(call.name) else ()
+    if classify_tool_effect(call.name, tags).effect in ("write", "execute"):
+        payload["nothing_sent"] = True
+    return payload
+
+
+async def execute_tool_call(
+    agent,
+    call: ToolCall,
+    spec: "AgentSpec",
+    runtime: "AgentRuntime",
+    goal: Goal,
+    messages: list[Message],
+    turn_index: int,
+    started_at: str,
+    is_duplicate: bool,
+    response_msg: Message,
+    turn_scope: "TurnScope",
+) -> ToolCallOutcome:
+    """Handles exactly one `ToolCall`. `turn_scope` (created once per
+    `Agent.step()` call) is used to build this call's `ToolScope` — carrying
+    the tool identity plus the FULL scope chain (`.turn.run...`) down into
+    both the PreToolUse/PostToolUse decision contexts (via `ToolExecutor.
+    call_tool(scope=...)`) and special-route handlers (via `RouteContext.
+    scope`). `messages` (already a fresh `context.messages()` snapshot taken
+    by `Agent.step()` AFTER the assistant's response was recorded) becomes
+    `ToolScope.messages` — see `core/scope.py` for why that snapshot timing
+    is load-bearing for `clarify`'s HIL checkpoint.
+
+    `is_duplicate` is computed by `compute_duplicate_flags()` in a
+    synchronous pre-pass over the whole wave, BEFORE any call in the wave
+    starts running — see that function's docstring for why the check can't
+    safely live in here, after this coroutine's own `await` points."""
+    if runtime.tool_registry is not None and runtime.tool_registry.has(CALL_TOOL):
+        # A tool found after the list was fixed is called through call_tool (R4): from here on, its own call.
+        call = unwrapped(call)
+    _silent = call.name in _NO_EMIT_TOOLS
+    tool_obj = _resolve_quietly(agent, call.name)
+    if not _silent:
+        _emit_payload: dict[str, Any] = {
+            "tool": call.name, "args": call.arguments, "tool_call_id": call.id,
+            "args_summary": _args_summary(agent, runtime, call),
+        }
+        if tool_obj is not None and tool_obj.display_name:
+            _emit_payload["display_name"] = tool_obj.display_name
+        await agent.emit(EventType.TOOL_CALL, _emit_payload)
+
+    # A call whose argument JSON couldn't be parsed (or repaired) by the
+    # transport's message converter arrives here carrying these sentinel
+    # keys instead of real arguments (see `app/agents/agent_loop/
+    # converters.py::_recover_invalid_tool_call`). Short-circuit straight
+    # to a corrective error `ToolMessage` — never resolve/validate/execute
+    # a tool against sentinel data, and never let this look like a plain
+    # no-tool-call turn (which `Agent.step()` would otherwise treat as a
+    # successful, silent completion).
+    if (content := malformed_call_error(call.name, call.arguments)) is not None:
+        tr = ToolResult(tool_call_id=call.id, name=call.name, content=content, is_error=True, error_code="invalid_call")
+        log_tool_call_end(
+            outcome="failure", reason="malformed_args", error_class="bad_request", tool=call.name, tool_call_id=call.id,
+        )
+        if not _silent:
+            await agent.emit(EventType.TOOL_RESULT, _failure_payload(call, tr, runtime))
+        return ToolCallOutcome(result=tr)
+
+    # Repeated tool calls (same tool + same key argument) were already
+    # detected by `compute_duplicate_flags()` — a synchronous pre-pass over
+    # the whole wave, run before any call in it (including this one)
+    # started. See that function's docstring for why detection can't
+    # safely happen here, after this coroutine's own `await` above.
+    if is_duplicate:
+        tr = ToolResult(
+            tool_call_id=call.id, name=call.name,
+            content=(
+                "[Duplicate call skipped — you already ran this exact search/scrape. "
+                f"Use the results you already have, or {finish_move(turn_scope)}.]"
+            ),
+            is_error=False,
+        )
+        log_tool_call_end(outcome="skipped", reason="duplicate", tool=call.name, tool_call_id=call.id)
+        if not _silent:
+            await agent.emit(EventType.TOOL_RESULT, {
+                "tool": tr.name, "is_error": tr.is_error,
+                "content": _result_preview(tr.content), "tool_call_id": call.id,
+                "result_summary": _result_summary(agent, runtime, call, tr),
+                "status": ToolCallStatus.ERROR if tr.is_error else ToolCallStatus.SUCCESS,
+            })
+        return ToolCallOutcome(result=tr)
+
+    # --- Checkpoint: PRE_TOOL ---
+    await obs.save_checkpoint(agent, "pre_tool", goal, messages, turn_index, current_tool=call.name)
+
+    # `tool_path` starts empty — `ToolExecutor.call_tool()` resolves the
+    # real path/tags and fills them onto this SAME scope object before
+    # dispatching PRE_TOOL_USE, so by the time `override_execute()` below
+    # actually runs (from inside `_run()`, after PRE_TOOL_USE), `tool_scope.
+    # tool_path`/`.tags` are already correct for handlers that read them.
+    tool_scope = ToolScope(turn=turn_scope, call=call, tool_path="", messages=messages)
+
+    handler = SpecialRouteRegistry(runtime.tool_registry).get(call.name)
+    override_execute = None  # pyright: ignore[reportAssignmentType]
+    if handler is not None:
+        ctx = RouteContext(agent=agent, scope=tool_scope)
+
+        async def override_execute() -> ToolResult:
+            return await handler.handle(call, ctx)
+    else:
+        # --- Normal tool execution ---
+        await obs.write_state(agent, goal, "running_tool", turn_index=turn_index, started_at=started_at, current_tool=call.name)
+        await obs.append_timeline(agent, "tool_call", f"Calling tool: {call.name}", "running_tool", {"tool": call.name, "args": call.arguments})
+
+    blocked_reason: str | None = None
+
+    async def _on_denied(reason: str) -> None:
+        nonlocal blocked_reason
+        blocked_reason = reason
+        await agent.emit(EventType.TOOL_BLOCKED, {
+            "tool": call.name, "reason": reason, "tool_call_id": call.id,
+            "status": ToolCallStatus.BLOCKED,
+        })
+        await obs.append_timeline(
+            agent, "tool_blocked", f"Tool blocked: {call.name} — {reason}", "running_tool",
+            {"tool": call.name, "args": call.arguments, "reason": reason},
+        )
+
+    async def _on_ask(asked_call: ToolCall, reason: str) -> bool:
+        return await obs.handle_tool_approval(agent, asked_call, reason, goal, messages, turn_index)
+
+    pending_approval: PendingApproval | None = None
+
+    async def _on_pending(asked_call: ToolCall, pending: PendingApproval) -> None:
+        nonlocal pending_approval
+        pending_approval = pending
+        agent.scope.get(PENDING_APPROVAL).pending = pending
+        await agent.emit(EventType.TOOL_BLOCKED, {
+            "tool": asked_call.name, "reason": pending.message, "tool_call_id": asked_call.id,
+            "status": ToolCallStatus.AWAITING_APPROVAL, "approval": pending.details,
+        })
+        await obs.append_timeline(
+            agent, "tool_awaiting_approval", f"Waiting for approval: {asked_call.name}", "running_tool",
+            {"tool": asked_call.name, "args": asked_call.arguments},
+        )
+
+    tr = await agent._executor.call_tool(
+        call, session_id=agent.session_id, override_execute=override_execute,
+        on_denied=_on_denied, on_ask=_on_ask, on_pending=_on_pending, scope=tool_scope,
+    )
+
+    # --- Record budget tool call ---
+    if runtime.budget is not None:
+        await runtime.budget.record_tool_call()
+
+    if blocked_reason is not None:
+        return ToolCallOutcome(result=tr)
+    if pending_approval is not None:
+        # Ends the turn like a terminal tool: the person's decision is the next turn.
+        if pending_approval.end_turn:
+            return ToolCallOutcome(result=tr, task_done=True, final_output=pending_approval.message)
+        return ToolCallOutcome(result=tr)
+
+    if not _silent:
+        # A tool that returned normally can still show its step as failed (run_code's non-zero exit):
+        # its output is data the model reads, so the card keeps the preview, unlike a real error's code.
+        failed = _result_failed(agent, call, tr)
+        result_event: dict[str, Any] = _failure_payload(call, tr, runtime) if tr.is_error else {
+            "tool": tr.name, "is_error": failed,
+            "content": _result_preview(tr.content), "tool_call_id": call.id,
+            "result_summary": _result_summary(agent, runtime, call, tr),
+            "status": ToolCallStatus.ERROR if failed else ToolCallStatus.SUCCESS,
+        }
+        if tr.artifact_meta is not None:
+            result_event["artifact_id"] = tr.artifact_meta.artifact_id
+        if not tr.is_error and (view := _result_view(agent, call, tr)) is not None:
+            result_event["result_view"] = view
+        await agent.emit(EventType.TOOL_RESULT, result_event)
+
+    if tr.sources:
+        await obs.append_timeline(
+            agent, "tool_result_sources", f"Sources from {call.name}", "running_tool",
+            {"tool": call.name, "is_error": tr.is_error, "sources": [s.model_dump() for s in tr.sources]},
+        )
+
+    # --- terminal-tool detection (TAG_LIFECYCLE_TERMINAL) ---
+    if not tr.is_error and TAG_LIFECYCLE_TERMINAL in runtime.tool_registry.tags_for_name(call.name):  # pyright: ignore[reportOptionalMemberAccess]
+        tool = _resolve_quietly(agent, call.name)
+        if isinstance(tool, TerminalTool):
+            outcome = tool.extract_outcome(tr, call, agent.extract_text(response_msg))
+            if outcome.error_result is not None:
+                return ToolCallOutcome(result=outcome.error_result)
+            return ToolCallOutcome(
+                result=tr, task_done=outcome.task_done,
+                final_output=outcome.final_output, artifacts=outcome.artifacts,
+                confidence=getattr(outcome, "confidence", None),
+                record_ids=getattr(outcome, "record_ids", None) or [],
+                needs_input=getattr(outcome, "needs_input", None),
+            )
+
+    return ToolCallOutcome(result=tr)

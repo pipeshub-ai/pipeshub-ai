@@ -71,6 +71,11 @@ def get_mcp_credentials_path(instance_id: str, user_id: str) -> str:
     return f"{MCP_ROOT}/credentials/{instance_id}/{user_id}"
 
 
+def get_mcp_credentials_prefix() -> str:
+    """Every instance's auth records: /services/mcp/credentials/"""
+    return f"{MCP_ROOT}/credentials/"
+
+
 def get_mcp_instance_credentials_prefix(instance_id: str) -> str:
     """Prefix to list every user's auth record for an instance (used on full instance delete)."""
     return f"{MCP_ROOT}/credentials/{instance_id}/"

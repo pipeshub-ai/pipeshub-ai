@@ -64,8 +64,8 @@ persistence:
 config:
   allowedOrigins: "http://localhost:3001,http://127.0.0.1:3001,http://localhost:3000,http://127.0.0.1:3000"
   frontendPublicUrl: "http://localhost:3001"
-  # A kind/minikube node has no Docker socket mounted into the pod, so the
-  # chart default of "docker" would fail `run_code` at provision. Chosen
+  # A kind/minikube node has no Docker daemon for the chart default of
+  # "broker" (the chart refuses to render it without one). Chosen
   # explicitly here rather than inherited: on this preset generated code runs
   # as a subprocess of the query service (no network namespace, no filesystem
   # boundary beyond rlimits), which is acceptable for a local dev cluster and
@@ -73,15 +73,20 @@ config:
   sandboxMode: "local"
   sandboxAllowLocal: true
 
-# ----- MongoDB: single standalone node -----
+# ----- MongoDB: single-node replica set -----
 mongodb:
-  # Standalone mongod does not support multi-document transactions. The API
-  # branch is controlled by REPLICA_SET_AVAILABLE, which the chart derives
-  # from this architecture value — no separate flag needed.
-  architecture: standalone
+  # One member, no arbiter: multi-document transactions work on a single node.
+  # REPLICA_SET_AVAILABLE and the replicaSet URI follow from this architecture
+  # value. The subchart generates the internal-auth key (auth.replicaSetKey).
+  # A release installed from the old standalone preset refuses to upgrade until
+  # its data is moved; see the chart README.
+  architecture: replicaset
+  replicaSetName: rs0
   replicaCount: 1
   arbiter:
     enabled: false
+  extraFlags:
+    - "--oplogSize=1024"
   auth:
     enabled: true
     rootUser: root
@@ -162,5 +167,7 @@ neo4j:
 ingress:
   enabled: false
 
+# Follows `hardened` (ADR-OPS-04, ADR-OPS-07). kind's default CNI may not enforce it; a
+# cluster with Calico or Cilium does, and the app still answers port-forward.
 networkPolicy:
-  enabled: false
+  enabled: null

@@ -17,6 +17,7 @@ from app.agents.agent_loop.cancellation.in_process import (
 from app.agents.agent_loop.cancellation.kv_backed import KVBackedRunCancellationRegistry
 from app.config.constants.store_type import StoreType
 from app.config.key_value_store_factory import KeyValueStoreFactory, StoreConfig
+from app.config.providers.etcd.etcd_env import etcd_store_config
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry
@@ -68,19 +69,9 @@ def _build_kv_store() -> "KeyValueStore[str] | None":
             store_type=StoreType.REDIS, serializer=_serialize, deserializer=_deserialize, config=config,
         )
 
-    etcd_url = os.getenv("ETCD_URL")
-    if not etcd_url:
+    config = etcd_store_config()
+    if config is None:
         return None
-    if "://" in etcd_url:
-        etcd_url = etcd_url.split("://")[1]
-    parts = etcd_url.split(":")
-    config = StoreConfig(
-        host=parts[0],
-        port=int(parts[1]) if len(parts) > 1 else 2379,
-        timeout=float(os.getenv("ETCD_TIMEOUT", "5000")) / 1000,
-        username=os.getenv("ETCD_USERNAME", None),
-        password=os.getenv("ETCD_PASSWORD", None),
-    )
     return KeyValueStoreFactory.create_store(
         store_type=StoreType.ETCD3, serializer=_serialize, deserializer=_deserialize, config=config,
     )

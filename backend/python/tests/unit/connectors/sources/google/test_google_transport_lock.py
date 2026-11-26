@@ -8,6 +8,7 @@ import pytest
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
+from tests.support.settle import SETTLE_S, settle
 
 
 @pytest.mark.asyncio
@@ -35,7 +36,7 @@ async def test_cancellation_does_not_release_transport(
 
     try:
         first_task = asyncio.create_task(data_source.execute(first_operation))
-        assert await asyncio.to_thread(first_started.wait, 1)
+        assert await asyncio.to_thread(first_started.wait, SETTLE_S)
 
         first_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -46,7 +47,7 @@ async def test_cancellation_does_not_release_transport(
         assert not second_started.is_set()
 
         release_first.set()
-        assert await asyncio.wait_for(second_task, timeout=1) == "second"
+        assert await settle(second_task) == "second"
     finally:
         release_first.set()
         executor.shutdown(wait=True, cancel_futures=True)

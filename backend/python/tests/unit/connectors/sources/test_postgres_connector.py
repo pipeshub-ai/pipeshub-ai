@@ -16,8 +16,14 @@ from app.config.constants.arangodb import (
     RecordRelations,
 )
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.connectors.core.registry.filters import FilterCollection, FilterOption
+from app.connectors.core.registry.filters import (
+    Filter,
+    FilterCollection,
+    FilterOption,
+    name_passes_filter,
+)
 from app.connectors.core.sql.column_records import column_revision as _column_revision
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.postgres.catalog_diff import TableChange, diff_catalog
 from app.connectors.sources.postgres.connector import (
     MAX_COLUMN_VALUES_STREAMED,
@@ -51,6 +57,7 @@ from app.sources.external.postgres.postgres_ import (
     TableColumnStatistics,
 )
 from tests.support.data_store import runs_in_its_transaction
+from tests.support.sql_full_sync import full_sync_losses
 
 # ===========================================================================
 # Helpers
@@ -5172,3 +5179,423 @@ class TestSchemaGroupNotDeleted:
 
         connector.data_entities_processor.on_sql_record_groups_deleted.assert_awaited_once_with(["g-b"], "conn-pg-1")
         assert connector.sync_stats.errors == 1
+
+
+class _FullSyncWorld:
+    """A database and the records the processor keeps of it, for full syncs end to end."""
+
+    def __init__(self, tables: dict[str, list[str]]) -> None:
+        # "schema.table" -> column names
+        self.tables = dict(tables)
+        self.unreadable: set[str] = set()
+        self.slow: set[str] = set()
+        self.records: dict[str, Any] = {}
+        self.seen: set[str] = set()
+        self.sync_filters = FilterCollection()
+        # The table states the last run saved, and whether the next run reads them.
+        self.saved: dict[str, Any] = {}
+        self.incremental = False
+        self.connector = connector = _make_connector()
+        connector.database_name = "testdb"
+        connector.data_source = self._source()
+        connector._create_app_users = AsyncMock()
+        connector._get_current_table_states = AsyncMock(side_effect=lambda *_: ({
+            fqn: PostgresTableState(schema_name=fqn.split(".")[0], table_name=fqn.split(".")[1], n_tup_ins=1)
+            for fqn in self.tables
+        }, set()))
+        connector.tables_sync_point = MagicMock()
+        connector.tables_sync_point.read_sync_point = AsyncMock(
+            side_effect=lambda key: self.saved if self.incremental else {},
+        )
+        connector.tables_sync_point.update_sync_point = AsyncMock(
+            side_effect=lambda key, data: setattr(self, "saved", data),
+        )
+        p = connector.data_entities_processor
+        p.get_record_by_external_id = AsyncMock(side_effect=lambda connector_id, external_record_id, **_: (
+            self.records.get(external_record_id)
+        ))
+        p.on_new_records = AsyncMock(side_effect=self._write)
+        p.get_records_by_record_type = AsyncMock(side_effect=lambda connector_id, record_type: [
+            r for r in self.records.values() if r.record_type == record_type
+        ])
+        p.on_sql_records_deleted = AsyncMock(side_effect=self._delete)
+        p.note_kept_records = lambda connector_id, record_ids: self.seen.update(record_ids)
+        world = self
+
+        class Tx:
+            async def __aenter__(self) -> "Tx":
+                return self
+
+            async def __aexit__(self, *exc) -> bool:
+                return False
+
+            async def get_records_by_parent(self, connector_id, parent, record_type=None) -> list:
+                return [r for r in world.records.values() if r.parent_external_record_id == parent]
+
+            async def get_nodes_by_filters(self, collection, filters) -> list:
+                return []
+
+        connector.data_store_provider.transaction = MagicMock(side_effect=lambda: Tx())
+
+    def _source(self) -> MagicMock:
+        ds = MagicMock()
+        schemas = lambda: sorted({fqn.split(".")[0] for fqn in self.tables})  # noqa: E731
+        ds.list_schemas = AsyncMock(side_effect=lambda: _pg_response(data=[{"name": s} for s in schemas()]))
+        ds.list_tables = AsyncMock(side_effect=lambda schema: _pg_response(data=[
+            {"name": fqn.split(".")[1]} for fqn in sorted(self.tables) if fqn.split(".")[0] == schema
+        ]))
+
+        async def info(schema, table) -> PostgreSQLResponse:
+            fqn = f"{schema}.{table}"
+            if fqn in self.unreadable:
+                return _pg_response(False, error="permission denied for table")
+            return _pg_response(data={"name": table, "columns": [
+                {"name": c, "data_type": "integer"} for c in self.tables[fqn]
+            ]})
+
+        async def statistics(schema, table) -> None:
+            if f"{schema}.{table}" in self.slow:
+                raise TimeoutError("canceling statement due to statement timeout")
+
+        ds.get_table_info = AsyncMock(side_effect=info)
+        ds.get_foreign_keys = AsyncMock(return_value=_pg_response(data=[]))
+        ds.get_primary_keys = AsyncMock(return_value=_pg_response(data=[]))
+        ds.fetch_column_statistics = AsyncMock(side_effect=statistics)
+        return ds
+
+    async def _write(self, batch) -> None:
+        for record, _ in batch:
+            stored = self.records.get(record.external_record_id)
+            if stored is not None:
+                record.id = stored.id
+            self.records[record.external_record_id] = record
+            self.seen.add(record.id)
+
+    async def _delete(self, record_ids, connector_id, table_record_id=None) -> list:
+        gone = [r for r in self.records.values() if r.id in record_ids]
+        gone += [r for r in self.records.values() if r.parent_external_record_id in {g.external_record_id for g in gone}]
+        for record in gone:
+            self.records.pop(record.external_record_id, None)
+        return [r.id for r in gone]
+
+    def saved_tables(self) -> set[str]:
+        return set(json.loads(self.saved["table_states"]))
+
+    async def sync(self) -> None:
+        self.connector.data_entities_processor.full_sync_running = MagicMock(return_value=not self.incremental)
+        with patch(
+            "app.connectors.sources.postgres.connector.load_connector_filters",
+            new_callable=AsyncMock, return_value=(self.sync_filters, FilterCollection()),
+        ), patch("app.connectors.sources.postgres.connector.asyncio.sleep", new_callable=AsyncMock):
+            await self.connector.run_sync()
+
+    async def full_sync(self) -> tuple[set[str], set[str]]:
+        """Run a full sync; see what its end would unlink (sync_runner._unlink_what_full_sync_missed).
+
+        Returns ``full_sync_losses`` for this sync; its first result is limited to the tables the filter keeps.
+        """
+        before = {fqn: record.id for fqn, record in self.records.items()}
+        self.seen = set()
+        await self.sync()
+        coverage = getattr(self.connector, "full_sync_coverage", FullSyncCoverage)()
+        at_source: set[str] = set()
+        kept: set[str] = set()  # at the source, of a table the filter keeps
+        for fqn, columns in self.tables.items():
+            records = {fqn} | {f"testdb.{fqn}.{column}" for column in columns}
+            at_source |= records
+            if name_passes_filter(self.sync_filters, "tables", fqn):
+                kept |= records
+        return full_sync_losses(before, self.records.keys(), self.seen, coverage, at_source, kept)
+
+
+class TestFullSyncUnlink:
+    """A full sync unlinks what it did not write: a table it could not write is still there."""
+
+    @staticmethod
+    async def _world() -> _FullSyncWorld:
+        world = _FullSyncWorld({
+            "public.orders": ["id", "total"],
+            "public.customers": ["id", "name"],
+            "public.old": ["id", "note"],
+        })
+        await world.full_sync()
+        del world.tables["public.old"]
+        return world
+
+    @pytest.mark.asyncio
+    async def test_the_check_counts_a_kept_table_the_sync_deleted(self) -> None:
+        # A sync that deletes a table still at the source loses it as surely as an unlink.
+        world = await self._world()
+        world.tables["public.old"] = ["id", "note"]
+        # Neither written nor kept: unreadable, and its stored record not found.
+        world.unreadable = {"public.customers"}
+        processor = world.connector.data_entities_processor
+        lookup = processor.get_record_by_external_id
+
+        async def get_record_by_external_id(connector_id, external_record_id, **kwargs) -> object:
+            if external_record_id == "public.customers" and kwargs.get("raise_on_error"):
+                raise RuntimeError("graph down")
+            return await lookup(connector_id, external_record_id, **kwargs)
+
+        processor.get_record_by_external_id = AsyncMock(side_effect=get_record_by_external_id)
+        sync = world.sync
+
+        async def deleting_sync() -> None:
+            await sync()
+            for fqn in [k for k in world.records if "public.customers" in k or "public.old" in k]:
+                del world.records[fqn]
+
+        world.sync = deleting_sync
+        world.sync_filters = FilterCollection(filters=[
+            Filter(key="tables", value=["public.old"], type="list", operator="not_in"),
+        ])
+        wrongly, gone = await world.full_sync()
+        # The filter leaves out public.old, so removing it is expected.
+        assert sorted(wrongly) == ["public.customers", "testdb.public.customers.id", "testdb.public.customers.name"]
+        assert sorted(gone) == []
+
+    @staticmethod
+    def _then(world: _FullSyncWorld, change) -> None:
+        sync = world.sync
+
+        async def changed_sync() -> None:
+            await sync()
+            change()
+
+        world.sync = changed_sync
+
+    def _deleting_after_sync(self, world: _FullSyncWorld, table: str) -> None:
+        def delete() -> None:
+            for key in [k for k in world.records if k in (table, f"testdb.{table}") or k.startswith(f"testdb.{table}.")]:
+                del world.records[key]
+
+        self._then(world, delete)
+
+    @pytest.mark.asyncio
+    async def test_the_check_counts_a_kept_table_deleted_after_the_sync_wrote_it(self) -> None:
+        world = await self._world()
+        self._deleting_after_sync(world, "public.orders")
+        wrongly, gone = await world.full_sync()
+        assert sorted(wrongly) == ["public.orders", "testdb.public.orders.id", "testdb.public.orders.total"]
+        assert sorted(gone) == ["public.old", "testdb.public.old.id", "testdb.public.old.note"]
+
+    @pytest.mark.asyncio
+    async def test_the_check_counts_a_kept_table_deleted_after_the_sync_noted_it(self) -> None:
+        world = await self._world()
+        world.unreadable = {"public.customers"}
+        noted = _noting(world)
+        self._deleting_after_sync(world, "public.customers")
+        wrongly, gone = await world.full_sync()
+        assert noted
+        assert sorted(wrongly) == ["public.customers", "testdb.public.customers.id", "testdb.public.customers.name"]
+        assert sorted(gone) == ["public.old", "testdb.public.old.id", "testdb.public.old.note"]
+
+    @pytest.mark.asyncio
+    async def test_the_check_does_not_count_the_unlink_of_a_table_the_filter_excludes(self) -> None:
+        world = await self._world()
+        world.tables["public.old"] = ["id", "note"]
+        old = {key: record for key, record in world.records.items() if "public.old" in key}
+        # Left stored instead of deleted, so the end of the sync unlinks it.
+        self._then(world, lambda: world.records.update(old))
+        world.sync_filters = FilterCollection(filters=[
+            Filter(key="tables", value=["public.old"], type="list", operator="not_in"),
+        ])
+        wrongly, gone = await world.full_sync()
+        assert world.connector.full_sync_coverage().complete
+        assert sorted(wrongly) == []
+        assert sorted(gone) == []
+
+    @pytest.mark.asyncio
+    async def test_a_table_whose_columns_cannot_be_read_keeps_its_links(self) -> None:
+        world = await self._world()
+        world.unreadable = {"public.customers"}
+        wrongly, gone = await world.full_sync()
+        assert sorted(wrongly) == []
+        assert sorted(gone) == ["public.old", "testdb.public.old.id", "testdb.public.old.note"]
+        # Kept by noting, not by skipping the unlink.
+        assert world.connector.full_sync_coverage().complete
+
+    @pytest.mark.asyncio
+    async def test_columns_whose_stored_profiles_cannot_be_loaded_keep_their_links(self) -> None:
+        world = await self._world()
+        world.slow = {"public.customers"}
+        world.connector.data_entities_processor.get_typed_records_by_ids = AsyncMock(
+            side_effect=RuntimeError("graph down"),
+        )
+        wrongly, gone = await world.full_sync()
+        assert sorted(wrongly) == []
+        assert sorted(gone) == ["public.old", "testdb.public.old.id", "testdb.public.old.note"]
+        assert world.connector.full_sync_coverage().complete
+
+    @pytest.mark.asyncio
+    async def test_a_table_whose_stored_profiles_cannot_be_loaded_is_tried_again(self) -> None:
+        world = await self._world()
+        customers = world.records["public.customers"]
+        world.slow = {"public.customers"}
+        processor = world.connector.data_entities_processor
+        load = processor.get_typed_records_by_ids
+        processor.get_typed_records_by_ids = AsyncMock(side_effect=RuntimeError("graph down"))
+        writes = _written(world)
+        await world.full_sync()
+        assert "public.customers" not in world.saved_tables()
+        assert "public.orders" in world.saved_tables()
+        assert "public.customers" not in writes
+        assert world.records["public.customers"] is customers
+
+        processor.get_typed_records_by_ids = load
+        world.slow = set()
+        world.incremental = True
+        writes.clear()
+        await world.sync()
+        assert {"public.customers", "testdb.public.customers.id", "testdb.public.customers.name"} <= set(writes)
+        # Incremental: found as new because the state left it out.
+        assert "public.orders" not in writes
+        assert "public.customers" in world.saved_tables()
+
+    @pytest.mark.asyncio
+    async def test_only_listed_unwritten_tables_are_noted_kept(self) -> None:
+        world = await self._world()
+        kept = {world.records[fqn].id for fqn in (
+            "public.customers", "testdb.public.customers.id", "testdb.public.customers.name",
+        )}
+        world.unreadable = {"public.customers"}
+        noted = _noting(world)
+        wrongly, gone = await world.full_sync()
+        assert sorted(noted) == sorted(kept)
+        assert sorted(wrongly) == []
+        assert sorted(gone) == ["public.old", "testdb.public.old.id", "testdb.public.old.note"]
+
+    @pytest.mark.asyncio
+    async def test_a_table_excluded_by_the_filter_is_removed_not_kept(self) -> None:
+        world = await self._world()
+        world.tables["public.old"] = ["id", "note"]
+        old_ids = {world.records[fqn].id for fqn in ("public.old", "testdb.public.old.id", "testdb.public.old.note")}
+        customers = world.records["public.customers"].id
+        world.unreadable = {"public.customers"}
+        world.sync_filters = FilterCollection(filters=[
+            Filter(key="tables", value=["public.old"], type="list", operator="not_in"),
+        ])
+        noted = _noting(world)
+        await world.full_sync()
+        assert not {"public.old", "testdb.public.old.id", "testdb.public.old.note"} & world.records.keys()
+        assert customers in noted
+        assert not old_ids & set(noted)
+
+    @pytest.mark.asyncio
+    async def test_a_kept_table_that_cannot_be_looked_up_leaves_the_sync_incomplete(self) -> None:
+        world = await self._world()
+        processor = world.connector.data_entities_processor
+        lookup = processor.get_record_by_external_id
+
+        async def get_record_by_external_id(connector_id, external_record_id, **kwargs) -> object:
+            if external_record_id == "public.customers" and kwargs.get("raise_on_error"):
+                raise RuntimeError("graph down")
+            return await lookup(connector_id, external_record_id, **kwargs)
+
+        processor.get_record_by_external_id = AsyncMock(side_effect=get_record_by_external_id)
+        world.unreadable = {"public.customers"}
+        noted = _noting(world)
+        await world.full_sync()
+        assert not world.connector.full_sync_coverage().complete
+        assert world.connector.sync_stats.errors >= 1
+        assert noted == []
+        assert "public.orders" in world.saved_tables()
+
+        # The flag is this run's: the next one starts complete.
+        processor.get_record_by_external_id = lookup
+        world.unreadable = set()
+        await world.full_sync()
+        assert world.connector.full_sync_coverage().complete
+
+    @pytest.mark.asyncio
+    async def test_a_clean_full_sync_notes_nothing_and_is_complete(self) -> None:
+        world = await self._world()
+        world.tables["public.old"] = ["id", "note"]
+        stored = {record.id for record in world.records.values()}
+        noted = _noting(world)
+        wrongly, _ = await world.full_sync()
+        assert world.connector.full_sync_coverage().complete
+        assert noted == []
+        assert sorted(wrongly) == []
+        assert stored <= world.seen
+
+    @pytest.mark.asyncio
+    async def test_a_dropped_table_goes_and_the_rest_stay(self) -> None:
+        world = await self._world()
+        wrongly, gone = await world.full_sync()
+        assert sorted(wrongly) == []
+        assert sorted(gone) == ["public.old", "testdb.public.old.id", "testdb.public.old.note"]
+        assert world.connector.full_sync_coverage().complete
+
+
+def _noting(world: _FullSyncWorld) -> list[str]:
+    """The record ids the connector notes kept from now on."""
+    noted: list[str] = []
+    note = world.connector.data_entities_processor.note_kept_records
+
+    def note_kept_records(connector_id, record_ids) -> None:
+        note(connector_id, record_ids)
+        noted.extend(record_ids)
+
+    world.connector.data_entities_processor.note_kept_records = note_kept_records
+    return noted
+
+
+def _written(world: _FullSyncWorld) -> list[str]:
+    """The external ids of the records written from now on."""
+    written: list[str] = []
+    processor = world.connector.data_entities_processor
+    write = processor.on_new_records.side_effect
+
+    async def on_new_records(batch) -> None:
+        written.extend(record.external_record_id for record, _ in batch)
+        await write(batch)
+
+    processor.on_new_records = AsyncMock(side_effect=on_new_records)
+    return written
+
+
+class TestProcessTablesGeneratorColumnsFirst:
+
+    @pytest.mark.asyncio
+    async def test_the_generator_yields_nothing_for_a_table_whose_columns_cannot_be_built(self) -> None:
+        connector = _make_connector()
+        connector.database_name = "testdb"
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector._stored_columns = AsyncMock(return_value={})
+        connector._typed_columns = AsyncMock(side_effect=RuntimeError("graph down"))
+        columns = [ColumnInfo(name="id"), ColumnInfo(name="note")]
+        tables = [
+            PostgresTable(name="orders", schema_name="public", columns=columns),
+            PostgresTable(name="customers", schema_name="public", columns=columns, profiling_failed=True),
+        ]
+
+        records = [record async for record, _ in connector._process_tables_generator("public", tables)]
+
+        assert [r.external_record_id for r in records] == [
+            "public.orders", "testdb.public.orders.id", "testdb.public.orders.note",
+        ]
+        assert connector.sync_stats.errors == 1
+
+
+class TestDatabaseGrantNotReadable:
+
+    @pytest.mark.asyncio
+    async def test_a_failed_creator_lookup_keeps_the_stored_grant(self) -> None:
+        connector = _make_connector()
+        connector.database_name = "testdb"
+        connector.scope = ConnectorScope.PERSONAL.value
+        connector.created_by = "user-1"
+        tx_store = MagicMock()
+        tx_store.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("graph down"))
+        transaction = MagicMock()
+        transaction.__aenter__ = AsyncMock(return_value=tx_store)
+        transaction.__aexit__ = AsyncMock(return_value=False)
+        connector.data_store_provider.transaction = MagicMock(return_value=transaction)
+
+        await connector._create_database_record_group()
+
+        # None keeps the stored grants; [] would remove the creator's.
+        (_, grants), = connector.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert grants is None

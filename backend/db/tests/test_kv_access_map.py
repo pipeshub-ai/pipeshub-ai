@@ -16,6 +16,7 @@ unless it is one of those. Keys built at run time from other values are not seen
 import ast
 import functools
 import io
+import json
 import re
 import tokenize
 from collections.abc import Iterator
@@ -24,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from db import bootstrap_roles
+from db.locations import extra_locations
 
 from .conftest import EXTENSIONS, VETTED, _drop_roles, run_migrate
 
@@ -54,7 +56,7 @@ READS = {
         "/services/secretKeys": ("app/api/middlewares/auth.py::isJwtTokenValid", "config_node_constants.SECRET_KEYS.value"),  # parsing and extraction routes; policy_store.py::IdentityPolicyStore.pseudonym_key (pseudonyms)
         "/services/aiGateway/identityPolicy": ("app/services/model_identity/policy_store.py::IdentityPolicyStore._load", "config_node_constants.AI_GATEWAY_IDENTITY_POLICY.value"),  # routes/parsing.py::_parse_file, routes/extraction.py::classify
         "/services/metricsCollection": ("app/telemetry/pusher.py::MetricsPusher._load_config", "get_config(METRICS_CONFIG_KEY"),  # embedding, docling (pusher bound at start)
-        "/migrations/etcd_to_redis": ("app/config/configuration_service.py::ConfigurationService._start_watch.watch_worker", "get_key(migration_flag_key)"),  # every ConfigurationService
+        "/migrations/etcd_to_redis": ("app/config/configuration_service.py::ConfigurationService._start_watch.watch_worker", "_migration_completed(migration_flag_key)"),  # every ConfigurationService
         # parsing and extraction bind the fleet breaker at start (fleet_redis.bind_service_fleet): created if absent, then read
         "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py::load_install_secret", "get_config(INSTALL_SECRET_KEY"),
         "/services/redis": ("app/config/configuration_service.py::ConfigurationService.get_redis_config", "config_node_constants.REDIS.value"),  # the same: fleet_redis.py::fleet_redis_config
@@ -66,6 +68,8 @@ READS = {
         "/services/platform/artifactRollout/membership/*": ("app/services/messaging/membership.py::read_entries_from_config", "list_keys_in_directory(MEMBERSHIP_DIRECTORY)"),
         "/services/entityCleanup/*": ("app/connectors/services/entity_cleanup_intents.py::_STORE", "ConnectorIntentStore(PENDING_DIRECTORY"),  # entity_index_rebuild.py::EntityIndexRebuilder._reconcile_entity_cleanup
         "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py::_backfill_pass", "get_config(flag_key"),
+        # the PDF page limit audit (indexing_main.py::run_pdf_page_limit_audit_once): its done flag, cursor and rerun count (platform_0013)
+        "/migrations/pdf_page_limit_audit*": ("app/modules/indexing/pdf_page_limit_audit.py::run_pdf_page_limit_audit", "get_config(FLAG_KEY"),
         "/services/secretKeys": ("app/core/envelope.py::configure_from_config.load", "config_node_constants.SECRET_KEYS.value"),
         "/services/endpoints": ("app/modules/transformers/blob_storage.py::BlobStorage._get_auth_and_config", "config_node_constants.ENDPOINTS.value"),
         "/services/storage": ("app/modules/transformers/blob_storage.py::BlobStorage._get_auth_and_config", "config_node_constants.STORAGE.value"),
@@ -83,7 +87,7 @@ READS = {
         "/services/platform/settings": ("app/services/featureflag/platform_settings.py::read_platform_feature_flag", "PLATFORM_SETTINGS_KEY"),  # pipeline stages
         "/services/file_types/config": ("app/services/messaging/kafka/handlers/record.py::RecordEventHandler._disabled_file_types", "get_config(file_types.FILE_TYPES_CONFIG_KEY"),  # the record event handler
         "/migrations/kh_listing_state_v1": ("app/services/graph_db/neo4j/neo4j_provider.py::Neo4jProvider._kh_listing_state_ready", "get_config(KH_LISTING_STATE_FLAG"),
-        "/migrations/etcd_to_redis": ("app/config/configuration_service.py::ConfigurationService._start_watch.watch_worker", "get_key(migration_flag_key)"),
+        "/migrations/etcd_to_redis": ("app/config/configuration_service.py::ConfigurationService._start_watch.watch_worker", "_migration_completed(migration_flag_key)"),
         _META: ("app/modules/record_metadata/schemas.py::MetadataSchemaRegistry._read", "self._get(schema_key("),  # sink_orchestrator.py::SinkOrchestrator._project_properties (indexing)
         "/services/indexing/spendGuard": ("app/modules/pipeline/pause_judge.py::spend_limits_source.read", "get_config(SPEND_GUARD_KEY"),  # the pause judge (pipeline/runtime.py::build_pipeline_runtime)
         "/services/indexing/spendGuard/hmacKey": ("app/services/llm_gateway/fleet_breaker.py::load_install_secret", "get_config(INSTALL_SECRET_KEY"),  # indexing_main.py::_bind_fleet_state, at start
@@ -102,7 +106,8 @@ _DEAD = "named in config_node_constants, read by no code"
 _LIST = "listed in encrypted_store.py as stored unencrypted, not read there"
 # Reachable from a service's entry module but never read by it at run time, with why.
 _COMMON_NOT_READ = {
-    "/services/connectors/*": _CONN, "/services/oauth/*": _CONN, "/services/oauths/*": _TOOLS, "/services/toolset*": _TOOLS,
+    "/services/connectors/*": _CONN, "/services/oauth/*": _CONN, "/services/oauth-code-claims/*": _CONN,
+    "/services/oauths/*": _TOOLS, "/services/toolset*": _TOOLS,
     "/services/api-toolsets*": _TOOLS, "/services/mcp*": _TOOLS, "/services/agents/*": _QUERY, "/services/webSearch": _QUERY,
     "/services/aiModelApiModes": "read only by query, which creates the store at start (query_main.py::initialize_container); elsewhere get_llm_api_mode_store() is None",
     "/services/systemPrompts": _QUERY, "/services/demoData/*": "demo data markers: the connectors service and query's retrieval",
@@ -111,6 +116,15 @@ _COMMON_NOT_READ = {
     "/services/deployment": "read by the connectors container at start (containers/connector.py::initialize_container); " + _LIST,
     "/services/migrations": _DEAD, "/services/inheritance": _DEAD, "/services/neo4j": _DEAD, "/services/message-broker": _DEAD,
     "/services/redis-streams": _DEAD, "/services/aiModels/*": _DEAD + " (/services/aiModels/embedding)",
+    # the agent harness and the control plane: reachable through shared modules (configuration_service.py names the sandbox-plane
+    # component documents; the agent loop and the credential service name the rest), read by none of these services
+    "/services/agentHarness/components/*": "sandbox-plane component documents: read only by a process started with a component identity "
+                                           "(egress proxy, sandbox broker; utils/encryption/component_key.py)",
+    "/services/agentHarness/*": "the agent harness's settings, credential vault and role credentials: the Node API, query's agents, "
+                                "the connectors service's token refresh and the harness worker and gateways",
+    "/services/controlPlane/*": "control-plane bindings and their credentials: the Node API, query's agents and the connectors service",
+    "/services/sandbox/alerts*": "the code sandbox load alerts' cooldown claims (sandbox_alerts/cooldown.py::AlertCooldown.key): query only, "
+                                 "which starts the alert loop (query_main.py::lifespan) and writes them (platform_0011)",
     "/services/mongodb": _ADMIN, "/services/smtp": _ADMIN, "/services/slackBot": _ADMIN, "/services/auth/*": _ADMIN, "crawl:*": _ADMIN,
 }
 NOT_READ = {
@@ -134,6 +148,23 @@ NOT_READ = {
            "/services/indexing/parseAdmission": "the class admission's numbers: only indexing_main.py::lifespan attaches the store; elsewhere "
                                                 "the wiring's LiveAdmissionConfig(None) reads no key (parse_engine/wiring.py::_Registry)"},
 }
+
+
+# The function the policies on platform.kv_entries judge a key with. A build whose migrations add their own policies names its
+# function, and the entries for the keys its own code reaches, in a kv_access.json beside them ("READS", "NOT_READ": an entry
+# replaces the same key's entry in the other map).
+MATRIX = "platform.kv_may"
+for _path in (Path(location) / "kv_access.json" for location in extra_locations()):
+    if not _path.is_file():
+        continue
+    _overlay = json.loads(_path.read_text(encoding="utf-8"))
+    for _mine, _other in (("READS", NOT_READ), ("NOT_READ", READS)):
+        for _role, _entries in _overlay.get(_mine, {}).items():
+            for _key in _entries:
+                _other[_role].pop(_key, None)
+            (READS if _mine == "READS" else NOT_READ)[_role].update(
+                {k: tuple(v) if isinstance(v, list) else v for k, v in _entries.items()})
+    MATRIX = _overlay.get("MATRIX", MATRIX)
 
 
 def _scope(node: ast.AST) -> Iterator[tuple[str, ast.AST]]:
@@ -341,7 +372,7 @@ def matrix(cluster):
         def may(role: str, key: str) -> bool:
             a.execute(f"SET ROLE pipeshub_{role}")
             try:
-                return a.execute("SELECT platform.kv_may(%s, false)", (key,)).fetchone()[0]
+                return a.execute(f"SELECT {MATRIX}(%s, false)", (key,)).fetchone()[0]
             finally:
                 a.execute("RESET ROLE")
         yield may

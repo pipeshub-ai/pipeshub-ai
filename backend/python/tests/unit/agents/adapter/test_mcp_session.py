@@ -129,7 +129,9 @@ class _FakeClientManagerFactory:
         # Responses for managers not built yet, one list per manager in build order.
         self.queued_responses: list[list[Any]] = []
 
-    def __call__(self, config: object, env: dict | None = None, headers: dict | None = None) -> _FakeClientManager:
+    def __call__(
+        self, config: object, env: dict | None = None, headers: dict | None = None, runner: object = None,
+    ) -> _FakeClientManager:
         manager = _FakeClientManager(config, env=env, headers=headers)
         if self.queued_responses:
             manager.responses = self.queued_responses.pop(0)

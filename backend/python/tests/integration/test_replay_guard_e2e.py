@@ -47,6 +47,7 @@ from tests.integration.real_graph import (
     connect_arango,
     connect_neo4j,
 )
+from tests.support import it_backends
 from tests.support.vector_db import make_config_service
 
 if TYPE_CHECKING:
@@ -58,7 +59,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
 logger = logging.getLogger("replay-guard-it")
 
-QDRANT_HOST = os.environ.get("QDRANT_IT_HOST", "localhost")
 QDRANT_PORT = int(os.environ.get("QDRANT_IT_PORT", "6343"))
 DIM = 8
 CHUNKS = 3
@@ -98,7 +98,8 @@ class _World:
 
 
 async def _connect_qdrant() -> QdrantService:
-    service = QdrantService(QdrantConfig(host=QDRANT_HOST, port=QDRANT_PORT, prefer_grpc=False, timeout=30))
+    qdrant_host = it_backends.endpoint("QDRANT_IT_HOST")
+    service = QdrantService(QdrantConfig(host=qdrant_host, port=QDRANT_PORT, prefer_grpc=False, timeout=30))
     await service.connect()
     await service.get_collections()
     return service
@@ -112,9 +113,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         try:
             qdrant = await _connect_qdrant()
         except Exception as exc:
-            if os.environ.get("QDRANT_IT_HOST") or os.environ.get("QDRANT_IT_PORT"):
-                pytest.fail(f"Qdrant is configured (QDRANT_IT_HOST/PORT) but not reachable: {exc!r}")
-            pytest.skip(f"Qdrant not configured and not reachable locally: {exc!r}")
+            it_backends.unavailable("QDRANT_IT_HOST", exc)
         cleanup.push_async_callback(qdrant.disconnect)
         try:
             graph = await (

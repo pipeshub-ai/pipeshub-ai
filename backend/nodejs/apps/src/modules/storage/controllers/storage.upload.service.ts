@@ -40,6 +40,7 @@ import {
   extractUserId,
   normalizeExtension,
   requireId,
+  storageUnavailable,
   validateFileAndDocumentName,
   writeToStorage,
 } from '../utils/utils';
@@ -202,11 +203,7 @@ export class UploadDocumentService {
         concatenatedPath,
       );
     } catch (error) {
-      logger.error('Could not get a direct-upload URL from storage', {
-        documentId: documentId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+      throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, error);
     }
     const baseUrl = storageURL ? getBaseUrl(storageURL) : undefined;
     if (!storageURL || !baseUrl) {
@@ -219,7 +216,7 @@ export class UploadDocumentService {
       // Never the URL itself. A presigned URL carries its own authorization,
       // so anyone who can read the log can perform the upload until it
       // expires — and dev logs get retained, exported and shared.
-      logger.info('Presigned url generated for direct upload', {
+      logger.debug('Presigned url generated for direct upload', {
         documentId,
       });
     }
@@ -451,16 +448,12 @@ export class UploadDocumentService {
 
     let uploadResult: StorageServiceResponse<string>;
     try {
-      uploadResult = await writeToStorage(
-        this.storageServiceWrapper,
-        {
-          buffer,
-          mimeType,
-          documentPath: concatenatedPath,
-          isVersioned,
-        },
-        { documentId: savedDocument._id },
-      );
+      uploadResult = await writeToStorage(this.storageServiceWrapper, {
+        buffer,
+        mimeType,
+        documentPath: concatenatedPath,
+        isVersioned,
+      });
     } catch (error) {
       if (leaseToken === undefined) {
         // A failed write does not prove the file is absent: a request can time
@@ -618,8 +611,6 @@ export class UploadDocumentService {
       isVersioned: document.isVersionedFile,
     };
 
-    return writeToStorage(this.storageServiceWrapper, cloneFilePayload, {
-      documentPath: newDocumentFilePath,
-    });
+    return writeToStorage(this.storageServiceWrapper, cloneFilePayload);
   }
 }

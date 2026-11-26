@@ -20,7 +20,7 @@ export function PanelHeader({ title, trailing }: { title: string; trailing?: Rea
       <Text
         size="1"
         weight="medium"
-        style={{ color: 'var(--slate-9)', textTransform: 'uppercase', letterSpacing: '0.04em' }}
+        style={{ color: 'var(--slate-11)', textTransform: 'uppercase', letterSpacing: '0.04em' }}
       >
         {title}
       </Text>
@@ -65,20 +65,20 @@ export function PanelRow({ icon, label, value, onClick, isFirst = false }: Panel
       }}
     >
       <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-        {icon && <MaterialIcon name={icon} size={16} color="var(--slate-10)" />}
+        {icon && <MaterialIcon name={icon} size={16} color="var(--slate-11)" />}
         <Text size="2" style={{ color: 'var(--slate-12)' }}>
           {label}
         </Text>
       </Flex>
       <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
         {typeof value === 'string' ? (
-          <Text size="1" style={{ color: 'var(--slate-9)', textAlign: 'right' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)', textAlign: 'right' }}>
             {value}
           </Text>
         ) : (
           value
         )}
-        {onClick && <MaterialIcon name="chevron_right" size={16} color="var(--slate-8)" style={{ flexShrink: 0 }} />}
+        {onClick && <MaterialIcon name="chevron_right" size={16} color="var(--slate-11)" style={{ flexShrink: 0 }} />}
       </Flex>
     </Flex>
   );

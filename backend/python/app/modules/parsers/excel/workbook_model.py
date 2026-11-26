@@ -42,6 +42,7 @@ from openpyxl.worksheet.cell_range import CellRange
 
 from app.modules.parsers import parse_worker
 from app.modules.parsers.excel.limits import CELL_DICT_BYTES, OUTPUT_BUDGET_FACTOR
+from harness_core.archive_reader import zip_declared_entries
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -468,19 +469,33 @@ class _GrowthWatcher:
     reasons, when openpyxl turned the MemoryError into another error. It is sampled here
     because the kernel's own peak marks (VmHWM) cover the whole life of a long-lived worker
     and cannot be reset by a non-dumpable process.
+
+    A load at its cap does not always fail (R47POLISH-FU-2): openpyxl can go on at a crawl, or
+    sit inside one C call, with memory flat at the cap. The parse pool stops that worker from
+    outside (``parse_pool._AT_DATA_LIMIT_SECONDS``): nothing is raised into the load from a
+    signal handler, for the reason ``_cpu_limited`` gives.
     """
 
     _INTERVAL_SECONDS = 0.02
 
     def __init__(self) -> None:
-        self._start_kb = _status_kb("VmData")
-        self._start_vm_peak_kb = _status_kb("VmPeak")
+        self._start_kb = 0
+        self._start_vm_size_kb = 0
+        self._start_vm_peak_kb = 0
         self.peak_kb = 0
+        self._ready = threading.Event()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="excel-growth-watch", daemon=True)
 
     def __enter__(self) -> _GrowthWatcher:
+        # Entered before the growth cap is set: started under it, the thread's stack (8 MB of
+        # VmData) was charged to the file's allowance, and a thread that could not get one left
+        # start() waiting forever. The baseline is taken after the stack exists, as the cap's is.
         self._thread.start()
+        self._start_kb = _status_kb("VmData")
+        self._start_vm_size_kb = _status_kb("VmSize")
+        self._start_vm_peak_kb = _status_kb("VmPeak")
+        self._ready.set()
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -488,8 +503,11 @@ class _GrowthWatcher:
         self._thread.join(timeout=1)
 
     def _run(self) -> None:
+        self._ready.wait()
         while not self._stop.wait(self._INTERVAL_SECONDS):
-            self.sample()
+            # A MemoryError escaping here would end this thread: reading /proc allocates.
+            with contextlib.suppress(MemoryError):
+                self.sample()
 
     def sample(self) -> int:
         self.peak_kb = max(self.peak_kb, _status_kb("VmData") - self._start_kb)
@@ -501,9 +519,13 @@ class _GrowthWatcher:
         A peak allocated and freed between two samples is still in VmPeak (the kernel's
         high-water mark of address space, readable by a non-dumpable process), but only when
         it went past every earlier peak of this worker: a spike under an earlier, larger job
-        is not seen, which can only misname the file's own error, never admit more.
+        is not seen, which can only misname the file's own error, never admit more. A new peak
+        is measured from the size at the start, not the old peak: starting this watcher's thread
+        alone raises VmPeak by its stack and a malloc arena (about 136 MB, briefly).
         """
-        return max(self.sample(), _status_kb("VmPeak") - self._start_vm_peak_kb)
+        vm_peak = _status_kb("VmPeak")
+        new_peak = vm_peak - self._start_vm_size_kb if vm_peak > self._start_vm_peak_kb else 0
+        return max(self.sample(), new_peak)
 
 
 def max_merged_positions(max_text_bytes: int) -> int:
@@ -578,6 +600,10 @@ def _declared_positions(archive: zipfile.ZipFile, info: zipfile.ZipInfo, budget:
     return total
 
 
+# A workbook is a few parts per sheet; ten thousand entries is far past any real one.
+MAX_ZIP_ENTRIES = 10_000
+
+
 class _StopScan(Exception):
     pass
 
@@ -587,6 +613,11 @@ def _precheck(file_binary: bytes, max_xml_bytes: int, max_merged: int | None = N
     total of decompressed bytes over the cap, and declared merged ranges that add up to more than
     *max_merged* positions. Streams every entry in 1 MB chunks (constant memory), skips an entry it cannot read
     (the loader reads only what it needs), and never trusts the sizes the zip declares."""
+    # ZipFile parses the whole central directory, memory per entry, so its declared count is checked first
+    # (SEC-C-19): 300 000 empty entries in 25 MiB took seconds and 160 MiB before.
+    declared = zip_declared_entries(file_binary)
+    if declared is not None and declared > MAX_ZIP_ENTRIES:
+        raise WorkbookRefused("too_large", f"{declared} zip entries")
     try:
         archive = zipfile.ZipFile(io.BytesIO(file_binary))
         entries = [info for info in archive.infolist() if not info.is_dir()]
@@ -783,9 +814,9 @@ def load_workbook_model(
     than *max_seconds* of CPU (the work openpyxl does on a flat amount of memory: ranges that
     overlap, hyperlinks on merged cells, anything not yet known) ends the worker (``_cpu_limited``).
     """
-    restore, cap = _enforce_growth_limit(limit_bytes)
     over = False
     with _GrowthWatcher() as growth:
+        restore, cap = _enforce_growth_limit(limit_bytes)
         try:
             with _cpu_limited(max_seconds):
                 try:

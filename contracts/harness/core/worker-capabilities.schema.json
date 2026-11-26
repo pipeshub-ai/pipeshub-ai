@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/worker-capabilities.schema.json",
+  "title": "WorkerCapabilities",
+  "description": "What a worker build can run, sent with every claim (REPORT 6.1.7). Node hands a worker only runs whose requirements this meets, so an older worker never receives a run it would misread. Code constants of the build, never configuration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "harnessMajor",
+    "supportedSchemaVersions",
+    "foldVersion",
+    "features"
+  ],
+  "properties": {
+    "harnessMajor": {
+      "const": 2
+    },
+    "supportedSchemaVersions": {
+      "description": "RunSpec schemaVersions this worker's models read.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "common.schema.json#/$defs/PosInt"
+      }
+    },
+    "foldVersion": {
+      "description": "The highest fold version this worker folds (its FOLD_VERSION); it also writes at it.",
+      "$ref": "common.schema.json#/$defs/PosInt"
+    },
+    "features": {
+      "description": "Run shapes beyond the spec and fold versions that this worker's models accept, by name (e.g. chat, caller, steering). Open vocabulary: a reader ignores names it does not know, so a feature ships to workers before Node requires it.",
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "common.schema.json#/$defs/Name"
+      }
+    }
+  },
+  "examples": [
+    {
+      "harnessMajor": 2,
+      "supportedSchemaVersions": [
+        2
+      ],
+      "foldVersion": 5,
+      "features": [
+        "caller",
+        "chat",
+        "steering"
+      ]
+    }
+  ]
+}

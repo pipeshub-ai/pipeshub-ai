@@ -753,6 +753,8 @@ class TestRecordIdLookup:
     @pytest.mark.asyncio
     async def test_record_id_resolves_through_the_acl_gate(self) -> None:
         rec = _mock_record(_RECORD_UUID, "kv-prefetch-thread", record_type="FILE", connector="KB")
+        # An exact id is still held to the catalog's connectors, so the record is on the catalog's KB.
+        rec = rec.model_copy(update={"connector_id": "conn-kb"})
         gp = _gp_for_record_id(rec, _access_node(_RECORD_UUID, "kv-prefetch-thread", "FILE"))
 
         success, text = await KnowledgeGraph(state=_record_id_state(gp)).lookup_record(identifiers=[_RECORD_UUID])
@@ -853,6 +855,8 @@ class TestLookupShowsTypedFields:
         state = self._state(None, _typed_pr_record())
         gp = state["graph_provider"]
         gp.get_record_by_external_id = AsyncMock(return_value=_base_pr_record())
+        # A bare identifier is tried as a record id first; the store has no record with this one.
+        gp.get_record_by_id = AsyncMock(side_effect=lambda rid: _typed_pr_record() if rid == "pr1" else None)
 
         success, text = await KnowledgeGraph(state=state).lookup_record(
             identifiers=["123/pull/42"],
@@ -896,10 +900,12 @@ class TestLookupShowsTypedFields:
         state = self._state(None, _typed_pr_record())
         gp = state["graph_provider"]
         gp.get_record_by_external_id = AsyncMock(return_value=_typed_pr_record())
+        # A bare identifier is tried as a record id first; the store has no record with this one.
+        gp.get_record_by_id = AsyncMock(return_value=None)
 
         _success, text = await KnowledgeGraph(state=state).lookup_record(identifiers=["123/pull/42"])
 
-        gp.get_record_by_id.assert_not_awaited()
+        assert [c.args for c in gp.get_record_by_id.await_args_list] == [("123/pull/42",)]
         assert "* Status: Merged" in text
 
     @pytest.mark.asyncio

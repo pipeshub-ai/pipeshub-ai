@@ -17,7 +17,7 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null })
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 
 const { useChatStore } = await import('@/chat/store');
-const { ChatSectionElement } = await import('../chat-section-element');
+const { ChatSectionElement, GeneratingTitleItem } = await import('../chat-section-element');
 
 const initialState = useChatStore.getState();
 const unread = () => [...useChatStore.getState().unreadConversationIds];
@@ -28,7 +28,7 @@ function renderRow(isActive = false) {
   return renderInTheme(<ChatSectionElement conversation={conversation} isActive={isActive} onClick={vi.fn()} />);
 }
 
-const dot = () => screen.queryByRole('img', { name: 'New answer' });
+const dot = () => screen.queryByText('New answer');
 
 beforeEach(() => {
   installBrowserShims();
@@ -111,6 +111,31 @@ describe('a chat row in the sidebar', () => {
   });
 });
 
+describe('D10: the row this tab streams shows Needs you over its spinner (CJFIX-A F2)', () => {
+  const ask = { interactionId: 'ix-1', runId: 'r-1', toolName: 'mcp_e2esaas_create_ticket', status: 'pending' } as never;
+  const mark = () => document.querySelector('[data-testid="chat-dot"]')?.getAttribute('data-dot') ?? null;
+
+  it('a new chat still streaming, before the list has it: working, then Needs you once its stream holds an ask', () => {
+    const slotId = useChatStore.getState().createSlot('conv-new');
+    useChatStore.getState().updateSlot(slotId, { isStreaming: true });
+    useChatStore.setState((s) => ({ pendingConversations: { ...s.pendingConversations, [slotId]: { slotId, title: 'File a ticket', isGenerating: true, createdAt: 1 } as never } }));
+    renderInTheme(<GeneratingTitleItem slotId={slotId} />);
+    expect(mark()).toBe('working');
+
+    act(() => useChatStore.getState().updateSlot(slotId, { pendingApprovals: [ask] }));
+
+    expect(mark()).toBe('needsYou');
+    expect(screen.getByText('Needs you')).toBeTruthy();
+  });
+
+  it('a listed chat whose stream here holds an ask is Needs you before the server’s state says so', () => {
+    const slotId = useChatStore.getState().createSlot('conv-1');
+    useChatStore.getState().updateSlot(slotId, { isStreaming: true, pendingApprovals: [ask] });
+    renderRow();
+    expect(mark()).toBe('needsYou');
+  });
+});
+
 describe('where a chat row opens', () => {
   const hrefOf = (conv: unknown, agentId?: string) => {
     renderInTheme(<ChatSectionElement conversation={conv as never} isActive={false} onClick={vi.fn()} agentId={agentId} />);
@@ -177,5 +202,52 @@ describe('who shared a chat, and whether it is an agent chat', () => {
     );
     expect(screen.getByText('Shared by Pranjal')).toBeTruthy();
     expect(screen.queryByRole('img', { name: 'Agent chat' })).toBeNull();
+  });
+});
+
+describe('a chat row’s run mark from the server (classic jobs D10)', () => {
+  const state = (over: Record<string, unknown> = {}) => ({ activeRun: null, runState: null, needsYou: false, finishedUnseen: false, seenUpTo: null, ...over });
+  const rowWith = (harnessState: unknown, isActive = false) =>
+    renderInTheme(
+      <ChatSectionElement conversation={{ id: 'conv-9', title: 'Q3 report', isOwner: false, harnessState } as never} isActive={isActive} onClick={vi.fn()} />,
+    );
+  const mark = () => screen.queryByTestId('chat-dot');
+
+  it('marks a chat that waits on the person amber, named "Needs you", over working and finished', () => {
+    rowWith(state({ needsYou: true, runState: 'needs_you', activeRun: { runId: 'r1', status: 'waiting_approval' }, finishedUnseen: true }));
+    expect(mark()?.getAttribute('data-dot')).toBe('needsYou');
+    expect(mark()?.textContent).toBe('Needs you');
+  });
+
+  it('shows the working spinner for a run this tab never streamed', () => {
+    rowWith(state({ runState: 'working', activeRun: { runId: 'r1', status: 'running' } }));
+    expect(mark()?.getAttribute('data-dot')).toBe('working');
+    expect(mark()?.textContent).toBe('Working');
+  });
+
+  it('shows the finished dot for a run that ended unseen, and none on the chat open now', () => {
+    rowWith(state({ finishedUnseen: true }));
+    expect(mark()?.getAttribute('data-dot')).toBe('finished');
+    expect(mark()?.textContent).toBe('Finished since you last looked');
+    cleanup();
+    rowWith(state({ finishedUnseen: true }), true);
+    expect(mark()).toBeNull();
+  });
+
+  it('keeps needs you on the open chat, since it still waits there', () => {
+    rowWith(state({ needsYou: true }), true);
+    expect(mark()?.getAttribute('data-dot')).toBe('needsYou');
+  });
+
+  it('merges the server’s unseen with this tab’s new answer into one mark', () => {
+    useChatStore.getState().markConversationUnread('conv-9');
+    rowWith(state({ finishedUnseen: true }));
+    expect(screen.getAllByTestId('chat-dot')).toHaveLength(1);
+    expect(mark()?.textContent).toBe('Finished since you last looked');
+  });
+
+  it('shows nothing for a quiet chat', () => {
+    rowWith(state());
+    expect(mark()).toBeNull();
   });
 });

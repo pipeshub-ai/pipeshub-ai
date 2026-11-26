@@ -43,6 +43,8 @@ function clearLockedZoomScale(): void {
 export function usePdfZoom(fileId: string, fileUrl: string, initialPage?: number) {
   const [pdfScale, setPdfScale] = useState(PDF_ZOOM_DEFAULT);
   const [isZoomLocked, setIsZoomLocked] = useState(false);
+  // Until the person zooms, the viewer fits the page to the panel and reports that scale back.
+  const [zoomChosen, setZoomChosen] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
 
   const isZoomLockedRef = useRef(isZoomLocked);
@@ -55,6 +57,7 @@ export function usePdfZoom(fileId: string, fileUrl: string, initialPage?: number
     if (savedScale !== null) {
       setPdfScale(savedScale);
       setIsZoomLocked(true);
+      setZoomChosen(true);
     }
     setIsHydrated(true);
   }, []);
@@ -62,6 +65,7 @@ export function usePdfZoom(fileId: string, fileUrl: string, initialPage?: number
   useEffect(() => {
     if (!isHydrated || isZoomLockedRef.current) return;
     setPdfScale(PDF_ZOOM_DEFAULT);
+    setZoomChosen(false);
   }, [fileId, fileUrl, initialPage, isHydrated]);
 
   useEffect(() => {
@@ -78,6 +82,7 @@ export function usePdfZoom(fileId: string, fileUrl: string, initialPage?: number
   }, []);
 
   const handlePdfZoomIn = useCallback(() => {
+    setZoomChosen(true);
     setPdfScale((s) =>
       Math.min(
         PDF_ZOOM_MAX,
@@ -87,6 +92,7 @@ export function usePdfZoom(fileId: string, fileUrl: string, initialPage?: number
   }, []);
 
   const handlePdfZoomOut = useCallback(() => {
+    setZoomChosen(true);
     setPdfScale((s) =>
       Math.max(
         PDF_ZOOM_MIN,
@@ -97,6 +103,8 @@ export function usePdfZoom(fileId: string, fileUrl: string, initialPage?: number
 
   return {
     pdfScale,
+    /** The scale to apply, or undefined to fit the page width (the person has not zoomed). */
+    pdfScaleValue: zoomChosen ? pdfScale : undefined,
     setPdfScale,
     handlePdfZoomIn,
     handlePdfZoomOut,

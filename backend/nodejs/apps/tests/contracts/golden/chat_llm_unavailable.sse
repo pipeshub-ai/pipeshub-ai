@@ -1,0 +1,6 @@
+event: CUSTOM
+data: {"type":"CUSTOM","name":"conversation_created","value":{"conversationId":"oid-1","title":"What is the refund policy?"}}
+
+event: RUN_ERROR
+data: {"type": "RUN_ERROR", "message": "No AI model is set up for this workspace yet. An admin can add one in Workspace \u2192 AI Models, then you can send your message again.", "code": "llm_initialization_failed"}
+

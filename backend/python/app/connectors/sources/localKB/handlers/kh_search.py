@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+import weakref
 from collections import Counter
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +34,7 @@ from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingNotReady,
     KnowledgeHubListingTooLarge,
 )
+from app.utils.env_config import env_int
 from app.utils.kh_cursor import (
     Boundary,
     CursorError,
@@ -40,14 +43,25 @@ from app.utils.kh_cursor import (
     decode,
     encode,
 )
+from app.utils.request_deadline import seconds_left
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 # Connector queries one search page runs at once: a tenant can have hundreds of
 # connectors, and each page would otherwise put all their queries on the graph
 # together. A caller can pass another positive limit, or None for no cap.
 DEFAULT_MAX_CONCURRENCY = 8
+
+# Connector queries all the searches of this process run at once. Each holds
+# transaction memory from the one pool the database has, and searches that each
+# keep under the cap above still add up past it: the pool runs out and every
+# search in it is refused. Past this many, a query waits for a turn, at most
+# until its request's deadline (then the search is answered busy). 0: no limit.
+SHARED_MAX_CONCURRENCY = env_int("KH_LISTING_PAGES_MAX", 8)
+_shared_gates: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = weakref.WeakKeyDictionary()
 
 
 @dataclass(frozen=True)
@@ -379,8 +393,9 @@ async def _run(
 
         try:
             if gate is None:
-                return await call()
-            async with gate:
+                async with _shared_turn():
+                    return await call()
+            async with gate, _shared_turn():
                 return await call()
         except KnowledgeHubListingNotReady:
             return {"rows": [], "hasMore": False, "total": 0, "counts": {}, "notReady": True}
@@ -404,3 +419,23 @@ def _gate(max_concurrency: int | None) -> asyncio.Semaphore | None:
     if max_concurrency is None or max_concurrency <= 0:
         return None
     return asyncio.Semaphore(max_concurrency)
+
+
+@asynccontextmanager
+async def _shared_turn() -> AsyncIterator[None]:
+    """A turn under ``SHARED_MAX_CONCURRENCY``, or busy at the request's deadline."""
+    if SHARED_MAX_CONCURRENCY <= 0:
+        yield
+        return
+    loop = asyncio.get_running_loop()
+    shared = _shared_gates.get(loop)
+    if shared is None:
+        shared = _shared_gates[loop] = asyncio.Semaphore(SHARED_MAX_CONCURRENCY)
+    try:
+        await asyncio.wait_for(shared.acquire(), seconds_left())
+    except TimeoutError:
+        raise KnowledgeHubListingBusy(timed_out=True) from None
+    try:
+        yield
+    finally:
+        shared.release()

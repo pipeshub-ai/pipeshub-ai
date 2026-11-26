@@ -27,10 +27,24 @@ class TestAcceptedServiceScopes:
                 "record:content",
                 "conversation:create",
                 "conversation:permissions",
+                # Node's erasure job (E7): a deleted conversation's artifacts.
+                "conversation:erase",
+                # "Continue privately" (SS3): artifact copies into the forker's conversation.
+                "conversation:fork",
+                # Node's agent-erasure sweeper (H5): whether an agent's delete committed.
+                "agent:erase",
+                # Node's usage report and budget notices (WP-51): one org's agent names.
+                "agent:names",
+                # Node's control plane (CPD-7): one org's legacy capability facts.
+                "capabilities:read",
+                # Node's control plane (CPD-11): a user's teams and roles.
+                "directory:read",
                 "fetch:config",
                 "document:parse",
                 "document:classify",
                 "entity:user:write",
+                # Node user and org deletion (C-14): the principal's personal toolset and MCP instances.
+                "principal:erase",
                 "entity:user:ensure",
             }
         )
@@ -44,6 +58,7 @@ class TestAcceptedServiceScopes:
             TokenScopes.STORAGE_TOKEN,
             TokenScopes.USER_LOOKUP,
             TokenScopes.CALLER_ROLE,
+            TokenScopes.CAPABILITIES_SYNC,
         ],
     )
     def test_node_only_scopes_are_not_accepted(self, user_held_or_node_only_scope):

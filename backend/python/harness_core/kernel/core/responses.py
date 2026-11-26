@@ -1,0 +1,101 @@
+# pyright: basic
+"""Response envelopes returned by a `Model`/`LLMTransport` call.
+
+Before this module, transports returned a bare `Message` and stashed usage
+on a mutable `self.last_usage` side-channel the caller had to read
+immediately afterwards via `getattr(transport, "last_usage", None)` —
+fragile (nothing stops a caller from reading it at the wrong time, or an
+implementation from forgetting to set it) and unable to carry per-call
+metadata (stop reason, which model actually served the request) at all.
+`ModelResponse`/`StructuredResponse` make every call's full outcome an
+explicit, immutable return value instead.
+"""
+
+from __future__ import annotations
+
+from enum import Enum
+
+from pydantic import BaseModel, Field
+
+from harness_core.kernel.core.messages import AssistantMessage
+
+__all__ = ["StopReason", "TokenUsage", "ModelResponse", "StructuredResponse", "RunUsage"]
+
+
+class StopReason(str, Enum):
+    END_TURN = "end_turn"
+    TOOL_USE = "tool_use"
+    MAX_TOKENS = "max_tokens"
+    STOP_SEQUENCE = "stop_sequence"
+    ERROR = "error"
+    # Cooperative cancellation (Stop Generation, Phase 3b): a transport's
+    # `stream()` observed a `CancellationToken` mid-response and stopped
+    # consuming the provider's stream early. `message` still carries
+    # whatever text streamed before the check fired; any tool call still
+    # being assembled is dropped (see `LangChainTransport.stream()`) since
+    # its arguments are truncated mid-JSON.
+    CANCELLED = "cancelled"
+
+
+class TokenUsage(BaseModel):
+    """Usage for a single `complete()`/`complete_structured()`/`stream()` call.
+
+    ``input_tokens`` counts every prompt token of the request: ``cache_read_tokens``
+    and ``cache_write_tokens`` are parts of it, whatever the provider's own payload
+    says. Whoever builds a ``TokenUsage`` from a provider payload makes it so."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    # Part of ``output_tokens``, where the provider reports it (OpenAI, Responses, Gemini): tells a reasoning
+    # runaway from a long visible reply or tool call (P4.17 open item 2).
+    reasoning_tokens: int = 0
+
+    @property
+    def uncached_input_tokens(self) -> int:
+        """The prompt tokens no cache served or stored (what Anthropic calls ``input_tokens``)."""
+        return max(0, self.input_tokens - self.cache_read_tokens - self.cache_write_tokens)
+
+
+class ModelResponse(BaseModel):
+    """Full outcome of one `Model.complete()`/`LLMTransport.complete()` call."""
+
+    message: AssistantMessage
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+    stop_reason: StopReason = StopReason.END_TURN
+    model: str = ""
+
+
+class StructuredResponse(BaseModel):
+    """Full outcome of one `complete_structured()` call — `data` is the
+    already-parsed JSON object matching the caller's `output_schema`."""
+
+    data: dict
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+    model: str = ""
+
+
+class RunUsage(BaseModel):
+    """Cumulative usage across every LLM call in one `Agent.run()` — the
+    live accumulator `Agent` maintains and exposes via `Agent.usage`,
+    replacing the old pattern of reading cumulative counters off a
+    concrete transport instance (`agent.transport.total_input_tokens`, ...)."""
+
+    requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    # Per-request breakdown, kept because pricing is not always linear in
+    # the total: a long-context surcharge applies per request that crosses
+    # its threshold, which the cumulative counters cannot reconstruct.
+    per_request: list[TokenUsage] = Field(default_factory=list)
+
+    def add(self, request_usage: TokenUsage) -> None:
+        self.requests += 1
+        self.per_request.append(request_usage)
+        self.input_tokens += request_usage.input_tokens
+        self.output_tokens += request_usage.output_tokens
+        self.cache_read_tokens += request_usage.cache_read_tokens
+        self.cache_write_tokens += request_usage.cache_write_tokens

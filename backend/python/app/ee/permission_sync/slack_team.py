@@ -188,9 +188,10 @@ class SlackWorkspacePermissionsMixin:
         channel_data: dict[str, Any],
     ) -> list[Permission] | None:
         """
-        Return the correct HAS_PERMISSION list for a single channel, or None when an
-        archived private channel's members cannot be read (its membership is frozen,
-        so the grants stored by an earlier sync stay).
+        Return the correct HAS_PERMISSION list for a single channel, the authenticator's
+        grant included, or None when a private channel's members cannot be read (the
+        grants stored by an earlier sync stay, and the authenticator is not added to them).
+        A public channel whose members cannot be read gets the workspace role alone.
 
         Public channel  → workspace_member AppRole (efficient single edge)
         Private channel → explicit member list from conversations.members
@@ -206,28 +207,32 @@ class SlackWorkspacePermissionsMixin:
             remote_uid = channel_data.get("user", "")
             email = self.user_id_to_email_cache.get(remote_uid)
             if email:
-                return [Permission(
+                return self._with_authenticator([Permission(
                     email=email,
                     entity_type=EntityType.USER,
                     type=PermissionType.READ,
-                )]
-            return []
+                )])
+            return self._with_authenticator([])
 
         # Public channel — workspace members, plus guests who were added to this channel.
         if not channel_data.get("is_private") and not channel_data.get("is_mpim"):
-            try:
-                member_ids = await self._fetch_channel_members(cid)
-            except RuntimeError as exc:
-                # Only the guests depend on the member list: they get no grant this
-                # time, and the channel still syncs for the workspace.
-                self._full_sync_read_failed = True
-                self.logger.warning(f"Guests of {channel_data.get('name')} not read: {exc}")
-                member_ids = []
             perms = [Permission(
                 entity_type=EntityType.ROLE,
                 external_id="workspace_member",
                 type=PermissionType.READ,
             )]
+            try:
+                member_ids = await self._fetch_channel_members(cid, keep_if_unreadable=True)
+            except RuntimeError as exc:
+                # The channel still syncs for the workspace. Its guests get no grant this
+                # time, and neither does the authenticator, who may not be in it.
+                self._full_sync_read_failed = True
+                self.logger.warning(f"Members of {channel_data.get('name')} not read: {exc}")
+                return perms
+            if member_ids is None:
+                # The token cannot read this channel's members, so its holder may not be in it:
+                # no authenticator grant, and the guests cannot be listed.
+                return perms
             for uid in member_ids:
                 if uid not in self._guest_user_ids:
                     continue
@@ -238,12 +243,12 @@ class SlackWorkspacePermissionsMixin:
                         entity_type=EntityType.USER,
                         type=PermissionType.READ,
                     ))
-            return perms
+            return self._with_authenticator(perms)
 
         # Private channel or group DM — resolve explicit member list
-        member_ids = await self._fetch_channel_members(cid, keep_if_unreadable=cid in self._archived_channel_ids)
+        member_ids = await self._fetch_channel_members(cid, keep_if_unreadable=True)
         if member_ids is None:
-            self.logger.info(f"Members of archived channel {cid} cannot be read; its stored grants are kept")
+            self.logger.info(f"Members of channel {cid} cannot be read; its stored grants are kept")
             return None
         perms: list[Permission] = []
         for uid in member_ids:
@@ -254,7 +259,7 @@ class SlackWorkspacePermissionsMixin:
                     entity_type=EntityType.USER,
                     type=PermissionType.READ,
                 ))
-        return perms
+        return self._with_authenticator(perms)
 
     async def _fetch_channel_members(
         self, channel_id: str, *, keep_if_unreadable: bool = False
@@ -265,9 +270,8 @@ class SlackWorkspacePermissionsMixin:
 
         An empty list when the first page answers channel_not_found,
         not_in_channel or missing_scope: the members cannot be read with this
-        token, so nobody is granted the channel (fail closed) until they can be.
-        Those answers repeat on every sync, so they are not a failed read. Any
-        failure after the first page, or any other failure, raises. With
+        token. Those answers repeat on every sync, so they are not a failed read.
+        Any failure after the first page, or any other failure, raises. With
         ``keep_if_unreadable`` those answers return None (unknown) instead of [].
         """
         members: list[str] = []
@@ -286,14 +290,10 @@ class SlackWorkspacePermissionsMixin:
                 if not resp or not resp.success:
                     error = getattr(resp, "error", "no response")
                     # On the first page these mean the members cannot be read at
-                    # all, and will not be next time either: fail closed, so a
-                    # member removed from the channel never keeps access unseen.
-                    # After it they cut the list short like any other error.
+                    # all, and will not be next time either. After it they cut
+                    # the list short like any other error.
                     if cursor is None and error in ("channel_not_found", "not_in_channel", "missing_scope"):
-                        self.logger.warning(
-                            f"Cannot read the members of {channel_id} ({error}); "
-                            f"nobody is given access to it until they can be read"
-                        )
+                        self.logger.warning(f"Cannot read the members of {channel_id} ({error})")
                         return None if keep_if_unreadable else []
                     # Any other failure leaves the member list short. Returned,
                     # it would replace the channel's grants and lock out every

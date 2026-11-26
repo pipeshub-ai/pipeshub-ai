@@ -10,13 +10,14 @@ import type { AppliedFilters } from '@/chat/types';
 import type { ProjectDetail, ProjectKnowledgeScope } from '@/chat/project-types';
 import { CharCount, PROJECT_INSTRUCTIONS_MAX } from '@/chat/sidebar/dialogs/project-form-fields';
 import { ConnectorsCard } from './connectors-card';
+import { CollectionsCard } from './collections-card';
 import { FilesCard } from './files-card';
 import { ToolsMcpCard } from './tools-mcp-card';
 import { PanelCard, PanelHeader } from './panel-section';
 
-export type SetupSectionKey = 'instructions' | 'files' | 'connectors' | 'tools' | 'members';
+export type SetupSectionKey = 'instructions' | 'files' | 'connectors' | 'collections' | 'tools' | 'members';
 
-const SETUP_SECTION_ORDER: SetupSectionKey[] = ['instructions', 'files', 'connectors', 'tools', 'members'];
+const SETUP_SECTION_ORDER: SetupSectionKey[] = ['instructions', 'files', 'connectors', 'collections', 'tools', 'members'];
 
 interface SetupRowProps {
   icon: string;
@@ -85,7 +86,7 @@ function SetupRow({
         style={{ padding: 'var(--space-3) 0', cursor: clickable ? 'pointer' : 'default' }}
       >
         <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
-          <MaterialIcon name={icon} size={16} color="var(--slate-10)" />
+          <MaterialIcon name={icon} size={16} color="var(--slate-11)" />
           <Text size="2" style={{ color: 'var(--slate-12)' }}>
             {label}
           </Text>
@@ -97,7 +98,7 @@ function SetupRow({
             <Text
               size="1"
               style={{
-                color: 'var(--slate-9)',
+                color: 'var(--slate-11)',
                 maxWidth: 130,
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
@@ -113,7 +114,7 @@ function SetupRow({
             <MaterialIcon
               name="chevron_right"
               size={16}
-              color="var(--slate-8)"
+              color="var(--slate-11)"
               style={{
                 transform: expanded ? 'rotate(90deg)' : 'none',
                 transition: expandable ? 'transform 0.15s ease' : undefined,
@@ -135,8 +136,8 @@ function SetupRow({
 function SetStatus({ done, text }: { done: boolean; text: string }) {
   return (
     <Flex align="center" gap="1">
-      {done && <MaterialIcon name="check" size={14} color="var(--jade-9)" />}
-      <Text size="1" style={{ color: done ? 'var(--jade-11)' : 'var(--slate-9)' }}>
+      {done && <MaterialIcon name="check" size={14} color="var(--jade-11)" />}
+      <Text size="1" style={{ color: done ? 'var(--jade-11)' : 'var(--slate-11)' }}>
         {text}
       </Text>
     </Flex>
@@ -164,6 +165,10 @@ export interface ProjectSettingsPanelProps {
     knowledgeScope: ProjectKnowledgeScope;
     appliedFilters: AppliedFilters;
   }) => void;
+  onCollectionsChange?: (patch: {
+    knowledgeScope: ProjectKnowledgeScope;
+    appliedFilters: AppliedFilters;
+  }) => void;
   onToolsChange: (update: (previous: string[]) => string[]) => void;
 
   onOpenShare: () => void;
@@ -178,6 +183,36 @@ export interface ProjectSettingsPanelProps {
  * for the Files card, which owns its own KB fetch/upload/delete lifecycle
  * (see `FilesCard`).
  */
+export function computeScopeCounts(
+  knowledgeScope: ProjectKnowledgeScope | undefined,
+  appliedFilters: AppliedFilters | undefined,
+): { connectorCount: number; collectionCount: number } {
+  const isCollectionGroup = (id: string) =>
+    appliedFilters?.recordGroups?.find((n) => n.id === id)?.connector === 'KB';
+  const isCollectionRecord = (id: string) =>
+    appliedFilters?.records?.find((n) => n.id === id)?.connector === 'KB';
+
+  const collectionRecordGroupCount =
+    (knowledgeScope?.recordGroups ?? []).filter(isCollectionGroup).length;
+  const collectionRecordCount =
+    (knowledgeScope?.records ?? []).filter(isCollectionRecord).length;
+  const collectionCount =
+    (knowledgeScope?.kb?.length ?? 0) +
+    collectionRecordGroupCount +
+    collectionRecordCount;
+
+  const connectorRecordGroupCount =
+    (knowledgeScope?.recordGroups?.length ?? 0) - collectionRecordGroupCount;
+  const connectorRecordCount =
+    (knowledgeScope?.records?.length ?? 0) - collectionRecordCount;
+  const connectorCount =
+    (knowledgeScope?.apps?.length ?? 0) +
+    connectorRecordGroupCount +
+    connectorRecordCount;
+
+  return { connectorCount, collectionCount };
+}
+
 export function ProjectSettingsPanel({
   project,
   canEdit,
@@ -193,6 +228,7 @@ export function ProjectSettingsPanel({
   onSaveInstructions,
   onKbCreated,
   onConnectorsChange,
+  onCollectionsChange,
   onToolsChange,
   onOpenShare,
 }: ProjectSettingsPanelProps) {
@@ -204,18 +240,18 @@ export function ProjectSettingsPanel({
   const [fileSummary, setFileSummary] = useState({ count: 0, totalBytes: 0 });
 
   const hasInstructions = Boolean(project.instructions?.trim());
-  const connectorCount =
-    (project.knowledgeScope?.apps?.length ?? 0) +
-    (project.knowledgeScope?.recordGroups?.length ?? 0) +
-    (project.knowledgeScope?.records?.length ?? 0);
+  const { connectorCount, collectionCount } = useMemo(
+    () => computeScopeCounts(project.knowledgeScope, project.appliedFilters),
+    [project.knowledgeScope, project.appliedFilters],
+  );
   const toolCount = project.tools?.length ?? 0;
   const memberCount = project.members.length; // additional members beyond the owner
 
   const setupProgress = useMemo(
     () =>
-      [hasInstructions, fileSummary.count > 0, connectorCount > 0, toolCount > 0, memberCount > 0].filter(Boolean)
+      [hasInstructions, fileSummary.count > 0, connectorCount > 0, collectionCount > 0, toolCount > 0, memberCount > 0].filter(Boolean)
         .length,
-    [hasInstructions, fileSummary.count, connectorCount, toolCount, memberCount],
+    [hasInstructions, fileSummary.count, connectorCount, collectionCount, toolCount, memberCount],
   );
 
   const toggleSection = (key: SetupSectionKey) => {
@@ -315,7 +351,7 @@ export function ProjectSettingsPanel({
             <Text
               size="2"
               style={{
-                color: project.instructions ? 'var(--slate-12)' : 'var(--slate-10)',
+                color: project.instructions ? 'var(--slate-12)' : 'var(--slate-11)',
                 whiteSpace: 'pre-wrap',
               }}
             >
@@ -377,6 +413,31 @@ export function ProjectSettingsPanel({
             appliedFilters={project.appliedFilters}
             canEdit={canEdit}
             onChange={onConnectorsChange}
+          />
+        </SetupRow>
+
+        {/* Collections (knowledgeScope.kb — workspace collections) */}
+        <SetupRow
+          icon="folder"
+          label={t('chat.projects.workspace.collectionsTitle', { defaultValue: 'Collections' })}
+          statusText={
+            collectionCount > 0
+              ? t('chat.projects.workspace.collectionsStatusCount', {
+                  count: collectionCount,
+                  defaultValue: '{{count}} selected',
+                })
+              : t('chat.projects.workspace.collectionsStatusNone', { defaultValue: 'None' })
+          }
+          isFirst={false}
+          isExpanded={expandedSection === 'collections'}
+          onToggle={() => toggleSection('collections')}
+          lazy
+        >
+          <CollectionsCard
+            knowledgeScope={project.knowledgeScope}
+            appliedFilters={project.appliedFilters}
+            canEdit={canEdit}
+            onChange={onCollectionsChange ?? onConnectorsChange}
           />
         </SetupRow>
 

@@ -28,6 +28,23 @@ export class VersionConflictError extends DatabaseError {
   }
 }
 
+/**
+ * A store filter named an identifier with something other than a string (or a
+ * `$in` of strings). A 400 that names the field only, never the value.
+ */
+export class InvalidIdFilterError extends DatabaseError {
+  constructor(field: string) {
+    super(
+      'INVALID_ID_FILTER',
+      `The ${field} given is not a valid identifier`,
+      400,
+      {
+        field,
+      },
+    );
+  }
+}
+
 /** The store is frozen for a cutover: retry after it (HTTP 503 with a Retry-After header; consumers re-throw so the message is redelivered). */
 export class DocStoreReadOnlyError extends ServiceUnavailableError {
   constructor(retryAfterSeconds = 5) {

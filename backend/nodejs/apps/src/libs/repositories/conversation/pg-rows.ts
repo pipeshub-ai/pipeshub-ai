@@ -14,6 +14,7 @@ import {
   shapeReference,
   shapeTool,
   shapeAttachment,
+  shapeHarnessFields,
 } from './pg-schema';
 import type {
   ChatSessionDto,
@@ -82,6 +83,10 @@ export interface MessageSqlRow {
   parts: unknown[];
   created_at: Date;
   updated_at: Date;
+  sender_id?: string | null;
+  harness?: Record<string, unknown> | null;
+  /** Only when the read asked for labels. */
+  label?: unknown;
 }
 
 export interface CitationSqlRow {
@@ -223,6 +228,9 @@ export interface StoredMessage {
   tools: unknown[];
   reasoning: unknown[];
   parts: unknown[];
+  senderId: string | null;
+  label: unknown;
+  harness: Record<string, unknown> | null;
 }
 
 const each = (
@@ -256,6 +264,9 @@ export function storedMessage(m: NewMessage): StoredMessage {
     tools,
     reasoning,
     parts,
+    senderId: m.senderId != null ? String(m.senderId) : null,
+    label: m.label != null ? clean(m.label) : null,
+    harness: clean(shapeHarnessFields(m)),
   };
 }
 
@@ -292,6 +303,9 @@ export function messageDto(
   o.tools = r.tools;
   o.reasoning = r.reasoning;
   o.parts = r.parts;
+  put(o, 'senderId', r.sender_id);
+  if (r.harness) Object.assign(o, r.harness);
+  put(o, 'label', r.label);
   return { dto: o as unknown as MessageDto };
 }
 

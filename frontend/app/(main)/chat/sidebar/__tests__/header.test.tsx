@@ -24,6 +24,7 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null })
 
 import { ChatSidebarHeader } from '../header';
 import { useChatStore } from '@/chat/store';
+import { useUserStore } from '@/lib/store/user-store';
 
 // Zustand copies actions into every new state, so a spy would outlive its test; swap a stub in instead.
 const originalClearSearchResults = useChatStore.getState().clearSearchResults;
@@ -74,5 +75,15 @@ describe('Chat sidebar header: Home', () => {
 
     expect(useChatStore.getState().settings.mode).toBe('search');
     expect(clearSearchResults).not.toHaveBeenCalled();
+  });
+});
+
+describe('Chat sidebar header: profile (BGUI8-FU-4)', () => {
+  it('names the profile link in words and no aria-label that leaves out the avatar it shows (WCAG 2.5.3)', () => {
+    useUserStore.setState({ profile: { fullName: 'Ana Bell', email: 'ana@example.com' } } as never);
+    renderHeader();
+    const link = screen.getByRole('link', { name: 'Open profile' });
+    expect(link.getAttribute('href')).toBe('/workspace/profile/');
+    expect(link.hasAttribute('aria-label')).toBe(false);
   });
 });

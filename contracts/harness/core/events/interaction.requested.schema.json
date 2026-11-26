@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/interaction.requested.schema.json",
+  "title": "InteractionRequestedEvent",
+  "description": "Worker asks for an interaction; Node validates it inside the fenced commit.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "interaction.requested"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/InteractionRequestedData"
+    }
+  },
+  "$defs": {
+    "InteractionRequestedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interactionId",
+        "kind",
+        "bindingDigest"
+      ],
+      "properties": {
+        "interactionId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "kind": {
+          "enum": [
+            "question",
+            "approval",
+            "client_tool",
+            "connect"
+          ],
+          "description": "connect (G-12): the call needs an item the run's owner has not connected (a toolset or an MCP server); the run waits for them to connect it, and the call runs once they have (`approved`) or is refused (`denied`). Its id is `ix.connect.<invocationId>` (loop) or `ix.connect.k<digest>` (engine), and it carries `connect`."
+        },
+        "bindingDigest": {
+          "$ref": "../common.schema.json#/$defs/Digest"
+        },
+        "connect": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "item",
+            "itemKind",
+            "instanceId"
+          ],
+          "description": "What a `connect` interaction waits on (G-12): the item as the person names it, its kind, its instance and, for a sign-in withdrawn during the run, why. Written only with kind connect, and only to a journal whose claim names connect_pauses.",
+          "properties": {
+            "item": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "itemKind": {
+              "enum": [
+                "toolset",
+                "mcp"
+              ]
+            },
+            "instanceId": {
+              "$ref": "../common.schema.json#/$defs/Id"
+            },
+            "reason": {
+              "description": "Why it waits, when the item was connected: `sign_in_rejected`, its vendor rejected the saved sign-in during the run and it was withdrawn (WP-64), so the person reconnects it. Absent: never connected.",
+              "enum": [
+                "sign_in_rejected"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "interaction.requested",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "int_1",
+        "kind": "approval",
+        "bindingDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 8,
+      "runId": "run_1",
+      "type": "interaction.requested",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:01.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "interactionId": "ix.connect.t2.0",
+        "kind": "connect",
+        "bindingDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "connect": {
+          "item": "Jira",
+          "itemKind": "toolset",
+          "instanceId": "inst_jira_1"
+        }
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

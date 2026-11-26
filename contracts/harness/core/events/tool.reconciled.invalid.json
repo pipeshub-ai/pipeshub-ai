@@ -1,0 +1,128 @@
+[
+  {
+    "description": "wrong type for this schema",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "type": "tool.unknown",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-05T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "t1.0",
+        "verdict": "applied",
+        "reason": "found",
+        "lookups": 1,
+        "source": "reconciler"
+      },
+      "attemptId": "att_2",
+      "fence": 4
+    }
+  },
+  {
+    "description": "writer allowlist: only worker writes tool.reconciled",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "type": "tool.reconciled",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-05T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "t1.0",
+        "verdict": "applied",
+        "reason": "found",
+        "lookups": 1,
+        "source": "reconciler"
+      },
+      "attemptId": "att_2",
+      "fence": 4
+    }
+  },
+  {
+    "description": "verdict outside the three answers",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "type": "tool.reconciled",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-05T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "t1.0",
+        "verdict": "probably",
+        "reason": "found",
+        "lookups": 1,
+        "source": "reconciler"
+      },
+      "attemptId": "att_2",
+      "fence": 4
+    }
+  },
+  {
+    "description": "unknown data field",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "type": "tool.reconciled",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-05T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "t1.0",
+        "verdict": "applied",
+        "reason": "found",
+        "lookups": 1,
+        "source": "reconciler",
+        "evidence": "issue PROJ-1"
+      },
+      "attemptId": "att_2",
+      "fence": 4
+    }
+  },
+  {
+    "description": "negative lookups",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 9,
+      "runId": "run_1",
+      "type": "tool.reconciled",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-05T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "t1.0",
+        "verdict": "applied",
+        "reason": "found",
+        "lookups": -1,
+        "source": "reconciler"
+      },
+      "attemptId": "att_2",
+      "fence": 4
+    }
+  }
+]

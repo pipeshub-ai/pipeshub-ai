@@ -1,0 +1,25 @@
+# Report cases the parity and replay tests drive: a written answer over the knowledge fixture, cited.
+cases:
+  - id: rp-01-travel-policy
+    knowledge: true
+    task: What is our current travel policy for flights and hotels? Cite your sources.
+    citations: {supporting: [pol-travel-2025, pol-travel-2023], required: [pol-travel-2025]}
+    facts: ["6 hour|6+ hour", "$220|220"]
+    rubric: 'Required: economy for flights under 6 hours and premium economy at 6 hours or more; hotel caps of $220 in tier-1 cities and $160 elsewhere; from the 2025 policy, without presenting the superseded 2023 rules as current.'
+    reference:
+      searches: [travel policy flights hotels]
+      answer:
+        - {text: "Flights under 6 hours are economy; premium economy is allowed at 6 hours or more.", cite: [pol-travel-2025]}
+        - {text: "Hotels are capped at $220 a night in tier-1 cities and $160 elsewhere.", cite: [pol-travel-2025]}
+
+  - id: rp-03-globex-status
+    knowledge: true
+    task: Give me a status report on the Globex account, including any open escalation. Cite sources.
+    citations: {supporting: [cust-globex, tkt-nw-114], required: [cust-globex, tkt-nw-114]}
+    facts: ["180 ms|180ms", "100 ms|100ms"]
+    rubric: 'Required: ARR $640k, 60 Vision Kits, renewal on 15 December 2025, and the open escalation NW-114: Vision Kit latency of 180 ms against a 100 ms SLA. Not required, but must match the documents if stated: NW-114''s priority (P1) and owner (Arjun Mehta).'
+    reference:
+      searches: [Globex account renewal, NW-114 Vision Kit latency]
+      answer:
+        - {text: "Globex is a $640k ARR account using 60 Vision Kits, renewing on 15 December 2025.", cite: [cust-globex]}
+        - {text: "Escalation NW-114 (P1, Arjun Mehta) is open: latency is 180 ms against a 100 ms SLA.", cite: [tkt-nw-114]}

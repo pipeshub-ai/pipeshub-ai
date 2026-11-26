@@ -3,16 +3,19 @@
 import { asRecord } from '@/lib/utils/safe';
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Badge, Box, Button, Flex, Select, Switch, Tabs, Text, TextArea, TextField } from '@radix-ui/themes';
+import { Badge, Box, Button, Flex, Select, Switch, Tabs, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import {
-  WorkspaceRightPanel,
-  FormField,
-  TagInput,
   ConfirmationDialog,
   DestructiveTypedConfirmationDialog,
+  FormField,
+  FormFieldSelectTrigger,
+  FormFieldTextArea,
+  FormFieldTextField,
   SettingsRow,
+  TagInput,
+  WorkspaceRightPanel,
 } from '../../../components';
 import type { TagItem } from '../../../components';
 import { useWorkspaceDrawerNestedModalHost } from '../../../components/workspace-right-panel';
@@ -20,9 +23,20 @@ import { toast } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { useSkillsStore } from '../store';
 import { SkillsApi, isSkillConflictError } from '../api';
-import type { EditorTab, Skill, SkillStatus, SkillUsage, SkillVersionSummary, SkillWritePayload } from '../types';
+import type {
+  CommandShare,
+  CommandShareTargets,
+  EditorTab,
+  Skill,
+  SkillStatus,
+  SkillUsage,
+  SkillVersionSummary,
+  SkillWritePayload,
+} from '../types';
 import { canToggleSkillAvailability } from '../skill-availability';
 import { MarkdownEditor } from './markdown-editor';
+import { SkillCommandTab, commandProblem } from './skill-command-tab';
+import { useCommandCatalog } from '@/chat/commands';
 
 const EMPTY_SKILL: Skill = {
   name: '',
@@ -45,9 +59,24 @@ const EMPTY_SKILL: Skill = {
   updatedAt: null,
   packName: null,
   packVersion: null,
+  invocation: { user: false, model: true },
+  arguments: [],
   body: '',
   resources: {},
 };
+
+/** What "Try it" sends: the saved command, so it is offered only while nothing it expands from is edited. */
+const commandSnapshot = (skill: Skill): string =>
+  JSON.stringify([skill.body, skill.invocation, skill.arguments]);
+
+const PERSONAL_SHARE: CommandShare = { scope: 'personal', teamId: null };
+
+const shareOf = (skill: Skill): CommandShare =>
+  skill.scope === 'team' || skill.scope === 'org'
+    ? { scope: skill.scope, teamId: skill.scope === 'team' ? (skill.teamId ?? null) : null }
+    : PERSONAL_SHARE;
+
+const shareValueKey = (share: CommandShare): string => `${share.scope}:${share.teamId ?? ''}`;
 
 const toTagItems = (values: string[]): TagItem[] => values.map((v) => ({ id: v, value: v }));
 const fromTagItems = (items: TagItem[]): string[] => items.map((i) => i.value.trim()).filter(Boolean);
@@ -85,6 +114,10 @@ export function SkillEditorPanel() {
   const [saving, setSaving] = useState(false);
   const [skill, setSkill] = useState<Skill>(EMPTY_SKILL);
   const [name, setName] = useState('');
+  const [savedCommand, setSavedCommand] = useState<string | null>(null);
+  const [share, setShare] = useState<CommandShare>(PERSONAL_SHARE);
+  const [savedShare, setSavedShare] = useState<CommandShare>(PERSONAL_SHARE);
+  const [shareTargets, setShareTargets] = useState<CommandShareTargets | null>(null);
 
   const nestedHost = useWorkspaceDrawerNestedModalHost(editorOpen);
 
@@ -99,6 +132,20 @@ export function SkillEditorPanel() {
 
   useEffect(() => {
     if (!editorOpen) return;
+    let live = true;
+    SkillsApi.getCommandShareTargets()
+      .then((targets) => live && setShareTargets(targets))
+      // Sharing is then not offered; the command still saves as the caller's own.
+      .catch(() => live && setShareTargets(null));
+    return () => {
+      live = false;
+    };
+  }, [editorOpen]);
+
+  useEffect(() => {
+    if (!editorOpen) return;
+    setShare(PERSONAL_SHARE);
+    setSavedShare(PERSONAL_SHARE);
     if (!isEditMode) {
       if (editorPrefill) {
         setName(editorPrefill.prefillName ?? '');
@@ -109,6 +156,7 @@ export function SkillEditorPanel() {
           category: editorPrefill.prefillCategory ?? null,
           subcategory: editorPrefill.prefillSubcategory ?? null,
           tags: editorPrefill.prefillTags ?? [],
+          ...(editorPrefill.prefillCommand ? { invocation: { user: true, model: false } } : {}),
         });
       } else {
         setSkill(EMPTY_SKILL);
@@ -119,8 +167,13 @@ export function SkillEditorPanel() {
     setLoading(true);
     SkillsApi.getSkill(editingSkillName!)
       .then((data) => {
-        setSkill(data);
+        const loaded = { ...EMPTY_SKILL, ...data };
+        setSkill(loaded);
         setName(data.name);
+        setSavedCommand(commandSnapshot(loaded));
+        const loadedShare = shareOf(loaded);
+        setShare(loadedShare);
+        setSavedShare(loadedShare);
       })
       .catch(() => toast.error(t('workspace.skills.toasts.loadError')))
       .finally(() => setLoading(false));
@@ -129,7 +182,11 @@ export function SkillEditorPanel() {
   const isReadOnly = skill.source === 'builtin';
   const isAdmin = useUserStore(selectIsAdmin) === true;
   const showAvailability = isEditMode && canToggleSkillAvailability(skill, isAdmin);
-  const isValid = name.trim().length > 0 && skill.description.trim().length > 0 && skill.body.trim().length > 0;
+  const isValid =
+    name.trim().length > 0 &&
+    skill.description.trim().length > 0 &&
+    skill.body.trim().length > 0 &&
+    commandProblem(skill, name.trim()) === null;
 
   const handleSave = useCallback(async () => {
     if (!isValid || saving || isReadOnly) return;
@@ -148,6 +205,8 @@ export function SkillEditorPanel() {
         related: skill.related,
         requires: skill.requires,
         concepts: skill.concepts,
+        invocation: skill.invocation,
+        arguments: skill.arguments,
       };
       if (isEditMode) {
         await SkillsApi.updateSkill(editingSkillName!, payload, skill.updatedAt);
@@ -159,7 +218,13 @@ export function SkillEditorPanel() {
           await SkillsApi.approveCandidate(editorPrefill.candidateId).catch(() => {});
         }
       }
+      if (skill.invocation.user && shareValueKey(share) !== shareValueKey(savedShare)) {
+        await SkillsApi.publishCommand(name.trim(), share).catch(() => {
+          toast.warning(t('workspace.skills.command.shareError'));
+        });
+      }
       await refreshCatalog();
+      useCommandCatalog.getState().invalidate();
       closeEditor();
     } catch (error) {
       if (isEditMode && isSkillConflictError(error)) {
@@ -185,7 +250,7 @@ export function SkillEditorPanel() {
     } finally {
       setSaving(false);
     }
-  }, [isValid, saving, isReadOnly, isEditMode, name, skill, editingSkillName, editorPrefill, refreshCatalog, closeEditor, t]);
+  }, [isValid, saving, isReadOnly, isEditMode, name, skill, editingSkillName, editorPrefill, share, savedShare, refreshCatalog, closeEditor, t]);
 
   const headerIcon = <MaterialIcon name="psychology" size={20} color="var(--slate-12)" />;
 
@@ -210,13 +275,13 @@ export function SkillEditorPanel() {
     >
       {loading ? (
         <Flex align="center" justify="center" style={{ height: 200 }}>
-          <Text size="2" style={{ color: 'var(--gray-10)' }}>{t('workspace.skills.loading')}</Text>
+          <Text size="2" style={{ color: 'var(--gray-11)' }}>{t('workspace.skills.loading')}</Text>
         </Flex>
       ) : (
         <Flex direction="column" gap="4" style={{ height: '100%', minHeight: 0 }}>
           {isReadOnly && (
             <Flex align="center" gap="2" style={{ padding: 'var(--space-2)', background: 'var(--gray-a2)', borderRadius: 'var(--radius-2)' }}>
-              <MaterialIcon name="info" size={16} color="var(--gray-10)" />
+              <MaterialIcon name="info" size={16} color="var(--gray-11)" />
               <Text size="1" style={{ color: 'var(--gray-11)' }}>{t('workspace.skills.builtinReadOnly')}</Text>
             </Flex>
           )}
@@ -224,7 +289,7 @@ export function SkillEditorPanel() {
           {/* Essential fields - always visible at top */}
           {!isEditMode && (
             <FormField label={t('workspace.skills.form.name')} required>
-              <TextField.Root
+              <FormFieldTextField
                 size="2"
                 placeholder={t('workspace.skills.form.namePlaceholder')}
                 value={name}
@@ -234,7 +299,7 @@ export function SkillEditorPanel() {
           )}
 
           <FormField label={t('workspace.skills.form.description')} required>
-            <TextArea
+            <FormFieldTextArea
               size="2"
               rows={2}
               placeholder={t('workspace.skills.form.descriptionPlaceholder')}
@@ -265,6 +330,7 @@ export function SkillEditorPanel() {
                 {t('workspace.skills.tabs.content')}
                 {!skill.body.trim() && <Text as="span" style={{ color: 'var(--red-a11)', marginLeft: 2 }}>*</Text>}
               </Tabs.Trigger>
+              <Tabs.Trigger value="command">{t('workspace.skills.tabs.command')}</Tabs.Trigger>
               <Tabs.Trigger value="metadata">{t('workspace.skills.tabs.metadata')}</Tabs.Trigger>
               <Tabs.Trigger value="resources" disabled={!isEditMode}>{t('workspace.skills.tabs.resources')}</Tabs.Trigger>
               <Tabs.Trigger value="versions" disabled={!isEditMode}>{t('workspace.skills.tabs.versions')}</Tabs.Trigger>
@@ -275,7 +341,7 @@ export function SkillEditorPanel() {
               style={{ ...CONTENT_TAB_STYLE, display: editorTab === 'content' ? 'flex' : 'none' }}
             >
               <Flex direction="column" gap="1" style={{ flex: 1, minHeight: 0 }}>
-                <Text size="1" style={{ color: 'var(--gray-9)', marginBottom: 4, flexShrink: 0 }}>
+                <Text size="1" style={{ color: 'var(--gray-11)', marginBottom: 4, flexShrink: 0 }}>
                   {t('workspace.skills.editorPanel.bodyHint')}
                 </Text>
                 <MarkdownEditor
@@ -286,6 +352,21 @@ export function SkillEditorPanel() {
                   minHeight={220}
                 />
               </Flex>
+            </Tabs.Content>
+
+            <Tabs.Content value="command" style={TAB_CONTENT_STYLE}>
+              <SkillCommandTab
+                skill={skill}
+                name={name.trim()}
+                setSkill={setSkill}
+                readOnly={isReadOnly}
+                isCreate={!isEditMode}
+                saved={isEditMode && skill.invocation.user && savedCommand === commandSnapshot(skill)}
+                onTry={closeEditor}
+                share={share}
+                onShareChange={setShare}
+                shareTargets={shareTargets}
+              />
             </Tabs.Content>
 
             <Tabs.Content value="metadata" style={TAB_CONTENT_STYLE}>
@@ -352,7 +433,7 @@ function MetadataTab({
       <Flex gap="3">
         <Box style={{ flex: 1, minWidth: 0 }}>
           <FormField label={t('workspace.skills.form.category')} optional>
-            <TextField.Root
+            <FormFieldTextField
               size="2"
               value={skill.category ?? ''}
               onChange={(e) => setSkill((s) => ({ ...s, category: e.target.value || null }))}
@@ -362,7 +443,7 @@ function MetadataTab({
         </Box>
         <Box style={{ flex: 1, minWidth: 0 }}>
           <FormField label={t('workspace.skills.form.subcategory')} optional>
-            <TextField.Root
+            <FormFieldTextField
               size="2"
               value={skill.subcategory ?? ''}
               onChange={(e) => setSkill((s) => ({ ...s, subcategory: e.target.value || null }))}
@@ -405,7 +486,7 @@ function MetadataTab({
       <Flex gap="3">
         <Box style={{ flex: 1, minWidth: 0 }}>
           <FormField label={t('workspace.skills.form.license')} optional>
-            <TextField.Root
+            <FormFieldTextField
               size="2"
               value={skill.license ?? ''}
               onChange={(e) => setSkill((s) => ({ ...s, license: e.target.value || null }))}
@@ -415,7 +496,7 @@ function MetadataTab({
         </Box>
         <Box style={{ flex: 1, minWidth: 0 }}>
           <FormField label={t('workspace.skills.form.compatibility')} optional>
-            <TextField.Root
+            <FormFieldTextField
               size="2"
               value={skill.compatibility ?? ''}
               onChange={(e) => setSkill((s) => ({ ...s, compatibility: e.target.value || null }))}
@@ -428,9 +509,9 @@ function MetadataTab({
       {skill.status === 'deprecated' && (
         <Flex align="center" gap="2">
           <Badge color="gray">{t('workspace.skills.status.deprecated')}</Badge>
-          {skill.deprecatedReason && <Text size="1" style={{ color: 'var(--gray-10)' }}>{skill.deprecatedReason}</Text>}
+          {skill.deprecatedReason && <Text size="1" style={{ color: 'var(--gray-11)' }}>{skill.deprecatedReason}</Text>}
           {skill.replacedBy && (
-            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {t('workspace.skills.form.replacedBy_withName', { name: skill.replacedBy })}
             </Text>
           )}
@@ -600,11 +681,11 @@ function DangerZone({
         message={
           <Flex direction="column" gap="3">
             <FormField label={t('workspace.skills.form.deprecateReason')} required>
-              <TextArea size="2" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
+              <FormFieldTextArea size="2" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
             </FormField>
             <FormField label={t('workspace.skills.form.replacedBy')} optional>
               <Select.Root value={replacedBy || '__none__'} onValueChange={(v) => setReplacedBy(v === '__none__' ? '' : v)}>
-                <Select.Trigger style={{ width: '100%' }} />
+                <FormFieldSelectTrigger style={{ width: '100%' }} />
                 <Select.Content>
                   <Select.Item value="__none__">{t('workspace.skills.form.noReplacement')}</Select.Item>
                   {otherSkills.map((s) => (
@@ -716,17 +797,17 @@ function ResourcesTab({
   return (
     <Flex direction="column" gap="3">
       {allPaths.length === 0 ? (
-        <Text size="2" style={{ color: 'var(--gray-10)' }}>{t('workspace.skills.resources.empty')}</Text>
+        <Text size="2" style={{ color: 'var(--gray-11)' }}>{t('workspace.skills.resources.empty')}</Text>
       ) : (
         <Flex direction="column" gap="1">
           {allPaths.map((path) => (
             <Flex key={path} align="center" justify="between" style={{ padding: '6px 10px', border: '1px solid var(--olive-3)', borderRadius: 'var(--radius-2)' }}>
               <Flex align="center" gap="2">
-                <MaterialIcon name="description" size={14} color="var(--gray-9)" />
+                <MaterialIcon name="description" size={14} color="var(--gray-11)" />
                 <Text size="1" style={{ color: 'var(--slate-12)', fontFamily: 'monospace' }}>{path}</Text>
               </Flex>
               {!readOnly && (
-                <Button variant="ghost" color="red" size="1" onClick={() => handleRemove(path)} disabled={busy} style={{ cursor: 'pointer' }}>
+                <Button aria-label={t('action.remove')} variant="ghost" color="red" size="1" onClick={() => handleRemove(path)} disabled={busy} style={{ cursor: 'pointer' }}>
                   <MaterialIcon name="close" size={14} color="var(--red-a11)" />
                 </Button>
               )}
@@ -739,10 +820,10 @@ function ResourcesTab({
         <Flex direction="column" gap="2" style={{ marginTop: 8, paddingTop: 12, borderTop: '1px solid var(--olive-3)' }}>
           <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>{t('workspace.skills.resources.addNew')}</Text>
           <FormField label={t('workspace.skills.resources.path')}>
-            <TextField.Root size="2" placeholder="references/notes.md" value={newPath} onChange={(e) => setNewPath(e.target.value)} />
+            <FormFieldTextField size="2" placeholder="references/notes.md" value={newPath} onChange={(e) => setNewPath(e.target.value)} />
           </FormField>
           <FormField label={t('workspace.skills.resources.content')}>
-            <TextArea size="2" rows={4} value={newContent} onChange={(e) => setNewContent(e.target.value)} />
+            <FormFieldTextArea size="2" rows={4} value={newContent} onChange={(e) => setNewContent(e.target.value)} />
           </FormField>
           <LoadingButton variant="solid" size="2" onClick={handleAdd} disabled={!newPath.trim()} loading={busy} style={{ alignSelf: 'flex-start' }}>
             {t('workspace.skills.resources.addNew')}
@@ -797,11 +878,11 @@ function VersionsTab({
   }, [rollbackTarget, busy, skillName, onRolledBack, t]);
 
   if (loading) {
-    return <Text size="2" style={{ color: 'var(--gray-10)' }}>{t('workspace.skills.loading')}</Text>;
+    return <Text size="2" style={{ color: 'var(--gray-11)' }}>{t('workspace.skills.loading')}</Text>;
   }
 
   if (versions.length === 0) {
-    return <Text size="2" style={{ color: 'var(--gray-10)' }}>{t('workspace.skills.versions.empty')}</Text>;
+    return <Text size="2" style={{ color: 'var(--gray-11)' }}>{t('workspace.skills.versions.empty')}</Text>;
   }
 
   return (
@@ -817,14 +898,14 @@ function VersionsTab({
           <Flex direction="column" gap="0">
             <Flex align="center" gap="2">
               <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>v{v.version}</Text>
-              {idx === 0 && <Badge color="green" size="1">{t('workspace.skills.versions.current')}</Badge>}
+              {(v.current ?? idx === 0) && <Badge color="green" size="1">{t('workspace.skills.versions.current')}</Badge>}
             </Flex>
-            {v.summary && <Text size="1" style={{ color: 'var(--gray-10)' }}>{v.summary}</Text>}
-            <Text size="1" style={{ color: 'var(--gray-9)' }}>
-              {v.updatedBy ? t('workspace.skills.versions.updatedBy', { who: v.updatedBy }) : ''}
+            {v.summary && <Text size="1" style={{ color: 'var(--gray-11)' }}>{v.summary}</Text>}
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
+              {v.updatedByName ? t('workspace.skills.versions.updatedBy', { who: v.updatedByName }) : ''}
             </Text>
           </Flex>
-          {idx !== 0 && (
+          {!(v.current ?? idx === 0) && (
             <Button variant="outline" color="gray" size="1" onClick={() => setRollbackTarget(v.version)} style={{ cursor: 'pointer' }}>
               {t('workspace.skills.versions.rollback')}
             </Button>

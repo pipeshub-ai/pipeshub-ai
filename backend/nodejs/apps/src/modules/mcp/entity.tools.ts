@@ -113,6 +113,7 @@ const PERSON_ROLES = [
   'author',
   'owner',
   'editor',
+  'shared_with',
   'reviewer',
   'recipient',
   'lead',

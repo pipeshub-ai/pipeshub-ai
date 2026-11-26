@@ -121,6 +121,32 @@ async def test_indexing_reads_the_parse_admission_numbers_an_admin_saved_in_eith
         await admin.close()
 
 
+async def test_query_claims_resolves_takes_over_and_releases_a_sandbox_alert_cooldown_in_either_mode(runtime, monkeypatch, uid) -> None:
+    """The code sandbox's load alert cooldown, driven the way query's alert loop does (``query_main`` starts it): ``AlertCooldown`` on
+    the query login creates the claim if absent with a TTL, reads it, marks it resolved, takes the resolved claim over (delete, then
+    create), puts the resolved value back on release and finally deletes it. Refused, the first create raises and no alert is sent."""
+    from app.services.sandbox_alerts.cooldown import STATE_RESOLVED, AlertCooldown
+
+    svc = _config_as(runtime, monkeypatch, "query")
+    c = AlertCooldown(svc, f"it{uid}", 3600, host="h")
+    try:
+        first = await c.claim_alert("warning", "a1")
+        assert first is not None and first.email
+        assert await c.claim("warning", "a2") is False
+        current = await c.read("warning")
+        assert current is not None and current["alertId"] == "a1"
+        assert await c.mark_resolved("warning", current)
+        taken = await c.claim_alert("warning", "a2")
+        assert taken is not None and taken.previous is not None and taken.previous["state"] == STATE_RESOLVED
+        assert await c.release_if_ours("warning", "a2", taken.previous)
+        assert (await c.read("warning") or {}).get("state") == STATE_RESOLVED
+        assert await c.release_if_ours("warning", "a1")
+        assert await c.read("warning") is None
+    finally:
+        await svc.delete_config(c.key("warning"))
+        await svc.close()
+
+
 async def test_the_kv_role_holds_nothing_else(runtime) -> None:
     db = await runtime.db()
     async with db.runtime_uow() as tx:

@@ -21,7 +21,7 @@ export function PanelSection({ title, description, aside, children }: PanelSecti
             {title}
           </Text>
           {description ? (
-            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+            <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
               {description}
             </Text>
           ) : null}

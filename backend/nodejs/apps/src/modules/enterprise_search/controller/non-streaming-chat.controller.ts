@@ -1,3 +1,5 @@
+import type { TurnLabel } from '../../agent-harness/domain/turn-labels';
+import { resolvedProxyHeaders } from '../../agent-harness/transport/resolved-turn-header';
 import { NextFunction, Response } from 'express';
 import type {
   ChatSessionDto,
@@ -126,6 +128,7 @@ const nonStreamingTurn =
 
       let conversation: ChatSessionDto;
       let previousConversations: unknown[];
+      let previousLabel: TurnLabel | undefined;
       let access: Readable | undefined;
       let project: ProjectDto | undefined;
       if (mode === 'create') {
@@ -166,6 +169,7 @@ const nonStreamingTurn =
         );
         conversation = continued.conversation;
         previousConversations = continued.previousConversations;
+        previousLabel = continued.historyLabel;
         access = continued.access;
         project = await loadProjectForSession(
           conversation.orgId,
@@ -191,10 +195,16 @@ const nonStreamingTurn =
         request: buildAiChatRequest(target, body, {
           conversationId,
           previousConversations,
+          ...(previousLabel !== undefined
+            ? { historyLabel: previousLabel }
+            : {}),
           isNewConversation: mode === 'create',
           project,
         }),
-        headers: req.headers as Record<string, string>,
+        headers: await resolvedProxyHeaders(req, {
+          agentKey: target.kind === 'agent' ? target.agentKey : null,
+          conversationId,
+        }),
         modelInfo: extractModelInfo(body),
         requestId,
       });

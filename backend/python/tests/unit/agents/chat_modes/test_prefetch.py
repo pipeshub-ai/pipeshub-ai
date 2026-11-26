@@ -97,7 +97,8 @@ class TestRetrievalFailureModes:
         assert isinstance(result, PrefetchResult)
         assert result.is_empty is True
         assert result.final_results == []
-        assert "qdrant unavailable" in (result.error_message or "")
+        # The client's retrieval frame carries only why: a search error can quote the query.
+        assert result.error_message == "internal (RuntimeError)"
 
     async def test_a_search_that_raises_is_one_line_without_the_query(self, caplog: pytest.LogCaptureFixture) -> None:
         import logging
@@ -191,7 +192,7 @@ class TestSuccessfulPrefetch:
 
 
 class TestPrefetchImageCollection:
-    """`bridge.py` merges `PrefetchResult.collected_images` into
+    """`chat_modes/setup.py` merges `PrefetchResult.collected_images` into
     `context.attachment_image_blocks` so `shape_image_injection` can
     deliver them -- prefetch itself only needs to plumb `collected_images`/
     `image_budget` through to `build_message_content_array` correctly."""
@@ -225,7 +226,7 @@ class TestPrefetchImageCollection:
         }]
 
     async def test_shared_image_budget_is_forwarded_to_formatter(self) -> None:
-        """A shared `ImageBudget` passed in by the caller (`bridge.py`'s
+        """A shared `ImageBudget` passed in by the caller (`chat_modes/setup.py`'s
         per-request budget) must reach `build_message_content_array`
         unchanged -- not a fresh per-call budget -- so the 50-image cap is
         enforced across search/fetch/prefetch/attachments together."""

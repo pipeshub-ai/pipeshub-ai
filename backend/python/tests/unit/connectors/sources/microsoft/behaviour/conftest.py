@@ -1,5 +1,8 @@
 """Fixtures for the Microsoft 365 connector behaviour tests (fakes live in ms_graph_fakes)."""
 
+import asyncio
+import types
+
 import aiohttp
 import httpx
 import pytest
@@ -30,7 +33,12 @@ def backoff_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     async def _sleep(delay: float, *_: object, **__: object) -> None:
         slept.append(delay)
 
-    monkeypatch.setattr("kiota_http.middleware.retry_handler.asyncio.sleep", _sleep)
+    # The retry handler's own `asyncio` only: patching `asyncio.sleep` itself also made the connector's resilience
+    # gate (it waits a throttle's pause out on the loop clock) spin, as an instant sleep never moves that clock.
+    retry_asyncio = types.SimpleNamespace(**{**vars(asyncio), "sleep": _sleep})
+    monkeypatch.setattr("kiota_http.middleware.retry_handler.asyncio", retry_asyncio)
+    # The gate's pause is the same wait the retry handler records; here the connector's other callers are none.
+    monkeypatch.setattr("app.sources.client.resilience.ResiliencePolicy.pause", lambda *_, **__: None)
     return slept
 
 

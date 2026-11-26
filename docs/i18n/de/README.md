@@ -57,6 +57,35 @@
 
 PipesHub baut eine **einheitliche Kontextschicht** über Dokumente, Unterhaltungen, strukturierte Daten, Wikis, Tickets und Code. Konnektoren synchronisieren jede Quelle samt ihren Berechtigungen. Die Indexierungspipeline parst, zerlegt und embeddet die Inhalte und verknüpft Datensätze, Personen und Entitäten in einem Knowledge Graph.
 
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
 Fragen beantwortet eine **Agent-Schleife** statt eines einzelnen Retrieve-then-Generate-Durchlaufs. Der Agent plant, ruft Tools auf, liest die Ergebnisse und macht weiter, bis die Belege vorliegen:
 
 - **Hybride Suche** — semantisches und Keyword-Retrieval, damit sowohl Bedeutung als auch exakte Begriffe gefunden werden.
@@ -66,6 +95,14 @@ Fragen beantwortet eine **Agent-Schleife** statt eines einzelnen Retrieve-then-G
 
 Jeder Tool-Aufruf wird nach den Berechtigungen der fragenden Person gefiltert, und jede Antwort zitiert die Blöcke, aus denen sie stammt.
 
+
+| | Top-k-Chunk-RAG | PipesHub |
+| --- | --- | --- |
+| **Was der Agent zuerst sieht** | Ein paar Text-Chunks | Name, Ort, Metadaten und Zusammenfassung jedes Datensatzes, dazu die passenden Blöcke |
+| **Wie er tiefer gräbt** | Gar nicht: ein Retrieval pro Frage | Hybride Suche, `grep`/`find` über Datensätze, Ordnernavigation und Knowledge-Graph-Abfragen, in einer Schleife |
+| **Struktur** | Geht beim Chunking verloren | Jede Quelle wird zu Blocks: Abschnitte, Tabellen mit Zeilen und Zellen, Threads, Code, SQL-Tabellen samt Schema |
+| **Berechtigungen** | Oft beim Indexieren nur angenähert | Bei jedem Tool-Aufruf gegen die Berechtigungen des Quellsystems für den anfragenden Nutzer geprüft |
+| **Zitate** | Pro Chunk, falls überhaupt | Pro Block: Seite, Tabellenzelle, Zeile, Folie oder Codezeile; erfundene Zitate werden entfernt |
 
 ## Funktionen
 

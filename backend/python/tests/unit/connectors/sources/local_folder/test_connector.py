@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import types
@@ -17,6 +18,7 @@ from app.models.entities import CodeFileRecord, FileRecord, RecordType
 from app.models.permission import PermissionType
 from tests.unit.connectors.sources.local_folder.harness import (
     FilterCollection,
+    full_sync_unlinks,
     make_connector,
     mod,
 )
@@ -308,6 +310,114 @@ async def test_a_sync_whose_walk_could_not_read_a_folder_fails_and_keeps_every_r
     with patch.object(os, "scandir", scandir), pytest.raises(scan.WalkFailed):
         await env.c.run_sync()
     assert "locked/b.py" in env.graph.records and env.graph.deleted == []  # unreadable is not "deleted"
+
+
+async def test_a_full_sync_keeps_the_links_of_files_it_could_not_read_and_unlinks_only_what_is_gone(env):
+    put(env.root, "a.py")
+    put(env.root, "locked/b.py")
+    put(env.root, "c.py")
+    put(env.root, "gone.py")
+    await env.c.run_sync()
+    assert set(env.graph.records) == {"a.py", "locked", "locked/b.py", "c.py", "gone.py"}
+    (env.root / "gone.py").unlink()
+    real_open, real_hash = scan.safe_open, scan.sha256_fd
+    opened: dict[int, str] = {}
+
+    def flaky_open(root, rel, max_links=1):
+        if rel == "locked/b.py":
+            raise scan.PathRefused("cannot open: Permission denied")
+        fd = real_open(root, rel, max_links)
+        opened[fd] = rel
+        return fd
+
+    def flaky_hash(fd):
+        if opened.get(fd) == "c.py":
+            os.close(fd)
+            raise OSError(errno.EIO, "Input/output error")
+        return real_hash(fd)
+
+    with patch.object(scan, "safe_open", flaky_open), patch.object(scan, "sha256_fd", flaky_hash):
+        unlinked = await full_sync_unlinks(env.c, env.graph)
+    on_disk = {"locked", "locked/b.py", "c.py"}
+    assert "gone.py" in env.graph.deleted and "gone.py" not in env.graph.records
+    assert unlinked & on_disk == set()  # still on disk: unreadable this run is not gone
+
+
+def refusing(*rels):
+    """``scan.safe_open`` that refuses ``rels`` as a file the process may not read."""
+    real = scan.safe_open
+
+    def open_(root, rel, max_links=1):
+        if rel in rels:
+            raise scan.PathRefused("cannot open: Permission denied")
+        return real(root, rel, max_links)
+
+    return patch.object(scan, "safe_open", open_)
+
+
+def ids_of(graph, *rels):
+    return {graph.records[r].id for r in rels}
+
+
+async def test_a_full_sync_keeps_every_stored_folder_above_an_unreadable_file(env):
+    for rel in ("a/x.py", "a/b/c/deep.py", "a/b/c/other.py"):
+        put(env.root, rel)
+    await env.c.run_sync()
+    assert {"a", "a/b", "a/b/c"} <= set(env.graph.records)
+    with refusing("a/b/c/deep.py", "a/b/c/other.py"):
+        unlinked = await full_sync_unlinks(env.c, env.graph)
+    assert unlinked == set() and env.graph.deleted == []
+    assert "a" in env.graph.new_calls[-2]  # the ancestor of a live file is written
+    assert set(env.graph.kept) >= ids_of(env.graph, "a/b", "a/b/c", "a/b/c/deep.py", "a/b/c/other.py")
+    assert len(env.graph.kept) == len(set(env.graph.kept))
+
+
+async def test_an_unreadable_file_that_was_never_stored_notes_nothing(env):
+    put(env.root, "a.py")
+    await env.c.run_sync()
+    put(env.root, "new.py")
+    with refusing("new.py"):
+        unlinked = await full_sync_unlinks(env.c, env.graph)
+    assert env.graph.kept == [] and env.c.full_sync_coverage().complete
+    assert unlinked == set() and "new.py" not in env.graph.records
+
+
+async def test_a_full_sync_that_cannot_list_stored_records_and_could_not_read_a_file_unlinks_nothing(env):
+    put(env.root, "a.py")
+    put(env.root, "locked/b.py")
+    await env.c.run_sync()
+    env.graph.get_records_by_status = AsyncMock(side_effect=RuntimeError("store down"))
+    with refusing("locked/b.py"):
+        unlinked = await full_sync_unlinks(env.c, env.graph)
+    assert not env.c.full_sync_coverage().complete and unlinked == set()
+    await full_sync_unlinks(env.c, env.graph)
+    assert env.c.full_sync_coverage().complete  # every file read: nothing was held back
+
+
+async def test_a_full_sync_with_every_file_readable_notes_nothing_kept_and_is_complete(env):
+    put(env.root, "a.py")
+    put(env.root, "d/e.py")
+    await env.c.run_sync()
+    (env.root / "a.py").unlink()
+    unlinked = await full_sync_unlinks(env.c, env.graph)
+    assert env.graph.kept == [] and env.c.full_sync_coverage().complete
+    assert "a.py" in env.graph.deleted and {"d", "d/e.py"} <= set(env.graph.new_calls[-1] + env.graph.new_calls[-2])
+    assert unlinked == set()
+
+
+async def test_a_full_sync_still_unlinks_a_folder_emptied_on_disk_next_to_an_unreadable_file(env):
+    for rel in ("keep/locked.py", "old/x.py", "old2.py"):
+        put(env.root, rel)
+    await env.c.run_sync()
+    gone = ids_of(env.graph, "old", "old/x.py", "old2.py")
+    held = ids_of(env.graph, "keep", "keep/locked.py")
+    (env.root / "old" / "x.py").unlink()
+    (env.root / "old").rmdir()
+    (env.root / "old2.py").unlink()
+    with refusing("keep/locked.py"):
+        unlinked = await full_sync_unlinks(env.c, env.graph)
+    assert unlinked == set() and set(env.graph.deleted) == {"old", "old/x.py", "old2.py"}
+    assert sorted(env.graph.kept) == sorted(held) and not gone & set(env.graph.kept)
 
 
 def test_loading_the_harness_leaves_the_real_application_container_in_place():
