@@ -338,6 +338,7 @@ async def test_the_root_read_from_the_marks_and_the_rows_lists_what_the_walk_lis
     assert {u: await _roots(p, org, u) for u in VIEWERS} == marked
 
 
+@pytest.mark.pg_table_lock           # clears kg's statistics, which every other test's plans read: runs alone
 async def test_the_roots_chain_top_reads_are_seeks_with_no_statistics_and_analysed(pg_provider, pg_db, no_stats) -> None:  # noqa: F811 (the fixture)
     """EXPLAIN gate, as the first drain's (test_kg_first_drain): on its world (5,000 files, each held alone by u2), kg's statistics cleared and then analysed, the root's read of the
     rows behind the grants whose node_parent is not set (``ROOT_CHAIN``, under reader.seeks as the browse runs it) reads kg.records and kg.links only by their key's index, bounded
