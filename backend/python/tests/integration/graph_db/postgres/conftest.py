@@ -31,6 +31,13 @@ def _no_background_sample(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 TABLE_LOCK_KEY = 0x6B675F7461626C65       # the advisory lock that runs a ``pg_table_lock`` test alone
+ALONE_TIMEOUT_S = 3600 + 600               # a marked test first waits for those running in other workers: the folder's longest timeout, then its own run
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        if item.get_closest_marker("pg_table_lock"):
+            item.add_marker(pytest.mark.timeout(ALONE_TIMEOUT_S), append=False)
 
 
 @pytest.fixture(autouse=True)

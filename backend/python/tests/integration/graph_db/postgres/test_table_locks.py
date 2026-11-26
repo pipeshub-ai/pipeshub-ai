@@ -10,7 +10,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 
-from .conftest import TABLE_LOCK_KEY
+from .conftest import ALONE_TIMEOUT_S, TABLE_LOCK_KEY
 
 pytestmark = pytest.mark.integration
 # statements whose lock blocks every reader or writer of the table, in every org
@@ -46,5 +46,6 @@ async def test_a_test_holds_the_folder_lock_shared(pg_required: None) -> None:
 
 
 @pytest.mark.pg_table_lock
-async def test_a_table_lock_test_holds_the_folder_lock_alone(pg_required: None) -> None:
+async def test_a_table_lock_test_holds_the_folder_lock_alone(pg_required: None, request: pytest.FixtureRequest) -> None:
     assert not await _other_may_take(shared=True)            # every other test waits for this one
+    assert request.node.get_closest_marker("timeout").args == (ALONE_TIMEOUT_S,)     # and its timeout leaves time to wait for those running
