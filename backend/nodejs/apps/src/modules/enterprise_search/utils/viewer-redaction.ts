@@ -220,7 +220,16 @@ interface PartEntry {
   type?: string;
   isFinal?: boolean;
   notFound?: unknown;
+  runId?: string;
+  parentRunId?: string;
+  parts?: unknown[];
 }
+/**
+ * A background job's card: a durable child run, named by its parent. A viewer
+ * sees its card and status, as the live stream names it, never its steps.
+ */
+const isJobCard = (part: PartEntry | null): boolean =>
+  part?.type === 'sub_agent' && !!part.runId && part.parentRunId !== undefined;
 export interface ViewerMessage {
   _id?: unknown;
   messageType?: string;
@@ -622,11 +631,17 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
       if (m.messageType === 'tool_call') view.content = '';
       if (m.parts)
         view.parts = m.parts
-          .filter((part) => part?.type === 'text' && part.isFinal === true)
+          .filter(
+            (part) =>
+              (part?.type === 'text' && part.isFinal === true) ||
+              isJobCard(part),
+          )
           .map((part) =>
-            part && 'notFound' in part
-              ? { ...part, notFound: sharedNotFound(part.notFound) }
-              : part,
+            isJobCard(part)
+              ? { ...part, parts: [] }
+              : part && 'notFound' in part
+                ? { ...part, notFound: sharedNotFound(part.notFound) }
+                : part,
           );
       if (m.notFound !== undefined) view.notFound = sharedNotFound(m.notFound);
     }

@@ -1204,6 +1204,19 @@ describe("a viewer never sees another person's reasoning or tool steps", () => {
     for (const leaked of HIDDEN) expect(JSON.stringify(message), leaked).to.not.contain(leaked)
   })
 
+  it("keeps a background job's card, without its steps, and drops any other sub-agent", async () => {
+    stubAccess(ALL)
+    const job = { type: 'sub_agent', runId: 'job-1', parentRunId: 'turn-1', goal: 'Summarise the pages', status: 'completed', parts: [{ type: 'tool_call', toolName: 'read', resultPreview: TOOL_TEXT }] }
+    stubConversation([{ ...richAnswer(), parts: [...richAnswer().parts, job] }])
+    const message = await fetchConversation(VIEWER)
+
+    expect(message.parts).to.deep.equal([
+      { type: 'text', content: 'visible answer text', isFinal: true },
+      { ...job, parts: [] },
+    ])
+    for (const leaked of HIDDEN) expect(JSON.stringify(message), leaked).to.not.contain(leaked)
+  })
+
   it("a turn's response to a collaborator reads a message without a sender as the initiator's", async () => {
     stubAccess(ALL)
     const out: any = await redactConversationFor(appConfig, viewerOf(COLLABORATOR, ORG), { initiator: OWNER, messages: [richAnswer()] })
