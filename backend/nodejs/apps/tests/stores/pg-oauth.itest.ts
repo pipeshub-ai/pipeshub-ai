@@ -143,6 +143,8 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       listClientIdsActingAsCreator: 0,
       softDeleteActingAsCreator: 0,
       transferCreatedBy: 0,
+      listClientSecrets: 0,
+      replaceClientSecret: 0,
       disownInstanceApps: 0,
     });
     // the ledger learns hex ids only; a client id is not one, so these calls run in the org that holds the client

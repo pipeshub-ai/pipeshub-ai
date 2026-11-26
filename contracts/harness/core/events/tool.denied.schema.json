@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/tool.denied.schema.json",
+  "title": "ToolDeniedEvent",
+  "description": "Policy denied the call; a typed result the model can route around.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "tool.denied"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/ToolDeniedData"
+    }
+  },
+  "$defs": {
+    "ToolDeniedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invocationId",
+        "rule"
+      ],
+      "properties": {
+        "invocationId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "rule": {
+          "$ref": "../common.schema.json#/$defs/Name"
+        },
+        "toolId": {
+          "description": "The refused tool, when the refusal is a run gate's own decision about its own tool (G-04: a declined plan, harness@gate/submit_plan), so every executor's fold knows the plan was declined. Absent otherwise: the call's tool is in its model response or its intent.",
+          "$ref": "../common.schema.json#/$defs/ToolId"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.denied",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_1",
+        "rule": "external_sink_unattended"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "tool.denied",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "invocationId": "inv_9",
+        "rule": "interaction_denied",
+        "toolId": "harness@gate/submit_plan"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

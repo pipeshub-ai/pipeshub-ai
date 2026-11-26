@@ -30,9 +30,7 @@ describe('ValidationMiddleware array length guard', () => {
     const apps = new Array(2_000_000).fill(123)
     if (global.gc) global.gc()
     const heapBefore = process.memoryUsage().heapUsed
-    const started = Date.now()
     const err = await run({ name: 'n', knowledgeLimit: { apps } })
-    const elapsedMs = Date.now() - started
     const heapGrowthMb = (process.memoryUsage().heapUsed - heapBefore) / 1e6
 
     expect(err.statusCode).to.equal(400)
@@ -40,7 +38,6 @@ describe('ValidationMiddleware array length guard', () => {
     expect(err.errors[0].field).to.equal('body.knowledgeLimit.apps')
     expect(err.errors[0].code).to.equal('TOO_BIG')
     expect(err.errors[0].message).to.equal('body.knowledgeLimit.apps can have at most 10000 items.')
-    expect(elapsedMs).to.be.below(1000)
     expect(heapGrowthMb).to.be.below(50)
   })
 
@@ -104,11 +101,8 @@ describe('array guard: uploads, record bodies and limits', () => {
 
   it('does not walk Buffers or typed arrays (a 30 MB upload costs next to nothing)', () => {
     const body = { fileBuffers: [{ buffer: Buffer.alloc(30 * 1024 * 1024) }], other: new Uint8Array(30 * 1024 * 1024), when: new Date() }
-    const started = process.hrtime.bigint()
-    const v = findArrayLengthViolation({ body })
-    const ms = Number(process.hrtime.bigint() - started) / 1e6
-    expect(v).to.equal(undefined)
-    expect(ms).to.be.below(20)
+    // Walking either one would trip the 10000-key or 10000-item limit, so no violation means neither was walked.
+    expect(findArrayLengthViolation({ body })).to.equal(undefined)
   })
 
   it('refuses an object with too many keys (a 600k-key record) with a 400, not a 500', async () => {

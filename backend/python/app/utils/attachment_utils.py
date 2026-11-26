@@ -19,7 +19,7 @@ from app.utils.image_admission import (
     ImageOrigin,
     admission_from_state,
 )
-from app.utils.record_access import caller_can_read_virtual_record
+from app.utils.record_access import attachment_reader_id, caller_can_read_virtual_record
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -572,7 +572,7 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
             out_records=attachment_records,
             image_budget=image_budget,
             image_admission=admission_from_state(state),
-            user_id=state.get("user_id") or "",
+            user_id=attachment_reader_id(state.get("user_id") or "", state.get("user_info")) or "",
             graph_provider=state.get("graph_provider"),
             is_service_account=bool(state.get("is_service_account")),
         )

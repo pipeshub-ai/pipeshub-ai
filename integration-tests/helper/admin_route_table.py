@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from helper import suite_extensions
+from helper.admin_route_conditional_table import HARNESS_OFF
 
 # A well-formed Mongo ObjectId that no document has.
 ABSENT_ID = "65f0c0ffee00000000000000"
@@ -75,6 +76,8 @@ def _no_admin(method: str, path: str, why: str, **kw: Any) -> AdminRoute:
 
 
 _CM = "/api/v1/configurationManager"
+_HARNESS = "/api/v1/agent-harness"
+_HARNESS_ADMIN = f"{_HARNESS}/admin"
 
 NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     # orgAuthConfig.routes.ts (router-level userAdminCheck)
@@ -156,6 +159,8 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("GET", f"{_CM}/metricsCollection"),
     AdminRoute("PATCH", f"{_CM}/metricsCollection/pushInterval", admin="invalid"),
     AdminRoute("PATCH", f"{_CM}/metricsCollection/serverUrl", admin="invalid"),
+    # agent_activity/agent-activity.routes.ts
+    AdminRoute("GET", "/api/v1/agent-activity"),
     # crawling_manager/routes/cm_routes.ts
     AdminRoute("GET", "/api/v1/crawlingManager/schedule/all"),
     _no_admin("DELETE", "/api/v1/crawlingManager/schedule/all",
@@ -210,11 +215,20 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     # user_management/routes/users.routes.ts
     AdminRoute("GET", "/api/v1/users/:id/email"),
     AdminRoute("PUT", "/api/v1/users/:id/unblock"),
+    AdminRoute("PUT", "/api/v1/users/:id/deactivate"),
+    AdminRoute("PUT", "/api/v1/users/:id/reactivate"),
     _no_admin("POST", "/api/v1/users",
               "creates a user; every member in these suites is created through it as the admin",
               member_body={"fullName": "IT Admin Probe", "email": "it-admin-probe@test-pipeshub.com"}),
     AdminRoute("DELETE", "/api/v1/users/:id"),
     AdminRoute("GET", "/api/v1/users/:id/adminCheck"),
+    # configuration_manager/routes/cm_routes.ts (Slack identity links)
+    AdminRoute("GET", f"{_CM}/slack-bot/identity-links"),
+    AdminRoute("DELETE", f"{_CM}/slack-bot/identity-links/:teamId/:slackUserId"),
+    # agent-harness/transport/admin-routes.ts. The write is validated after the admin check, so
+    # the admin's malformed request stores nothing.
+    AdminRoute("GET", f"{_HARNESS_ADMIN}/dependencies"),
+    AdminRoute("PUT", f"{_HARNESS_ADMIN}/coding-engine", admin="invalid"),
 )
 
 
@@ -364,6 +378,23 @@ PYTHON_CONDITIONAL_ADMIN = {
     # skill is theirs alone.
     "api/routes/skills.py::disable_skill": "built-in skills need admin",
     "api/routes/skills.py::enable_skill": "built-in skills need admin",
+    # A team or org /command is changed by those who govern it: an org command by an admin,
+    # a team command by its team's owners or an admin. A personal skill is its author's.
+    "api/routes/skills.py::update_skill": "a shared command is an admin's to change",
+    "api/routes/skills.py::patch_skill_body": "a shared command is an admin's to change",
+    "api/routes/skills.py::rename_skill": "a shared command is an admin's to change",
+    "api/routes/skills.py::deprecate_skill": "a shared command is an admin's to change",
+    "api/routes/skills.py::delete_skill": "a shared command is an admin's to change",
+    "api/routes/skills.py::rollback_skill": "a shared command is an admin's to change",
+    "api/routes/skills.py::write_resource": "a shared command is an admin's to change",
+    "api/routes/skills.py::remove_resource": "a shared command is an admin's to change",
+    "api/routes/skills.py::publish_command": "only an admin shares with the org",
+    "api/routes/skills.py::command_share_targets": "the org is offered to admins only",
+    "api/routes/skills.py::list_skills": "the editor lists what the caller may change",
+    # A learned proposal is decided by the person it was learned for, or an admin.
+    "api/routes/skills.py::approve_candidate": "the learner or an admin decides",
+    "api/routes/skills.py::reject_candidate": "the learner or an admin decides",
+    "api/routes/skills.py::get_pending_candidates": "an admin sees every proposal",
     # Only instances that use the shared admin credential need an admin.
     "api/routes/mcp_servers.py::authenticate_instance": "shared admin credential needs admin",
     "api/routes/mcp_servers.py::update_credentials": "shared admin credential needs admin",
@@ -394,12 +425,15 @@ PYTHON_CONDITIONAL_ADMIN = {
     # name. Nobody is refused the agent itself.
     "api/routes/agent.py::get_agent": "a limited source's name is hidden from members it refuses",
     "api/routes/agent.py::get_agents": "a limited source's name is hidden from members it refuses",
+    "api/routes/agent.py::export_agent": "a limited source is left out for members it refuses",
     # Every team connector is listed for a member, except one whose access limit
     # refuses them; an admin is shown every one.
     "connectors/api/router.py::get_inactive_connector_instances":
         "a limited connector is hidden from members it refuses",
     "connectors/api/router.py::get_active_connector_instances":
         "a limited connector is hidden from members it refuses",
+    "api/routes/agent.py::import_agent": "an import never binds a service account",
+    "api/routes/agent.py::rollback_agent_version": "only a service agent's binding needs admin",
     # The directory of people. Everyone gets it; an administrator asking for
     # service accounts gets those too, and nobody else does.
     "api/routes/entity.py::get_users": "admin widens the directory",
@@ -414,6 +448,11 @@ PYTHON_CONDITIONAL_ADMIN = {
     # also change or delete any team in their org.
     "api/routes/entity.py::update_team": "owner or admin",
     "api/routes/entity.py::delete_team": "owner or admin",
+    # A knowledge base is published, and its publications listed or revoked, by an owner of it
+    # or an org admin. Served through the gateway's harness routes.
+    "api/routes/knowledge_publications.py::create_publication": "container owner or admin",
+    "api/routes/knowledge_publications.py::list_publications": "container owner or admin",
+    "api/routes/knowledge_publications.py::revoke_publication": "container owner or admin",
 }
 
 # Routes with no admin check whose live cases sit in admin_route_conditional_table.py all the same: the
@@ -423,6 +462,7 @@ PYTHON_LIVE_ACCESS_ONLY: dict[str, str] = {
     "connectors/api/router.py::download_file": "signed link and record permission",
     "connectors/api/router.py::stream_record_internal": "service token only",
     "connectors/api/router.py::get_record_content_internal": "service token only",
+    "api/routes/skills.py::finalize_import": "never asks who is calling",
 }
 
 
@@ -450,6 +490,14 @@ PYTHON_CONDITIONAL_ADMIN_UNIT_ONLY: dict[str, tuple[str, str, str]] = {
         "a limited source's name is hidden from members it refuses",
         _CHAT_IS_A_PROMPT,
         f"{_AGENT_NAMES_TEST}::test_a_chat_turn_without_streaming_names_to_the_model_only_the_sources_the_caller_may_open",
+    ),
+    # A published version's limited source a member cannot open is named by its id,
+    # weighed by its connector's limit as it is now; an admin sees its name.
+    "api/routes/agent.py::get_agent_version": (
+        "a limited source's name is hidden from members it refuses",
+        "a version exists only once the agent is published or its versions are first read, "
+        "which the world does neither",
+        f"{_AGENT_NAMES_TEST}::test_a_published_version_names_only_the_sources_the_viewer_may_open",
     ),
     # A member is not shown a per-user connector whose access limit refuses them;
     # an admin is shown every one.
@@ -491,7 +539,11 @@ class SwitchedOff:
         )
 
 
-SWITCHED_OFF: tuple[SwitchedOff, ...] = ()
+SWITCHED_OFF: tuple[SwitchedOff, ...] = (
+    # agent-harness/transport/harness-switch.ts: off unless the install sets AGENT_HARNESS_WORKER_ENABLED.
+    SwitchedOff(_HARNESS, 404, HARNESS_OFF,
+                "the agent harness is off on this stack"),
+)
 
 # Rows a downstream build adds (helper/suite_extensions.py). Last, so the
 # extension can build its rows with everything above.

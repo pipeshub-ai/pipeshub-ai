@@ -13,7 +13,7 @@ import {
   knowledgeLimitForApi,
   type KnowledgeLimitValue,
 } from '@/app/components/knowledge-limit';
-import { FormField, WorkspaceRightPanel } from '../../../components';
+import { FormField, FormFieldTextField, WorkspaceRightPanel } from '../../../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { PatApi } from '../api';
@@ -387,7 +387,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
               required
               error={nameError}
             >
-              <TextField.Root
+              <FormFieldTextField
                 size="2"
                 placeholder={t('workspace.personalAccessTokens.create.namePlaceholder')}
                 value={name}
@@ -431,6 +431,9 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
               onChange={setKnowledgeLimit}
               idPrefix="pat"
             />
+            <Text as="p" size="1" style={{ color: 'var(--slate-11)', marginTop: 'var(--space-3)' }}>
+              {t('workspace.personalAccessTokens.create.knowledgeLimitLaterHint')}
+            </Text>
           </Box>
 
           <Flex align="start" justify="between" gap="3" wrap="wrap">

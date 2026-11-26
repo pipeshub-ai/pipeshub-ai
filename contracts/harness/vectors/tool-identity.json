@@ -1,0 +1,79 @@
+{
+  "description": "Instance-scoped tool names (P2.2): the name a model and the engines see for a connector toolset's or an MCP server's tool when the agent binds more than one instance of its type (shared: false is today's name, unchanged). Scoped names carry the instance id's 8-hex tag and fit scopedNameMax (64 less the longest engine prefix). Pinned by tests/unit/harness_core/tool_identity/test_names.py and the engines' NE-1.",
+  "scopedNameMax": 51,
+  "exportRule": "^[A-Za-z0-9_-]{1,51}$",
+  "tags": {
+    "7f3c2a10-0b6e-4d55-9a1e-3c1d2b9e8f01": "f03a785e",
+    "c41e9d77-5a2b-4f08-8e6d-0a9b7c6d5e42": "28e10e87"
+  },
+  "connector": [
+    {
+      "group": "jira",
+      "instance": "7f3c2a10-0b6e-4d55-9a1e-3c1d2b9e8f01",
+      "tool": "search_issues",
+      "shared": false,
+      "exported": "jira__search_issues"
+    },
+    {
+      "group": "jira",
+      "instance": "7f3c2a10-0b6e-4d55-9a1e-3c1d2b9e8f01",
+      "tool": "search_issues",
+      "shared": true,
+      "exported": "jira_f03a785e__search_issues"
+    },
+    {
+      "group": "jira",
+      "instance": "c41e9d77-5a2b-4f08-8e6d-0a9b7c6d5e42",
+      "tool": "search_issues",
+      "shared": true,
+      "exported": "jira_28e10e87__search_issues"
+    },
+    {
+      "group": "google_drive_enterprise",
+      "instance": "7f3c2a10-0b6e-4d55-9a1e-3c1d2b9e8f01",
+      "tool": "get_group_members_list",
+      "shared": true,
+      "exported": "google_drive_enterpri_f03a785e__get_group_3cca7ed3"
+    },
+    {
+      "group": "confluence_data_center",
+      "instance": "c41e9d77-5a2b-4f08-8e6d-0a9b7c6d5e42",
+      "tool": "validate_connection",
+      "shared": true,
+      "exported": "confluence_data_cente_28e10e87__validate_connection"
+    },
+    {
+      "group": "zoom",
+      "instance": "7f3c2a10-0b6e-4d55-9a1e-3c1d2b9e8f01",
+      "tool": "list_recurring_meetings_ending_in_range",
+      "shared": true,
+      "exported": "zoom_f03a785e__list_recurring_meetings_end_c6b8db4b"
+    }
+  ],
+  "mcp": [
+    {
+      "type": "github",
+      "instance": "7f3c2a10-0b6e-4d55-9a1e-3c1d2b9e8f01",
+      "tool": "create_issue",
+      "exported": "mcp_github_f03a785e_create_issue"
+    },
+    {
+      "type": "github",
+      "instance": "c41e9d77-5a2b-4f08-8e6d-0a9b7c6d5e42",
+      "tool": "create_issue",
+      "exported": "mcp_github_28e10e87_create_issue"
+    },
+    {
+      "type": "github",
+      "instance": "c41e9d77-5a2b-4f08-8e6d-0a9b7c6d5e42",
+      "tool": "admin.tools.list",
+      "exported": "mcp_github_28e10e87_admin_tools_list_cde30491"
+    },
+    {
+      "type": "My Server-2",
+      "instance": "7f3c2a10-0b6e-4d55-9a1e-3c1d2b9e8f01",
+      "tool": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "exported": "mcp_my_server_2_f03a785e_aaaaaaaaaaaaaaaaa_aff76509"
+    }
+  ]
+}

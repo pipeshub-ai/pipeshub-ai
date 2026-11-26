@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/binding.schema.json",
+  "title": "Binding",
+  "description": "Binding metadata (02-lld §2.5): which owner's credential an installation uses, its status and expiry, and the vault reference of its secret. Never the secret: there is no field for one, and `lastError` is a code, never a provider's message. Rows in `cpBindings` (BindingStore, 03-interfaces §2.6).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "orgId",
+    "installation",
+    "owner",
+    "mode",
+    "status",
+    "secret",
+    "scopes",
+    "expiresAt",
+    "refreshedAt",
+    "lastError",
+    "revision"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "$ref": "common.schema.json#/$defs/BindingRef" },
+    "orgId": { "$ref": "common.schema.json#/$defs/OrgId" },
+    "installation": { "$ref": "common.schema.json#/$defs/InstallationRef" },
+    "owner": { "$ref": "common.schema.json#/$defs/BindingOwnerRef" },
+    "mode": { "enum": ["oauth", "api_key", "header", "dcr", "model_account"] },
+    "status": { "enum": ["pending", "active", "expiring", "expired", "revoked", "error"] },
+    "secret": {
+      "description": "Where the secret is in the vault; null while an OAuth flow is pending.",
+      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/SecretRef" }]
+    },
+    "scopes": {
+      "type": "array",
+      "maxItems": 200,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "expiresAt": { "anyOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/Timestamp" }] },
+    "refreshedAt": { "anyOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/Timestamp" }] },
+    "lastError": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "at"],
+          "properties": {
+            "code": { "description": "A lower-case reason code (`invalid_grant`): no token shape fits it.", "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+            "at": { "$ref": "common.schema.json#/$defs/Timestamp" }
+          }
+        }
+      ]
+    },
+    "revision": { "$ref": "common.schema.json#/$defs/Revision" }
+  },
+  "$defs": {
+    "SecretRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "version", "versionDigest"],
+      "properties": {
+        "path": {
+          "description": "The vault document (02-lld §4.3).",
+          "type": "string",
+          "pattern": "^/services/[A-Za-z0-9_./-]{1,512}$"
+        },
+        "version": { "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/UInt" },
+        "versionDigest": { "$ref": "common.schema.json#/$defs/Digest" }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "id": "bnd_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V",
+      "orgId": "o1",
+      "installation": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V",
+      "owner": "user:u3",
+      "mode": "oauth",
+      "status": "active",
+      "secret": {
+        "path": "/services/controlPlane/credentials/o1/inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V/user/u3",
+        "version": 7,
+        "versionDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "scopes": ["read", "write"],
+      "expiresAt": 1760003600000,
+      "refreshedAt": 1760000000000,
+      "lastError": null,
+      "revision": 9
+    }
+  ]
+}

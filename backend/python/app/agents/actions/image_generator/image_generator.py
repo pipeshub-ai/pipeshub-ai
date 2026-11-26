@@ -32,9 +32,11 @@ from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agent_loop_lib.tools.tags import TAG_OUTPUT_DERIVED, TAG_SINK_SELF
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -106,7 +108,7 @@ class GenerateImageInput(BaseModel):
     )
 
 
-@ToolsetBuilder("Image Generator")\
+@ToolsetBuilder("Image Generator", provider=ToolProvider.PLATFORM)\
     .in_group("Internal Tools")\
     .with_description("Generative-AI image creation from a text prompt - always available, no authentication required")\
     .with_category(ToolsetCategory.UTILITY)\
@@ -214,7 +216,13 @@ class ImageGenerator:
                 default=None,
             ),
         ],
-        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action")],
+        # Self: the prompt reaches only the org's configured image model (as context reaches its chat model); the image lands in this conversation.
+        # Derived: the model reads back an acknowledgement built from the arguments (and, for an edit, the name of
+        # the artifact its record_id names); never the image or its source's content.
+        tags=[
+            Tag(key="category", value="utility"), Tag(key="type", value="action"), Tag(key="effect", value="write"),
+            TAG_SINK_SELF, TAG_OUTPUT_DERIVED,
+        ],
     )
     async def generate_image(
         self,
@@ -275,9 +283,14 @@ class ImageGenerator:
         provider = image_config.get("provider")
         try:
             # Local import to avoid loading provider SDKs at module import time.
-            from app.utils.aimodels import get_image_generation_model
+            from app.utils.llm import (
+                ModelNotAllowedError,
+                build_image_generation_model,
+            )
 
-            adapter = get_image_generation_model(provider, image_config)
+            adapter = await build_image_generation_model(config_service, provider, image_config)
+        except ModelNotAllowedError as outside:
+            return self._result(False, {"success": False, "error": str(outside)})
         except Exception as e:
             logger.exception(
                 "[generate_image] failed to build image generation adapter",
@@ -370,6 +383,8 @@ class ImageGenerator:
         # Schedule the upload as a background conversation task so the
         # artifact markers are appended by ``_append_task_markers`` when the
         # streaming response completes (same pattern as coding_sandbox).
+        from app.agents.agent_loop.artifact_provenance import request_provenance
+
         self._schedule_artifact_upload(
             images=images,
             blob_store=blob_store,
@@ -380,6 +395,9 @@ class ImageGenerator:
             model_name=adapter.model,
             file_name_hint=file_name,
             edit_record_id=record_id if is_edit else None,
+            # The prompt carries what the request showed the model; an edit also
+            # keeps the edited artifact's earlier versions' sources.
+            provenance=request_provenance(self.chat_state, task_id="image_generator.generate_image"),
         )
 
         action_word = "Updated" if is_edit else "Generated"
@@ -559,6 +577,7 @@ class ImageGenerator:
         model_name: str,
         file_name_hint: str | None = None,
         edit_record_id: str | None = None,
+        provenance: Any = None,  # noqa: ANN401 - ArtifactProvenance
     ) -> None:
         """Upload generated images in the background and register the task.
 
@@ -659,6 +678,16 @@ class ImageGenerator:
                         idx, file_name,
                     )
                     continue
+                if entry and graph_provider is not None:
+                    from app.agents.agent_loop.artifact_provenance import (
+                        record_output_provenance,
+                    )
+                    from app.services.artifact_registry import ArtifactRegistryService
+
+                    await record_output_provenance(
+                        ArtifactRegistryService(graph_provider, store),
+                        entry.get("recordId"), entry.get("version"), provenance,
+                    )
                 if entry:
                     logger.info(
                         "[generate_image] uploaded %s — documentId=%s recordId=%s url=%s",

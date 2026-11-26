@@ -130,9 +130,8 @@ class TestFormatMessage:
         assert "tool_call_id" not in formatted
 
     def test_multipart_tool_message_strips_images_keeps_text(self) -> None:
-        """Ollama's /api/chat has no multipart tool-result support — images
-        must be stripped here (delivered instead via the PRE_MODEL fallback
-        hook) while the text parts are preserved."""
+        """Ollama's `tool` role takes text only: the result keeps its text and
+        `_format_messages` sends the images in a user message after it."""
         transport = _transport()
         msg = ToolMessage(
             content=[

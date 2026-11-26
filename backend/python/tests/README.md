@@ -8,9 +8,17 @@ Unit tests for the PipesHub Python microservices using **pytest**.
 cd backend/python
 python3.12 -m venv venv
 source venv/bin/activate   # On Windows: venv\Scripts\activate
-pip install uv
-uv pip install -e .
+PYTHON=venv/bin/python requirements/install.sh dev --project . --editable   # the hashed lock CI uses: pytest, asyncio, timeout, xdist, cov
 ```
+
+Some suites drive the TypeScript side through Node 22 (`.nvmrc`): the C-5 codegen check, the kernel and journal
+parity tests, and parts of `tests/cohesion`. Put `node` on `PATH` and run `npm ci` in `backend/nodejs/apps` (and
+`npm ci --ignore-scripts` in `frontend` for C-5) first. Without them those tests skip; CI sets
+`PXH_REQUIRE_NODE=1`, which turns the C-5 skip into a failure.
+
+The tests need no network and no data downloaded beforehand: `tests/support/no_network.py` refuses any dial
+beyond loopback, and `tests/conftest.py` points tiktoken at the encodings LiteLLM ships. The nltk `punkt` download
+in CONTRIBUTING.md is for running the services, not for the tests.
 
 ## Running Tests
 

@@ -1,0 +1,27 @@
+{
+ "scenario": "agent_artifact_marker_answer",
+ "parts": [
+  {
+   "type": "text",
+   "content": "",
+   "runId": "run-golden"
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-promote",
+   "toolName": "artifacts__promote_artifact",
+   "args": "{\"artifact_id\": \"art-q3\"}",
+   "status": "completed",
+   "runId": "run-golden",
+   "argsSummary": "Promote Artifact",
+   "resultPreview": "{\"success\": true, \"artifact_id\": \"art-q3\", \"name\": \"q3-revenue.csv\", \"version\": 2, \"visibility\": \"VISIBLE\", \"message\": \"Artifact 'q3-revenue.csv' is now visible to the user as a download card. Do NOT ",
+   "resultSummary": "Artifact 'q3-revenue.csv' is now visible to the user as a download card. Do NOT include its raw content or a separate download link in your reply."
+  },
+  {
+   "type": "text",
+   "content": "Here is the export you asked for.\n\n\n\n::artifact[q3-revenue.csv](record:art-q3){text/csv|doc-q3|art-q3|SPREADSHEET|2}",
+   "runId": "run-golden",
+   "isFinal": true
+  }
+ ]
+}

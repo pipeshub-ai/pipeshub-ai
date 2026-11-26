@@ -127,6 +127,27 @@ def _narrowed_to(entry: dict[str, Any], source_ids: set[str]) -> dict[str, list[
     return limit if any(limit.values()) else None
 
 
+def source_reach(entries: Iterable[object]) -> dict[str, tuple[tuple[str, ...], ...] | None]:
+    """What each knowledge source lets an agent search, read the way search reads
+    it: ``None`` for a whole source, else its sorted record groups and records.
+    Two spellings of the same reach compare equal, so a save that resends an
+    agent's sources unchanged is not mistaken for a change.
+    """
+    items = [e for e in entries if isinstance(e, dict) and str(e.get("connectorId") or "").strip()]
+    source_ids = {str(e["connectorId"]).strip() for e in items}
+    reach: dict[str, tuple[tuple[str, ...], ...] | None] = {}
+    for entry in items:
+        source = str(entry["connectorId"]).strip()
+        limit = _narrowed_to(entry, source_ids)
+        # As in resolve_agent_filters: a source listed twice is searched with its
+        # last limit, and a whole-source entry does not lift an earlier limit.
+        if limit is None:
+            reach.setdefault(source, None)
+        else:
+            reach[source] = tuple(tuple(sorted(limit[key])) for key in _NARROWING_KEYS)
+    return reach
+
+
 def _clean_ids(values: Iterable[object]) -> list[str]:
     return list(dict.fromkeys(v.strip() for v in values if isinstance(v, str) and v.strip()))
 
@@ -379,6 +400,18 @@ async def hide_names_the_viewer_cannot_open(
             if key in k:
                 k[key] = _without_titles(k[key])
     return {str(k.get("connectorId")) for k in refused}
+
+
+async def with_current_limits(graph_provider: IGraphDBProvider, knowledge: Sequence[object]) -> None:
+    """Set, in place, each source's ``accessLimit`` to its connector's as it is now. A published version (and so an export
+    of one) froze the limit its sources had then; a connector limited since must be weighed as it is. A failed read
+    raises, rather than reading as no limit."""
+    for k in knowledge or []:
+        if isinstance(k, dict) and k.get("connectorId"):
+            app = await graph_provider.get_document(
+                str(k["connectorId"]), CollectionNames.APPS.value, raise_on_error=True,
+            ) or {}
+            k["accessLimit"] = app.get("accessLimit")
 
 
 async def _refused_sources(

@@ -23,7 +23,12 @@ vi.mock('@/lib/api', () => ({
   apiClient: { get: vi.fn(), post: vi.fn(async () => ({ data: [] })) },
   isProcessedError: () => false,
 }));
-vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCallout: () => null, McpManageAccess: () => null }));
+vi.mock('@/config', () => ({
+  isMcpInstanceReadOnly: () => false,
+  McpInheritedCallout: () => null,
+  McpManageAccess: () => null,
+  McpInstanceConfigExtras: () => null,
+}));
 vi.mock('../../../api', () => ({ McpServersApi: api }));
 // jsdom has no canvas; the drawing is covered by its own tests.
 vi.mock('../../../logo-file', async (importOriginal) => ({
@@ -58,7 +63,9 @@ vi.mock('../../../../components/workspace-right-panel', () => ({
       </div>
     ) : null,
 }));
-vi.mock('../../../../components', () => ({
+vi.mock('../../../../components', async () => ({
+  // The real wrapper: the panel's fields read the mocked FormField's ids through it.
+  FormFieldTextField: (await vi.importActual<typeof import('../../../../components/form-field')>('../../../../components/form-field')).FormFieldTextField,
   FormField: ({ label, description, error, children }: { label: string; description?: string; error?: string; children: React.ReactNode }) => (
     <div role="group" aria-label={label}>
       {children}
@@ -117,11 +124,6 @@ function panel(state: PanelProps['state'], onSaved = vi.fn()) {
     customStdioAllowed: false,
     onOpenChange: vi.fn(),
     onSaved,
-    onRequestDelete: vi.fn(),
-    busyInstanceId: null,
-    onAuthenticate: vi.fn(),
-    onReauthenticate: vi.fn(),
-    onDisconnect: vi.fn(),
   } as PanelProps;
   return (
     <Theme>
@@ -132,6 +134,14 @@ function panel(state: PanelProps['state'], onSaved = vi.fn()) {
 
 const createCustom = { open: true, mode: 'create', editingInstance: null, prefillTemplate: null } as PanelProps['state'];
 const editCustom = { open: true, mode: 'edit', editingInstance: custom, prefillTemplate: null } as PanelProps['state'];
+
+/** The logo sits under Advanced; open it whenever the panel shows it closed. */
+// Fails when Advanced is missing or won't open, so a check for an absent field there can't pass vacuously.
+function withAdvanced() {
+  const toggle = screen.getByRole('button', { name: 'workspace.mcpServers.form.advanced' });
+  if (toggle.getAttribute('aria-expanded') === 'false') fireEvent.click(toggle);
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+}
 
 const logoField = () => screen.queryByRole('group', { name: 'workspace.mcpServers.form.logo' });
 const preview = () => screen.queryByTestId('logo-preview')?.getAttribute('src') ?? null;
@@ -165,6 +175,7 @@ afterEach(cleanup);
 describe('McpInstanceConfigPanel logo', () => {
   it('saves the logo picked for a new custom server once the server exists', async () => {
     render(panel(createCustom));
+    withAdvanced();
     fireEvent.change(textInput('workspace.mcpServers.form.name'), { target: { value: 'Acme tools' } });
     fireEvent.change(textInput('workspace.mcpServers.form.url'), { target: { value: 'https://mcp.acme.example/mcp' } });
 
@@ -178,12 +189,14 @@ describe('McpInstanceConfigPanel logo', () => {
 
   it('offers no logo for a catalog server, which shows its vendor logo', () => {
     render(panel({ open: true, mode: 'create', editingInstance: null, prefillTemplate: template } as PanelProps['state']));
+    withAdvanced();
 
     expect(logoField()).toBeNull();
   });
 
   it("shows a custom server's saved logo and removes it on save", async () => {
     render(panel(editCustom));
+    withAdvanced();
     await waitFor(() => expect(preview()).toBe(SAVED));
 
     fireEvent.click(screen.getByRole('button', { name: 'workspace.mcpServers.form.logoRemove' }));
@@ -196,6 +209,7 @@ describe('McpInstanceConfigPanel logo', () => {
 
   it('leaves the logo alone when it was not changed', async () => {
     render(panel(editCustom));
+    withAdvanced();
     await waitFor(() => expect(preview()).toBe(SAVED));
 
     await save();
@@ -209,6 +223,7 @@ describe('McpInstanceConfigPanel logo', () => {
     api.setLogo.mockRejectedValue(new Error('too large'));
     const onSaved = vi.fn();
     render(panel(editCustom, onSaved));
+    withAdvanced();
 
     await pickFile();
     await save();
@@ -220,6 +235,7 @@ describe('McpInstanceConfigPanel logo', () => {
   it('says why a picked file was refused and keeps the earlier logo', async () => {
     picked.imageFileToLogo.mockRejectedValue(new McpLogoFileError('type'));
     render(panel(editCustom));
+    withAdvanced();
     await waitFor(() => expect(preview()).toBe(SAVED));
 
     await pickFile();
@@ -234,6 +250,7 @@ describe('McpInstanceConfigPanel logo', () => {
       .mockReturnValueOnce(new Promise<string>((resolve) => (finishFirst = resolve)))
       .mockResolvedValueOnce(NEW);
     render(panel(editCustom));
+    withAdvanced();
     await waitFor(() => expect(preview()).toBe(SAVED));
 
     await pickFile();
@@ -247,6 +264,7 @@ describe('McpInstanceConfigPanel logo', () => {
     let finish: (logo: string) => void = () => {};
     picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>((resolve) => (finish = resolve)));
     render(panel(editCustom));
+    withAdvanced();
     await waitFor(() => expect(preview()).toBe(SAVED));
 
     await pickFile();
@@ -263,6 +281,7 @@ describe('McpInstanceConfigPanel logo', () => {
       let finish: (logo: string) => void = () => {};
       picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>((resolve) => (finish = resolve)));
       render(panel(editCustom));
+      withAdvanced();
       await waitFor(() => expect(preview()).toBe(SAVED));
 
       await pickFile();
@@ -279,6 +298,7 @@ describe('McpInstanceConfigPanel logo', () => {
       let fail: (error: Error) => void = () => {};
       picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>((_, reject) => (fail = reject)));
       render(panel(editCustom));
+      withAdvanced();
 
       await pickFile();
       expect(saveButton().disabled).toBe(true);
@@ -294,6 +314,7 @@ describe('McpInstanceConfigPanel logo', () => {
         .mockReturnValueOnce(new Promise<string>((resolve) => (finishFirst = resolve)))
         .mockReturnValueOnce(new Promise<string>((resolve) => (finishLatest = resolve)));
       render(panel(editCustom));
+      withAdvanced();
 
       await pickFile();
       await pickFile();
@@ -312,6 +333,7 @@ describe('McpInstanceConfigPanel logo', () => {
         let finish: (logo: string) => void = () => {};
         picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>((resolve) => (finish = resolve)));
         const { rerender } = render(panel(editCustom));
+        withAdvanced();
         await waitFor(() => expect(preview()).toBe(SAVED));
         await pickFile();
         expect(saveButton().disabled).toBe(true);
@@ -332,6 +354,7 @@ describe('McpInstanceConfigPanel logo', () => {
         await finishAfter((rerender) => {
           rerender(panel({ ...editCustom, open: false }));
           rerender(panel(editOther));
+          withAdvanced();
         });
 
         await expectOtherUntouched();
@@ -347,12 +370,26 @@ describe('McpInstanceConfigPanel logo', () => {
     it('frees Save when the logo is removed instead', async () => {
       picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>(() => {}));
       render(panel(editCustom));
+      withAdvanced();
       await waitFor(() => expect(preview()).toBe(SAVED));
 
       await pickFile();
       fireEvent.click(screen.getByRole('button', { name: 'workspace.mcpServers.form.logoRemove' }));
 
       expect(saveButton().disabled).toBe(false);
+    });
+
+    it('keeps Advanced open while the picked logo is still being read', async () => {
+      picked.imageFileToLogo.mockReturnValueOnce(new Promise<string>(() => {}));
+      render(panel(editCustom));
+      withAdvanced();
+      await waitFor(() => expect(preview()).toBe(SAVED));
+
+      await pickFile();
+      fireEvent.click(screen.getByRole('button', { name: 'workspace.mcpServers.form.advanced' }));
+
+      expect(logoField()).not.toBeNull();
+      expect(saveButton().disabled).toBe(true);
     });
   });
 });

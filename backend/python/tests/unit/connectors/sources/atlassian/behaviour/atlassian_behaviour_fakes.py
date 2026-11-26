@@ -130,6 +130,36 @@ def as_base_record(record: Record) -> Record:
     return Record.model_validate(record.model_dump(include=set(Record.model_fields)))
 
 
+class FakeGrantEdges:
+    """``DataStoreProvider.transaction()`` of a ``FakeRecordsDb`` for its permission edges: an edge into a record per
+    stored grant. ``fail`` makes the read fail as the real providers do: it raises with ``raise_on_error`` and
+    otherwise returns no edges."""
+
+    def __init__(self, db: "FakeRecordsDb") -> None:
+        self.db = db
+        self.fail = False
+
+    @asynccontextmanager
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeGrantEdges"]:
+        yield self
+
+    async def get_edges_to_node(self, node_id: str, edge_collection: str, *, raise_on_error: bool = False) -> list[dict]:
+        from app.config.constants.arangodb import CollectionNames
+
+        if self.fail:
+            if raise_on_error:
+                raise RuntimeError("database unavailable")
+            return []
+        assert edge_collection == CollectionNames.PERMISSION.value
+        collection, _, key = node_id.partition("/")
+        assert collection == CollectionNames.RECORDS.value
+        return [
+            {"_from": f"grantee/{i}", "_to": node_id}
+            for external_id, record in self.db.records.items() if record.id == key
+            for i, _ in enumerate(self.db.record_permissions.get(external_id) or [])
+        ]
+
+
 class FakeRecordsDb:
     """In-memory stand-in for ``DataSourceEntitiesProcessor``.
 
@@ -155,19 +185,25 @@ class FakeRecordsDb:
         self.permission_updates: list[tuple[Any, list[Any]]] = []
         self.reindexed: list[Any] = []
         self.fail_lookup_for: set[str] = set()
+        # Records whose write the processor quarantined (schema refused): not stored, not raised, not seen.
+        self.quarantined: set[str] = set()
         self.fail_delete_for: set[str] = set()
         self.fail_stored_permission_reads = False
         self.kept_records: list[str] = []
         self.full_sync = False
         self.unlinked_record_groups: list[str] = []
         self.fail_group_listing = False
+        self.fail_note_kept_group = False
+        self.data_store_provider = FakeGrantEdges(self)
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[SimpleNamespace]:
         if not self.creator_email:
             return None
         return SimpleNamespace(email=self.creator_email, id=user_id)
 
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(
+        self, connector_id: str, external_record_id: str, *, raise_on_error: bool = False
+    ) -> Optional[Record]:
         if external_record_id in self.fail_lookup_for:
             raise RuntimeError(f"database unavailable for {external_record_id}")
         stored = self.records.get(external_record_id)
@@ -189,6 +225,8 @@ class FakeRecordsDb:
         for record, permissions in records_with_permissions:
             self.records[record.external_record_id] = record
             self.record_permissions[record.external_record_id] = list(permissions)
+            # A lookup failure fails the build; the close of the failed record is read back after its write.
+            self.fail_lookup_for.discard(record.external_record_id)
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, permissions in groups:
@@ -253,7 +291,16 @@ class FakeRecordsDb:
         return [r for r in rows if after_key is None or r.id > after_key][:limit]
 
     def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        """Noted as seen by the full sync in progress, under the external ids its record writes are tracked by."""
+        from app.config.constants.arangodb import CollectionNames
+
         self.kept_records.extend(record_ids)
+        seen = getattr(self, "full_sync_seen", None)
+        if seen is not None:
+            ids = set(record_ids)
+            for record in self.records.values():
+                if record.id in ids:
+                    seen.add(CollectionNames.RECORDS.value, record.external_record_id)
 
     def full_sync_running(self, connector_id: str) -> bool:
         return self.full_sync or getattr(self, "full_sync_seen", None) is not None
@@ -272,6 +319,15 @@ class FakeRecordsDb:
         if seen is not None:
             for group in groups:
                 seen.add(CollectionNames.GROUPS.value, group.source_user_group_id)
+
+    async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
+        from app.config.constants.arangodb import CollectionNames
+
+        if self.fail_note_kept_group:
+            raise RuntimeError("database unavailable")
+        seen = getattr(self, "full_sync_seen", None)
+        if seen is not None:
+            seen.add(CollectionNames.GROUPS.value, external_group_id)
 
     async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
         from app.config.constants.arangodb import CollectionNames
@@ -304,6 +360,13 @@ class FakeRecordsDb:
 
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self.permission_updates.append((record, permissions))
+        # The stored grants are replaced, and the record inherits from its parent if it says so.
+        self.record_permissions[record.external_record_id] = list(permissions)
+        stored = self.records.get(record.external_record_id)
+        if stored is not None:
+            self.records[record.external_record_id] = stored.model_copy(
+                update={"inherit_permissions": record.inherit_permissions}
+            )
 
     async def reindex_existing_records(self, records: list[Any]) -> None:
         # The real one builds the indexing event from each record; a base Record raises here.
@@ -387,9 +450,10 @@ async def run_full_sync(connector: Any, db: "FakeRecordsDb") -> AsyncMock:  # no
         collection, key = tracked[name]
 
         async def write(items: list[tuple[Any, list[Any]]]) -> None:
-            for item, _ in items:
-                seen.add(collection, key(item))
             await originals[name](items)
+            for item, _ in items:  # as the processor notes them: once the write commits
+                if name != "on_new_records" or key(item) not in db.quarantined:
+                    seen.add(collection, key(item))
 
         return write
 

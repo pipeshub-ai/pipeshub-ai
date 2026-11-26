@@ -9,6 +9,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from harness_core.mime import EXTENSION_TO_MIME
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,6 +24,7 @@ class SandboxLanguage(str, Enum):
 class SandboxMode(str, Enum):
     LOCAL = "local"
     DOCKER = "docker"
+    BROKER = "broker"
 
 
 class ArtifactOutput(BaseModel):
@@ -55,29 +58,6 @@ DEFAULT_CPU_LIMIT = 0.5
 # Override ``SANDBOX_DOCKER_IMAGE`` for a registry image (e.g. production:
 # pipeshubai/pipeshub-sandbox:${IMAGE_TAG} per docker-compose.prod.yml).
 SANDBOX_IMAGE = os.environ.get("SANDBOX_DOCKER_IMAGE", "pipeshub/sandbox:latest")
-
-# MIME type detection by extension
-EXTENSION_TO_MIME: dict[str, str] = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".svg": "image/svg+xml",
-    ".webp": "image/webp",
-    ".pdf": "application/pdf",
-    ".csv": "text/csv",
-    ".json": "application/json",
-    ".html": "text/html",
-    ".txt": "text/plain",
-    ".md": "text/markdown",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ".xml": "application/xml",
-    ".zip": "application/zip",
-    ".tar": "application/x-tar",
-    ".gz": "application/gzip",
-}
 
 
 def detect_mime_type(file_name: str) -> str:

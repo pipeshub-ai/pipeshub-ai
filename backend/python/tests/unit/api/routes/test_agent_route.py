@@ -11,6 +11,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from tests.support.agent_versions import versions_beside
+
+
+@pytest.fixture(autouse=True)
+def _agent_versions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The routes' agent versions (OWD-14) beside this file's mocked graph."""
+    versions_beside(monkeypatch, "app.api.routes.agent")
+
 # =============================================================================
 # Exception classes
 # =============================================================================
@@ -52,7 +60,7 @@ class TestExceptionClasses:
         from app.api.routes.agent import AgentTemplateNotFoundError
         err = AgentTemplateNotFoundError("tmpl-456")
         assert err.status_code == 404
-        assert "tmpl-456" in err.detail
+        assert "tmpl-456" not in err.detail
 
     def test_permission_denied(self) -> None:
         from app.api.routes.agent import PermissionDeniedError
@@ -1366,8 +1374,8 @@ class TestGetWebSearchProviderUsage:
         assert body["agents"] == []
 
     @pytest.mark.asyncio
-    async def test_provider_exception_raises_400(self) -> None:
-        """Generic exception path returns 400 (matches the existing endpoint contract)."""
+    async def test_provider_exception_raises_500(self) -> None:
+        """A failure of ours is a 500 raised from it (it was a 400, which read as the caller's mistake)."""
         from app.api.routes.agent import get_web_search_provider_usage
 
         graph_provider = AsyncMock()
@@ -1382,7 +1390,8 @@ class TestGetWebSearchProviderUsage:
             with pytest.raises(HTTPException) as exc_info:
                 await get_web_search_provider_usage(request, "serper")
 
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 500
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
 
     @pytest.mark.asyncio
     async def test_http_exception_propagates_unchanged(self) -> None:

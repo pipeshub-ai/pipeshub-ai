@@ -1,6 +1,7 @@
 """Shared admin credentials, delete-while-attached and credential reset on edit."""
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,6 +26,7 @@ from app.api.routes.mcp_servers import (
     remove_credentials,
     update_instance,
 )
+from tests.support.bound_org import bind_test_org
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
 
 if TYPE_CHECKING:
@@ -311,7 +313,7 @@ async def test_my_mcp_servers_refreshes_an_expired_oauth_token_and_lists_tools(a
         "/services/mcp/credentials/inst-1/user-1": {"isAuthenticated": True, "oauthTokens": {"accessToken": "old"}},
     })
 
-    async def _discover(config: Any, credentials: dict, timeout_seconds: float | None = None) -> ToolListing:  # noqa: ANN401
+    async def _discover(config: Any, credentials: dict, timeout_seconds: float | None = None, **_: Any) -> ToolListing:  # noqa: ANN401
         if credentials.get("accessToken") == "old":
             request = httpx.Request("POST", "https://mcp.example.com/mcp")
             error = MCPConnectionError("HTTP 401")
@@ -327,7 +329,8 @@ async def test_my_mcp_servers_refreshes_an_expired_oauth_token_and_lists_tools(a
     entry = result["instances"][0]
     assert entry["toolsError"] is None
     assert [t["name"] for t in entry["tools"]] == ["search"]
-    refresh.assert_awaited_once_with("inst-1", "user-1", store, stale_access_token="old")
+    # org_id: the CPD-8 binding refresher refreshes through the org's binding.
+    refresh.assert_awaited_once_with("inst-1", "user-1", store, stale_access_token="old", org_id="org-1")
 
 
 def _marked(**fields: Any) -> dict[str, Any]:  # noqa: ANN401
@@ -450,3 +453,9 @@ class TestSharedCredentialSlot:
         await update_instance(route_request(store, user_id="admin-b"), "inst-1", _payload(name="Renamed"))
 
         assert store.data[INSTANCE_PATH]["sharedCredentialSlot"] is True
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org("org-1")

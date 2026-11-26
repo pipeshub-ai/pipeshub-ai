@@ -1,9 +1,22 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { Box, Flex, Heading, Text, Button, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
+import { selectSkillsEnabled, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { useSkillsStore } from '@/workspace/skills/personal/store';
+import {
+  CommandsApi,
+  liveSentCommand,
+  useCommandCatalog,
+  type CommandProvenance,
+  type SentCommand,
+} from '@/chat/commands';
+import { ownerLabel, sharedByText } from '@/chat/components/chat-panel/slash-command-menu';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { MentionIcon } from '@/chat/components/mention-icon';
 import { locateMentionNames, mentionLabel, type MentionNode } from '@/chat/utils/node-mentions';
@@ -19,6 +32,8 @@ export interface ExpandableUserQueryProps {
   messageId?: string;
   isStreaming?: boolean;
   onEdit?: () => void;
+  /** The /command the question was sent as (SLASH1): drawn as its chip, with what was sent. */
+  command?: SentCommand;
   /** Nodes the question was scoped to; where the text names one, it shows as a chip. */
   mentions?: readonly MentionNode[];
 }
@@ -165,16 +180,44 @@ function ToggleButton({
   );
 }
 
+const SKILLS_PAGE = '/workspace/skills/personal';
+
+/** "Save as command" (SLASH1 S3): the skills editor, opened on a new personal command holding this text. */
+function SaveAsCommandButton({ text, visible }: { text: string; visible: boolean }) {
+  const { t } = useTranslation();
+  const label = t('slashCommands.saveAsCommand');
+  return (
+    <IconButton
+      asChild
+      variant="ghost"
+      color="gray"
+      size="1"
+      style={{ flexShrink: 0, opacity: visible ? 1 : 0, transition: 'opacity 0.15s ease', pointerEvents: visible ? 'auto' : 'none' }}
+    >
+      <Link
+        href={SKILLS_PAGE}
+        aria-label={label}
+        title={label}
+        onClick={() => useSkillsStore.getState().openEditorPanel(null, { prefillBody: text, prefillCommand: true })}
+      >
+        <MaterialIcon name="bookmark_add" size={ICON_SIZES.PRIMARY} color="var(--slate-11)" />
+      </Link>
+    </IconButton>
+  );
+}
+
 function QueryActions({
   question,
   showEdit,
   onEdit,
   visible,
+  saveAsCommand = false,
 }: {
   question: string;
   showEdit: boolean;
   onEdit?: () => void;
   visible: boolean;
+  saveAsCommand?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -211,7 +254,113 @@ function QueryActions({
           onClick={onEdit}
         />
       ) : null}
+      {saveAsCommand && question.trim() ? <SaveAsCommandButton text={question} visible={visible} /> : null}
     </Flex>
+  );
+}
+
+/** Literal keys per owner, so `i18n:keys` checks each one. */
+function authorText(t: TFunction, command: SentCommand, names: CommandProvenance | null): string | null {
+  if (command.owner === 'you') return t('slashCommands.byYou');
+  if (command.owner === 'pipeshub') return t('slashCommands.byPipeshub');
+  return names ? sharedByText(t, names) : null;
+}
+
+const isShared = (command: SentCommand): boolean => command.owner === 'team' || command.owner === 'org';
+
+/** A question sent as a /command: its chip and typed arguments, and "What was sent" once the server recorded it. */
+function CommandQuery({ command }: { command: SentCommand }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  // A shared command's author and team are kept as ids and named when shown, so an erased author never is (S4).
+  const [names, setNames] = useState<CommandProvenance | null>(null);
+  useEffect(() => {
+    if (!open || names || !isShared(command)) return;
+    let live = true;
+    const fallback: CommandProvenance = { owner: command.owner, ...(command.authorFormer ? { authorFormer: true } : {}) };
+    if (!command.authorId && !command.teamId) {
+      setNames(fallback);
+      return;
+    }
+    CommandsApi.provenance(command)
+      .then((read) => live && setNames(read))
+      .catch(() => live && setNames({ owner: command.owner }));
+    return () => {
+      live = false;
+    };
+  }, [open, names, command]);
+  const args = command.typed.replace(/^\/\S+\s*/, '');
+  const author = authorText(t, command, names);
+  const detailsId = `sent-command-${command.name}-${command.version}`;
+  return (
+    <Box style={{ paddingTop: 'var(--space-3)' }} data-testid="user-command-query">
+      <Flex align="baseline" gap="2" wrap="wrap">
+        <Text
+          size="3"
+          weight="medium"
+          data-testid="user-command-chip"
+          style={{
+            fontFamily: 'monospace',
+            padding: '2px var(--space-2)',
+            borderRadius: 'var(--radius-2)',
+            backgroundColor: 'var(--accent-a3)',
+            color: 'var(--accent-11)',
+            flexShrink: 0,
+          }}
+        >
+          /{command.name}
+        </Text>
+        {args ? (
+          <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)', lineHeight: 1.3, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+            {args}
+          </Heading>
+        ) : null}
+      </Flex>
+      {command.expanded === undefined && command.files !== undefined ? (
+        <Text size="1" color="gray" as="p" style={{ marginTop: 'var(--space-2)' }} data-testid="user-command-review-files">
+          {t('slashCommands.reviewOfFiles', { count: command.files })}
+        </Text>
+      ) : null}
+      {command.expanded !== undefined ? (
+        <Box style={{ marginTop: 'var(--space-2)' }}>
+          <Button
+            type="button"
+            variant="ghost"
+            color="gray"
+            size="1"
+            aria-expanded={open}
+            aria-controls={detailsId}
+            onClick={() => setOpen((v) => !v)}
+            data-testid="user-command-what-was-sent"
+          >
+            {t('slashCommands.whatWasSent')}
+            <MaterialIcon name={open ? 'keyboard_arrow_up' : 'keyboard_arrow_down'} size={ICON_SIZES.PRIMARY} />
+          </Button>
+          {open ? (
+            <Box
+              id={detailsId}
+              data-testid="user-command-sent-text"
+              style={{
+                marginTop: 'var(--space-2)',
+                backgroundColor: 'var(--slate-3)',
+                border: '1px solid var(--slate-a4)',
+                borderRadius: 'var(--radius-3)',
+                padding: 'var(--space-3)',
+              }}
+            >
+              <Text size="2" as="p" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: EXPANDED_MAX_HEIGHT_PX, overflowY: 'auto' }}>
+                {command.expanded}
+              </Text>
+              <Text size="1" color="gray" as="p" style={{ marginTop: 'var(--space-2)' }} data-testid="user-command-provenance">
+                {[`${command.name} v${command.version}`, author, names?.team ? null : ownerLabel(t, command.owner)]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </Text>
+            </Box>
+          ) : null}
+        </Box>
+      ) : null}
+    </Box>
   );
 }
 
@@ -221,13 +370,20 @@ export function ExpandableUserQuery({
   messageId,
   isStreaming = false,
   onEdit,
+  command,
   mentions = [],
 }: ExpandableUserQueryProps) {
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const catalog = useCommandCatalog((s) => s.commands);
+  const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
   const canHover = useCanHover();
 
   useEffect(() => setExpanded(false), [question]);
+
+  // While the turn streams the server's record is not back yet: the chip comes from the menu's list.
+  const sentCommand = command ?? (isStreaming ? liveSentCommand(question, catalog) : null);
+  if (sentCommand) return <CommandQuery command={sentCommand} />;
 
   const quoted = parseQuotedSelection(question);
   const displayQuestion = quoted.question;
@@ -290,6 +446,7 @@ export function ExpandableUserQuery({
               showEdit={showEdit}
               onEdit={onEdit}
               visible={hovered || isMobile || !canHover}
+              saveAsCommand={skillsEnabled && !isStreaming}
             />
           </span>
         </Heading>

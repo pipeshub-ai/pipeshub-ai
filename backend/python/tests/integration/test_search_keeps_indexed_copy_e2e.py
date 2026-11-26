@@ -11,7 +11,8 @@ schema first, so it also proves ``hasIndexedCopy`` is declared there.
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \
     up -d --wait neo4j-graph-it arango-graph-it
-  cd backend/python && pytest tests/integration/test_search_keeps_indexed_copy_e2e.py -m integration
+  cd backend/python && NEO4J_IT_URI=bolt://localhost:17687 ARANGO_IT_URL=http://localhost:18529 \
+    pytest tests/integration/test_search_keeps_indexed_copy_e2e.py -m integration
 
 Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
@@ -39,6 +40,7 @@ from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from tests.support import it_backends
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -47,9 +49,7 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 
-NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
 NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 ARANGO_DB = "search_keeps_indexed_copy_e2e"
 
@@ -79,7 +79,8 @@ class _World:
 
 
 async def _connect_neo4j(monkeypatch: pytest.MonkeyPatch) -> IGraphDBProvider:
-    monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
+    neo4j_uri = it_backends.endpoint("NEO4J_IT_URI")
+    monkeypatch.setenv("NEO4J_URI", neo4j_uri)
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
     monkeypatch.setenv("NEO4J_DATABASE", "neo4j")
@@ -90,9 +91,10 @@ async def _connect_neo4j(monkeypatch: pytest.MonkeyPatch) -> IGraphDBProvider:
 
 
 async def _connect_arango() -> IGraphDBProvider:
+    arango_url = it_backends.endpoint("ARANGO_IT_URL")
     config_service = MagicMock()
     config_service.get_config = AsyncMock(
-        return_value={"url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB}
+        return_value={"url": arango_url, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB}
     )
     provider = ArangoHTTPProvider(logger, config_service)
     if not await asyncio.wait_for(provider.connect(), timeout=60):
@@ -107,10 +109,7 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         try:
             graph = await (_connect_neo4j(monkeypatch) if request.param == "neo4j" else _connect_arango())
         except Exception as exc:
-            env = "NEO4J_IT_URI" if request.param == "neo4j" else "ARANGO_IT_URL"
-            if os.environ.get(env):
-                pytest.fail(f"{request.param} is configured ({env}) but not reachable: {exc!r}")
-            pytest.skip(f"{request.param} not configured ({env} unset) and not reachable locally: {exc!r}")
+            it_backends.unavailable("NEO4J_IT_URI" if request.param == "neo4j" else "ARANGO_IT_URL", exc)
         cleanup.push_async_callback(graph.disconnect)
         suffix = uuid.uuid4().hex[:10]
         w = _World(

@@ -1,0 +1,8 @@
+{
+  "name": "pxh-ci-spectral",
+  "private": true,
+  "description": "CI's Spectral (openapi-validator.yml), installed with npm ci from this lock.",
+  "dependencies": {
+    "@stoplight/spectral-cli": "6.17.0"
+  }
+}

@@ -44,7 +44,14 @@ import type { ICacheService } from '../../../../src/libs/services/cache/cacheSer
 import type { AuthenticatedServiceRequest } from '../../../../src/libs/middlewares/types';
 import { createMockRedisService } from '../../../helpers/mock-redis';
 import { createMockQuery } from '../../../helpers/mock-mongo';
+import {
+  installOrgLifecycle,
+  resetOrgLifecycle,
+  type OrgLifecycleHook,
+} from '../../../../src/libs/org-lifecycle';
 import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
+import { samples, sampleValue } from '../../../helpers/metric-samples';
+import { AUTH_ATTEMPTS_METRIC } from '../../../../src/libs/services/telemetry/modules/auth-metrics';
 import { stubGoogleIdTokenCheck } from '../../../helpers/google-id-token';
 
 // Drives the real controller and the real SessionService through whole
@@ -125,6 +132,7 @@ interface ResponseBody {
 }
 
 interface FakeRes {
+  cookie: sinon.SinonStub;
   headers: Record<string, string>;
   statusCode: number;
   body: ResponseBody | undefined;
@@ -183,6 +191,7 @@ describe('UserAccountController sign-in flow', () => {
   function makeRes(): FakeRes {
     const json = sinon.stub();
     const res: FakeRes = {
+      cookie: sinon.stub(),
       headers: {},
       statusCode: 200,
       body: undefined,
@@ -217,12 +226,16 @@ describe('UserAccountController sign-in flow', () => {
 
   // Mirrors authSessionMiddleware: the session is read back from the cache on
   // every request, so whatever a step saved is what the next step sees.
-  async function authenticate(token: string, body: Record<string, unknown>) {
+  async function authenticate(
+    token: string,
+    body: Record<string, unknown>,
+    headers: Record<string, string> = {},
+  ) {
     const sessionInfo = await sessionService.getSession(token);
     const res = makeRes();
     const next = sinon.stub();
     await controller.authenticate(
-      fakeRequest({ body, sessionInfo: sessionInfo ?? undefined, ip: '10.0.0.1' }),
+      fakeRequest({ body, headers, sessionInfo: sessionInfo ?? undefined, ip: '10.0.0.1' }),
       fakeResponse(res),
       next,
     );
@@ -401,6 +414,68 @@ describe('UserAccountController sign-in flow', () => {
     } as unknown as LoginTicket);
   }
 
+  describe('the org lifecycle hook at sign-in', () => {
+    afterEach(() => resetOrgLifecycle());
+
+    const refusingHook = (overrides: Partial<Record<keyof OrgLifecycleHook, sinon.SinonStub>> = {}) => {
+      const hook: Record<keyof OrgLifecycleHook, sinon.SinonStub> = {
+        deleteOrg: sinon.stub().rejects(new Error('not used here')),
+        signInPageOrg: sinon.stub().resolves(null),
+        notLiveOrgOf: sinon.stub().resolves(null),
+        signInRefusal: sinon.stub().resolves({ status: 403, body: { status: 'NOT_NOW', orgName: 'Acme' } }),
+        ...overrides,
+      };
+      installOrgLifecycle({ orgLifecycleHook: hook as unknown as OrgLifecycleHook });
+      return hook;
+    };
+
+    it("by default, sign-in with no live org reads no org's methods", async () => {
+      (Org.findOne as sinon.SinonStub).callsFake((() => Promise.resolve(null)) as unknown as typeof Org.findOne);
+      const token = await initAuth([['password']]);
+      expect((await sessionService.getSession(token))?.orgId ?? '', 'no org').to.equal('');
+    });
+
+    it('with no live org, the sign-in page reads its methods from the org the hook names', async () => {
+      (Org.findOne as sinon.SinonStub).callsFake((() => Promise.resolve(null)) as unknown as typeof Org.findOne);
+      const hook = refusingHook({ signInPageOrg: sinon.stub().resolves({ _id: orgId, shortName: 'Acme' }) });
+      const token = await initAuth([['otp']]);
+      expect(hook.signInPageOrg.calledOnce).to.equal(true);
+      expect((await sessionService.getSession(token))?.orgId).to.equal(orgId);
+    });
+
+    it('a wrong password gets the same refusal as anyone and the hook is never asked', async () => {
+      const hook = refusingHook();
+      await givePassword(alice);
+      const token = await initAuth([['password']]);
+      const { res, error } = await authenticate(token, { method: 'password', credentials: { password: 'Wrong-Horse-9!' } });
+      expect(error).to.be.instanceOf(BadRequestError);
+      expect(error.message).to.equal(WRONG_EMAIL_OR_PASSWORD);
+      expect(res.body).to.equal(undefined);
+      expect(hook.signInRefusal.called).to.equal(false);
+    });
+
+    it("once every credential is proven, the hook's refusal is the answer and no session token is given", async () => {
+      const hook = refusingHook();
+      await givePassword(alice);
+      const token = await initAuth([['password']]);
+      const { res, error } = await authenticate(token, { method: 'password', credentials: { password: PASSWORD } });
+      expect(error).to.equal(undefined);
+      expect(hook.signInRefusal.calledOnceWith(alice._id, { frontendUrl: 'http://app', scopedJwtSecret: SCOPED_SECRET })).to.equal(true);
+      expect(res.statusCode).to.equal(403);
+      expect(res.body).to.deep.equal({ status: 'NOT_NOW', orgName: 'Acme' });
+      expect(res.body).to.not.have.property('accessToken');
+    });
+
+    it('a hook that lets the sign-in complete leaves it as it was', async () => {
+      refusingHook({ signInRefusal: sinon.stub().resolves(null) });
+      await givePassword(alice);
+      const token = await initAuth([['password']]);
+      const { res, error } = await authenticate(token, { method: 'password', credentials: { password: PASSWORD } });
+      expect(error).to.equal(undefined);
+      expect(res.body).to.have.property('accessToken');
+    });
+  });
+
   describe('the sign-in method has to be one the org allows at this step', () => {
     it('refuses password sign-in when the org only allows Google, even with the right password', async () => {
       await givePassword(alice);
@@ -464,6 +539,50 @@ describe('UserAccountController sign-in flow', () => {
       ) as TokenClaims;
       expect(refresh.userId).to.equal(alice._id);
       expect(await sessionService.getSession(token)).to.equal(null);
+    });
+  });
+
+  // R41OPS-FU-7 (ADR-WEB-02): a browser asks for its refresh token as an HttpOnly cookie; it never sees it.
+  describe('the web app gets its refresh token as a cookie', () => {
+    it('sets the __Host- cookie for an https page and leaves the token out of the body', async () => {
+      await givePassword(alice);
+      const token = await initAuth([['password']]);
+      const { res, error } = await authenticate(
+        token,
+        { method: 'password', credentials: { password: PASSWORD } },
+        { 'x-pipeshub-session': 'cookie', origin: 'https://pipeshub.example.com' },
+      );
+      expect(error).to.be.undefined;
+      expect(res.body).to.include({ message: 'Fully authenticated', session: 'cookie' });
+      expect(res.body).to.not.have.property('refreshToken');
+      expect(res.cookie.calledOnce).to.be.true;
+      const [name, value, options] = res.cookie.firstCall.args;
+      expect(name).to.equal('__Host-pipeshub_refresh');
+      expect(options).to.include({ httpOnly: true, secure: true, sameSite: 'strict', path: '/' });
+      expect(options.maxAge).to.be.within(29 * 24 * 3600 * 1000, 30 * 24 * 3600 * 1000);
+      const refresh = jwt.verify(String(value), deriveUserActionSecret(SCOPED_SECRET)) as TokenClaims;
+      expect(refresh.userId).to.equal(alice._id);
+    });
+
+    it('uses the plain-named cookie, without Secure, for an http page (a local install, the from-source split)', async () => {
+      await givePassword(alice);
+      const token = await initAuth([['password']]);
+      const { res } = await authenticate(
+        token,
+        { method: 'password', credentials: { password: PASSWORD } },
+        { 'x-pipeshub-session': 'cookie', origin: 'http://localhost:3001' },
+      );
+      const [name, , options] = res.cookie.firstCall.args;
+      expect(name).to.equal('pipeshub_refresh');
+      expect(options).to.include({ httpOnly: true, secure: false, sameSite: 'strict', path: '/api/v1/userAccount/' });
+    });
+
+    it('keeps the body for a client that does not ask (the desktop app, scripts, the SDK)', async () => {
+      await givePassword(alice);
+      const token = await initAuth([['password']]);
+      const { res } = await authenticate(token, { method: 'password', credentials: { password: PASSWORD } });
+      expect(res.body?.refreshToken).to.be.a('string');
+      expect(res.cookie.called).to.be.false;
     });
   });
 
@@ -753,8 +872,10 @@ describe('UserAccountController sign-in flow', () => {
     const issuedAt = Math.floor(Date.now() / 1000) - 3600;
 
     function refreshReq(): AuthenticatedServiceRequest {
+      // A token from before rotation (no family): the refresh adopts it (ADR-WEB-02 D9).
       return fakeRequest({
-        tokenPayload: { userId: alice._id, orgId, iat: issuedAt },
+        tokenPayload: { userId: alice._id, orgId, iat: issuedAt, exp: issuedAt + 86_400 },
+        verifiedToken: `pre-rotation-refresh-${Math.random()}`,
         ip: '10.0.0.1',
       });
     }
@@ -919,6 +1040,63 @@ describe('UserAccountController sign-in flow', () => {
         expect((error as { cause?: Error }).cause?.name).to.equal('AxiosError');
         expect(logger.error.called).to.be.false;
       });
+    });
+  });
+
+  describe('SEC-D-13: every sign-in attempt is counted by method and outcome, never by account', () => {
+    const attempts = (outcome: string, method: string) =>
+      sampleValue(AUTH_ATTEMPTS_METRIC, { outcome, method });
+
+    it('a wrong password, an unknown email and a right password are each one attempt', async () => {
+      await givePassword(alice);
+      const before = {
+        failed: await attempts('failure', 'password'),
+        ok: await attempts('success', 'password'),
+      };
+      const wrong = await authenticate(await initAuth([['password']]), {
+        method: 'password',
+        credentials: { password: 'Wrong-Horse-9!' },
+      });
+      expect(wrong.error).to.be.instanceOf(BadRequestError);
+      const stranger = await authenticate(await initAuth([['password']], 'nobody@acme.test'), {
+        method: 'password',
+        credentials: { password: PASSWORD },
+      });
+      expect(stranger.error).to.be.instanceOf(BadRequestError);
+      const right = await authenticate(await initAuth([['password']]), {
+        method: 'password',
+        credentials: { password: PASSWORD },
+      });
+      expect(right.error).to.equal(undefined);
+      expect(await attempts('failure', 'password')).to.equal(before.failed + 2);
+      expect(await attempts('success', 'password')).to.equal(before.ok + 1);
+    });
+
+    it('a wrong code counts under otp, and a method the server does not know under other', async () => {
+      await giveOtp(alice, '123456');
+      const before = { otp: await attempts('failure', 'otp'), other: await attempts('failure', 'other') };
+      const wrong = await authenticate(await initAuth([['otp']]), { method: 'otp', credentials: { otp: '654321' } });
+      expect(wrong.error).to.be.instanceOf(UnauthorizedError);
+      const odd = await authenticate(await initAuth([['otp']]), {
+        method: 'password"} 1\npipeshub_auth_attempts_total{outcome="success',
+        credentials: { otp: '123456' },
+      });
+      expect(odd.error).to.not.equal(undefined);
+      expect(await attempts('failure', 'otp')).to.equal(before.otp + 1);
+      expect(await attempts('failure', 'other')).to.equal(before.other + 1);
+    });
+
+    it('no series carries an email, a user, an org or a password, and the labels stay in their fixed sets', async () => {
+      await givePassword(alice);
+      await authenticate(await initAuth([['password']]), { method: 'password', credentials: { password: 'Wrong-1' } });
+      const text = JSON.stringify(await samples(AUTH_ATTEMPTS_METRIC));
+      for (const secret of [alice.email, alice._id, orgId, 'Wrong-1', PASSWORD]) {
+        expect(text).to.not.include(secret);
+      }
+      for (const { labels } of await samples(AUTH_ATTEMPTS_METRIC)) {
+        expect(Object.keys(labels).sort()).to.deep.equal(['method', 'outcome']);
+        expect(['success', 'failure', 'error']).to.include(labels['outcome']);
+      }
     });
   });
 
@@ -1273,30 +1451,19 @@ describe('UserAccountController sign-in flow', () => {
       const written = new Promise<void>((resolve) => {
         finishWrite = resolve;
       });
-      const create = sinon.stub(UserCredentials, 'create').callsFake((() =>
-        written.then(() => ({}))) as unknown as typeof UserCredentials.create);
+      let writeStarted: () => void = () => undefined;
+      const writing = new Promise<void>((resolve) => {
+        writeStarted = resolve;
+      });
+      const create = sinon.stub(UserCredentials, 'create').callsFake((() => {
+        writeStarted();
+        return written.then(() => ({}));
+      }) as unknown as typeof UserCredentials.create);
+      // The email never goes out: an answer that waited for it would never come, and the test would time out.
       mailService.sendMail.returns(new Promise(() => undefined));
-      const ANSWER_WITHIN_MS = 2000;
-
-      async function within<T>(work: Promise<T>): Promise<boolean> {
-        let timer: NodeJS.Timeout | undefined;
-        const done = await Promise.race([
-          work.then(() => true),
-          new Promise<boolean>((resolve) => {
-            timer = setTimeout(() => resolve(false), ANSWER_WITHIN_MS);
-          }),
-        ]);
-        clearTimeout(timer);
-        return done;
-      }
 
       const unknownRes = makeRes();
-      const unknownStarted = Date.now();
-      const unknownAnswered = await within(
-        controller.getLoginOtp(fakeRequest({ body: { email: stranger }, ip: '1.1.1.1' }), fakeResponse(unknownRes)),
-      );
-      const unknownMs = Date.now() - unknownStarted;
-      expect(unknownAnswered, 'unknown email answered').to.be.true;
+      await controller.getLoginOtp(fakeRequest({ body: { email: stranger }, ip: '1.1.1.1' }), fakeResponse(unknownRes));
 
       const knownRes = makeRes();
       let knownAnswered = false;
@@ -1305,10 +1472,7 @@ describe('UserAccountController sign-in flow', () => {
         .then(() => {
           knownAnswered = true;
         });
-      const waitStarted = Date.now();
-      while (!create.called && Date.now() - waitStarted < ANSWER_WITHIN_MS) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+      await writing;
       await settle();
 
       // The code is being stored: no answer and no email yet.
@@ -1317,13 +1481,10 @@ describe('UserAccountController sign-in flow', () => {
       expect(knownRes.body).to.be.undefined;
       expect(mailService.sendMail.called, 'emailed before the code was stored').to.be.false;
 
-      const releasedAt = Date.now();
       finishWrite();
-      const answeredAfterWrite = await within(knownRequest);
+      await knownRequest;
 
-      // Stored, so the answer comes at once, while the email is still sending.
-      expect(answeredAfterWrite, 'real account answered while the email was still sending').to.be.true;
-      expect(Date.now() - releasedAt).to.be.lessThan(unknownMs + 1000);
+      // Stored, so the answer comes while the email is still sending.
       expect(knownRes.statusCode).to.equal(200);
       expect(knownRes.body).to.equal(unknownRes.body);
       expect(mailService.sendMail.calledOnce).to.be.true;

@@ -35,6 +35,7 @@ from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.modules.parsers.excel.workbook_model import SheetModel, WorkbookModel
 from app.services.parsing.interface import ParseError
 from app.utils import user_errors
+from tests.support.cpu_budget import thread_cpu
 from tests.support.excel_workbooks import empty_cells, load, workbook_zip
 
 MB = 1024 * 1024
@@ -616,11 +617,31 @@ def test_a_stray_cell_far_from_the_data_cannot_make_the_parent_build_millions_of
     wb.active.cell(60_000, 300, 7)  # 18 M positions below the data
     out = io.BytesIO()
     wb.save(out)
-    start = time.monotonic()
-    with pytest.raises(ParseError) as raised:
-        load(out.getvalue())._build_basic_block_container()
+    parser = load(out.getvalue())
+    with thread_cpu() as cpu, pytest.raises(ParseError) as raised:
+        parser._build_basic_block_container()
     assert raised.value.message == user_errors.EXCEL_TOO_LARGE
-    assert time.monotonic() - start < 15  # refused after ~70 rows of 300 cells, not after 18 M cells
+    assert cpu.seconds < 15  # refused after ~70 rows of 300 cells, not after 18 M cells (minutes)
+
+
+def test_sec_c_19_a_zip_declaring_too_many_entries_is_refused_before_its_directory_is_parsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+    import zipfile
+
+    from app.modules.parsers.excel import workbook_model
+
+    monkeypatch.setattr(workbook_model, "MAX_ZIP_ENTRIES", 50)
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        for index in range(51):
+            archive.writestr(f"x/{index}", b"")
+    parsed: list[bytes] = []
+    monkeypatch.setattr(workbook_model.zipfile, "ZipFile", lambda data, *a, **k: parsed.append(b"") or zipfile.ZipFile(data))
+    with pytest.raises(workbook_model.WorkbookRefused):
+        workbook_model._precheck(out.getvalue(), 10**9)
+    assert parsed == []
 
 
 @pytest.mark.asyncio

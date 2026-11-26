@@ -196,6 +196,24 @@ describe('tokens_manager/controllers connector stop + busy guard', () => {
       expect(recordRelationService.resyncConnectorRecords.calledOnce).to.be.true;
     });
 
+    // The path value is the caller's and the message is logged: it names the entity only.
+    it('refuses a connector that is not active without quoting the path value', async () => {
+      req.params.connectorId = 'n5n-fake-ada@example.com';
+      await run('IDLE');
+      expect(next.firstCall.args[0]?.message).to.equal('Connector not allowed');
+    });
+
+    it('a connector read with no connector body is a 500 that does not quote the path value', async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').callsFake(async (uri: string) =>
+        (uri.endsWith('/connectors/active')
+          ? { statusCode: 200, data: { connectors: [{ _key: 'c-1' }] } }
+          : { statusCode: 200, data: {} }) as any,
+      );
+      await resyncConnectorRecords(recordRelationService, appConfig)(req, res, next);
+      expect(next.firstCall.args[0]?.statusCode).to.equal(500);
+      expect(next.firstCall.args[0]?.message).to.equal('Failed to fetch connector state');
+    });
+
     it('lets an idle connector through to the resync', async () => {
       await run('IDLE');
       expect(next.called, String(next.firstCall?.args?.[0]?.message ?? '')).to

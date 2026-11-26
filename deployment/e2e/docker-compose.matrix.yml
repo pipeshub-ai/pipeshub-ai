@@ -1,0 +1,100 @@
+# DEV-ONLY overlay for the QA-6 options-matrix lane (deployment/e2e/run.sh matrix-up), on top of
+# docker-compose.e2e.yml: what a stack profile of docs/test-plan/04 §4.1 adds to the harness lane's ST-1.
+#
+#   kafka-1                apache/kafka in KRaft mode (one node, no ZooKeeper), as the base file's Kafka is reached
+#   pxh-mongo-standalone   a MongoDB without a replica set, under the name `mongodb` (ST-4, ST-7)
+#
+# etcd and ArangoDB are the base file's services under their profiles (kv-etcd, graph-arango). Everything is
+# labelled with the run, as the harness lane's services.
+
+x-e2e-labels: &e2e-labels
+  pipeshub.harness.owner: x-lead
+  io.pipeshub.e2e.run: ${E2E_RUN:?set E2E_RUN}
+
+services:
+  pipeshub-ai:
+    environment:
+      # A self-hosted install: the vendor rules allow Claude Code on an organization's own Anthropic key there, and
+      # not on the managed offering (the release default; harness_engines/vendor_rules.json).
+      - AGENT_HARNESS_OFFERING=oss
+      # This lane's KRaft broker takes SASL/PLAIN (SCRAM users cannot be created from its environment); the base
+      # file's broker takes SCRAM-SHA-512 (SEC-D-06).
+      - KAFKA_SASL_MECHANISM=plain
+
+  zookeeper:
+    profiles: !override ["qa6-never"]
+
+  kafka-1:
+    image: apache/kafka:3.9.1@sha256:4ceccc577f03f51f6af8dbfda55194d0d892f4fa7913ffbded567ce3895622ed
+    labels: *e2e-labels
+    restart: "no"
+    depends_on: !reset {}
+    volumes: !reset []
+    environment: !override
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_LISTENERS=ACCESS://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      - KAFKA_ADVERTISED_LISTENERS=ACCESS://kafka-1:9092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=ACCESS:SASL_PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_INTER_BROKER_LISTENER_NAME=ACCESS
+      - KAFKA_SASL_ENABLED_MECHANISMS=PLAIN
+      - KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL=PLAIN
+      - KAFKA_LISTENER_NAME_ACCESS_PLAIN_SASL_JAAS_CONFIG=org.apache.kafka.common.security.plain.PlainLoginModule required username="pipeshub" password="${KAFKA_PASSWORD:?}" user_pipeshub="${KAFKA_PASSWORD:?}";
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+    healthcheck: !override
+      test: ["CMD-SHELL", "printf 'security.protocol=SASL_PLAINTEXT\\nsasl.mechanism=PLAIN\\nsasl.jaas.config=%s\\n' \"$$KAFKA_LISTENER_NAME_ACCESS_PLAIN_SASL_JAAS_CONFIG\" > /tmp/hc.properties && /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 --command-config /tmp/hc.properties >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  # The base file's TLS etcd (SEC-D-06) with its data in /tmp; etcd-tls (docker-compose.e2e.yml) writes the certificates.
+  etcd:
+    labels: *e2e-labels
+    restart: "no"
+    volumes: !override
+      - etcd_tls_server:/tls:ro
+    command: >
+      etcd
+      --name etcd-node
+      --data-dir /tmp/etcd-data
+      --listen-client-urls https://0.0.0.0:2379
+      --advertise-client-urls https://etcd:2379
+      --client-cert-auth
+      --trusted-ca-file /tls/ca.crt
+      --cert-file /tls/tls.crt
+      --key-file /tls/tls.key
+      --listen-peer-urls http://127.0.0.1:2380
+      --initial-advertise-peer-urls http://etcd:2380
+      --initial-cluster etcd-node=http://etcd:2380
+
+  arango:
+    labels: *e2e-labels
+    restart: "no"
+    volumes: !reset []
+
+  pxh-mongo-standalone:
+    profiles: ["mongo-standalone"]
+    image: mongo:8.0.17@sha256:9814652e33f0cf8b9fddea8b46dfc9d8e19b130dcfdd7b510ca58bb0d40c8b71
+    ulimits:
+      nofile:
+        soft: 64000
+        hard: 64000
+    labels: *e2e-labels
+    restart: "no"
+    command: ["mongod", "--bind_ip_all"]
+    networks:
+      pipeshub:
+        aliases: [mongodb]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+

@@ -95,7 +95,8 @@ export const AuthApi = {
 
   /**
    * Step 2 – authenticate with email + password.
-   * On success the server returns { accessToken, refreshToken }.
+   * On success the server returns the access token; the web app's refresh
+   * token arrives as an HttpOnly cookie (the desktop's in the body).
    */
   async signInWithPassword(
     email: string,
@@ -146,17 +147,6 @@ export const AuthApi = {
       {},
       { headers: { Authorization: `Bearer ${token}` } },
     );
-  },
-
-  /**
-   * Exchange a long-lived refreshToken for a new accessToken.
-   */
-  async refreshAccessToken(refreshToken: string): Promise<{ accessToken: string }> {
-    const { data } = await publicAuthClient.post<{ accessToken: string }>(
-      '/api/v1/userAccount/token/refresh',
-      { refreshToken },
-    );
-    return data;
   },
 
   /**

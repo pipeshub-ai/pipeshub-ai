@@ -50,8 +50,9 @@ def _entry(key: str) -> dict[str, Any]:
 def graph() -> InMemoryGraph:
     g = InMemoryGraph()
     for key, (limit, org, creator) in SOURCES.items():
-        g.add_node("apps", {"_key": key, "type": "SLACK", "scope": "team", "orgId": org, "createdBy": creator,
-                            "accessLimit": limit, "isConfigured": True})
+        # The providers' get_agent names each source after its connector.
+        g.add_node("apps", {"_key": key, "name": f"Name {key}", "type": "SLACK", "scope": "team", "orgId": org,
+                            "createdBy": creator, "accessLimit": limit, "isConfigured": True})
         g.add_node("agentKnowledge", _entry(key))
     g.add_agent("shared", "alice", share_with_org=True, knowledge=[_entry(k) for k in SOURCES])
     for key in SOURCES:
@@ -377,3 +378,69 @@ def test_a_refused_members_prompt_gets_no_connector_config_of_the_hidden_source(
     assert ("byAlice" in ids) is not hidden
     assert (secret in catalog) is not hidden and (secret in summary) is not hidden
     assert f"{SCOPE_LABEL} open" in catalog      # an unlimited source keeps its scope lines
+
+
+def _version_1(graph: InMemoryGraph) -> None:
+    """Freezes the shared agent as version 1: an agent from before versions gets it on the first read of its versions."""
+    client, _ = _client(graph, "alice")
+    assert client.get("/api/v1/agent/shared/versions", headers=as_user("alice")).status_code == 200
+
+
+@pytest.mark.parametrize(("viewer", "admitted"), VIEWERS)
+def test_a_published_version_names_only_the_sources_the_viewer_may_open(
+    graph: InMemoryGraph, viewer: str, admitted: set[str],
+) -> None:
+    _version_1(graph)
+    client, user = _client(graph, viewer)
+    response = client.get("/api/v1/agent/shared/versions/1", headers=as_user(user))
+    assert response.status_code == 200, response.text
+    assert _names(response.json()["version"]["definition"]["knowledge"]) == _expected(admitted)
+    assert (TITLE in response.text) is ("byAlice" in admitted)
+
+
+def test_a_connector_limited_after_the_version_was_published_is_weighed_as_it_is_now(graph: InMemoryGraph) -> None:
+    """The version froze byAlice unlimited; its connector is limited to alice since. Bob is shown its id only."""
+    graph.nodes["agentKnowledge"]["k-byAlice"]["accessLimit"] = None
+    _version_1(graph)
+    graph.nodes["apps"]["byAlice"]["accessLimit"] = "CREATOR"
+    client, user = _client(graph, "bob")
+    response = client.get("/api/v1/agent/shared/versions/1", headers=as_user(user))
+    assert response.status_code == 200, response.text
+    assert _names(response.json()["version"]["definition"]["knowledge"])["byAlice"] == "byAlice"
+    assert TITLE not in response.text
+
+
+@pytest.mark.parametrize(("viewer", "admitted"), VIEWERS)
+@pytest.mark.parametrize("version", ["draft", "1"])
+def test_an_export_carries_only_the_sources_the_viewer_may_open(
+    graph: InMemoryGraph, viewer: str, admitted: set[str], version: str,
+) -> None:
+    _version_1(graph)
+    client, user = _client(graph, viewer)
+    response = client.get(f"/api/v1/agent/shared/export?version={version}", headers=as_user(user))
+    assert response.status_code == 200, response.text
+    named = {k["name"] for k in response.json()["agent"]["knowledge"]}
+    # A hidden source is named by its id, which the portable form leaves out as a source that is gone.
+    assert named == {f"Name {k}" for k in SOURCES if SOURCES[k][0] is None or k in admitted}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("is_admin", "listed"), [(False, {"orgWide", "open"}), (True, set(SOURCES) - {"elsewhere"})])
+async def test_an_import_binds_only_the_connectors_the_importers_limit_admits(
+    graph: InMemoryGraph, monkeypatch: pytest.MonkeyPatch, is_admin: bool, listed: set[str],
+) -> None:
+    """A member's import is offered, and told of, only what their limit admits; an admin's, every org connector."""
+    import app.agents.mcp.service as mcp_service
+    import app.agents.toolset_store as toolset_store
+    import app.edition_config as edition
+    from app.api.routes import agent as routes
+
+    async def nothing(*_a: object, **_k: object) -> list[dict[str, Any]]:
+        return []
+    for module, name in ((routes, "configured_llm_entries"), (edition, "load_instances_for_mutation"),
+                         (toolset_store, "load_user_instances"), (mcp_service, "load_visible_instances")):
+        monkeypatch.setattr(module, name, nothing)
+    catalog = await routes._import_catalog(
+        {"config_service": object(), "graph_provider": graph}, "org-1", "u-bob", is_admin=is_admin,
+    )
+    assert {c["_key"] for c in catalog.connectors} == listed

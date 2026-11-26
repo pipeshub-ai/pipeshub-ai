@@ -19,6 +19,7 @@ import fakeredis.aioredis
 import pytest
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
+from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import VectorStoreError
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 from app.modules.transformers import entity_vectorstore as module
@@ -87,7 +88,7 @@ MODELS: dict[str, FakeEmbeddingModel] = {
 
 @pytest.fixture(autouse=True)
 def _models() -> Iterator[None]:
-    with embedding_models(MODELS), patch.object(module, "get_default_embedding_model", return_value=BGE):
+    with embedding_models(MODELS), patch("app.utils.llm.get_default_embedding_model", return_value=BGE):
         yield
 
 
@@ -156,6 +157,50 @@ class TestWrites:
 
         assert db.deletions == 1
         assert _models_of(db) == {"t1": (ADA_FP, ADA.value)}
+
+    @pytest.mark.parametrize(("provider", "model"), [
+        ("openAICompatible", "azure/text-embedding-3-small"),
+        ("azureOpenAI", "text-embedding-3-small"),
+        ("openAICompatible", "Text-Embedding-3-Small"),
+    ])
+    async def test_the_same_model_from_another_provider_keeps_the_collection(self, provider: str, model: str) -> None:
+        """Any replica goes on writing at once, and nothing is embedded again: the vectors are the same model's."""
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic("t1")], merge_membership=False)
+
+        with embedding_models({**MODELS, model: SMALL}):
+            await switch_embedding_model(config, embedding_config(provider, model))
+            outcome = await store.upsert_entities_batch([_topic("t1"), _topic("t2")], merge_membership=False)
+            fingerprint = await _leader_tick(store)
+
+        assert db.deletions == 0
+        assert (outcome.written, outcome.unchanged) == (1, 1)
+        assert fingerprint == f"{provider}:{model}:6"
+        assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value), "t2": (fingerprint, SMALL.value)}
+
+    async def test_a_query_store_serves_the_same_model_from_another_provider(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
+        reader = _store(db, another_process(config), owner=False)
+
+        with embedding_models({**MODELS, "azure/text-embedding-3-small": SMALL}):
+            await switch_embedding_model(config, embedding_config("openAICompatible", "azure/text-embedding-3-small"))
+            assert await reader.embedding_fingerprint() == "openAICompatible:azure/text-embedding-3-small:6"
+        assert db.deletions == 0
+
+    async def test_another_model_from_another_provider_still_recreates(self) -> None:
+        """A gateway prefix does not make two models one."""
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+
+        with embedding_models({**MODELS, "azure/text-embedding-ada-002": ADA}):
+            await switch_embedding_model(config, embedding_config("openAICompatible", "azure/text-embedding-ada-002"))
+            with pytest.raises(VectorStoreError, match="embedded by openAI:text-embedding-3-small"):
+                await store.embedding_fingerprint()
+            await _leader_tick(store)
+        assert db.deletions == 1
 
     async def test_only_the_rebuild_leader_drops_the_collection(self) -> None:
         """Every indexing replica owns the collection, but one dropping it
@@ -543,12 +588,12 @@ class TestOneRecreateAtATime:
         db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
         with recreate_lock_redis() as server:
             redis = fakeredis.aioredis.FakeRedis(server=server)
-            monkeypatch.setattr(db, "create_collection", AsyncMock(side_effect=RuntimeError("create failed")))
-            with pytest.raises(RuntimeError, match="create failed"):
+            # Scoped to the failing write alone: ``monkeypatch.undo()`` would also undo the suite's defaults.
+            with patch.object(db, "create_collection", AsyncMock(side_effect=RuntimeError("create failed"))), \
+                    pytest.raises(RuntimeError, match="create failed"):
                 await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
             assert await redis.get(module._recreate_lock_key("entities")) is None
 
-            monkeypatch.undo()
             assert (await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)).written == 1
             assert await redis.get(module._recreate_lock_key("entities")) is None
         assert db.dimension == SMALL.dimension
@@ -600,7 +645,10 @@ class TestConfigReads:
 
         async def _counting_get_key(key: str, **kwargs: object) -> object:
             nonlocal reads
-            reads += 1
+            # The embedding config, the epoch pointer and the precision pin; the region pin (MG-15) is a document of
+            # its own and not counted.
+            if key == config_node_constants.AI_MODELS.value or key.startswith("/services/vectordb/embedding_"):
+                reads += 1
             return await real_get_key(key, **kwargs)
 
         with patch.object(config.store, "get_key", side_effect=_counting_get_key):

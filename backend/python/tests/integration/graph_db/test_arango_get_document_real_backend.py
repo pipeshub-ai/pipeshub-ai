@@ -18,23 +18,24 @@ import pytest
 from app.config.constants.arangodb import CollectionNames
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from tests.support import it_backends
 
 pytestmark = pytest.mark.integration
 
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
 ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 COLLECTION = CollectionNames.TOPICS.value
 
 
 @pytest.fixture
 async def arango() -> AsyncIterator[ArangoHTTPProvider]:
+    url = it_backends.endpoint("ARANGO_IT_URL")
     config = AsyncMock()
     config.get_config = AsyncMock(return_value={
-        "url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": "ensure_it",
+        "url": url, "username": "root", "password": ARANGO_PASSWORD, "db": "ensure_it",
     })
     provider = ArangoHTTPProvider(logging.getLogger("arango-get-document-it"), config)
     if not await provider.connect():
-        pytest.skip(f"ArangoDB not reachable at {ARANGO_URL}")
+        it_backends.unavailable("ARANGO_IT_URL", f"ArangoDB not reachable at {url}")
     assert provider.http_client is not None
     if not await provider.http_client.has_collection(COLLECTION):
         await provider.http_client.create_collection(COLLECTION, edge=False, schema=None)

@@ -387,6 +387,7 @@ export function MoveFolderSidebar({
             </Text>
           </Flex>
           <IconButton
+            aria-label={t('common.close')}
             variant="ghost"
             // Radix ghost buttons pull out by their padding; keep the header's own inset
             style={{ margin: 0 }}
@@ -407,7 +408,7 @@ export function MoveFolderSidebar({
             onChange={(e) => setSearchQuery(e.target.value)}
           >
             <TextField.Slot>
-              <MaterialIcon name="search" size={16} color="var(--slate-9)" />
+              <MaterialIcon name="search" size={16} color="var(--slate-11)" />
             </TextField.Slot>
           </TextField.Root>
         </Box>
@@ -519,7 +520,7 @@ export function MoveFolderSidebar({
             </Flex>
           ) : (
               <Flex align="center" justify="center" style={{ padding: 'var(--space-8)' }}>
-              <Text size="2" style={{ color: 'var(--slate-9)' }}>
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>
                 {searchQuery ? t('moveFolder.noFolders') : t('sidebar.noCollectionSelected')}
               </Text>
             </Flex>

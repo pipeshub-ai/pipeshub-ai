@@ -3,9 +3,11 @@
 import React from 'react';
 import { Flex, Text, Avatar, Box } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore } from '@/config';
+import { userStatus } from './deactivate-user-dialog';
+import { PersonPanelExtras, useAuthStore } from '@/config';
 import { WorkspaceRightPanel } from '../../components';
 import { useUsersStore } from '../store';
+import { useFeatureFlagsStore, selectAgentHarnessOn } from '@/lib/store/feature-flags-store';
 
 // ========================================
 // Helpers
@@ -58,7 +60,7 @@ function ProfileField({ label, value, valueColor }: ProfileFieldProps) {
       }}
     >
       <Flex direction="column" gap="1">
-        <Text size="1" style={{ color: 'var(--slate-9)' }}>
+        <Text size="1" style={{ color: 'var(--slate-11)' }}>
           {label}
         </Text>
         <Text size="2" weight="medium" style={{ color: valueColor || 'var(--slate-12)' }}>
@@ -75,6 +77,7 @@ function ProfileField({ label, value, valueColor }: ProfileFieldProps) {
 
 export function UserProfileSidebar() {
   const { t } = useTranslation();
+  const harnessOn = useFeatureFlagsStore(selectAgentHarnessOn);
   const currentUser = useAuthStore((s) => s.user);
 
   const { isProfilePanelOpen, profileUser, closeProfilePanel } = useUsersStore();
@@ -85,7 +88,7 @@ export function UserProfileSidebar() {
   const displayName = profileUser.name || profileUser.email || '-';
   const nameWithSuffix = isSelf ? `${displayName} (${t('common.you')})` : displayName;
 
-  const status = profileUser.hasLoggedIn ? 'Active' : 'Pending';
+  const status = userStatus(profileUser);
 
   // Map status to color for the profile display
   const statusColor =
@@ -93,7 +96,9 @@ export function UserProfileSidebar() {
       ? 'var(--accent-11)'
       : status === 'Pending'
         ? 'var(--amber-11)'
-        : 'var(--slate-11)';
+        : status === 'Blocked'
+          ? 'var(--red-11)'
+          : 'var(--slate-11)';
 
   return (
     <WorkspaceRightPanel
@@ -117,7 +122,7 @@ export function UserProfileSidebar() {
         >
           <Flex align="center" justify="between">
             <Flex direction="column" gap="1">
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 {t('workspace.users.profile.name')}
               </Text>
               <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
@@ -166,6 +171,10 @@ export function UserProfileSidebar() {
           label={t('workspace.users.profile.invitedBy')}
           value="-"
         />
+
+        {profileUser.userId && harnessOn && (
+          <PersonPanelExtras userId={profileUser.userId} name={displayName} isSelf={isSelf} />
+        )}
       </Flex>
     </WorkspaceRightPanel>
   );

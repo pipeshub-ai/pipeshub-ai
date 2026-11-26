@@ -8,6 +8,7 @@ import logging
 import os
 import warnings
 import zlib
+from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -16,7 +17,7 @@ import pytest
 from app.connectors.sources.localKB.handlers.kh_merge import key_for
 from app.core.org_context import OrgContext, bind
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
-from app.services.graph_db.postgres import kh_browse
+from app.services.graph_db.postgres import kh_browse, kh_listing
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import counts as kg_counts
 from app.services.graph_db.postgres.kg.drainer import drain_org
@@ -29,6 +30,7 @@ from tests.permissions.kh_layer import (
     browse_pages,
     check_world,
     children_of,
+    counts_from_the_second_page,
     cursor_in_the_clear,
     listing,
 )
@@ -38,6 +40,7 @@ from tests.permissions.kh_worlds import (
     CHAIN,
     CHAINLINK,
     DECLPAG,
+    FOLDERSTUB,
     KH_WORLDS,
     LEVELS,
     OPENGRANT,
@@ -249,6 +252,44 @@ async def test_golden_and_adversarial_worlds_count_from_the_counters_what_the_vi
     assert set(refused) <= set(KNOWN_REFUSED), f"{layer.name} with counters: golden worlds refused as not copied, so never listed: {sorted(set(refused) - set(KNOWN_REFUSED))}"
 
 
+@pytest.mark.parametrize("kh_layer", ["current", "not_current"], indirect=True)
+async def test_a_name_search_by_the_trigram_index_lists_what_the_walk_lists_in_every_world(kh_layer, monkeypatch) -> None:
+    """Every golden and adversarial world, every viewer, searches for the first letters of the names the world holds: the rows and the total read by the trigram index
+    of the graph nodes' names (``graph.records_by_name``) are the ones the walk of the sort order lists, with kg deciding access and with the live walk deciding it."""
+    real = kh_listing.KhListingMixin._kh_name_hits
+    used: list[bool] = []
+
+    async def indexed(self, *a, **kw) -> object:
+        got = await real(self, *a, **kw)
+        used.append(got is not None)
+        return got
+
+    async def walked(self, *a, **kw) -> None:
+        return None
+    worlds = [*dict.fromkeys(s.final_world() for s in load_all()), *KH_WORLDS]
+    bad: list[str] = []
+    for start in range(0, len(worlds), CHUNK):
+        chunk = worlds[start:start + CHUNK]
+        await kh_layer.preload(chunk)
+        for offset, world in enumerate(chunk):
+            terms = sorted({n.id[:4] for n in world.nodes if n.kind != "app" and sum(c.isalnum() for c in n.id[:4]) >= 3})[:3]
+            with bind(OrgContext((await kh_layer._ns(world)).org, None, "job", "job:test", "t")):
+                for viewer in world.users():
+                    for term in terms:
+                        try:
+                            monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_name_hits", indexed)
+                            a = await listing(kh_layer, world, viewer, {"search_query": term})
+                            monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_name_hits", walked)
+                            b = await listing(kh_layer, world, viewer, {"search_query": term})
+                        except KnowledgeHubListingNotReady:
+                            continue
+                        if [r["id"] for r in a.rows] != [r["id"] for r in b.rows] or a.total != b.total:
+                            bad.append(f"golden-{start + offset} {viewer} {term!r}: {[r['id'] for r in a.rows]} ({a.total}) by the index, {[r['id'] for r in b.rows]} ({b.total}) by the walk")
+        await kh_layer.release(chunk)
+    assert not bad, "\n".join(bad[:40])
+    assert sum(used) > 100, f"the trigram index read only {sum(used)} of {len(used)} searches"
+
+
 @pytest.mark.parametrize(("kind", "part"), [(kind, part) for kind in sorted(gen.GENERATORS) for part in range(GENERATED_PARTS)],
                          ids=[f"{kind}-{part + 1}of{GENERATED_PARTS}" for kind in sorted(gen.GENERATORS) for part in range(GENERATED_PARTS)])
 async def test_generated_worlds_list_what_the_viewer_may_read(kh_layer, kind: str, part: int, monkeypatch) -> None:
@@ -381,6 +422,17 @@ async def test_a_page_that_ends_at_a_scan_bound_names_no_child_the_viewer_may_no
     assert sorted(listed) == readable, kh_layer.name      # the order is the store's (these names sort by their stored keys), each row once
     assert cursors, kh_layer.name
     assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)], kh_layer.name
+
+
+async def test_counts_asked_for_from_the_second_page_on_describe_the_whole_folder(kh_layer) -> None:
+    """A first page asked without counts issues a cursor carrying the total alone; every later page that asks for counts gets counts by type that add
+    up to its total, as the rows of the whole folder do."""
+    await kh_layer.preload([FOLDERSTUB])
+    with bind(OrgContext((await kh_layer._ns(FOLDERSTUB)).org, None, "job", "job:test", "t")):
+        items, pages = await counts_from_the_second_page(kh_layer, FOLDERSTUB, "u", "f", "folder", 4)
+    by_type = dict(Counter(i.nodeType for i in items))
+    assert len(items) == 9 and len(pages) == 2, (kh_layer.name, len(items), pages)
+    assert all(p == (9, 9, 9, by_type) for p in pages), (kh_layer.name, pages, by_type)
 
 
 async def test_a_browse_lists_the_chain_tops_the_stores_place_under_it_and_their_arrows(kh_layer) -> None:

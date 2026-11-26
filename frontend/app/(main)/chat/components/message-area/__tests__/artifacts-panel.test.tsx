@@ -91,6 +91,16 @@ describe('ArtifactsPanel for a deleted artifact', () => {
     click.mockRestore();
   });
 
+  it('each icon-only button names itself with its glyph\'s word, so an undrawn icon still matches its name', () => {
+    renderPanel([artifact({ mimeType: 'text/csv', fileName: 'data.csv', recordId: 'rec-1' })], { onPreview: vi.fn() });
+    for (const button of screen.getAllByRole('button')) {
+      const name = (button.getAttribute('aria-label') ?? '').toLowerCase();
+      const glyphs = Array.from(button.querySelectorAll('.material-icons-outlined, .material-icons'));
+      for (const glyph of glyphs) expect(name).toContain((glyph.textContent ?? '').replace(/_/g, ' '));
+    }
+    expect(screen.getByRole('button', { name: 'Preview artifact' })).toBeTruthy();
+  });
+
   it('marks the card unavailable when the preview reports it gone', async () => {
     const onPreview = vi.fn().mockRejectedValue(gone());
 

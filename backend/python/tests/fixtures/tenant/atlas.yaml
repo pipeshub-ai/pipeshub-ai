@@ -1,0 +1,90 @@
+# G-49 / GA-26: the seeded fixture tenant. One organization with four connectors (Slack, Jira, Google Drive,
+# Confluence) and ACL variety: group grants, direct grants, a connector a user may not use, a record in the trash and
+# a user with no access at all. ``expect`` is what each user reads; tests/support/seeded_tenant.py checks it against
+# the in-memory record-access fake, and the real-graph tests check it against Neo4j and ArangoDB.
+#
+# "Last week" is 20-24 October 2025: the journeys send 27 October 2025 as the client's time.
+org: org-atlas
+domain: atlas.example
+apps:
+  - {id: app-slack, connector: SLACK, name: Slack}
+  - {id: app-jira, connector: JIRA, name: Jira}
+  - {id: app-drive, connector: DRIVE, name: Google Drive}
+  - {id: app-confluence, connector: CONFLUENCE, name: Confluence}
+groups:
+  - {id: grp-eng, name: Engineering}
+  - {id: grp-sales, name: Sales}
+users:
+  - {id: alice, name: Alice Rao, groups: [grp-eng]}
+  - {id: bob, name: Bob Iyer, groups: [grp-sales]}
+  # A contractor in engineering who was given Slack only.
+  - {id: carol, name: Carol Diaz, groups: [grp-eng], apps: [app-slack]}
+  - {id: dave, name: Dave Moss, groups: []}
+records:
+  - id: atlas-standup
+    app: app-slack
+    title: "#atlas standup, 21 October 2025"
+    text: >-
+      Atlas: the auth service moved to v2 on Tuesday 21 October. p95 login latency fell from 900 ms to 610 ms.
+      Ravi is on call for the rollout.
+    grants: [{group: grp-eng}]
+  - id: atlas-sales-pricing
+    app: app-slack
+    title: "#atlas-sales, 23 October 2025"
+    text: >-
+      Atlas launch pricing was approved on 23 October: 40 dollars per seat per month for the first year.
+    grants: [{group: grp-sales}]
+  - id: atl-101
+    app: app-jira
+    title: "ATL-101 Login returns 500 after the auth migration"
+    text: >-
+      Atlas issue ATL-101, priority P1, status Open, owner Alice Rao. Since the 21 October auth migration about
+      2 percent of Atlas logins return HTTP 500.
+    ticket: {key: ATL-101, status: Open, priority: P1, owner: Alice Rao}
+    grants: [{group: grp-eng}]
+  - id: atl-102
+    app: app-jira
+    title: "ATL-102 CSV export times out on large workspaces"
+    text: >-
+      Atlas issue ATL-102, priority P1, status Open, owner Ravi Kumar. Exports of workspaces over 50,000 rows time
+      out after 60 seconds since 22 October.
+    ticket: {key: ATL-102, status: Open, priority: P1, owner: Ravi Kumar}
+    grants: [{group: grp-eng}]
+  - id: atl-095
+    app: app-jira
+    title: "ATL-095 Dark mode for the Atlas dashboard"
+    text: >-
+      Atlas issue ATL-095, priority P2, status Done, owner Bob Iyer. Dark mode shipped on 22 October.
+    ticket: {key: ATL-095, status: Done, priority: P2, owner: Bob Iyer}
+    grants: [{group: grp-eng}]
+  - id: atlas-roadmap
+    app: app-drive
+    title: "Atlas roadmap Q4 2025"
+    text: >-
+      Atlas general availability moved from 3 November to 17 November 2025 to finish the auth migration. Decided
+      on 22 October.
+    grants: [{user: alice}, {user: bob}]
+  - id: atlas-board-update
+    app: app-drive
+    title: "Atlas board update (confidential)"
+    text: >-
+      Atlas spend is 1.2 million over plan. The board asked for a cost review by 15 November.
+    grants: [{user: alice}]
+  - id: atlas-design-v3
+    app: app-confluence
+    title: "Atlas design doc v3"
+    text: >-
+      Atlas v3 splits the auth service from the API gateway. Updated on 20 October.
+    grants: [{group: grp-eng}, {group: grp-sales}]
+  - id: atlas-design-v1
+    app: app-confluence
+    title: "Atlas design doc v1 (archived)"
+    text: >-
+      Atlas v1 keeps auth inside the API gateway.
+    grants: [{group: grp-eng}]
+    deleted: true
+expect:
+  alice: [atlas-standup, atl-101, atl-102, atl-095, atlas-roadmap, atlas-board-update, atlas-design-v3]
+  bob: [atlas-sales-pricing, atlas-roadmap, atlas-design-v3]
+  carol: [atlas-standup]
+  dave: []

@@ -13,6 +13,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -69,7 +70,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register BookStack toolset
-@ToolsetBuilder("BookStack")\
+@ToolsetBuilder("BookStack", provider=ToolProvider.CONNECTOR)\
     .in_group("Documentation")\
     .with_description("BookStack integration for documentation and knowledge management")\
     .with_category(ToolsetCategory.APP)\
@@ -193,7 +194,7 @@ class BookStack:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def create_page(
         self,
@@ -244,7 +245,7 @@ class BookStack:
                 description="The ID of the page to retrieve"
             )
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_page(self, page_id: int) -> Tuple[bool, str]:
         """Get a page by ID from BookStack."""
@@ -310,7 +311,7 @@ class BookStack:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="update")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="update"), Tag(key="effect", value="write")],
     )
     async def update_page(
         self,
@@ -363,7 +364,7 @@ class BookStack:
                 description="The ID of the page to delete"
             )
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_page(self, page_id: int) -> Tuple[bool, str]:
         """Delete a page from BookStack."""
@@ -400,7 +401,7 @@ class BookStack:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="search")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="search"), Tag(key="effect", value="read")],
     )
     async def search_all(
         self,

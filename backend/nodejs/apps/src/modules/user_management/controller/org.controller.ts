@@ -1,5 +1,25 @@
+import { getSlackUserLinkRepository } from '../../../libs/repositories/slack-user-link';
+import {
+  INBOX_ERASER,
+  type InboxEraser,
+} from '../../agent-harness/ports/inbox';
+import {
+  ENGINE_SIGNIN_ERASER,
+  type EngineSignInEraser,
+} from '../../agent-harness/ports/engine-signins';
+import {
+  PERSONAL_INSTANCE_ERASER,
+  type PersonalInstanceEraser,
+} from '../../agent-harness/ports/personal-instances';
 import { Response, NextFunction } from 'express';
+import {
+  SCHEDULE_ERASER,
+  ScheduleEraser,
+} from '../../agent-harness/ports/schedules';
 import bcrypt from 'bcryptjs';
+import type { OrgQueryServiceEraser } from '../../agent-harness/ports/principal-erasure';
+import { ORG_QUERY_SERVICE_ERASER } from '../../agent-harness/binders/tokens';
+import { orgLifecycle } from '../../../libs/org-lifecycle';
 
 import { getOrgRepository } from '../../../libs/repositories/org';
 import { asAccount } from '../../../libs/context/orgContext';
@@ -11,8 +31,24 @@ import {
   readImageUpload,
   sharp,
 } from '../../../libs/utils/image.utils';
-import { inject, injectable } from 'inversify';
+import { inject, injectable, optional } from 'inversify';
+import {
+  MODEL_ACCOUNT_ERASER,
+  ModelAccountEraser,
+} from '../../agent-harness/ports/model-accounts';
+import {
+  MEMORY_ERASER,
+  MemoryEraser,
+} from '../../agent-harness/ports/memory-store';
+import {
+  DATA_ERASER_EXTENSION,
+  DataEraserExtension,
+} from '../../agent-harness/ports/data-eraser-extension';
 import { MailService } from '../services/mail.service';
+import {
+  PRINCIPAL_DELETION,
+  type PrincipalDeletionService,
+} from '../services/principal-deletion.service';
 import { getBrandConfig } from '../../../libs/branding';
 import { passwordValidator } from '../../auth/utils/passwordValidator';
 import { SALT_ROUNDS } from '../../auth/controller/userAccount.controller';
@@ -20,6 +56,7 @@ import {
   BadRequestError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import {
   markClientSafe,
@@ -46,6 +83,33 @@ import {
 import { ORG_CREATED_EVENT } from '../constants/constants';
 import { audit } from '../../../libs/services/audit';
 import { withCause } from '../../../libs/errors/base.error';
+import { hardenedProfile } from '../../../libs/utils/security-profile';
+import { erasureOnDelete } from '../../agent-harness/config';
+
+/**
+ * How many pages of the query service's org erase one delete asks for. Each
+ * page is idempotent, so a delete that runs out of pages leaves the org as it
+ * is and the next delete continues where this one stopped.
+ */
+export const ORG_DELETE_QUERY_SERVICE_PAGES = 200;
+
+/** The refusal of a delete whose typed name is not the org's. */
+export const ORG_DELETE_NAME_MISMATCH = 'org_delete_name_mismatch';
+
+/**
+ * What an admin types to delete the org: its registered name, else its
+ * display name, else its contact email (an individual account may have no
+ * registered name). The UI asks for the same.
+ */
+export const orgConfirmationName = (org: {
+  registeredName?: string | null;
+  shortName?: string | null;
+  contactEmail?: string | null;
+}): string =>
+  org.registeredName?.trim() ||
+  org.shortName?.trim() ||
+  org.contactEmail?.trim() ||
+  '';
 
 const ADDRESS_FIELDS = [
   'addressLine1',
@@ -70,6 +134,36 @@ export class OrgController {
     @inject('Logger') protected logger: Logger,
     @inject('EntitiesEventProducer')
     protected eventService: EntitiesEventProducer,
+    @inject(MODEL_ACCOUNT_ERASER)
+    @optional()
+    protected modelAccounts: ModelAccountEraser | null = null,
+    @inject(SCHEDULE_ERASER)
+    @optional()
+    protected schedules: ScheduleEraser | null = null,
+    @inject(MEMORY_ERASER)
+    @optional()
+    protected memories: MemoryEraser | null = null,
+    @inject(ENGINE_SIGNIN_ERASER)
+    @optional()
+    protected engineSignIns: EngineSignInEraser | null = null,
+    @inject(PERSONAL_INSTANCE_ERASER)
+    @optional()
+    protected personalInstances: PersonalInstanceEraser | null = null,
+    @inject(DATA_ERASER_EXTENSION)
+    @optional()
+    protected extension: DataEraserExtension | null = null,
+    @inject(INBOX_ERASER)
+    @optional()
+    protected inbox: InboxEraser | null = null,
+    @inject(ORG_QUERY_SERVICE_ERASER)
+    @optional()
+    protected queryService: OrgQueryServiceEraser | null = null,
+    @inject(PRINCIPAL_DELETION)
+    @optional()
+    protected principalDeletion: Pick<
+      PrincipalDeletionService,
+      'requestOrg'
+    > | null = null,
   ) {}
 
   getDomainFromEmail(email: string) {
@@ -471,6 +565,45 @@ export class OrgController {
         throw new NotFoundError('Organisation not found');
       }
 
+      // The server, not only the dialog, asks for the org's name, so a stray call cannot delete it. On the
+      // compatibility profile (ADR-OPS-07) an API caller may leave it out, as before ORGDEL; one that sends it is held to it.
+      const { confirmName } = (req.body ?? {}) as { confirmName?: unknown };
+      const expected = orgConfirmationName(org);
+      const confirmationRequired = hardenedProfile();
+      if (
+        (confirmName !== undefined || confirmationRequired) &&
+        (typeof confirmName !== 'string' ||
+          expected === '' ||
+          confirmName.trim() !== expected)
+      ) {
+        throw new BadRequestError(
+          "Type the organization's name exactly as shown to delete it.",
+          { reasonCode: ORG_DELETE_NAME_MISMATCH },
+        );
+      }
+
+      const hook = orgLifecycle().orgLifecycleHook;
+      if (hook !== null) {
+        res.status(200).json(
+          await hook.deleteOrg({
+            org,
+            orgId: org._id,
+            byUserId: String(req.user?.userId),
+            config: {
+              frontendUrl: this.config.frontendUrl,
+              scopedJwtSecret: this.config.scopedJwtSecret,
+            },
+          }),
+        );
+        return;
+      }
+
+      // Erasure, beyond the soft delete a release without it did, runs where the harness is on for the org or the
+      // install is hardened (ADR-OPS-07, ADR-OPS-08); otherwise the org's data stays as that release kept it.
+      if (await erasureOnDelete(org._id)) {
+        await this.eraseOrgData(org._id, String(req.user?.userId));
+      }
+
       // Soft delete: set isDeleted to true
       const deleted = await getOrgRepository().softDelete(orgId as string);
       if (!deleted) {
@@ -498,6 +631,39 @@ export class OrgController {
     } catch (error) {
       next(error);
     }
+  }
+
+  /** Before the org is marked deleted, so a failed erasure can be retried. */
+  private async eraseOrgData(orgId: string, byUserId: string): Promise<void> {
+    await this.modelAccounts?.eraseOrg(orgId);
+    await this.schedules?.eraseOrg(orgId);
+    await this.memories?.eraseOrg(orgId);
+    // And what stores this build does not know of keep for it (`DataEraserExtension`).
+    await this.extension?.eraseOrg(orgId);
+    // And every person's own Claude sign-in (SIGNIN): records removed, live sandboxes signed out.
+    await this.engineSignIns?.eraseOrg(orgId);
+    // And every member's Inbox settings, run-notice claims and watch leases (G2).
+    await this.inbox?.eraseOrg(orgId);
+    // And every member's own toolset and MCP instances (main #4324).
+    await this.personalInstances?.eraseOrg(orgId);
+    // And what the query service holds for it: artifacts, chat attachments, skill candidates, agent versions.
+    await this.eraseQueryServiceData(orgId);
+    // And its Slack account links (ADR-SLACKID-01), which hold a person's email and Slack name.
+    await getSlackUserLinkRepository().removeForOrg(orgId);
+    // And the rest through the org's durable erasure job: its sessions (journals, payloads, workspaces), its harness
+    // documents, its data keys and its audit chain, which no request could erase in one go.
+    await this.principalDeletion?.requestOrg(orgId, byUserId);
+  }
+
+  /** Page by page until nothing is left; a page that fails, or too many pages, leave the org undeleted. */
+  private async eraseQueryServiceData(orgId: string): Promise<void> {
+    if (this.queryService === null) return;
+    for (let page = 0; page < ORG_DELETE_QUERY_SERVICE_PAGES; page += 1) {
+      if (!(await this.queryService.eraseOrg(orgId)).remaining) return;
+    }
+    throw new ServiceUnavailableError(
+      "The organization's data is still being erased. Delete it again to continue.",
+    );
   }
 
   async updateOrgLogo(

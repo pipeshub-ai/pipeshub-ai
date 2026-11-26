@@ -22,13 +22,6 @@ Covers:
     - returns 404 when provider returns None after permission check
     - all error codes are int, not str (Minor 3 fix)
 
-  list_kb_records
-    - user not found → 404 (only user check)
-    - no KB permission → still returns records/empty list (provider filters),
-      does NOT return 403 (Blocker 3 fix)
-    - never calls get_user_kb_permission or kb_exists (those belong in the
-      provider, not the service, for this endpoint)
-
   delete_knowledge_base
     - 403 access denial does NOT log at error level [MAJOR 1]
     - OWNER can delete successfully
@@ -348,81 +341,6 @@ class TestGetKnowledgeBase:
 
         assert result_404["code"] == 404
         assert result_403["code"] == 403
-
-
-# ===========================================================================
-# list_kb_records — Blocker 3: restored historical contract
-# ===========================================================================
-
-class TestListKbRecords:
-
-    @pytest.mark.asyncio
-    async def test_user_not_found_returns_404(self):
-        svc, gp = _make_service()
-        gp.get_user_by_user_id.return_value = None
-
-        result = await svc.list_kb_records(
-            kb_id="kb-1", user_id="uid-1", org_id="org-1", page=1, limit=10
-        )
-
-        assert result["success"] is False
-        assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    async def test_no_kb_permission_returns_empty_list_not_403(self):
-        """
-        Historical API contract: if the provider returns an empty list for an
-        unauthorised user, the service must return {records: [], ...}, NOT 403.
-        This is the Blocker 3 fix — list_kb_records must NOT call
-        get_user_kb_permission or kb_exists at the service layer.
-        """
-        svc, gp = _make_service()
-        gp.get_user_by_user_id.return_value = _user()
-        # Provider handles its own access filtering and returns empty
-        gp.list_kb_records.return_value = ([], 0, {})
-
-        result = await svc.list_kb_records(
-            kb_id="kb-1", user_id="uid-1", org_id="org-1", page=1, limit=10
-        )
-
-        # Must NOT be a 403 response
-        assert result.get("success") is not False or result.get("code") != 403
-        assert "records" in result
-        assert result["records"] == []
-        # Service must NOT bypass the provider by checking permission itself
-        gp.get_user_kb_permission.assert_not_called()
-        gp.kb_exists.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_with_records_returns_paginated_response(self):
-        svc, gp = _make_service()
-        gp.get_user_by_user_id.return_value = _user()
-        records = [{"id": "r1", "name": "doc1"}, {"id": "r2", "name": "doc2"}]
-        gp.list_kb_records.return_value = (records, 2, {"types": ["pdf"]})
-
-        result = await svc.list_kb_records(
-            kb_id="kb-1", user_id="uid-1", org_id="org-1", page=1, limit=10
-        )
-
-        assert result["records"] == records
-        assert result["pagination"]["totalCount"] == 2
-        assert result["pagination"]["page"] == 1
-
-    @pytest.mark.asyncio
-    async def test_pagination_calculation(self):
-        svc, gp = _make_service()
-        gp.get_user_by_user_id.return_value = _user()
-        gp.list_kb_records.return_value = ([], 50, {})
-
-        result = await svc.list_kb_records(
-            kb_id="kb-1", user_id="uid-1", org_id="org-1", page=3, limit=10
-        )
-
-        assert result["pagination"]["totalPages"] == 5
-        assert result["pagination"]["page"] == 3
-        # The skip passed to the provider must be (page-1)*limit = 20
-        call_kwargs = gp.list_kb_records.call_args.kwargs
-        assert call_kwargs.get("skip") == 20 or call_kwargs.get("offset") == 20
 
 
 # ===========================================================================

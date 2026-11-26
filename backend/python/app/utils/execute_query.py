@@ -65,7 +65,7 @@ def connector_instances_have_sql(instances: list[dict] | None) -> bool:
 
     Split out of :func:`has_sql_connector_configured` so a caller that also
     needs the Slack answer can share one query instead of issuing the same
-    one twice (see `chat_modes/bridge.py`).
+    one twice (see `chat_modes/setup.py`).
     """
     return any(
         str(i.get("type", "")).upper() in _SQL_CONNECTOR_TYPES and bool(i.get("isConfigured"))

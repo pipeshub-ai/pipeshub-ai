@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "engineProfile": {
+    "mode": "build",
+    "isolationMin": "gvisor",
+    "egress": "none",
+    "tools": {
+      "maxTools": null,
+      "effects": [
+        "execute",
+        "read",
+        "workspace",
+        "write"
+      ]
+    },
+    "limits": {
+      "maxSteps": 1000,
+      "maxWallS": 1800,
+      "maxTokens": null,
+      "maxUsd": null
+    },
+    "subAgents": {
+      "enabled": false,
+      "maxDepth": 1,
+      "maxConcurrent": 1
+    },
+    "reasoningEffort": null,
+    "approvals": {
+      "read": "allow",
+      "workspace": "allow",
+      "write": "ask",
+      "execute": "ask"
+    },
+    "skills": null,
+    "accountKinds": [
+      "org_api_key",
+      "org_cloud",
+      "user_api_key",
+      "user_plan_sandbox_login"
+    ]
+  },
+  "engineIsolation": {
+    "devOverride": {
+      "env": "PIPESHUB_ENGINES_WITHOUT_GVISOR",
+      "isolationMin": "docker"
+    },
+    "installGuide": "https://github.com/pipeshub-ai/pipeshub-ai/blob/main/deployment/docker-compose/GVISOR.md"
+  },
+  "children": {
+    "maxPerRun": 16
+  },
+  "memory": {
+    "maxChars": 500
+  },
+  "models": {
+    "offering": "managed"
+  },
+  "runs": {
+    "deadlineMs": 3600000
+  },
+  "journal": {
+    "maxCommitEvents": 100
+  },
+  "budgets": {
+    "maxTurns": 15,
+    "maxTokens": 10000000,
+    "loopMaxTokens": 2000000,
+    "maxCostUsd": 5,
+    "activeTimeS": null
+  },
+  "rollout": {
+    "durable": {
+      "modes": [
+        "auto",
+        "deep",
+        "quick",
+        "react"
+      ],
+      "assistantModes": [
+        "internal_search",
+        "web_search"
+      ],
+      "modelFamilies": null
+    }
+  },
+  "snapshots": {
+    "ttlDays": 7
+  },
+  "triggers": {
+    "webhookMaxBytes": 262144,
+    "webhookPerMinute": 30,
+    "notifyChannels": [
+      "in_app",
+      "email",
+      "slack"
+    ]
+  },
+  "quotas": {
+    "activeRunsPerOrg": 200,
+    "activeRunsPerUser": 10
+  },
+  "toolResults": {
+    "maxChars": null
+  },
+  "interactions": {
+    "waitS": null,
+    "conversationGrants": true
+  },
+  "recovery": {
+    "autoResume": true
+  },
+  "sandbox": {
+    "cpus": null,
+    "memoryMb": null,
+    "pids": null,
+    "scratchMb": null,
+    "inputMaxMb": null
+  },
+  "ui": {
+    "reasoning": true,
+    "terminal": true
+  }
+}

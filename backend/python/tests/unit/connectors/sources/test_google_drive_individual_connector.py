@@ -2005,7 +2005,7 @@ class TestConvertToPdf:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 504
 
     @pytest.mark.asyncio
     async def test_timeout_force_kill(self, connector):
@@ -2030,7 +2030,7 @@ class TestConvertToPdf:
             mock_exec.return_value = mock_proc
 
             with pytest.raises(HTTPException) as exc_info:
-                await connector._convert_to_pdf("/tmp/test.docx", str(tmp_path))
+                await connector._convert_to_pdf(str(tmp_path / "test.docx"), str(tmp_path))
             assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio

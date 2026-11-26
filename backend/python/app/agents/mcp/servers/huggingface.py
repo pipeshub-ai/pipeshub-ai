@@ -1,6 +1,12 @@
 """Hugging Face MCP server template — official remote server (Streamable HTTP), OAuth + DCR."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -33,6 +39,14 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Sign in with your Hugging Face account.",
         ),
         tags=["ml", "models", "datasets", "ai"],
+        category=MCPCategory.DEVELOPER,
+        capabilities=[
+            "Find a model",
+            "Search datasets",
+            "Read research papers",
+            "Explore Spaces",
+        ],
+        read_only=True,
     )
 )
 class HuggingFaceMCPServer:
