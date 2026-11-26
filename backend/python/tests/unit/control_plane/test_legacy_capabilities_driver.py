@@ -280,3 +280,22 @@ async def test_mg5_a_skill_the_runtime_stamped_with_a_user_id_keeps_it() -> None
               createdBy="mongo-u7", status="active")
     agent = (await reader(graph, kv, asked).read("org-a", agent_key="a7")).model_dump(by_alias=True)["agents"][0]
     assert [s["createdBy"] for s in agent["skills"]] == ["mongo-u7", None]
+
+
+async def test_mg4_a_skill_created_again_while_its_digest_is_read_is_left_out() -> None:
+    """The digest is looked up by name and version; a skill deleted and created again under them meanwhile would give
+    the fact one creation's builtin and createdBy with the other's content."""
+    graph, kv, asked = world()
+    graph.docs["agentSkills"]["org-a_notes"].update(generation="g1", createdAtTimestamp=1)
+    facts_reader = reader(graph, kv, asked)
+    digest = facts_reader._skill_digest
+
+    async def recreated_meanwhile(tenant: str, name: str, version: str) -> str | None:
+        if name == "notes":
+            graph.add("agentSkills", "org-a_notes", name="notes", version="1.0.0", orgId="org-a", source="manual",
+                      createdBy="u9", status="active", generation="g2", createdAtTimestamp=2)
+        return await digest(tenant, name, version)
+
+    facts_reader._skill_digest = recreated_meanwhile
+    agent = (await facts_reader.read("org-a", agent_key="a7")).model_dump(by_alias=True)["agents"][0]
+    assert [s["name"] for s in agent["skills"]] == ["pdf"]
