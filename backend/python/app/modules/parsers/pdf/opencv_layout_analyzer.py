@@ -3010,8 +3010,10 @@ def _prefer_model_tables(
     rules find tables by pdfplumber's line and text heuristics and often get the
     extent wrong, while the model sees the page. Rule tables the model doesn't
     cover stay; cells always come from the PDF text layer. A rule table with the
-    model box's extent (IoU >= 0.9) keeps its own grid: the model only fixes the
-    extent, and the rules already give the cells."""
+    model box's extent (IoU >= ``_MODEL_AGREES_IOU``) whose grid is the page's ruled
+    grid, has no row that may hold several records and keeps the box's words is
+    used as it is, its own bounds included: the rules already give the cells and
+    the extent. Any other box is re-extracted."""
     if not boxes:
         return rule_tables
     boxes = sorted(boxes, key=lambda b: -b[1])
