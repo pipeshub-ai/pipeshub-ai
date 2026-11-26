@@ -7,13 +7,15 @@ row and the row's cells: a row whose digest is found keeps its text, and only th
 from the stored table that shares the most rows with it, so two tables with an equal row each keep their own wording.
 
 A delivery offers the rows (``offer_previous_rows``); they are read from the stored record only when a table first asks
-(``previous_row_texts``), once; the delivery withdraws them when it ends (``end_previous_rows``).
+(``previous_row_texts``), once; the delivery withdraws them when it ends (``end_previous_rows``). With ``USE_PARSING_SERVICE`` the
+parse request carries them (``encode_stored_tables``), and the parsing service offers them for that parse.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Optional
 
@@ -109,6 +111,48 @@ class PreviousRows:
                     )
                     self._texts = []
             return self._texts
+
+    @classmethod
+    def already_read(cls, tables: list[StoredTable], logger: Logger, record_id: str) -> PreviousRows:
+        """Rows read elsewhere and handed over: the parsing service is sent them with the file it parses."""
+        rows = cls(_nothing_to_load, logger, record_id)
+        rows._texts = tables
+        return rows
+
+
+async def _nothing_to_load() -> None:
+    return None
+
+
+#: The most stored-row bytes a parse request carries to the parsing service. A larger set is not sent, and its tables are
+#: described as on a first index. Only described rows carry a digest (``MAX_TABLE_ROWS_FOR_LLM`` per record), so it is rarely
+#: reached.
+MAX_SENT_ROW_BYTES = 8 * 1024 * 1024
+
+
+def encode_stored_tables(tables: list[StoredTable]) -> Optional[bytes]:
+    """*tables* as a parse request carries them, or ``None`` when they are over ``MAX_SENT_ROW_BYTES``."""
+    raw = json.dumps(tables, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return raw if len(raw) <= MAX_SENT_ROW_BYTES else None
+
+
+def decode_stored_tables(raw: bytes) -> Optional[list[StoredTable]]:
+    """The tables ``encode_stored_tables`` wrote, or ``None`` for anything else (too large, not JSON, another shape)."""
+    if len(raw) > MAX_SENT_ROW_BYTES:
+        return None
+    try:
+        value = json.loads(raw)
+    except (ValueError, RecursionError):  # RecursionError: nesting deeper than the decoder allows, well under the size cap
+        return None
+    if not isinstance(value, list) or not all(_is_stored_table(table) for table in value):
+        return None
+    return value
+
+
+def _is_stored_table(value: object) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(texts, list) and all(isinstance(text, str) for text in texts) for texts in value.values()
+    )
 
 
 _offered: ContextVar[Optional[PreviousRows]] = ContextVar("previous_table_rows", default=None)
