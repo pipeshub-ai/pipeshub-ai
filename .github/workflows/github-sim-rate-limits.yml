@@ -44,9 +44,16 @@ env:
 
 jobs:
   rate-limits:
-    if: github.event_name != 'schedule'
+    # Secrets only for code from this repository: a fork's pull request never reaches the simulator token.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Its required reviewers are the approval gate before a pull request's code runs with the simulator token, as
+    # in integration-tests.yml; the schedule uses integration-test-daily, which has none.
+    environment:
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
     services:
       neo4j:
         image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
@@ -103,6 +110,10 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    # Its required reviewers are the approval gate before a pull request's code runs with the simulator token, as
+    # in integration-tests.yml; the schedule uses integration-test-daily, which has none.
+    environment:
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
     services:
       neo4j:
         image: neo4j:5.26.0@sha256:5a015e53de1895e7eee1574ae0325cf8c4b89587222778108c594bdd45a474b5
