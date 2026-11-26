@@ -6,6 +6,7 @@ import express, { Router, Request, Response } from 'express';
 import path from 'path';
 import { Container } from 'inversify';
 import { ApiDocsService } from './docs.service';
+import { Logger } from '../../libs/services/logger.service';
 
 /** Where the page's fonts are served from; they come from npm packages, not from Google. */
 export const DOCS_FONT_ROUTE = '/fonts';
@@ -60,7 +61,9 @@ export function createApiDocsRouter(container: Container): Router {
       const unifiedDocs = apiDocsService.getUnifiedDocs();
       res.json(unifiedDocs);
     } catch (error) {
-      console.error('Error in /json:', error);
+      Logger.getInstance({ service: 'ApiDocs' }).error('api_docs.load_failed', {
+        error,
+      });
       res.status(500).json({
         error: 'Failed to load API documentation',
         message: error instanceof Error ? error.message : 'Unknown error',

@@ -5,9 +5,6 @@ from collections.abc import Awaitable, Callable
 from http import HTTPStatus
 from typing import Any, Optional
 
-# JSON-serializable value produced by _serialize_response (avoids Any)
-_JsonSerValue = dict[str, object] | list[object] | str | int | float | bool | None
-
 from kiota_serialization_json.json_serialization_writer import (
     JsonSerializationWriter,  # type: ignore
 )
@@ -16,24 +13,30 @@ from msgraph.generated.sites.item.pages.pages_request_builder import (
 )
 from pydantic import BaseModel, Field
 
-from app.agents.actions.util.parse_file import FileContentParser
-from app.agents.actions.util.tool_summaries import args_template, list_summary
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
-from app.config.constants.arangodb import Connectors, OriginTypes
+from app.agents.actions.util.live_record import (
+    LiveCitations,
+    live_file_record,
+    toolset_instance_of,
+)
+from app.agents.actions.util.parse_file import FileContentParser
+from app.agents.actions.util.sign_in_rejected import note_sign_in_rejected
+from app.agents.actions.util.tool_summaries import args_template, list_summary
+from app.config.constants.arangodb import Connectors
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
     OAuthScopeConfig,
 )
-from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import AuthField, DocumentationLink
-from app.models.entities import FileRecord, RecordType
 from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.sharepoint.sharepoint import (
@@ -43,6 +46,9 @@ from app.sources.external.microsoft.sharepoint.sharepoint import (
 )
 
 logger = logging.getLogger(__name__)
+
+# JSON-serializable value produced by _serialize_response (avoids Any)
+_JsonSerValue = dict[str, object] | list[object] | str | int | float | bool | None
 
 _MAX_FILE_CONTENT_BYTES = 50 * 1024 * 1024  # 50 MB — matches OneDrive
 _NOTEBOOK_PAGE_SIZE = 50
@@ -204,6 +210,7 @@ def _graph_failure_message(*, action: str, response: SharePointResponse) -> str:
         wait = f"Wait {retry_after} seconds" if retry_after.isdigit() else "Wait a minute"
         return f"SharePoint is receiving too many requests right now, so it could not {action}. {wait} and try again."
     if status == HTTPStatus.UNAUTHORIZED:
+        note_sign_in_rejected()
         return f"Could not {action}: Microsoft did not accept the saved sign-in. {_RECONNECT_STEP}"
     if status == HTTPStatus.FORBIDDEN:
         return (
@@ -230,7 +237,7 @@ def _failure_text(response: SharePointResponse, action: str, fallback: str) -> s
 
 
 
-@ToolsetBuilder("SharePoint")\
+@ToolsetBuilder("SharePoint", provider=ToolProvider.CONNECTOR)\
     .in_group("Microsoft 365")\
     .with_description("SharePoint sites, files, and pages")\
     .with_category(ToolsetCategory.APP)\
@@ -532,7 +539,7 @@ class SharePoint:
             ToolParameter(name="skip", type=ParameterType.INTEGER, description="Sites to skip for pagination.", required=False),
             ToolParameter(name="orderby", type=ParameterType.STRING, description="Sort: 'createdDateTime desc', 'lastModifiedDateTime desc', 'name asc'.", required=False),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_sites(
         self,
@@ -583,7 +590,7 @@ class SharePoint:
         parameters=[
             ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID (e.g. contoso.sharepoint.com,site-guid,web-guid)", required=True),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_site(
         self,
@@ -611,7 +618,7 @@ class SharePoint:
             ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID", required=True),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Max pages to return (default 10, max 50)", required=False),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_pages(
         self,
@@ -681,7 +688,7 @@ class SharePoint:
             ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID (from search_pages or get_pages)", required=True),
             ToolParameter(name="page_id", type=ParameterType.STRING, description="Page ID (GUID from search_pages or get_pages)", required=True),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_page(
         self,
@@ -734,7 +741,7 @@ class SharePoint:
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Max pages to return (default 10, max 50).", required=False),
             ToolParameter(name="skip", type=ParameterType.INTEGER, description="Results to skip for pagination.", required=False),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def search_pages(
         self,
@@ -791,7 +798,7 @@ class SharePoint:
             ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID (from get_sites)", required=True),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Max drives to return (default 10, max 50)", required=False),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_drives(
         self,
@@ -870,7 +877,7 @@ class SharePoint:
             ToolParameter(name="depth", type=ParameterType.INTEGER, description="Folder traversal depth. 1 lists direct children only; 2 includes one nested level.", required=False),
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Max items per drive (default 10, max 50)", required=False),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_files(
         self,
@@ -966,7 +973,7 @@ class SharePoint:
             ToolParameter(name="top", type=ParameterType.INTEGER, description="Max results (default 10, max 50)", required=False),
             ToolParameter(name="skip", type=ParameterType.INTEGER, description="Results to skip for pagination.", required=False),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
         args_summary=args_template('Searching SharePoint: "{query}"', "query"),
         result_summary=list_summary(("files",), _sharepoint_file_label, "file"),
     )
@@ -1059,7 +1066,7 @@ class SharePoint:
             ToolParameter(name="drive_id", type=ParameterType.STRING, description="Drive ID (from list_drives or search_files parentReference.driveId)", required=True),
             ToolParameter(name="item_id", type=ParameterType.STRING, description="DriveItem ID (id from list_files or search_files)", required=True),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_file_metadata(
         self,
@@ -1126,7 +1133,7 @@ class SharePoint:
             ToolParameter(name="drive_id", type=ParameterType.STRING, description="Drive ID (from list_files or search_files)", required=True),
             ToolParameter(name="item_id", type=ParameterType.STRING, description="DriveItem ID (id from list_files or search_files)", required=True),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_file_content(
         self,
@@ -1193,7 +1200,7 @@ class SharePoint:
             model_key = state.get("model_key")
             config_service = state.get("config_service")
 
-            # 6. Build FileRecord. Extension may come from the Graph `file` facet
+            # 6. Build the live record. Extension may come from the Graph `file` facet
             #    or — more reliably for SharePoint — from the file_name itself.
             ext = ""
             if isinstance(file_facet, dict):
@@ -1201,24 +1208,22 @@ class SharePoint:
             if not ext and "." in file_name:
                 ext = file_name.rsplit(".", 1)[1].lower()
 
-            file_record = FileRecord(
-                org_id="",
-                record_name=file_name,
-                record_type=RecordType.FILE,
+            file_record = live_file_record(
+                state,
+                tool="sharepoint.get_file_content",
+                instance_id=toolset_instance_of(self),
+                connector=Connectors.SHAREPOINT_ONLINE,
                 external_record_id=item_id,
-                version=1,
-                origin=OriginTypes.CONNECTOR,
-                connector_name=Connectors.SHAREPOINT_ONLINE,
-                connector_id=drive_id or "sharepoint",
-                mime_type=mime_type or "application/octet-stream",
+                record_name=file_name,
+                mime_type=mime_type,
                 extension=ext,
-                is_file=True,
             )
 
             # 7. Parse via shared async parser.
             parser = FileContentParser(logger=logger, config_service=config_service)
             ok, payload = await parser.parse(
                 file_record, bytes(raw), model_name, model_key, config_service,
+                citations=LiveCitations(self.state),
             )
             serialized = [item.model_dump() for item in payload]
             if ok:
@@ -1246,7 +1251,7 @@ class SharePoint:
             ToolParameter(name="content_html", type=ParameterType.STRING, description="Page body as HTML (e.g. <h1>, <p>, <ul>, <li>, <strong>)", required=True),
             ToolParameter(name="publish", type=ParameterType.BOOLEAN, description="True to publish; default False (draft).", required=False),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_page(
         self,
@@ -1300,7 +1305,7 @@ class SharePoint:
             ToolParameter(name="content_html", type=ParameterType.STRING, description="New HTML body (omit to keep current; replaces entire body)", required=False),
             ToolParameter(name="publish", type=ParameterType.BOOLEAN, description="True to publish; default False (draft).", required=False),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def update_page(
         self,
@@ -1379,7 +1384,7 @@ class SharePoint:
             ToolParameter(name="folder_name", type=ParameterType.STRING, description="Name of the new folder (duplicate names get auto-renamed)", required=True),
             ToolParameter(name="parent_folder_id", type=ParameterType.STRING, description="Parent folder ID (from list_files). Omit for drive root.", required=False),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_folder(
         self,
@@ -1430,7 +1435,7 @@ class SharePoint:
             ToolParameter(name="parent_folder_id", type=ParameterType.STRING, description="Folder ID (from list_files). Omit for drive root.", required=False),
             ToolParameter(name="content_text", type=ParameterType.STRING, description="Optional plain-text body (newlines = paragraphs). Omit for blank doc.", required=False),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_word_document(
         self,
@@ -1490,7 +1495,7 @@ class SharePoint:
             ToolParameter(name="destination_folder_id", type=ParameterType.STRING, description="Destination folder ID (from list_files or search_files). Use 'root' for drive root.", required=True),
             ToolParameter(name="new_name", type=ParameterType.STRING, description="Optional new name after moving. Omit to keep the current name.", required=False),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def move_item(
         self,
@@ -1557,7 +1562,7 @@ class SharePoint:
             ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID (from sharepoint.search_files results)", required=True),
             ToolParameter(name="notebook_query", type=ParameterType.STRING, description="Notebook name or keyword (e.g. 'mp_plan')", required=True),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def find_notebook(
         self,
@@ -1641,7 +1646,7 @@ class SharePoint:
             ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID (from find_notebook)", required=True),
             ToolParameter(name="notebook_id", type=ParameterType.STRING, description="Notebook ID (from find_notebook)", required=True),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def list_notebook_pages(
         self,
@@ -1739,7 +1744,7 @@ class SharePoint:
             ToolParameter(name="site_id", type=ParameterType.STRING, description="SharePoint site ID", required=True),
             ToolParameter(name="page_ids", type=ParameterType.ARRAY, description="List of page IDs (from list_notebook_pages)", required=True),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_notebook_page_content(
         self,
@@ -1803,7 +1808,7 @@ class SharePoint:
             ToolParameter(name="page_title", type=ParameterType.STRING, description="First page title (requires section_name)", required=False),
             ToolParameter(name="page_content_html", type=ParameterType.STRING, description="First page HTML body (requires section_name)", required=False),
         ],
-        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="documentation"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def create_onenote_notebook(
         self,

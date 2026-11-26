@@ -31,12 +31,12 @@ from app.sources.client.resilience import ResiliencePolicy
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
+from app.utils.oauth_errors import RATE_LIMITED_ERROR_CODES
 
 # What Slack answers when an access token has expired or was replaced.
 RENEWABLE_ERRORS = frozenset({"token_expired", "invalid_auth"})
 
-# Slack throttles with a real HTTP 429 whose body says "ratelimited".
-_RATE_LIMITED_ERRORS = frozenset({"ratelimited", "rate_limited"})
+# Slack throttles with a real HTTP 429 whose body says "ratelimited" (RATE_LIMITED_ERROR_CODES).
 _HTTP_TOO_MANY_REQUESTS = 429
 
 # Shorter than the refresh service's own 10-minute lead, so the schedule normally
@@ -84,7 +84,7 @@ def _rate_limited(response: Any) -> bool:  # noqa: ANN401 - any SlackResponse-li
     return (
         getattr(response, "success", True) is False
         and (
-            getattr(response, "error", None) in _RATE_LIMITED_ERRORS
+            getattr(response, "error", None) in RATE_LIMITED_ERROR_CODES
             or getattr(response, "status_code", None) == _HTTP_TOO_MANY_REQUESTS
         )
     )

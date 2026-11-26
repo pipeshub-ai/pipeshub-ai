@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
     ToolsetCommonFields,
@@ -246,63 +247,63 @@ class TestToolsetConfigBuilder:
 
 class TestToolsetBuilder:
     def test_basic_builder(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         assert builder.name == "test_toolset"
         assert builder.category == ToolsetCategory.APP
         assert builder.is_internal is False
 
     def test_with_description(self):
-        builder = ToolsetBuilder("t")
+        builder = ToolsetBuilder("t", provider=ToolProvider.CONNECTOR)
         result = builder.with_description("A test toolset")
         assert builder.description == "A test toolset"
         assert result is builder
 
     def test_with_category(self):
-        builder = ToolsetBuilder("t")
+        builder = ToolsetBuilder("t", provider=ToolProvider.CONNECTOR)
         result = builder.with_category(ToolsetCategory.COMMUNICATION)
         assert builder.category == ToolsetCategory.COMMUNICATION
         assert result is builder
 
     def test_as_internal(self):
-        builder = ToolsetBuilder("t")
+        builder = ToolsetBuilder("t", provider=ToolProvider.CONNECTOR)
         result = builder.as_internal()
         assert builder.is_internal is True
         assert result is builder
 
     def test_in_group(self):
-        builder = ToolsetBuilder("t")
+        builder = ToolsetBuilder("t", provider=ToolProvider.CONNECTOR)
         result = builder.in_group("Google Workspace")
         assert builder.app_group == "Google Workspace"
         assert result is builder
 
     def test_with_supported_auth_types_string(self):
-        builder = ToolsetBuilder("t")
+        builder = ToolsetBuilder("t", provider=ToolProvider.CONNECTOR)
         builder.with_supported_auth_types("OAUTH")
         assert builder.supported_auth_types == ["OAUTH"]
 
     def test_with_supported_auth_types_empty_raises(self):
-        builder = ToolsetBuilder("t")
+        builder = ToolsetBuilder("t", provider=ToolProvider.CONNECTOR)
         with pytest.raises(ValueError, match="cannot be empty"):
             builder.with_supported_auth_types([])
 
     def test_with_supported_auth_types_invalid_raises(self):
-        builder = ToolsetBuilder("t")
+        builder = ToolsetBuilder("t", provider=ToolProvider.CONNECTOR)
         with pytest.raises(ValueError, match="must be str or List"):
             builder.with_supported_auth_types(42)
 
     def test_add_supported_auth_type(self):
-        builder = ToolsetBuilder("t")
+        builder = ToolsetBuilder("t", provider=ToolProvider.CONNECTOR)
         builder.add_supported_auth_type("BEARER")
         assert "BEARER" in builder.supported_auth_types
         assert "API_TOKEN" in builder.supported_auth_types
 
     def test_add_supported_auth_type_no_duplicate(self):
-        builder = ToolsetBuilder("t")
+        builder = ToolsetBuilder("t", provider=ToolProvider.CONNECTOR)
         builder.add_supported_auth_type("API_TOKEN")
         assert builder.supported_auth_types.count("API_TOKEN") == 1
 
     def test_with_tools(self):
-        builder = ToolsetBuilder("t")
+        builder = ToolsetBuilder("t", provider=ToolProvider.CONNECTOR)
         tools = [ToolDefinition(name="search", description="Search")]
         result = builder.with_tools(tools)
         assert builder.tools == tools
@@ -310,7 +311,7 @@ class TestToolsetBuilder:
 
     def test_configure(self):
         """configure() passes the config builder to a function and stores result."""
-        builder = ToolsetBuilder("t")
+        builder = ToolsetBuilder("t", provider=ToolProvider.CONNECTOR)
 
         def config_fn(cb):
             cb.with_icon("/custom.svg")
@@ -320,7 +321,7 @@ class TestToolsetBuilder:
         assert result is builder
 
     def test_with_auth_empty_raises(self):
-        builder = ToolsetBuilder("t")
+        builder = ToolsetBuilder("t", provider=ToolProvider.CONNECTOR)
         with pytest.raises(ValueError, match="cannot be empty"):
             builder.with_auth([])
 
@@ -474,7 +475,7 @@ class TestToolsetBuilderWithOauthConfig:
     def test_with_oauth_config_default_auth_type(self):
         from app.connectors.core.registry.auth_builder import OAuthConfig
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["OAUTH"]
 
         scopes = MagicMock()
@@ -499,7 +500,7 @@ class TestToolsetBuilderWithOauthConfig:
     def test_with_oauth_config_explicit_auth_type(self):
         from app.connectors.core.registry.auth_builder import OAuthConfig
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
 
         scopes = MagicMock()
         scopes.get_all_scopes.return_value = ["read"]
@@ -536,7 +537,7 @@ class TestToolsetBuilderWithAuth:
         field = AuthField(name="apiKey", display_name="API Key", field_type="password", required=True)
         auth_builder = AuthBuilder.type("API_TOKEN").fields([field])
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.with_auth([auth_builder])
         assert "API_TOKEN" in builder.supported_auth_types
 
@@ -561,7 +562,7 @@ class TestToolsetBuilderWithAuth:
 
         auth_builder = AuthBuilder.type("OAUTH").oauth_config(oauth_config)
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.with_auth([auth_builder])
         assert "OAUTH" in builder.supported_auth_types
         assert "OAUTH" in builder._oauth_configs
@@ -576,7 +577,7 @@ class TestValidateOauthRequirements:
     """Test the _validate_oauth_requirements method."""
 
     def test_missing_authorize_url_raises(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {
@@ -593,7 +594,7 @@ class TestValidateOauthRequirements:
             builder._validate_oauth_requirements(config, "OAUTH")
 
     def test_missing_redirect_uri_raises(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {
@@ -610,7 +611,7 @@ class TestValidateOauthRequirements:
             builder._validate_oauth_requirements(config, "OAUTH")
 
     def test_scopes_not_list_raises(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {
@@ -627,7 +628,7 @@ class TestValidateOauthRequirements:
             builder._validate_oauth_requirements(config, "OAUTH")
 
     def test_valid_config_does_not_raise(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {
@@ -645,7 +646,7 @@ class TestValidateOauthRequirements:
 
     def test_fallback_to_top_level_config(self):
         """When auth_type not in oauthConfigs, falls back to top-level."""
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {},
@@ -659,7 +660,7 @@ class TestValidateOauthRequirements:
 
     def test_top_level_scopes_not_list(self):
         """Top-level scopes (not in oauthConfigs) is not a list."""
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {},
@@ -674,7 +675,7 @@ class TestValidateOauthRequirements:
 
     def test_none_scopes_does_not_raise(self):
         """None scopes are acceptable (some OAuth providers don't use scopes)."""
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {
@@ -700,7 +701,7 @@ class TestValidateRequiredAuthFields:
     """Test the _validate_required_auth_fields method."""
 
     def test_required_field_without_name_raises(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         config = {
             "auth": {
@@ -717,7 +718,7 @@ class TestValidateRequiredAuthFields:
 
     def test_none_auth_type_skipped(self):
         """NONE auth type should be skipped in validation."""
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["NONE"]
         config = {
             "auth": {
@@ -729,7 +730,7 @@ class TestValidateRequiredAuthFields:
         builder._validate_required_auth_fields(config)
 
     def test_valid_fields_pass(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         config = {
             "auth": {
@@ -747,7 +748,7 @@ class TestValidateRequiredAuthFields:
         builder._validate_required_auth_fields(config)
 
     def test_default_schema_used_when_no_type_specific_schema(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         config = {
             "auth": {
@@ -762,7 +763,7 @@ class TestValidateRequiredAuthFields:
 
     def test_non_dict_field_item_skipped(self):
         """Non-dict items in fields should be skipped (no error)."""
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         config = {
             "auth": {
@@ -795,7 +796,7 @@ class TestBuildDecorator:
         mock_get_registry.return_value = mock_registry
         mock_toolset_cls.return_value = MagicMock()
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         builder.app_group = "test_group"
         builder.category = ToolsetCategory.APP
@@ -827,7 +828,7 @@ class TestBuildDecorator:
         oauth_config.app_categories = ["app"]
         oauth_config.documentation_links = []
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         builder._oauth_configs = {"OAUTH": oauth_config}
 
@@ -862,7 +863,7 @@ class TestBuildDecorator:
         oauth_config.app_categories = []
         oauth_config.documentation_links = []
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         builder.app_group = "Test Group"
         builder.category = ToolsetCategory.COMMUNICATION
@@ -884,7 +885,7 @@ class TestToolsetBuilderConfigure:
     """Test the configure method."""
 
     def test_configure_replaces_config_builder(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
 
         def config_func(cb):
             cb.with_icon("/custom/icon.svg")
@@ -1006,7 +1007,7 @@ class TestToolsetBuilderWithOauthConfigCoverage:
     def test_with_oauth_config_default_auth_type(self):
         from app.connectors.core.registry.auth_builder import OAuthConfig
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["OAUTH"]
 
         scopes = MagicMock()
@@ -1031,7 +1032,7 @@ class TestToolsetBuilderWithOauthConfigCoverage:
     def test_with_oauth_config_explicit_auth_type(self):
         from app.connectors.core.registry.auth_builder import OAuthConfig
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
 
         scopes = MagicMock()
         scopes.get_all_scopes.return_value = ["read"]
@@ -1068,7 +1069,7 @@ class TestToolsetBuilderWithAuthCoverage:
         field = AuthField(name="apiKey", display_name="API Key", field_type="password", required=True)
         auth_builder = AuthBuilder.type("API_TOKEN").fields([field])
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.with_auth([auth_builder])
         assert "API_TOKEN" in builder.supported_auth_types
 
@@ -1093,7 +1094,7 @@ class TestToolsetBuilderWithAuthCoverage:
 
         auth_builder = AuthBuilder.type("OAUTH").oauth_config(oauth_config)
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.with_auth([auth_builder])
         assert "OAUTH" in builder.supported_auth_types
         assert "OAUTH" in builder._oauth_configs
@@ -1108,7 +1109,7 @@ class TestValidateOauthRequirementsCoverage:
     """Test the _validate_oauth_requirements method."""
 
     def test_missing_authorize_url_raises(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {
@@ -1125,7 +1126,7 @@ class TestValidateOauthRequirementsCoverage:
             builder._validate_oauth_requirements(config, "OAUTH")
 
     def test_missing_redirect_uri_raises(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {
@@ -1142,7 +1143,7 @@ class TestValidateOauthRequirementsCoverage:
             builder._validate_oauth_requirements(config, "OAUTH")
 
     def test_scopes_not_list_raises(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {
@@ -1159,7 +1160,7 @@ class TestValidateOauthRequirementsCoverage:
             builder._validate_oauth_requirements(config, "OAUTH")
 
     def test_valid_config_does_not_raise(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {
@@ -1177,7 +1178,7 @@ class TestValidateOauthRequirementsCoverage:
 
     def test_fallback_to_top_level_config(self):
         """When auth_type not in oauthConfigs, falls back to top-level."""
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {},
@@ -1191,7 +1192,7 @@ class TestValidateOauthRequirementsCoverage:
 
     def test_top_level_scopes_not_list(self):
         """Top-level scopes (not in oauthConfigs) is not a list."""
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {},
@@ -1206,7 +1207,7 @@ class TestValidateOauthRequirementsCoverage:
 
     def test_none_scopes_does_not_raise(self):
         """None scopes are acceptable (some OAuth providers don't use scopes)."""
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         config = {
             "auth": {
                 "oauthConfigs": {
@@ -1232,7 +1233,7 @@ class TestValidateRequiredAuthFieldsCoverage:
     """Test the _validate_required_auth_fields method."""
 
     def test_required_field_without_name_raises(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         config = {
             "auth": {
@@ -1249,7 +1250,7 @@ class TestValidateRequiredAuthFieldsCoverage:
 
     def test_none_auth_type_skipped(self):
         """NONE auth type should be skipped in validation."""
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["NONE"]
         config = {
             "auth": {
@@ -1261,7 +1262,7 @@ class TestValidateRequiredAuthFieldsCoverage:
         builder._validate_required_auth_fields(config)
 
     def test_valid_fields_pass(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         config = {
             "auth": {
@@ -1279,7 +1280,7 @@ class TestValidateRequiredAuthFieldsCoverage:
         builder._validate_required_auth_fields(config)
 
     def test_default_schema_used_when_no_type_specific_schema(self):
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         config = {
             "auth": {
@@ -1294,7 +1295,7 @@ class TestValidateRequiredAuthFieldsCoverage:
 
     def test_non_dict_field_item_skipped(self):
         """Non-dict items in fields should be skipped (no error)."""
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         config = {
             "auth": {
@@ -1327,7 +1328,7 @@ class TestBuildDecoratorCoverage:
         mock_get_registry.return_value = mock_registry
         mock_toolset_cls.return_value = MagicMock()
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         builder.app_group = "test_group"
         builder.category = ToolsetCategory.APP
@@ -1359,7 +1360,7 @@ class TestBuildDecoratorCoverage:
         oauth_config.app_categories = ["app"]
         oauth_config.documentation_links = []
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         builder._oauth_configs = {"OAUTH": oauth_config}
 
@@ -1394,7 +1395,7 @@ class TestBuildDecoratorCoverage:
         oauth_config.app_categories = []
         oauth_config.documentation_links = []
 
-        builder = ToolsetBuilder("test_toolset")
+        builder = ToolsetBuilder("test_toolset", provider=ToolProvider.CONNECTOR)
         builder.supported_auth_types = ["API_TOKEN"]
         builder.app_group = "Test Group"
         builder.category = ToolsetCategory.COMMUNICATION
@@ -1416,7 +1417,7 @@ class TestToolsetBuilderConfigureCoverage:
     """Test the configure method."""
 
     def test_configure_replaces_config_builder(self):
-        builder = ToolsetBuilder("test")
+        builder = ToolsetBuilder("test", provider=ToolProvider.CONNECTOR)
 
         def config_func(cb):
             cb.with_icon("/custom/icon.svg")

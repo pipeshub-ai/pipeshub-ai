@@ -681,9 +681,38 @@ async def test_a_degraded_leg_is_flagged_on_every_hit_and_the_space_check_starts
 
 
 @pytest.mark.asyncio
-async def test_a_leg_that_failed_twice_is_an_empty_answer_flagged_for_the_request(searcher, monkeypatch) -> None:
+async def test_every_legs_reason_is_noted_an_exact_dense_leg_does_not_hide_a_word_search_out_of_time(searcher, lexical_rows, monkeypatch) -> None:
+    """A dense leg read exactly with the bit index off is flagged ``quantization`` (complete); the word search beside it that ran out of time and found nothing
+    must still be told, or an empty fused answer reads as "no documents"."""
     from app.modules.retrieval import degraded_notice
+    from app.services.vector_db.models import SparseVector
     from app.services.vector_db.pgvector import dense
+
+    svc, _ = searcher
+
+    async def exact(db, sizer, q, t, *, bq_ok=True) -> tuple[object, object]:
+        return dense.Leg([], SimpleNamespace(tier=dense.Tier.E0X, share_band="all"), "quantization"), SimpleNamespace(leaf_rows=9, n_hat=9)
+
+    monkeypatch.setattr(dense, "search", exact)
+    lexical_rows.answer = ([], "timeout")
+    with degraded_notice.collect() as noted:
+        assert await svc.query_nearest_points("records", [request(limit=10, sparse_query=SparseVector([7], [1.0]))]) == [[]]
+    assert sorted(noted) == ["quantization", "timeout"]
+
+
+@pytest.mark.asyncio
+async def test_a_search_left_empty_by_a_leg_that_could_not_run_is_busy_not_an_empty_answer(searcher, lexical_rows, monkeypatch) -> None:
+    """Under load the dense leg's degraded path failed too and the search answered ``[]``, which every caller reads as "nothing matched"."""
+    from app.services.vector_db.models import (
+        HybridSearchRequest,
+        SearchFailureKind,
+        SparseVector,
+    )
+    from app.services.vector_db.pgvector import dense
+    from app.services.vector_db.pgvector.errors import (
+        SearchBusy,
+        classify_pg_search_error,
+    )
 
     svc, _ = searcher
 
@@ -691,10 +720,20 @@ async def test_a_leg_that_failed_twice_is_an_empty_answer_flagged_for_the_reques
         return dense.Leg([], SimpleNamespace(tier=dense.Tier.E0, share_band="all"), "overload"), SimpleNamespace(leaf_rows=3, n_hat=3)
 
     monkeypatch.setattr(dense, "search", overloaded)
-    degraded_notice.track()
-    before = degraded_notice.count()
-    assert await svc.query_nearest_points("records", [request()]) == [[]]                      # no hits to carry the flag
-    assert degraded_notice.count() == before + 1                                               # the request is told, as the provider contract says
+    with pytest.raises(SearchBusy) as busy:
+        await svc.query_nearest_points("records", [request()])
+    assert classify_pg_search_error(busy.value) is SearchFailureKind.TIMEOUT                   # retried once, then answered as a timeout (503)
+    lexical_rows.answer = ([], None)                                                           # a complete lexical answer cannot stand for the dense leg
+    with pytest.raises(SearchBusy):
+        await svc.query_nearest_points("records", [request(limit=10, sparse_query=SparseVector([7], [1.0]))])
+    words_only = HybridSearchRequest(dense_query=None, sparse_query=SparseVector([7], [1.0]), filter=request().filter, limit=10)
+    for reason in ("timeout", "error"):                                                        # with no dense query, the lexical leg decides
+        lexical_rows.answer = ([], reason)
+        with pytest.raises(SearchBusy):
+            await svc.query_nearest_points("records", [words_only])
+    lexical_rows.answer = ([lexical_rows.u(3)], "timeout")                                     # a leg that answered something is flagged, not busy
+    [hits] = await svc.query_nearest_points("records", [request(limit=10, sparse_query=SparseVector([7], [1.0]))])
+    assert [h.degraded for h in hits] == ["overload"]
 
 
 @pytest.mark.asyncio

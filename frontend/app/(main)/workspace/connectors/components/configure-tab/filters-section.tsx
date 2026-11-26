@@ -838,12 +838,12 @@ function ConnectorFilterSelect({
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
-              color: selectedLabel ? 'var(--gray-12)' : 'var(--gray-10)',
+              color: selectedLabel ? 'var(--gray-12)' : 'var(--gray-11)',
             }}
           >
             {selectedLabel ?? t('workspace.connectors.filters.selectFieldPlaceholder', { field: field.displayName })}
           </Text>
-          <MaterialIcon name="expand_more" size={16} color="var(--gray-9)" style={{ flexShrink: 0 }} />
+          <MaterialIcon name="expand_more" size={16} color="var(--gray-11)" style={{ flexShrink: 0 }} />
         </Button>
       </Popover.Trigger>
       <Popover.Content
@@ -876,7 +876,7 @@ function ConnectorFilterSelect({
               </Text>
             </Flex>
           ) : visibleOptions.length === 0 ? (
-            <Text size="2" style={{ color: 'var(--slate-9)', display: 'block', padding: '8px 12px' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)', display: 'block', padding: '8px 12px' }}>
               {dyn.emptyMessage ?? t('workspace.connectors.filters.noResults')}
             </Text>
           ) : (
@@ -927,7 +927,7 @@ function ConnectorFilterSelect({
           {dyn.loadingMore ? (
             <Flex align="center" justify="center" gap="2" style={{ padding: 8 }}>
               <Spinner size={12} />
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 {t('workspace.connectors.filters.loadingMore')}
               </Text>
             </Flex>
@@ -955,7 +955,7 @@ const FOLDER_PATHS_FIELD = 'folder_paths';
 function FolderPatternHelp({ field }: { field: FilterSchemaField }) {
   const { t } = useTranslation();
   if (field.name !== FOLDER_PATHS_FIELD || !field.folderWildcards) return null;
-  const muted = { color: 'var(--gray-10)', lineHeight: 1.55 };
+  const muted = { color: 'var(--gray-11)', lineHeight: 1.55 };
   return (
     <Flex direction="column" gap="1" data-testid="folder-pattern-help">
       <Text size="1" style={muted}>
@@ -1048,7 +1048,7 @@ function ConnectorFilterTagInput({
         error={error}
       />
       {fileTypeHint && !error ? (
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text size="1" style={{ color: 'var(--gray-11)' }}>
           {t('workspace.connectors.filters.folderPaths.notFiles')}
         </Text>
       ) : null}
@@ -1123,13 +1123,13 @@ function ManualIndexingSection({
                   aria-label={t('workspace.connectors.filters.manualIndexingInfo')}
                   style={{ cursor: 'help', flexShrink: 0 }}
                 >
-                  <MaterialIcon name="info" size={16} color="var(--gray-10)" />
+                  <MaterialIcon name="info" size={16} color="var(--gray-11)" />
                 </IconButton>
               </HelpTooltip>
             </Flex>
           </Flex>
           {field.description ? (
-            <Text id={`${toggleId}-help`} size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+            <Text id={`${toggleId}-help`} size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
               {field.description}
             </Text>
           ) : null}
@@ -1285,7 +1285,7 @@ export function FiltersSection({ readOnly = false }: { readOnly?: boolean }) {
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {t('workspace.connectors.filters.title')}
           </Text>
-          <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
             {t('workspace.connectors.filters.description')}
           </Text>
         </Flex>
@@ -1581,7 +1581,7 @@ function FilterCategoryBlock({
                 })}
               </Badge>
               {field.description ? (
-                <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+                <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
                   {field.description}
                 </Text>
               ) : null}
@@ -1707,7 +1707,7 @@ function FilterFieldRow({
             ) : null}
           </Flex>
           {field.description ? (
-            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+            <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
               {field.description}
             </Text>
           ) : null}
@@ -1750,7 +1750,7 @@ function FilterFieldRow({
               {field.displayName}
             </Text>
             {field.description ? (
-              <Text id={`${toggleId}-help`} size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+              <Text id={`${toggleId}-help`} size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
                 {field.description}
               </Text>
             ) : null}
@@ -1775,7 +1775,7 @@ function FilterFieldRow({
           ) : null}
         </Flex>
         {field.description ? (
-          <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+          <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
             {field.description}
           </Text>
         ) : null}
@@ -1923,20 +1923,23 @@ function FilterValueEditor({
   if (ft === 'number') {
     return (
       <FormField label={t('workspace.connectors.filters.value')}>
-        <input
-          type="number"
-          value={value === undefined || value === null || value === '' ? '' : String(value)}
-          onChange={(e) => {
-            const raw = e.target.value;
-            if (raw === '') {
-              onValueChange(null);
-              return;
-            }
-            const n = parseFloat(raw);
-            onValueChange(Number.isNaN(n) ? null : n);
-          }}
-          style={inputLike}
-        />
+        {(control) => (
+          <input
+            {...control}
+            type="number"
+            value={value === undefined || value === null || value === '' ? '' : String(value)}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === '') {
+                onValueChange(null);
+                return;
+              }
+              const n = parseFloat(raw);
+              onValueChange(Number.isNaN(n) ? null : n);
+            }}
+            style={inputLike}
+          />
+        )}
       </FormField>
     );
   }
@@ -1998,12 +2001,15 @@ function FilterValueEditor({
 
   return (
     <FormField label={t('workspace.connectors.filters.value')}>
-      <input
-        type="text"
-        value={value === undefined || value === null ? '' : String(value)}
-        onChange={(e) => onValueChange(e.target.value)}
-        style={inputLike}
-      />
+      {(control) => (
+        <input
+          {...control}
+          type="text"
+          value={value === undefined || value === null ? '' : String(value)}
+          onChange={(e) => onValueChange(e.target.value)}
+          style={inputLike}
+        />
+      )}
     </FormField>
   );
 }

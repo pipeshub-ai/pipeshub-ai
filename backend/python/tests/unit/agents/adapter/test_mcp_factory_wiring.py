@@ -62,7 +62,9 @@ def _mcp_context(**overrides: Any) -> Any:
     return make_context(**defaults)
 
 
-async def _fake_discover_tools(config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None) -> list[MCPToolInfo]:
+async def _fake_discover_tools(
+    config: Any, credentials: dict, timeout_seconds: float = 10.0, namespace: str | None = None, *, runner: object = None,
+) -> list[MCPToolInfo]:
     return [MCPToolInfo(
         name="search", namespaced_name="mcp_jira_mcp_search", description="Search Jira", input_schema={},
     )]

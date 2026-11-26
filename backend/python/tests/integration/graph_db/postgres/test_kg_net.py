@@ -3,21 +3,25 @@ direction (kg admitting what the walk denies, and kg denying what it admits), an
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import secrets
 import time
+from typing import Any
 
 import asyncpg
 import pytest
 
 from app.core.db import DbConfig, KernelDB
 from app.services.graph_db.postgres.kg import backfill as bf
-from app.services.graph_db.postgres.kg import bootstrap, drainer, net
+from app.services.graph_db.postgres.kg import bootstrap, counts, drainer, net, restamp
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg import verify as verify_mod
+from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.kg.worker import KgWorker
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
+from tests.support import plan_gate
 
 from .pg_support import new_org
 from .test_kg_derivation import ctx, prov
@@ -185,6 +189,21 @@ async def test_a_record_kg_holds_that_the_graph_does_not_is_caught_by_the_chunke
     assert await net.verify_due(pg_db, org, {}) == 1 and await _mode(p, org) == "legacy"
 
 
+async def test_the_verify_waits_while_a_restamp_job_hides_rows_and_never_demotes_for_their_outdated_stamps(pg_db, no_jitter) -> None:
+    """A rows job keeps its connector served; the stamps of the rows it hides differ from a fresh compile until it is over them. The verify waits for the job instead of demoting."""
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+
+    async def mark(tx) -> int:
+        return await restamp.enqueue_rows(tx, org, {("records", "r3")}, "reach", org_wide=True)
+    with ctx(org):
+        assert await pg_db.run(mark, write=True) == 1
+    await _admin("UPDATE kg.records SET class_id = NULL WHERE org_id = $1 AND id = 'r3'", org)          # an outdated stamp, hidden by the mark
+    assert await net.verify_due(pg_db, org, {}) == 0 and await _mode(p, org) == "enforce"
+    assert await restamp.run_jobs(pg_db, org, "w1") == 1
+    assert await net.verify_due(pg_db, org, {}) == 1 and await _mode(p, org) == "enforce"
+
+
 async def test_the_verify_is_bounded_per_pass_scheduled_stoppable(pg_db, no_jitter, monkeypatch) -> None:
     p, org = prov(pg_db), new_org()
     await _enforce(p, pg_db, org, apps=2)                                      # three connectors
@@ -218,6 +237,28 @@ async def test_a_connector_too_large_for_one_pass_is_verified_over_several_from_
     assert passes > 4 and seen_pages == sorted(seen_pages) and len(set(seen_pages)) > 3      # a cursor that moved forward and was kept between passes
 
 
+async def test_a_large_verify_in_progress_does_not_hold_back_another_connector_whose_turn_has_come(pg_db, no_jitter, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org, extra=12, apps=1)                             # drv: 15 records, verified over several passes; drv0: one record
+    await _admin("DELETE FROM kg.records WHERE org_id = $1 AND id = 'app0-r'", org)              # a drift in the small connector
+    monkeypatch.setattr(verify_mod, "PAGE", 3)
+    monkeypatch.setattr(net, "VERIFY_BUDGET_S", 0.0)                           # one page a pass
+    monkeypatch.setattr(net, "VERIFY_PER_PASS", 1)
+    states: dict = {}
+    await net.verify_due(pg_db, org, states)
+    assert states[(org, "drv")].cursor is not None                             # the large one went first and is in progress
+    await net.verify_due(pg_db, org, states)
+    assert await _mode_of(pg_db, org, "drv0") == "legacy"                      # the next pass is the small one's: caught while the large scan waits its turn
+    assert states[(org, "drv")].cursor is not None and await _mode(p, org) == "enforce"
+
+
+async def _mode_of(db, org: str, app: str) -> str | None:
+    async def go(tx) -> str | None:
+        return await tx.fetchval("SELECT s.mode FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk AND k.coll = 1 WHERE s.org_id = $1 AND k.id = $2", org, app)
+    with ctx(org):
+        return await db.run(go)
+
+
 async def test_a_verify_that_does_not_finish_in_its_intervals_is_logged_and_raised_not_demoted(pg_db, no_jitter, monkeypatch, caplog) -> None:
     p, org = prov(pg_db), new_org()
     await _enforce(p, pg_db, org, extra=6)
@@ -246,6 +287,24 @@ async def test_a_complete_verify_sets_the_last_verified_gauge(pg_db, no_jitter, 
     await _admin("DELETE FROM kg.records WHERE org_id = $1 AND id = 'r3'", org)
     await net.verify_due(pg_db, org, {})
     assert sets == []                                                          # a verify that found a difference is not a verified connector
+
+
+async def test_after_a_verify_the_counters_are_checked_and_a_difference_is_reported_not_repaired_or_demoted(pg_db, no_jitter, caplog) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    await counts.run(pg_db, org)
+    stray = """SELECT count(*) FROM kg.counts WHERE org_id = $1 AND facet = 1 AND n = 7000"""
+    await _admin("""INSERT INTO kg.counts (org_id, app_sk, facet, class_id, kind, folder, n, folded) SELECT org_id, app_sk, 1, class_id, kind, folder, 7000, true FROM kg.counts
+        WHERE org_id = $1 AND facet = 1 ORDER BY id LIMIT 1""", org)
+    with caplog.at_level(logging.ERROR, logger=counts.logger.name):
+        assert await net.verify_due(pg_db, org, {}) == 1
+    assert await _mode(p, org) == "enforce"                                   # the copy equals the graph: a counter difference demotes nothing
+    assert any("kg counters of connector drv" in r.getMessage() for r in caplog.records)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        assert await con.fetchval(stray, org) == 1                            # and repairs nothing
+    finally:
+        await con.close()
 
 
 async def test_the_first_verifies_are_spread_over_the_interval(pg_db, monkeypatch) -> None:
@@ -547,6 +606,7 @@ async def test_the_samples_draw_their_ids_from_the_nodes_kg_decided(pg_db, every
     assert got and set(got[0]) <= set(IDS) and not any(i.startswith("nothing") for i in got[0])      # the 40 unknown ids are the walk's and are not repeated
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_statements_of_the_chunked_verify_are_index_ranges(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await _enforce(p, pg_db, org)
@@ -571,6 +631,57 @@ async def test_the_statements_of_the_chunked_verify_are_index_ranges(pg_db) -> N
             assert "Seq Scan" not in plan, (state, name, plan)
         assert "records_app" in plans["ghosts"] or "records_pkey" in plans["ghosts"], plans["ghosts"]
         assert "Index Scan using scope_members" in plans["grants"] or "Index Only Scan using scope_members" in plans["grants"], plans["grants"]
+
+
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
+async def test_the_verify_checks_seek_every_key_on_an_org_the_statistics_do_not_know(pg_db) -> None:
+    """The statistics know two orgs of 10,000 records and links each and not this one (its first load into kg, before the maintenance worker's ANALYZE),
+    so the planner puts it at a row. Each check of verify_app reads the connector's records once and every other row by its key: written as joins,
+    verify_orphan_links crossed the org's links with its records on org_id alone (over 120 s at 47,000 links) and verify_sk read the org's node keys
+    once per record. Plans as the connectors service runs them (custom plans; the orphan links under reader.seeks)."""
+    org, others, n, m = new_org(), [new_org(), new_org()], 10_000, 2_000
+    keyed = {"records": r"\b(sk >= |app_sk = )", "links": r"\bparent_sk >= ", "node_keys": r"\bid >= "}
+    try:
+        for i, o in enumerate(others):
+            await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, parent_sk) SELECT $1, $2 + g, 3, 'b' || g, 3, g % 50, g / 20 FROM generate_series(1, $3) g", o, i * n, n)
+            await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT $1, $2 + g, 1 + g % 3, $2 + g + 1 FROM generate_series(1, $3) g", o, i * n, n)
+            await _admin("INSERT INTO kg.node_keys (org_id, coll, id, sk) SELECT $1, 3, 'b' || g, $2 + g FROM generate_series(1, $3) g", o, i * n, n)
+        await _admin("ANALYZE kg.records; ANALYZE kg.links; ANALYZE kg.node_keys; ANALYZE kg.scopes; ANALYZE kg.scope_members")
+        await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk) SELECT $1, g, 3, 'r' || g, 3, 7 FROM generate_series(1, $2) g", org, m)
+        await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT $1, g, 1, g + 1 FROM generate_series(1, $2) g", org, m)
+        await _admin("INSERT INTO kg.node_keys (org_id, coll, id, sk) SELECT $1, 3, 'r' || g, g FROM generate_series(1, $2) g", org, m)
+        await _admin("INSERT INTO kg.scopes (org_id, sk, kind, app_sk, restricted, rule_restricted, needs_grant, deleted) SELECT $1, g, 3, 7, false, false, false, false "
+                     "FROM generate_series(1, $2) g", org, m)
+        await _admin("INSERT INTO kg.scope_members (org_id, principal_sk, node_sk, gtype) SELECT $1, 0, g, 'USER' FROM generate_series(1, $2) g", org, m)
+        # what each check must still find: a link and an access list and a grant whose node is gone, a record whose key row holds another sk, one without a key row
+        await _admin("INSERT INTO kg.scopes (org_id, sk, kind, app_sk, restricted, rule_restricted, needs_grant, deleted) VALUES ($1, $2, 3, 7, false, false, false, false)", org, m + 5)
+        await _admin("INSERT INTO kg.scope_members (org_id, principal_sk, node_sk, gtype) VALUES ($1, 0, $2, 'USER')", org, m + 5)
+        await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk) VALUES ($1, $2, 3, 'moved', 3, 7), ($1, $3, 3, 'keyless', 3, 7)", org, m + 10, m + 11)
+        await _admin("INSERT INTO kg.node_keys (org_id, coll, id, sk) VALUES ($1, 3, 'moved', $2)", org, m + 99)
+
+        async def go(tx) -> dict[str, Any]:
+            plans = {}
+            for name, sql, args in (("sk", verify_mod.VERIFY_SK, (org, 7, 100)), ("links", verify_mod.ORPHAN_LINKS, (org, 7, 100)),
+                                    ("grants", verify_mod.ORPHAN_GRANTS, (org, 100)), ("scopes", verify_mod.ORPHAN_SCOPES, (org, 7, 100))):
+                async with seeks(tx) if name == "links" else contextlib.nullcontext():
+                    plans[name] = await tx.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args)
+            return plans
+        with ctx(org):
+            plans = await pg_db.run(go, custom_plan=True)
+        assert not (bad := {name: v for name, plan in plans.items() if (v := plan_gate.violations(plan, keyed))}), bad
+
+        async def found(tx) -> list[list[tuple]]:
+            async with seeks(tx):
+                links = await tx.fetch(verify_mod.ORPHAN_LINKS, org, 7, 100)
+            return [[tuple(r) for r in rows] for rows in (await tx.fetch(verify_mod.VERIFY_SK, org, 7, 100), links,
+                                                          await tx.fetch(verify_mod.ORPHAN_GRANTS, org, 100), await tx.fetch(verify_mod.ORPHAN_SCOPES, org, 7, 100))]
+        with ctx(org):
+            assert await pg_db.run(found) == [[(m + 10, 3, "moved", m + 99), (m + 11, 3, "keyless", None)], [(m, 1, m + 1)], [(0, m + 5, "USER")], [(m + 5,)]]
+    finally:
+        for o in (org, *others):
+            for t in ("records", "links", "node_keys", "scopes", "scope_members", "counts"):
+                await _admin(f"DELETE FROM kg.{t} WHERE org_id = $1", o)
+        await _admin("ANALYZE kg.records; ANALYZE kg.links; ANALYZE kg.node_keys; ANALYZE kg.scopes; ANALYZE kg.scope_members")
 
 
 # ---- the request row, the verify's restart and its immediate demotion ------------------------------------------------------------------------------

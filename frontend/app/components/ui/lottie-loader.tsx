@@ -21,9 +21,9 @@ const DotLottieReact = dynamic(
   () =>
     import('@lottiefiles/dotlottie-react')
       .then((m) => {
-        // The player downloads its wasm from a CDN unless told where it is; here it ships in
-        // the build, so the loader works with no route to the internet.
-        m.setWasmUrl(new URL('../../../node_modules/@lottiefiles/dotlottie-web/dist/dotlottie-player.wasm', import.meta.url).toString());
+        // Bundled with the app: the player otherwise fetches its WebAssembly from a public CDN, which the
+        // app's CSP refuses (ADR-WEB-01) and an offline install cannot reach.
+        m.setWasmUrl(new URL('@lottiefiles/dotlottie-web/dotlottie-player.wasm', import.meta.url).href);
         return m.DotLottieReact;
       })
       .catch(() => LogoFallback as React.ComponentType<Record<string, unknown>>),

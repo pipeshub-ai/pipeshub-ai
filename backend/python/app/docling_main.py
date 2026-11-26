@@ -87,6 +87,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Initialize Docling service with proper dependencies
         config_service = app_container.config_service()
         logger = app_container.logger()
+        from app.modules.indexing.replay_set import check_main_redis_eviction_policy
+
+        await check_main_redis_eviction_policy(config_service, logger, "docling")
         app.state.docling_service = DoclingService(
             config_service=config_service, logger=logger
         )

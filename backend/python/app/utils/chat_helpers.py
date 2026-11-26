@@ -31,6 +31,7 @@ from app.models.blocks import (
     group_caption,
     summary_with_captions,
 )
+from app.models.citation_source import is_live_record_id, live_citation_metadata
 from app.models.entities import (
     CodeFileRecord,
     Connectors,
@@ -47,6 +48,7 @@ from app.models.entities import (
     Record,
     RecordType,
     TicketRecord,
+    edition_fields_of,
 )
 from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, epoch_ms
 from app.modules.artifacts.reader import record_artifact_reader
@@ -733,6 +735,18 @@ class CitationRefMapper:
         """Snapshot of ref→URL mapping (safe to pass downstream without exposing mutability)."""
         return dict(self._ref_to_url)
 
+    def restore(self, pairs: list[tuple[str, str]]) -> None:
+        """Re-adds ``(url, ref)`` mappings recorded by an earlier process, keeping
+        their numbers, so refs a model already saw resolve the same way."""
+        for url, ref in pairs:
+            if url in self._url_to_ref:
+                continue
+            self._url_to_ref[url] = ref
+            self._ref_to_url[ref] = url
+            number = ref.removeprefix("ref")
+            if number.isdigit():
+                self._counter = max(self._counter, int(number))
+
     @property
     def url_to_ref(self) -> dict[str, str]:
         """Snapshot of URL→ref mapping."""
@@ -774,6 +788,22 @@ class RecordIdShortener:
         self._full_to_short[full_id] = short
         self._short_to_full[short] = full_id
         return short
+
+    def entries(self) -> list[tuple[str, str]]:
+        """``(full, short)`` in the order the short ids were assigned."""
+        return list(self._full_to_short.items())
+
+    def restore(self, pairs: list[tuple[str, str]]) -> None:
+        """Re-adds ``(full, short)`` ids recorded by an earlier process, keeping
+        their labels, so a label the model already saw resolves the same way."""
+        for full, short in pairs:
+            if full in self._full_to_short:
+                continue
+            self._full_to_short[full] = short
+            self._short_to_full[short] = full
+            number = short.removeprefix("R")
+            if number.isdigit():
+                self._counter = max(self._counter, int(number))
 
     def copy(self) -> "RecordIdShortener":
         """An independent shortener that continues numbering from this one."""
@@ -1478,8 +1508,9 @@ async def _build_linked_record_context_metadata(
         blob_record = None
         if vrid and blob_store and org_id:
             try:
+                # Only metadata and the summary are used: the blocks need not be decoded.
                 blob_record = await record_artifact_reader(blob_store).read_record(
-                    vrid, org_id, lookup=lookup_result
+                    vrid, org_id, lookup=lookup_result, head_only=True
                 )
             except Exception as e:
                 logger.debug(
@@ -1618,7 +1649,7 @@ async def resolve_frontend_url(
         return None
     try:
         endpoints_config = await config_service.get_config(
-            config_node_constants.ENDPOINTS.value, default={},
+            config_node_constants.ENDPOINTS.value, default={}, use_cache=True,
         )
         if isinstance(endpoints_config, dict):
             return endpoints_config.get("frontend", {}).get("publicEndpoint")
@@ -1757,22 +1788,16 @@ async def _resolve_target_metadata(
             })
         return resolved
 
-    doc_results, vrid_result = await asyncio.gather(
-        _fetch_docs(),
-        graph_provider.get_virtual_record_ids_for_record_ids(list(context_ids)),
-        return_exceptions=True,
-    )
+    try:
+        doc_results = await _fetch_docs()
+    except Exception as e:
+        doc_results = e
 
     # Populate doc_index from fetched docs
     if ids_needing_docs and not isinstance(doc_results, Exception):
         for rid, doc in doc_results.items():
             if doc and isinstance(doc, dict):
                 doc_index[rid] = doc  # noqa: PERF403
-
-    # Build id -> vrid mapping
-    id_to_vrid: dict[str, str] = {}
-    if not isinstance(vrid_result, Exception) and isinstance(vrid_result, dict):
-        id_to_vrid = vrid_result
 
     # Build context for out-of-context, non-deleted IDs
     out_of_context_ids = [
@@ -1783,6 +1808,22 @@ async def _resolve_target_metadata(
 
     context_map: dict[str, str] = {}
     if out_of_context_ids:
+        # Each of these has its graph record doc in hand, and that doc carries
+        # the virtual record id the lookup query would return; only docs
+        # without one (e.g. a projection that left it out) are asked for.
+        id_to_vrid: dict[str, str] = {
+            rid: vrid for rid in out_of_context_ids
+            if (vrid := doc_index[rid].get("virtualRecordId"))
+        }
+        unresolved = [rid for rid in out_of_context_ids if rid not in id_to_vrid]
+        if unresolved:
+            try:
+                vrid_result = await graph_provider.get_virtual_record_ids_for_record_ids(unresolved)
+                if isinstance(vrid_result, dict):
+                    id_to_vrid.update(vrid_result)
+            except Exception as e:
+                logger.warning("Linked record context: virtual record id lookup failed: %s", e)
+
         # Resolve both per-record lookups once for the whole batch. Each linked
         # record otherwise pays its own virtual-record mapping query inside
         # read_record, plus its own type-specific get_document.
@@ -3429,6 +3470,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
 
         block_type = block.get("type")
         result["block_type"] = block_type
+        # What a text block is within its document (heading, paragraph, list item...),
+        # when the parser said: /retrieve joins a lone heading to the passage it heads.
+        if block.get("sub_type"):
+            result["block_sub_type"] = block["sub_type"]
 
         # Fragment block: split from a container due to inline images inside a group.
         # Route through the container's parent group rather than treating as standalone.
@@ -3895,6 +3940,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         block = blocks[index]
         block_type = block.get("type")
         result["block_type"] = block_type
+        # What a text block is within its document (heading, paragraph, list item...),
+        # when the parser said: /retrieve joins a lone heading to the passage it heads.
+        if block.get("sub_type"):
+            result["block_sub_type"] = block["sub_type"]
         result["virtual_record_id"] = virtual_record_id
         result["block_index"] = index
         enhanced_metadata = get_enhanced_metadata(record,block,meta)
@@ -3986,7 +4035,11 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
             origin = meta.get("origin") or record.get("origin", "")
             recordId = meta.get("recordId") or record.get("id", "")
             record_type = record.get("record_type", "")
-            if hide_weburl and recordId:
+            # A live record was never saved: no record page exists to link or preview.
+            live = is_live_record_id(recordId)
+            if live:
+                preview_renderable = False
+            if hide_weburl and recordId and not live:
                 web_url = f"/record/{recordId}"
             elif (
                 web_url
@@ -3997,7 +4050,7 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
                 web_url = generate_text_fragment_url(
                     web_url, block_text, _fragment_source_format(block, block_type)
                 )
-            if not web_url and recordId:
+            if not web_url and recordId and not live:
                 web_url = f"/record/{recordId}"
 
             record_updated_at_ms = record.get("updated_at")
@@ -4036,6 +4089,8 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
                         "hideWeburl": hide_weburl,
                         "updatedAt": record_updated_at_iso,
                     }
+            if live:
+                enhanced_metadata.update(live_citation_metadata(record))
             if cited_as == "xlsx" or meta.get("sheetName"):
                 if isinstance(data, dict):
                     enhanced_metadata["sheetName"] = data.get("sheet_name", "")
@@ -4093,11 +4148,19 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 record["preview_renderable"] = graphDb_record.get("previewRenderable", True)
                 record["hide_weburl"] = graphDb_record.get("hideWeburl", False)
                 record["mime_type"] = graphDb_record.get("mimeType")
+                edition_fields = edition_fields_of(graphDb_record)
+                if edition_fields:
+                    # Journaled with the read, for an edition that decides by what the source said of the item.
+                    record["edition_fields"] = edition_fields
                 record["source_created_at"] = graphDb_record.get("sourceCreatedAtTimestamp")
                 record["source_updated_at"] = graphDb_record.get("sourceLastModifiedTimestamp")
                 _put_graph_dates(record, graphDb_record, copy_of_another=copy_of_another)
                 if graphDb_record.get("location"):
                     record["location"] = graphDb_record["location"]
+                if graphDb_record.get("publicationId"):
+                    # Only a publication put this record in reach (P2.13): labels and raw reads key off it.
+                    record["publicationId"] = graphDb_record["publicationId"]
+                    record["publicationMode"] = graphDb_record.get("publicationMode")
                 graph_external_id = graphDb_record.get("externalRecordId")
                 if graph_external_id:
                     record["external_record_id"] = graph_external_id
@@ -4704,6 +4767,35 @@ def _render_blocks_with_images(
     return content
 
 
+def _group_block_indices(block_groups: list[dict[str, Any]], group_index: int) -> list[int]:
+    """Block indices of a group in reading order, including those of nested groups that expand as text
+    (a list inside a panel or comment), not nested tables, which are their own units."""
+    found: set[int] = set()
+    seen: set[int] = set()
+    pending = [group_index]
+    while pending:
+        gi = pending.pop()
+        if gi in seen or not 0 <= gi < len(block_groups):
+            continue
+        seen.add(gi)
+        children = block_groups[gi].get("children")
+        if not isinstance(children, dict):
+            continue
+        for key, into in (("block_ranges", None), ("block_group_ranges", pending)):
+            for r in children.get(key) or []:
+                start, end = r.get("start"), r.get("end")
+                if start is None or end is None:
+                    continue
+                if into is None:
+                    found.update(range(start, end + 1))
+                else:
+                    into.extend(
+                        i for i in range(start, end + 1)
+                        if 0 <= i < len(block_groups) and block_groups[i].get("type") in valid_group_labels
+                    )
+    return sorted(found)
+
+
 def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int, virtual_record_id: str = None, record: dict[str, Any] = None, result: dict[str, Any] = None, is_multimodal_llm: bool = False, fragment_map: dict[int, list[dict[str, Any]]] | None = None) -> list[dict[str, Any]]:  # noqa: FBT001, FBT002
     if parent_index < 0 or parent_index >= len(block_groups):
         return None
@@ -4717,16 +4809,11 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
 
     # Handle new range-based format
     if isinstance(children, dict) and 'block_ranges' in children:
-        block_ranges = children.get('block_ranges', [])
-        for range_obj in block_ranges:
-            start = range_obj.get('start')
-            end = range_obj.get('end')
-            if start is not None and end is not None:
-                for block_index in range(start, end + 1):
-                    if 0 <= block_index < len(blocks):
-                        if blocks[block_index].get("type") == BlockType.IMAGE.value:
-                            continue
-                        result_blocks.append(blocks[block_index])
+        for block_index in _group_block_indices(block_groups, parent_index):
+            if 0 <= block_index < len(blocks):
+                if blocks[block_index].get("type") == BlockType.IMAGE.value:
+                    continue
+                result_blocks.append(blocks[block_index])
     # Handle old format (list of BlockContainerIndex)
     elif isinstance(children, list):
         for child in children:
@@ -4787,7 +4874,7 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
                                         "citationType": "vectordb|document",
                                     })
             continue
-        child_results.append({
+        child = {
             "content": data,
             "block_type": block.get("type"),
             "virtual_record_id": virtual_record_id,
@@ -4796,8 +4883,18 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
             "metadata": get_enhanced_metadata(record, block, meta),
             "score": float(result.get("score",0.0)),
             "citationType": "vectordb|document",
-        })
+        }
+        # As for a top-level hit: /retrieve tells a lone heading by it.
+        if block.get("sub_type"):
+            child["block_sub_type"] = block["sub_type"]
+        child_results.append(child)
     return child_results
+
+
+CITE_BLOCK_REFS_HINT = (
+    "\n\nCite facts from the above using each block's `[refN]` id "
+    "as a markdown link, e.g. [source](ref2). Do NOT use external URLs as citations."
+)
 
 
 class _TableFraming:

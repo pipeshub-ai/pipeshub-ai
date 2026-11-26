@@ -25,6 +25,7 @@ import {
   toolsetDialogPrimaryActionsStyle,
 } from './toolset-config-dialog-styles';
 import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 function extractErrorDetail(e: unknown): string | undefined {
   return isProcessedError(e) ? e.message : e instanceof Error ? e.message : undefined;
@@ -254,9 +255,8 @@ export function McpCredentialsDialog({
                     <Text size="2" weight="medium" mb="2" style={{ color: 'var(--slate-12)', display: 'block' }}>
                       {t('workspace.mcpServers.form.headerValue', { headerName: instance.headerName || 'Authorization' })}
                     </Text>
-                    <TextField.Root
+                    <SecretTextField
                       size="2"
-                      type="password"
                       value={headerValue}
                       onChange={(e) => setHeaderValue(e.target.value)}
                       disabled={busy}
@@ -270,9 +270,9 @@ export function McpCredentialsDialog({
                         {envKey}
                         {!requiredEnv.includes(envKey) ? ' (optional)' : ''}
                       </Text>
-                      <TextField.Root
+                      <SecretTextField
                         size="2"
-                        type={isSecretFieldName(envKey) ? 'password' : 'text'}
+                        masked={isSecretFieldName(envKey)}
                         value={envValues[envKey] ?? ''}
                         onChange={(e) => setEnvValues((prev) => ({ ...prev, [envKey]: e.target.value }))}
                         disabled={busy}
@@ -285,9 +285,8 @@ export function McpCredentialsDialog({
                     <Text size="2" weight="medium" mb="2" style={{ color: 'var(--slate-12)', display: 'block' }}>
                       {t('workspace.mcpServers.form.apiToken')}
                     </Text>
-                    <TextField.Root
+                    <SecretTextField
                       size="2"
-                      type="password"
                       value={apiToken}
                       onChange={(e) => setApiToken(e.target.value)}
                       disabled={busy}

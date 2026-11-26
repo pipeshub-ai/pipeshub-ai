@@ -1,0 +1,858 @@
+{
+ "login": {
+  "credentials_shape": {
+   "claudeAiOauth": {
+    "accessToken": "str",
+    "expiresAt": "int",
+    "rateLimitTier": "str",
+    "refreshToken": "str",
+    "refreshTokenExpiresAt": "int",
+    "scopes": [
+     "str",
+     "str",
+     "str",
+     "str",
+     "str"
+    ],
+    "subscriptionType": "str",
+    "subscriptionTypeSource": "str"
+   }
+  },
+  "oauth_account": {
+   "accountUuid": "00000000-0000-4000-8000-0000000000a1",
+   "billingType": "stripe_subscription",
+   "ccOnboardingFlags": {},
+   "claudeCodeTrialDurationDays": null,
+   "claudeCodeTrialEndsAt": null,
+   "displayName": "Ada",
+   "emailAddress": "ada@example.com",
+   "fullName": "Ada Example",
+   "organizationName": "Example Org",
+   "organizationRole": "admin",
+   "organizationUuid": "00000000-0000-4000-8000-0000000000b2",
+   "planDisplayName": "Max",
+   "profileFetchedAt": 1794658210959,
+   "seatTier": null,
+   "workspaceRole": null
+  },
+  "rc": 0,
+  "stderr": "",
+  "stdout": "Opening browser to sign in\u2026\nIf the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge=qy3ZauNtnZG5U4TqVoYn3izRgl_eDco3z_8pr1IcSE8&code_challenge_method=S256&state=VnxVkbenNnQ4zwRqJVcYa00K_pOmJJBYK8xdMglJfKI\nPaste code here if prompted > Login successful.\n",
+  "tree": [
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": ".claude.json"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": ".claude.json.lock"
+   },
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": ".credentials.json"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": "backups"
+   },
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": "backups/.claude.json.backup.1794658207337"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": "telemetry"
+   },
+   {
+    "dir": false,
+    "mode": "0o644",
+    "path": "telemetry/1p_failed_events.1671303a-fd5e-4624-8ac4-31be35ff1714.f7ec5887-f585-4e87-a7e7-94a9bce36846.json"
+   }
+  ],
+  "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge=qy3ZauNtnZG5U4TqVoYn3izRgl_eDco3z_8pr1IcSE8&code_challenge_method=S256&state=VnxVkbenNnQ4zwRqJVcYa00K_pOmJJBYK8xdMglJfKI"
+ },
+ "login_bad_code": {
+  "oauth_account": null,
+  "rc": 1,
+  "stderr": "Login failed: That code wasn't accepted. It may be incomplete, expired, already used, or from an earlier sign-in attempt. Sign in again to get a new code.\n",
+  "stdout": "Opening browser to sign in\u2026\nIf the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge=fabLpCgvmd245c1ixz0TL5aHX5cy7qJIrp3-5Q4yXqw&code_challenge_method=S256&state=dpmc7Nnb9hocq4Gtsg0H0KBCHGDukGL5n2rcpZ52IIY\nPaste code here if prompted > ",
+  "tree": [
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": ".claude.json"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": "backups"
+   },
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": "backups/.claude.json.backup.1794658221584"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": "telemetry"
+   },
+   {
+    "dir": false,
+    "mode": "0o644",
+    "path": "telemetry/1p_failed_events.17deae1b-ca6e-48b7-82e7-f64db47fa913.cf2e7127-8795-47d7-b725-6b47ee81592f.json"
+   }
+  ],
+  "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge=fabLpCgvmd245c1ixz0TL5aHX5cy7qJIrp3-5Q4yXqw&code_challenge_method=S256&state=dpmc7Nnb9hocq4Gtsg0H0KBCHGDukGL5n2rcpZ52IIY"
+ },
+ "login_code_without_state": {
+  "oauth_account": null,
+  "rc": "still_running_after_40s",
+  "stderr": "Invalid code. Please make sure the full code was copied.\n",
+  "stdout": "Opening browser to sign in\u2026\nIf the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge=NhElg2eUOfKnyqWT4oo6l31uJYLhtP-bc-iWSO-G_MA&code_challenge_method=S256&state=R2fROFkfESQ4M7YEAliGZykhh75xpp-T5aHnMLlBYvA\nPaste code here if prompted > ",
+  "tree": [
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": ".claude.json"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": "backups"
+   },
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": "backups/.claude.json.backup.1794658222320"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": "telemetry"
+   },
+   {
+    "dir": false,
+    "mode": "0o644",
+    "path": "telemetry/1p_failed_events.d2026d6f-ae0d-4ae6-bf26-af56196e3605.7c5c7b7f-c3f9-40d2-8d2b-299062c6fc27.json"
+   }
+  ],
+  "url": "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload+user%3Aplugins&code_challenge=NhElg2eUOfKnyqWT4oo6l31uJYLhtP-bc-iWSO-G_MA&code_challenge_method=S256&state=R2fROFkfESQ4M7YEAliGZykhh75xpp-T5aHnMLlBYvA"
+ },
+ "login_requests": [
+  {
+   "body": [
+    "client_id",
+    "code",
+    "code_verifier",
+    "grant_type",
+    "redirect_uri",
+    "state"
+   ],
+   "grant_type": "authorization_code",
+   "host": "platform.claude.com",
+   "method": "POST",
+   "path": "/v1/oauth/token"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/api/oauth/profile"
+  },
+  {
+   "body": [
+    "attributes",
+    "forcedFeatures",
+    "forcedVariations",
+    "url"
+   ],
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "POST",
+   "path": "/api/eval/sdk-zAZezfDKGoZuXXKe"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/api/oauth/claude_cli/roles"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/api/organization/claude_code_first_token_date"
+  },
+  {
+   "body": [
+    "attributes",
+    "forcedFeatures",
+    "forcedVariations",
+    "url"
+   ],
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "POST",
+   "path": "/api/eval/sdk-zAZezfDKGoZuXXKe"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/api/claude_cli/bootstrap"
+  },
+  {
+   "body": [
+    "events"
+   ],
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "POST",
+   "path": "/api/event_logging/v2/batch"
+  }
+ ],
+ "logout": {
+  "argv": [
+   "claude",
+   "auth",
+   "logout"
+  ],
+  "rc": 0,
+  "stderr": "",
+  "stdout": "Successfully logged out from your Anthropic account.\n",
+  "tree": [
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": ".claude.json"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": "backups"
+   },
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": "backups/.claude.json.backup.1794658207337"
+   },
+   {
+    "dir": true,
+    "mode": "0o700",
+    "path": "plugins"
+   },
+   {
+    "dir": true,
+    "mode": "0o700",
+    "path": "plugins/store"
+   },
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": "plugins/store/cc-plugin-agents-md_builtin-b049b47b3618.json"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": "projects"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": "projects/-workspace"
+   },
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": "projects/-workspace/181e35ba-a40f-40f1-8c2c-4e81e90ff36d.jsonl"
+   },
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": "projects/-workspace/9db427ea-d481-4d9d-a987-c0c7a761f4e7.jsonl"
+   },
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": "projects/-workspace/f3ddc36d-9361-4aad-a098-6d6c4523ac20.jsonl"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": "projects/-workspace/memory"
+   },
+   {
+    "dir": true,
+    "mode": "0o700",
+    "path": "sessions"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": "telemetry"
+   },
+   {
+    "dir": false,
+    "mode": "0o644",
+    "path": "telemetry/1p_failed_events.1671303a-fd5e-4624-8ac4-31be35ff1714.f7ec5887-f585-4e87-a7e7-94a9bce36846.json"
+   },
+   {
+    "dir": false,
+    "mode": "0o644",
+    "path": "telemetry/1p_failed_events.181e35ba-a40f-40f1-8c2c-4e81e90ff36d.3600596d-26c8-4d9c-b595-f93cd356183c.json"
+   },
+   {
+    "dir": false,
+    "mode": "0o644",
+    "path": "telemetry/1p_failed_events.649583e2-a1bf-48e9-9ac5-e2ad4e184172.3bf3185d-afc3-4903-a1b3-e5ff0319afc5.json"
+   },
+   {
+    "dir": false,
+    "mode": "0o644",
+    "path": "telemetry/1p_failed_events.9db427ea-d481-4d9d-a987-c0c7a761f4e7.2594d129-80ba-4df2-a7c7-3f11292d15a2.json"
+   },
+   {
+    "dir": false,
+    "mode": "0o644",
+    "path": "telemetry/1p_failed_events.f3ddc36d-9361-4aad-a098-6d6c4523ac20.59417afd-da3d-4dee-b32e-1de589168b48.json"
+   }
+  ]
+ },
+ "logout_requests": [
+  {
+   "body": [
+    "client_id",
+    "token",
+    "token_type_hint"
+   ],
+   "grant_type": null,
+   "host": "platform.claude.com",
+   "method": "POST",
+   "path": "/v1/oauth/token/revoke"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/api/oauth/profile"
+  },
+  {
+   "body": [
+    "events"
+   ],
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "POST",
+   "path": "/api/event_logging/v2/batch"
+  }
+ ],
+ "logout_revoke_failed": {
+  "argv": [
+   "claude",
+   "auth",
+   "logout"
+  ],
+  "rc": 0,
+  "stderr": "",
+  "stdout": "Successfully logged out from your Anthropic account.\n",
+  "tree": [
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": ".claude.json"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": "backups"
+   },
+   {
+    "dir": false,
+    "mode": "0o600",
+    "path": "backups/.claude.json.backup.1794658269610"
+   },
+   {
+    "dir": true,
+    "mode": "0o755",
+    "path": "telemetry"
+   },
+   {
+    "dir": false,
+    "mode": "0o644",
+    "path": "telemetry/1p_failed_events.23d19249-9495-41a5-ad04-392f647ac4db.34ff9184-1ad8-4acf-845e-1763eac325d6.json"
+   },
+   {
+    "dir": false,
+    "mode": "0o644",
+    "path": "telemetry/1p_failed_events.abacc174-e858-4615-82c1-0ba3ed6ffd05.ed5a3905-c8d5-4191-9a24-22f2ceb729f0.json"
+   }
+  ]
+ },
+ "logout_revoke_failed_requests": [
+  {
+   "body": [
+    "client_id",
+    "token",
+    "token_type_hint"
+   ],
+   "grant_type": null,
+   "host": "platform.claude.com",
+   "method": "POST",
+   "path": "/v1/oauth/token/revoke"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/api/oauth/profile"
+  },
+  {
+   "body": [
+    "events"
+   ],
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "POST",
+   "path": "/api/event_logging/v2/batch"
+  }
+ ],
+ "plans": {
+  "claude_enterprise": {
+   "analyticsDisabled": false,
+   "apiProvider": "firstParty",
+   "authMethod": "claude.ai",
+   "configDirectory": "/state/plan-claude_enterprise",
+   "email": "ada@example.com",
+   "loggedIn": true,
+   "loginExpiresAt": "2026-12-14T12:11:08.218Z",
+   "orgId": "00000000-0000-4000-8000-0000000000b2",
+   "orgName": "Example Org",
+   "planTier": "other",
+   "projectsDirectory": "/state/plan-claude_enterprise/projects",
+   "storedClaudeAiLogin": true,
+   "subscriptionType": "enterprise"
+  },
+  "claude_max": {
+   "analyticsDisabled": false,
+   "apiProvider": "firstParty",
+   "authMethod": "claude.ai",
+   "configDirectory": "/state/plan-claude_max",
+   "email": "ada@example.com",
+   "loggedIn": true,
+   "loginExpiresAt": "2026-12-14T12:11:05.051Z",
+   "orgId": "00000000-0000-4000-8000-0000000000b2",
+   "orgName": "Example Org",
+   "planTier": "max_20x",
+   "projectsDirectory": "/state/plan-claude_max/projects",
+   "storedClaudeAiLogin": true,
+   "subscriptionType": "max"
+  },
+  "claude_pro": {
+   "analyticsDisabled": false,
+   "apiProvider": "firstParty",
+   "authMethod": "claude.ai",
+   "configDirectory": "/state/plan-claude_pro",
+   "email": "ada@example.com",
+   "loggedIn": true,
+   "loginExpiresAt": "2026-12-14T12:11:03.543Z",
+   "orgId": "00000000-0000-4000-8000-0000000000b2",
+   "orgName": "Example Org",
+   "planTier": "pro",
+   "projectsDirectory": "/state/plan-claude_pro/projects",
+   "storedClaudeAiLogin": true,
+   "subscriptionType": "pro"
+  },
+  "claude_team": {
+   "analyticsDisabled": false,
+   "apiProvider": "firstParty",
+   "authMethod": "claude.ai",
+   "configDirectory": "/state/plan-claude_team",
+   "email": "ada@example.com",
+   "loggedIn": true,
+   "loginExpiresAt": "2026-12-14T12:11:06.580Z",
+   "orgId": "00000000-0000-4000-8000-0000000000b2",
+   "orgName": "Example Org",
+   "planTier": "other",
+   "projectsDirectory": "/state/plan-claude_team/projects",
+   "storedClaudeAiLogin": true,
+   "subscriptionType": "team"
+  }
+ },
+ "prompt_expired": {
+  "events": [
+   {
+    "attempt": 1,
+    "error": "authentication_failed",
+    "error_status": 401,
+    "subtype": "api_retry",
+    "type": "system"
+   },
+   {
+    "attempt": 2,
+    "error": "authentication_failed",
+    "error_status": 401,
+    "subtype": "api_retry",
+    "type": "system"
+   },
+   {
+    "content": [
+     {
+      "text": "Failed to authenticate. API Error: 401 OAuth token has expired. Please obtain a new token or refresh your existing token.",
+      "type": "text"
+     }
+    ],
+    "error": "authentication_failed",
+    "model": "<synthetic>",
+    "type": "assistant"
+   },
+   {
+    "api_error_status": 401,
+    "is_error": true,
+    "result": "Failed to authenticate. API Error: 401 OAuth token has expired. Please obtain a new token or refresh your existing token.",
+    "subtype": "success",
+    "terminal_reason": "api_error",
+    "total_cost_usd": 0,
+    "type": "result"
+   }
+  ],
+  "rc": 1,
+  "stderr": ""
+ },
+ "prompt_expired_requests": [
+  {
+   "body": [
+    "attributes",
+    "forcedFeatures",
+    "forcedVariations",
+    "url"
+   ],
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "POST",
+   "path": "/api/eval/sdk-zAZezfDKGoZuXXKe"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/api/oauth/profile"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/v1/mcp_servers"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/api/claude_cli/bootstrap"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/v1/mcp_servers"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/api/claude_code_penguin_mode"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/mcp-registry/v0/servers"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/api/claude_code_grove"
+  },
+  {
+   "body": [
+    "context_management",
+    "diagnostics",
+    "max_tokens",
+    "messages",
+    "metadata",
+    "model",
+    "output_config",
+    "stream",
+    "system",
+    "thinking",
+    "tools"
+   ],
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "POST",
+   "path": "/v1/messages"
+  },
+  {
+   "body": [
+    "client_id",
+    "grant_type",
+    "refresh_token",
+    "scope"
+   ],
+   "grant_type": "refresh_token",
+   "host": "platform.claude.com",
+   "method": "POST",
+   "path": "/v1/oauth/token"
+  },
+  {
+   "body": null,
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "GET",
+   "path": "/api/oauth/profile"
+  },
+  {
+   "body": [
+    "context_management",
+    "diagnostics",
+    "max_tokens",
+    "messages",
+    "metadata",
+    "model",
+    "output_config",
+    "stream",
+    "system",
+    "thinking",
+    "tools"
+   ],
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "POST",
+   "path": "/v1/messages"
+  },
+  {
+   "body": [
+    "events"
+   ],
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "POST",
+   "path": "/api/event_logging/v2/batch"
+  },
+  {
+   "body": [
+    "events"
+   ],
+   "grant_type": null,
+   "host": "api.anthropic.com",
+   "method": "POST",
+   "path": "/api/event_logging/v2/batch"
+  }
+ ],
+ "prompt_limit": {
+  "events": [
+   {
+    "rate_limit_info": {
+     "isUsingOverage": false,
+     "rateLimitType": "five_hour",
+     "resetsAt": 1792360800,
+     "status": "rejected"
+    },
+    "type": "rate_limit_event"
+   },
+   {
+    "content": [
+     {
+      "text": "You've hit your 5-hour limit \u00b7 resets 10pm (UTC)",
+      "type": "text"
+     }
+    ],
+    "error": "rate_limit",
+    "model": "<synthetic>",
+    "type": "assistant"
+   },
+   {
+    "api_error_status": 429,
+    "is_error": true,
+    "result": "You've hit your 5-hour limit \u00b7 resets 10pm (UTC)",
+    "subtype": "success",
+    "terminal_reason": "api_error",
+    "total_cost_usd": 0,
+    "type": "result"
+   }
+  ],
+  "rc": 1,
+  "stderr": ""
+ },
+ "prompt_ok": {
+  "events": [
+   {
+    "rate_limit_info": {
+     "isUsingOverage": false,
+     "status": "allowed"
+    },
+    "type": "rate_limit_event"
+   },
+   {
+    "content": [
+     {
+      "text": "hi",
+      "type": "text"
+     }
+    ],
+    "error": null,
+    "model": "claude-fake",
+    "type": "assistant"
+   },
+   {
+    "api_error_status": null,
+    "is_error": false,
+    "result": "hi",
+    "subtype": "success",
+    "terminal_reason": "completed",
+    "total_cost_usd": 2.3999999999999997e-05,
+    "type": "result"
+   }
+  ],
+  "rc": 0,
+  "stderr": ""
+ },
+ "prompt_signed_out": {
+  "events": [
+   {
+    "content": [
+     {
+      "text": "Not logged in \u00b7 Please run /login",
+      "type": "text"
+     }
+    ],
+    "error": "authentication_failed",
+    "model": "<synthetic>",
+    "type": "assistant"
+   },
+   {
+    "api_error_status": null,
+    "is_error": true,
+    "result": "Not logged in \u00b7 Please run /login",
+    "subtype": "success",
+    "terminal_reason": "api_error",
+    "total_cost_usd": 0,
+    "type": "result"
+   }
+  ],
+  "rc": 1,
+  "stderr": ""
+ },
+ "status_after_failed_revoke": {
+  "json": {
+   "argv": [
+    "claude",
+    "auth",
+    "status"
+   ],
+   "rc": 1,
+   "stderr": "",
+   "stdout": "{\n  \"loggedIn\": false,\n  \"authMethod\": \"none\",\n  \"apiProvider\": \"firstParty\",\n  \"analyticsDisabled\": false,\n  \"projectsDirectory\": \"/state/e/projects\",\n  \"configDirectory\": \"/state/e\",\n  \"loginExpiresAt\": null\n}\n"
+  },
+  "text": {
+   "argv": [
+    "claude",
+    "auth",
+    "status",
+    "--text"
+   ],
+   "rc": 1,
+   "stderr": "",
+   "stdout": "Additional CA cert(s): /certs/ca.pem\nNot logged in. Run claude auth login to authenticate.\n"
+  }
+ },
+ "status_after_logout": {
+  "json": {
+   "argv": [
+    "claude",
+    "auth",
+    "status"
+   ],
+   "rc": 1,
+   "stderr": "",
+   "stdout": "{\n  \"loggedIn\": false,\n  \"authMethod\": \"none\",\n  \"apiProvider\": \"firstParty\",\n  \"analyticsDisabled\": false,\n  \"projectsDirectory\": \"/state/a/projects\",\n  \"configDirectory\": \"/state/a\",\n  \"loginExpiresAt\": null\n}\n"
+  },
+  "text": {
+   "argv": [
+    "claude",
+    "auth",
+    "status",
+    "--text"
+   ],
+   "rc": 1,
+   "stderr": "",
+   "stdout": "Additional CA cert(s): /certs/ca.pem\nNot logged in. Run claude auth login to authenticate.\n"
+  }
+ },
+ "status_signed_in": {
+  "json": {
+   "argv": [
+    "claude",
+    "auth",
+    "status"
+   ],
+   "rc": 0,
+   "stderr": "",
+   "stdout": "{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\",\n  \"apiProvider\": \"firstParty\",\n  \"analyticsDisabled\": false,\n  \"projectsDirectory\": \"/state/a/projects\",\n  \"configDirectory\": \"/state/a\",\n  \"loginExpiresAt\": \"2026-12-14T12:10:07.902Z\",\n  \"email\": \"ada@example.com\",\n  \"orgId\": \"00000000-0000-4000-8000-0000000000b2\",\n  \"orgName\": \"Example Org\",\n  \"subscriptionType\": \"max\",\n  \"storedClaudeAiLogin\": true,\n  \"planTier\": \"max_20x\"\n}\n"
+  },
+  "text": {
+   "argv": [
+    "claude",
+    "auth",
+    "status",
+    "--text"
+   ],
+   "rc": 0,
+   "stderr": "",
+   "stdout": "Login method: Claude Max account\nOrganization: Example Org\nEmail: ada@example.com\nAdditional CA cert(s): /certs/ca.pem\nSign-in ends: between 2026-12-11 and 2026-12-14 (2026-12-14T12:10:07.902Z)\n"
+  }
+ },
+ "status_signed_out": {
+  "json": {
+   "argv": [
+    "claude",
+    "auth",
+    "status"
+   ],
+   "rc": 1,
+   "stderr": "",
+   "stdout": "{\n  \"loggedIn\": false,\n  \"authMethod\": \"none\",\n  \"apiProvider\": \"firstParty\",\n  \"analyticsDisabled\": false,\n  \"projectsDirectory\": \"/state/a/projects\",\n  \"configDirectory\": \"/state/a\",\n  \"loginExpiresAt\": null\n}\n"
+  },
+  "text": {
+   "argv": [
+    "claude",
+    "auth",
+    "status",
+    "--text"
+   ],
+   "rc": 1,
+   "stderr": "",
+   "stdout": "Additional CA cert(s): /certs/ca.pem\nNot logged in. Run claude auth login to authenticate.\n"
+  }
+ }
+}

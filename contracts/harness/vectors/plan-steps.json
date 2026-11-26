@@ -1,0 +1,651 @@
+{
+  "description": "UXR-B1: one fixture task as each executor states its plan (Codex turn/plan/updated, Claude Code TodoWrite, opencode todowrite, the loop's write_todos), revision by revision. Revision 3 follows a steering message that dropped the last step. Every executor yields the same task.* events per revision (Python reads native, asserts events); Node folds the events of revisions 1..n and the plan frame it sends after revision n equals frame (steps in first-stated order, the in-progress step as currentTaskId).",
+  "revisions": [
+    {
+      "native": {
+        "codex": [
+          {
+            "step": "Find the Q3 invoices",
+            "status": "inProgress"
+          },
+          {
+            "step": "Read the budget sheet",
+            "status": "pending"
+          },
+          {
+            "step": "Match spend to budget",
+            "status": "pending"
+          },
+          {
+            "step": "Draft the review",
+            "status": "pending"
+          },
+          {
+            "step": "Send it to finance",
+            "status": "pending"
+          }
+        ],
+        "claude_code": [
+          {
+            "content": "Find the Q3 invoices",
+            "status": "in_progress",
+            "activeForm": "Find the Q3 invoices"
+          },
+          {
+            "content": "Read the budget sheet",
+            "status": "pending",
+            "activeForm": "Read the budget sheet"
+          },
+          {
+            "content": "Match spend to budget",
+            "status": "pending",
+            "activeForm": "Match spend to budget"
+          },
+          {
+            "content": "Draft the review",
+            "status": "pending",
+            "activeForm": "Draft the review"
+          },
+          {
+            "content": "Send it to finance",
+            "status": "pending",
+            "activeForm": "Send it to finance"
+          }
+        ],
+        "opencode": [
+          {
+            "content": "Find the Q3 invoices",
+            "status": "in_progress",
+            "priority": "medium",
+            "id": "1"
+          },
+          {
+            "content": "Read the budget sheet",
+            "status": "pending",
+            "priority": "medium",
+            "id": "2"
+          },
+          {
+            "content": "Match spend to budget",
+            "status": "pending",
+            "priority": "medium",
+            "id": "3"
+          },
+          {
+            "content": "Draft the review",
+            "status": "pending",
+            "priority": "medium",
+            "id": "4"
+          },
+          {
+            "content": "Send it to finance",
+            "status": "pending",
+            "priority": "medium",
+            "id": "5"
+          }
+        ],
+        "loop": [
+          {
+            "content": "Find the Q3 invoices",
+            "status": "in_progress"
+          },
+          {
+            "content": "Read the budget sheet",
+            "status": "pending"
+          },
+          {
+            "content": "Match spend to budget",
+            "status": "pending"
+          },
+          {
+            "content": "Draft the review",
+            "status": "pending"
+          },
+          {
+            "content": "Send it to finance",
+            "status": "pending"
+          }
+        ]
+      },
+      "events": [
+        {
+          "type": "task.created",
+          "data": {
+            "taskId": "task-1",
+            "title": "Find the Q3 invoices",
+            "status": "in_progress",
+            "deps": []
+          }
+        },
+        {
+          "type": "task.created",
+          "data": {
+            "taskId": "task-2",
+            "title": "Read the budget sheet",
+            "status": "pending",
+            "deps": []
+          }
+        },
+        {
+          "type": "task.created",
+          "data": {
+            "taskId": "task-3",
+            "title": "Match spend to budget",
+            "status": "pending",
+            "deps": []
+          }
+        },
+        {
+          "type": "task.created",
+          "data": {
+            "taskId": "task-4",
+            "title": "Draft the review",
+            "status": "pending",
+            "deps": []
+          }
+        },
+        {
+          "type": "task.created",
+          "data": {
+            "taskId": "task-5",
+            "title": "Send it to finance",
+            "status": "pending",
+            "deps": []
+          }
+        }
+      ],
+      "frame": {
+        "steps": [
+          {
+            "taskId": "task-1",
+            "title": "Find the Q3 invoices",
+            "status": "in_progress",
+            "deps": []
+          },
+          {
+            "taskId": "task-2",
+            "title": "Read the budget sheet",
+            "status": "pending",
+            "deps": []
+          },
+          {
+            "taskId": "task-3",
+            "title": "Match spend to budget",
+            "status": "pending",
+            "deps": []
+          },
+          {
+            "taskId": "task-4",
+            "title": "Draft the review",
+            "status": "pending",
+            "deps": []
+          },
+          {
+            "taskId": "task-5",
+            "title": "Send it to finance",
+            "status": "pending",
+            "deps": []
+          }
+        ],
+        "currentTaskId": "task-1"
+      }
+    },
+    {
+      "native": {
+        "codex": [
+          {
+            "step": "Find the Q3 invoices",
+            "status": "completed"
+          },
+          {
+            "step": "Read the budget sheet",
+            "status": "inProgress"
+          },
+          {
+            "step": "Match spend to budget",
+            "status": "pending"
+          },
+          {
+            "step": "Draft the review",
+            "status": "pending"
+          },
+          {
+            "step": "Send it to finance",
+            "status": "pending"
+          }
+        ],
+        "claude_code": [
+          {
+            "content": "Find the Q3 invoices",
+            "status": "completed",
+            "activeForm": "Find the Q3 invoices"
+          },
+          {
+            "content": "Read the budget sheet",
+            "status": "in_progress",
+            "activeForm": "Read the budget sheet"
+          },
+          {
+            "content": "Match spend to budget",
+            "status": "pending",
+            "activeForm": "Match spend to budget"
+          },
+          {
+            "content": "Draft the review",
+            "status": "pending",
+            "activeForm": "Draft the review"
+          },
+          {
+            "content": "Send it to finance",
+            "status": "pending",
+            "activeForm": "Send it to finance"
+          }
+        ],
+        "opencode": [
+          {
+            "content": "Find the Q3 invoices",
+            "status": "completed",
+            "priority": "medium",
+            "id": "1"
+          },
+          {
+            "content": "Read the budget sheet",
+            "status": "in_progress",
+            "priority": "medium",
+            "id": "2"
+          },
+          {
+            "content": "Match spend to budget",
+            "status": "pending",
+            "priority": "medium",
+            "id": "3"
+          },
+          {
+            "content": "Draft the review",
+            "status": "pending",
+            "priority": "medium",
+            "id": "4"
+          },
+          {
+            "content": "Send it to finance",
+            "status": "pending",
+            "priority": "medium",
+            "id": "5"
+          }
+        ],
+        "loop": [
+          {
+            "content": "Find the Q3 invoices",
+            "status": "completed"
+          },
+          {
+            "content": "Read the budget sheet",
+            "status": "in_progress"
+          },
+          {
+            "content": "Match spend to budget",
+            "status": "pending"
+          },
+          {
+            "content": "Draft the review",
+            "status": "pending"
+          },
+          {
+            "content": "Send it to finance",
+            "status": "pending"
+          }
+        ]
+      },
+      "events": [
+        {
+          "type": "task.updated",
+          "data": {
+            "taskId": "task-1",
+            "title": "Find the Q3 invoices",
+            "status": "completed",
+            "deps": []
+          }
+        },
+        {
+          "type": "task.updated",
+          "data": {
+            "taskId": "task-2",
+            "title": "Read the budget sheet",
+            "status": "in_progress",
+            "deps": []
+          }
+        }
+      ],
+      "frame": {
+        "steps": [
+          {
+            "taskId": "task-1",
+            "title": "Find the Q3 invoices",
+            "status": "completed",
+            "deps": []
+          },
+          {
+            "taskId": "task-2",
+            "title": "Read the budget sheet",
+            "status": "in_progress",
+            "deps": []
+          },
+          {
+            "taskId": "task-3",
+            "title": "Match spend to budget",
+            "status": "pending",
+            "deps": []
+          },
+          {
+            "taskId": "task-4",
+            "title": "Draft the review",
+            "status": "pending",
+            "deps": []
+          },
+          {
+            "taskId": "task-5",
+            "title": "Send it to finance",
+            "status": "pending",
+            "deps": []
+          }
+        ],
+        "currentTaskId": "task-2"
+      }
+    },
+    {
+      "native": {
+        "codex": [
+          {
+            "step": "Find the Q3 invoices",
+            "status": "completed"
+          },
+          {
+            "step": "Read the budget sheet",
+            "status": "completed"
+          },
+          {
+            "step": "Match spend to budget",
+            "status": "inProgress"
+          },
+          {
+            "step": "Draft the review",
+            "status": "pending"
+          }
+        ],
+        "claude_code": [
+          {
+            "content": "Find the Q3 invoices",
+            "status": "completed",
+            "activeForm": "Find the Q3 invoices"
+          },
+          {
+            "content": "Read the budget sheet",
+            "status": "completed",
+            "activeForm": "Read the budget sheet"
+          },
+          {
+            "content": "Match spend to budget",
+            "status": "in_progress",
+            "activeForm": "Match spend to budget"
+          },
+          {
+            "content": "Draft the review",
+            "status": "pending",
+            "activeForm": "Draft the review"
+          }
+        ],
+        "opencode": [
+          {
+            "content": "Find the Q3 invoices",
+            "status": "completed",
+            "priority": "medium",
+            "id": "1"
+          },
+          {
+            "content": "Read the budget sheet",
+            "status": "completed",
+            "priority": "medium",
+            "id": "2"
+          },
+          {
+            "content": "Match spend to budget",
+            "status": "in_progress",
+            "priority": "medium",
+            "id": "3"
+          },
+          {
+            "content": "Draft the review",
+            "status": "pending",
+            "priority": "medium",
+            "id": "4"
+          }
+        ],
+        "loop": [
+          {
+            "content": "Find the Q3 invoices",
+            "status": "completed"
+          },
+          {
+            "content": "Read the budget sheet",
+            "status": "completed"
+          },
+          {
+            "content": "Match spend to budget",
+            "status": "in_progress"
+          },
+          {
+            "content": "Draft the review",
+            "status": "pending"
+          }
+        ]
+      },
+      "events": [
+        {
+          "type": "task.updated",
+          "data": {
+            "taskId": "task-2",
+            "title": "Read the budget sheet",
+            "status": "completed",
+            "deps": []
+          }
+        },
+        {
+          "type": "task.updated",
+          "data": {
+            "taskId": "task-3",
+            "title": "Match spend to budget",
+            "status": "in_progress",
+            "deps": []
+          }
+        },
+        {
+          "type": "task.updated",
+          "data": {
+            "taskId": "task-5",
+            "title": "Send it to finance",
+            "status": "cancelled",
+            "deps": []
+          }
+        }
+      ],
+      "frame": {
+        "steps": [
+          {
+            "taskId": "task-1",
+            "title": "Find the Q3 invoices",
+            "status": "completed",
+            "deps": []
+          },
+          {
+            "taskId": "task-2",
+            "title": "Read the budget sheet",
+            "status": "completed",
+            "deps": []
+          },
+          {
+            "taskId": "task-3",
+            "title": "Match spend to budget",
+            "status": "in_progress",
+            "deps": []
+          },
+          {
+            "taskId": "task-4",
+            "title": "Draft the review",
+            "status": "pending",
+            "deps": []
+          },
+          {
+            "taskId": "task-5",
+            "title": "Send it to finance",
+            "status": "cancelled",
+            "deps": []
+          }
+        ],
+        "currentTaskId": "task-3"
+      }
+    },
+    {
+      "native": {
+        "codex": [
+          {
+            "step": "Find the Q3 invoices",
+            "status": "completed"
+          },
+          {
+            "step": "Read the budget sheet",
+            "status": "completed"
+          },
+          {
+            "step": "Match spend to budget",
+            "status": "completed"
+          },
+          {
+            "step": "Draft the review",
+            "status": "completed"
+          }
+        ],
+        "claude_code": [
+          {
+            "content": "Find the Q3 invoices",
+            "status": "completed",
+            "activeForm": "Find the Q3 invoices"
+          },
+          {
+            "content": "Read the budget sheet",
+            "status": "completed",
+            "activeForm": "Read the budget sheet"
+          },
+          {
+            "content": "Match spend to budget",
+            "status": "completed",
+            "activeForm": "Match spend to budget"
+          },
+          {
+            "content": "Draft the review",
+            "status": "completed",
+            "activeForm": "Draft the review"
+          }
+        ],
+        "opencode": [
+          {
+            "content": "Find the Q3 invoices",
+            "status": "completed",
+            "priority": "medium",
+            "id": "1"
+          },
+          {
+            "content": "Read the budget sheet",
+            "status": "completed",
+            "priority": "medium",
+            "id": "2"
+          },
+          {
+            "content": "Match spend to budget",
+            "status": "completed",
+            "priority": "medium",
+            "id": "3"
+          },
+          {
+            "content": "Draft the review",
+            "status": "completed",
+            "priority": "medium",
+            "id": "4"
+          }
+        ],
+        "loop": [
+          {
+            "content": "Find the Q3 invoices",
+            "status": "completed"
+          },
+          {
+            "content": "Read the budget sheet",
+            "status": "completed"
+          },
+          {
+            "content": "Match spend to budget",
+            "status": "completed"
+          },
+          {
+            "content": "Draft the review",
+            "status": "completed"
+          }
+        ]
+      },
+      "events": [
+        {
+          "type": "task.updated",
+          "data": {
+            "taskId": "task-3",
+            "title": "Match spend to budget",
+            "status": "completed",
+            "deps": []
+          }
+        },
+        {
+          "type": "task.updated",
+          "data": {
+            "taskId": "task-4",
+            "title": "Draft the review",
+            "status": "completed",
+            "deps": []
+          }
+        }
+      ],
+      "frame": {
+        "steps": [
+          {
+            "taskId": "task-1",
+            "title": "Find the Q3 invoices",
+            "status": "completed",
+            "deps": []
+          },
+          {
+            "taskId": "task-2",
+            "title": "Read the budget sheet",
+            "status": "completed",
+            "deps": []
+          },
+          {
+            "taskId": "task-3",
+            "title": "Match spend to budget",
+            "status": "completed",
+            "deps": []
+          },
+          {
+            "taskId": "task-4",
+            "title": "Draft the review",
+            "status": "completed",
+            "deps": []
+          },
+          {
+            "taskId": "task-5",
+            "title": "Send it to finance",
+            "status": "cancelled",
+            "deps": []
+          }
+        ],
+        "currentTaskId": null
+      }
+    }
+  ]
+}

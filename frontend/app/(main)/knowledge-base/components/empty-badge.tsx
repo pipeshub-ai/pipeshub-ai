@@ -2,9 +2,11 @@
 
 import React from 'react';
 import { Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 
 /** Marks a folder or collection that has nothing in it yet. */
 export function EmptyBadge({ style }: { style?: React.CSSProperties }) {
+  const { t } = useTranslation();
   return (
     <Text
       style={{
@@ -15,7 +17,8 @@ export function EmptyBadge({ style }: { style?: React.CSSProperties }) {
         fontSize: 11,
         lineHeight: '16px',
         fontWeight: 500,
-        color: 'var(--gray-a10)',
+        // gray-11: gray-a10 is under AA's 4.5:1 for 11 px text in dark.
+        color: 'var(--gray-11)',
         border: '1px solid var(--gray-a5)',
         borderRadius: 999,
         boxSizing: 'border-box',
@@ -24,7 +27,7 @@ export function EmptyBadge({ style }: { style?: React.CSSProperties }) {
         ...style,
       }}
     >
-      Empty
+      {t('kb.emptyFolder')}
     </Text>
   );
 }

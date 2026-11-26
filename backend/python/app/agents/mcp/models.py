@@ -4,6 +4,7 @@ and auth/token management.
 All models use camelCase aliases on the wire (matching the frontend/Node conventions)
 while keeping snake_case attribute names in Python.
 """
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -13,6 +14,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 from pydantic.alias_generators import to_camel
 
+from app.agents.mcp.runner_fields import MAX_EGRESS_HOSTS
 from app.agents.mcp.tool_kind import KindSource, ToolKind, tool_kind
 
 
@@ -56,6 +58,24 @@ class MCPAuthMode(str, Enum):
     HEADERS = "headers"
 
 
+class MCPCategory(str, Enum):
+    """The one catalog shelf a server sits on, so people can browse by what kind of tool it is."""
+
+    COMMUNICATION = "communication"
+    MEETINGS = "meetings"
+    DOCS = "docs"
+    PROJECTS = "projects"
+    DEVELOPER = "developer"
+    DATA = "data"
+    SALES = "sales"
+    SUPPORT = "support"
+    FINANCE = "finance"
+    DESIGN = "design"
+    AUTOMATION = "automation"
+    SEARCH = "search"
+    SECURITY = "security"
+
+
 class TokenEndpointAuthMethod(str, Enum):
     """How PipesHub proves which OAuth client it is when it asks for tokens (RFC 6749 §2.3.1)."""
 
@@ -91,6 +111,9 @@ class MCPServerTemplate(MCPCamelModel):
     args: list[str] = Field(default_factory=list)
     required_env: list[str] = Field(default_factory=list)
     optional_env: list[str] = Field(default_factory=list)
+    # The hosts the program calls, which its MCP runner may reach (`host` or `host:port`). Not part of the dumped
+    # entry: the release catalog's digests name what a server runs and how it signs in.
+    egress_hosts: list[str] = Field(default_factory=list, exclude=True)
 
     # SSE / Streamable HTTP
     default_url: Optional[str] = None
@@ -122,6 +145,12 @@ class MCPServerTemplate(MCPCamelModel):
     documentation_url: Optional[str] = None
     auth_hint: Optional[AuthHint] = None
     tags: list[str] = Field(default_factory=list)
+    category: Optional[MCPCategory] = None
+    # What someone gets done with it, in their words ("Schedule meetings"): search reads these, and
+    # the catalog lists them. Hand-written, since a server's tools are only known after sign-in.
+    capabilities: list[str] = Field(default_factory=list)
+    # Every tool only looks things up. Unset means some tools change data.
+    read_only: bool = False
     # The catalog entry that took this one's place. A replaced entry can't be used for a new
     # server; servers already made from it keep running from it.
     replaced_by: Optional[str] = None
@@ -169,6 +198,8 @@ class MCPServerInstanceConfig(MCPCamelModel):
     args: list[Annotated[str, Field(max_length=2048)]] = Field(default_factory=list, max_length=64)
     # Custom STDIO only — catalog templates supply required_env from the template.
     required_env: list[Annotated[str, Field(max_length=128)]] = Field(default_factory=list, max_length=64)
+    # Custom STDIO only: the hosts its program calls, which its MCP runner may reach (`host` or `host:port`).
+    egress_hosts: list[Annotated[str, Field(max_length=261)]] = Field(default_factory=list, max_length=MAX_EGRESS_HOSTS)
 
     # SSE / Streamable HTTP
     url: Optional[str] = Field(default=None, max_length=2048)
@@ -227,6 +258,11 @@ class MCPServerConfig(MCPCamelModel):
     args: list[str] = Field(default_factory=list)
     required_env: list[str] = Field(default_factory=list)
     optional_env: list[str] = Field(default_factory=list)
+    # STDIO in MCP runners (P5.10, `app.agents.mcp.runner_fields`): the hosts the server may reach (`host` or
+    # `host:port`, plain HTTP through the egress proxy; none = no network) and its runner image (None: the
+    # deployment's).
+    egress_hosts: list[str] = Field(default_factory=list)
+    runner_image: str | None = None
 
     url: Optional[str] = None
     header_name: Optional[str] = None
@@ -263,6 +299,16 @@ class OAuthTokens(MCPCamelModel):
     # Absent on tokens from before it was recorded, all issued with `client_secret_post`.
     token_endpoint_auth_method: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("expires_in", mode="before")
+    @classmethod
+    def _whole_seconds(cls, value: object) -> object:
+        # Some providers send a fraction (3599.5). Connectors accept it too; dropping it only refreshes a moment early.
+        if not isinstance(value, float) or not math.isfinite(value):
+            return value
+        whole = int(value)
+        # Under a second never becomes 0, which the expiry properties read as "no expiry".
+        return whole if whole or value == 0 else (1 if value > 0 else -1)
 
     @property
     def is_expired(self) -> bool:

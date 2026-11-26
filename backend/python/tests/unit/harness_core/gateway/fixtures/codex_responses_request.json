@@ -1,0 +1,59 @@
+{
+  "provenance": {
+    "source": "openai/codex, tag rust-v0.160.0, commit a956835d020762cb2b570053af06f643a11c0ecc, Apache-2.0",
+    "how": "Constructed from the source, not recorded from a live provider. 'body' follows ResponsesApiRequest (codex-rs/codex-api/src/common.rs L278-304, serde field order) as build_responses_request fills it for a custom provider and an unknown model slug (codex-rs/core/src/client.rs L885-1008: store false, stream true, tool_choice auto, parallel_tool_calls true, reasoning {summary: auto}, include [reasoning.encrypted_content], prompt_cache_key = session id, client_metadata keys from core/src/responses_metadata.rs L325-375); every input item carries a client-generated id (core/tests/suite/client.rs L386-450); the namespace tool as core/tests/suite/sqlite_state.rs L409-422 builds it and a namespaced call as core/tests/common/responses.rs L981-997; a replayed reasoning item with null encrypted_content and content (protocol/src/models.rs L1010-1260, L1624-1631); output_text replayed without annotations. 'minimal_body' is the body codex-api/tests/clients.rs L335-382 asserts byte-equal. 'headers' from codex-api/src/endpoint/responses.rs L70-97 and L135-149, core/src/client.rs L1349-1378, login/src/auth/default_client.rs L125-178.",
+    "values": "ids, session ids and texts are placeholders"
+  },
+  "headers": {
+    "authorization": "Bearer placeholder-the-proxy-replaces-this",
+    "content-type": "application/json",
+    "accept": "text/event-stream",
+    "originator": "codex_cli_rs",
+    "user-agent": "codex_cli_rs/0.160.0 (Ubuntu 24.4.0; x86_64) unknown",
+    "session-id": "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    "thread-id": "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    "x-client-request-id": "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    "x-codex-window-id": "0199a213-81c0-7800-8aa1-bbab2a035a53:0",
+    "x-codex-turn-metadata": "{\"turn_id\":\"0199a213-9000-7000-8000-000000000001\",\"sandbox\":\"external\"}",
+    "x-egress-request-id": "egr-codex-1"
+  },
+  "minimal_body": {"model": "gpt-test", "instructions": "Say hi", "input": [{"type": "message", "id": "msg_1", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}], "tools": [], "tool_choice": "auto", "parallel_tool_calls": false, "reasoning": null, "store": false, "stream": true, "include": []},
+  "body": {
+    "model": "engine-model",
+    "instructions": "You are Codex, a coding agent. Work in the workspace and answer briefly.",
+    "input": [
+      {"type": "message", "id": "msg_0199a2130001", "role": "developer", "content": [{"type": "input_text", "text": "<permissions instructions>Commands run in an external sandbox.</permissions instructions>"}]},
+      {"type": "message", "id": "msg_0199a2130002", "role": "user", "content": [{"type": "input_text", "text": "<environment_context><cwd>/workspace</cwd></environment_context>"}]},
+      {"type": "message", "id": "msg_0199a2130003", "role": "user", "content": [{"type": "input_text", "text": "Search the knowledge base for the Q3 plan, then list the skills."}]},
+      {"type": "reasoning", "id": "rs_0199a2130004", "summary": [{"type": "summary_text", "text": "Searching first."}], "content": null, "encrypted_content": null},
+      {"type": "message", "id": "msg_0199a2130005", "role": "assistant", "content": [{"type": "output_text", "text": "Searching."}]},
+      {"type": "function_call", "id": "fc_0199a2130006", "name": "pipeshub_search", "arguments": "{\"query\":\"Q3 plan\"}", "call_id": "call_search_1"},
+      {"type": "function_call_output", "id": "fco_0199a2130007", "call_id": "call_search_1", "output": "[ref1] The Q3 plan ships the gateway."},
+      {"type": "function_call", "id": "fc_0199a2130008", "name": "list", "namespace": "skills", "arguments": "{}", "call_id": "call_skills_1"},
+      {"type": "function_call_output", "id": "fco_0199a2130009", "call_id": "call_skills_1", "output": [{"type": "input_text", "text": "[]"}]}
+    ],
+    "tools": [
+      {"type": "function", "name": "exec_command", "description": "Runs a command.", "strict": false, "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"], "additionalProperties": false}},
+      {"type": "function", "name": "pipeshub_search", "description": "Search company knowledge.", "strict": false, "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+      {"type": "namespace", "name": "skills", "description": "Skills available to this thread.", "tools": [
+        {"type": "function", "name": "list", "description": "List skills.", "strict": false, "parameters": {"type": "object", "properties": {}}},
+        {"type": "function", "name": "read", "description": "Read a skill.", "strict": false, "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}}
+      ]}
+    ],
+    "tool_choice": "auto",
+    "parallel_tool_calls": true,
+    "reasoning": {"summary": "auto"},
+    "store": false,
+    "stream": true,
+    "include": ["reasoning.encrypted_content"],
+    "prompt_cache_key": "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    "client_metadata": {
+      "x-codex-installation-id": "11111111-2222-4333-8444-555555555555",
+      "session_id": "0199a213-81c0-7800-8aa1-bbab2a035a53",
+      "thread_id": "0199a213-81c0-7800-8aa1-bbab2a035a53",
+      "x-codex-window-id": "0199a213-81c0-7800-8aa1-bbab2a035a53:0",
+      "turn_id": "0199a213-9000-7000-8000-000000000001",
+      "x-codex-turn-metadata": "{\"turn_id\":\"0199a213-9000-7000-8000-000000000001\"}"
+    }
+  }
+}

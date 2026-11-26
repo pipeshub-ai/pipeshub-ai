@@ -11,6 +11,7 @@ import asyncpg
 import pytest
 
 from app.core import org_context
+from app.core.db.errors import ConnectionLost
 from app.services.vector_db.collection_registry import _is_collection_missing
 from app.services.vector_db.models import SearchFailureKind
 from app.services.vector_db.pgvector.catalog import Catalog
@@ -207,6 +208,8 @@ def test_transient_classification() -> None:
     assert classify_pg_search_error(asyncpg.QueryCanceledError()) is SearchFailureKind.TIMEOUT
     assert classify_pg_search_error(ConnectionResetError()) is SearchFailureKind.UNAVAILABLE
     assert classify_pg_search_error(asyncpg.UndefinedTableError()) is None
+    # what KernelDB.run raises for a connection it could not open or keep (57P03 while the server starts, among others)
+    assert classify_pg_search_error(ConnectionLost("cannot connect", retry_safe=True)) is SearchFailureKind.UNAVAILABLE
 
 
 # ---- capability rules ----------------------------------------------------------------------------------------------------

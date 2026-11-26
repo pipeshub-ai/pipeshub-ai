@@ -181,8 +181,9 @@ async def seed_external(p: OrgBound) -> None:
     await p.batch_upsert_nodes([{"_key": "s1", "orgId": p.org, "connectorId": "c1", "stage": "indexing", "status": "PENDING", "virtualRecordId": "v1", "rev": "1"},
                                 {"_key": "s2", "orgId": p.org, "connectorId": "c1", "stage": "indexing", "status": "PENDING", "virtualRecordId": "v2", "rev": "1"}], "stageStates")
     await p.batch_upsert_nodes([{"_key": "r1", "orgId": p.org, "connectorId": "c1", "virtualRecordId": "v1", "contentRev": "1", "indexingStatus": "NOT_STARTED"},
-                                {"_key": "r2", "orgId": p.org, "connectorId": "c1", "virtualRecordId": "v1", "contentRev": "1", "isDeleted": True},
+                                {"_key": "r2", "orgId": p.org, "connectorId": "c1", "virtualRecordId": "v1", "contentRev": "1"},
                                 {"_key": "r3", "orgId": p.org, "connectorId": "c2", "virtualRecordId": "v1", "contentRev": "1"}], "records")
+    await p.batch_update_nodes([{"id": "r2", "isDeleted": True}], "records")      # a targeted update trashes: an upsert leaves trash state alone
 
 
 async def test_groups_roles_and_the_stage_sweep_read_their_vetted_functions_for_the_org_alone(world, monkeypatch: pytest.MonkeyPatch) -> None:

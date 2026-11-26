@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # PostgreSQL image for the opt-in `postgres` compose profile: pgvector, pg_trgm, pg_textsearch,
-# and PgBouncer (the same image runs the `postgres` and `pgbouncer` services).
+# PgBouncer (the same image runs the `postgres` and `pgbouncer` services) and pgBackRest (the opt-in `pg-backup` service).
 #   docker build --build-arg PG_MAJOR=17 -t pipeshubai/postgres:17-1 deployment/docker-compose/postgres
 # Both bases are multi-arch (linux/amd64, linux/arm64) and pinned by digest. To bump one, resolve the
 # new digest for the tag, update it here, and run tests/postgres_roles_test.sh and tests/postgres_persistence_test.sh on both majors.
@@ -16,6 +16,8 @@ ARG PG_TEXTSEARCH_VERSION=1.5.1
 ARG PG_TEXTSEARCH_SHA256=2e7fb76ed96176afc6d16cc5d095ced2cb233ff27fbeaa8c7bfffc82e02f7498
 ARG PGBOUNCER_VERSION=1.26.1
 ARG PGBOUNCER_SHA256=00886a2994b4844cd37110970df777772cfc42a74c400522c82fba509a3f42d9
+# pgBackRest from the signed PGDG repository (live or archive, as above), installed in the final stage
+ARG PGBACKREST_VERSION=2.60.0
 # apt installs the current Debian/PGDG build tools; only the build stage uses them. The server headers are pinned to the
 # base image's server (PG_VERSION, set by the image): an extension built against a newer minor release can call symbols the
 # image's server does not have (17.12 headers reference heap_datum_check, which 17.11 lacks). apt.postgresql.org keeps only
@@ -35,6 +37,10 @@ RUN apt-get update \
       "postgresql-server-dev-${PG_MAJOR}=${PG_VERSION}" libevent-dev libssl-dev pkg-config \
  && rm -rf /var/lib/apt/lists/*
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+WORKDIR /debs
+RUN apt-get update --error-on=any \
+ && apt-get download "pgbackrest=${PGBACKREST_VERSION}-*" \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 RUN curl -fsSL -o pts.tgz "https://github.com/timescale/pg_textsearch/archive/refs/tags/v${PG_TEXTSEARCH_VERSION}.tar.gz" \
  && echo "${PG_TEXTSEARCH_SHA256}  pts.tgz" | sha256sum -c - \
@@ -53,10 +59,12 @@ RUN ./configure --prefix=/opt/pgbouncer --with-openssl \
 # hadolint ignore=DL3006
 FROM base-${PG_MAJOR}
 ARG PG_MAJOR
+COPY --from=build /debs/ /tmp/debs/
+# lz4 and bzip2 (gzip and zstd are in the base): scripts/pg-restore-reach.pl decompresses archived WAL of every compress-type
 # hadolint ignore=DL3008
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libevent-2.1-7 \
- && rm -rf /var/lib/apt/lists/*
+ && apt-get install -y --no-install-recommends libevent-2.1-7 lz4 bzip2 /tmp/debs/pgbackrest_*.deb \
+ && rm -rf /var/lib/apt/lists/* /tmp/debs
 # pg_textsearch files, then the PgBouncer binary
 COPY --from=build /usr/lib/postgresql/${PG_MAJOR}/lib/pg_textsearch* /usr/lib/postgresql/${PG_MAJOR}/lib/
 COPY --from=build /usr/share/postgresql/${PG_MAJOR}/extension/pg_textsearch* /usr/share/postgresql/${PG_MAJOR}/extension/
@@ -64,10 +72,13 @@ COPY --from=build /opt/pgbouncer/bin/pgbouncer /usr/local/bin/pgbouncer
 COPY pgbouncer.ini /etc/pgbouncer/pgbouncer.ini
 COPY initdb/ /docker-entrypoint-initdb.d/
 COPY pg-entrypoint.sh /usr/local/bin/pg-entrypoint.sh
-COPY pg-roles.sh scram-verifier.pl /usr/local/bin/
-# /pgbouncer-auth carries the SCRAM verifier file from postgres (writer) to pgbouncer (reader)
-RUN chmod 0755 /usr/local/bin/pg-entrypoint.sh /usr/local/bin/pg-roles.sh /usr/local/bin/scram-verifier.pl /docker-entrypoint-initdb.d/*.sh \
- && install -d -o postgres -g postgres -m 0700 /pgbouncer-auth \
- && pgbouncer --version >/dev/null
+COPY pg-roles.sh scram-verifier.pl pg-backup.sh pgbackrest-archive-push.sh /usr/local/bin/
+# /pgbouncer-auth carries the SCRAM verifier file from postgres (writer) to pgbouncer (reader); /pgbackrest-restore is where pg-restore.sh
+# mounts the volume it restores into (a new named volume takes this owner and mode; pg-restore.sh also hands it to postgres as root, for a
+# volume that does not). /var/lib/pgbackrest (the package's, postgres 0750) is the local repository; pg-entrypoint.sh does the same for it.
+RUN chmod 0755 /usr/local/bin/pg-entrypoint.sh /usr/local/bin/pg-roles.sh /usr/local/bin/scram-verifier.pl /usr/local/bin/pg-backup.sh \
+      /usr/local/bin/pgbackrest-archive-push.sh /docker-entrypoint-initdb.d/*.sh \
+ && install -d -o postgres -g postgres -m 0700 /pgbouncer-auth /pgbackrest-restore \
+ && pgbouncer --version >/dev/null && pgbackrest version
 ENTRYPOINT ["pg-entrypoint.sh"]
 CMD ["postgres"]

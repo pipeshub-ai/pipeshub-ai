@@ -18,15 +18,16 @@ from app.models.blocks import Block, BlockType, DataFormat, SemanticMetadata
 from app.modules.transformers.document_extraction import (
     DocumentClassification,
     DocumentExtraction,
+    ExtractionContentFilteredError,
     ExtractionLLMError,
     SubCategories,
 )
 from app.services.llm_gateway.gateway import ProviderUnavailableError
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
+from tests.support.log_capture import assert_text_free, failure_line
 from tests.support.provider_errors import (
     MARK,
-    assert_text_free,
-    failure_line,
+    SENTINELS,
     httpx_error,
     openai_error,
     schema_mismatch,
@@ -431,8 +432,8 @@ async def test_a_failed_extraction_is_one_text_free_line_for_the_record(caplog, 
         await extraction.apply(MagicMock(record=record))
 
     assert record.semantic_metadata is None
-    assert failure_line(caplog.records, "document_extraction.failed", error_class, level)["record_id"] == "rec-1"
-    assert_text_free(caplog.records)
+    assert failure_line(caplog.records, "document_extraction.failed", error_class, level, *SENTINELS)["record_id"] == "rec-1"
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 @pytest.mark.asyncio
@@ -452,7 +453,7 @@ async def test_refused_images_are_noted_by_count_without_the_refusal(caplog) -> 
     assert note.levelno == logging.WARNING
     assert note.error_type == "ExtractionLLMError"
     assert "1 image" in note.getMessage()
-    assert_text_free(caplog.records)
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 @pytest.mark.asyncio
@@ -468,8 +469,8 @@ async def test_a_failed_fallback_summary_is_one_text_free_line(caplog, kind) -> 
             result = await extraction._code_fallback_summary(MagicMock(), "code")
 
     assert result is None
-    assert failure_line(caplog.records, "extraction.fallback_failed", "bad_request", logging.WARNING)["kind"] == kind
-    assert_text_free(caplog.records)
+    assert failure_line(caplog.records, "extraction.fallback_failed", "bad_request", logging.WARNING, *SENTINELS)["kind"] == kind
+    assert_text_free(caplog.records, *SENTINELS)
 
 
 @pytest.mark.asyncio
@@ -481,3 +482,60 @@ async def test_an_outage_in_the_fallback_is_raised_without_a_line(caplog) -> Non
         await extraction._fallback_summary(MagicMock(), [{"type": "text", "text": "doc"}])
 
     assert not [r for r in caplog.records if r.getMessage() == "extraction.fallback_failed"]
+
+
+def _filtered(code: str, message: str = "Blocked.") -> openai.APIStatusError:
+    return openai_error(400, {"message": message, "type": "invalid_request_error", "param": "prompt", "code": code})
+
+
+async def _classify_error(error: Exception) -> ExtractionLLMError:
+    extraction = _extraction()
+    invoke = AsyncMock(side_effect=error)
+    with patch(f"{_MODULE}.get_llm_for_role", _llm_role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", invoke
+    ), pytest.raises(ExtractionLLMError) as raised:
+        await extraction.classify(_blocks(), "org-1", ["Engineering"])
+    invoke.assert_awaited_once()
+    return raised.value
+
+
+@pytest.mark.parametrize("code", ["content_filter", "content_policy_violation", "ResponsibleAIPolicyViolation"])
+@pytest.mark.asyncio
+async def test_a_content_filter_refusal_is_its_own_error(code: str) -> None:
+    raised = await _classify_error(_filtered(code, MARK))
+    assert isinstance(raised, ExtractionContentFilteredError)
+    # The reason is shown on the record; the provider's message can quote the document.
+    assert not any(sentinel in str(raised) for sentinel in SENTINELS)
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_wrapped_by_an_sdk_is_still_recognised() -> None:
+    raised = await _classify_error(with_cause(ValueError("call failed"), _filtered("content_filter")))
+    assert isinstance(raised, ExtractionContentFilteredError)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        lambda: openai_error(400, {"message": "Our content policy", "type": "invalid_request_error", "param": None,
+                                   "code": "invalid_value"}),
+        lambda: ValueError("the document discusses content_filter and content policy"),
+        lambda: openai_error(429),
+    ],
+    ids=["other-400-mentioning-it", "text-mentioning-it", "rate-limit"],
+)
+@pytest.mark.asyncio
+async def test_only_the_providers_code_makes_it_a_content_filter_refusal(error) -> None:
+    assert not isinstance(await _classify_error(error()), ExtractionContentFilteredError)
+
+
+@pytest.mark.asyncio
+async def test_a_content_filter_refusal_of_a_code_file_is_its_own_error() -> None:
+    extraction = _extraction()
+    summary = MagicMock(data={"file_path": "a.py"}, code_metadata=None)
+    with patch(f"{_MODULE}.get_llm_for_role", _llm_role()), patch.object(
+        extraction, "_prepare_code_content", MagicMock(return_value="def f(): ...")
+    ), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", AsyncMock(side_effect=_filtered("content_filter"))
+    ), pytest.raises(ExtractionContentFilteredError):
+        await extraction.process_code_document([], summary)

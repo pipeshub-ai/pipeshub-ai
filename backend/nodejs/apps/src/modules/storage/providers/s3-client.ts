@@ -53,7 +53,7 @@ export interface S3Service {
   }): { promise: () => Promise<{ Key?: string }> };
   deleteObjects(params: {
     Bucket: string;
-    Delete: { Objects: Array<{ Key: string }>; Quiet?: boolean };
+    Delete: { Objects: Array<{ Key: string; ETag?: string }>; Quiet?: boolean };
   }): {
     promise: () => Promise<{
       Errors?: Array<{ Key?: string; Code?: string; Message?: string }>;
@@ -66,7 +66,12 @@ export interface S3Service {
     MaxKeys?: number;
   }): {
     promise: () => Promise<{
-      Contents?: Array<{ Key?: string; Size?: number; LastModified?: Date }>;
+      Contents?: Array<{
+        Key?: string;
+        Size?: number;
+        LastModified?: Date;
+        ETag?: string;
+      }>;
       IsTruncated?: boolean;
       NextContinuationToken?: string;
     }>;
@@ -215,6 +220,7 @@ export function createS3Service(config: S3ServiceConfig): S3Service {
         ResponseContentDisposition?: string;
         ContentType?: string;
         IfNoneMatch?: string;
+        IfMatch?: string;
       };
       let command: GetObjectCommand | PutObjectCommand | UploadPartCommand;
       if (operation === 'getObject') {

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from app.models.blocks import Block, BlocksContainer, BlockType, GroupType
+from app.utils.table_row_memory import hashed_block_data
 
 # The block types classification reads (DocumentExtraction._prepare_content).
 _TEXT_TYPES = frozenset({BlockType.TEXT, BlockType.TABLE_ROW, BlockType.CODE})
@@ -39,6 +40,7 @@ def _digest(parts: Iterable[str]) -> str:
 def _content_hash(data: object, existing: str | None) -> str:
     if existing:
         return existing
+    data = hashed_block_data(data)
     canonical = json.dumps(data, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

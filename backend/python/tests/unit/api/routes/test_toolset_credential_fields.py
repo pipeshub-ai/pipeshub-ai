@@ -6,6 +6,7 @@ its tokens come from the OAuth flow.
 """
 
 import json
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from app.api.routes.toolsets import (
     update_agent_toolset_credentials,
     update_toolset_credentials,
 )
+from tests.support.bound_org import bind_test_org
 
 _ROUTES = "app.api.routes.toolsets"
 ORG = "o1"
@@ -270,3 +272,9 @@ class TestAuthenticateRefusesUndeclaredFields:
             )
         assert result["isAuthenticated"] is True
         assert cs.set_config.await_args.args[1]["auth"]["apiToken"] == "t"
+
+
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[str]:
+    """The auth middleware binds the verified token's org; these tests call the route functions directly."""
+    yield from bind_test_org(ORG)

@@ -1,4 +1,5 @@
 import { Etcd3 } from 'etcd3';
+import { etcdCredentials, type EtcdTlsFiles } from '../etcd-tls';
 import { Logger } from '../../services/logger.service';
 import { getRedisProvider } from '../../services/redis/connectionProviderFactory';
 import { redisConnectionConfigFromHostPort } from '../../services/redis/connectionConfig';
@@ -9,6 +10,7 @@ export interface MigrationConfig {
     host: string;
     port: number;
     dialTimeout?: number;
+    tls?: EtcdTlsFiles;
   };
   redis: {
     host: string;
@@ -116,9 +118,11 @@ export class KVStoreMigrationService {
   async isEtcdAvailable(): Promise<boolean> {
     try {
       const hostWithPort = `${this.config.etcd.host}:${this.config.etcd.port}`;
+      const credentials = etcdCredentials(this.config.etcd.tls);
       const client = new Etcd3({
         hosts: [hostWithPort],
         dialTimeout: this.config.etcd.dialTimeout || 5000,
+        ...(credentials ? { credentials } : {}),
       });
 
       // Try to get maintenance status
@@ -233,9 +237,11 @@ export class KVStoreMigrationService {
   private async connect(): Promise<void> {
     // Connect to etcd
     const hostWithPort = `${this.config.etcd.host}:${this.config.etcd.port}`;
+    const credentials = etcdCredentials(this.config.etcd.tls);
     this.etcdClient = new Etcd3({
       hosts: [hostWithPort],
       dialTimeout: this.config.etcd.dialTimeout || 5000,
+      ...(credentials ? { credentials } : {}),
     });
 
     // Connect to Redis

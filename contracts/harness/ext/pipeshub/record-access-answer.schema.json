@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/record-access-answer.schema.json",
+  "title": "PipeshubRecordAccessAnswer",
+  "description": "Answer of POST /api/v1/records/access. readable: the asked record ids (recordIds and record references) the caller may read. decisions: one per distinct asked reference, present when references were asked. A record the caller may not read is denied whether or not it exists; unresolved means a live item has no indexed copy in the caller's org. artifacts: one per distinct asked artifact id, present when artifactIds were asked; readable only when the artifact's provenance is known and every source in it is readable by the caller, unresolved when its provenance is unknown or the artifact is not in the caller's org.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "readable"
+  ],
+  "properties": {
+    "readable": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SourceDecision"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ArtifactDecision"
+      }
+    }
+  },
+  "$defs": {
+    "SourceDecision": {
+      "title": "PipeshubSourceDecision",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "status"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "record-access-query.schema.json#/$defs/CheckedSource"
+        },
+        "status": {
+          "enum": [
+            "readable",
+            "denied",
+            "unresolved"
+          ]
+        }
+      }
+    },
+    "ArtifactDecision": {
+      "title": "PipeshubArtifactDecision",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "status"
+      ],
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "readable",
+            "denied",
+            "unresolved"
+          ]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "readable": [
+        "r1"
+      ],
+      "decisions": [
+        {
+          "source": {
+            "kind": "indexed",
+            "recordId": "r1"
+          },
+          "status": "readable"
+        },
+        {
+          "source": {
+            "kind": "live",
+            "connector": "DRIVE",
+            "externalRecordId": "f1"
+          },
+          "status": "unresolved"
+        }
+      ]
+    },
+    {
+      "readable": []
+    },
+    {
+      "readable": [],
+      "artifacts": [
+        {
+          "artifactId": "a1",
+          "status": "unresolved"
+        }
+      ]
+    }
+  ]
+}

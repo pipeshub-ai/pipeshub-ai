@@ -14,8 +14,11 @@
 #   scripts/verify.sh              # everything available
 #   scripts/verify.sh --list       # what would run, and why anything is skipped
 #   scripts/verify.sh shell python # only the named groups
+#   PXH_VERIFY_E2E=1 scripts/verify.sh e2e   # opt in: the browser lane (needs Docker; ~25 min)
 #
-# Groups: shell, python, frontend, node
+# Groups: shell, python, frontend, node, e2e. The e2e group is the one exception to "no Docker": it runs only when
+# PXH_VERIFY_E2E=1, bringing up a throwaway stack (deployment/e2e/run.sh browser), running the harness and the
+# authenticated Playwright projects on its scripted model, and tearing it down.
 #
 # A suite that cannot run on this machine is reported as SKIP with the reason
 # rather than silently passing — a green result from a suite that never
@@ -42,11 +45,11 @@ for arg in "$@"; do
   case "$arg" in
     --list) LIST_ONLY=true ;;
     -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    shell|python|frontend|node) SELECTED+=("$arg") ;;
+    shell|python|frontend|node|e2e) SELECTED+=("$arg") ;;
     *) echo "unknown argument: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
-[[ ${#SELECTED[@]} -eq 0 ]] && SELECTED=(shell python frontend node)
+[[ ${#SELECTED[@]} -eq 0 ]] && SELECTED=(shell python frontend node e2e)
 
 wants() { local g="$1"; local x; for x in "${SELECTED[@]}"; do [[ "$x" == "$g" ]] && return 0; done; return 1; }
 
@@ -126,13 +129,41 @@ run shell "offline switch tests" \
   'exists deployment/docker-compose/tests/offline_env_test.sh' \
   bash deployment/docker-compose/tests/offline_env_test.sh
 
+run shell "fault soak guard tests" \
+  'exists deployment/docker-compose/tests/pg_fault_soak_guard_test.sh' \
+  bash deployment/docker-compose/tests/pg_fault_soak_guard_test.sh
+
+run shell "installer sandbox-plane tests" \
+  'exists deployment/docker-compose/tests/sandbox_plane_test.sh' \
+  bash deployment/docker-compose/tests/sandbox_plane_test.sh
+
+run shell "installer offline bundle tests" \
+  'exists deployment/docker-compose/tests/offline_bundle_test.sh' \
+  bash deployment/docker-compose/tests/offline_bundle_test.sh
+
 run shell "eks purge tests" \
   'exists deployment/helm/tests/purge_bucket_test.sh' \
   bash deployment/helm/tests/purge_bucket_test.sh
 
+run shell "eks tool install tests" \
+  'exists deployment/helm/tests/install_deps_test.sh' \
+  bash deployment/helm/tests/install_deps_test.sh
+
+run shell "eks install profile tests" \
+  'exists deployment/helm/tests/aws_install_profile_test.sh' \
+  bash deployment/helm/tests/aws_install_profile_test.sh
+
 run shell "release tooling tests" \
   'exists deployment/docker-compose/tests/release_tooling_test.sh' \
   bash deployment/docker-compose/tests/release_tooling_test.sh
+
+run shell "native launcher tests" \
+  'have node && node -e "const [a,b]=process.versions.node.split(\".\").map(Number); process.exit(a>24||(a===24&&b>=12)?0:1)" || { echo "needs Node 24.12 or later"; false; }' \
+  bash -c "cd deployment/native/launcher && npm test --silent"
+
+run shell "native bundle signing tests" \
+  'exists deployment/native/tests/sign_test.sh' \
+  bash deployment/native/tests/sign_test.sh
 
 run shell "omnigent helper tests" \
   'exists integrations/omnigent/tests/scripts_test.sh' \
@@ -140,20 +171,36 @@ run shell "omnigent helper tests" \
 
 # ── python ───────────────────────────────────────────────────────────────────
 PY="${PYTHON:-python3}"
+# Standard library only (python3 -I): the guard's own tests, then what is not committed yet. CI runs it over a
+# pull request's commits (.github/workflows/edition-guard.yml).
+run python "edition guard" \
+  'exists scripts/edition_guard.py && have python3' \
+  bash -c "python3 -I -m unittest discover -s scripts -p 'test_edition_guard.py' && python3 -I scripts/edition_guard.py --worktree"
+
+# R31-JOURNEY (ADR-TEST-01): every feasible feature x path x shape cell covered or tracked, every named test real;
+# the owner-shape fixture held to its derived counts. Standard library only.
+run python "journey registry coverage" \
+  'exists scripts/journey_matrix.py && have python3' \
+  bash -c "python3 -I -m unittest discover -s scripts -p 'test_journey_matrix.py' && python3 -I scripts/journey_matrix.py --check && python3 -I scripts/owner_shape.py --check"
+
 run python "python unit tests" \
   "exists backend/python/tests/unit && have $PY && has_pytest $PY" \
-  bash -c "cd backend/python && $PY -m pytest tests/unit -q -p no:warnings"
+  bash -c "cd backend/python && $PY -m pytest tests/unit -q --disable-warnings"
+
+run python "cohesion and contract suites" \
+  "exists backend/python/tests/cohesion && have $PY && has_pytest $PY" \
+  bash -c "cd backend/python && $PY -m pytest tests/cohesion tests/contracts -m 'not docker and not slow' -q --disable-warnings"
 
 run python "golden agent evals" \
   "exists backend/python/tests/evals && have $PY && has_pytest $PY" \
-  bash -c "cd backend/python && $PY -m pytest tests/evals -q -p no:warnings"
+  bash -c "cd backend/python && $PY -m pytest tests/evals -q --disable-warnings"
 
 run python "python service tests (no infra)" \
   "exists backend/python/tests/integration && have $PY && has_pytest $PY" \
   bash -c "cd backend/python && $PY -m pytest tests/integration \
       --ignore=tests/integration/redis_cluster \
       --ignore=tests/integration/skills/test_npm_import_live.py \
-      -q -p no:warnings --timeout=300"
+      -q --disable-warnings --timeout=300"
 
 # ── frontend ─────────────────────────────────────────────────────────────────
 run frontend "locale parity" \
@@ -184,6 +231,49 @@ run frontend "electron main-process tests" \
 run node "node backend tests (mocha)" \
   'exists backend/nodejs/apps/node_modules && have npm' \
   bash -c "cd backend/nodejs/apps && npm run --silent test"
+
+# CI's gate (nodejs-unit-tests: npm run test:coverage-gate): the unit run, the MongoDB and Redis itests, then the global
+# floor and the harness and control-plane floor (coverage:harness), which count both runs. The unit run's own
+# coverage:logic passing says nothing about those (SYNC-F: harness lines at 96.53% under 96.7% went unseen locally).
+has_redis_it() { [[ -n "${REDIS_IT_URL:-}" ]] || { echo "set REDIS_IT_URL (a local Redis, e.g. redis://127.0.0.1:6379)"; return 1; }; }
+has_mongo_it() { [[ -n "${MONGO_IT_URI:-}" ]] || { echo "set MONGO_IT_URI (a local replica set) and REDIS_IT_URL"; return 1; }; }
+run node "node coverage gate (unit + itests, harness floor)" \
+  'exists backend/nodejs/apps/node_modules && have npm && has_mongo_it && has_redis_it' \
+  bash -c "cd backend/nodejs/apps && npm run --silent test:coverage-gate"
+
+# The harness and control-plane stores on PostgreSQL, with their own coverage floor (.c8rc.pg-harness.json). They
+# start a throwaway PostgreSQL and PgBouncer from local binaries (no Docker), named by the PG_TEST_* variables; a
+# passing run under its floor fails here, as it does in CI's pg-stores workflow (DOS-MONGO-FU-1: it slipped unseen).
+has_pg_binaries() {
+  local v
+  for v in PG_TEST_BINS PG_TEST_PGBOUNCER PG_TEST_MIGRATE_PYTHON; do
+    [[ -n "${!v:-}" ]] || { echo "set PG_TEST_BINS, PG_TEST_PGBOUNCER and PG_TEST_MIGRATE_PYTHON (local PostgreSQL 17 and PgBouncer)"; return 1; }
+  done
+}
+# The operator CLI itest among them runs its migrations against a Redis KV store (has_redis_it, above).
+run node "node postgresql stores (coverage floor)" \
+  'exists backend/nodejs/apps/node_modules && have npm && has_pg_binaries && has_redis_it' \
+  bash -c "cd backend/nodejs/apps && npm run --silent test:pg-harness"
+
+# The MongoDB -> PostgreSQL move on a migrated PostgreSQL: table and column coverage, the copy and verify of every
+# mapped collection (R44SMALL-FU-3: the coverage itest was red unseen because nothing ran it). The cases that need a
+# MongoDB skip unless MIGRATE_TEST_MONGOD names a mongod binary.
+run node "node docstore-migrate itests" \
+  'exists backend/nodejs/apps/node_modules && have npm && has_pg_binaries' \
+  bash -c "cd backend/nodejs/apps && npm run --silent test:docstore-migrate"
+
+# ── e2e (opt-in) ─────────────────────────────────────────────────────────────
+opted_in_e2e() {
+  [[ "${PXH_VERIFY_E2E:-0}" == "1" ]] || { echo "opt-in: set PXH_VERIFY_E2E=1 (brings up a throwaway Docker stack)"; return 1; }
+}
+run e2e "browser lane (harness + authenticated)" \
+  'opted_in_e2e && have docker && exists frontend/node_modules && exists backend/nodejs/apps/node_modules' \
+  bash deployment/e2e/run.sh browser
+
+# R31-JOURNEY: the journey gate tier on an own human-style stack (scripted model), torn down after.
+run e2e "journey gate tier (human-style stack)" \
+  'opted_in_e2e && have docker && exists deployment/e2e/journeys.py' \
+  bash -c 'export E2E_RUN="vj$(date +%s)" E2E_PROJECT_PREFIX=pxh-vj- E2E_STACK=ST-1 E2E_HUMAN_DIR="${E2E_HUMAN_DIR:?the embedding model cache (hf/) of a human stack}"; state="${E2E_STATE_DIR:-$HOME/.cache/pxh-e2e}"; bash deployment/e2e/run.sh human-up && python3 deployment/e2e/journeys.py "$state/$E2E_RUN" --tier gate; status=$?; bash deployment/e2e/run.sh down "$E2E_RUN"; exit $status'
 
 # ── summary ──────────────────────────────────────────────────────────────────
 printf '\n%s%-34s %s%s\n' "$BOLD" "SUITE" "RESULT" "$RESET"

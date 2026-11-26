@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/installation.schema.json",
+  "title": "Installation",
+  "description": "A catalog item enabled in one org at an owner scope (02-lld §2.2): validated non-secret configuration, the approved descriptor set runs may use, a status and a revision. Rows in `cpInstallations`, history in `cpInstallationHistory` (InstallationStore, 03-interfaces §2.3).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "orgId",
+    "item",
+    "kind",
+    "owner",
+    "visibility",
+    "config",
+    "approved",
+    "pending",
+    "status",
+    "installedVia",
+    "credentialMode",
+    "revision",
+    "updatedAt",
+    "updatedBy"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "$ref": "common.schema.json#/$defs/InstallationRef" },
+    "orgId": { "$ref": "common.schema.json#/$defs/OrgId" },
+    "item": { "$ref": "common.schema.json#/$defs/ItemRef" },
+    "kind": { "$ref": "common.schema.json#/$defs/ItemKind" },
+    "owner": { "$ref": "common.schema.json#/$defs/InstallationOwnerRef" },
+    "visibility": {
+      "description": "Who can see and pick it; never wider than the owner scope allows.",
+      "enum": ["owner", "team", "org"]
+    },
+    "config": {
+      "description": "Non-secret configuration, validated by the kind's ConfigValidator against the item's configSchema.",
+      "type": "object"
+    },
+    "approved": {
+      "description": "What runs may use; null until the first approval.",
+      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/ApprovedDescriptors" }]
+    },
+    "pending": {
+      "description": "A change waiting for approval while the approved set keeps serving.",
+      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/PendingChange" }]
+    },
+    "status": {
+      "enum": ["draft", "pending_approval", "enabled", "disabled", "upgrade_pending", "removed"]
+    },
+    "installedVia": {
+      "description": "The parent installation when a plugin contributed this one.",
+      "anyOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/InstallationRef" }]
+    },
+    "credentialMode": { "enum": ["per_user", "agent", "org", "none"] },
+    "revision": { "$ref": "common.schema.json#/$defs/Revision" },
+    "updatedAt": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "updatedBy": { "$ref": "common.schema.json#/$defs/ActorRef" }
+  },
+  "$defs": {
+    "ToolDigests": {
+      "description": "Tool name → descriptor digest.",
+      "type": "object",
+      "maxProperties": 2000,
+      "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+      "additionalProperties": { "$ref": "common.schema.json#/$defs/Digest" }
+    },
+    "ApprovedDescriptors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["descriptorSetDigest", "tools", "approvalRef", "at", "by"],
+      "properties": {
+        "descriptorSetDigest": { "$ref": "common.schema.json#/$defs/Digest" },
+        "tools": { "$ref": "#/$defs/ToolDigests" },
+        "approvalRef": {
+          "description": "Null for an item approved without a request (release items an admin enabled, migrated approvals).",
+          "anyOf": [{ "type": "null" }, { "$ref": "common.schema.json#/$defs/ApprovalRef" }]
+        },
+        "at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "by": { "$ref": "common.schema.json#/$defs/ActorRef" }
+      }
+    },
+    "PendingChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approvalRef"],
+      "properties": {
+        "item": { "$ref": "common.schema.json#/$defs/ItemRef" },
+        "config": { "type": "object" },
+        "descriptors": { "$ref": "#/$defs/ToolDigests" },
+        "approvalRef": { "$ref": "common.schema.json#/$defs/ApprovalRef" }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "id": "inst_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V",
+      "orgId": "o1",
+      "item": "mcp:pipeshub/linear@3",
+      "kind": "mcp",
+      "owner": "team:t9",
+      "visibility": "team",
+      "config": { "url": "https://mcp.linear.app/sse", "transport": "sse" },
+      "approved": {
+        "descriptorSetDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "tools": { "list_issues": "sha256:2222222222222222222222222222222222222222222222222222222222222222" },
+        "approvalRef": "apr_01J9ZQ5Y8K3M4N5P6Q7R8S9T0V",
+        "at": 1760000000000,
+        "by": "user:u1"
+      },
+      "pending": null,
+      "status": "enabled",
+      "installedVia": null,
+      "credentialMode": "per_user",
+      "revision": 4,
+      "updatedAt": 1760000000000,
+      "updatedBy": "user:u1"
+    },
+    {
+      "schemaVersion": 1,
+      "id": "jira-instance-1",
+      "orgId": "o1",
+      "item": "toolset:pipeshub/jira@c.0123456789ab",
+      "kind": "toolset",
+      "owner": "org",
+      "visibility": "org",
+      "config": {},
+      "approved": null,
+      "pending": { "approvalRef": "apr_01J9ZQ5Y8K3M4N5P6Q7R8S9T0W" },
+      "status": "pending_approval",
+      "installedVia": null,
+      "credentialMode": "org",
+      "revision": 1,
+      "updatedAt": 1760000000000,
+      "updatedBy": "user:u7"
+    }
+  ]
+}

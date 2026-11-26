@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/label.declassified.schema.json",
+  "title": "LabelDeclassifiedEvent",
+  "description": "Explicit declassification: Node from an interaction, worker from the typed-output rule.",
+  "x-writer": [
+    "node",
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "label.declassified"
+    },
+    "writer": {
+      "enum": [
+        "node",
+        "worker"
+      ]
+    },
+    "data": {
+      "$ref": "#/$defs/LabelDeclassifiedData"
+    }
+  },
+  "$defs": {
+    "LabelDeclassifiedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "by",
+        "reason"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "../common.schema.json#/$defs/Id"
+          }
+        },
+        "by": {
+          "enum": [
+            "interaction",
+            "typed_output"
+          ]
+        },
+        "interactionId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "reason": {
+          "$ref": "../common.schema.json#/$defs/Text"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "label.declassified",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "items": [
+          "inv_1"
+        ],
+        "by": "interaction",
+        "interactionId": "int_1",
+        "reason": "user approved sharing"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

@@ -7,7 +7,7 @@ import {
   reconcileConnectorSchedule,
 } from '../../../../src/modules/crawling_manager/services/connector_schedule_orchestrator';
 import { CrawlingScheduleType } from '../../../../src/modules/crawling_manager/schema/enums';
-import { BadRequestError } from '../../../../src/libs/errors/http.errors';
+import { BadRequestError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
 import { buildCrawlingScheduleFromSync } from '../../../../src/modules/crawling_manager/utils/schedule_config_mapper';
 import { FakeQueueStore, schedulerOver } from '../fake-crawling-queue';
 
@@ -41,12 +41,11 @@ const input = (overrides: Partial<ScheduleReconcileInput> = {}): ScheduleReconci
 const resultLog = (logger: ReturnType<typeof makeLogger>) => {
   const matching = (stub: sinon.SinonStub) =>
     stub.getCalls().filter((c) => c.args[0] === RECONCILE_LOG_MESSAGE);
-  const errors = matching(logger.error);
-  const infos = matching(logger.info);
-  expect(errors.length + infos.length).to.equal(1);
-  return errors.length
-    ? { level: 'error', fields: errors[0].args[1] }
-    : { level: 'info', fields: infos[0].args[1] };
+  const lines = (['error', 'warn', 'info'] as const).flatMap((level) =>
+    matching(logger[level]).map((c) => ({ level, fields: c.args[1] })),
+  );
+  expect(lines.length).to.equal(1);
+  return lines[0];
 };
 
 describe('reconcileConnectorSchedule', () => {
@@ -65,7 +64,7 @@ describe('reconcileConnectorSchedule', () => {
       expect(schedule.scheduleType).to.equal(CrawlingScheduleType.INTERVAL);
       expect(schedule.scheduleConfig.intervalMinutes).to.equal(30);
       expect(resultLog(logger)).to.deep.include({ level: 'info' });
-      expect(resultLog(logger).fields).to.include({ outcome: 'scheduled', connectorId: 'conn-1' });
+      expect(resultLog(logger).fields).to.include({ outcome: 'success', reason: 'scheduled', connector_id: 'conn-1' });
     });
 
     it('reports "unchanged" when the schedule already matches', async () => {
@@ -125,7 +124,8 @@ describe('reconcileConnectorSchedule', () => {
 
       expect(outcome).to.equal('invalid_config');
       expect(scheduler.upsertRepeatingSchedule.called).to.be.false;
-      expect(resultLog(logger)).to.deep.include({ level: 'error' });
+      expect(resultLog(logger)).to.deep.include({ level: 'warn' });
+      expect(resultLog(logger).fields).to.include({ outcome: 'failure', reason: 'invalid_config' });
     });
 
     for (const field of ['connector', 'connectorId', 'orgId'] as const) {
@@ -138,7 +138,8 @@ describe('reconcileConnectorSchedule', () => {
         expect(outcome).to.equal('invalid_input');
         expect(scheduler.upsertRepeatingSchedule.called).to.be.false;
         expect(scheduler.removeConnectorSchedules.called).to.be.false;
-        expect(resultLog(logger)).to.deep.include({ level: 'error' });
+        expect(resultLog(logger)).to.deep.include({ level: 'warn' });
+        expect(resultLog(logger).fields).to.include({ outcome: 'failure', reason: 'invalid_input' });
       });
     }
   });
@@ -162,7 +163,29 @@ describe('reconcileConnectorSchedule', () => {
       expect(logger.warn.calledOnce).to.be.true;
     });
 
-    it('rethrows after the last retry and logs "failed" with the stack', async () => {
+    it('a queue that is unavailable is WARNING, by its class', async () => {
+      const upsert = sinon.stub().rejects(new ServiceUnavailableError('redis is away'));
+      const logger = makeLogger();
+      await reconcileConnectorSchedule(makeScheduler({ upsertRepeatingSchedule: upsert }) as any, logger as any, input(), NO_WAIT).catch(
+        () => undefined,
+      );
+      const { level, fields } = resultLog(logger);
+      expect(level).to.equal('warn');
+      expect(fields).to.include({ outcome: 'failure', reason: 'queue_failed', error_class: 'unavailable' });
+    });
+
+    it('a schedule the scheduler refuses is invalid_config, not a queue failure', async () => {
+      const upsert = sinon.stub().rejects(new BadRequestError('cron fires too often'));
+      const logger = makeLogger();
+      await reconcileConnectorSchedule(makeScheduler({ upsertRepeatingSchedule: upsert }) as any, logger as any, input(), NO_WAIT).catch(
+        () => undefined,
+      );
+      expect(upsert.callCount).to.equal(1);
+      expect(resultLog(logger)).to.deep.include({ level: 'warn' });
+      expect(resultLog(logger).fields).to.include({ outcome: 'failure', reason: 'invalid_config' });
+    });
+
+    it('rethrows after the last retry and logs queue_failed once, with the error object', async () => {
       const upsert = sinon.stub().rejects(new Error('redis down'));
       const logger = makeLogger();
 
@@ -175,9 +198,15 @@ describe('reconcileConnectorSchedule', () => {
 
       expect(upsert.callCount).to.equal(3);
       const { level, fields } = resultLog(logger);
+      // our own Redis failing: internal, so ERROR (the logger prints the error's stack there)
       expect(level).to.equal('error');
-      expect(fields).to.include({ outcome: 'failed', error: 'redis down' });
-      expect(fields.stack).to.be.a('string');
+      expect(fields).to.include({ outcome: 'failure', reason: 'queue_failed', error_class: 'internal' });
+      expect((fields.error as Error).message).to.equal('redis down');
+      expect(fields).to.not.have.property('stack');
+      // each retry: WARNING with the attempt and the error object, never a printed stack
+      expect(logger.warn.callCount).to.equal(2);
+      expect(logger.warn.firstCall.args[1]).to.include({ attempt: 1 });
+      expect(logger.warn.firstCall.args[1]).to.not.have.property('stack');
     });
 
     it('does not retry a validation error', async () => {
@@ -242,7 +271,7 @@ describe('reconcileConnectorSchedule', () => {
       const outcome = await reconcileConnectorSchedule(scheduler, makeLogger() as any, input(), NO_WAIT);
 
       expect(outcome).to.equal('unchanged');
-      expect(schedules().map((r) => r.key)).to.deep.equal([before.key]);
+      expect(schedules().map((r) => r.key)).to.deep.equal([before!.key]);
     });
 
     it('replaces a schedule whose interval changed, leaving one', async () => {

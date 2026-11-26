@@ -1,0 +1,139 @@
+# Infrastructure for the L4 fault suite: the shipped MongoDB replica set, Redis
+# (KV, LiveBus and, for the redis broker, Redis Streams) and Kafka (profile
+# `kafka`). Node and the worker run on the host as real processes so the suite
+# can SIGKILL them; conftest.py starts and removes this project. Its name and
+# host ports come from stack.configure (`--port-base`), so two checkouts can
+# run the suite side by side.
+#
+# Profile `degraded` (QA-17, test_degraded.py): toxiproxy in front of every
+# dependency a degraded scenario slows down or takes away, a second Redis to
+# fail over to, and the graph and vector stores a run's knowledge reads reach.
+# Toxiproxy is on the host network so one proxy reaches a container's
+# published port and a fake on the host alike, all on 127.0.0.1.
+
+services:
+  mongodb:
+    extends:
+      file: ../../../deployment/docker-compose/docker-compose.yml
+      service: mongodb
+    networks: !reset null
+    ports:
+      - "${FAULT_MONGO_PORT:-37017}:27017"
+    environment:
+      - MONGO_INITDB_ROOT_PASSWORD=password
+    # The suite makes a database per Node it starts (about 30 in a run, each some 80 collections with their
+    # indexes), and mongod holds a file per collection and index. On a host whose Docker default is 1024 open files
+    # mongod ran out about every ten minutes, terminated ("Too many open files", exit 139) and was restarted, 5 to
+    # 28 s out of whatever test was running. 64000 is what mongod asks for at startup.
+    ulimits:
+      nofile:
+        soft: 64000
+        hard: 64000
+
+  redis:
+    image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "${FAULT_REDIS_PORT:-36379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  kafka:
+    profiles: ["kafka"]
+    image: apache/kafka:3.9.1@sha256:4ceccc577f03f51f6af8dbfda55194d0d892f4fa7913ffbded567ce3895622ed
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    ports:
+      - "${FAULT_KAFKA_PORT:-39092}:${FAULT_KAFKA_PORT:-39092}"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:${FAULT_KAFKA_PORT:-39092},CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:${FAULT_KAFKA_PORT:-39092}
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:${FAULT_KAFKA_PORT:-39092} >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 24
+
+  toxiproxy:
+    profiles: ["degraded"]
+    image: ghcr.io/shopify/toxiproxy:2.12.0@sha256:9378ed52a28bc50edc1350f936f518f31fa95f0d15917d6eb40b8e376d1a214e
+    network_mode: host
+    command: ["-host", "127.0.0.1", "-port", "${FAULT_TOXI_PORT:-29130}"]
+
+  redis-replica:
+    profiles: ["degraded"]
+    image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    command: ["redis-server", "--replicaof", "redis", "6379"]
+    ports:
+      - "${FAULT_REDIS_REPLICA_PORT:-29131}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  neo4j:
+    profiles: ["degraded"]
+    image: neo4j:5.26@sha256:ec10d705830a340c7438e125cb5c4f90522b85369d877c9a581c3de5974ab3d6
+    ulimits:
+      nofile:
+        soft: 60000
+        hard: 60000
+    ports:
+      - "${FAULT_NEO4J_PORT:-29132}:7687"
+    environment:
+      NEO4J_AUTH: neo4j/fault-suite-graph
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 64m
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p fault-suite-graph 'RETURN 1' >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 10s
+      retries: 60
+
+  qdrant:
+    profiles: ["degraded"]
+    image: qdrant/qdrant:v1.15.5@sha256:0fb8897412abc81d1c0430a899b9a81eb8328aa634e7242d1bc804c1fe8fe863
+    ulimits:
+      nofile:
+        soft: 50000
+        hard: 50000
+    ports:
+      - "${FAULT_QDRANT_PORT:-29133}:6333"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333'"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  mongodb_data:
+  mongodb_replset_key:
+
+# A /28 the suite creates itself (stack.infrastructure_up), not a /16 from the daemon's default pools: on a shared
+# daemon other users' networks exhaust those ("all predefined address pools have been fully subnetted").
+networks:
+  default:
+    name: ${FAULT_NETWORK:-harness-fault-rig}
+    external: true

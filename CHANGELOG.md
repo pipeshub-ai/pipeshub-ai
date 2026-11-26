@@ -34,6 +34,39 @@ This file is the release registry: each entry is a condensed summary linking to 
 
 Changes merged to `main` since the last release: [`v1.0.0...HEAD`](https://github.com/pipeshub-ai/pipeshub-ai/compare/v1.0.0...HEAD).
 
+### Added
+- **Agent harness: durable agent runs and coding engines, with the engine versions this release supports. Off unless the operator turns it on.** `AGENT_HARNESS_WORKER_ENABLED=true` (Compose `.env`, `PIPESHUB_AGENT_HARNESS=on ./install.sh`, Helm `agentHarness.enabled=true`) is its one switch. Off, the default, no harness process, route, Labs flag or screen exists and every chat runs as before; `install.sh --upgrade` keeps an install's choice ([what it covers](docs/agent-harness-v2/guides/HARNESS-OFF.md)). With it on, agent chat runs on the durable harness (runs survive restarts, approvals and questions wait in the chat, every step is journaled), and an org can hand long work to a coding engine that runs in a sandbox behind PipesHub's Model and Tool Gateways. Supported engine versions, as pinned in `backend/python/harness_engines/allowlist.json`: **opencode 1.18.34** (`pxh-opencode-tools:1.18.34-ph7`), **Codex 0.160.0** (`pxh-codex-tools:0.160.0-ph7`), **Claude Code 2.1.319** (`pxh-claude-code-tools:2.1.319-ph7`, an image the admin builds from their own copy), **ACP-opencode 1.18.34** (on the opencode image), **Gemini CLI 0.63.0** (`acp-gemini`, `pxh-gemini-tools:0.63.0-ph7`) and, optional, **Goose 1.57.0** (`acp-goose`, `pxh-goose-tools:1.57.0-ph7`; never an org's default, and it normalises Unicode in its output), **Qwen Code 0.26.5** (`acp-qwen`, `pxh-qwen-tools:0.26.5-ph7`) and **DeepSeek Harness 0.2.2-rc.1** (`acp-dsh`, `pxh-dsh-tools:0.2.2-rc.1-ph7`; a developer preview, never an org's default). The ACP engines (ACP-opencode, Gemini CLI, Goose, Qwen Code, DeepSeek Harness) run only for an org whose engine profile names them, and their profiles are not yet signed for production. Coding engines are off until the operator sets `HARNESS_ENGINE_RUNS=true`, and in production they need gVisor (`./install.sh --install-gvisor`). Operators: the [operator guide](docs/agent-harness-v2/guides/operator-guide.md) covers sizing, backup and restore, air-gapped installs, upgrades and the runbooks (incident, stuck session, exhausted pool, gateway 5xx, CVE response, credential rotation, approval backlog).
+
+
+### Upgrade notes (every install, harness on or off)
+**An upgrade from 1.0.0 behaves as 1.0.0 did; a fresh install starts hardened.** One switch,
+`PIPESHUB_HARDENED`, decides the security profile ([ADR-OPS-07](docs/agent-harness-v2/adr/ADR-OPS-07-compatibility-profile-for-upgrades.md);
+the table of what it changes is in [HARNESS-OFF.md](docs/agent-harness-v2/guides/HARNESS-OFF.md), "Security profile").
+- **Upgrading changes nothing your users or clients see.** `./install.sh --upgrade` writes `PIPESHUB_HARDENED=false`
+  for an `.env` from 1.0.0 and says so; a plain `docker compose up` with that `.env` reads the same. The stores start
+  as before when a credential is missing, a weak `SECRET_KEY` is accepted with a warning, the app port stays published
+  on every interface, code execution stays on the Docker API proxy, bearer refresh tokens do not rotate, the app may
+  be framed, `/api/v1/health` answers the full report, org deletion accepts the request without `confirmName`, and a
+  deleted chat is soft-deleted as before. The installer still generates missing store credentials and creates
+  MongoDB's root user when its password was empty (nothing changes for clients; each store reads them at start).
+- **Rolling back** to 1.0.0 from the compatibility profile: stop, put the previous images back
+  (`deployment/docker-compose/rollback.sh`), start. Configuration written since the upgrade is under the key 1.0.0
+  reads. Remove `PIPESHUB_HARDENED` and the variables the installer added if you like; 1.0.0 ignores them.
+- **Adopting the hardened profile**: back up `.env` and the KV store, then `PIPESHUB_HARDENED=true ./install.sh --upgrade`
+  (Helm: `--set hardened=true`). It turns on, in one step: required store credentials, the `SECRET_KEY` floor (a weak
+  key is rotated without losing data), new configuration under the HKDF key, the app port on 127.0.0.1 unless a public
+  URL is set, code execution through the sandbox broker, refresh-token rotation for every client, `frame-ancestors
+  'none'` and an enforced CSP, the trimmed health answer, `confirmName` on org deletion with erasure, conversation
+  erasure, strict boolean flags and, on Helm, the namespace default-deny and non-root stores. **Risks you accept by
+  staying on compatibility**, each a flaw 1.0.0 also has: stores reachable without a password on the Compose network
+  if the installer has not run, a guessable `SECRET_KEY` if yours is weak, the app port reachable from other machines,
+  clickjacking of the sign-in page, a copied refresh token usable until it expires, service names and versions on
+  the public health answer. After opting in, a rollback to 1.0.0 cannot read configuration written since: restore the
+  backup.
+- **Embedding PipesHub in a frame** on the hardened profile: set `CSP_FRAME_ANCESTORS`.
+- **API clients** that refresh with a bearer token may opt in to rotation with `X-PipesHub-Refresh-Rotation: 1`; they
+  must then keep the `refreshToken` each refresh returns.
+
 ---
 
 ## 1.0.0 — 2026-10-27

@@ -32,6 +32,12 @@ import {
   mergeAiModelCredentials,
   pickAiModelCredentials,
 } from '../utils/maskConfigSecrets';
+import {
+  aiModelsRepository,
+  plainAiModelsSave,
+  type AiModelsSave,
+  type AiModelsSaver,
+} from '../utils/ai-models-save';
 import { EXTRA_AI_PUBLIC_CONFIG_KEYS } from '../../../edition';
 
 const logger = Logger.getInstance({ service: 'AI Models Batch Controller' });
@@ -187,6 +193,7 @@ export function batchAddAIModels(
   keyValueStoreService: KeyValueStoreService,
   eventService: AiConfigEventProducer,
   appConfig: AppConfig,
+  save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
 ) {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -212,7 +219,12 @@ export function batchAddAIModels(
         });
         return;
       }
-      const repo = new AiModelsConfigRepository(keyValueStoreService);
+      const repo = aiModelsRepository(
+        keyValueStoreService,
+        save,
+        req as AiModelsSaver,
+        [modelType],
+      );
       if (requestedConnectionId) {
         const stored = await repo.read();
         const joinable = AI_MODEL_TYPES.some((type) =>
@@ -374,6 +386,7 @@ export function batchAddAIModels(
 export function rotateConnectionCredentials(
   keyValueStoreService: KeyValueStoreService,
   appConfig: AppConfig,
+  save: AiModelsSave = plainAiModelsSave(keyValueStoreService),
 ) {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -381,7 +394,12 @@ export function rotateConnectionCredentials(
       const incoming = pickAiModelCredentials(
         (req.body.configuration ?? {}) as Record<string, unknown>,
       );
-      const repo = new AiModelsConfigRepository(keyValueStoreService);
+      const repo = aiModelsRepository(
+        keyValueStoreService,
+        save,
+        req as AiModelsSaver,
+        AI_MODEL_TYPES,
+      );
       const stored = await repo.read();
       const members: { modelType: string; entry: AIModelConfiguration }[] = [];
       if (stored) {

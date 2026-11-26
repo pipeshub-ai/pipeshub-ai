@@ -7,6 +7,7 @@ import i18n from '@/lib/i18n/config';
 import { useLanguageStore } from '@/lib/store/language-store';
 import { ToastContainer } from '@/app/components/feedback';
 import { ThemeProvider, ThemeScript } from '@/app/components/theme-provider';
+import { IconFontScript } from '@/app/components/ui/icon-font-script';
 import { AuthHydrator } from '@/lib/store/auth-hydrator';
 import { ServerUrlGuard } from '@/app/components/electron/server-url-setup';
 import { BrandProvider } from '@/config';
@@ -35,6 +36,7 @@ export default function PublicLayout({
     <html lang={currentLang} suppressHydrationWarning>
       <head>
         <ThemeScript />
+        <IconFontScript />
       </head>
       <body style={{ backgroundColor: 'var(--olive-1, #f8f8f5)' }}>
         <I18nextProvider i18n={i18n}>

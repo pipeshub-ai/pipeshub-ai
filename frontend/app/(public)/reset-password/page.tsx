@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useEffect, useState, Suspense } from 'react';
-import { useRouter } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
 import { useAuthWideLayout } from '@/lib/hooks/use-breakpoint';
 import AuthHero from '../components/auth-hero';
@@ -12,6 +11,8 @@ import ChangePassword from '../forms/change-password';
 import { decodeJwtUser } from '@/lib/utils/auth-helpers';
 import type { JwtUser } from '@/lib/utils/auth-helpers';
 import { useAuthStore } from '@/config';
+import { discardAllChatDrafts } from '@/lib/storage/chat-drafts';
+import { discardAllChatUnread } from '@/lib/storage/chat-unread';
 import {
   PASSWORD_RESET_FAILURE_VARIANT,
   INVITE_VS_RESET_LIFETIME_CUTOFF_SECONDS,
@@ -21,9 +22,8 @@ import type { PasswordResetFailureVariant } from './types';
 // ─── Inner component ─────────────────────────────────────────────────────────
 
 function ResetPasswordContent() {
-  const router = useRouter();
   const splitLayout = useAuthWideLayout();
-  const { isAuthenticated, isHydrated } = useAuthStore();
+  const isHydrated = useAuthStore((s) => s.isHydrated);
 
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<JwtUser>({});
@@ -37,13 +37,6 @@ function ResetPasswordContent() {
   // (cancelled invite or deleted account). JWTs are stateless, so expiry alone
   // can't tell us this — we learn about it on submit and lift it up here.
   const [tokenInvalidated, setTokenInvalidated] = useState(false);
-
-  // If the user is already logged in, send them to the app
-  useEffect(() => {
-    if (isHydrated && isAuthenticated) {
-      router.replace('/chat');
-    }
-  }, [isHydrated, isAuthenticated, router]);
 
   useEffect(() => {
     // Token is read exclusively from the hash fragment (#token=) so it is
@@ -66,8 +59,21 @@ function ResetPasswordContent() {
   // Don't render until the Zustand auth store has rehydrated from localStorage
   if (!isHydrated || !ready) return null;
 
-  // Already authenticated — redirect effect will fire, render nothing
-  if (isAuthenticated) return null;
+  // A signed-in browser still gets the form: the link in the email is the
+  // credential, and redirecting would silently discard it. Once the password
+  // changes, the stored session is dropped so "Sign In" reaches the login page
+  // instead of bouncing back into the app. The store is read when the request
+  // finishes: another tab may have signed in while it was pending.
+  const handleSuccess = () => {
+    const { isAuthenticated, logout } = useAuthStore.getState();
+    if (isAuthenticated) {
+      // A deliberate end of the session, like the workspace-menu sign-out.
+      discardAllChatUnread();
+      discardAllChatDrafts();
+      logout();
+    }
+    setSuccess(true);
+  };
 
   // Decide which screen to show: no token, expired token (invite vs reset),
   // server-invalidated token (cancelled invite / deleted account), or the
@@ -109,7 +115,7 @@ function ResetPasswordContent() {
             token={token!}
             user={user}
             disabled={false}
-            onSuccess={() => setSuccess(true)}
+            onSuccess={handleSuccess}
             onInvalidToken={() => setTokenInvalidated(true)}
           />
         )}

@@ -6,6 +6,7 @@ import socket
 from collections.abc import AsyncIterator, Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
 import pytest
 
 from app.connectors.sources.web import address_guard
@@ -18,6 +19,7 @@ from app.connectors.sources.web.address_guard import (
     start_guard_proxy,
 )
 from app.utils.url_fetcher import PublicTarget
+from harness_core.testing.virtual_time import run_on_virtual_time
 
 PUBLIC = ipaddress.ip_address("93.184.215.14")
 
@@ -110,6 +112,53 @@ class TestAllowedHosts:
         await resolver.close()
 
 
+class TestPublicHttpsOnly:
+    """A person's own OAuth app: its token URL is an address they typed, so every request, a
+    redirect too, is https to a public address, whatever the admin opened to the Web connector."""
+
+    @staticmethod
+    def _request(url: str) -> MagicMock:
+        request = MagicMock()
+        request.url = url
+        return request
+
+    @pytest.mark.parametrize("url", ["http://idp.example/token", "http://93.184.215.14/token"])
+    async def test_a_plain_http_request_is_refused_before_it_is_sent(self, url) -> None:
+        handler = AsyncMock()
+        with pytest.raises(UnsafeAddressError):
+            await address_guard._guard_request(self._request(url), handler, public_https_only=True)
+        handler.assert_not_awaited()
+
+    async def test_an_https_request_is_sent(self) -> None:
+        handler = AsyncMock(return_value="answer")
+        request = self._request("https://idp.example/token")
+        assert await address_guard._guard_request(request, handler, public_https_only=True) == "answer"
+        handler.assert_awaited_once_with(request)
+
+    async def test_the_session_s_middleware_refuses_http(self) -> None:
+        async with aiohttp.ClientSession(**address_guard.guarded_session_kwargs(public_https_only=True)) as session:
+            with pytest.raises(UnsafeAddressError):
+                async with session.post("http://idp.example/token", data={"client_secret": "s"}):
+                    pass
+
+    async def test_an_allowed_host_on_a_private_address_is_refused(self, monkeypatch, allowed_hosts) -> None:
+        allowed_hosts("wiki.corp.example")
+        connector = address_guard.guarded_session_kwargs(allow_private=True, public_https_only=True)["connector"]
+        resolver = connector._resolver
+        answer = [{"hostname": "wiki.corp.example", "host": "10.0.0.7", "port": 443, "family": socket.AF_INET, "proto": 0, "flags": 0}]
+        monkeypatch.setattr(resolver._resolver, "resolve", AsyncMock(return_value=answer))
+        with pytest.raises(UnsafeAddressError):
+            await resolver.resolve("wiki.corp.example", 443)
+        await connector.close()
+
+    async def test_an_allowed_host_s_ip_literal_is_refused(self, allowed_hosts) -> None:
+        allowed_hosts("10.0.0.7")
+        handler = AsyncMock()
+        with pytest.raises(UnsafeAddressError):
+            await address_guard._guard_request(self._request("https://10.0.0.7/token"), handler, public_https_only=True)
+        handler.assert_not_awaited()
+
+
 class TestGuardedResolver:
     async def test_refuses_a_private_answer(self, monkeypatch) -> None:
         resolver = GuardedResolver()
@@ -179,18 +228,22 @@ class TestGuardProxy:
         assert answer.startswith(b"HTTP/1.1 403")
         assert received == []
 
-    async def test_all_connect_attempts_share_one_deadline(self, monkeypatch) -> None:
+    def test_all_connect_attempts_share_one_deadline(self, monkeypatch) -> None:
         async def never_answers(*_: object, **__: object) -> None:
             await asyncio.sleep(3600)
 
         monkeypatch.setattr(address_guard, "_PROXY_CONNECT_TIMEOUT", 0.2)
         monkeypatch.setattr(asyncio, "open_connection", never_answers)
         pin = PublicTarget("http", "public.example", 80, (PUBLIC, ipaddress.ip_address("93.184.215.15")))
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        with pytest.raises(TimeoutError):
-            await address_guard._connect_checked(pin)
-        assert loop.time() - started < 1
+
+        async def main() -> None:
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            with pytest.raises(TimeoutError):
+                await address_guard._connect_checked(pin)
+            assert loop.time() - started == pytest.approx(0.2)
+
+        run_on_virtual_time(main)
 
     async def test_relays_a_public_request_to_the_checked_address_only(self, site, proxy_port, monkeypatch) -> None:
         port, received = site

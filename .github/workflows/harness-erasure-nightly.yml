@@ -1,0 +1,81 @@
+name: Harness Erasure (nightly)
+
+# QA-15 (ERA-G3, ERA-G6): erasure on real stores whatever a change touched. The pull-request lanes that run
+# these are path-filtered (agent-harness-infrastructure.yml), so a change elsewhere (the conversation module,
+# the artifact registry, a deletion path) never ran them. Nightly: every agent-harness replica-set itest
+# (the erasure census, the operator backfill CLI, agent erasure) with Redis for the LiveBus, and the
+# artifact registry's erasure census on real Neo4j and ArangoDB.
+on:
+  schedule:
+    - cron: '45 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-erasure-nightly
+  cancel-in-progress: false
+
+jobs:
+  replica-set-itests:
+    name: Erasure census, backfill and agent erasure on a replica set
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      redis:
+        image: redis:7.4.12-bookworm@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
+        ports:
+          - 6379:6379
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci --ignore-scripts
+
+      - name: Agent-harness replica-set itests
+        env:
+          AGENT_HARNESS_RUN_NODE_ADMISSION_TEST: 'true'
+          REDIS_IT_URL: redis://127.0.0.1:6379
+        run: deployment/docker-compose/tests/agent_harness_replset_test.sh
+
+  graph-census:
+    name: Artifact erasure census on Neo4j and ArangoDB
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        working-directory: backend/python
+        run: |
+          requirements/install.sh dev --project . --editable
+
+      - name: Real-graph erasure census
+        working-directory: backend/python
+        env:
+          PXH_REQUIRE_DOCKER: '1'
+        run: pytest -q -m docker tests/unit/services/artifact_registry/test_erasure_real_graph.py --timeout=900
+
+      - name: Remove the lane's graph containers
+        if: always()
+        run: docker ps -aq --filter label=pxh.qa15 | xargs -r docker rm -f -v

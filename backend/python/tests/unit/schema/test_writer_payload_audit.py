@@ -53,7 +53,7 @@ ENTITIES = APP / "models" / "entities.py"
 
 # Keys the backend adds or strips itself; the validator never sees them.
 _ENDPOINT_KEYS = frozenset({"_from", "_to", "from_id", "to_id", "from_collection", "to_collection", "_key", "_id", "id"})
-_INTERNAL_KEYS = frozenset({"khSortName", "khScope"})
+_INTERNAL_KEYS = frozenset({"khSortName", "khScope", "khFrom", "khOrd", "khChild"})
 
 # provider method -> (kind, position of the collection argument, position of the payload argument)
 _WRITERS: dict[str, tuple[str, int | None, int]] = {
@@ -683,13 +683,13 @@ _AUDITED_CYPHER_WRITERS = frozenset({
     'backfill_block_name_folded', 'backfill_hierarchy', 'backfill_indexed_copy_flags', 'stamp_external_org_parents', 'batch_create_edges',
     'batch_create_entity_relations', 'replace_record_entity_relations', 'batch_update_connector_status', 'batch_update_nodes',
     'batch_update_team_member_roles', 'batch_upsert_node_relations', 'batch_upsert_nodes', 'batch_upsert_people',
-    'claim_push_record', 'update_indexing_status_for_record_ids', 'write_attempt_start', 'compare_and_set_indexing_status', 'compare_and_set_record_fields',
+    'claim_push_record', 'update_indexing_status_for_record_ids', 'update_record_fields_for_ids', '_promote_queued_copies', 'write_attempt_start', 'compare_and_set_indexing_status', 'compare_and_set_record_fields',
     'create_edges_if_absent', 'create_node_if_absent', 'create_organization_if_absent', 'create_taxonomy_node_if_absent',
-    'delete_records_recursive', 'drop_redundant_group_edges', 'ensure_app_membership', 'ensure_nodes',
+    'delete_node_if_match', 'delete_records_recursive', 'drop_redundant_group_edges', 'ensure_app_membership', 'ensure_nodes',
     'ensure_taxonomy_hierarchy_edge', 'ensure_team_app_edge', 'heal_taxonomy_alias_nodes', 'increment_node_field',
-    'link_record_to_group', 'migrate_legacy_kb_to_app', 'migrate_legacy_relation_edge', 'migrate_person_to_user',
+    'link_record_to_group', 'migrate_legacy_kb_to_app', '_move_legacy_relation_edges', 'migrate_person_to_user',
     'move_taxonomy_edges', 'normalize_folder_mime_types', 'purge_trash_kept_record_groups',
-    'purge_trashed_records', 'record_purge_failure', 'reset_indexing_status_for_connector', 'restore_records',
+    'purge_trashed_records', 'record_purge_failure', 'reset_indexing_status_for_connector', 'restore_records', 'stamp_kh_children_order', '_kh_stamp_unstamped_children_order',
     'retag_push_record', 'soft_delete_records', 'split_link_edges', 'stage_state_compare_and_set',
     'stage_state_create', 'stage_states_delete_unheld_revisions', 'store_page_token',
     'take_back_kept_record_group', 'transition_unsupported', 'update_agent_permission', 'update_drive_sync_state', 'update_edge',

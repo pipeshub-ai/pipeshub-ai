@@ -19,6 +19,7 @@ listing's cursors must rebuild the same list with no gap or duplicate.
 """
 from __future__ import annotations
 
+import logging
 import random
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -34,9 +35,13 @@ from app.modules.retrieval.entity_permissions import (
     list_accessible_entity_records,
 )
 from tests.integration.graph_db.test_permitted_entity_records_real_backends import (
+    ARANGO_DB,
     _insert,
-    _open_arango,
-    _open_neo4j,
+)
+from tests.integration.real_graph import (
+    backend_unavailable,
+    connect_arango,
+    connect_neo4j,
 )
 
 if TYPE_CHECKING:
@@ -46,6 +51,8 @@ if TYPE_CHECKING:
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
+
+logger = logging.getLogger("permitted-entity-records-differential-it")
 
 # The connector ids are App keys, so each run takes its own: the stores are shared.
 _RUN = uuid.uuid4().hex[:8]
@@ -316,9 +323,9 @@ async def seeded(
 ) -> AsyncIterator[tuple[Neo4jProvider | ArangoHTTPProvider, str, list[dict[str, Any]]]]:
     kind = request.param
     try:
-        provider = await (_open_neo4j(monkeypatch) if kind == "neo4j" else _open_arango(monkeypatch))
+        provider = await (connect_neo4j(logger, monkeypatch) if kind == "neo4j" else connect_arango(logger, ARANGO_DB))
     except Exception as exc:
-        pytest.skip(f"{kind} not available: {exc}")
+        backend_unavailable(kind, exc)
     org = f"org-d-{uuid.uuid4().hex[:8]}"
     records = plan(org)
     try:

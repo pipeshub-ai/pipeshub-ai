@@ -1,0 +1,22 @@
+[
+  {
+    "description": "unknown egress",
+    "instance": {
+      "egress": "internet",
+      "argsLeaveBoundary": true
+    }
+  },
+  {
+    "description": "argsLeaveBoundary is required",
+    "instance": {
+      "egress": "self"
+    }
+  },
+  {
+    "description": "argsLeaveBoundary must be boolean",
+    "instance": {
+      "egress": "self",
+      "argsLeaveBoundary": "no"
+    }
+  }
+]

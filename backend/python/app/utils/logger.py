@@ -6,6 +6,7 @@ redacted. ``LOG_LEVEL`` and ``LOG_LEVELS`` set the levels.
 """
 
 import asyncio
+import errno
 import functools
 import json
 import logging
@@ -128,6 +129,21 @@ def _note_context_failure(exc: Exception) -> None:
         sys.stderr.write(f"app.utils.logger: log context not added ({type(exc).__name__})\n")
 
 
+def _hide_driver_text(record: logging.LogRecord) -> None:
+    """A ``logger.exception`` or ``exc_info=True`` record of a stamped chain prints the text-free stack, as ``log_failure``'s does."""
+    # Imported here, not at the top: error_class's own imports stay out of this module's load. A first import runs those
+    # modules' code, which can raise anything, and makeRecord must not.
+    try:
+        from app.utils.error_class import hide_record_text
+    except Exception:
+        # Fail closed: without the module the stamp cannot be checked, so every chain keeps its type alone.
+        exc = record.exc_info[1] if isinstance(record.exc_info, tuple) else None
+        if exc is not None:
+            record.exc_info, record.exc_text = None, f"{type(exc).__qualname__}: <stack omitted>"
+        return
+    hide_record_text(record)
+
+
 def _make_record_factory(
     base_factory: Callable[..., logging.LogRecord],
 ) -> Callable[..., logging.LogRecord]:
@@ -135,6 +151,8 @@ def _make_record_factory(
     # this module cannot rebind it to ourselves and cause infinite recursion.
     def _record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
         record = base_factory(*args, **kwargs)  # type: ignore[arg-type]
+        if record.exc_info:
+            _hide_driver_text(record)
 
         ctx = get_context()
         _stamp_context(record, ctx)
@@ -426,6 +444,13 @@ class AccessLogRedactionFilter(logging.Filter):
 # Created by create_logger only when the provider keeps file logging, so a
 # read-only container filesystem never has to be written.
 log_dir = "logs"
+# Set once the log folder could not be made or opened: every later logger skips
+# the file, so a command run from a read-only working directory (an operator's
+# step on a read-only code mount, KEYRING-FU-1) logs to the console instead of
+# dying at import.
+class _FileLogging:
+    failed = False
+
 
 # Force UTF-8 for stdout/stderr in Windows
 if sys.platform == "win32":
@@ -632,6 +657,24 @@ def install_log_redaction() -> None:
     _redact_all_handlers()
 
 
+def _file_handler(service_name: str) -> logging.FileHandler | None:
+    """The service's log file, or ``None`` (said once on stderr, by the kind of
+    path and the errno, never the path itself) when its folder is not writable."""
+    if _FileLogging.failed:
+        return None
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        return logging.FileHandler(os.path.join(log_dir, f"{service_name}.log"), encoding="utf-8")
+    except OSError as exc:
+        _FileLogging.failed = True
+        where = "an absolute path" if os.path.isabs(log_dir) else "the working directory"
+        reason = errno.errorcode.get(exc.errno or 0, type(exc).__name__)
+        sys.stderr.write(
+            f"logging: file logging off, the log folder under {where} is not writable ({reason}); console only\n"
+        )
+        return None
+
+
 def create_logger(service_name: str) -> logging.Logger:
     """The logger named ``service_name``. Its lines go to the one console
     handler on root, and to ``logs/<service_name>.log`` when the logging
@@ -646,8 +689,8 @@ def create_logger(service_name: str) -> logging.Logger:
     provider = get_provider()
     _route_root_handlers(provider)
     if not logger.handlers and provider.file_logging_enabled():
-        os.makedirs(log_dir, exist_ok=True)
-        file_handler = logging.FileHandler(os.path.join(log_dir, f"{service_name}.log"), encoding="utf-8")
-        file_handler.setFormatter(_formatter(color=False))
-        logger.addHandler(file_handler)
+        file_handler = _file_handler(service_name)
+        if file_handler is not None:
+            file_handler.setFormatter(_formatter(color=False))
+            logger.addHandler(file_handler)
     return logger

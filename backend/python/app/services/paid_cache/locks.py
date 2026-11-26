@@ -166,6 +166,11 @@ def refresh_name(org_id: str, record_id: str, event_id: str) -> str:
     return f"pc:refresh:{{{org_id}:{record_id}}}:{event_id}"
 
 
+def refresh_done_name(org_id: str, record_id: str, event_id: str) -> str:
+    """The marker that a refresh run under ``event_id`` has ended (a second event of the same refresh is a no-op)."""
+    return f"pc:refreshdone:{{{org_id}:{record_id}}}:{event_id}"
+
+
 class LockBackend(Protocol):
     #: True when every replica sees this backend's locks and markers (Redis); False for one process's own.
     shared: bool
@@ -180,14 +185,18 @@ class LockBackend(Protocol):
 
     async def release(self, name: str, token: str) -> None: ...
 
-    async def mark(self, name: str, ttl_ms: int) -> None:
-        """Sets a marker that reads as set until it lapses."""
+    async def mark(self, name: str, ttl_ms: int, value: str = "1") -> None:
+        """Sets a marker that reads as set until it lapses. ``value`` is what ``marker_value`` reads back (a delete
+        stores its time in ms; a marker of an older release holds ``1``)."""
 
     async def mark_if_owned(self, name: str, ttl_ms: int, lock_name: str, token: str) -> bool:
         """Sets the marker only while ``token`` still holds ``lock_name``, in one atomic step; False when it does not."""
 
     async def is_marked(self, name: str) -> bool:
         """Raises when unreachable: a caller that cannot tell must not assume the marker is absent."""
+
+    async def marker_value(self, name: str) -> str | None:
+        """The marker's value, None when it is not set. One single-key read. Raises when unreachable."""
 
 
 class RedisLocks:
@@ -215,8 +224,8 @@ class RedisLocks:
     async def release(self, name: str, token: str) -> None:
         await self._client.eval(_RELEASE_LUA, 1, self.key_of(name), token)  # type: ignore[misc]
 
-    async def mark(self, name: str, ttl_ms: int) -> None:
-        await self._client.set(self.key_of(name), "1", px=ttl_ms)
+    async def mark(self, name: str, ttl_ms: int, value: str = "1") -> None:
+        await self._client.set(self.key_of(name), value, px=ttl_ms)
 
     async def mark_if_owned(self, name: str, ttl_ms: int, lock_name: str, token: str) -> bool:
         return bool(await self._client.eval(  # type: ignore[misc]
@@ -225,6 +234,12 @@ class RedisLocks:
 
     async def is_marked(self, name: str) -> bool:
         return bool(await self._client.exists(self.key_of(name)))
+
+    async def marker_value(self, name: str) -> str | None:
+        value = await self._client.get(self.key_of(name))
+        if value is None:
+            return None
+        return value.decode() if isinstance(value, bytes) else str(value)
 
 
 class InProcessLocks:
@@ -237,6 +252,7 @@ class InProcessLocks:
 
     def __init__(self) -> None:
         self._held: dict[str, tuple[str, float]] = {}
+        self._values: dict[str, str] = {}
         self._clock = time.monotonic
         #: Event loops on several threads share one instance (the fallback of a Redis that cannot be reached).
         self._mutex = threading.Lock()
@@ -270,9 +286,10 @@ class InProcessLocks:
             if held is not None and held[0] == token:
                 del self._held[name]
 
-    async def mark(self, name: str, ttl_ms: int) -> None:
+    async def mark(self, name: str, ttl_ms: int, value: str = "1") -> None:
         with self._mutex:
             self._held[name] = ("marker", self._clock() + ttl_ms / 1000)
+            self._values[name] = value
 
     async def mark_if_owned(self, name: str, ttl_ms: int, lock_name: str, token: str) -> bool:
         with self._mutex:
@@ -286,6 +303,13 @@ class InProcessLocks:
         with self._mutex:
             held = self._held.get(name)
             return held is not None and held[1] > self._clock()
+
+    async def marker_value(self, name: str) -> str | None:
+        with self._mutex:
+            held = self._held.get(name)
+            if held is None or held[0] != "marker" or held[1] <= self._clock():
+                return None
+            return self._values.get(name, "1")
 
     def expire_all(self) -> None:
         """Test hook: every held lock lapses, as a dead holder's does (markers stay)."""

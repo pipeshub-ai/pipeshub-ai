@@ -14,6 +14,9 @@ export function isOfflineMode(): boolean {
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
+/** What start-up logs when the switch is off. */
+export const telemetryOffMessage = `Telemetry disabled (${TELEMETRY_COLLECTION_FLAG} is not 'true')`;
+
 export function isTelemetryEnabled(): boolean {
   const raw = process.env[TELEMETRY_COLLECTION_FLAG]?.trim();
   if (!raw) {

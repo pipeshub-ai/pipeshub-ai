@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.connectors.core.base.token_service.oauth_service import OAuthTokenRequestError
+from app.connectors.sources.github_teams.runtime import RefreshOutcome
 from app.connectors.sources.github_teams.runtime import RuntimeHelper as GitHubRuntime
 from app.connectors.sources.gitlab.runtime import RuntimeHelper as GitLabRuntime
 from app.connectors.sources.microsoft.outlook_individual.connector import (
@@ -138,7 +139,7 @@ async def _slack(error: BaseException) -> object:
 
 SITES: dict[str, tuple[Callable[[BaseException], Awaitable[object]], object]] = {
     "outlook_individual": (_outlook, False),
-    "github_teams": (lambda e: _runtime(GitHubRuntime, e), False),
+    "github_teams": (lambda e: _runtime(GitHubRuntime, e), RefreshOutcome.UNAVAILABLE),
     "notion": (_notion, False),
     "zendesk": (_zendesk, False),
     "slack": (_slack, None),
@@ -164,3 +165,9 @@ async def test_refresh_failure_after_a_401_is_logged_without_the_provider_text(
         text = TextFormatter().format(record) + repr(log_record_fields(record))
         for leaked in (SEEDED_RT, "idp.example", "app.example/cb", "is not active"):
             assert leaked not in text
+
+
+def test_slack_renewal_reads_a_malformed_saved_token_as_not_expiring() -> None:
+    config = {"credentials": {"access_token": "at", "refresh_token": "rt", "expires_in": 3600, "created_at": "not-a-time"}}
+
+    assert SlackTokenRenewal._expiring(config, "at") is False  # MalformedTokenError is a ValueError: the fallback holds

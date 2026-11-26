@@ -16,7 +16,7 @@ from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.context import RunContext
-from app.agent_loop_lib.core.exceptions import AgentError
+from app.agent_loop_lib.core.exceptions import SpawnDepthError
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall, ToolMessage, UserMessage
 from app.agent_loop_lib.core.scope import RunScope, ToolScope, TurnScope
 from app.agent_loop_lib.core.types import AgentResult, Goal
@@ -862,7 +862,7 @@ class TestAgentToolHandle:
         runtime = AgentRuntime()
 
         async def _raise(*_args: Any, **_kwargs: Any) -> AgentResult:
-            raise AgentError("Maximum spawn depth (3) reached")
+            raise SpawnDepthError("Maximum spawn depth (3) reached")
 
         runtime.run_child = _raise
 
@@ -874,6 +874,26 @@ class TestAgentToolHandle:
 
         assert result.is_error is True
         assert "spawn depth" in str(result.content)
+
+    async def test_handle_reports_a_child_that_raised_by_why(self) -> None:
+        """The domain-agent route: a child that couldn't run (a store's or a provider's error) reaches the parent model
+        and the tool card as why it failed, never the error's text."""
+        from tests.support.provider_errors import MARK, SECRET
+
+        runtime = AgentRuntime()
+
+        async def _raise(*_args: object, **_kwargs: object) -> AgentResult:
+            raise RuntimeError(f"config store at db.internal: {MARK} {SECRET}")
+
+        runtime.run_child = _raise
+
+        child_spec = AgentSpec(name="child", system_prompt="x", model=ModelSpec(provider="scripted", model="m"))
+        tool = AgentTool(child_spec, runtime)
+        call = ToolCall(id="c1", name="child", arguments={"goal": "do it"})
+
+        result = await tool.handle(call, _route_context(runtime, call))
+
+        assert (result.is_error, result.content, result.end_fields["reason"]) == (True, "internal (RuntimeError)", "exception")
 
 
 class TestAgentToolInheritsParentSkills:

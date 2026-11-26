@@ -6,7 +6,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useComposerResizeAnimation } from '../hooks/use-composer-resize-animation';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { Spinner } from '@/app/components/ui/spinner';
-import { Flex, Box, Text, IconButton, Tooltip, Popover } from '@radix-ui/themes';
+import { Flex, Box, Text, IconButton, Tooltip, Popover, VisuallyHidden } from '@radix-ui/themes';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { ChatInputExpansionPanel } from '@/chat/components/chat-panel/expansion-panels/chat-input-expansion-panel';
@@ -29,6 +29,7 @@ import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import {
   AgentStrategyModeSwitcher,
   AgentStrategyModePanel,
+  COMPOSER_POPOVER_FITS_VIEWPORT,
   PlusMenuButton,
   PlusMenuSheet,
   PlusMenuTriggerIcon,
@@ -46,22 +47,66 @@ import {
   getModelDefaultReasoningEffort,
   projectCapabilitiesKey,
 } from '@/chat/store';
-import { chatModelOptions } from '@/config';
+import { chatModelOptions, useAuthStore } from '@/config';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useScrollEdges } from '@/lib/hooks/use-scroll-edges';
 import { touchTarget, TOUCH_TARGET_PX } from '@/app/components/ui/responsive';
-import { useCommandStore } from '@/lib/store/command-store';
+import { FILL_COMPOSER_COMMAND, useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
+import { canSteerSlot, steerRunningTask, untilSlotIdle } from '@/chat/steering';
+import { slotWaitingCount } from '@/chat/interactions';
+import { composerCommandState, useCommandCatalog, type MenuEntry } from '@/chat/commands';
+import {
+  BuiltinCommandBar,
+  CommandArgsBar,
+  SLASH_MENU_ID,
+  SlashCommandMenu,
+  builtinReasonText,
+  slashOptionId,
+} from '@/chat/components/chat-panel/slash-command-menu';
+import {
+  BUILTIN_BUS,
+  builtinReason,
+  findBuiltin,
+  repoBuiltinReason,
+  isPromptBuiltin,
+  takesArgsFirst,
+  type BuiltinCommand,
+  type BuiltinContext,
+} from '@/chat/builtin-commands';
+import { runBuiltin } from '@/chat/builtin-actions';
+import { runCodeOf, useSandboxViews } from '@/chat/sandbox-commands';
+import { NEW_CHAT_KEY, useBuiltinResults, useBuiltinRows, useWorkspaceHeads, type BuiltinRow } from '@/chat/builtin-results';
+import { BuiltinResultRows } from '@/chat/components/message-area/builtin-result-rows';
+import { selectIsAdmin, useUserStore } from '@/lib/store/user-store';
 import { attachmentErrorMessage } from '@/chat/utils/attachment-error';
 import { showRemoteRunInProgressToast } from '@/chat/utils/remote-run-toast';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { chatHarnessField, conversationHarness, harnessSwitchLock, harnessSwitchOn } from '@/chat/assistant-harness';
+import { agentGateLocks, useRunGatesStore } from '@/chat/run-gates';
+import { RunGateChips, useRunGateChipsShown } from './chat-panel/run-gate-chips';
+import {
+  selectAgentHarnessEnabled,
+  selectAgentHarnessOn,
+  selectAgentHarnessResumeEnabled,
+  selectMcpEnabled,
+  selectSkillsEnabled,
+  useFeatureFlagsStore,
+} from '@/lib/store/feature-flags-store';
 import { getUserIdFromToken } from '@/lib/utils/jwt';
 import { useComposerDraft } from '@/chat/hooks/use-composer-draft';
 import { buildDraftKey } from '@/chat/utils/composer-draft';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
 import { PastedTextChip } from '@/chat/components/pasted-text-chip';
+import { PendingEngineChip } from '@/chat/components/chat-panel/pending-engine-chip';
+import { RepositoryChip, useRepositoryChipShown } from '@/chat/components/chat-panel/repository-chip';
+import { RepositoryPickerDialog } from '@/chat/components/chat-panel/repository-picker-dialog';
+import { useRepositoryMenu } from '@/chat/hooks/use-repository-menu';
+import { useRepositoryStore } from '@/chat/repository-store';
 import { TextPreviewDialog } from '@/chat/components/text-preview-dialog';
+import { PastedSecretDialog, PERSONAL_CREDENTIALS_PATH } from '@/chat/components/pasted-secret-dialog';
+import { findPastedSecrets, redactPastedSecrets } from '@/chat/pasted-secrets';
 import {
   isLargePaste,
   createPastedTextFile,
@@ -107,6 +152,7 @@ import {
 
 type ChatInputVariant = 'full' | 'widget';
 
+const NO_ROWS: BuiltinRow[] = [];
 /** A chip for a file already stored with the question being edited. */
 function chipForStoredFile(ref: AttachmentRef): UploadedFile {
   return {
@@ -274,6 +320,10 @@ export function ChatInput({
   const router = useRouter();
   const agentDeprecatedToolNames = useChatStore((s) => s.agentDeprecatedToolNames);
   const [message, setMessage] = useState('');
+  // SEC-CR-07: a message holding a secret waits for the person's choice; `secretCleared` lets that one send through.
+  const [secretFound, setSecretFound] = useState(false);
+  const [sendWithoutSecret, setSendWithoutSecret] = useState(false);
+  const secretCleared = useRef(false);
   const [mentions, setMentions] = useState<MentionNode[]>([]);
   const [showUploadArea, setShowUploadArea] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
@@ -362,8 +412,8 @@ export function ChatInput({
       return next;
     });
   }, [message]);
-  const [canScrollLeft, setCanScrollLeft] = useState(false);
-  const [canScrollRight, setCanScrollRight] = useState(false);
+  const hasFileChips = uploadedFiles.length > 0;
+  const { start: canScrollLeft, end: canScrollRight } = useScrollEdges(chipsScrollRef, hasFileChips);
   /**
    * Per-file AbortController keyed by `UploadedFile.id`. Held in a ref (not
    * state) because controllers are imperative — they belong outside the
@@ -382,7 +432,14 @@ export function ChatInput({
   /** id of the `UploadedFile` currently shown in the text preview dialog (composer, pre-send). */
   const [textPreviewFileId, setTextPreviewFileId] = useState<string | null>(null);
   const { t, i18n } = useTranslation();
-  const resolvedPlaceholder = placeholder ?? t('chat.askAnything');
+  // UXINT-5: while a card waits, the box says so; what is typed steers the run and the card stays.
+  // A question ended its run: typing starts a new one and skips it (D6). An approval holds a running task: typing steers it.
+  const waitingForYou = useChatStore((s) => {
+    const slot = variant !== 'widget' && s.activeSlotId ? s.slots[s.activeSlotId] : undefined;
+    if (!slot || slotWaitingCount(slot) === 0) return null;
+    return slot.isStreaming ? 'interaction.composerWaiting' : 'interaction.composerQuestion';
+  });
+  const resolvedPlaceholder = placeholder ?? (waitingForYou ? t(waitingForYou) : t('chat.askAnything'));
 
   const {
     isListening,
@@ -432,6 +489,14 @@ export function ChatInput({
   // "+" menu capability toggles — universal agent uses settings.agentCapabilities;
   // scoped custom agents use their own per-agent capabilities map.
   const setAgentCapabilities = useChatStore((s) => s.setAgentCapabilities);
+  const harnessOffered = useFeatureFlagsStore(selectAgentHarnessEnabled);
+  const harnessOn = useFeatureFlagsStore(selectAgentHarnessOn);
+  const newHarness = useChatStore((s) => s.settings.newHarness);
+  const setNewHarness = useChatStore((s) => s.setNewHarness);
+  const agentNeedsHarness = useChatStore((s) => s.agentNeedsHarness);
+  const activeConversationHarness = useChatStore((s) =>
+    conversationHarness(s.activeSlotId ? s.slots[s.activeSlotId] : undefined),
+  );
   const agentHasWebSearch = useChatStore((s) => s.agentHasWebSearch);
   const scopedAgentCapabilities = useChatStore((s) =>
     agentId ? s.scopedAgentCapabilities[agentId] : undefined
@@ -470,6 +535,14 @@ export function ChatInput({
   // resolved `agentId` disables the toggles instead of silently no-op'ing.
   const plusMenuCapabilities = useMemo(() => {
     const canPersistScoped = isAgentChat && Boolean(agentId);
+    const harnessChoice = {
+      queryMode: settings.queryMode,
+      scopedAgent: isAgentChat,
+      offered: harnessOffered,
+      conversation: activeConversationHarness,
+      chosen: newHarness,
+      needsHarness: isAgentChat && agentNeedsHarness,
+    };
     // A project chat keeps its own choice (on by default) instead of the global one.
     const ownCaps = projectCapsKey
       ? { internalSearch: projectCaps?.internalSearch ?? true, webSearch: projectCaps?.webSearch ?? true }
@@ -500,8 +573,29 @@ export function ChatInput({
         ? (agentHasWebSearch && canPersistScoped ? undefined : false)
         : undefined,
       webSearchNotSetUp,
+      // A project chat always runs on the classic loop (its knowledge is the loop's), so it shows no switch. With
+      // the org's harness on but new runs refused, the switch stays and says why, instead of vanishing.
+      ...(!isProjectChat && (harnessOffered || harnessOn)
+        ? {
+            harness: harnessOffered
+              ? {
+                  checked: harnessSwitchOn(harnessChoice),
+                  locked: harnessSwitchLock(harnessChoice),
+                  onCheckedChange: setNewHarness,
+                }
+              : { checked: false, locked: 'paused' as const, onCheckedChange: setNewHarness },
+          }
+        : {}),
     };
   }, [
+    harnessOffered,
+    harnessOn,
+    isProjectChat,
+    settings.queryMode,
+    activeConversationHarness,
+    newHarness,
+    agentNeedsHarness,
+    setNewHarness,
     isAgentChat,
     agentId,
     scopedInternalSearch,
@@ -572,6 +666,10 @@ export function ChatInput({
   // chat, so a run left going on the chat page is not its run.
   const isStreaming = useChatStore((s) =>
     variant !== 'widget' && s.activeSlotId ? (s.slots[s.activeSlotId]?.isStreaming ?? false) : false
+  );
+  // Streaming a durable run that can still take a message (steering, T2).
+  const canSteer = useChatStore((s) =>
+    s.activeSlotId ? canSteerSlot(s.slots[s.activeSlotId]) : false
   );
   // True from the moment Stop is clicked until the run actually ends —
   // disables the stop button so a second click can't fire another cancel
@@ -666,6 +764,251 @@ export function ChatInput({
   useEffect(() => {
     dismissExpansionPanelsRef.current = dismissExpansionPanels;
   }, [dismissExpansionPanels]);
+
+  // SLASH1/SLASH2: `/` at the start of the composer names a built-in or one of the user's commands.
+  const commandCatalog = useCommandCatalog((s) => s.commands);
+  const commandBodies = useCommandCatalog((s) => s.bodies);
+  const [menuIndex, setMenuIndex] = useState(0);
+  const [dismissedMenuText, setDismissedMenuText] = useState<string | null>(null);
+  const [showAllBuiltins, setShowAllBuiltins] = useState(false);
+  const [menuAnnouncement, setMenuAnnouncement] = useState<string | null>(null);
+  const isAdmin = useUserStore(selectIsAdmin) === true;
+  const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
+  const memoryEnabled = useFeatureFlagsStore(selectAgentHarnessResumeEnabled);
+  const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
+  // A finished last answer registers `/copy`'s handler; "Continue privately" registers `/fork`'s.
+  const hasAnswer = useCommandStore((s) => Boolean(s.handlers[BUILTIN_BUS.copyLastAnswer]));
+  const forkable = useCommandStore((s) => Boolean(s.handlers[BUILTIN_BUS.continuePrivately]));
+  const workspaceHead = useWorkspaceHeads((s) => (draftConvId ? (s.heads[draftConvId]?.head ?? 0) : 0));
+  const agentEditor = useChatStore((s) => Boolean(s.agentContextAccess?.canEdit));
+  const answers = useBuiltinResults((s) => s.pairs[activeSlotId ?? NEW_CHAT_KEY] ?? 0);
+  // Unknown (null) until the conversation loads: the server's 404 is the backstop.
+  const notOwner = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner === false : false));
+  const sandboxView = useSandboxViews((s) => (draftConvId ? s.views[draftConvId]?.view : undefined));
+  // `/run` runs where the agent's next turn could run code: an agent chat, or the assistant's Agent mode (SD2).
+  const runCode = runCodeOf(isAgentChat || settings.queryMode === 'agent', sandboxView);
+  const agentEngineCount = useChatStore((s) => s.agentEngines.length);
+  // `/engine` (SD5): an agent's chat chooses among the engines its profile lists; the assistant in Agent mode only.
+  const engineChoice = isAgentChat
+    ? agentEngineCount >= 2
+      ? 'choose'
+      : 'fixed'
+    : settings.queryMode === 'agent'
+      ? 'choose'
+      : 'quickChat';
+  // A chat with no message yet is on the harness when its first message will be (CMDUI2: `/engine` before it).
+  const newChatNoMessage = useChatStore((s) => {
+    const slot = s.activeSlotId ? s.slots[s.activeSlotId] : undefined;
+    return !slot || (!slot.convId && slot.messages.length === 0 && !slot.isStreaming);
+  });
+  const firstTurnOnHarness =
+    newChatNoMessage &&
+    (isAgentChat
+      ? agentNeedsHarness
+      : chatHarnessField({
+          queryMode: settings.queryMode,
+          scopedAgent: false,
+          offered: harnessOffered,
+          conversation: 'new',
+          chosen: newHarness,
+          needsHarness: false,
+        }).harness === 'durable');
+  // "Work on a repository" (WP-26): the chat's own, on the agent harness, like `/engine`.
+  const repoThreadAgent = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.threadAgentId : undefined));
+  const repoSessionAgent = repoThreadAgent ?? agentId ?? undefined;
+  const repoSession = useMemo(
+    () => (draftConvId ? { ...(repoSessionAgent ? { agentId: repoSessionAgent } : {}), sessionId: draftConvId } : null),
+    [draftConvId, repoSessionAgent],
+  );
+  const repoMenuEnabled = variant !== 'widget' && (activeConversationHarness === 'durable' || firstTurnOnHarness) && !notOwner;
+  const repoMenu = useRepositoryMenu({
+    enabled: repoMenuEnabled,
+    session: repoSession,
+    agentId: agentId ?? null,
+    agentChat: isAgentChat,
+    engineChoice,
+    running: isStreaming,
+  });
+  const repoReasonValues = useMemo(() => ({ repository: repoMenu.repository ?? '' }), [repoMenu.repository]);
+  const repositoryMenuEntry = useMemo(() => {
+    if (!repoMenuEnabled) return undefined;
+    const command = findBuiltin('repo');
+    const reason = repoBuiltinReason(repoMenu.reason);
+    return {
+      reason: command && reason ? builtinReasonText(t, command, reason, repoReasonValues) : null,
+      onSelect: () => useRepositoryStore.getState().openPicker(),
+    };
+  }, [repoMenuEnabled, repoMenu.reason, repoReasonValues, t]);
+  const repoChipShown = useRepositoryChipShown(repoSession, agentId ?? null) && repoMenuEnabled;
+  // Run gates (WP-31 A): this message's dry run, plan approval and checks, where the repository menu is offered.
+  const gatesEnabled = repoMenuEnabled;
+  const gateTurn = useRunGatesStore((s) => s.turn);
+  const setGate = useRunGatesStore((s) => s.set);
+  const agentGates = useChatStore((s) => (isAgentChat ? s.agentGates : null));
+  const gatesMenuEntry = useMemo(
+    () => (gatesEnabled ? { turn: gateTurn, locks: agentGateLocks(agentGates), onToggle: setGate } : undefined),
+    [gatesEnabled, gateTurn, agentGates, setGate],
+  );
+  const gateChipsShown = useRunGateChipsShown(gatesEnabled, isAgentChat);
+  useEffect(() => {
+    // Only the agent harness serves a gate: a chat it does not serve sends none.
+    if (!gatesEnabled) useRunGatesStore.getState().clear();
+  }, [gatesEnabled]);
+  const pendingEngineShown = useChatStore(
+    (s) => newChatNoMessage && s.pendingCodingEngine !== null && s.pendingCodingEngine.agentId === (agentId ?? null),
+  );
+  const refreshRepoMenu = repoMenu.refresh;
+  const typingSlash = harnessOn && message.startsWith('/');
+  useEffect(() => {
+    if (isPlusMenuOpen || isMobilePlusMenuOpen || typingSlash) refreshRepoMenu();
+  }, [isPlusMenuOpen, isMobilePlusMenuOpen, typingSlash, refreshRepoMenu]);
+  const builtinContext = useMemo<BuiltinContext>(
+    () => ({
+      running: isStreaming,
+      conversation: draftConvId !== null,
+      answer: hasAnswer,
+      harness: activeConversationHarness === 'durable' || firstTurnOnHarness,
+      forkable,
+      reasoningModel: activeModelSupportsReasoning,
+      planStrategy: isAgentChat && !agentNeedsHarness,
+      mcp: mcpEnabled,
+      knowledge: variant !== 'widget' && (isAgentChat ? agentHasInternalSearch : settings.queryMode !== 'web-search'),
+      memory: memoryEnabled,
+      skills: skillsEnabled,
+      workspace: workspaceHead > 0,
+      agentChat: isAgentChat,
+      agentEditor,
+      answers,
+      notOwner,
+      runCode,
+      engineChoice,
+      repo: repoMenu.reason,
+    }),
+    [
+      isStreaming,
+      draftConvId,
+      hasAnswer,
+      activeConversationHarness,
+      firstTurnOnHarness,
+      forkable,
+      activeModelSupportsReasoning,
+      isAgentChat,
+      agentNeedsHarness,
+      mcpEnabled,
+      variant,
+      agentHasInternalSearch,
+      settings.queryMode,
+      memoryEnabled,
+      skillsEnabled,
+      workspaceHead,
+      agentEditor,
+      answers,
+      notOwner,
+      runCode,
+      engineChoice,
+      repoMenu.reason,
+    ],
+  );
+  // `/` commands came with the agent harness: off for the org, a message starting with `/` is sent as typed (ADR-OPS-08).
+  const commandState = useMemo<ReturnType<typeof composerCommandState>>(
+    () =>
+      harnessOn
+        ? composerCommandState(message, commandCatalog, commandBodies, {
+            reason: (command) => builtinReason(command, builtinContext),
+            showAll: showAllBuiltins,
+          })
+        : { phase: 'none' },
+    [harnessOn, message, commandCatalog, commandBodies, builtinContext, showAllBuiltins],
+  );
+  const slashMenuOpen = commandState.phase === 'menu' && dismissedMenuText !== message;
+  const slashEntries = commandState.phase === 'menu' ? commandState.entries : [];
+  const activeCommandName = commandState.phase === 'args' ? commandState.command.name : null;
+  const commandBlocked =
+    commandState.phase === 'args' && commandState.preview !== null && !commandState.preview.ok;
+  useEffect(() => {
+    if (harnessOn && message.startsWith('/')) void useCommandCatalog.getState().load();
+    setMenuAnnouncement(null);
+    if (message === '') setShowAllBuiltins(false);
+  }, [harnessOn, message]);
+  useEffect(() => {
+    if (activeCommandName) void useCommandCatalog.getState().loadBody(activeCommandName);
+  }, [activeCommandName]);
+  // Whether `/diff`, `/undo` and `/review` apply: asked only once `/` is typed, never on chat open (O8).
+  const typingCommand = message.startsWith('/');
+  const threadAgentId = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.threadAgentId : undefined));
+  useEffect(() => {
+    if (!typingCommand || !draftConvId || activeConversationHarness !== 'durable') return;
+    const owner = threadAgentId ?? agentId;
+    void useWorkspaceHeads.getState().load({ ...(owner ? { agentId: owner } : {}), sessionId: draftConvId });
+    void useSandboxViews.getState().load({ ...(owner ? { agentId: owner } : {}), sessionId: draftConvId });
+  }, [typingCommand, draftConvId, activeConversationHarness, threadAgentId, agentId]);
+  const slashQuery = commandState.phase === 'menu' ? commandState.query : null;
+  useEffect(() => setMenuIndex(0), [slashQuery]);
+
+  /** Runs a built-in with the same actions its buttons use (SLASH2); never sent, never steered. */
+  const runBuiltinCommand = (command: BuiltinCommand, args: string, as: string = command.name) => {
+    setMessage('');
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    const state = useChatStore.getState();
+    const slot = state.activeSlotId ? state.slots[state.activeSlotId] : undefined;
+    const rowKey = state.activeSlotId ?? NEW_CHAT_KEY;
+    void runBuiltin(command, args, {
+      t,
+      rowKey,
+      afterPairs: useBuiltinResults.getState().pairs[rowKey] ?? 0,
+      slot,
+      agentId: slot?.threadAgentId ?? agentId ?? null,
+      running: isStreaming,
+      harness: activeConversationHarness === 'durable',
+      isAdmin,
+      models: state.settings.availableModels[modelCtxKey]?.models ?? [],
+      currentModel: displayModel,
+      selectModel: handleModelSelect,
+      setEffort: (effort) => state.setReasoningEffortForCtx(modelCtxKey, effort),
+      setStrategy: setAgentStrategy,
+      modeLabel: t(activeQueryConfig.toolbarLabel),
+      openModelPanel: () => {
+        dismissExpansionPanels();
+        setIsModelPanelOpen(true);
+      },
+      openKnowledgePanel: () => {
+        dismissExpansionPanels();
+        if (usesScopedPanel) setIsAgentResourcesPanelOpen(true);
+        else setIsCollectionsPanelOpen(true);
+      },
+      knowledgeSelection: selectedCollections.map((c) => c.name),
+      stop: handleStopStream,
+      navigate: (href) => router.push(href),
+      isMobile,
+    }, as);
+  };
+
+  // An empty chat has no message list: its built-in rows show above the composer (SLASH2 §3).
+  const emptyChat = useChatStore((s) => {
+    const slot = s.activeSlotId ? s.slots[s.activeSlotId] : undefined;
+    return !slot || (slot.messages.length === 0 && !slot.isStreaming);
+  });
+  const ownRows = useBuiltinRows(activeSlotId ?? NEW_CHAT_KEY);
+  const emptyChatRows = variant === 'full' && emptyChat ? ownRows : NO_ROWS;
+
+  const selectCommand = (entry: MenuEntry) => {
+    if (entry.kind === 'more') {
+      setShowAllBuiltins(true);
+      return;
+    }
+    if (entry.kind === 'builtin') {
+      if (entry.reason) {
+        setMenuAnnouncement(builtinReasonText(t, entry.command, entry.reason, repoReasonValues));
+        return;
+      }
+      if (!takesArgsFirst(entry.command)) {
+        runBuiltinCommand(entry.command, '', entry.alias);
+        return;
+      }
+    }
+    setMessage(`/${entry.command.name} `);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  };
 
   // Build selected collections from store (roots → apps API; record groups → kb API).
   // Includes connector metadata so pills show the right icon per source type.
@@ -1007,6 +1350,15 @@ export function ChatInput({
     setMentions([]);
   }, [leaveEditFiles]);
 
+  // A suggested next step lands here to be edited or sent by the person; it is never sent for them (UX5 FU-6).
+  const handleFillComposer = useCallback((payload?: unknown) => {
+    const text = typeof payload === 'object' && payload !== null ? (payload as { text?: unknown }).text : undefined;
+    if (typeof text !== 'string') return;
+    setActiveMessageAction(null);
+    setRegenModelOverride(null);
+    setMessage(text);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  }, []);
   // While the bar is open, the reply's question card can be answered again (ChatResponse reads this).
   const regenTargetMessageId = activeMessageAction?.type === 'regenerate' ? activeMessageAction.messageId : null;
   useEffect(() => {
@@ -1020,12 +1372,14 @@ export function ChatInput({
     register('showRegenBar', handleShowRegenBar);
     register('showEditQuery', handleShowEditQuery);
     register('showQuoteBar', handleShowQuoteBar);
+    register(FILL_COMPOSER_COMMAND, handleFillComposer);
     return () => {
       unregister('showRegenBar');
       unregister('showEditQuery');
       unregister('showQuoteBar');
+      unregister(FILL_COMPOSER_COMMAND);
     };
-  }, [handleShowRegenBar, handleShowEditQuery, handleShowQuoteBar]);
+  }, [handleShowRegenBar, handleShowEditQuery, handleShowQuoteBar, handleFillComposer]);
 
   // Dismiss message action on slot switch
   useEffect(() => {
@@ -1099,8 +1453,33 @@ export function ChatInput({
 
     if (isListening) stopSpeech();
 
+    // A built-in is never sent and never steered into a running task (SLASH2 §2.3).
+    if (commandState.phase === 'builtin' && !activeMessageAction) {
+      const { command, typed, args, reason } = commandState;
+      if (reason) {
+        setMenuAnnouncement(builtinReasonText(t, command, reason, repoReasonValues));
+        return;
+      }
+      // A prompt command (`/review`, `/init`) goes as the next message; the server expands it (SLASH1 D2).
+      if (!isPromptBuiltin(command)) {
+        if (!(takesArgsFirst(command) && !args.trim())) runBuiltinCommand(command, args, typed);
+        return;
+      }
+    }
+    if (commandBlocked) return;
+    if (harnessOn && !secretCleared.current && findPastedSecrets(message).length > 0) {
+      setSecretFound(true);
+      return;
+    }
+    secretCleared.current = false;
     const sid = variant === 'widget' ? null : useChatStore.getState().activeSlotId;
     const liveSlot = sid ? useChatStore.getState().slots[sid] : undefined;
+    if (sid && canSteerSlot(liveSlot) && !activeMessageAction) {
+      // A /command never joins a running task (SLASH1 D5): it runs as the next turn.
+      if (commandState.phase === 'args') queueCommand(sid, commandState.command.name);
+      else sendToRunningTask(sid);
+      return;
+    }
     if ((liveSlot?.isStreaming && !liveSlot.stopping) || isUniversalAgentLoading) return;
     if (liveSlot?.remoteRunInProgress) {
       showRemoteRunInProgressToast();
@@ -1271,7 +1650,6 @@ export function ChatInput({
         }
       }
       const clearDraft = () => {
-        setMessage('');
         setMentions([]);
         setUploadedFiles([]);
         setShowUploadArea(false);
@@ -1281,32 +1659,114 @@ export function ChatInput({
           textareaRef.current.style.height = 'auto';
         }
       };
+      // The text leaves the box before the send: the page may swap this composer for another while it is in flight.
       const sentText = message;
       draft.markSent();
       const questionText = stripMentionPads(message, kept);
+      setMessage('');
+      const putBack = () => {
+        setMessage((current) => (current === '' ? sentText : current));
+        draft.unmarkSent(sentText);
+      };
       const sending = onSend(
         quotedExcerpt ? formatQuotedSelection(quotedExcerpt, questionText) : questionText,
         refs.length > 0 ? refs : undefined,
         sent.length > 0 ? sent : undefined,
       );
       if (sending instanceof Promise) {
-        // The host said why it refused (or failed); the draft stays for another try.
-        void sending.then(
-          (ok) => {
-            if (ok !== false) clearDraft();
-            else draft.unmarkSent(sentText);
-          },
-          () => draft.unmarkSent(sentText),
-        );
+        // The host said why it refused (or failed); the text comes back, and stays the draft, for another try.
+        void sending.then((ok) => (ok !== false ? clearDraft() : putBack()), putBack);
       } else if (sending !== false) {
         clearDraft();
       } else {
-        draft.unmarkSent(sentText);
+        putBack();
       }
     }
   };
 
+  /** A /command sent while a task runs: sent as the next turn once that task ends. */
+  const queueCommand = (slotId: string, name: string) => {
+    const text = message.trim();
+    setMessage('');
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    toast.success(t('slashCommands.queued', { name }), { description: t('slashCommands.queuedDescription') });
+    void untilSlotIdle(slotId, Infinity).then(() => onSend?.(text));
+  };
+
+  /** A message while a durable run streams joins that running task (T2), with its files (C-21). */
+  const submitRef = useRef(handleSubmit);
+  submitRef.current = handleSubmit;
+  useEffect(() => {
+    if (!sendWithoutSecret) return;
+    setSendWithoutSecret(false);
+    submitRef.current({ preventDefault: () => undefined } as React.SyntheticEvent);
+  }, [sendWithoutSecret]);
+  const removeSecretFromDraft = () => {
+    setMessage((current) => redactPastedSecrets(current).text);
+    setSecretFound(false);
+  };
+  const sendWithSecretRemoved = () => {
+    removeSecretFromDraft();
+    secretCleared.current = true;
+    setSendWithoutSecret(true);
+  };
+  const saveSecretAsCredential = () => {
+    removeSecretFromDraft();
+    window.open(PERSONAL_CREDENTIALS_PATH, '_blank', 'noopener');
+  };
+
+  const sendToRunningTask = (slotId: string) => {
+    const text = message.trim();
+    if (uploadedFiles.some((f) => f.status === 'uploading')) return;
+    const files = uploadedFiles;
+    const refs = files.filter((f) => f.status === 'uploaded' && f.ref).map((f) => f.ref!);
+    if (!text && refs.length === 0) return;
+    setMessage('');
+    setUploadedFiles([]);
+    setShowUploadArea(false);
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    void steerRunningTask(slotId, text, refs).then((outcome) => {
+      if (outcome.status === 'queued') {
+        // UXINT-5: shown in the reply at once, queued, until the run reads it; a toast alone was gone in seconds.
+        const queued = useChatStore.getState().slots[slotId];
+        if (queued) {
+          useChatStore.getState().updateSlot(slotId, {
+            queuedSteers: [...(queued.queuedSteers ?? []), { messageSeq: outcome.messageSeq, text }],
+          });
+        }
+        toast.success(t('chat.steering.added'), { description: t('chat.steering.addedDescription') });
+      } else if (outcome.status === 'next_run') {
+        toast.success(t('chat.steering.nextRun'), { description: t('chat.steering.nextRunDescription') });
+      } else if (outcome.status === 'not_active') {
+        // The task finished meanwhile: this message starts the next one.
+        onSend?.(text, refs.length > 0 ? refs : undefined);
+      } else {
+        toast.error(t('chat.steering.failed'));
+        setMessage((current) => (current.trim() ? current : text));
+        setUploadedFiles((current) => (current.length > 0 ? current : files));
+      }
+    });
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (slashMenuOpen && slashEntries.length > 0) {
+      const count = slashEntries.length;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMenuIndex((i) => (i + (e.key === 'ArrowDown' ? 1 : count - 1)) % count);
+        return;
+      }
+      if ((e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === 'Tab') {
+        e.preventDefault();
+        selectCommand(slashEntries[Math.min(menuIndex, count - 1)]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setDismissedMenuText(message);
+        return;
+      }
+    }
     // Escape cancels whichever action mode is active (edit or regenerate)
     if (e.key === 'Escape' && isActionMode) {
       handleDismissAction();
@@ -1695,19 +2155,6 @@ export function ChatInput({
     };
   }, []);
 
-  // Keep scroll-arrow visibility in sync with the chips container scroll state.
-  const updateChipsScrollState = useCallback(() => {
-    const el = chipsScrollRef.current;
-    if (!el) return;
-    setCanScrollLeft(el.scrollLeft > 0);
-    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
-  }, []);
-
-  // Re-check whenever the file list changes (chips added / removed).
-  useEffect(() => {
-    updateChipsScrollState();
-  }, [uploadedFiles, updateChipsScrollState]);
-
   const scrollChips = useCallback((direction: 'left' | 'right') => {
     const el = chipsScrollRef.current;
     if (!el) return;
@@ -1737,7 +2184,8 @@ export function ChatInput({
   const canSubmit =
     (hasContent || activeMessageAction !== null) &&
     !isUniversalAgentLoading &&
-    !hasUploadingAttachments;
+    !hasUploadingAttachments &&
+    !commandBlocked;
 
   // Display value combines committed text with interim speech so users see real-time feedback
   const displayValue = interimTranscript
@@ -1931,6 +2379,18 @@ export function ChatInput({
           />
 
           {/* Send / Stop — same contract as full composer */}
+          {canSteer && (message.trim() || hasSendableAttachment) && (
+            <IconButton
+              variant="solid"
+              size="2"
+              onClick={handleSubmit}
+              aria-label={t('chat.steering.send')}
+              data-testid="chat-steer-button"
+              style={{ margin: 0, backgroundColor: activeToggleColor }}
+            >
+              <MaterialIcon name="arrow_upward" size={ICON_SIZES.PRIMARY} color="white" />
+            </IconButton>
+          )}
           {isStreaming ? (
             <IconButton
               variant="solid"
@@ -1990,6 +2450,12 @@ export function ChatInput({
             </IconButton>
           )}
         </Flex>
+        <PastedSecretDialog
+          open={secretFound}
+          onSendWithout={sendWithSecretRemoved}
+          onSaveAsCredential={saveSecretAsCredential}
+          onKeepEditing={() => setSecretFound(false)}
+        />
       </Flex>
     );
   }
@@ -2022,6 +2488,11 @@ export function ChatInput({
 
   return (
     <>
+    {emptyChatRows.length > 0 ? (
+      <Box style={{ width: '100%' }}>
+        <BuiltinResultRows rows={emptyChatRows} rowKey={activeSlotId ?? NEW_CHAT_KEY} afterPairs={0} last />
+      </Box>
+    ) : null}
     <Flex
       ref={containerRef}
       data-composer-shell=""
@@ -2106,7 +2577,7 @@ export function ChatInput({
                 justifyContent: 'center',
                 width: 24,
                 height: 24,
-                borderRadius: 'var(--radius-round)',
+                borderRadius: '50%',
                 backgroundColor: 'var(--slate-4)',
                 cursor: 'pointer',
               }}
@@ -2119,7 +2590,6 @@ export function ChatInput({
           {/* Scrollable chips row */}
           <Box
             ref={chipsScrollRef}
-            onScroll={updateChipsScrollState}
             style={{
               flex: 1,
               overflowX: 'auto',
@@ -2285,7 +2755,7 @@ export function ChatInput({
               onMouseEnter={() => setIsAddFileButtonHovered(true)}
               onMouseLeave={() => setIsAddFileButtonHovered(false)}
             >
-              <MaterialIcon name="add" size={24} color="var(--accent-9)" />
+              <MaterialIcon name="add" size={24} color="var(--accent-11)" />
             </Box>
           </Flex>
           </Box>
@@ -2301,7 +2771,7 @@ export function ChatInput({
                 justifyContent: 'center',
                 width: 24,
                 height: 24,
-                borderRadius: 'var(--radius-round)',
+                borderRadius: '50%',
                 backgroundColor: 'var(--slate-4)',
                 cursor: 'pointer',
               }}
@@ -2363,6 +2833,21 @@ export function ChatInput({
         padding: '12px 16px 16px',
       }}
     >
+      {pendingEngineShown || repoChipShown || gateChipsShown ? (
+        <Flex gap="2" wrap="wrap" style={{ minWidth: 0 }}>
+          {gateChipsShown ? <RunGateChips agentScoped={isAgentChat} /> : null}
+          {newChatNoMessage ? <PendingEngineChip agentId={agentId ?? null} /> : null}
+          {repoMenuEnabled ? <RepositoryChip session={repoSession} agentId={agentId ?? null} /> : null}
+        </Flex>
+      ) : null}
+      {repoMenuEnabled ? <RepositoryPickerDialog session={repoSession} agentId={agentId ?? null} /> : null}
+      <PastedSecretDialog
+        open={secretFound}
+        onSendWithout={sendWithSecretRemoved}
+        onSaveAsCredential={saveSecretAsCredential}
+        onKeepEditing={() => setSecretFound(false)}
+      />
+
       {/* Hidden file input - always rendered so add button can access it */}
       <input
         ref={fileInputRef}
@@ -2399,7 +2884,7 @@ export function ChatInput({
               <MaterialIcon
                 name={isDragging ? 'file_upload' : 'add'}
                 size={isDragging ? 32 : 24}
-                color={isDragging ? 'var(--accent-9)' : 'var(--slate-9)'}
+                color={isDragging ? 'var(--accent-11)' : 'var(--slate-11)'}
               />
               <Text
                 size="2"
@@ -2411,7 +2896,7 @@ export function ChatInput({
               <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 {t('chat.supportsFileTypes', { types: SUPPORTED_FILE_TYPES.join(', ') })}
               </Text>
-              <Text size="1" style={{ color: 'var(--slate-10)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 {uploadedFiles.length > 0
                   ? t('chat.uploadFilesRemaining', {
                       remaining: CHAT_ATTACHMENT_MAX_FILES - uploadedFiles.length,
@@ -2518,28 +3003,49 @@ export function ChatInput({
         // so the user can see / edit their query during edit or regenerate flows.
         // In regenerate mode the textarea is disabled and text is rendered dimmed;
         // in edit mode it is fully editable (focused immediately on activation).
-        <MentionComposerField
-          ref={textareaRef}
-          value={displayValue}
-          mentions={mentions}
-          onChange={setMessage}
-          onMentionsChange={setMentions}
-          onKeyDown={handleKeyDown}
-          onFocus={() => setIsInputFocused(true)}
-          onBlur={() => setIsInputFocused(false)}
-          placeholder={isListening ? t('chat.listening') : resolvedPlaceholder}
-          readOnly={isRegenerateMode}
-          parent={mentionParent}
-          selection={mentionSelection}
-          mentionsOff={mentionsOff}
-          onSelectionChange={onMentionSelectionChange}
-          multiline
-          style={{
-            ...textareaLayoutStyle,
-            color: isRegenerateMode ? 'var(--slate-a8)' : 'var(--neutral-12)',
-          }}
-          onInput={syncTextareaHeight}
-        />
+        <Box style={{ position: 'relative', width: '100%' }}>
+          <SlashCommandMenu
+            open={slashMenuOpen && !isActionMode}
+            entries={slashEntries}
+            highlighted={menuIndex}
+            onHighlight={setMenuIndex}
+            onSelect={selectCommand}
+            onDismiss={() => setDismissedMenuText(message)}
+            inputRef={textareaRef}
+            announcement={menuAnnouncement}
+            reasonValues={repoReasonValues}
+          />
+          <MentionComposerField
+            ref={textareaRef}
+            value={displayValue}
+            mentions={mentions}
+            onChange={setMessage}
+            onMentionsChange={setMentions}
+            onKeyDown={handleKeyDown}
+            onFocus={() => setIsInputFocused(true)}
+            onBlur={() => setIsInputFocused(false)}
+            placeholder={isListening ? t('chat.listening') : resolvedPlaceholder}
+            readOnly={isRegenerateMode}
+            parent={mentionParent}
+            selection={mentionSelection}
+            mentionsOff={mentionsOff}
+            onSelectionChange={onMentionSelectionChange}
+            listboxControls={slashMenuOpen ? SLASH_MENU_ID : undefined}
+            listboxActiveDescendant={
+              slashMenuOpen && slashEntries[menuIndex] ? slashOptionId(slashEntries[menuIndex].id) : undefined
+            }
+            multiline
+            style={{
+              ...textareaLayoutStyle,
+              color: isRegenerateMode ? 'var(--slate-a8)' : 'var(--neutral-12)',
+            }}
+            onInput={syncTextareaHeight}
+          />
+          {commandState.phase === 'args' && !isActionMode ? <CommandArgsBar state={commandState} /> : null}
+          {(commandState.phase === 'builtin' || commandState.phase === 'word') && !isActionMode && !slashMenuOpen ? (
+            <BuiltinCommandBar state={commandState} announcement={menuAnnouncement} reasonValues={repoReasonValues} />
+          ) : null}
+        </Box>
       ) : null}
 
       {/* Bottom controls — fixed 32px row so left/right share one baseline */}
@@ -2628,6 +3134,8 @@ export function ChatInput({
                 activeIconColor={toolbarIconColor}
                 onAttachFiles={toggleUploadArea}
                 {...plusMenuCapabilities}
+                repository={repositoryMenuEntry}
+                gates={gatesMenuEntry}
               />
             )
           )}
@@ -2639,10 +3147,10 @@ export function ChatInput({
             /* Mobile: meatball opens bottom sheet; mic stays inline (attach files lives in the + menu). */
             <Flex align="center" gap="1">
               <IconButton
+                aria-label={t('common.moreOptions')}
                 variant="ghost"
                 color="gray"
                 size="2"
-                aria-label={t('common.moreOptions')}
                 onClick={() => setIsMobileOptionsOpen(true)}
                 style={{ margin: 0, ...touchTarget(isMobile), cursor: 'pointer' }}
               >
@@ -2679,6 +3187,7 @@ export function ChatInput({
                 side="top"
                 align="end"
                 style={{
+                  ...COMPOSER_POPOVER_FITS_VIEWPORT,
                   padding: 'var(--space-2)',
                   minWidth: '220px',
                   backgroundColor: 'var(--color-panel-solid)',
@@ -2783,7 +3292,7 @@ export function ChatInput({
                     {reasoningEffortLabel && (
                       <Text
                         size="2"
-                        style={{ color: 'var(--slate-10)', whiteSpace: 'nowrap', flexShrink: 0 }}
+                        style={{ color: 'var(--slate-11)', whiteSpace: 'nowrap', flexShrink: 0 }}
                       >
                         · {reasoningEffortLabel}
                       </Text>
@@ -2956,7 +3465,8 @@ export function ChatInput({
                   <button
                     type="button"
                     className="touch-size"
-                    aria-label={t('chat.aiModelsTooltip')}
+                    // With the model's name shown, the name comes from the words (WCAG 2.5.3: it must hold them).
+                    aria-label={isMobile ? t('chat.aiModelsTooltip') : undefined}
                     data-testid="chat-model-selector"
                     onClick={() => {
                       const next = !isModelPanelOpen;
@@ -2985,6 +3495,7 @@ export function ChatInput({
                     <MaterialIcon name="memory" size={14} color={toolbarIconColor} />
                     {!isMobile && (
                       <Flex align="center" gap="1" style={{ overflow: 'hidden' }}>
+                        <VisuallyHidden>{`${t('chat.aiModelsTooltip')}: `}</VisuallyHidden>
                         <Text
                           size="1"
                           weight="regular"
@@ -3004,7 +3515,7 @@ export function ChatInput({
                             size="1"
                             weight="regular"
                             style={{
-                              color: 'var(--neutral-a10)',
+                              color: 'var(--neutral-a11)',
                               whiteSpace: 'nowrap',
                               flexShrink: 0,
                             }}
@@ -3032,7 +3543,19 @@ export function ChatInput({
             </>
           )}
 
-          {/* Send / Stop button */}
+          {/* Send / Stop button; while a durable run streams, a message joins it */}
+          {canSteer && (message.trim() || hasSendableAttachment) && (
+            <IconButton
+              variant="solid"
+              size="2"
+              onClick={handleSubmit}
+              aria-label={t('chat.steering.send')}
+              data-testid="chat-steer-button"
+              style={{ margin: 0, backgroundColor: activeToggleColor }}
+            >
+              <MaterialIcon name="arrow_upward" size={ICON_SIZES.PRIMARY} color="white" />
+            </IconButton>
+          )}
           {isStreaming ? (
             <IconButton
               className="touch-size"
@@ -3106,14 +3629,14 @@ export function ChatInput({
             pointerEvents: 'none',
           }}
         >
-          <MaterialIcon name="file_upload" size={36} color="var(--accent-9)" />
+          <MaterialIcon name="file_upload" size={36} color="var(--accent-11)" />
           <Text size="3" weight="medium" style={{ color: 'var(--accent-11)' }}>
             {t('chat.dropFilesHere')}
           </Text>
           <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {t('chat.supportsFileTypes', { types: SUPPORTED_FILE_TYPES.join(', ') })}
           </Text>
-          <Text size="1" style={{ color: 'var(--slate-10)' }}>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
             {uploadedFiles.length > 0
               ? t('chat.uploadFilesRemaining', {
                   remaining: CHAT_ATTACHMENT_MAX_FILES - uploadedFiles.length,
@@ -3160,6 +3683,8 @@ export function ChatInput({
       onOpenChange={setIsMobilePlusMenuOpen}
       onAttachFiles={toggleUploadArea}
       {...plusMenuCapabilities}
+      repository={repositoryMenuEntry}
+      gates={gatesMenuEntry}
     />
 
     {/* Overlay panel — collections (assistant) or agent resources (overlay mode) */}

