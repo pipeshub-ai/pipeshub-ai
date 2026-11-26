@@ -31,8 +31,8 @@ from test_jira_dc_sync_behaviour import (
     user,
 )
 
-from app.connectors.core.base.connector.connector_service import IncompleteSyncError
 from app.config.constants.arangodb import AccessRule
+from app.connectors.core.base.connector.connector_service import IncompleteSyncError
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
 )

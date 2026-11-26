@@ -387,11 +387,15 @@ class JiraDcWorld:
         config = self.credentials(auth, user, secret)
         if base_url:
             config["baseUrl"] = base_url
-        created = self.client.create_connector(
-            connector_type=PERSONAL_TYPE if personal else CONNECTOR_TYPE,
-            instance_name=f"jira-dc-sim-{uuid.uuid4().hex[:8]}", scope="personal" if personal else "team",
-            config={"auth": config}, auth_type="API_TOKEN" if auth == "token" else "BASIC_AUTH",
-        )
+        settings = {
+            "instance_name": f"jira-dc-sim-{uuid.uuid4().hex[:8]}", "scope": "personal" if personal else "team",
+            "config": {"auth": config}, "auth_type": "API_TOKEN" if auth == "token" else "BASIC_AUTH",
+        }
+        # One call per type, so the connector-type guard reads each as a constant.
+        if personal:
+            created = self.client.create_connector(connector_type=PERSONAL_TYPE, **settings)
+        else:
+            created = self.client.create_connector(connector_type=CONNECTOR_TYPE, **settings)
         assert created.connector_id, "Connector must have a valid ID"
         self.connector_id = created.connector_id
         if filters:

@@ -5162,7 +5162,7 @@ def _build_connector(attachment_field: object) -> tuple[JiraDataCenterConnector,
 
 
 @pytest.mark.asyncio
-async def test_an_attachment_the_issue_no_longer_lists_is_queued_for_deletion_and_deleted():
+async def test_an_attachment_the_issue_no_longer_lists_is_queued_for_deletion_and_deleted() -> None:
     conn, issue = _build_connector([{"id": "1", "filename": "kept.png", "size": 1, "created": "2024-01-01T00:00:00.000+0000"}])
     conn.site_url = "https://jira.example"
     conn.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
@@ -5178,7 +5178,7 @@ async def test_an_attachment_the_issue_no_longer_lists_is_queued_for_deletion_an
 
 
 @pytest.mark.asyncio
-async def test_an_issue_whose_last_attachment_was_removed_loses_every_stored_file():
+async def test_an_issue_whose_last_attachment_was_removed_loses_every_stored_file() -> None:
     conn, issue = _build_connector([])
     await conn._build_issue_records([issue], "pid", [], is_new_project=True)
     assert conn._stale_attachment_ids == ["keep", "gone"]
@@ -5186,7 +5186,7 @@ async def test_an_issue_whose_last_attachment_was_removed_loses_every_stored_fil
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["absent", None, "hidden", {"unexpected": "shape"}])
-async def test_an_issue_read_without_a_usable_attachment_field_removes_nothing(field):
+async def test_an_issue_read_without_a_usable_attachment_field_removes_nothing(field) -> None:
     """The field is absent when a read did not request it or Jira hides it for the issue, and then holds no list."""
     conn, issue = _build_connector(field)
     await conn._build_issue_records([issue], "pid", [], is_new_project=True)
@@ -5195,7 +5195,7 @@ async def test_an_issue_read_without_a_usable_attachment_field_removes_nothing(f
 
 
 @pytest.mark.asyncio
-async def test_a_store_failure_in_the_removal_check_holds_the_issue_instead_of_dropping_it_silently():
+async def test_a_store_failure_in_the_removal_check_holds_the_issue_instead_of_dropping_it_silently() -> None:
     conn, issue = _build_connector([{"id": "1", "filename": "kept.png", "size": 1, "created": "2024-01-01T00:00:00.000+0000"}])
     conn.data_entities_processor.get_records_by_parent = AsyncMock(side_effect=RuntimeError("store down"))
     rows = await conn._build_issue_records([issue], "pid", [], is_new_project=True)
@@ -5205,7 +5205,7 @@ async def test_a_store_failure_in_the_removal_check_holds_the_issue_instead_of_d
 
 
 @pytest.mark.asyncio
-async def test_a_failed_deletion_of_removed_attachments_fails_the_run_so_it_is_retried():
+async def test_a_failed_deletion_of_removed_attachments_fails_the_run_so_it_is_retried() -> None:
     conn = _make_connector()
     conn._stale_attachment_ids = ["a", "a", "b"]
     conn.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={"success": False, "reason": "db"})
@@ -5216,7 +5216,7 @@ async def test_a_failed_deletion_of_removed_attachments_fails_the_run_so_it_is_r
 
 
 @pytest.mark.asyncio
-async def test_the_attachments_queued_by_one_project_are_not_deleted_with_the_next_projects_batch():
+async def test_the_attachments_queued_by_one_project_are_not_deleted_with_the_next_projects_batch() -> None:
     conn = _make_connector()
     conn._stale_attachment_ids = ["left-over"]
     conn.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
@@ -5226,7 +5226,7 @@ async def test_the_attachments_queued_by_one_project_are_not_deleted_with_the_ne
 
 
 @pytest.mark.asyncio
-async def test_removed_attachments_are_deleted_before_the_issues_that_dropped_them_are_written():
+async def test_removed_attachments_are_deleted_before_the_issues_that_dropped_them_are_written() -> None:
     """An issue written with its new ``updated`` is skipped as unchanged next sync, so a deletion that fails (or a stop)
     after the write would never be retried: when the deletion fails, nothing of the batch is written."""
     conn = _make_connector()
@@ -5240,7 +5240,7 @@ async def test_removed_attachments_are_deleted_before_the_issues_that_dropped_th
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("listed", [[{}], [None], [{"filename": "x"}], [{"id": "1"}, None]])
-async def test_a_list_with_an_entry_that_names_no_attachment_removes_nothing(listed):
+async def test_a_list_with_an_entry_that_names_no_attachment_removes_nothing(listed) -> None:
     conn, issue = _build_connector([])
     await conn._note_removed_attachments(issue["id"], listed)
     assert conn._stale_attachment_ids == []
@@ -5248,7 +5248,7 @@ async def test_a_list_with_an_entry_that_names_no_attachment_removes_nothing(lis
 
 
 @pytest.mark.asyncio
-async def test_a_new_issue_is_not_checked_for_removed_attachments():
+async def test_a_new_issue_is_not_checked_for_removed_attachments() -> None:
     conn, issue = _build_connector([])
     conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     await conn._build_issue_records([issue], "pid", [], is_new_project=True)

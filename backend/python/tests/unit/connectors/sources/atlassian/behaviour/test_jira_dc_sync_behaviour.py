@@ -26,8 +26,8 @@ from atlassian_behaviour_fakes import (
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import AccessRule, CollectionNames
-from app.connectors.core.sync import sync_runner
 from app.connectors.core.base.connector.connector_service import IncompleteSyncError
+from app.connectors.core.sync import sync_runner
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,

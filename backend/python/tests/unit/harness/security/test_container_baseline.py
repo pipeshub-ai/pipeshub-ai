@@ -45,6 +45,7 @@ SHIPPED = ("docker-compose.yml", "docker-compose.monitoring.yml", "docker-compos
 NOT_SHIPPED = ("docker-compose.build.neo4j.yml", "docker-compose.prod-legacy.yml", "docker-compose.sandbox-legacy.yml",
                "docker-compose.integration.arango.yml", "docker-compose.integration.neo4j.yml",
                "docker-compose.integration.bookstack-sim.yml", "docker-compose.integration.graph-db.yml",
+               "docker-compose.integration.jira-dc-sim.yml",
                "docker-compose.integration.kv.yml", "docker-compose.integration.messaging.yml",
                "docker-compose.integration.redis-cluster.yml", "docker-compose.integration.salesforce-sim.yml",
                "docker-compose.integration.servicenow-sim.yml", "docker-compose.integration.sharepoint-sim.yml",

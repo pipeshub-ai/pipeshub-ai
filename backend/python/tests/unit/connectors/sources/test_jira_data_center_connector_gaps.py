@@ -731,7 +731,7 @@ class TestBuildIssueRecordsAndCommentsGaps:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", [401, 403, 429, 500])
-    async def test_fetch_all_issue_comments_for_a_stream_raises_on_http_error(self, status: int):
+    async def test_fetch_all_issue_comments_for_a_stream_raises_on_http_error(self, status: int) -> None:
         """A stream is indexed as the whole issue, so a page of comments that cannot be read fails it."""
         conn = _make_connector()
         conn.data_source = MagicMock()
