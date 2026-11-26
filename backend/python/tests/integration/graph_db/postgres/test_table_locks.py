@@ -19,7 +19,7 @@ from .conftest import LOCK_HOLDER, TABLE_LOCK_KEY
 pytestmark = pytest.mark.integration
 # What a test does to the whole database, whatever its org: a lock that blocks every reader or writer of a table, or the planner statistics and storage settings
 # of a shared table, which every other worker's plans (and plan gates) read. Matched in the strings of a test and of the helpers, fixtures and constants it uses.
-DATABASE_WIDE = re.compile(r"LOCK TABLE|DROP INDEX|CREATE (UNIQUE )?INDEX|REINDEX (TABLE|INDEX|SCHEMA|DATABASE)|VACUUM FULL|TRUNCATE (TABLE )?[a-z]|CLUSTER [a-z]"
+DATABASE_WIDE = re.compile(r"LOCK TABLE|DROP INDEX|CREATE (UNIQUE )?INDEX|REINDEX (TABLE|INDEX|SCHEMA|DATABASE)|\bVACUUM\b|TRUNCATE (TABLE )?[a-z]|CLUSTER [a-z]"
                            r"|ROW LEVEL SECURITY|pg_statistic|UPDATE pg_class|SET STATISTICS|\bSET \(|\bRESET \(|(?<![(\w])ANALYZE(?=\s+[a-z{%]|\s*;|\s*$)|^analyze$")
 
 

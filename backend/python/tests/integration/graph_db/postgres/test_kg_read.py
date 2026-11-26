@@ -486,6 +486,8 @@ async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer
     c = await _case(layer, pg_provider, pg_db, literal_kind=3)
     await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, leaf) SELECT $1, 50000000 + g, 3, 'plans-r' || g, 3, $2, true FROM generate_series(1, $3) g", c.org, c.app_sk, N)
     await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT $1, 50000000 + g, 1, 60000000 + g FROM generate_series(1, $2) g", c.org, N)
+    # pages are counted per probe: dead index entries (the rows earlier tests and runs deleted, before autovacuum reaches them) would be counted too
+    await _admin("VACUUM kg.records, kg.node_keys, kg.scope_classes, kg.links")
     ids = [*c.ids, *(f"plans-r{j}" for j in range(1, N, 240))]
     sks = [c.lit, c.x_sk, *(50000000 + j for j in range(1, N, 240))]
     wants = {
