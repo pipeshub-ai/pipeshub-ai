@@ -180,6 +180,7 @@ from app.agents.agent_loop.resume import (  # noqa: F401  (re-exported)
     ASK_USER_QUESTION_RESUME_PREFIX,
     _answered_questions,
     _asked_questions,
+    _turn_asked_questions,
     any_card_shown,
     card_already_answered,
     cards_in_request,
