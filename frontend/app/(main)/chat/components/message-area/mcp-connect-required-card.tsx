@@ -150,7 +150,7 @@ export function McpConnectRequiredCard({ details, question }: McpConnectRequired
                     {busyId === server.instanceId ? t('chat.mcpConnect.connecting') : t('chat.mcpConnect.connect')}
                   </Button>
                 ) : (
-                  <Text size="1" style={{ color: 'var(--slate-10)', textAlign: 'right' }}>
+                  <Text size="1" style={{ color: 'var(--slate-11)', textAlign: 'right' }}>
                     {server.problem === 'not_found'
                       ? t('chat.mcpConnect.removed')
                       : server.sharedCredential

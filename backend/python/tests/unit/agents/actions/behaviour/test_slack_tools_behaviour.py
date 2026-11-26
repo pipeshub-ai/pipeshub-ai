@@ -935,3 +935,44 @@ class TestRepeatedPagesDoNotFillLimits:
         assert ok is True
         assert [c["id"] for c in data["data"]["channels"]] == [GENERAL]
         assert data["data"]["complete"] is False
+
+
+class TestWp56SignInRejectedWithdrawsTheConnection:
+    """WP56-DEAUTH-1: Slack answers a rejected sign-in with HTTP 200 and ``ok: false``. The tool notes it where the
+    call's scope collects it (``watching_sign_in``), so the saved credential is withdrawn and the next run shows the
+    connect card, as a 401 does for Jira, GitHub or SharePoint (WP62-TS). Other failures note nothing."""
+
+    @pytest.mark.parametrize("code", ["invalid_auth", "not_authed", "token_revoked", "account_inactive"])
+    async def test_wp56_deauth_1_a_rejected_sign_in_is_noted(self, slack, api, code) -> None:
+        from app.agents.actions.util.sign_in_rejected import watching_sign_in
+
+        api.on("chat.postMessage", slack_error(code))
+        with watching_sign_in() as noted:
+            data = failure(await slack.send_message(GENERAL, "hi"))
+        assert noted, code
+        assert "Reconnect Slack under Your actions" in explanation(data)
+
+    @pytest.mark.parametrize("code", ["missing_scope", "channel_not_found", "token_expired", "not_in_channel"])
+    async def test_wp56_deauth_1_other_failures_note_nothing(self, slack, api, code) -> None:
+        from app.agents.actions.util.sign_in_rejected import watching_sign_in
+
+        api.on("chat.postMessage", slack_error(code))
+        with watching_sign_in() as noted:
+            _ = await slack.send_message(GENERAL, "hi")
+        assert not noted, code
+
+    async def test_wp56_deauth_1_rate_limits_note_nothing(self, slack, api) -> None:
+        from app.agents.actions.util.sign_in_rejected import watching_sign_in
+
+        api.on("chat.postMessage", rate_limited(12))
+        with watching_sign_in() as noted:
+            _ = await slack.send_message(GENERAL, "hi")
+        assert not noted
+
+    async def test_wp56_deauth_1_a_list_cut_short_by_a_rejected_sign_in_is_noted(self, slack, api) -> None:
+        from app.agents.actions.util.sign_in_rejected import watching_sign_in
+
+        api.on("users.list", members_page([ANN], "c2"), slack_error("token_revoked"))
+        with watching_sign_in() as noted:
+            _ = await slack.get_users_list()
+        assert noted

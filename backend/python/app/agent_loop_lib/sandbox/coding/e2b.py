@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 import time
 
 from app.agent_loop_lib.sandbox.base import SandboxInfo
@@ -17,7 +18,9 @@ from app.agent_loop_lib.sandbox.coding.base import (
     SandboxCapabilities,
     SandboxContext,
     normalize_sandbox_path,
+    validate_entry_file,
 )
+from app.agent_loop_lib.sandbox.coding.output_limits import cap_text
 from app.agent_loop_lib.sandbox.coding.reflection import ReflectionEngine
 from app.agent_loop_lib.sandbox.coding.validation import (
     canonical_package_key,
@@ -63,6 +66,9 @@ _RUN_COMMANDS: dict[CodingLanguage, str] = {
     "python": "python3 {file}",
 }
 _LISTING_IGNORED_DIRS = {"node_modules", ".venv", "__pycache__", ".git"}
+# The run contract every backend keeps (`environment.py::sanitized_subprocess_env`, `DockerCodingSandbox._run_env`).
+_RUN_ENV: dict[str, str] = {"OUTPUT_DIR": f"{_WORKING_DIR}/output", "WORKSPACE_DIR": f"{_WORKING_DIR}/workspace"}
+_MAKE_RUN_DIRS = 'mkdir -p "$OUTPUT_DIR" "$WORKSPACE_DIR" && '
 
 
 class E2BCodingSandbox(CodingSandboxBackend):
@@ -256,13 +262,13 @@ class E2BCodingSandbox(CodingSandboxBackend):
 
         before = set(await self.list_files())
 
-        entry_file = request.entry_file or _ENTRY_FILES[request.language]
+        entry_file = validate_entry_file(request.entry_file or _ENTRY_FILES[request.language])
         file_path = f"{_WORKING_DIR}/{entry_file}"
         await self._sbx.files.write(file_path, request.code)
 
-        run_cmd = _RUN_COMMANDS[request.language].format(file=entry_file)
+        run_cmd = _MAKE_RUN_DIRS + _RUN_COMMANDS[request.language].format(file=shlex.quote(entry_file))
         start = time.monotonic()
-        stdout, stderr, exit_code = await self._run_command(run_cmd, timeout=request.timeout)
+        stdout, stderr, exit_code = await self._run_command(run_cmd, timeout=request.timeout, envs=_RUN_ENV)
         duration_ms = (time.monotonic() - start) * 1000
 
         after = set(await self.list_files())
@@ -304,9 +310,9 @@ class E2BCodingSandbox(CodingSandboxBackend):
 
         if language == "typescript":
             await self._ensure_node_project()
-            cmd = "npm install --ignore-scripts --no-audit --no-fund " + " ".join(to_install)
+            cmd = "npm install --ignore-scripts --no-audit --no-fund " + _shell_words(to_install)
         else:
-            cmd = "pip install --no-cache-dir " + " ".join(to_install)
+            cmd = "pip install --no-cache-dir " + _shell_words(to_install)
 
         stdout, stderr, exit_code = await self._run_command(cmd, timeout=float(self._e2b_timeout))
         success = exit_code == 0
@@ -332,6 +338,41 @@ class E2BCodingSandbox(CodingSandboxBackend):
         full_path = self._resolve_path(path)
         content = await self._sbx.files.read(full_path, format="bytes")
         return bytes(content)
+
+    async def read_file_head(self, path: str, max_bytes: int) -> tuple[bytes, bool]:
+        """At most ``max_bytes`` of a file, streamed so a large file is
+        never read whole."""
+        if self._sbx is None:
+            await self.provision()
+        max_bytes = max(0, int(max_bytes))
+        stream = await self._sbx.files.read(self._resolve_path(path), format="stream")
+        buf = bytearray()
+        try:
+            async for chunk in stream:
+                buf += chunk
+                if len(buf) > max_bytes:
+                    break
+        finally:
+            close = getattr(stream, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    pass
+        return bytes(buf[:max_bytes]), len(buf) > max_bytes
+
+    async def file_size(self, path: str) -> int | None:
+        if self._sbx is None:
+            await self.provision()
+        full_path = self._resolve_path(path)
+        get_info = getattr(self._sbx.files, "get_info", None)
+        if get_info is None:
+            return None
+        try:
+            size = getattr(await get_info(full_path), "size", None)
+        except Exception:
+            return None
+        return size if isinstance(size, int) and not isinstance(size, bool) else None
 
     async def list_files(self) -> list[str]:
         if self._sbx is None:
@@ -374,7 +415,9 @@ class E2BCodingSandbox(CodingSandboxBackend):
         if exit_code != 0:
             raise EnvironmentSetupError(f"npm init failed: {stderr}")
 
-    async def _run_command(self, cmd: str, *, timeout: float) -> tuple[str, str, int]:
+    async def _run_command(
+        self, cmd: str, *, timeout: float, envs: dict[str, str] | None = None
+    ) -> tuple[str, str, int]:
         """Run `cmd` in the sandbox and normalize both the happy path
         (`CommandResult`) and E2B's non-zero-exit path (`run()` internally
         calls `AsyncCommandHandle.wait()`, which RAISES `CommandExitException`
@@ -384,11 +427,13 @@ class E2BCodingSandbox(CodingSandboxBackend):
         ones."""
         from e2b_code_interpreter import CommandExitException, TimeoutException
 
+        # The provider SDK buffers the whole output; only its head and tail
+        # are passed on.
         try:
-            result = await self._sbx.commands.run(cmd, cwd=_WORKING_DIR, timeout=timeout)
-            return result.stdout, result.stderr, result.exit_code
+            result = await self._sbx.commands.run(cmd, cwd=_WORKING_DIR, envs=envs, timeout=timeout)
+            return cap_text(result.stdout), cap_text(result.stderr), result.exit_code
         except CommandExitException as e:
-            return e.stdout, e.stderr, e.exit_code
+            return cap_text(e.stdout), cap_text(e.stderr), e.exit_code
         except TimeoutException as e:
             return "", str(e) or "Execution timed out", -1
 
@@ -401,3 +446,9 @@ class E2BCodingSandbox(CodingSandboxBackend):
         if full_path != _WORKING_DIR and not full_path.startswith(_WORKING_DIR + "/"):
             raise ValueError(f"path {path!r} escapes the sandbox working directory")
         return full_path
+
+
+def _shell_words(specs: list[str]) -> str:
+    """Package specs as literal ``sh`` words: ``numpy>=1.26`` would
+    otherwise be read as a redirection, and ``lodash@4.*`` as a glob."""
+    return " ".join(shlex.quote(spec) for spec in specs)

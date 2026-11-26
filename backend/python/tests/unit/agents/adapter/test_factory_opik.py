@@ -9,11 +9,6 @@ SAME env-var check, so they can never disagree."""
 
 from __future__ import annotations
 
-import contextlib
-from types import SimpleNamespace
-from typing import Any
-from unittest.mock import patch
-
 import pytest
 
 from app.agent_loop_lib.transport.opik_tracing import OpikTracingTransport
@@ -21,12 +16,8 @@ from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.output_cap_transport import OutputCappedTransport
 from app.agents.agent_loop.usage_transport import UsageReportingTransport
+from tests.support.opik_client import opik_spans_offline
 from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
-
-
-@contextlib.contextmanager
-def _fake_span_cm(**_kwargs: Any):
-    yield SimpleNamespace()
 
 
 @pytest.fixture(autouse=True)
@@ -67,10 +58,7 @@ def _no_real_opik_network_calls():
     which would otherwise make a genuine (and, in a sandboxed test run,
     failing) network call to Opik — stub the two real entry points
     process-wide for this module so no test here ever reaches the network."""
-    with (
-        patch("opik.start_as_current_span", side_effect=lambda **kw: _fake_span_cm(**kw)),
-        patch("opik.start_as_current_trace", side_effect=lambda **kw: _fake_span_cm(**kw)),
-    ):
+    with opik_spans_offline():
         yield
 
 

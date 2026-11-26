@@ -41,6 +41,7 @@ import {
   reauthenticateToolsetInstance,
   getInstanceOAuthAuthorizationUrl,
   getInstanceStatus,
+  getGithubRepositoryListing,
   getToolsetToolRules,
   updateToolsetToolRules,
   listToolsetOAuthConfigs,
@@ -55,13 +56,45 @@ import {
   reauthenticateAgentToolset,
   getAgentToolsetOAuthUrl,
 } from '../controller/toolsets_controller';
-import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import {
+  bindPathLogFields,
+  guardPathParams,
+} from '../../../libs/middlewares/safe-path-params.middleware';
 import { messageForUnknownOption } from '../../../libs/utils/validation.utils';
 import { integerCheck } from '../../../libs/utils/zod-formats';
 
 // ============================================================================
 // Validation Schemas
 // ============================================================================
+
+const githubInstanceParams = z.object({
+  instanceId: z.string().min(1).max(128),
+});
+
+/** GIT-FLOW repository picker: a search over the caller's repositories, a page at a time. */
+const githubRepositoriesSchema = z.object({
+  params: githubInstanceParams,
+  query: z.object({
+    search: z.string().max(200).optional(),
+    page: z
+      .string()
+      .regex(/^[1-9][0-9]{0,3}$/)
+      .optional(),
+  }),
+});
+
+/** GIT-FLOW repository picker: one repository's branches (`owner/name`). */
+const githubBranchesSchema = z.object({
+  params: githubInstanceParams,
+  query: z.object({
+    repository: z
+      .string()
+      .max(201)
+      .regex(
+        /^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/,
+      ),
+  }),
+});
 
 /**
  * Schema for toolset list query parameters
@@ -292,6 +325,8 @@ export function createToolsetsRouter(container: Container): Router {
     'oauthConfigId',
     'agentKey',
   );
+  // `toolsetId` (the legacy routes) is not the instance id Python logs as `toolset_id`.
+  bindPathLogFields(router, { instanceId: 'toolset_id', agentKey: 'agent_id' });
   const config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
 
@@ -590,6 +625,27 @@ export function createToolsetsRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.TOOLSET_READ),
     getInstanceStatus(config)
+  );
+
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- AuthMiddleware binds authenticate in its constructor, and the route tests match the injected function itself
+  const { authenticate } = authMiddleware;
+  /**
+   * GIT-FLOW (WP-26): the repository picker's repositories and branches, read with the caller's own sign-in to a
+   * GitHub toolset instance.
+   */
+  router.get(
+    '/instances/:instanceId/github/repositories',
+    authenticate,
+    requireScopes(OAuthScopeNames.TOOLSET_READ),
+    ValidationMiddleware.validate(githubRepositoriesSchema),
+    getGithubRepositoryListing(config, 'repositories'),
+  );
+  router.get(
+    '/instances/:instanceId/github/branches',
+    authenticate,
+    requireScopes(OAuthScopeNames.TOOLSET_READ),
+    ValidationMiddleware.validate(githubBranchesSchema),
+    getGithubRepositoryListing(config, 'branches'),
   );
 
   /**

@@ -23,6 +23,7 @@ from app.services.record_content.models import (
     RecordNotFoundError,
     RecordTooLargeError,
 )
+from tests.support.record_access import InMemoryRecordAccess
 
 ORG = "org-1"
 USER = "user-1"
@@ -677,11 +678,12 @@ class TestRetryBudget:
 class ConnectorGraph(FakeGraph):
     """FakeGraph that also serves the record and the permission check the real resolver reads."""
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        InMemoryRecordAccess().readable(USER, ORG, "rec-root").serve(self)
+
     async def get_record_by_id(self, record_id: str, *, raise_on_error: bool = False) -> dict:
         return {"_key": record_id, "orgId": ORG, "origin": "CONNECTOR", "recordName": "CLAUDE.md"}
-
-    async def check_record_access_with_details(self, user_id: str, org_id: str, record_id: str) -> dict:
-        return {"permission": "READER"}
 
 
 class TestConnectorAnswer:

@@ -2,10 +2,13 @@
 
 It stands in for ``aiohttp.ClientSession`` inside ``oauth_service``, so the real
 ``OAuthProvider`` sends the request and classifies the provider's answer. With ``raises``
-the endpoint is unreachable: every request raises it (an ``aiohttp.ClientConnectorError``).
+the endpoint is unreachable: every request raises it (an ``aiohttp.ClientConnectorError``). With a 2xx status it answers
+like a token endpoint that succeeds, for an answer the provider should not have sent (no token, a malformed field).
 """
 
 from __future__ import annotations
+
+import json
 
 ENTRA_INVALID_CLIENT = (
     '{"error":"invalid_client","error_description":"AADSTS7000222: The provided client secret '
@@ -61,3 +64,9 @@ class _Response:
 
     async def text(self) -> str:
         return self._body
+
+    def raise_for_status(self) -> None:
+        """Reached only for a status below 400: oauth_service reads a refusal's text and raises before it."""
+
+    async def json(self) -> object:
+        return json.loads(self._body)

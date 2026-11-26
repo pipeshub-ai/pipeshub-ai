@@ -1,6 +1,6 @@
 """One test per bug the QA pass found, so none comes back."""
 
-import time
+import asyncio
 
 import httpx
 import pytest
@@ -69,12 +69,20 @@ class TestMalformedInput:
 
 
 class TestRateLimitedPages:
-    async def test_a_429_page_is_reported_at_once_not_after_the_deadline(self, lab: WebLab) -> None:
+    async def test_a_429_page_is_reported_at_once_not_after_the_deadline(self, lab: WebLab, monkeypatch: pytest.MonkeyPatch) -> None:
+        sleep, waits = asyncio.sleep, []
+
+        async def recorded(delay: float, *args: object, **kwargs: object) -> object:
+            waits.append(delay)
+            return await sleep(delay, *args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "sleep", recorded)
         lab.site.add("http://busy.test/", Page(status=429, body=b"slow down"))
-        started = time.monotonic()
         call = await lab.agent().fetch("http://busy.test/")
         assert call.payload["error_type"] == "rate_limited"
-        assert time.monotonic() - started < 5
+        # The fetch chain's 429 back-off starts at 2 s and retries: the deadline is what it would spend.
+        assert max(waits, default=0) < 1
+        assert lab.site.gets("http://busy.test/") == 1
 
 
 class TestChainShape:

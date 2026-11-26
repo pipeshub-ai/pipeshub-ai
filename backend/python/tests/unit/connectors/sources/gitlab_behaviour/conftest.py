@@ -143,8 +143,8 @@ def fake_network(monkeypatch: pytest.MonkeyPatch, gitlab: FakeGitLab) -> None:
     """Every ``requests`` session python-gitlab is given talks to the fake GitLab."""
     real_secure_session = gitlab_client_module._secure_session
 
-    def secure_session(logger: logging.Logger | None = None):  # noqa: ANN202
-        session = real_secure_session(logger)
+    def secure_session(logger: logging.Logger | None = None, *, allow_private: bool | None = None):  # noqa: ANN202
+        session = real_secure_session(logger, allow_private=allow_private)
         session.mount("https://", gitlab.requests_adapter())
         session.mount("http://", gitlab.requests_adapter())
         return session

@@ -1,0 +1,569 @@
+{
+ "benchmark": "harness-latency",
+ "environment": {
+  "label": "local-pxh-32cpu",
+  "host": "Linux-7.0.0-1014-azure-x86_64-with-glibc2.39",
+  "cpus": 32,
+  "head": "5145deaac",
+  "model_delay_ms": 200.0,
+  "token_interval_ms": 20.0,
+  "at": "2026-10-11T18:14:45.327908+00:00",
+  "commit_profiles_head": "a17a17bb2",
+  "commit_profiles_at": "2026-10-11T19:51:24.107206+00:00"
+ },
+ "results": {
+  "commits-n16": {
+   "profile": "commits-n16",
+   "metrics": {
+    "commit_ms": {
+     "n": 1120,
+     "p50": 55.0,
+     "p95": 198.1,
+     "p99": 294.5,
+     "max": 566.0
+    },
+    "commit_ms[complete]": {
+     "n": 160,
+     "p50": 155.5,
+     "p95": 305.3,
+     "p99": 420.7,
+     "max": 566.0
+    },
+    "commit_ms[intent]": {
+     "n": 160,
+     "p50": 52.0,
+     "p95": 69.0,
+     "p99": 96.9,
+     "max": 220.0
+    },
+    "commit_ms[model]": {
+     "n": 480,
+     "p50": 54.0,
+     "p95": 76.1,
+     "p99": 88.4,
+     "max": 121.0
+    },
+    "commit_ms[outcome]": {
+     "n": 160,
+     "p50": 51.5,
+     "p95": 72.2,
+     "p99": 80.4,
+     "max": 89.0
+    },
+    "commit_ms[reads]": {
+     "n": 160,
+     "p50": 56.0,
+     "p95": 79.1,
+     "p99": 97.0,
+     "max": 111.0
+    },
+    "commit_excess": {
+     "n": 160,
+     "p50": -7.0,
+     "p95": -7.0,
+     "p99": -7.0,
+     "max": -7.0
+    },
+    "commits_per_run": {
+     "n": 160,
+     "p50": 7.0,
+     "p95": 7.0,
+     "p99": 7.0,
+     "max": 7.0
+    }
+   },
+   "load1_max": 5.6,
+   "sessions": 16,
+   "wall_s": 61.8
+  },
+  "cancel": {
+   "profile": "cancel",
+   "metrics": {
+    "stop_ms": {
+     "n": 200,
+     "p50": 55.5,
+     "p95": 68.6,
+     "p99": 83.8,
+     "max": 85.9
+    },
+    "ack_ms": {
+     "n": 200,
+     "p50": 20.6,
+     "p95": 25.1,
+     "p99": 31.2,
+     "max": 34.6
+    },
+    "stop_ms[stream]": {
+     "n": 100,
+     "p50": 55.8,
+     "p95": 70.7,
+     "p99": 83.8,
+     "max": 85.9
+    },
+    "stop_ms[slow_tool]": {
+     "n": 100,
+     "p50": 55.4,
+     "p95": 65.4,
+     "p99": 73.2,
+     "max": 85.9
+    }
+   },
+   "load1_max": 2.8,
+   "wall_s": 506.8
+  },
+  "mcp-5-servers": {
+   "profile": "mcp-5-servers",
+   "metrics": {
+    "ttft_ms[none]": {
+     "n": 100,
+     "p50": 255.4,
+     "p95": 267.7,
+     "p99": 269.9,
+     "max": 275.9
+    },
+    "ttft_ms[five]": {
+     "n": 100,
+     "p50": 340.2,
+     "p95": 362.2,
+     "p99": 568.5,
+     "max": 593.1
+    },
+    "added_ttft_ms": {
+     "n": 100,
+     "p50": 84.8,
+     "p95": 94.5
+    }
+   },
+   "load1_max": 3.3,
+   "wall_s": 185.8
+  },
+  "sandbox": {
+   "profile": "sandbox",
+   "metrics": {
+    "cold_ms": {
+     "n": 100,
+     "p50": 210.9,
+     "p95": 271.3,
+     "p99": 296.9,
+     "max": 310.7
+    },
+    "warm_ms": {
+     "n": 100,
+     "p50": 49.0,
+     "p95": 57.9,
+     "p99": 73.0,
+     "max": 83.6
+    }
+   },
+   "load1_max": 4.5,
+   "pytest": "passed",
+   "wall_s": 78.3
+  },
+  "reconnect": {
+   "profile": "reconnect",
+   "metrics": {
+    "reconnect_ms": {
+     "n": 220,
+     "p50": 50.8,
+     "p95": 69.0,
+     "p99": 102.1,
+     "max": 103.1
+    },
+    "reconnect_ms[short]": {
+     "n": 200,
+     "p50": 50.8,
+     "p95": 51.4,
+     "p99": 52.8,
+     "max": 53.2
+    },
+    "reconnect_ms[long]": {
+     "n": 20,
+     "p50": 75.5,
+     "p95": 102.5,
+     "p99": 103.0,
+     "max": 103.1
+    }
+   },
+   "load1_max": 5.0,
+   "wall_s": 1343.9
+  },
+  "modes": {
+   "profile": "modes",
+   "metrics": {
+    "created_ms": {
+     "n": 600,
+     "p50": 30.8,
+     "p95": 41.4,
+     "p99": 64.1,
+     "max": 202.2
+    },
+    "created_ms[agent:quick]": {
+     "n": 100,
+     "p50": 33.0,
+     "p95": 44.3,
+     "p99": 57.0,
+     "max": 174.0
+    },
+    "created_ms[agent:auto]": {
+     "n": 100,
+     "p50": 31.1,
+     "p95": 38.8,
+     "p99": 172.4,
+     "max": 202.2
+    },
+    "created_ms[agent:react]": {
+     "n": 100,
+     "p50": 31.2,
+     "p95": 41.7,
+     "p99": 49.4,
+     "max": 51.8
+    },
+    "created_ms[agent:deep]": {
+     "n": 100,
+     "p50": 31.1,
+     "p95": 41.0,
+     "p99": 59.8,
+     "max": 64.1
+    },
+    "created_ms[chat:internal_search]": {
+     "n": 100,
+     "p50": 30.1,
+     "p95": 37.3,
+     "p99": 68.1,
+     "max": 70.6
+    },
+    "created_ms[chat:web_search]": {
+     "n": 100,
+     "p50": 28.4,
+     "p95": 39.0,
+     "p99": 51.8,
+     "max": 68.3
+    },
+    "admission_ms": {
+     "n": 600,
+     "p50": 23.0,
+     "p95": 31.0,
+     "p99": 50.0,
+     "max": 192.0
+    },
+    "admission_ms[agent:quick]": {
+     "n": 100,
+     "p50": 25.0,
+     "p95": 33.0,
+     "p99": 49.0,
+     "max": 151.0
+    },
+    "admission_ms[agent:auto]": {
+     "n": 100,
+     "p50": 23.0,
+     "p95": 30.0,
+     "p99": 163.3,
+     "max": 192.0
+    },
+    "admission_ms[agent:react]": {
+     "n": 100,
+     "p50": 23.0,
+     "p95": 32.0,
+     "p99": 38.1,
+     "max": 43.0
+    },
+    "admission_ms[agent:deep]": {
+     "n": 100,
+     "p50": 23.0,
+     "p95": 32.0,
+     "p99": 50.0,
+     "max": 50.0
+    },
+    "admission_ms[chat:internal_search]": {
+     "n": 100,
+     "p50": 23.0,
+     "p95": 29.0,
+     "p99": 52.1,
+     "max": 62.0
+    },
+    "admission_ms[chat:web_search]": {
+     "n": 100,
+     "p50": 22.0,
+     "p95": 29.1,
+     "p99": 44.1,
+     "max": 57.0
+    },
+    "handoff_ms": {
+     "n": 600,
+     "p50": 18.7,
+     "p95": 25.3,
+     "p99": 31.0,
+     "max": 80.0
+    },
+    "handoff_ms[agent:quick]": {
+     "n": 100,
+     "p50": 19.0,
+     "p95": 25.3,
+     "p99": 31.0,
+     "max": 38.8
+    },
+    "handoff_ms[agent:auto]": {
+     "n": 100,
+     "p50": 18.2,
+     "p95": 23.0,
+     "p99": 26.0,
+     "max": 26.5
+    },
+    "handoff_ms[agent:react]": {
+     "n": 100,
+     "p50": 18.8,
+     "p95": 24.3,
+     "p99": 30.5,
+     "max": 33.1
+    },
+    "handoff_ms[agent:deep]": {
+     "n": 100,
+     "p50": 19.2,
+     "p95": 26.5,
+     "p99": 36.6,
+     "max": 80.0
+    },
+    "handoff_ms[chat:internal_search]": {
+     "n": 100,
+     "p50": 18.5,
+     "p95": 25.1,
+     "p99": 29.0,
+     "max": 36.2
+    },
+    "handoff_ms[chat:web_search]": {
+     "n": 100,
+     "p50": 18.1,
+     "p95": 26.5,
+     "p99": 28.3,
+     "max": 38.3
+    },
+    "ttft_nonmodel_ms": {
+     "n": 600,
+     "p50": 58.0,
+     "p95": 76.5,
+     "p99": 96.7,
+     "max": 229.7
+    },
+    "ttft_nonmodel_ms[agent:quick]": {
+     "n": 100,
+     "p50": 61.2,
+     "p95": 81.1,
+     "p99": 89.0,
+     "max": 221.5
+    },
+    "ttft_nonmodel_ms[agent:auto]": {
+     "n": 100,
+     "p50": 58.6,
+     "p95": 70.7,
+     "p99": 198.3,
+     "max": 229.7
+    },
+    "ttft_nonmodel_ms[agent:react]": {
+     "n": 100,
+     "p50": 57.9,
+     "p95": 74.1,
+     "p99": 79.8,
+     "max": 87.7
+    },
+    "ttft_nonmodel_ms[agent:deep]": {
+     "n": 100,
+     "p50": 58.8,
+     "p95": 76.0,
+     "p99": 98.2,
+     "max": 182.4
+    },
+    "ttft_nonmodel_ms[chat:internal_search]": {
+     "n": 100,
+     "p50": 56.2,
+     "p95": 69.4,
+     "p99": 96.3,
+     "max": 97.5
+    },
+    "ttft_nonmodel_ms[chat:web_search]": {
+     "n": 100,
+     "p50": 54.7,
+     "p95": 71.5,
+     "p99": 86.6,
+     "max": 96.7
+    },
+    "done_nonmodel_ms": {
+     "n": 600,
+     "p50": 117.2,
+     "p95": 145.5,
+     "p99": 213.1,
+     "max": 283.7
+    },
+    "done_nonmodel_ms[agent:quick]": {
+     "n": 100,
+     "p50": 122.3,
+     "p95": 150.6,
+     "p99": 167.3,
+     "max": 283.7
+    },
+    "done_nonmodel_ms[agent:auto]": {
+     "n": 100,
+     "p50": 118.9,
+     "p95": 141.0,
+     "p99": 251.4,
+     "max": 283.2
+    },
+    "done_nonmodel_ms[agent:react]": {
+     "n": 100,
+     "p50": 116.9,
+     "p95": 138.6,
+     "p99": 160.5,
+     "max": 161.4
+    },
+    "done_nonmodel_ms[agent:deep]": {
+     "n": 100,
+     "p50": 118.4,
+     "p95": 147.0,
+     "p99": 216.4,
+     "max": 235.8
+    },
+    "done_nonmodel_ms[chat:internal_search]": {
+     "n": 100,
+     "p50": 113.2,
+     "p95": 150.4,
+     "p99": 213.1,
+     "max": 219.5
+    },
+    "done_nonmodel_ms[chat:web_search]": {
+     "n": 100,
+     "p50": 106.7,
+     "p95": 134.0,
+     "p99": 184.4,
+     "max": 190.5
+    },
+    "delta_ms": {
+     "n": 12000,
+     "p50": 21.7,
+     "p95": 42.2,
+     "p99": 42.7,
+     "max": 82.7
+    }
+   },
+   "load1_max": 8.7,
+   "ends": [
+    "RUN_FINISHED"
+   ],
+   "wall_s": 635.9
+  },
+  "code-mode-5k": {
+   "profile": "code-mode-5k",
+   "metrics": {
+    "commit_ms": {
+     "n": 1100,
+     "p50": 64.0,
+     "p95": 119.0,
+     "p99": 180.2,
+     "max": 280.0
+    },
+    "commit_ms[complete]": {
+     "n": 50,
+     "p50": 129.0,
+     "p95": 201.0,
+     "p99": 206.5,
+     "max": 209.0
+    },
+    "commit_ms[model]": {
+     "n": 550,
+     "p50": 52.0,
+     "p95": 87.5,
+     "p99": 115.0,
+     "max": 280.0
+    },
+    "commit_ms[reads]": {
+     "n": 500,
+     "p50": 74.5,
+     "p95": 115.1,
+     "p99": 155.0,
+     "max": 276.0
+    },
+    "commit_excess": {
+     "n": 50,
+     "p50": -1000.0,
+     "p95": -1000.0,
+     "p99": -1000.0,
+     "max": -1000.0
+    },
+    "commits_per_run": {
+     "n": 50,
+     "p50": 22.0,
+     "p95": 22.0,
+     "p99": 22.0,
+     "max": 22.0
+    },
+    "inline_kb": {
+     "n": 50,
+     "p50": 2090.6,
+     "p95": 2091.1,
+     "p99": 2091.1,
+     "max": 2091.1
+    },
+    "largest_event_kb": {
+     "n": 50,
+     "p50": 15.2,
+     "p95": 15.2,
+     "p99": 15.2,
+     "max": 15.2
+    },
+    "inline_ratio": {
+     "n": 50,
+     "p50": 1.4,
+     "p95": 1.4,
+     "p99": 1.4,
+     "max": 1.4
+    }
+   },
+   "load1_max": 8.1,
+   "runs_per_session": 10,
+   "turns": 10,
+   "calls_per_turn": 50,
+   "projected_inline_kb": 1502.2,
+   "wall_s": 336.5
+  },
+  "deep-wave": {
+   "profile": "deep-wave",
+   "metrics": {
+    "fanout_ms": {
+     "n": 200,
+     "p50": 139.4,
+     "p95": 171.8,
+     "p99": 201.2,
+     "max": 321.3
+    },
+    "join_ms": {
+     "n": 200,
+     "p50": 77.9,
+     "p95": 96.3,
+     "p99": 105.9,
+     "max": 110.0
+    }
+   },
+   "load1_max": 6.8,
+   "wall_s": 292.7
+  },
+  "approval": {
+   "profile": "approval",
+   "metrics": {
+    "held_resume_ms": {
+     "n": 100,
+     "p50": 55.5,
+     "p95": 72.3,
+     "p99": 77.3,
+     "max": 105.3
+    },
+    "suspended_resume_ms": {
+     "n": 100,
+     "p50": 77.8,
+     "p95": 103.3,
+     "p99": 116.9,
+     "max": 145.1
+    }
+   },
+   "load1_max": 5.0,
+   "wall_s": 344.3
+  }
+ }
+}

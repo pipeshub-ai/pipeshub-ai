@@ -1,0 +1,17 @@
+id: chat-05-llm-rate-limited
+category: robustness
+route: chat
+chat_mode: internal_search
+task: What is the refund policy?
+fixtures:
+  knowledge:
+    - {id: kb-refund, title: Refund policy, text: "Refunds are accepted within 30 days of purchase."}
+notes: A single 429 from the provider is retried by the transport and the user still gets the answer.
+script:
+  turns:
+    - reply: {error: {kind: rate_limited, retry_after_s: 0.01}}
+    - reply: {text: "Refunds are accepted within 30 days of purchase [source](ref1)."}
+grader:
+  - status: completed
+  - contains: 30 days
+  - no_effects: true

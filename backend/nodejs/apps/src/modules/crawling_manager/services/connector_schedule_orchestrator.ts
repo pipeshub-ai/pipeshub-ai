@@ -1,5 +1,6 @@
 import { Logger } from '../../../libs/services/logger.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
+import { classifyError, levelFor } from '../../../libs/utils/error-class';
 import { CrawlingSchedulerService } from './crawling_service';
 import {
   ConnectorSyncBlock,
@@ -29,11 +30,6 @@ export const RECONCILE_LOG_MESSAGE = 'connector schedule reconcile';
 
 const RETRY_DELAYS_MS = [200, 1_000];
 
-const errorFields = (error: unknown): { error: string; stack?: string } => ({
-  error: error instanceof Error ? error.message : String(error),
-  stack: error instanceof Error ? error.stack : undefined,
-});
-
 // Validation errors are the input's fault; retrying them only delays the report.
 const withRetry = async <T>(
   operation: () => Promise<T>,
@@ -48,10 +44,11 @@ const withRetry = async <T>(
       if (error instanceof BadRequestError || attempt >= retryDelaysMs.length) {
         throw error;
       }
+      // The error object: the logger prints its stack only at ERROR.
       logger.warn(`${RECONCILE_LOG_MESSAGE}: retrying after error`, {
         ...ctx,
         attempt: attempt + 1,
-        ...errorFields(error),
+        error,
       });
       await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt]));
     }
@@ -60,9 +57,9 @@ const withRetry = async <T>(
 
 /**
  * Make the BullMQ crawling schedule for a connector match its saved sync
- * config. Every call ends in exactly one `RECONCILE_LOG_MESSAGE` log line
- * carrying the outcome; failures and invalid input or config are logged at
- * error. Queue errors are retried, then rethrown.
+ * config. Every call ends in exactly one `RECONCILE_LOG_MESSAGE` line:
+ * `outcome` success or failure, the case in `reason` (docs/logging.md "Crawling
+ * jobs (Node)"). Queue errors are retried, then rethrown.
  */
 export const reconcileConnectorSchedule = async (
   scheduler: CrawlingSchedulerService,
@@ -74,22 +71,34 @@ export const reconcileConnectorSchedule = async (
   const { connector, connectorId, orgId, isActive, sync } = input;
   // Only stamped on the job as createdBy; a missing owner must not cost the schedule.
   const userId = input.userId || 'system';
-  const ctx = { connector, connectorId, orgId };
+  // Passed explicitly: a reconcile also runs outside any request (the sweep, a connector event).
+  const ctx = {
+    connector_type: connector,
+    connector_id: connectorId,
+    org_id: orgId,
+  };
 
   const report = (
-    outcome: ScheduleReconcileOutcome | 'failed',
+    result: ScheduleReconcileOutcome | 'queue_failed',
     extra: Record<string, unknown> = {},
   ): void => {
-    const isProblem =
-      outcome === 'failed' || outcome === 'invalid_input' || outcome === 'invalid_config';
-    const log = isProblem ? logger.error.bind(logger) : logger.info.bind(logger);
-    log(RECONCILE_LOG_MESSAGE, {
+    const failed =
+      result === 'queue_failed' ||
+      result === 'invalid_input' ||
+      result === 'invalid_config';
+    const errorClass =
+      result === 'queue_failed' ? classifyError(extra.error) : undefined;
+    const level = errorClass ? levelFor(errorClass) : failed ? 'warn' : 'info';
+    logger[level](RECONCILE_LOG_MESSAGE, {
       ...ctx,
-      outcome,
-      isActive,
-      selectedStrategy: sync?.selectedStrategy ?? null,
-      intervalMinutes: sync?.scheduledConfig?.intervalMinutes ?? null,
-      durationMs: Date.now() - started,
+      // `outcome` takes the logger's values only; the case is the typed `reason`.
+      outcome: failed ? 'failure' : 'success',
+      reason: result,
+      ...(errorClass && { error_class: errorClass }),
+      is_active: isActive,
+      selected_strategy: sync?.selectedStrategy ?? null,
+      interval_minutes: sync?.scheduledConfig?.intervalMinutes ?? null,
+      duration_ms: Date.now() - started,
       ...extra,
     });
   };
@@ -114,7 +123,7 @@ export const reconcileConnectorSchedule = async (
 
     const schedule = buildCrawlingScheduleFromSync(sync, userId);
     if (!schedule) {
-      report('invalid_config', { scheduledConfig: sync?.scheduledConfig ?? null });
+      report('invalid_config');
       return 'invalid_config';
     }
 
@@ -128,7 +137,9 @@ export const reconcileConnectorSchedule = async (
     report(outcome);
     return outcome;
   } catch (error) {
-    report('failed', errorFields(error));
+    // The scheduler refusing the schedule (assertSchedulable) is the config's fault, not the queue's.
+    if (error instanceof BadRequestError) report('invalid_config');
+    else report('queue_failed', { error });
     throw error;
   }
 };

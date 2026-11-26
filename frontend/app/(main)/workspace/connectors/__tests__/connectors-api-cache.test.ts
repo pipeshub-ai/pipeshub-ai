@@ -27,7 +27,7 @@ describe('connector writes refresh the cached team connector lists (and the demo
       connectorType: 'Demo', instanceName: 'Acme', scope: 'team', authType: 'NONE', config: { auth: {} },
     })],
     ['delete', () => ConnectorsApi.deleteConnectorInstance('c1')],
-    ['toggle', () => ConnectorsApi.toggleConnector('c1', 'sync')],
+    ['toggle', () => ConnectorsApi.toggleConnector('c1', 'sync', true)],
     ['rename', () => ConnectorsApi.updateConnectorInstanceName('c1', 'Acme 2')],
   ])('after a successful %s', async (_name, write) => {
     await write();
@@ -60,7 +60,7 @@ describe('connector writes refresh the cached team connector lists (and the demo
   it('not after a failed write, since nothing changed', async () => {
     api.post.mockRejectedValue(new Error('500'));
 
-    await expect(ConnectorsApi.toggleConnector('c1', 'sync')).rejects.toThrow('500');
+    await expect(ConnectorsApi.toggleConnector('c1', 'sync', true)).rejects.toThrow('500');
 
     expect(revalidate).not.toHaveBeenCalled();
   });

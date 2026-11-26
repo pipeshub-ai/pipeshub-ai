@@ -5,8 +5,12 @@ import { SWRConfig } from 'swr';
 import '@/lib/__tests__/test-i18n';
 
 const getStatus = vi.fn();
+const setFilter = vi.fn();
 vi.mock('../../../api', () => ({
-  ConnectorsApi: { getPermissionStatus: (...a: unknown[]) => getStatus(...a) },
+  ConnectorsApi: {
+    getPermissionStatus: (...a: unknown[]) => getStatus(...a),
+    setPermissionFilter: (...a: unknown[]) => setFilter(...a),
+  },
 }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
@@ -40,6 +44,7 @@ beforeEach(() => {
   installDomShims();
   signInAs('admin');
   getStatus.mockReset().mockResolvedValue(status());
+  setFilter.mockReset();
 });
 afterEach(() => {
   cleanup();
@@ -227,5 +232,61 @@ describe('PermissionFreshness: sync now and accessibility', () => {
     renderCard();
     const region = await screen.findByRole('region', { name: 'Access' });
     expect(within(region).getByRole('heading', { name: 'Access' })).toBeTruthy();
+  });
+});
+
+describe('PermissionFreshness: how search checks access', () => {
+  const filtered = (filter: PermissionStatus['filter']) => status({ filter });
+
+  it('shows the connector\'s mode and what its searches use, and stores a new mode', async () => {
+    getStatus.mockResolvedValue(filtered({ mode: 'inherit', effective: 'legacy', blockers: [] }));
+    setFilter.mockResolvedValue({ mode: 'scopes', effective: 'legacy', blockers: [] });
+    renderCard();
+    const trigger = await screen.findByRole('combobox', { name: 'How search checks access' });
+    expect(trigger.textContent).toBe('Deployment default');
+    expect(screen.getByText(/use the classic check: results are checked after they are found\./)).toBeTruthy();
+
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole('option', { name: 'Faster search' }));
+    await vi.waitFor(() => expect(setFilter).toHaveBeenCalledWith('conn-1', 'scopes'));
+    await vi.waitFor(() => expect(getStatus).toHaveBeenCalledTimes(2));
+    expect((await screen.findByText('This change reaches search within 30 seconds.')).getAttribute('role')).toBe('status');
+  });
+
+  it('words the blockers of a refused change instead of the generic failure, and reloads the status', async () => {
+    getStatus.mockResolvedValue(filtered({ mode: 'inherit', effective: 'legacy', blockers: [] }));
+    setFilter.mockRejectedValue({ statusCode: 409, message: 'x', originalError: { response: { data: { error: 'not_switchable', blockers: ['store_unsupported'] } } } });
+    renderCard();
+    fireEvent.click(await screen.findByRole('combobox', { name: 'How search checks access' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Faster search' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe("This deployment's vector store does not support faster search.");
+    await vi.waitFor(() => expect(getStatus).toHaveBeenCalledTimes(2));
+  });
+
+  it('says why faster search cannot be chosen, and does not offer it', async () => {
+    getStatus.mockResolvedValue(filtered({ mode: 'inherit', effective: 'legacy', blockers: ['serving_off'] }));
+    renderCard();
+    expect(await screen.findByText('Faster search is turned off for this deployment.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('combobox', { name: 'How search checks access' }));
+    expect((await screen.findByRole('option', { name: 'Faster search' })).getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('says faster search waits for up-to-date permissions when it is chosen but not served yet', async () => {
+    getStatus.mockResolvedValue(filtered({ mode: 'scopes', effective: 'legacy', blockers: [] }));
+    renderCard();
+    expect(await screen.findByText(/Faster search starts once the permissions of .* are up to date\./)).toBeTruthy();
+  });
+
+  it('announces a failed change and keeps the stored mode', async () => {
+    getStatus.mockResolvedValue(filtered({ mode: 'scopes', effective: 'scopes', blockers: [] }));
+    setFilter.mockRejectedValue(new Error('boom'));
+    renderCard();
+    expect(await screen.findByText(/use the faster search/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('combobox', { name: 'How search checks access' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Classic check' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Could not change this setting. Try again.');
+    await vi.waitFor(() => expect(getStatus).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('combobox', { name: 'How search checks access' }).textContent).toBe('Faster search');
   });
 });

@@ -1,0 +1,362 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.outcome.settled.schema.json",
+  "title": "PipeshubOutcomeSettledEvent",
+  "description": "ADR-RUN-01 D1: the run's one typed outcome (completed, partial with why and what is missing, or failed), with what it delivered from its ledger, the deliverable it was read against and the action the chat offers. Journaled with the run's completion; the web chat words it in the reader's language and a surface with no UI reads the presenter's English closing (presented), from the same outcome. Written only when the claim's journal accepts outcome_ledger. Non-critical; folds ignore it.",
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 13,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-05T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.outcome.settled",
+      "data": {
+        "outcome": {
+          "kind": "partial",
+          "reason": "time",
+          "delivered": {
+            "file": {
+              "path": "out/report.md",
+              "revision": 7,
+              "by": "engine"
+            },
+            "sources": 150,
+            "notes": [
+              "notes/handoff.json"
+            ],
+            "kept": true
+          },
+          "missing": [],
+          "action": "continue"
+        },
+        "deliverable": {
+          "kind": "file",
+          "name": "report.md"
+        },
+        "presented": {
+          "closing": "The full report is in **report.md**.\n\n---\n**This result is partial.** This stopped early when its working time ran out, so the result above is partial.",
+          "opening": true
+        }
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 14,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-05T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.outcome.settled",
+      "data": {
+        "outcome": {
+          "kind": "partial",
+          "reason": "unfinished",
+          "delivered": {
+            "sources": 0,
+            "notes": [],
+            "kept": false
+          },
+          "missing": [
+            "report.md"
+          ],
+          "action": "retry"
+        },
+        "deliverable": {
+          "kind": "file",
+          "name": "report.md"
+        }
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 15,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-05T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "type": "x.pipeshub.outcome.settled",
+      "data": {
+        "outcome": {
+          "kind": "completed",
+          "delivered": {
+            "sources": 3,
+            "notes": [],
+            "kept": false
+          },
+          "action": "none"
+        },
+        "deliverable": {
+          "kind": "answer"
+        }
+      }
+    }
+  ],
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.outcome.settled"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubOutcomeSettledData"
+    }
+  },
+  "$defs": {
+    "PipeshubOutcomeSettledData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "deliverable"
+      ],
+      "properties": {
+        "outcome": {
+          "$ref": "#/$defs/RunOutcome"
+        },
+        "deliverable": {
+          "$ref": "#/$defs/Deliverable"
+        },
+        "presented": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "closing",
+            "opening"
+          ],
+          "description": "WP-89: written only when the claim's journal accepts outcome_words. The answer then carries only the model's prose (opening: the opening of the deliverable's file); the web chat words the outcome from this event in the reader's language, and a surface with no UI (the Slack bot, an API text consumer) appends closing, the presenter's English words.",
+          "properties": {
+            "closing": {
+              "type": "string",
+              "maxLength": 16000,
+              "description": "The presenter's English words after the prose; empty when the outcome needs none."
+            },
+            "opening": {
+              "type": "boolean",
+              "description": "The answer is the opening of the deliverable's file, which holds the whole result."
+            }
+          }
+        }
+      }
+    },
+    "RunOutcome": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "delivered",
+            "action"
+          ],
+          "properties": {
+            "kind": {
+              "const": "completed"
+            },
+            "delivered": {
+              "$ref": "#/$defs/Delivered"
+            },
+            "action": {
+              "enum": [
+                "continue",
+                "retry",
+                "none"
+              ],
+              "description": "The action the chat offers: continue only when there is material to continue from; retry when nothing was gathered."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "reason",
+            "delivered",
+            "missing",
+            "action"
+          ],
+          "properties": {
+            "kind": {
+              "const": "partial"
+            },
+            "reason": {
+              "enum": [
+                "budget",
+                "turns",
+                "time",
+                "stall",
+                "provider",
+                "engine_error",
+                "secret_blocked",
+                "unfinished"
+              ]
+            },
+            "delivered": {
+              "$ref": "#/$defs/Delivered"
+            },
+            "missing": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            },
+            "action": {
+              "enum": [
+                "continue",
+                "retry",
+                "none"
+              ],
+              "description": "The action the chat offers: continue only when there is material to continue from; retry when nothing was gathered."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "reason",
+            "delivered",
+            "action"
+          ],
+          "properties": {
+            "kind": {
+              "const": "failed"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "delivered": {
+              "$ref": "#/$defs/Delivered"
+            },
+            "action": {
+              "enum": [
+                "continue",
+                "retry",
+                "none"
+              ],
+              "description": "The action the chat offers: continue only when there is material to continue from; retry when nothing was gathered."
+            }
+          }
+        }
+      ]
+    },
+    "Delivered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sources",
+        "notes",
+        "kept"
+      ],
+      "properties": {
+        "file": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "revision",
+            "by"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "revision": {
+              "$ref": "../../../core/common.schema.json#/$defs/UInt"
+            },
+            "by": {
+              "enum": [
+                "engine",
+                "wrap_up"
+              ]
+            }
+          }
+        },
+        "sources": {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt"
+        },
+        "notes": {
+          "type": "array",
+          "maxItems": 500,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "kept": {
+          "type": "boolean",
+          "description": "The run's work was saved for the run that continues it."
+        }
+      }
+    },
+    "Deliverable": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "file",
+              "description": "The request asks for a file."
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 110,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*\\.[A-Za-z]+$",
+              "description": "The file name as the request spells it (report.md); absent when it asks for a file without naming one."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "answer",
+              "description": "The request asks for a reply in chat."
+            }
+          }
+        }
+      ]
+    }
+  }
+}

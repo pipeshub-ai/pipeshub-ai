@@ -5,7 +5,13 @@ workspaces; it is a separate host with its own authorization server, so it is no
 The legacy SSE endpoint (/sse) is deprecated and not used.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -38,6 +44,12 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Sign in with your Intercom account. Only US-hosted workspaces are supported.",
         ),
         tags=["support", "customer-service", "crm"],
+        category=MCPCategory.SUPPORT,
+        capabilities=[
+            "Answer customer conversations",
+            "Find a customer's history",
+            "Manage support tickets",
+        ],
     )
 )
 class IntercomMCPServer:

@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import ast
-import time
 from pathlib import Path
 
 import pytest
 
 from app.modules.parsers.markdown import linear_image_search as lis
 from app.modules.parsers.markdown import markdown_to_blocks as m2b
+from tests.support.cpu_budget import thread_cpu
 
 APP = Path(__file__).resolve().parents[3] / "app"
 
@@ -19,9 +19,9 @@ def test_converter_uses_the_linear_searches() -> None:
 
 
 def _cpu(text: str) -> float:
-    start = time.process_time()
-    m2b._split_raw_markdown_into_segments(text)
-    return time.process_time() - start
+    with thread_cpu() as cpu:
+        m2b._split_raw_markdown_into_segments(text)
+    return cpu.seconds
 
 
 @pytest.mark.parametrize("unit", ["<![CDATA[", '<img alt="', "![a]("])

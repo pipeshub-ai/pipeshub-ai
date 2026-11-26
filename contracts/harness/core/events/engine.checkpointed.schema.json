@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/engine.checkpointed.schema.json",
+  "title": "EngineCheckpointedEvent",
+  "description": "An engine's saved state after a turn (E1): the sealed blob in the session's object scope, the engine version that wrote it and the adapter's state schema. Written non-critical: only the engine kernel reads it; a loop fold may ignore it.",
+  "x-writer": [
+    "worker"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "engine.checkpointed"
+    },
+    "writer": {
+      "const": "worker"
+    },
+    "data": {
+      "$ref": "#/$defs/EngineCheckpointedData"
+    }
+  },
+  "$defs": {
+    "EngineCheckpointedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "blob",
+        "engine",
+        "schemaVersion",
+        "turnId"
+      ],
+      "properties": {
+        "blob": {
+          "$ref": "#/$defs/EngineStateObject"
+        },
+        "engine": {
+          "$ref": "#/$defs/EngineVersionRef"
+        },
+        "schemaVersion": {
+          "description": "The adapter's state schema version; restore refuses one it does not know.",
+          "$ref": "../common.schema.json#/$defs/UInt"
+        },
+        "turnId": {
+          "description": "The turn whose end the state was captured at.",
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "repository": {
+          "$ref": "#/$defs/RepositoryCommit"
+        },
+        "isolation": {
+          "description": "The sandbox runtime the turn ran on (R31-GVISO): what the broker gave the attempt, not the floor it asked for. Absent from a checkpoint written before it was recorded.",
+          "$ref": "../engine-profile.schema.json#/$defs/IsolationModeName"
+        }
+      }
+    },
+    "EngineStateObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objectId",
+        "contentHash",
+        "sizeBytes"
+      ],
+      "properties": {
+        "objectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "contentHash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sizeBytes": {
+          "$ref": "../common.schema.json#/$defs/UInt"
+        }
+      }
+    },
+    "EngineVersionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "version",
+        "binaryDigest"
+      ],
+      "properties": {
+        "kind": {
+          "description": "A native engine, or an ACP agent profile's acp-<agent> (ACP-driver).",
+          "anyOf": [
+            {
+              "enum": [
+                "opencode",
+                "codex",
+                "jcode",
+                "claude_code"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^acp-[a-z][a-z0-9_-]{0,31}$"
+            }
+          ]
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "binaryDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "RepositoryCommit": {
+      "description": "C2.10: the commit the run's repository (GIT-FLOW) was at when the state was captured. The repository itself is a durable workspace folder; a redriven turn makes this commit reachable again (pinned as refs/pipeshub/checkpoint) without discarding later work. Absent for a run without a repository, and on checkpoints written before C2.10.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "directory",
+        "branch",
+        "commit"
+      ],
+      "properties": {
+        "directory": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$"
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "type": "engine.checkpointed",
+      "data": {
+        "blob": {
+          "objectId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "contentHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "sizeBytes": 4096
+        },
+        "engine": {
+          "kind": "opencode",
+          "version": "1.18.34",
+          "binaryDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "schemaVersion": 1,
+        "turnId": "trn_0123456789abcdef0123456789abcdef"
+      }
+    }
+  ]
+}

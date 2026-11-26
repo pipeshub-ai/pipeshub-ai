@@ -68,6 +68,23 @@ const mcpCoreExports = {
 patchRequireCache(mcpCorePath, mcpCoreExports);
 
 // ---------------------------------------------------------------------------
+// 2b. @pipeshub-ai/mcp  — HTTPClient (the SDK's fetch wrapper, with hooks)
+// ---------------------------------------------------------------------------
+const mcpHttpPath = require.resolve('@pipeshub-ai/mcp/esm/lib/http.js');
+
+const mcpHttpExports = {
+  HTTPClient: class FakeHTTPClient {
+    readonly hooks: Array<(req: Request) => unknown> = [];
+    addHook(_name: string, fn: (req: Request) => unknown) {
+      this.hooks.push(fn);
+      return this;
+    }
+  },
+};
+
+patchRequireCache(mcpHttpPath, mcpHttpExports);
+
+// ---------------------------------------------------------------------------
 // 3. @modelcontextprotocol/sdk — StreamableHTTPServerTransport
 // ---------------------------------------------------------------------------
 const sdkTransportPath = require.resolve(
@@ -89,21 +106,6 @@ const sdkTransportExports = {
 };
 
 patchRequireCache(sdkTransportPath, sdkTransportExports);
-
-// ---------------------------------------------------------------------------
-// 4. @pipeshub-ai/mcp  — HTTPClient (keeps its hooks so tests can run them)
-// ---------------------------------------------------------------------------
-const mcpHttpPath = require.resolve('@pipeshub-ai/mcp/esm/lib/http.js');
-
-class FakeHTTPClient {
-  hooks: Array<(req: Request) => unknown> = [];
-  addHook(_kind: string, fn: (req: Request) => unknown) {
-    this.hooks.push(fn);
-    return this;
-  }
-}
-
-patchRequireCache(mcpHttpPath, { HTTPClient: FakeHTTPClient });
 
 // ---------------------------------------------------------------------------
 // 5. @pipeshub-ai/mcp  — requiredOAuthScopes (tests set the map they need)

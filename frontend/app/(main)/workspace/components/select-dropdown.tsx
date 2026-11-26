@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useFormFieldControl } from './form-field';
 
 // ========================================
 // Types
@@ -40,6 +41,7 @@ export function SelectDropdown({
 }: SelectDropdownProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const control = useFormFieldControl();
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Close on click outside
@@ -79,6 +81,7 @@ export function SelectDropdown({
     <Box style={{ position: 'relative' }}>
       {/* Trigger */}
       <button
+        {...control}
         ref={triggerRef}
         type="button"
         onClick={() => {
@@ -96,7 +99,7 @@ export function SelectDropdown({
           borderRadius: 'var(--radius-2)',
           fontSize: 14,
           fontFamily: 'var(--default-font-family)',
-          color: selectedOption ? 'var(--slate-12)' : 'var(--slate-a9)',
+          color: selectedOption ? 'var(--slate-12)' : 'var(--slate-a11)',
           cursor: disabled ? 'not-allowed' : 'pointer',
           boxSizing: 'border-box',
           opacity: disabled ? 0.6 : 1,
@@ -108,7 +111,7 @@ export function SelectDropdown({
         <MaterialIcon
           name={open ? 'expand_less' : 'expand_more'}
           size={16}
-          color="var(--slate-9)"
+          color="var(--slate-11)"
         />
       </button>
 

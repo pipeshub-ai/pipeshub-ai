@@ -41,6 +41,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `azure_files` | container | container | the whole app | `app/connectors/sources/azure_files/connector.py::AzureFilesConnector` | writer read |
 | `dropbox_individual` | container | container | the whole app | `app/connectors/sources/dropbox_individual/connector.py::DropboxIndividualConnector` | writer read |
 | `google_cloud_storage` | container | container | the whole app | `app/connectors/sources/google_cloud_storage/connector.py::GCSConnector` | writer read |
+| `cloudflare_r2` | container | container | the whole app | `app/connectors/sources/cloudflare_r2/connector.py::CloudflareR2Connector` | writer read |
 | `minio` | container | container | the whole app | `app/connectors/sources/minio/connector.py::MinIOConnector` | writer read |
 | `s3` | container | container | the whole app | `app/connectors/sources/s3/connector.py::S3Connector` | writer read |
 | `nextcloud` | container | container | the whole app | `app/connectors/sources/nextcloud/connector.py::NextcloudConnector` | writer read |
@@ -100,6 +101,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `azure_files` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `dropbox_individual` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `google_cloud_storage` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
+| `cloudflare_r2` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `minio` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `s3` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `nextcloud` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |

@@ -120,6 +120,17 @@ class TestEnd:
             "rate_limited", "rate_limit", "llm_call_failed",
         )
 
+    def test_the_clients_code_is_read_from_the_raw_error(self, caplog: pytest.LogCaptureFixture) -> None:
+        """`error` is text-free (`HTTP 400` reads as no code); the client's code came from `error_detail`."""
+        result = _result(
+            success=False, error="LLM call failed: bad_request (BadRequestError, HTTP 400)",
+            end_event="llm_call_failed", error_class="bad_request",
+        ).with_error_detail("LLM call failed: Error code: 400 - {'error': {'code': 'context_length_exceeded'}}")
+        with caplog.at_level(logging.DEBUG, logger=_LOG.name):
+            _timing().end(_LOG, "error", result=result)
+
+        assert log_record_fields(_end_lines(caplog)[0])["code"] == "request_too_large"
+
     def test_the_stop_reason_is_derived_from_the_result_when_not_given(
         self, caplog: pytest.LogCaptureFixture,
     ) -> None:

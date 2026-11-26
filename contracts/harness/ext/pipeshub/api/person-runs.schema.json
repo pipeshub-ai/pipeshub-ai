@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/person-runs.schema.json",
+  "title": "PersonRuns",
+  "description": "`GET /api/v1/agent-harness/runs` (ADR-UI-01 D1, UI-B1 G1, G7): one page of the caller's own runs and jobs across their conversations, newest first. A job is a run another run handed work to (an engine or a sub-agent child). Filtered by `state`, `agentKey` (an agent's Runs tab), `kind` and creation time; `nextCursor` continues the list. The org and the person are always the caller's: nobody lists another person's runs here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runs",
+    "nextCursor"
+  ],
+  "properties": {
+    "runs": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/PersonRun"
+      }
+    },
+    "nextCursor": {
+      "description": "Pass as `cursor` for the next page; null on the last.",
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "PersonRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "sessionId",
+        "parentRunId",
+        "job",
+        "agentKey",
+        "agentName",
+        "conversationTitle",
+        "engine",
+        "state",
+        "status",
+        "outcome",
+        "createdAt",
+        "updatedAt",
+        "endedAt"
+      ],
+      "properties": {
+        "runId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "sessionId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "parentRunId": {
+          "description": "A job's parent run (the answer that handed it the work); null on a chat's own answer.",
+          "anyOf": [
+            {
+              "$ref": "../../../core/common.schema.json#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "job": {
+          "type": "boolean"
+        },
+        "agentKey": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agentName": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "conversationTitle": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "engine": {
+          "description": "The coding engine a job runs on (an engine kind, `claude_code`); null: the native loop.",
+          "anyOf": [
+            {
+              "$ref": "../../../core/common.schema.json#/$defs/Name"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RunListState"
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "running",
+            "waiting_approval",
+            "paused",
+            "recovering",
+            "needs_reconciliation",
+            "cancelling",
+            "completed",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "outcome": {
+          "description": "A completed run's outcome (`needs_input`: it asked a question); null otherwise.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAt": {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt"
+        },
+        "updatedAt": {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt"
+        },
+        "endedAt": {
+          "description": "When it ended; null while it runs.",
+          "anyOf": [
+            {
+              "$ref": "../../../core/common.schema.json#/$defs/UInt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operatorStop": {
+          "$ref": "#/$defs/OperatorStop"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "UI-B5 (UIP2-FU-1): a job's title, the first line of the goal its parent gave it (at most 200 characters); absent on a chat's own answer, and once the conversation's content was erased."
+        }
+      }
+    },
+    "RunListState": {
+      "description": "One meaning each: working (going, nobody is needed), needs_you (an open ask: an approval, a question, a sign-in), finished, failed (ended on something it could not get past), stopped (a person or an admin stopped it).",
+      "enum": [
+        "working",
+        "needs_you",
+        "finished",
+        "failed",
+        "stopped"
+      ]
+    },
+    "OperatorStop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "reason",
+        "at"
+      ],
+      "description": "G11 (ADR-OPS-01 D5): an operator's stop that cancelled the run: the scope it covered, the reason the admin gave and when (ms). Never the admin's note.",
+      "properties": {
+        "scope": {
+          "enum": [
+            "session",
+            "agent",
+            "org",
+            "engine_version",
+            "instance",
+            "egress"
+          ]
+        },
+        "reason": {
+          "enum": [
+            "security",
+            "cost",
+            "incident",
+            "maintenance",
+            "other"
+          ]
+        },
+        "at": {
+          "$ref": "../../../core/common.schema.json#/$defs/UInt"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "runs": [
+        {
+          "runId": "run_2",
+          "sessionId": "ses_1",
+          "parentRunId": "run_1",
+          "job": true,
+          "agentKey": null,
+          "agentName": null,
+          "conversationTitle": "Fix PAY-1423",
+          "engine": "claude_code",
+          "state": "needs_you",
+          "status": "running",
+          "outcome": null,
+          "createdAt": 1762678800000,
+          "updatedAt": 1762678860000,
+          "endedAt": null
+        },
+        {
+          "runId": "run_1",
+          "sessionId": "ses_1",
+          "parentRunId": null,
+          "job": false,
+          "agentKey": "triage",
+          "agentName": "Support triage",
+          "conversationTitle": "Fix PAY-1423",
+          "engine": null,
+          "state": "stopped",
+          "status": "cancelled",
+          "outcome": null,
+          "createdAt": 1762678700000,
+          "updatedAt": 1762678900000,
+          "endedAt": 1762678900000,
+          "operatorStop": {
+            "scope": "session",
+            "reason": "maintenance",
+            "at": 1762678890000
+          }
+        }
+      ],
+      "nextCursor": "MTc2MjY3ODcwMDAwMDpydW5fMQ"
+    },
+    {
+      "runs": [],
+      "nextCursor": null
+    }
+  ]
+}

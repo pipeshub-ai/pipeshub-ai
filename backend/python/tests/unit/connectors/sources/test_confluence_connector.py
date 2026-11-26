@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -42,7 +43,7 @@ from app.connectors.sources.atlassian.core.confluence_html import HtmlImageConte
 from app.ee.permission_sync.confluence_cloud import (
     PSEUDO_USER_GROUP_PREFIX,
 )
-from app.models.blocks import ChildRecord, ChildType, GroupSubType
+from app.models.blocks import BlocksContainer, ChildRecord, ChildType, GroupSubType
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -56,6 +57,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.modules.transformers.block_container_validator import BlockContainerValidator
 
 # ===========================================================================
 # Helpers
@@ -9551,3 +9553,119 @@ def test_a_jira_match_that_could_be_by_display_name_or_another_email_is_not_trus
     assert _matched_by_something_else({"displayName": "Bob", "emailAddress": "other@acme.com"}, "bob@acme.com")
     assert not _matched_by_something_else({"displayName": "Bob Jones"}, "bob@acme.com")
     assert not _matched_by_something_else({"displayName": "Bob", "emailAddress": "BOB@acme.com"}, "bob@acme.com")
+
+
+def _p(text: str) -> dict:
+    return {"type": "paragraph", "content": [{"type": "text", "text": text}]}
+
+
+def _list(kind: str, *items: object) -> dict:
+    # An item is a string, or a (string, nested list) pair.
+    def item(i: object) -> dict:
+        text, nested = (i, None) if isinstance(i, str) else i
+        return {"type": "listItem", "content": [_p(text)] + ([nested] if nested else [])}
+    return {"type": kind, "content": [item(i) for i in items]}
+
+
+def _cell(*content: dict) -> dict:
+    return {"type": "tableCell", "content": list(content)}
+
+
+def _table(*rows: list) -> dict:
+    return {"type": "table", "content": [{"type": "tableRow", "content": list(r)} for r in rows]}
+
+
+_IMAGE = {"type": "mediaSingle", "content": [{"type": "media", "attrs": {"id": "fid-1", "alt": "a.png", "type": "file"}}]}
+
+
+class TestPageStructureIsConsistent:
+    """Each group's children agree with the parent_index of its blocks and groups.
+
+    The page shapes are those of the pages that logged CHILDREN_PARENT_INDEX_MISMATCH and
+    REVERSE_LINKAGE_MISSING while indexing (lists in a panel, a footer comment holding a
+    table and a list, images in table and nested-table cells).
+    """
+
+    LINKAGE = ("CHILDREN_PARENT_INDEX_MISMATCH", "REVERSE_LINKAGE_MISSING")
+
+    async def _parse(self, content: list, footer_comment: list | None = None) -> BlocksContainer:
+        c = _mk_connector()
+        page_data = {"body": {"atlas_doc_format": {"value": json.dumps({"type": "doc", "content": content})}}}
+        comments = []
+        if footer_comment:
+            comments = [{
+                "id": "fc1",
+                "version": {"authorId": "author-1", "createdAt": "2025-01-01T00:00:00.000Z"},
+                "body": {"atlas_doc_format": {"value": json.dumps({"type": "doc", "content": footer_comment})}},
+                "_links": {"webui": "/comments/fc1"},
+            }]
+        c._fetch_page_comments_recursive = AsyncMock(side_effect=[comments, []])
+        c._batch_fetch_user_display_names = AsyncMock(return_value={"author-1": "Author"})
+        c._create_confluence_media_fetcher = MagicMock(
+            return_value=AsyncMock(return_value="data:image/png;base64,iVBORw0KGgo=")
+        )
+        return await c._parse_confluence_page_to_blocks(
+            page_data=page_data, page_id="p1", page_title="T",
+            weburl="https://wiki.example.com/wiki/spaces/ENG/pages/1",
+            record_type=RecordType.CONFLUENCE_PAGE,
+        )
+
+    def _linkage_issues(self, container: BlocksContainer) -> list[str]:
+        # validate() raises on any ERROR-severity issue, so reaching the filter also means no errors.
+        return [i.message for i in BlockContainerValidator().validate(container) if i.code in self.LINKAGE]
+
+    async def test_lists_between_paragraphs_in_a_panel(self) -> None:
+        container = await self._parse([{
+            "type": "panel", "attrs": {"panelType": "info"},
+            "content": [_p("lead"), _list("bulletList", "a", "b"), _p("mid"), _list("orderedList", "c", "d")],
+        }])
+        assert self._linkage_issues(container) == []
+        panel = next(g for g in container.block_groups if g.sub_type == GroupSubType.CALLOUT)
+        lists = [g.index for g in container.block_groups if g.parent_index == panel.index]
+        assert len(lists) == 2
+        assert [i for r in panel.children.block_group_ranges for i in range(r.start, r.end + 1)] == lists
+
+    async def test_nested_list_in_an_expand(self) -> None:
+        container = await self._parse([{
+            "type": "expand", "attrs": {"title": "More"},
+            "content": [_list("bulletList", ("a", _list("bulletList", "a1", "a2")), "b")],
+        }])
+        assert self._linkage_issues(container) == []
+
+    async def test_footer_comment_with_a_table_and_a_list(self) -> None:
+        container = await self._parse(
+            [_p("body")],
+            footer_comment=[_p("see"), _table([_cell(_p("h1")), _cell(_p("h2"))], [_cell(_p("x")), _cell(_p("y"))]),
+                            _list("bulletList", "one", "two")],
+        )
+        assert self._linkage_issues(container) == []
+        assert any(g.sub_type == GroupSubType.COMMENT for g in container.block_groups)
+
+    async def test_image_in_a_table_cell(self) -> None:
+        container = await self._parse([_table([_cell(_p("h1")), _cell(_p("h2"))], [_cell(_p("x")), _cell(_IMAGE)])])
+        assert self._linkage_issues(container) == []
+
+    async def test_text_and_image_in_one_cell_still_validate(self) -> None:
+        """The cell's text stays with the table (the row carries it), so the table must not list it as a
+        child: a non-row child of a table is a validation error that fails the record."""
+        container = await self._parse([_table([_cell(_p("h1")), _cell(_p("h2"))], [_cell(_p("x")), _cell(_p("caption"), _IMAGE)])])
+        issues = self._linkage_issues(container)  # raises on any ERROR
+        assert all("absent from block_group" in m for m in issues)
+
+    async def test_image_in_a_nested_table_inside_a_panel(self) -> None:
+        inner = _table([_cell(_p("i1")), _cell(_IMAGE)])
+        container = await self._parse([{
+            "type": "panel", "attrs": {"panelType": "note"},
+            "content": [_table([_cell(_p("h1")), _cell(_p("h2"))], [_cell(_p("a")), _cell(inner)])],
+        }])
+        assert self._linkage_issues(container) == []
+
+    async def test_no_block_is_dropped(self) -> None:
+        content = [{
+            "type": "panel", "attrs": {"panelType": "info"},
+            "content": [_p("lead"), _list("bulletList", "alpha", "beta"), _table([_cell(_p("xray")), _cell(_IMAGE)])],
+        }]
+        container = await self._parse(content)
+        words = set(re.findall(r"\w+", " ".join(str(b.data) for b in container.blocks)))
+        assert {"lead", "alpha", "beta", "xray"} <= words
+        assert any(b.type.value == "image" for b in container.blocks)

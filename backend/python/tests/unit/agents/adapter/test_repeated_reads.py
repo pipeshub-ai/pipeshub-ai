@@ -26,6 +26,7 @@ from app.agents.agent_loop.mcp_access import ResolvedMCPServer
 from app.agents.agent_loop.mcp_tool_adapter import MCPToolAdapter
 from app.agents.agent_loop.tool_approvals import TOOLS_BY_PATH
 from app.agents.mcp.models import MCPToolInfo
+from harness_core.effects.types import args_digest
 from tests.unit.agents.adapter.conftest import make_context
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
 
@@ -165,3 +166,37 @@ class TestWhereItCounts:
         context = make_context()
         adapter = _adapter(context, _Server(), "list_issues", read_only=True)
         assert await self._pre(RepeatedReadGuard(context), self._ctx(adapter, None)) == PreDecision.ALLOW
+
+
+class TestAResumedRun:
+    """SYNC3: a durable run's resumed attempt rebuilds the memory from its journaled calls (`replay`)."""
+
+    async def _pre(self, guard: RepeatedReadGuard, adapter: MCPToolAdapter, run: _Run, turn: int) -> PreDecision:
+        async def _next() -> None:
+            return None
+
+        scope = SimpleNamespace(turn=SimpleNamespace(run=run, turn_index=turn))
+        ctx = ToolCallContext(tool_path=adapter.path, tool_input={"team": "ENG"}, scope=scope)  # type: ignore[arg-type]
+        await guard.pre_tool_use(ctx, _next)
+        return ctx.decision
+
+    async def test_two_journaled_runs_refuse_the_third(self) -> None:
+        context = make_context()
+        adapter = _adapter(context, _Server(), "list_issues", read_only=True)
+        guard, run = RepeatedReadGuard(context), _Run()
+        for turn in (0, 1):
+            guard.replay(run, adapter.path, args_digest({"team": "ENG"}), turn, ok=True)  # type: ignore[arg-type]
+        assert await self._pre(guard, adapter, run, 2) == PreDecision.DENY
+
+    async def test_a_journaled_refusal_and_write_replay_as_they_ran(self) -> None:
+        context = make_context()
+        read = _adapter(context, _Server(), "list_issues", read_only=True)
+        write = _adapter(context, _Server(), "save_issue", read_only=False)
+        digest = args_digest({"team": "ENG"})
+        guard, run = RepeatedReadGuard(context), _Run()
+        # Ran twice, refused on turns 2..4: the refusals keep it recent, so turn 5 is still refused.
+        for turn in range(5):
+            guard.replay(run, read.path, digest, turn, ok=turn < 2)  # type: ignore[arg-type]
+        assert await self._pre(guard, read, run, 5) == PreDecision.DENY
+        guard.replay(run, write.path, args_digest({"title": "Bug"}), 6, ok=True)  # type: ignore[arg-type]
+        assert await self._pre(guard, read, run, 7) == PreDecision.ALLOW

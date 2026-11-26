@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -708,6 +709,31 @@ class TestSmartPDFParserPageRouting:
         assert raised.value.__cause__ is cause
         layout.parse.assert_awaited_once()
         ocr.parse.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("waits", "level"), [(True, logging.INFO), (False, logging.WARNING)], ids=["never-received", "counted"]
+    )
+    @pytest.mark.asyncio
+    async def test_the_fallback_line_of_a_pdf_waiting_for_docling_is_info(
+        self, waits: bool, level: int, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A hand-back repeats every minute while Docling is down; the outage is already reported at WARNING."""
+        from app.services.docling.client import (
+            DoclingNotServing,
+            DoclingUnavailableError,
+        )
+
+        down = DoclingNotServing("down") if waits else DoclingUnavailableError("down")
+        docling, layout, ocr = _routed_parsers(docling_error=down)
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with caplog.at_level(logging.DEBUG), patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
+        ):
+            await parser.parse(b"%PDF", "a.pdf")
+
+        [line] = [r for r in caplog.records if "Docling is unavailable" in r.getMessage()]
+        assert line.levelno == level
 
     @pytest.mark.parametrize(
         "code", [ParseErrorCode.UNSUPPORTED_FORMAT, ParseErrorCode.EMPTY_CONTENT, ParseErrorCode.INVALID_INPUT]

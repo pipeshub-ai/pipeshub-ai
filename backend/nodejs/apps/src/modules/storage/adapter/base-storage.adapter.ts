@@ -5,6 +5,8 @@ import {
   Document,
   FilePayload,
   ObjectPage,
+  ConditionalCapabilities,
+  ConditionalDeleteResult,
   SignObjectUrlOptions,
   SignedObjectUrl,
   StorageServiceResponse,
@@ -299,6 +301,39 @@ export class StorageServiceAdapter {
       ? this.adapter.deleteObjects(storageKeys)
       : Promise.reject(
           new Error('deleteObjects not implemented for this storage provider'),
+        );
+  }
+
+  deleteObjectsIfMatch(
+    items: { key: string; etag: string }[],
+  ): Promise<ConditionalDeleteResult> {
+    return this.adapter.deleteObjectsIfMatch
+      ? this.adapter.deleteObjectsIfMatch(items)
+      : Promise.reject(
+          new Error(
+            'deleteObjectsIfMatch not implemented for this storage provider',
+          ),
+        );
+  }
+
+  /** What the store honours. A provider without the method honours nothing conditional. */
+  conditionalCapabilities(): Promise<ConditionalCapabilities> {
+    return this.adapter.conditionalCapabilities
+      ? this.adapter.conditionalCapabilities()
+      : Promise.resolve({ conditionalDelete: false, bump: false });
+  }
+
+  writeObjectIfMatch(
+    storageKey: string,
+    data: Buffer,
+    etag: string,
+  ): Promise<'written' | 'gone' | 'changed'> {
+    return this.adapter.writeObjectIfMatch
+      ? this.adapter.writeObjectIfMatch(storageKey, data, etag)
+      : Promise.reject(
+          new Error(
+            'writeObjectIfMatch not implemented for this storage provider',
+          ),
         );
   }
 

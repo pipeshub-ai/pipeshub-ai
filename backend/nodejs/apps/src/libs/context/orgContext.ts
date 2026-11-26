@@ -100,6 +100,19 @@ export function forOrg<T>(
 }
 
 /**
+ * Per-org work for a row a cross-org read found (a sweep's page, an instance-wide control's runs): bound to the row's
+ * org from whatever context the caller has, the request's included, since the row, not the caller, names the org.
+ */
+export function forEnumeratedOrg<T>(
+  orgId: string,
+  job: string,
+  fn: () => T,
+): T {
+  if (orgContextStorage.getStore()?.orgId === orgId) return fn();
+  return orgContextStorage.exit(() => forOrg(orgId, job, fn));
+}
+
+/**
  * Work for an account the server itself resolved before any request carried a token: from a stored sign-in session, a
  * signed link, an address lookup it ran, or the organisation it is creating. Never from request input. A nested bind must
  * keep the org.
@@ -171,22 +184,46 @@ export function spawnDetached<T>(fn: () => T): T {
   return orgContextStorage.exit(fn);
 }
 
+/**
+ * A repeating timer started with an empty context (see `spawnDetached`): its ticks never carry the org of the request or job
+ * that started it. Unref'd unless `keepAlive`, so a periodic job does not hold a process open. Every repeating timer starts
+ * here, the one place the detached_work ratchet allows one.
+ */
+export function detachedInterval(
+  tick: () => void,
+  ms: number,
+  opts: { keepAlive?: boolean } = {},
+): NodeJS.Timeout {
+  const timer = spawnDetached(() => setInterval(tick, ms));
+  if (!opts.keepAlive) timer.unref();
+  return timer;
+}
+
 // --- shadow / enforce -------------------------------------------------------
-// `shadow` (default) logs and counts an access with no context, or with one for a
-// different org, and lets it through. `enforce` fails closed. Flip per deployment
-// with ORG_CONTEXT_MODE once the shadow counters stay at zero.
+// `enforce` (default) fails closed on an access with no context, or with one for a
+// different org. `shadow` is the escape hatch: it logs and counts such an access
+// and lets it through, with a warning that the mode is on.
 
 /** pipeshub_org_context_violations_total{kind,site} */
 export const orgContextViolations = new Map<string, number>();
 const logged = new Set<string>();
 
-/** true in enforce mode. An unknown ORG_CONTEXT_MODE throws (never silently shadow). */
+let shadowWarned = false;
+
+/** true in enforce mode (the default). An unknown ORG_CONTEXT_MODE throws (never silently shadow). */
 export function validateMode(): boolean {
   const mode =
-    (process.env.ORG_CONTEXT_MODE ?? 'shadow').trim().toLowerCase() || 'shadow';
+    (process.env.ORG_CONTEXT_MODE ?? '').trim().toLowerCase() || 'enforce';
   if (mode !== 'shadow' && mode !== 'enforce') {
     throw new Error(
       `ORG_CONTEXT_MODE must be 'shadow' or 'enforce', got '${mode}'`,
+    );
+  }
+  if (mode === 'shadow' && !shadowWarned) {
+    shadowWarned = true;
+    Logger.getInstance().warn(
+      'ORG_CONTEXT_MODE=shadow: an org-scoped access with no org or one of another org is logged and allowed, not refused',
+      { component: 'OrgContext' },
     );
   }
   return mode === 'enforce';
@@ -204,8 +241,8 @@ function callerSite(): string {
 
 /**
  * Check an explicit org argument against the ambient context at an org-scoped choke point.
- * Returns the explicit org (or the ambient one when none was given). Shadow mode never
- * throws; the first violation per (kind, site) is logged with the call site, every one is counted.
+ * Returns the explicit org (or the ambient one when none was given). Enforce mode throws;
+ * shadow mode never does; the first violation per (kind, site) is logged with the call site, every one is counted.
  */
 export function ambientOrg(
   explicitOrgId: string | null | undefined,

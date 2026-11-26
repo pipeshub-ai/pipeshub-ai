@@ -1,6 +1,12 @@
 """Notion MCP server template — official remote server (Streamable HTTP), OAuth-only."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -27,6 +33,12 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Sign in with your Notion account.",
         ),
         tags=["docs", "productivity"],
+        category=MCPCategory.DOCS,
+        capabilities=[
+            "Search the workspace",
+            "Write and edit pages",
+            "Query a database",
+        ],
     )
 )
 class NotionMCPServer:

@@ -5,6 +5,7 @@ import contextlib
 import inspect
 import ipaddress
 import logging
+import re
 from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import dataclass, replace
 from time import perf_counter
@@ -30,6 +31,8 @@ _FIELDS_KEY = "pipeshub.request_log_fields"
 # Never routine: a service token naming another org is our bug or a stolen token.
 _REASON_LEVEL = {"org_mismatch": logging.WARNING}
 _CRASH_BODY = {"detail": "Internal server error"}
+# Node's isShownId (logger.service.ts), which its bindPathLogFields applies too: one rule for an id on a line.
+_SHOWN_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 # When the line saw the client leave: before the answer started, or after it started and before its last body message.
 # A disconnect seen after the last body was handed over is the server's "response complete" and not recorded.
 _BEFORE_ANSWER = "before_answer"
@@ -80,10 +83,12 @@ def bind_request_log_fields(request: Request, **ids: object) -> None:
 
 
 def path_log_fields(**field_by_param: str) -> Callable[[Request], Awaitable[None]]:
-    """A router dependency binding path parameters as log ids: ``path_log_fields(instance_id="toolset_id")``."""
+    """A router dependency binding path parameters as log ids: ``path_log_fields(instance_id="toolset_id")``. It runs
+    before the route checks anything, so a value is bound only when it is shaped like an id."""
     async def bind(request: Request) -> None:  # async: a sync dependency runs in a thread, which loses the binding
-        bind_request_log_fields(request, **{field: request.path_params.get(param)
-                                            for param, field in field_by_param.items()})
+        values = {field: request.path_params.get(param) for param, field in field_by_param.items()}
+        bind_request_log_fields(request, **{field: v for field, v in values.items()
+                                            if v is not None and _SHOWN_ID.fullmatch(str(v))})
 
     return bind
 
