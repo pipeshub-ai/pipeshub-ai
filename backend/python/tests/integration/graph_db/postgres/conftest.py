@@ -39,7 +39,7 @@ LOCK_HOLDER = pytest.StashKey[int]()       # the backend that holds the lock for
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
 def pytest_runtest_protocol(item: pytest.Item) -> Iterator[None]:
-    """xdist workers share one database. A test marked ``pg_table_lock`` (LOCK TABLE, an index dropped or built) holds this lock exclusively and every other test
+    """xdist workers share one database. A test marked ``pg_table_lock`` (a table lock, an index dropped or built, statistics written or analysed) holds this lock exclusively and every other test
     of the folder holds it shared, so the marked one runs while no other test of the folder does: a read queued behind its table lock waits out its
     ``lock_timeout`` and the walk answers, which fails a sibling that counts kg's answers. The lock is taken outside pytest-timeout's timer (this wrapper is the
     outer one): the wait for the tests running in other workers is not part of a test's own time."""

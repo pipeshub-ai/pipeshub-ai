@@ -549,6 +549,7 @@ async def kg_statistics_held() -> AsyncIterator[None]:
 # after_first_load: the statistics are those the worker took when the connectors' first loads asked for them (kg.analyze_requests), and the org has grown tenfold since.
 # Before the request, an org the statistics did not know was put at one row, and the plan of a page could read every kg row of the org (records_pkey bounded by
 # the org alone, then a sort) instead of the parent's range of a children index: a near tie the planner broke either way.
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 @pytest.mark.parametrize("analyzed", [False, True], ids=["after_first_load", "after_analyze"])
 async def test_every_browse_statement_reads_by_an_index_and_never_scans_the_organisation(pg_db, kg_statistics_held, analyzed) -> None:
     p, org = prov(pg_db), new_org()
@@ -812,6 +813,7 @@ async def test_a_browse_of_many_chain_top_holders_resolves_the_chain_tops_once(p
     assert calls == {"_kh_v3_chain_top_groups": 1, "_kh_v3_chain_top_candidates": 1, "_kh_v3_chain_top_hidden": 1}, calls
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_a_wide_page_reads_each_linked_child_by_its_key_whatever_the_organisation_is_estimated_at(pg_db) -> None:
     """The page of a group whose 400 children are linked to it (``wide linked``): the linked children are read by their keys, one primary-key probe each, and the
     primary ones by the parent's range of a children index, however the planner estimates the organisation. Here the organisation is outside the most common values
@@ -853,6 +855,7 @@ async def test_a_wide_page_reads_each_linked_child_by_its_key_whatever_the_organ
         await con.close()
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_chain_top_read_reads_each_graph_node_by_its_key_whatever_the_statistics(pg_db) -> None:
     """EXPLAIN gate for ``CHAIN_GRANTED`` (``_kh_v3_chain_top_groups``): an org of 4,000 records and 200 groups, 600 of them granted, read as the call reads it (custom plan) while the
     statistics know only two small orgs whose graph nodes share its partition, after ANALYZE, and with two more orgs of its size in that partition. In every state each graph node is

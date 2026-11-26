@@ -97,6 +97,7 @@ async def _world(p, org: str) -> None:
             await p.batch_create_edges([edge(u, "users", k, "records", type="USER", role="READER") for _, k in part for u in ("u1", "u2")], "permission")
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_first_drain_of_a_large_connector_commits_with_no_statistics_under_a_short_statement_timeout(pg_provider, pg_db, monkeypatch, no_stats) -> None:
     """One page drains the whole world (every node, grant and mark written and read in one unit) with kg's statistics cleared and every statement of the unit held to 5 s
     after the projection starts. On the plans the planner made of the marks' lookups with no statistics (a record's own row and its parents' rows found by a scan of the
@@ -150,6 +151,7 @@ def _not_seeks(plan: dict[str, Any]) -> list[str]:
     return bad
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_the_marks_and_stamp_lookups_of_a_drain_are_seeks_with_no_statistics_and_analysed(pg_provider, pg_db, no_stats) -> None:
     """EXPLAIN gate: on the world above (drained and promoted), with kg's statistics cleared and then analysed, the statements a drain unit runs per grant or node (the marks of the grants on
     nodes, the children of parents, the stamp's kg rows), as the unit runs them (under reader.seeks, custom plans), read kg.records, kg.links and kg.scope_members only by
@@ -199,6 +201,7 @@ async def test_a_unit_plans_without_jit_where_the_server_has_it_on(pg_provider, 
     assert jit == "off" and "JIT" not in plan, plan.get("JIT")
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_clearing_kg_statistics_is_undone_at_teardown(no_stats) -> None:
     """The fixture's own check (its teardown asserts the same for every test that uses it): cleared here, so the teardown has to bring them back."""
     await no_stats()
