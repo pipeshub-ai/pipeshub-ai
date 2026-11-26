@@ -6465,6 +6465,32 @@ describe('ConfigurationManager Controller', () => {
       }
     })
 
+    it('writes nothing when the model moved during the health check and the request omits the endpoint', async () => {
+      const moved = {
+        ...saved,
+        llm: [{ ...savedLlm, configuration: { ...savedLlm.configuration, endpoint: 'https://b.test/v1' } }],
+      }
+      const get = sinon.stub()
+      get.onFirstCall().resolves(mockEncService.encrypt(JSON.stringify(saved)))
+      get.resolves(mockEncService.encrypt(JSON.stringify(moved)))
+      const kvs = createMockKeyValueStore({ get })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { status: 'healthy' },
+      } as any)
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai', cmBackend: 'http://cm' } as any)(
+        createMockRequest({
+          params: { modelType: 'llm', modelKey: 'key-1' },
+          body: { provider: 'openai', isDefault: true, configuration: { model: 'gpt-4', apiKey: 'retyped-key' } },
+        }),
+        res,
+        createMockNext(),
+      )
+      expect(res.status.calledWith(409)).to.be.true
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
     it('keeps a key rotated during the health check when the endpoint did not move', async () => {
       const rotated = {
         ...saved,
@@ -6551,10 +6577,12 @@ describe('ConfigurationManager Controller', () => {
       expect(kvs.compareAndSet.called).to.be.false
     })
 
-    it('accepts a different provider when the saved key is typed again', async () => {
-      const { res, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4', apiKey: 'x' } })
-      expect(res.status.calledWith(200)).to.be.true
-      expect(checked.apiKey).to.equal('x')
+    it('refuses a different provider even when the saved key is typed again', async () => {
+      const { res, kvs, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4', apiKey: 'x' } })
+      expect(res.status.calledWith(400)).to.be.true
+      expect(res.json.firstCall.args[0].message).to.equal('Provider does not match saved model')
+      expect(checked).to.equal(undefined)
+      expect(kvs.compareAndSet.called).to.be.false
     })
 
     it('accepts a provider that differs only by case and keeps the saved key', async () => {
@@ -6563,10 +6591,10 @@ describe('ConfigurationManager Controller', () => {
       expect(checked.apiKey).to.equal('saved-key')
     })
 
-    it('accepts a different provider when the saved key is explicitly cleared', async () => {
+    it('refuses a different provider when the saved key is explicitly cleared', async () => {
       const { res, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4', apiKey: '' } })
-      expect(res.status.calledWith(200)).to.be.true
-      expect(checked.apiKey).to.equal('')
+      expect(res.status.calledWith(400)).to.be.true
+      expect(checked).to.equal(undefined)
     })
 
     it('accepts a new endpoint when the saved key is explicitly cleared', async () => {
@@ -6581,10 +6609,10 @@ describe('ConfigurationManager Controller', () => {
       expect(checked).to.equal(undefined)
     })
 
-    it('accepts a different provider on a new endpoint, which drops the saved forwarding key', async () => {
+    it('refuses a different provider on a new endpoint', async () => {
       const { res, checked } = await update({ provider: 'anthropic', configuration: { model: 'gpt-4', endpoint: 'https://b.test/v1', apiKey: 'x' } }, withForwarding)
-      expect(res.status.calledWith(200)).to.be.true
-      expect(checked.identityForwardingServiceApiKey).to.equal(undefined)
+      expect(res.status.calledWith(400)).to.be.true
+      expect(checked).to.equal(undefined)
     })
 
     it('says so when a new endpoint clears saved forwarding credentials', async () => {
@@ -6679,6 +6707,13 @@ describe('ConfigurationManager Controller', () => {
       const text = JSON.stringify(entry)
       expect(text).to.not.include('token=abc')
       expect(text).to.not.include('saved-key')
+    })
+
+    it('logs the host of a changed baseUrl when the request leaves the endpoint out', async () => {
+      const warn = sinon.stub(Logger.prototype, 'warn')
+      await update({ configuration: { model: 'gpt-4', baseUrl: 'https://c.test/v1' } })
+      const entry = warn.getCalls().map((c) => c.args[1] as Record<string, unknown>).find((m) => m?.securityEvent === 'model_destination_change_refused')
+      expect(entry?.host).to.equal('c.test')
     })
 
     it('accepts a new endpoint with a retyped key', async () => {

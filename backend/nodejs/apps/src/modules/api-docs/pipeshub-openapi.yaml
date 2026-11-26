@@ -23815,9 +23815,10 @@ components:
       additionalProperties: false
       description: |
         A new secret for a connection whose models use more than one endpoint or baseUrl. Nothing is
-        checked or stored. Move the listed models back to the endpoint of the connection's first model,
-        or delete them, then save again.
-      required: [status, error_code, message, models]
+        checked or stored. `models` lists the models whose endpoint differs from `reference`, the
+        connection's first stored model. That order does not mark an intended endpoint: put every model
+        in the connection on one endpoint, then save again.
+      required: [status, error_code, message, models, reference]
       properties:
         status:
           type: string
@@ -23843,6 +23844,18 @@ components:
               name:
                 type: string
                 description: The model's display name, else its model id, else its key.
+        reference:
+          type: object
+          additionalProperties: false
+          description: The model the others were compared with.
+          required: [modelKey, modelType, name]
+          properties:
+            modelKey:
+              type: string
+            modelType:
+              type: string
+            name:
+              type: string
     AIModelProviderSimpleError:
       type: object
       additionalProperties: false
@@ -79121,8 +79134,10 @@ paths:
                   format: uuid
                   description: |
                     Join an existing connection of the same provider, e.g. when retrying models that failed. Unknown ids return 400.
-                    The shared `endpoint` and `baseUrl` must match the connection's (compared by scheme, host and path,
-                    ignoring case and a trailing slash): a connection shares one key, so a different endpoint is refused
+                    The shared `endpoint` and `baseUrl` must match the connection's. They are compared by scheme, host,
+                    port, path, query string and userinfo; only the scheme and host ignore case, a default port and a
+                    trailing slash on the path are ignored, and the path keeps its case (`/Tenant` and `/tenant` differ).
+                    A connection shares one key, so a different endpoint is refused
                     with 400 `credential_reentry_required` before any model is checked or saved.
                 defaultModel:
                   type: string
@@ -79170,7 +79185,9 @@ paths:
           description: |
             Invalid body, or connectionId does not match a saved connection for this provider.
             `error_code: credential_reentry_required` when connectionId names a connection whose
-            endpoint differs from the one sent ("Enter the credentials again to use this new endpoint.").
+            endpoint differs from the one sent. No credential changes that: use the connection's endpoint, or add
+            the models as a new connection. If the connection moves or is deleted while a model is checked, that
+            model is not saved and its progress event reports `failed`.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -79650,11 +79667,13 @@ paths:
             of these settings: it rejected the API key, could not find the model, or its
             endpoint could not be reached, or `contextLength` is outside 1,024 to 20,000,000.
 
-            Also returned when `provider` differs (ignoring case) from the saved model and saved
-            credentials would be reused, or when `configuration.endpoint` or `configuration.baseUrl`
-            changes and a saved credential is left out of the request
-            (`error_code: credential_reentry_required`). Saved credentials are only reused for the
-            endpoint they were saved with; sending a credential key blank clears it.
+            Also returned, with no `error_code`, when `provider` differs (ignoring case) from the
+            saved model: a model's provider cannot be changed here.
+
+            Also returned with `error_code: credential_reentry_required` when `configuration.endpoint`
+            or `configuration.baseUrl` changes and a saved credential is left out of the request.
+            Saved credentials are only reused for the endpoint they were saved with; sending a
+            credential key blank clears it.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -79680,6 +79699,15 @@ paths:
           description: |
             No AI models configuration is stored (`No AI models configuration found`), or no
             model has the given `modelKey` (`Model with key '<modelKey>' not found or model type not found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderSimpleError'
+        '409':
+          description: |
+            Another save moved the model to a different endpoint or baseUrl while this request's health
+            check ran, whether or not this request sends one. Nothing is stored; reload the model and
+            enter the credentials again.
           content:
             application/json:
               schema:
