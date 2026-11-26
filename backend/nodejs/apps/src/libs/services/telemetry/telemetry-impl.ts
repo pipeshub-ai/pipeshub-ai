@@ -18,3 +18,9 @@ export { isTelemetryEnabled, TELEMETRY_COLLECTION_FLAG } from './flag';
 export { metricsBackend } from './metrics-backend';
 export { recordServiceActivity } from './modules/activity-metrics';
 export { setMetricCollectionEnabled } from './modules/collection-metrics';
+export {
+  recordAuthAttempt,
+  refusalOutcome,
+  signInMethod,
+  type AuthAttemptMethod,
+} from './modules/auth-metrics';

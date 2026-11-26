@@ -38,4 +38,18 @@ export const metricsBackend = {
   createCounter: (_def: unknown): typeof instrument => instrument,
   createGauge: (_def: unknown): typeof instrument => instrument,
   createHistogram: (_def: unknown): typeof instrument => instrument,
+  serialize: async (): Promise<string> => '',
 };
+
+export type AuthAttemptMethod = string;
+
+type AuthAttemptOutcome = 'success' | 'failure' | 'error';
+
+export const recordAuthAttempt = (
+  _method: string,
+  _outcome: AuthAttemptOutcome,
+): void => {};
+
+export const refusalOutcome = (_error: unknown): AuthAttemptOutcome => 'error';
+
+export const signInMethod = (_raw: unknown): AuthAttemptMethod => 'other';

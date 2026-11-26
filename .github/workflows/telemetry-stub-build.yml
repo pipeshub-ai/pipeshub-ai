@@ -40,7 +40,7 @@ jobs:
         run: |
           set -e
           cd src/libs/services/telemetry
-          find . -type f ! -name '*.stub.ts' ! -name identity.ts -delete
+          find . -type f ! -name '*.stub.ts' ! -name identity.ts ! -name process-metrics.ts -delete
           find . -mindepth 1 -type d -empty -delete
           for f in *.stub.ts; do mv "$f" "${f%.stub.ts}.ts"; done
           cd ../../../..

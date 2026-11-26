@@ -132,7 +132,7 @@ import {
   recordAuthAttempt,
   refusalOutcome,
   signInMethod,
-} from '../../../libs/services/telemetry/modules/auth-metrics';
+} from '../../../libs/services/telemetry/telemetry-impl';
 import {
   executeConnectorCommand,
   handleBackendError,
