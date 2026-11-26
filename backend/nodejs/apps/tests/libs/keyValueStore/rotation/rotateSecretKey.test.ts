@@ -287,6 +287,40 @@ describe('rotateEncryptedValues', () => {
     expect(cipher(NEW).decrypt(m.b)).to.equal('B');
   });
 
+  it('recovers a mixed value with a weak current key by rotating back to the earlier key first', async () => {
+    const WEAK_CURRENT = 'k3P9vQ2mX7tL1wZ8';
+    const EARLIER = 'earlier-secret-key-0123456789-Mv3!';
+    const mixed = JSON.stringify({
+      a: cipher(WEAK_CURRENT).encrypt('A'),
+      b: cipher(EARLIER).encrypt('B'),
+    });
+    await store.createKey('/mixed', mixed);
+    // earlier -> current would write under the weak key, so it is refused.
+    let err: Error | undefined;
+    await rotateEncryptedValues(store, EARLIER, WEAK_CURRENT, {
+      dryRun: false,
+    }).catch((e) => (err = e));
+    expect(err?.message).to.contain('shorter than 32 characters');
+    // current -> earlier moves the current-key field; the earlier-key field is left as it is.
+    const back = await rotateEncryptedValues(store, WEAK_CURRENT, EARLIER, {
+      dryRun: false,
+      skipUnreadable: true,
+    });
+    expect(back.failed).to.not.include('/mixed');
+    const onEarlier = JSON.parse((await store.getKey('/mixed'))!);
+    expect(cipher(EARLIER).decrypt(onEarlier.a)).to.equal('A');
+    expect(onEarlier.b).to.equal(JSON.parse(mixed).b);
+    // Then the normal run, from the earlier key to the new key.
+    const forward = await rotateEncryptedValues(store, EARLIER, NEW, {
+      dryRun: false,
+      skipUnreadable: true,
+    });
+    expect(forward.failed).to.not.include('/mixed');
+    const m = JSON.parse((await store.getKey('/mixed'))!);
+    expect(cipher(NEW).decrypt(m.a)).to.equal('A');
+    expect(cipher(NEW).decrypt(m.b)).to.equal('B');
+  });
+
   it('refuses, before any write, a new secret the key ring refuses on the hardened profile, naming why', async () => {
     const before = await store.getKey('/services/aiModels');
     for (const [n, reason] of [
