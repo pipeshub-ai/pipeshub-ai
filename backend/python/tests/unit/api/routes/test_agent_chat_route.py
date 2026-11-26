@@ -25,6 +25,8 @@ from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER
 from app.connectors.core.base.data_processor.permission_sync_gate import (
     PERMISSION_SYNC_LICENCE_KEY,
 )
+from app.harness.credentials.sources import ToolsetSecretSource
+from app.harness.credentials.tool_credentials import scope_of, toolset_reference
 from app.utils.logger import log_record_fields
 from tests.support.agent_routes import (
     AGENTS,
@@ -34,12 +36,22 @@ from tests.support.agent_routes import (
     make_client,
     user_key,
 )
+from tests.unit.harness.credentials.support import owned_toolsets
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from fastapi.testclient import TestClient
     from httpx import Response
+
+
+def _resolved(config: object, reference: dict[str, Any]) -> Any:  # noqa: ANN401
+    """The record a toolset reference names, as the effect boundary resolves it (P2.4a)."""
+    scope = scope_of(reference)
+    assert scope is not None
+    secret = asyncio.run(ToolsetSecretSource(config).read("org", scope))
+    assert secret is not None
+    return secret.material
 
 
 def _sse(frames: list[dict[str, Any]]) -> list[str]:
@@ -257,28 +269,30 @@ class TestChatStreamToolsets:
 
     def test_credentials_are_the_executing_users(self, graph, loop) -> None:
         self._with_toolset(graph, "shared")
-        config = FakeConfigService({
+        config = FakeConfigService(owned_toolsets({
             "/services/toolsets/inst-1/u-alice": {"isAuthenticated": True, "who": "alice"},
             "/services/toolsets/inst-1/u-bob": {"isAuthenticated": True, "who": "bob"},
-        })
+        }, org_id="org"))
         c, _ = make_client(graph, config)
         response = _stream(c, "shared", "bob", {"query": "hi", "tools": ["jira.search"]})
         assert response.status_code == 200
         (call,) = loop.calls
-        assert call["query_info"]["toolsetConfigs"] == {"inst-1": {"isAuthenticated": True, "who": "bob"}}
+        # A reference, never the record; it resolves to the executing user's record.
+        assert call["query_info"]["toolsetConfigs"] == {"inst-1": toolset_reference("inst-1", "u-bob")}
+        assert _resolved(config, call["query_info"]["toolsetConfigs"]["inst-1"])["who"] == "bob"
         (toolset,) = call["query_info"]["toolsets"]
         assert [t["fullName"] for t in toolset["tools"]] == ["jira.search"]
 
     def test_service_account_uses_the_agents_own_credentials(self, graph, loop) -> None:
         self._with_toolset(graph, "sa")
-        config = FakeConfigService({
+        config = FakeConfigService(owned_toolsets({
             "/services/toolsets/inst-1/sa": {"isAuthenticated": True, "who": "agent"},
             "/services/toolsets/inst-1/u-bob": {"isAuthenticated": True, "who": "bob"},
-        })
+        }, org_id="org"))
         c, _ = make_client(graph, config)
         _stream(c, "sa", "bob")
         (call,) = loop.calls
-        assert call["query_info"]["toolsetConfigs"]["inst-1"]["who"] == "agent"
+        assert _resolved(config, call["query_info"]["toolsetConfigs"]["inst-1"])["who"] == "agent"
 
     @pytest.mark.parametrize("stored,fragment", [
         (None, "not configured: 'Jira'"),

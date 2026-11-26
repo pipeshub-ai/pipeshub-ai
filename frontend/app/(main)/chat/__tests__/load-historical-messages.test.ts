@@ -171,6 +171,21 @@ describe('loadHistoricalMessages', () => {
     expect(messages).toHaveLength(2);
   });
 
+  it('C-21: a failed run keeps the messages sent while it ran, with its error', () => {
+    const kept = { type: 'user_input' as const, content: 'also 2025', messageSeq: 1, runId: 'run-1', consumed: false };
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'A question' }),
+      message({ _id: 'e', messageType: 'error', content: 'It kept failing.', parts: [kept] }),
+    ]);
+    const custom = messages[1]!.metadata?.custom as Record<string, unknown>;
+    expect(custom.persistedParts).toEqual([kept]);
+  });
+
+  it('an error message without parts is shown as before', () => {
+    const { messages } = loadHistoricalMessages([message({ _id: 'e', messageType: 'error', content: 'Failed.' })]);
+    expect(messages[0]!.metadata?.custom).not.toHaveProperty('persistedParts');
+  });
+
   it('hides User selections and merges the follow-up answer into the question row', () => {
     const payload = {
       name: 'ask_user_question',

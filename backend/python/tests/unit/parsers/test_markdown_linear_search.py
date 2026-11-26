@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from app.modules.parsers.markdown import linear_image_search as lis
+from tests.support.cpu_budget import thread_cpu
 
 # The Markdown image pattern is checked against a frozen record of what the
 # original exponential regex returned (see ``_oracle``); it is no longer
@@ -113,11 +114,9 @@ TAILED_FAMILIES = [
 
 
 def _cpu(fn, text: str) -> float:
-    # This thread's CPU only: process_time also counts other threads left running in
-    # the test process, which inflated a 4x step to 8x on CI.
-    start = time.thread_time()
-    fn(text)
-    return time.thread_time() - start
+    with thread_cpu() as cpu:
+        fn(text)
+    return cpu.seconds
 
 
 def _best_of_three(fn, small: str, large: str) -> tuple[float, float]:

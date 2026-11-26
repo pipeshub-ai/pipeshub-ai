@@ -11,7 +11,8 @@ import { test, expect } from '../fixtures/api-context.fixture';
 import { ensureSmtpConfigured } from '../helpers/smtp.helper';
 import { acceptInvite, deleteUserByEmail, signInAs, uniqueMemberEmail } from '../helpers/members.helper';
 
-test.describe('Invite a teammate', () => {
+// @disposable (WP-71): invites people by email and needs SMTP, which only a stack made for the run may be given.
+test.describe('Invite a teammate', { tag: '@disposable' }, () => {
   let email: string | undefined;
 
   test.beforeEach(async ({ apiContext }) => {

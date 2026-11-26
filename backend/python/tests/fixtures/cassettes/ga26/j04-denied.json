@@ -1,0 +1,186 @@
+{
+ "format": "pipeshub.harness.cassette/v1",
+ "manifest": {
+  "name": "j04-denied",
+  "source": "scripted",
+  "provider": "scripted",
+  "model": "scripted-model",
+  "accepts_output_limit": false
+ },
+ "interactions": [
+  {
+   "request": {
+    "call": "stream",
+    "digest": "aaa87bc7bc261967f79d",
+    "message_count": 1,
+    "last_user": "Summarize the #atlas standup and email it to team@atlas.example.",
+    "tools": [
+     "gmail__read_email",
+     "gmail__search_emails",
+     "gmail__send_email",
+     "internaltools__ask_user_question",
+     "knowledgegraph__fetch_record",
+     "knowledgegraph__find_records_by_person",
+     "knowledgegraph__list_files",
+     "knowledgegraph__lookup_record",
+     "knowledgegraph__navigate",
+     "knowledgegraph__search",
+     "knowledgegraph__search_timeline",
+     "retrieve_artifact_content",
+     "search_tools",
+     "write_todos"
+    ]
+   },
+   "events": [
+    {
+     "type": "complete",
+     "response": {
+      "message": {
+       "role": "assistant",
+       "content": [],
+       "tool_calls": [
+        {
+         "id": "s1",
+         "name": "knowledgegraph__search",
+         "arguments": {
+          "query": "Atlas standup"
+         }
+        }
+       ],
+       "truncated": false
+      },
+      "usage": {
+       "input_tokens": 0,
+       "output_tokens": 0,
+       "cache_read_tokens": 0,
+       "cache_write_tokens": 0,
+       "reasoning_tokens": 0
+      },
+      "stop_reason": "tool_use",
+      "model": "scripted-model"
+     }
+    }
+   ],
+   "structured": null,
+   "usage": null,
+   "error": null
+  },
+  {
+   "request": {
+    "call": "stream",
+    "digest": "fae7fd4db7b7adc4d236",
+    "message_count": 3,
+    "last_user": "Summarize the #atlas standup and email it to team@atlas.example.",
+    "tools": [
+     "gmail__read_email",
+     "gmail__search_emails",
+     "gmail__send_email",
+     "internaltools__ask_user_question",
+     "knowledgegraph__fetch_record",
+     "knowledgegraph__find_records_by_person",
+     "knowledgegraph__list_files",
+     "knowledgegraph__lookup_record",
+     "knowledgegraph__navigate",
+     "knowledgegraph__search",
+     "knowledgegraph__search_timeline",
+     "retrieve_artifact_content",
+     "search_tools",
+     "write_todos"
+    ]
+   },
+   "events": [
+    {
+     "type": "complete",
+     "response": {
+      "message": {
+       "role": "assistant",
+       "content": [],
+       "tool_calls": [
+        {
+         "id": "m1",
+         "name": "gmail__send_email",
+         "arguments": {
+          "to": "team@atlas.example",
+          "subject": "Atlas standup",
+          "body": "Auth moved to v2 on 21 October; p95 login latency fell from 900 ms to 610 ms."
+         }
+        }
+       ],
+       "truncated": false
+      },
+      "usage": {
+       "input_tokens": 0,
+       "output_tokens": 0,
+       "cache_read_tokens": 0,
+       "cache_write_tokens": 0,
+       "reasoning_tokens": 0
+      },
+      "stop_reason": "tool_use",
+      "model": "scripted-model"
+     }
+    }
+   ],
+   "structured": null,
+   "usage": null,
+   "error": null
+  },
+  {
+   "request": {
+    "call": "stream",
+    "digest": "6dabe9d34d247a5bac7f",
+    "message_count": 5,
+    "last_user": "Summarize the #atlas standup and email it to team@atlas.example.",
+    "tools": [
+     "gmail__read_email",
+     "gmail__search_emails",
+     "gmail__send_email",
+     "internaltools__ask_user_question",
+     "knowledgegraph__fetch_record",
+     "knowledgegraph__find_records_by_person",
+     "knowledgegraph__list_files",
+     "knowledgegraph__lookup_record",
+     "knowledgegraph__navigate",
+     "knowledgegraph__search",
+     "knowledgegraph__search_timeline",
+     "retrieve_artifact_content",
+     "search_tools",
+     "write_todos"
+    ]
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "delta": "I did not send the email."
+    },
+    {
+     "type": "complete",
+     "response": {
+      "message": {
+       "role": "assistant",
+       "content": [
+        {
+         "type": "text",
+         "text": "I did not send the email."
+        }
+       ],
+       "tool_calls": null,
+       "truncated": false
+      },
+      "usage": {
+       "input_tokens": 0,
+       "output_tokens": 0,
+       "cache_read_tokens": 0,
+       "cache_write_tokens": 0,
+       "reasoning_tokens": 0
+      },
+      "stop_reason": "end_turn",
+      "model": "scripted-model"
+     }
+    }
+   ],
+   "structured": null,
+   "usage": null,
+   "error": null
+  }
+ ]
+}

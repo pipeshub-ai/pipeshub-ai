@@ -51,54 +51,54 @@ describe('enterprise_search/schema/citation.schema', () => {
   describe('metadata sub-schema', () => {
     it('should have orgId as required', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('orgId')).to.exist
+      expect(metadataSchema!.path('orgId')).to.exist
     })
 
     it('should have mimeType as required', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('mimeType')).to.exist
+      expect(metadataSchema!.path('mimeType')).to.exist
     })
 
     it('should have recordId as required', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('recordId')).to.exist
+      expect(metadataSchema!.path('recordId')).to.exist
     })
 
     it('should have recordName as required', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('recordName')).to.exist
+      expect(metadataSchema!.path('recordName')).to.exist
     })
 
     it('should have origin as required', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('origin')).to.exist
+      expect(metadataSchema!.path('origin')).to.exist
     })
 
     it('should have optional array fields', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('blockNum')).to.exist
-      expect(metadataSchema.path('pageNum')).to.exist
-      expect(metadataSchema.path('departments')).to.exist
-      expect(metadataSchema.path('topics')).to.exist
-      expect(metadataSchema.path('languages')).to.exist
-      expect(metadataSchema.path('bounding_box')).to.exist
+      expect(metadataSchema!.path('blockNum')).to.exist
+      expect(metadataSchema!.path('pageNum')).to.exist
+      expect(metadataSchema!.path('departments')).to.exist
+      expect(metadataSchema!.path('topics')).to.exist
+      expect(metadataSchema!.path('languages')).to.exist
+      expect(metadataSchema!.path('bounding_box')).to.exist
     })
 
     it('should have optional string fields', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('sheetName')).to.exist
-      expect(metadataSchema.path('connector')).to.exist
-      expect(metadataSchema.path('recordType')).to.exist
-      expect(metadataSchema.path('blockType')).to.exist
-      expect(metadataSchema.path('blockText')).to.exist
+      expect(metadataSchema!.path('sheetName')).to.exist
+      expect(metadataSchema!.path('connector')).to.exist
+      expect(metadataSchema!.path('recordType')).to.exist
+      expect(metadataSchema!.path('blockType')).to.exist
+      expect(metadataSchema!.path('blockText')).to.exist
     })
 
     it('keeps the connector instance id, not only the kind of source', () => {
       // `connector` is e.g. SLACK, shared by every Slack instance; the UI needs
       // the instance to tell a demo connector's records from real ones.
       const metadataSchema = Citation.schema.path('metadata').schema
-      expect(metadataSchema.path('connectorId')).to.exist
-      expect(metadataSchema.path('connectorId').instance).to.equal('String')
+      expect(metadataSchema!.path('connectorId')).to.exist
+      expect(metadataSchema!.path('connectorId').instance).to.equal('String')
 
       const citation = new Citation({
         content: 'c',
@@ -155,22 +155,22 @@ describe('enterprise_search/schema/citation.schema', () => {
         ),
       ) as { components: { schemas: Record<string, { properties: Record<string, unknown> }> } }
       const published = spec.components.schemas.PersistedSemanticSearchCitationMetadata
-      expect(published.properties).to.have.property('connectorId')
+      expect(published!.properties).to.have.property('connectorId')
       // Search hits carry the instance name too; both schemas forbid unlisted fields.
-      expect(spec.components.schemas.SemanticSearchHitMetadata.properties).to.have.property('connectorInstanceName')
-      expect(published.properties).to.include.keys('connectorInstanceName', 'updatedAt')
+      expect(spec.components.schemas.SemanticSearchHitMetadata!.properties).to.have.property('connectorInstanceName')
+      expect(published!.properties).to.include.keys('connectorInstanceName', 'updatedAt')
     })
 
     it('should have recordVersion with default 0', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      const rvPath = metadataSchema.path('recordVersion')
+      const rvPath = metadataSchema!.path('recordVersion')
       expect(rvPath).to.exist
       expect(rvPath.defaultValue).to.equal(0)
     })
 
     it('should have previewRenderable with default true', () => {
       const metadataSchema = Citation.schema.path('metadata').schema
-      const prPath = metadataSchema.path('previewRenderable')
+      const prPath = metadataSchema!.path('previewRenderable')
       expect(prPath).to.exist
       expect(prPath.defaultValue).to.equal(true)
     })

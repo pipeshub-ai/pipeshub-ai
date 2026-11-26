@@ -31,6 +31,8 @@ import {
   PAT_APP_CLIENT_ID_PREFIX,
   SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
 } from '../../oauth_provider/constants/constants';
+import { PUBLIC_MCP_TOOLS } from '../constants/allowed-tools';
+import { SURFACE_HEADER } from '../../agent-harness/transport/surface-header';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import {
   CODE_GRAPH_INSTRUCTIONS,
@@ -257,16 +259,16 @@ function auditToolCall(
   },
 ): void {
   const user: Record<string, unknown> | undefined = req.user;
-  logger.info('MCP tool call', {
-    audit: 'mcp_tool_call',
-    orgId: getCurrentOrgId(),
-    userId: user?.userId,
-    clientId: user?.oauthClientId,
+  // org and user fill the line only when the request's context has none.
+  logger.info('mcp.tool_call.end', {
+    org_id: getCurrentOrgId(),
+    user_id: typeof user?.userId === 'string' ? user.userId : undefined,
     tool: call.tool,
-    durationMs: call.durationMs,
-    isError: call.isError,
-    argumentNames: call.argumentNames,
-    requestId: req.context?.requestId,
+    duration_ms: Math.round(call.durationMs),
+    outcome: call.isError ? 'failure' : 'success',
+    client_id: user?.oauthClientId,
+    argument_names: call.argumentNames,
+    event_name: 'mcp.tool_call.end',
   });
 }
 
@@ -352,6 +354,8 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
         'beforeRequest',
         (request) => {
           request.headers.set(MCP_RELAY_HEADER, relay);
+          // The chat routes stream an MCP client the answer-only view (P1b C-5).
+          request.headers.set(SURFACE_HEADER, 'mcp');
           return links.toLoopback(request);
         },
       );
@@ -365,6 +369,13 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
           error: logger.error.bind(logger),
         },
         dynamic: false,
+        allowedTools: [...PUBLIC_MCP_TOOLS],
+        // Always offer the citations card. This server is built per request, so it never
+        // sees the client's `initialize` and the package would guess from the last one
+        // made with this token. Claude's tool loader and its chat share a token and
+        // disagree, so the guess flips mid-chat. A client without MCP Apps gets the
+        // sources as text from the same call.
+        apps: true,
         scopes: policy.allowWriteTools ? mcpToolScopes(req.user) : ['read'],
         // Tools are listed only when the token holds every scope they need.
         grantedOAuthScopes: held,
@@ -496,17 +507,10 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
       const body = req.body as { method?: unknown } | undefined;
       const jsonRpcMethod =
         typeof body?.method === 'string' ? body.method : undefined;
-      logger.info('MCP request completed', {
-        method: jsonRpcMethod,
-        requestId: req.context?.requestId,
-      });
+      // The access line is the request's line; it lacks the JSON-RPC method.
+      logger.debug('MCP request completed', { jsonrpc_method: jsonRpcMethod });
     } catch (error: any) {
-      logger.error('MCP request failed', {
-        error: error.message,
-        method: req.method,
-        userId: req.user?.userId,
-        requestId: req.context?.requestId,
-      });
+      // Logged once, by the error middleware.
       next(error);
     }
   };

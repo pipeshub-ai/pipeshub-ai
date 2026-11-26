@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/egress.volume_alert.schema.json",
+  "title": "EgressVolumeAlertEvent",
+  "description": "The egress proxy saw an unusual amount of traffic from or to the run's sandboxes (C6.12): more than the deployment's per-run threshold, many times the org's usual run, or the hard per-run cap, which also stopped the run's egress. The proxy counts bytes per run and destination alias, decides on its flush, and reports each kind and direction once with the run's own gateway token; Node writes it on the run's stream once per run, kind and direction. Byte counts, thresholds and an alias only: never a host, path or content. Folds ignore it; it is an audit record.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "egress.volume_alert"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/EgressVolumeAlertData"
+    }
+  },
+  "$defs": {
+    "Bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "EgressVolumeAlertData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "direction",
+        "bytes",
+        "thresholdBytes",
+        "alias"
+      ],
+      "properties": {
+        "kind": {
+          "description": "run_threshold: past the deployment's per-run alert threshold; org_baseline: many times the org's usual run (its baseline is in baselineBytes); run_cap: past the hard per-run cap, and the run's egress was stopped.",
+          "enum": [
+            "run_threshold",
+            "org_baseline",
+            "run_cap"
+          ]
+        },
+        "direction": {
+          "description": "up: what the sandboxes sent; down: what they received; total: both (the cap).",
+          "enum": [
+            "up",
+            "down",
+            "total"
+          ]
+        },
+        "bytes": {
+          "$ref": "#/$defs/Bytes",
+          "description": "The run's bytes in that direction when the proxy decided."
+        },
+        "thresholdBytes": {
+          "$ref": "#/$defs/Bytes",
+          "description": "The bound it went past."
+        },
+        "baselineBytes": {
+          "$ref": "#/$defs/Bytes",
+          "description": "org_baseline only: the org's usual bytes up per run."
+        },
+        "alias": {
+          "description": "Where most of those bytes went: a gateway, CONNECT tunnels, intercepted TLS, database routes, other plain HTTP destinations, or repositories the worker fetched for the run outside its sandboxes (repository_fetch, WP-63).",
+          "enum": [
+            "model-gateway",
+            "tool-gateway",
+            "tunnel",
+            "intercepted",
+            "database",
+            "other",
+            "repository"
+          ]
+        },
+        "attemptId": {
+          "$ref": "../common.schema.json#/$defs/Id",
+          "description": "The attempt the reporting token was issued for, from the verified token."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 12,
+      "runId": "run_1",
+      "type": "egress.volume_alert",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "kind": "org_baseline",
+        "direction": "up",
+        "bytes": 734003200,
+        "thresholdBytes": 104857600,
+        "baselineBytes": 10485760,
+        "alias": "tunnel",
+        "attemptId": "att_1"
+      }
+    }
+  ]
+}

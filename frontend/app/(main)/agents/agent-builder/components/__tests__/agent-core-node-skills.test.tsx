@@ -12,7 +12,7 @@ const flow = vi.hoisted(() => ({
 
 vi.mock('react-i18next', () => ({
   initReactI18next: { type: '3rdParty', init: () => undefined },
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({ t: (key: string) => key, i18n: { language: 'en-US' } }),
 }));
 
 vi.mock('@xyflow/react', () => ({
@@ -30,6 +30,10 @@ vi.mock('@/app/components/ui', () => ({
 vi.mock('@/app/components/ui/themeable-asset-icon', () => ({
   ThemeableAssetIcon: () => null,
   themeableAssetIconPresets: { flowNodeHeader: {}, flowNodeWell: {} },
+}));
+
+vi.mock('@/app/(main)/workspace/ai-accounts/api', () => ({
+  ModelAccountsApi: { codingEngine: vi.fn().mockResolvedValue({ engines: [] }) },
 }));
 
 import { AgentCoreNode } from '../agent-core-node';

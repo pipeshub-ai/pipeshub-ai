@@ -28,10 +28,17 @@ from slack_behaviour_setup import (
     personal_connector,
     standard_workspace,
 )
+from test_slack_personal_full_sync_coverage_behaviour import KeepingSlackStore
 
 from app.models.entities import FileRecord, ProgressStatus
 
 DM_BOB, DM_DAVE, GROUP_DM, RANDOM = "D0BOB", "D0DAVE", "G0MPIM", "C0RANDOM"
+
+
+@pytest.fixture
+def store() -> KeepingSlackStore:
+    # RANDOM refuses its history, and the connector then asks whether a full sync runs.
+    return KeepingSlackStore()
 
 
 @pytest.fixture

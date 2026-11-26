@@ -1,12 +1,14 @@
-import hashlib
 import logging
-import os
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.sync_point.isync_point import ISyncPoint
 from app.utils.encryption.encryption_service import EncryptionService
+from app.utils.encryption.secret_key_ring import (
+    deployment_cipher_key,
+    secret_key_configured,
+)
 
 
 class SyncDataPointType(Enum):
@@ -65,6 +67,14 @@ def listing_checkpoint(checkpoint: int, listing_started_at: Optional[int]) -> Op
         return None
     return min(checkpoint, listing_started_at - LISTING_CLOCK_SKEW_MS)
 
+def sync_point_cipher() -> EncryptionService:
+    """The cipher of a sync point's sealed fields (delta links): writes under ``SECRET_KEY``, reads under the ring
+    (ADR-KEY-01). The rotation's sync-point step (``sync_point.rekey``) opens them with the same one."""
+    if not secret_key_configured():
+        raise ValueError("SECRET_KEY environment variable is required for encrypting sensitive sync point data")
+    return EncryptionService.get_instance("aes-256-gcm", deployment_cipher_key(), logging.getLogger("sync_point"))
+
+
 class SyncPoint(ISyncPoint):
     connector_id: str
     org_id: str
@@ -81,16 +91,7 @@ class SyncPoint(ISyncPoint):
         self.sync_data_point_type = sync_data_point_type
         self.connector_id = connector_id
 
-        # Initialize encryption service for delta links
-        secret_key = os.getenv("SECRET_KEY")
-        if not secret_key:
-            raise ValueError("SECRET_KEY environment variable is required for encrypting sensitive sync point data")
-
-        hashed_key = hashlib.sha256(secret_key.encode()).digest()
-        hex_key = hashed_key.hex()
-        self.encryption_service = EncryptionService.get_instance(
-            "aes-256-gcm", hex_key, logging.getLogger("sync_point")
-        )
+        self.encryption_service = sync_point_cipher()
 
     def _encrypt_sensitive_fields(self, data: Dict[str, Any], fields_to_encrypt: List[str]) -> Dict[str, Any]:
         """Encrypt specified fields before storage."""

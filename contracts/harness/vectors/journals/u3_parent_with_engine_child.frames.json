@@ -1,0 +1,440 @@
+{
+ "scenario": "u3_parent_with_engine_child",
+ "frames": [
+  {
+   "id": "j:0.1/0.0.0",
+   "frame": {
+    "type": "CUSTOM",
+    "name": "conversation_created",
+    "value": {
+     "conversationId": "ses-u3",
+     "title": "Analyse the Q3 numbers with a code task",
+     "runId": "run-u3-parent"
+    }
+   }
+  },
+  {
+   "id": "j:4.1/0.0.0",
+   "frame": {
+    "type": "RUN_STARTED",
+    "threadId": "ses-u3",
+    "runId": "run-u3-parent"
+   }
+  },
+  {
+   "id": "j:4.2/0.0.0",
+   "frame": {
+    "type": "STATE_SNAPSHOT",
+    "runId": "run-u3-parent",
+    "snapshot": {
+     "run_id": "run-u3-parent",
+     "agent_id": "c7eb2b47-bb02-69a5-8211-2cea7090ccd6",
+     "trace_id": "e1f56701-b147-9e40-e3d7-8743a26ae207",
+     "parent_run_id": null,
+     "role_name": "pipeshub-agent",
+     "status": "starting",
+     "current_turn": 0,
+     "current_tool": null,
+     "current_child_run_id": null,
+     "hil_request_id": null,
+     "goal_description": "Analyse the Q3 numbers with a code task",
+     "started_at": "2026-10-04T12:00:00.000Z",
+     "updated_at": "2026-10-04T12:00:00.000Z"
+    }
+   }
+  },
+  {
+   "id": "j:4.3/0.0.0",
+   "frame": {
+    "type": "STATE_SNAPSHOT",
+    "runId": "run-u3-parent",
+    "snapshot": {
+     "run_id": "run-u3-parent",
+     "agent_id": "c7eb2b47-bb02-69a5-8211-2cea7090ccd6",
+     "trace_id": "e1f56701-b147-9e40-e3d7-8743a26ae207",
+     "parent_run_id": null,
+     "role_name": "pipeshub-agent",
+     "status": "calling_llm",
+     "current_turn": 0,
+     "current_tool": null,
+     "current_child_run_id": null,
+     "hil_request_id": null,
+     "goal_description": "Analyse the Q3 numbers with a code task",
+     "started_at": "2026-10-04T12:00:00.000Z",
+     "updated_at": "2026-10-04T12:00:00.000Z"
+    }
+   }
+  },
+  {
+   "id": "j:5.1/0.0.0",
+   "frame": {
+    "type": "TEXT_MESSAGE_START",
+    "messageId": "msg_4c7773be977c",
+    "role": "assistant",
+    "runId": "run-u3-parent"
+   }
+  },
+  {
+   "id": "j:5.2/0.0.0",
+   "frame": {
+    "type": "TEXT_MESSAGE_CONTENT",
+    "messageId": "msg_4c7773be977c",
+    "delta": "Handing this to a code task.",
+    "runId": "run-u3-parent"
+   }
+  },
+  {
+   "id": "j:5.3/0.0.0",
+   "frame": {
+    "type": "STATE_SNAPSHOT",
+    "runId": "run-u3-parent",
+    "snapshot": {
+     "run_id": "run-u3-parent",
+     "agent_id": "c7eb2b47-bb02-69a5-8211-2cea7090ccd6",
+     "trace_id": "e1f56701-b147-9e40-e3d7-8743a26ae207",
+     "parent_run_id": null,
+     "role_name": "pipeshub-agent",
+     "status": "calling_llm",
+     "current_turn": 0,
+     "current_tool": null,
+     "current_child_run_id": null,
+     "hil_request_id": null,
+     "goal_description": "Analyse the Q3 numbers with a code task",
+     "started_at": "2026-10-04T12:00:00.000Z",
+     "updated_at": "2026-10-04T12:00:00.000Z"
+    }
+   }
+  },
+  {
+   "id": "j:5.4/0.0.0",
+   "frame": {
+    "type": "TEXT_MESSAGE_END",
+    "messageId": "msg_4c7773be977c",
+    "runId": "run-u3-parent"
+   }
+  },
+  {
+   "id": "j:5.5/0.0.0",
+   "frame": {
+    "type": "TOOL_CALL_START",
+    "toolCallId": "call-ct",
+    "toolCallName": "code_task",
+    "runId": "run-u3-parent"
+   }
+  },
+  {
+   "id": "j:5.6/0.0.0",
+   "frame": {
+    "type": "TOOL_CALL_ARGS",
+    "toolCallId": "call-ct",
+    "delta": "{\"goal\":\"Analyse in/q3.csv\"}",
+    "runId": "run-u3-parent",
+    "argsSummary": null,
+    "argsPreview": "{\"goal\":\"Analyse in/q3.csv\"}"
+   }
+  },
+  {
+   "id": "j:5.7/0.0.0",
+   "frame": {
+    "type": "STATE_SNAPSHOT",
+    "runId": "run-u3-parent",
+    "snapshot": {
+     "run_id": "run-u3-parent",
+     "agent_id": "c7eb2b47-bb02-69a5-8211-2cea7090ccd6",
+     "trace_id": "e1f56701-b147-9e40-e3d7-8743a26ae207",
+     "parent_run_id": null,
+     "role_name": "pipeshub-agent",
+     "status": "running_tool",
+     "current_turn": 0,
+     "current_tool": "code_task",
+     "current_child_run_id": null,
+     "hil_request_id": null,
+     "goal_description": "Analyse the Q3 numbers with a code task",
+     "started_at": "2026-10-04T12:00:00.000Z",
+     "updated_at": "2026-10-04T12:00:00.000Z"
+    }
+   }
+  },
+  {
+   "id": "j:6.1/0.0.0",
+   "frame": {
+    "type": "STEP_STARTED",
+    "stepName": "sub_agent:pipeshub-subagent-analysis",
+    "runId": "run-u3-parent"
+   }
+  },
+  {
+   "id": "j:6.2/0.0.0",
+   "frame": {
+    "type": "RUN_STARTED",
+    "threadId": "ses-u3",
+    "runId": "run-u3-child",
+    "parentRunId": "run-u3-parent",
+    "codeTaskGoal": "Analyse in/q3.csv"
+   }
+  },
+  {
+   "id": "j:6.3/0.0.0",
+   "frame": {
+    "type": "STATE_SNAPSHOT",
+    "runId": "run-u3-child",
+    "snapshot": {
+     "run_id": "run-u3-child",
+     "agent_id": "90e4e4a9-f7b9-5464-9e21-c33b434383cd",
+     "trace_id": "e1f56701-b147-9e40-e3d7-8743a26ae207",
+     "parent_run_id": "run-u3-parent",
+     "role_name": "pipeshub-subagent",
+     "status": "running",
+     "current_turn": 0,
+     "current_tool": null,
+     "current_child_run_id": null,
+     "hil_request_id": null,
+     "goal_description": "analysis",
+     "started_at": "2026-10-04T12:00:00.000Z",
+     "updated_at": "2026-10-04T12:00:00.000Z"
+    }
+   }
+  },
+  {
+   "id": "j:7.1/0.0.0",
+   "frame": {
+    "type": "STATE_SNAPSHOT",
+    "runId": "run-u3-child",
+    "snapshot": {
+     "run_id": "run-u3-child",
+     "agent_id": "90e4e4a9-f7b9-5464-9e21-c33b434383cd",
+     "trace_id": "e1f56701-b147-9e40-e3d7-8743a26ae207",
+     "parent_run_id": "run-u3-parent",
+     "role_name": "pipeshub-subagent",
+     "status": "completed",
+     "current_turn": 0,
+     "current_tool": null,
+     "current_child_run_id": null,
+     "hil_request_id": null,
+     "goal_description": "analysis",
+     "started_at": "2026-10-04T12:00:00.000Z",
+     "updated_at": "2026-10-04T12:00:00.000Z"
+    }
+   }
+  },
+  {
+   "id": "j:7.2/0.0.0",
+   "frame": {
+    "type": "RUN_FINISHED",
+    "runId": "run-u3-child",
+    "parentRunId": "run-u3-parent"
+   }
+  },
+  {
+   "id": "j:7.3/0.0.0",
+   "frame": {
+    "type": "STEP_FINISHED",
+    "stepName": "sub_agent:pipeshub-subagent-analysis",
+    "runId": "run-u3-parent"
+   }
+  },
+  {
+   "id": "j:8.1/0.0.0",
+   "frame": {
+    "type": "TOOL_CALL_END",
+    "toolCallId": "call-ct",
+    "runId": "run-u3-parent"
+   }
+  },
+  {
+   "id": "j:8.2/0.0.0",
+   "frame": {
+    "type": "TOOL_CALL_RESULT",
+    "toolCallId": "call-ct",
+    "content": "analysis.csv written",
+    "role": "tool",
+    "status": "completed",
+    "runId": "run-u3-parent",
+    "resultSummary": null
+   }
+  },
+  {
+   "id": "j:9.1/0.0.0",
+   "frame": {
+    "type": "STATE_SNAPSHOT",
+    "runId": "run-u3-parent",
+    "snapshot": {
+     "run_id": "run-u3-parent",
+     "agent_id": "c7eb2b47-bb02-69a5-8211-2cea7090ccd6",
+     "trace_id": "e1f56701-b147-9e40-e3d7-8743a26ae207",
+     "parent_run_id": null,
+     "role_name": "pipeshub-agent",
+     "status": "calling_llm",
+     "current_turn": 1,
+     "current_tool": null,
+     "current_child_run_id": null,
+     "hil_request_id": null,
+     "goal_description": "Analyse the Q3 numbers with a code task",
+     "started_at": "2026-10-04T12:00:00.000Z",
+     "updated_at": "2026-10-04T12:00:00.000Z"
+    }
+   }
+  },
+  {
+   "id": "j:10.1/0.0.0",
+   "frame": {
+    "type": "TEXT_MESSAGE_START",
+    "messageId": "msg_4c7773be977c",
+    "role": "assistant",
+    "runId": "run-u3-parent"
+   }
+  },
+  {
+   "id": "j:10.2/0.0.0",
+   "frame": {
+    "type": "TEXT_MESSAGE_CONTENT",
+    "messageId": "msg_4c7773be977c",
+    "delta": "Done: the engine wrote the analysis.",
+    "runId": "run-u3-parent"
+   }
+  },
+  {
+   "id": "j:10.3/0.0.0",
+   "frame": {
+    "type": "TEXT_MESSAGE_END",
+    "messageId": "msg_4c7773be977c",
+    "runId": "run-u3-parent"
+   }
+  },
+  {
+   "id": "j:10.4/0.0.0",
+   "frame": {
+    "type": "STATE_DELTA",
+    "runId": "run-u3-parent",
+    "delta": [
+     {
+      "op": "replace",
+      "path": "/citations",
+      "value": []
+     },
+     {
+      "op": "replace",
+      "path": "/normalizedAnswer",
+      "value": "Done: the engine wrote the analysis."
+     },
+     {
+      "op": "replace",
+      "path": "/rawLength",
+      "value": 36
+     }
+    ]
+   }
+  },
+  {
+   "id": "j:12.1/0.0.0",
+   "frame": {
+    "type": "STATE_SNAPSHOT",
+    "runId": "run-u3-parent",
+    "snapshot": {
+     "run_id": "run-u3-parent",
+     "agent_id": "c7eb2b47-bb02-69a5-8211-2cea7090ccd6",
+     "trace_id": "e1f56701-b147-9e40-e3d7-8743a26ae207",
+     "parent_run_id": null,
+     "role_name": "pipeshub-agent",
+     "status": "completed",
+     "current_turn": 1,
+     "current_tool": null,
+     "current_child_run_id": null,
+     "hil_request_id": null,
+     "goal_description": "Analyse the Q3 numbers with a code task",
+     "started_at": "2026-10-04T12:00:00.000Z",
+     "updated_at": "2026-10-04T12:00:00.000Z"
+    }
+   }
+  },
+  {
+   "id": "j:12.2/0.0.0",
+   "frame": {
+    "type": "STATE_DELTA",
+    "runId": "run-u3-parent",
+    "delta": [
+     {
+      "op": "replace",
+      "path": "/citations",
+      "value": []
+     },
+     {
+      "op": "replace",
+      "path": "/normalizedAnswer",
+      "value": "Done: the engine wrote the analysis."
+     },
+     {
+      "op": "replace",
+      "path": "/rawLength",
+      "value": 36
+     }
+    ]
+   }
+  },
+  {
+   "id": "j:12.3/0.0.0",
+   "frame": {
+    "type": "STATE_SNAPSHOT",
+    "runId": "run-u3-parent",
+    "snapshot": {
+     "final": true,
+     "parts": [
+      {
+       "type": "text",
+       "content": "Handing this to a code task.",
+       "runId": "run-u3-parent"
+      },
+      {
+       "type": "tool_call",
+       "toolCallId": "call-ct",
+       "toolName": "code_task",
+       "args": "{\"goal\":\"Analyse in/q3.csv\"}",
+       "status": "completed",
+       "runId": "run-u3-parent",
+       "resultPreview": "analysis.csv written"
+      },
+      {
+       "type": "sub_agent",
+       "runId": "run-u3-child",
+       "parentRunId": "run-u3-parent",
+       "roleName": "pipeshub-subagent-analysis",
+       "codeTaskGoal": "Analyse in/q3.csv",
+       "status": "completed",
+       "parts": []
+      },
+      {
+       "type": "text",
+       "content": "Done: the engine wrote the analysis.",
+       "runId": "run-u3-parent",
+       "isFinal": true
+      }
+     ],
+     "answer": "Done: the engine wrote the analysis.",
+     "citations": [],
+     "confidence": null,
+     "succeeded_tool_names": [
+      "code_task"
+     ],
+     "failed_tool_names": []
+    }
+   }
+  },
+  {
+   "id": "j:12.4/0.0.0",
+   "frame": {
+    "type": "RUN_FINISHED",
+    "result": {
+     "conversation": {
+      "_id": "conversation",
+      "messages": []
+     },
+     "meta": {
+      "requestId": "r",
+      "timestamp": "t",
+      "duration": 0
+     }
+    }
+   }
+  }
+ ]
+}

@@ -163,13 +163,13 @@ describe('AuthMiddleware puts the verified org and user on later log lines', () 
 
   it('a scoped service token', async () => {
     tokens.verifyScopedToken.resolves({ userId: 'svc', orgId: 'org_a', iat: iat() } as any)
-    const seen = await lineAfter((next) => mw.scopedTokenValidator('mail:send')({ headers: { authorization: 'Bearer t' } } as any, {} as any, next as any))
+    const seen = await lineAfter((next) => mw.scopedTokenValidator('mail:send')({ headers: { authorization: 'Bearer t' } } as any, {} as any, next as any) as Promise<void>)
     expect(seen.record).to.include({ org_id: 'org_a', user_id: 'svc' })
   })
 
   it('a pre-org scoped token carries no org, and never its email', async () => {
     tokens.verifyScopedToken.resolves({ email: 'a@b.c', iat: iat() } as any)
-    const seen = await lineAfter((next) => mw.scopedTokenValidator('mail:send')({ headers: { authorization: 'Bearer t' } } as any, {} as any, next as any))
+    const seen = await lineAfter((next) => mw.scopedTokenValidator('mail:send')({ headers: { authorization: 'Bearer t' } } as any, {} as any, next as any) as Promise<void>)
     expect(seen.record).to.not.have.any.keys('org_id', 'user_id')
     expect(JSON.stringify(seen.record)).to.not.contain('a@b.c')
   })
@@ -226,7 +226,7 @@ describe('AuthMiddleware at LOG_LEVEL=debug logs no token payload', () => {
   it('a scoped token: the debug lines are written, without the email or the name', async () => {
     tokens.verifyScopedToken.resolves(claims() as any)
 
-    const err = await passes((next) => mw.scopedTokenValidator('mail:send')({ headers: { authorization: 'Bearer t' } } as any, {} as any, next as any))
+    const err = await passes((next) => mw.scopedTokenValidator('mail:send')({ headers: { authorization: 'Bearer t' } } as any, {} as any, next as any) as Promise<void>)
 
     expect(err).to.equal(undefined)
     expect(debugRecords()).to.have.length.greaterThan(0)

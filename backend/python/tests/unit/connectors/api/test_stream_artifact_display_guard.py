@@ -10,7 +10,13 @@ from fastapi import HTTPException
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.api.router import stream_record, stream_record_internal
-from app.models.entities import ArtifactRecord, ArtifactType, ArtifactVisibility, RecordType
+from app.models.entities import (
+    ArtifactRecord,
+    ArtifactType,
+    ArtifactVisibility,
+    RecordType,
+)
+from tests.support.record_access import InMemoryRecordAccess
 
 
 def _artifact_record(**overrides) -> ArtifactRecord:
@@ -52,10 +58,13 @@ async def _call_stream(record, graph_provider):
 
 
 def _graph_with_record(record):
+    # u1 streams its own chart: the owner always may (SS0); anyone else needs its provenance.
     gp = AsyncMock()
     gp.get_document = AsyncMock(return_value={"_key": "org-1"})
     gp.get_record_by_id = AsyncMock(return_value=record)
-    gp.check_record_access_with_details = AsyncMock(return_value={"hasAccess": True})
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "u1-key", "userId": "u1"})
+    gp.get_edge = AsyncMock(return_value={"role": "OWNER"})
+    InMemoryRecordAccess().readable("u1", "org-1", record.id, connectorId="c1").serve(gp)
     return gp
 
 

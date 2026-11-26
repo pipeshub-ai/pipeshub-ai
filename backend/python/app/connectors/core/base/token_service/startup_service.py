@@ -9,9 +9,18 @@ import logging
 from typing import Any, Optional
 
 from app.config.configuration_service import ConfigurationService
-
-from app.edition_services import TokenRefreshService, ToolsetTokenRefreshService, MCPTokenRefreshService
+from app.connectors.core.base.token_service.token_refresher import (
+    TokenRefresher,
+    deployment_token_refresher,
+)
+from app.edition_services import (
+    MCPTokenRefreshService,
+    TokenRefreshService,
+    ToolsetTokenRefreshService,
+)
+from app.harness.credentials.read_through import credentials_switch_on
 from app.services.messaging.interface.producer import IMessagingProducer
+from harness_core.clock import SystemClock
 
 
 class StartupService:
@@ -22,6 +31,7 @@ class StartupService:
         self._token_refresh_service: Optional[TokenRefreshService] = None
         self._toolset_token_refresh_service: Optional[ToolsetTokenRefreshService] = None
         self._mcp_token_refresh_service: Optional[MCPTokenRefreshService] = None
+        self._token_refresher: TokenRefresher | None = None
         self._initialize_lock = asyncio.Lock()
         self._initialized = False
 
@@ -56,22 +66,28 @@ class StartupService:
                 self._token_refresh_service = token_refresh_service
                 self.logger.info("✅ Connector token refresh service initialized")
 
-                toolset_token_refresh_service = ToolsetTokenRefreshService(
-                    configuration_service
-                )
-                if oauth_config_resolver is not None:
-                    toolset_token_refresh_service._oauth_config_resolver = (
-                        oauth_config_resolver
+                if credentials_switch_on():
+                    # CPD-8: toolset and MCP credentials are bindings; one refresher renews them.
+                    self._token_refresher = await deployment_token_refresher(configuration_service, SystemClock())
+                    self._token_refresher.start()
+                    self.logger.info("Binding token refresher started (CONTROL_PLANE_CREDENTIALS)")
+                else:
+                    toolset_token_refresh_service = ToolsetTokenRefreshService(
+                        configuration_service
                     )
-                await toolset_token_refresh_service.start(wait_for_initial_refresh=False)
-                self._toolset_token_refresh_service = toolset_token_refresh_service
-                self.logger.info("✅ Toolset token refresh service initialized")
+                    if oauth_config_resolver is not None:
+                        toolset_token_refresh_service._oauth_config_resolver = (
+                            oauth_config_resolver
+                        )
+                    await toolset_token_refresh_service.start(wait_for_initial_refresh=False)
+                    self._toolset_token_refresh_service = toolset_token_refresh_service
+                    self.logger.info("✅ Toolset token refresh service initialized")
 
-                # Initialize MCP server token refresh service (separate from connectors/toolsets)
-                mcp_token_refresh_service = MCPTokenRefreshService(configuration_service)
-                await mcp_token_refresh_service.start(wait_for_initial_refresh=False)
-                self._mcp_token_refresh_service = mcp_token_refresh_service
-                self.logger.info("✅ MCP token refresh service initialized")
+                    # Initialize MCP server token refresh service (separate from connectors/toolsets)
+                    mcp_token_refresh_service = MCPTokenRefreshService(configuration_service)
+                    await mcp_token_refresh_service.start(wait_for_initial_refresh=False)
+                    self._mcp_token_refresh_service = mcp_token_refresh_service
+                    self.logger.info("✅ MCP token refresh service initialized")
 
                 self._initialized = True
                 self.logger.info("Startup services initialized successfully")
@@ -98,6 +114,10 @@ class StartupService:
                         pass
                     self._mcp_token_refresh_service = None
 
+                if self._token_refresher:
+                    await self._token_refresher.stop()
+                    self._token_refresher = None
+
                 self._initialized = False
                 self.logger.error(f"Error initializing startup services: {e}")
                 raise
@@ -121,6 +141,10 @@ class StartupService:
                     self.logger.info("✅ MCP token refresh service stopped")
                     self._mcp_token_refresh_service = None
 
+                if self._token_refresher:
+                    await self._token_refresher.stop()
+                    self._token_refresher = None
+
                 self._initialized = False
                 self.logger.info("Startup services shutdown successfully")
 
@@ -134,6 +158,10 @@ class StartupService:
     def get_toolset_token_refresh_service(self) -> Optional[ToolsetTokenRefreshService]:
         """Get the toolset token refresh service instance"""
         return self._toolset_token_refresh_service
+
+    def get_token_refresher(self) -> TokenRefresher | None:
+        """The binding token refresher, with CONTROL_PLANE_CREDENTIALS on (CPD-8)"""
+        return self._token_refresher
 
     def get_mcp_token_refresh_service(self) -> Optional[MCPTokenRefreshService]:
         """Get the MCP server token refresh service instance"""

@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-import uuid
 import os
+import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -30,6 +30,7 @@ class DockerFactoryConfig(BaseModel):
     image: str = "agent-loop-sandbox:latest"
     memory_limit_mb: int = 512
     cpu_limit: float = 0.5
+    pids_limit: int = Field(default=128, gt=0)
     egress_network: str = "sandbox_egress"
     pip_index_url: str = "https://pypi.org/simple"
     npm_registry: str = "https://registry.npmjs.org"
@@ -104,6 +105,7 @@ class DockerCodingSandboxFactory(SandboxBackendFactory):
             working_dir=working_dir,
             memory_limit_mb=cfg.memory_limit_mb,
             cpu_limit=cfg.cpu_limit,
+            pids_limit=cfg.pids_limit,
             egress_network=cfg.egress_network,
             pip_index_url=cfg.pip_index_url,
             npm_registry=cfg.npm_registry,

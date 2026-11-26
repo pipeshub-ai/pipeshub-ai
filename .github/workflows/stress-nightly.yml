@@ -28,14 +28,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install uv
-        run: pip install uv
-
       - name: Install dependencies
         run: |
           cd backend/python
-          uv pip install --system pytest pytest-asyncio pytest-timeout pytest-xdist
-          uv pip install --system -e ".[dev]"
+          requirements/install.sh dev --project . --editable
 
       - name: Run the stress tests
         working-directory: backend/python

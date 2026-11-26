@@ -23,7 +23,7 @@ class GoogleDriveEnterprise:
         parameters=[
             ToolParameter(name="customer", type=ParameterType.STRING, description="The customer ID to get the list of users for", required=True),
         ],
-        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_users_list(self, customer: str = "my_customer") -> tuple[bool, str]:
         """Get the list of users in the domain
@@ -46,7 +46,7 @@ class GoogleDriveEnterprise:
         parameters=[
             ToolParameter(name="customer", type=ParameterType.STRING, description="The customer ID to get the list of groups for", required=True),
         ],
-        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_groups_list(self, customer: str = "my_customer") -> tuple[bool, str]:
         """Get the list of groups in the domain
@@ -68,7 +68,7 @@ class GoogleDriveEnterprise:
         parameters=[
             ToolParameter(name="customer", type=ParameterType.STRING, description="The customer ID to get the list of domains for", required=True),
         ],
-        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_domains_list(self, customer: str = "my_customer") -> tuple[bool, str]:
         """Get the list of domains in the domain
@@ -90,7 +90,7 @@ class GoogleDriveEnterprise:
         parameters=[
             ToolParameter(name="group_email", type=ParameterType.STRING, description="The email of the group to get the list of members for", required=True),
         ],
-        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_group_members_list(self, group_email: str) -> tuple[bool, str]:
         """Get the list of members in a group
@@ -113,7 +113,7 @@ class GoogleDriveEnterprise:
         parameters=[
             ToolParameter(name="user_email", type=ParameterType.STRING, description="The email of the user to get the info for", required=True),
         ],
-        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_user_info(self, user_email: str) -> tuple[bool, str]:
         """Get the info of a user
@@ -136,7 +136,7 @@ class GoogleDriveEnterprise:
         parameters=[
             ToolParameter(name="group_email", type=ParameterType.STRING, description="The email of the group to get the info for", required=True),
         ],
-        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="enterprise"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_group_info(self, group_email: str) -> tuple[bool, str]:
         """Get the info of a group

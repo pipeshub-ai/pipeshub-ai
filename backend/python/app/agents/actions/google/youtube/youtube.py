@@ -72,7 +72,7 @@ class YouTube:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     def search_videos(
         self,
@@ -128,7 +128,7 @@ class YouTube:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     def get_video_details(
         self,
@@ -182,7 +182,7 @@ class YouTube:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     def get_channel_info(
         self,
@@ -237,7 +237,7 @@ class YouTube:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     def get_playlist_videos(
         self,
@@ -292,7 +292,7 @@ class YouTube:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     def get_user_playlists(
         self,
@@ -347,7 +347,7 @@ class YouTube:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     def get_video_comments(
         self,
@@ -402,7 +402,7 @@ class YouTube:
                 required=False
             )
         ],
-        tags=[Tag(key="category", value="video"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="video"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     def get_trending_videos(
         self,

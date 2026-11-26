@@ -82,10 +82,23 @@ _KEY_SHAPES = re.compile(
     rf"|AIza[{_TOKEN}]{{30,}}"
     rf"|gh[pousr]_[A-Za-z0-9]{{36,}}"
     rf"|github_pat_[A-Za-z0-9_]{{22,}}"
+    # Tokens the connectors hold: Google OAuth access (a service account's has dots: `ya29.c.c0…`) and refresh, GitLab
+    # personal and OAuth-application, Notion current and legacy, Atlassian, Linear API and OAuth. A legacy Notion token
+    # is exactly 43 characters after `secret_`, and not after `_`, so `secret_<sha1>` in a path or `top_secret_…` stays.
+    rf"|ya29\.[{_TOKEN}.]{{20,}}"
+    rf"|1//0[{_TOKEN}]{{30,}}"
+    rf"|gl(?:pat|oas)-[{_TOKEN}]{{20,}}"
+    rf"|ntn_[A-Za-z0-9]{{40,}}"
+    rf"|(?<!_)secret_[A-Za-z0-9]{{43}}(?![A-Za-z0-9])"
+    rf"|ATATT[{_TOKEN}=]{{20,}}"
+    rf"|lin_(?:api|oauth)_[A-Za-z0-9]{{32,}}"
     rf"|(?<![_\-])eyJ[{_TOKEN}]{{8,}}\.[{_TOKEN}]{{8,}}\.[{_TOKEN}]*"
     rf")"
 )
-_KEY_SHAPE_TRIGGERS = ("phpat_", "sk-", "akia", "asia", "xox", "aiza", "gh", "eyj")
+_KEY_SHAPE_TRIGGERS = (
+    "phpat_", "sk-", "akia", "asia", "xox", "aiza", "gh", "eyj", "ya29.", "1//0", "glpat-", "gloas-", "ntn_", "secret_", "atatt",
+    "lin_api_", "lin_oauth_",
+)
 
 # `Bearer` is matched in any case; lowercase "basic" is an ordinary word, so
 # only `Basic` followed by something base64-shaped is taken as a credential.
@@ -99,19 +112,19 @@ _AUTH_SCHEME = re.compile(
 # and only after the name has been found to be a credential, so a value
 # that holds a further pair (`Error: password=x`) is still scanned.
 _PAIR_HEAD = re.compile(r"(?<![A-Za-z0-9_.\-])([A-Za-z][A-Za-z0-9_.\-]{0,127})['\"]?[ \t]*[:=][ \t]*")
-# Here and in _PYDANTIC_INPUT_VALUE, runs of plain characters are one
-# character-class repeat: re keeps backtracking state for every pass through
-# a repeated group (about 120 bytes per character of a 1 MB quoted value).
+# The repeats of an alternation are possessive (`*+`, `++`): re otherwise keeps one backtrack point per character
+# matched, so a long value grew memory with its length and ran 3-5x slower per character once that outgrew the CPU
+# cache. Nothing after them can fail, so they match exactly what the greedy forms did.
 _PAIR_VALUE = re.compile(
-    r"b?\"[^\"\\\n]*(?:\\.[^\"\\\n]*)*\"?"
-    r"|b?'[^'\\\n]*(?:\\.[^'\\\n]*)*'?"
+    r"b?\"(?:[^\"\\\n]|\\.)*+\"?"
+    r"|b?'(?:[^'\\\n]|\\.)*+'?"
     r"|(?:(?i:bearer|basic|token)[ \t]+)?[^\s,;&'\"(){}\[\]<>]+"
 )
 # str(pydantic.ValidationError) echoes each rejected value as
 # `input_value=<repr>, input_type=<type>`; the repr can be a password. A repr
 # may hold `]` or `,` itself, so the value runs to `, input_type=` or, when
 # that was cut off, to the end of the line.
-_PYDANTIC_INPUT_VALUE = re.compile(r"(input_value=)(?!, input_type=)[^\n][^,\n]*(?:,(?! input_type=)[^,\n]*)*")
+_PYDANTIC_INPUT_VALUE = re.compile(r"(input_value=)(?:(?!, input_type=)[^\n])++")
 
 # A traceback's source line: the line after `File "...", line N, in f`, two
 # spaces deeper under the same `|` gutter (exception groups). It is code read
@@ -278,7 +291,9 @@ def _redact_urls(text: str) -> str:
 def redact_secrets_in_text(text: str) -> str:
     """``text`` with credentials masked: private keys, this process's secret
     env values, known key shapes (``phpat_``, ``sk-``, ``AKIA``, ``xox*-``,
-    ``AIza``, GitHub tokens, JWTs), credential-named ``name: value`` pairs,
+    ``AIza``, GitHub tokens, JWTs, Google OAuth ``ya29.``/``1//0`` tokens,
+    GitLab ``glpat-``/``gloas-``, Notion ``ntn_``/``secret_``, Atlassian
+    ``ATATT``, Linear ``lin_api_``/``lin_oauth_``), credential-named ``name: value`` pairs,
     ``Bearer``/``Basic`` credentials, and URL passwords and query secrets.
 
     A pair value that only describes the credential is kept: a bare presence

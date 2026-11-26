@@ -503,13 +503,16 @@ test.describe('Chat — response tabs', () => {
   });
 
   test('"Sources" tab is rendered for a completed response', async ({ page }) => {
-    // Tabs are plain elements, not buttons; match the label itself.
-    await expect(page.getByText('Sources', { exact: true }).first()).toBeVisible({ timeout: 5_000 });
+    // The answer's tabs are a real tab list (QA-CLASSIC-FU-1).
+    await expect(page.getByRole('tab', { name: 'Sources' }).first()).toBeVisible({ timeout: 5_000 });
   });
 
   test('"Sources" tab does nothing for an answer with no sources', async ({ page }) => {
-    // The mocked answer carries no citations, so the tab is shown but disabled.
-    await page.getByText('Sources', { exact: true }).first().click();
+    // The mocked answer carries no citations, so the tab is shown but disabled, and the answer stays selected.
+    const sources = page.getByRole('tab', { name: 'Sources' }).first();
+    await expect(sources).toHaveAttribute('aria-disabled', 'true', { timeout: 5_000 });
+    await sources.click({ force: true });
+    await expect(page.getByRole('tab', { name: 'Answer' }).first()).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator(`text=${TEST_ANSWER.slice(0, 40)}`).first()).toBeVisible({
       timeout: 5_000,
     });

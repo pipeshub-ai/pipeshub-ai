@@ -58,6 +58,9 @@ export const REDIS_STREAMS_DEFAULTS = {
   maxRetryTime: 30000,
   idleSleepMs: 100,
   errorBackoffMs: 1000,
+  claimMinIdleMs: 30000,
+  // The Python consumers' MAX_DELIVERY_ATTEMPTS default.
+  maxDeliveries: 3,
 } as const;
 
 /** Redis CLI error substring when group already exists */

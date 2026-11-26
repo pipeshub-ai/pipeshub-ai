@@ -1,0 +1,644 @@
+{
+ "scenario": "agent_final_answer_with_write",
+ "query": "Export the Q3 report",
+ "runId": "run-golden",
+ "sessionId": "ses-1",
+ "events": [
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 1,
+   "type": "run.admitted",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "runKind": "interactive",
+    "principalRef": "p_user"
+   },
+   "runId": "run-golden"
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 2,
+   "type": "run.claimed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "attempt": 1,
+    "fence": 1,
+    "leaseMs": 30000
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 3,
+   "type": "run.spec_pinned",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "specDigest": "sha256:2f57d0816eae42c1ed12263b802d8b8ce009d669271e6d707a781f11cdbdee46",
+    "spec": {
+     "schemaVersion": 2,
+     "harnessMajor": 2,
+     "foldVersion": 1,
+     "runKind": "interactive",
+     "principalRef": "p_user-1",
+     "model": {
+      "policy": [
+       {
+        "provider": "openai",
+        "model": "gpt-x"
+       }
+      ],
+      "promptVersion": "pipeshub-agent-2026-09"
+     },
+     "grants": {
+      "tools": [],
+      "sandboxProfile": "none",
+      "egress": "none"
+     },
+     "budgets": {
+      "maxTurns": 15,
+      "maxTokens": 1000000,
+      "maxCostUsd": 5.0,
+      "activeTimeS": 3600,
+      "calendarDeadline": "2027-01-01T00:00:00Z",
+      "maxChildren": 0
+     },
+     "capabilitiesDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+     "extensions": {
+      "x.pipeshub": {
+       "model": {
+        "modelKey": "model-1",
+        "modelName": "gpt-x"
+       },
+       "knowledge": {
+        "apps": [],
+        "kb": [],
+        "strictScope": true
+       },
+       "mcp": [],
+       "skills": [],
+       "mounts": [],
+       "via": "session",
+       "agent": {
+        "agentKey": "agent-1",
+        "definitionVersion": 7,
+        "mode": "quick"
+       }
+      }
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 4,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "capabilities.observed": {}
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 5,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "pre_run.goal": {
+      "description": "Export the Q3 report",
+      "requirements": [],
+      "successCriteria": [],
+      "constraints": [
+       "<original_query>Export the Q3 report</original_query>"
+      ],
+      "gaps": [],
+      "mode": "quick",
+      "loopKind": "react",
+      "composeDomainAgents": false,
+      "wholeDocument": false,
+      "clarifyingQuestions": []
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 6,
+   "type": "x.pipeshub.goal.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "description": "Export the Q3 report"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 7,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "user",
+    "textRef": {
+     "ref": "inline:RXhwb3J0IHRoZSBRMyByZXBvcnQ=",
+     "hash": "sha256:e7f2768dce46928965218e721a171ff695adca5ee4cc5403dd618073c924433f",
+     "size": 20
+    },
+    "isFinal": false
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 8,
+   "type": "turn.started",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 9,
+   "type": "model.request",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "contextDigest": "sha256:afab81d590520a705fba12f11189f214118f6da0ae7daa7a6396fd46448f5fd8",
+    "route": {
+     "provider": "openai",
+     "model": "scripted-model"
+    },
+    "modelAttempt": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 10,
+   "type": "model.response",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "messageRef": {
+     "ref": "inline:eyJ0ZXh0IjoiIiwidG9vbENhbGxzIjpbeyJhcmdzIjp7Im5hbWUiOiJxMyJ9LCJpZCI6ImNhbGwtZXhwb3J0IiwibmFtZSI6ImdvbGRlbmRvY3NfX2V4cG9ydF9yZXBvcnQifSx7ImFyZ3MiOnsiYW5zd2VyX21hcmtkb3duIjoiVGhlIFEzIHJlcG9ydCBpcyBleHBvcnRlZC4iLCJjb25maWRlbmNlIjoiSGlnaCJ9LCJpZCI6ImNhbGwtZmluYWwiLCJuYW1lIjoiZmluYWxfYW5zd2VyIn1dfQ==",
+     "hash": "sha256:b68b67c6cab03546e2f4db796c44e7dc2ca93168c60be99fd53593960948a193",
+     "size": 220
+    },
+    "toolCalls": [
+     {
+      "callId": "call-export",
+      "modelName": "goldendocs__export_report",
+      "argsDigest": "sha256:c9c7cb4adc0ffb35f2eb1a3786b4ebd0729ecce667eb50656645c3a7ff6202c3"
+     },
+     {
+      "callId": "call-final",
+      "modelName": "final_answer",
+      "argsDigest": "sha256:90b022ed985feb1986948c8c5f062d26b180274b94dde2933358fa423ec9b8fc"
+     }
+    ],
+    "usage": {
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "provider": "openai",
+    "transport": "scripted",
+    "rawRef": {
+     "ref": "inline:eyJyb2xlIjoiYXNzaXN0YW50IiwiY29udGVudCI6W10sInRvb2xfY2FsbHMiOlt7ImlkIjoiY2FsbC1leHBvcnQiLCJuYW1lIjoiZ29sZGVuZG9jc19fZXhwb3J0X3JlcG9ydCIsImFyZ3VtZW50cyI6eyJuYW1lIjoicTMifX0seyJpZCI6ImNhbGwtZmluYWwiLCJuYW1lIjoiZmluYWxfYW5zd2VyIiwiYXJndW1lbnRzIjp7ImFuc3dlcl9tYXJrZG93biI6IlRoZSBRMyByZXBvcnQgaXMgZXhwb3J0ZWQuIiwiY29uZmlkZW5jZSI6IkhpZ2gifX1dLCJ0cnVuY2F0ZWQiOmZhbHNlfQ==",
+     "hash": "sha256:1b98933d35b0c207a03650dae8b2b1301960dd7603f27c17a9966a27b203f75f",
+     "size": 271
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 11,
+   "type": "x.pipeshub.message.presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "text": "The Q3 report is exported.",
+    "answerFrom": 0
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 12,
+   "type": "x.pipeshub.tool.call_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-export",
+    "toolName": "goldendocs__export_report",
+    "argsJson": "{\"name\": \"q3\"}",
+    "argsSummary": "Export Report: \"q3\""
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 13,
+   "type": "x.pipeshub.tool.call_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-final",
+    "toolName": "final_answer",
+    "argsJson": "{\"answer_markdown\": \"The Q3 report is exported.\", \"confidence\": \"High\"}",
+    "streamsAnswer": true,
+    "argsSummary": "Final Answer"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 14,
+   "type": "tool.intent",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.1",
+    "toolId": "pipeshub@builtin/final_answer",
+    "argsDigest": "sha256:90b022ed985feb1986948c8c5f062d26b180274b94dde2933358fa423ec9b8fc",
+    "effect": "read",
+    "sink": {
+     "egress": "external",
+     "argsLeaveBoundary": true
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 15,
+   "type": "tool.outcome",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.1",
+    "status": "ok",
+    "resultRef": {
+     "ref": "inline:eyJjb250ZW50Ijoie1wiYW5zd2VyX21hcmtkb3duXCI6IFwiVGhlIFEzIHJlcG9ydCBpcyBleHBvcnRlZC5cIiwgXCJzb3VyY2VzX3VzZWRcIjogW10sIFwidW5hdmFpbGFibGVfc291cmNlc1wiOiBbXSwgXCJjb25maWRlbmNlXCI6IFwiSGlnaFwiLCBcImNvbmZpZGVuY2VfcmVhc29uXCI6IG51bGx9IiwiaXNFcnJvciI6ZmFsc2V9",
+     "hash": "sha256:9a014d96dd1a20df10418c6060f7eeb66fc6e23d83f158e6b0b5bc3851514f51",
+     "size": 189
+    },
+    "labels": {
+     "integrity": "internal"
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 16,
+   "type": "x.pipeshub.tool.result_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-final",
+    "status": "completed",
+    "content": "{'answer_markdown': 'The Q3 report is exported.', 'sources_used': [], 'unavailable_sources': [], 'confidence': 'High', 'confidence_reason': None}",
+    "resultSummary": "Completed successfully"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 17,
+   "type": "loop.state_saved",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "slots": {
+     "terminal.answer": {
+      "invocationId": "t1.1",
+      "answer": "The Q3 report is exported.",
+      "confidence": "high"
+     }
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 18,
+   "type": "tool.intent",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "toolId": "pipeshub@goldendocs/export_report",
+    "argsDigest": "sha256:c9c7cb4adc0ffb35f2eb1a3786b4ebd0729ecce667eb50656645c3a7ff6202c3",
+    "effect": "write",
+    "sink": {
+     "egress": "external",
+     "argsLeaveBoundary": true
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 19,
+   "type": "tool.outcome",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "invocationId": "t1.0",
+    "status": "ok",
+    "resultRef": {
+     "ref": "inline:eyJjb250ZW50Ijoie1wibmFtZVwiOiBcInEzXCIsIFwicm93c1wiOiAzfSIsImlzRXJyb3IiOmZhbHNlfQ==",
+     "hash": "sha256:e9d682f65107e33a783bc443b88bf97ef3ac70c0b81225f99b09297ee33a5f92",
+     "size": 61
+    },
+    "labels": {
+     "integrity": "internal"
+    }
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 20,
+   "type": "x.pipeshub.tool.result_presented",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "callId": "call-export",
+    "status": "completed",
+    "content": "{\"name\": \"q3\", \"rows\": 3}",
+    "resultSummary": "Completed successfully"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 21,
+   "type": "turn.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "turn": 1
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 22,
+   "type": "message.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "role": "assistant",
+    "textRef": {
+     "ref": "inline:VGhlIFEzIHJlcG9ydCBpcyBleHBvcnRlZC4=",
+     "hash": "sha256:bda80b29b943a14fc0746b99965a92e030a23231cf2d50f88647a2e7822112e9",
+     "size": 26
+    },
+    "isFinal": true
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 23,
+   "type": "x.pipeshub.answer.finalized",
+   "schemaVersion": 1,
+   "critical": false,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "worker",
+   "visibility": "owner",
+   "data": {
+    "outcome": "answered",
+    "answer": "The Q3 report is exported.",
+    "partTexts": [
+     "The Q3 report is exported."
+    ],
+    "citations": [],
+    "confidence": "High"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  },
+  {
+   "orgId": "org-1",
+   "sessionId": "ses-1",
+   "streamId": "ses-1",
+   "seq": 24,
+   "type": "run.completed",
+   "schemaVersion": 1,
+   "critical": true,
+   "ts": "2026-01-01T00:00:00.000Z",
+   "writer": "node",
+   "visibility": "owner",
+   "data": {
+    "outcome": "answered"
+   },
+   "runId": "run-golden",
+   "attemptId": "run-golden.a1",
+   "fence": 1
+  }
+ ],
+ "live": [
+  {
+   "afterSeq": 6,
+   "frameId": "d:run-golden:1:1:1",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 1,
+    "n": 1,
+    "kind": "tool_call",
+    "data": {
+     "text": "arguments"
+    }
+   }
+  },
+  {
+   "afterSeq": 6,
+   "frameId": "d:run-golden:1:1:2",
+   "frame": {
+    "runId": "run-golden",
+    "fence": 1,
+    "modelAttempt": 1,
+    "n": 2,
+    "kind": "text_delta",
+    "data": {
+     "text": "The Q3 report is exported."
+    }
+   }
+  }
+ ]
+}

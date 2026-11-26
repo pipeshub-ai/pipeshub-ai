@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/tools/tool-display.schema.json",
+  "title": "ToolDisplay",
+  "description": "How a tool is named to people (TOOLNAMES): the built-in tools' action labels, the toolsets' display names, and the words the fallback humanizer writes in capitals. One registry the Slack bot and the web client name tools from; the rules are pinned by contracts/harness/vectors/tool-display-names.json. Generated as TOOL_DISPLAY in every target.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "description",
+    "builtins",
+    "toolsets",
+    "hiddenToolsets",
+    "acronyms"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "builtins": {
+      "description": "Built-in tools, by their bare name (no source, toolset or dynamic prefix): what the step says while it runs and once it ran. The web client reads the same words from i18n `toolNames.<key>.present|past`; these are its English fallback and the Slack bot's words.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/BuiltinTool"
+      }
+    },
+    "toolsets": {
+      "description": "A toolset's display name by the prefix its tools carry (`github__…`, `pipeshub@github/…`), where title-casing the prefix would read wrong.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ToolsetName"
+      }
+    },
+    "hiddenToolsets": {
+      "description": "Prefixes that are plumbing, not an app a person knows (`dynamic`, `internaltools`): the step names no app for them.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/Prefix"
+      }
+    },
+    "acronyms": {
+      "description": "Words the humanizer writes as given (`url` → URL, `ids` → IDs).",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9]{2,12}$"
+      }
+    }
+  },
+  "$defs": {
+    "Prefix": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]{1,64}$"
+    },
+    "ToolName": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$"
+    },
+    "BuiltinTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tools",
+        "key",
+        "present",
+        "past"
+      ],
+      "properties": {
+        "tools": {
+          "description": "The tool's bare names: PipesHub's, and an engine's own tools as the engine names them (Claude Code's `Glob`, Gemini CLI's `read_file`, WP-112).",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ToolName"
+          }
+        },
+        "key": {
+          "description": "The i18n key under `toolNames`.",
+          "type": "string",
+          "pattern": "^[a-z][A-Za-z]{1,40}$"
+        },
+        "present": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "past": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "ToolsetName": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prefix",
+        "name"
+      ],
+      "properties": {
+        "prefix": {
+          "$ref": "#/$defs/Prefix"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    }
+  }
+}

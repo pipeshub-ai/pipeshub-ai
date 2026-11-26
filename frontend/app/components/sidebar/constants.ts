@@ -54,6 +54,9 @@ export const HEADER_ELEMENT_SIZE = 24;
  */
 export const MOBILE_HAMBURGER_GUTTER_PX = TOUCH_TARGET_PX + 8;
 
+/** DOM id of the open mobile drawer, named by the menu button's `aria-controls`. */
+export const MOBILE_NAV_ID = 'app-mobile-nav';
+
 // ============================================
 // SPACING & PADDING
 // ============================================

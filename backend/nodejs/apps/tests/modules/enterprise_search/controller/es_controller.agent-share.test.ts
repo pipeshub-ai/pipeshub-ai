@@ -525,7 +525,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       const conversation = (out.body as { conversation: Record<string, unknown> }).conversation
       expect(conversation.title).to.equal('Roadmap review')
       expect(conversation.messages).to.have.length(2)
-      expect(conversation.access).to.deep.equal({ isOwner: false, accessLevel: 'read' })
+      expect(conversation.access).to.deep.equal({ isOwner: false, accessLevel: 'read', role: 'viewer' })
       expect(conversation.sharedWith, 'other recipients stay private').to.equal(undefined)
       expect((conversation.sharedBy as { userId: string }).userId).to.equal(String(OWNER))
     })
@@ -555,7 +555,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
       const out = await callJson(getHandler(), request(owner, agentParams(s)))
 
       const conversation = (out.body as { conversation: Record<string, unknown> }).conversation
-      expect(conversation.access).to.deep.equal({ isOwner: true, accessLevel: 'read' })
+      expect(conversation.access).to.deep.equal({ isOwner: true, accessLevel: 'read', role: 'owner' })
       expect((conversation.sharedWith as unknown[]).length).to.equal(1)
       expect(conversation.sharedBy).to.equal(undefined)
       expect(s.ai.calls).to.deep.equal([])

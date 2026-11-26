@@ -1,0 +1,41 @@
+[
+  {
+    "description": "unknown integrity level",
+    "instance": {
+      "integrity": "secret"
+    }
+  },
+  {
+    "description": "integrity is required",
+    "instance": {
+      "confidentiality": {
+        "readers": "org"
+      }
+    }
+  },
+  {
+    "description": "empty principal set",
+    "instance": {
+      "integrity": "internal",
+      "confidentiality": {
+        "readers": []
+      }
+    }
+  },
+  {
+    "description": "readers keyword outside vocabulary",
+    "instance": {
+      "integrity": "internal",
+      "confidentiality": {
+        "readers": "everyone"
+      }
+    }
+  },
+  {
+    "description": "extra property",
+    "instance": {
+      "integrity": "internal",
+      "owner": "p_x"
+    }
+  }
+]

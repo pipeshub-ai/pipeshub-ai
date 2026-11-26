@@ -2,6 +2,8 @@ import ssl
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from app.utils.security_profile import hardened_profile, warn_once
+
 
 @dataclass
 class KafkaProducerConfig:
@@ -80,18 +82,27 @@ class KafkaConsumerConfig:
 
 
 def kafka_security_kwargs(*, ssl_enabled: bool, sasl: dict[str, str] | None) -> dict[str, Any]:
-    """aiokafka client options for TLS and SASL (AWS MSK), shared by every Kafka client."""
-    if not ssl_enabled:
-        return {}
-    options: dict[str, Any] = {"ssl_context": ssl.create_default_context()}
+    """aiokafka client options for TLS and SASL, shared by every Kafka client.
+
+    SASL without TLS is the bundled broker's SASL_PLAINTEXT listener (SEC-D-06); with TLS it is AWS MSK's SASL_SSL.
+    """
+    options: dict[str, Any] = {"ssl_context": ssl.create_default_context()} if ssl_enabled else {}
     sasl = sasl or {}
     if sasl.get("username"):
         if not sasl.get("password"):
+            if not ssl_enabled and not hardened_profile():
+                # R51-COMPAT (ADR-OPS-07): an .env from a release before SEC-D-06 has no KAFKA_PASSWORD, and the bundled
+                # broker then keeps its PLAINTEXT listener, which a release before SEC-D-06 used without SASL.
+                warn_once(
+                    "KAFKA_PASSWORD is empty: connecting to Kafka without SASL, as releases before SEC-D-06 did "
+                    "(PIPESHUB_HARDENED is not true). Run ./install.sh --upgrade once to generate it."
+                )
+                return options
             raise ValueError("Kafka SASL is configured with a username but no password")
-        options["security_protocol"] = "SASL_SSL"
+        options["security_protocol"] = "SASL_SSL" if ssl_enabled else "SASL_PLAINTEXT"
         options["sasl_mechanism"] = sasl.get("mechanism", "SCRAM-SHA-512").upper()
         options["sasl_plain_username"] = sasl["username"]
         options["sasl_plain_password"] = sasl["password"]
-    else:
+    elif ssl_enabled:
         options["security_protocol"] = "SSL"
     return options

@@ -198,13 +198,13 @@ describe('shadow reads (DOC_STORE=shadow)', () => {
   it('never blocks or fails the caller: a slow PostgreSQL read times out, an error is counted, writes are untouched', async () => {
     const wrote: unknown[] = [];
     const repo = shadowWrap('thing', { findOpen: async () => 1, findMessage: async () => 2, create: async (x: unknown) => (wrote.push(x), 'ok') }, () => ({
-      findOpen: () => wait(2000).then(() => 1), findMessage: async () => { throw new Error('boom'); }, create: async () => { throw new Error('must not run'); },
+      findOpen: () => new Promise(() => undefined), findMessage: async () => { throw new Error('boom'); }, create: async () => { throw new Error('must not run'); },
     }), runPg);
-    const t0 = Date.now();
     expect(await repo.findOpen()).to.equal(1);
     expect(await repo.findMessage()).to.equal(2);
     expect(await repo.create('x')).to.equal('ok');
-    expect(Date.now() - t0).to.be.lessThan(150);
+    // The PostgreSQL read never answers: a caller that waited for it would return only after the timeout was counted.
+    expect(counts['thing:timeout']).to.equal(undefined);
     await wait(400);
     expect(counts['thing:timeout']).to.equal(1);
     expect(counts['thing:error']).to.equal(1);
