@@ -6337,18 +6337,19 @@ describe('ConfigurationManager Controller', () => {
   // DB Config tests - happy paths
   // -----------------------------------------------------------------------
   describe('updateAIModelProvider credential binding', () => {
+    const savedLlm = {
+      provider: 'openai',
+      configuration: { model: 'gpt-4', apiKey: 'saved-key', endpoint: 'https://a.test/v1', region: 'us-east-1' },
+      modelKey: 'key-1',
+      isDefault: true,
+    }
     const saved = {
-      llm: [{
-        provider: 'openai',
-        configuration: { model: 'gpt-4', apiKey: 'saved-key', endpoint: 'https://a.test/v1', region: 'us-east-1' },
-        modelKey: 'key-1',
-        isDefault: true,
-      }],
+      llm: [savedLlm],
       embedding: [],
     }
     const withForwarding = {
       ...saved,
-      llm: [{ ...saved.llm[0], configuration: { ...saved.llm[0].configuration, identityForwardingServiceApiKey: 'svc-saved' } }],
+      llm: [{ ...savedLlm, configuration: { ...savedLlm.configuration, identityForwardingServiceApiKey: 'svc-saved' } }],
     }
     async function update(body: Record<string, unknown>, stored: unknown = saved) {
       const kvs = createMockKeyValueStore({
@@ -6374,9 +6375,9 @@ describe('ConfigurationManager Controller', () => {
       const moved = {
         ...saved,
         llm: [{
-          ...saved.llm[0],
+          ...savedLlm,
           configuration: {
-            ...saved.llm[0].configuration,
+            ...savedLlm.configuration,
             apiKey: 'moved-key',
             endpoint: 'https://b.test/v1',
             identityForwardingServiceApiKey: 'svc-moved',
@@ -6413,7 +6414,7 @@ describe('ConfigurationManager Controller', () => {
     it('keeps a key rotated during the health check when the endpoint did not move', async () => {
       const rotated = {
         ...saved,
-        llm: [{ ...saved.llm[0], configuration: { ...saved.llm[0].configuration, apiKey: 'rotated-key' } }],
+        llm: [{ ...savedLlm, configuration: { ...savedLlm.configuration, apiKey: 'rotated-key' } }],
       }
       const get = sinon.stub()
       get.onFirstCall().resolves(mockEncService.encrypt(JSON.stringify(saved)))
@@ -6550,9 +6551,9 @@ describe('ConfigurationManager Controller', () => {
     const forwarding = {
       ...saved,
       llm: [{
-        ...saved.llm[0],
+        ...savedLlm,
         configuration: {
-          ...saved.llm[0].configuration,
+          ...savedLlm.configuration,
           identityForwardingServiceApiKey: 'svc-saved',
           identityForwardingHeaderTemplates: { 'x-api-key': 'hdr-saved', 'x-user': '{{email}}' },
         },
@@ -6570,9 +6571,9 @@ describe('ConfigurationManager Controller', () => {
       const nestedSaved = {
         ...saved,
         llm: [{
-          ...saved.llm[0],
+          ...savedLlm,
           configuration: {
-            ...saved.llm[0].configuration,
+            ...savedLlm.configuration,
             identityForwarding: {
               enabled: true,
               serviceApiKey: 'svc-nested',
