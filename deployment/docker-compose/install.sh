@@ -533,6 +533,13 @@ pg_password_ok() {
   [[ "$1" != *[!A-Za-z0-9._~-]* ]]
 }
 
+# A value saved in .env quoted, as Compose allows ('x' or "x"), read back bare.
+env_unquote() {
+  local v="$1"
+  if (( ${#v} >= 2 )) && [[ ( "$v" == \'*\' ) || ( "$v" == \"*\" ) ]]; then v="${v:1:${#v}-2}"; fi
+  printf '%s' "$v"
+}
+
 get_existing_val() {
   local key="$1" default="$2" val=""
   if [[ -f "$ENV_FILE" ]]; then
@@ -1464,7 +1471,9 @@ if $FLAG_UNINSTALL; then
 fi
 
 # An exported metrics password is saved to .env when .env has none: refuse one the server would refuse, before anything is written.
-if [[ -n "${PG_MONITOR_PASSWORD:-}" && -z "$(get_existing_val PG_MONITOR_PASSWORD "")" ]] && ! pg_password_ok "$PG_MONITOR_PASSWORD"; then
+# Kept apart because sourcing a .env with an empty PG_MONITOR_PASSWORD= line below would clear it.
+PG_MONITOR_EXPORTED="${PG_MONITOR_PASSWORD:-}"
+if [[ -n "$PG_MONITOR_EXPORTED" && -z "$(get_existing_val PG_MONITOR_PASSWORD "")" ]] && ! pg_password_ok "$PG_MONITOR_EXPORTED"; then
   die "PG_MONITOR_PASSWORD may contain only letters, digits and . _ ~ - (it goes into connection URLs). Change or unset the exported value."
 fi
 
@@ -2019,9 +2028,10 @@ if ! ${SKIP_WIZARD:-false}; then
   for _pg in ADMIN NODE CONNECTORS INDEXING QUERY KV JOBS MIGRATE BACKUP MONITOR; do
     _pw="$(gen_secret 16)"
     # The metrics login was set by hand before the installer wrote it, so an exported value may be what its role already holds.
-    [[ "$_pg" == MONITOR ]] && _pw="${PG_MONITOR_PASSWORD:-$_pw}"
+    [[ "$_pg" == MONITOR ]] && _pw="${PG_MONITOR_EXPORTED:-$_pw}"
     printf -v "PG_${_pg}_PASSWORD" '%s' "$(get_existing_val "PG_${_pg}_PASSWORD" "$_pw")"
   done
+  PG_MONITOR_PASSWORD="$(env_unquote "$PG_MONITOR_PASSWORD")"
 
   # Optional MongoDB knobs from env.template. The wizard never asks about these,
   # but .env is rewritten in full below, so read back anything the operator set
@@ -2237,7 +2247,7 @@ PG_JOBS_PASSWORD=${PG_JOBS_PASSWORD}
 PG_MIGRATE_PASSWORD=${PG_MIGRATE_PASSWORD}
 PG_BACKUP_PASSWORD=${PG_BACKUP_PASSWORD}
 # The login of the postgres-metrics exporters (pg_monitor only, reads no data).
-PG_MONITOR_PASSWORD=${PG_MONITOR_PASSWORD}
+PG_MONITOR_PASSWORD='${PG_MONITOR_PASSWORD}'
 # Server memory: the container limit, shared_buffers (about a quarter of the limit) and /dev/shm for parallel index builds.
 $(optional_env_line PG_MEMORY_LIMIT "$PG_MEMORY_LIMIT" "4G")
 $(optional_env_line PG_SHARED_BUFFERS "$PG_SHARED_BUFFERS" "1GB")
@@ -2385,8 +2395,9 @@ fi
 # Keep .env and -p in sync so later --stop / --uninstall only tear down this copy.
 persist_env_var "COMPOSE_PROJECT_NAME" "$PROJECT_NAME"
 # A .env written before the metrics login existed (reused, or --upgrade) gets its password once: the exported one, if any, as
-# pg-roles.sh may have created the role with it; else a new one. A value already in .env is kept.
-[[ -n "$(get_existing_val PG_MONITOR_PASSWORD "")" ]] || persist_env_var PG_MONITOR_PASSWORD "${PG_MONITOR_PASSWORD:-$(gen_secret 16)}"
+# pg-roles.sh may have created the role with it; else a new one. A value already in .env is kept. Single-quoted, as in the writer
+# above: bash, which reads .env back, expands a leading ~ (an allowed character), and Compose reads quotes as literal.
+[[ -n "$(get_existing_val PG_MONITOR_PASSWORD "")" ]] || persist_env_var PG_MONITOR_PASSWORD "'${PG_MONITOR_EXPORTED:-$(gen_secret 16)}'"
 
 # ==============================================================================
 # 14. DEPLOYMENT SUMMARY

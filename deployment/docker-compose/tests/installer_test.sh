@@ -572,12 +572,12 @@ wizard="$(awk '/PostgreSQL profile \(opt-in\): kept across/{g=1} g{print} g&&/^ 
 (
   get_existing_val() { echo "${2:-}"; }
   gen_secret() { printf 'x%.0s' $(seq 1 "${1:-32}"); }
-  PG_MONITOR_PASSWORD=exportedmonitor PG_NODE_PASSWORD=exportednode
+  PG_MONITOR_EXPORTED=exportedmonitor PG_NODE_PASSWORD=exportednode
   eval "$wizard"
   check_exact "wizard takes an exported monitoring password" "$PG_MONITOR_PASSWORD" "exportedmonitor"
   check_exact "wizard still generates the other PG passwords" "$PG_NODE_PASSWORD" "xxxxxxxxxxxxxxxx"
 )
-check ".env writer lists all ten PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\${PG_' "$INNER_INSTALLER")" "10"
+check ".env writer lists all ten PG passwords" "$(grep -cE "^PG_[A-Z]*_PASSWORD='?\\\$\{PG_" "$INNER_INSTALLER")" "10"
 
 # --reconfigure rebuilds COMPOSE_PROFILES from the wizard's choices; the saved override needs the PostgreSQL profiles, so they must
 # survive it, and the project must still render afterwards.
@@ -634,23 +634,53 @@ check ".env writer lists all ten PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\
   cp "$INNER_INSTALLER" "$work/install.sh"
   cp "$COMPOSE_DIR/docker-compose.yml" "$COMPOSE_DIR/env.template" "$work/"
   base='IMAGE_TAG=0.6.0-slim\nSECRET_KEY=abc\nMONGO_PASSWORD=m\nREDIS_PASSWORD=r\nNEO4J_PASSWORD=n\nAPP_PORT=3000\nPROJECT_NAME=testproj\nDATA_STORE=neo4j\nCOMPOSE_PROFILES=graph-neo4j,sandbox\n'
+  # The value as the installer reads it back (it sources .env with bash) and as Compose reads it; both must be the password.
+  bash_reads() { (unset PG_MONITOR_PASSWORD; set -a; . "$work/.env"; printf '%s' "${PG_MONITOR_PASSWORD-}"); }
+  printf 'services:\n  x:\n    image: busybox\n    environment:\n      - P=${PG_MONITOR_PASSWORD}\n' >"$work/reads.yml"
+  compose_reads() {
+    (cd "$work" && env -u PG_MONITOR_PASSWORD docker compose -f reads.yml --env-file .env config 2>/dev/null) \
+      | sed -n 's/^ *P: //p' | sed -E 's/^"(.*)"$/\1/'
+  }
+  have_compose=false; command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 && have_compose=true
   printf "$base" >"$work/.env"
   (cd "$work" && bash ./install.sh --yes --print-env-only >/dev/null 2>&1) && pass "reusing an old .env exits 0" || fail "reusing an old .env exits 0"
   first="$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")"
-  check_exact "a reused .env gets one 32-character monitoring password" "$(grep -cE '^PG_MONITOR_PASSWORD=[0-9a-f]{32}$' "$work/.env")" "1"
+  check_exact "a reused .env gets one monitoring password line" "$(grep -c '^PG_MONITOR_PASSWORD=' "$work/.env")" "1"
+  [[ "$(bash_reads)" =~ ^[0-9a-f]{32}$ ]] && pass "a reused .env gets a 32-character monitoring password" || fail "a reused .env gets a 32-character monitoring password"
   (cd "$work" && bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
   check_exact "the next run keeps it" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "$first"
   printf "${base}PG_MONITOR_PASSWORD=mine\n" >"$work/.env"
   (cd "$work" && bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
-  check_exact "a value set by hand is kept" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "PG_MONITOR_PASSWORD=mine"
+  check_exact "a value set by hand is kept" "$(bash_reads)" "mine"
   (cd "$work" && PG_MONITOR_PASSWORD=exportedmonitor bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
-  check_exact "a value in .env wins over an exported one" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "PG_MONITOR_PASSWORD=mine"
+  check_exact "a value in .env wins over an exported one" "$(bash_reads)" "mine"
   printf "$base" >"$work/.env"
   (cd "$work" && PG_MONITOR_PASSWORD=exportedmonitor bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
-  check_exact "a reused .env takes the exported monitoring password" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "PG_MONITOR_PASSWORD=exportedmonitor"
+  check_exact "a reused .env takes the exported monitoring password" "$(bash_reads)" "exportedmonitor"
   printf "$base" >"$work/.env"
   (cd "$work" && PG_MONITOR_PASSWORD=exportedmonitor bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
-  check_exact "--reconfigure takes the exported monitoring password" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "PG_MONITOR_PASSWORD=exportedmonitor"
+  check_exact "--reconfigure takes the exported monitoring password" "$(bash_reads)" "exportedmonitor"
+  # An empty PG_MONITOR_PASSWORD= line is no saved value: sourcing .env must not drop the exported one.
+  for mode in "" --upgrade; do
+    printf "${base}PG_MONITOR_PASSWORD=\n" >"$work/.env"
+    (cd "$work" && PG_MONITOR_PASSWORD=exportedmonitor bash ./install.sh $mode --yes --print-env-only >/dev/null 2>&1)
+    check_exact "an empty saved line takes the exported password ${mode:-on reuse}" "$(bash_reads)" "exportedmonitor"
+    check_exact "an empty saved line leaves one password line ${mode:-on reuse}" "$(grep -c '^PG_MONITOR_PASSWORD=' "$work/.env")" "1"
+  done
+  # A leading ~ is allowed by the server rule; an unquoted ~ in .env would be read by bash as the home directory.
+  for mode in "" --upgrade --reconfigure; do
+    printf "$base" >"$work/.env"
+    (cd "$work" && PG_MONITOR_PASSWORD='~' bash ./install.sh $mode --yes --print-env-only >/dev/null 2>&1)
+    check_exact "an exported ~ password is read back as ~ ${mode:-on reuse}" "$(bash_reads)" "~"
+    if $have_compose; then
+      check_exact "Compose reads the same ~ password ${mode:-on reuse}" "$(compose_reads)" "~"
+    else
+      pass "Compose reads the same ~ password ${mode:-on reuse} (skipped: no docker compose here)"
+    fi
+  done
+  (cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
+  check_exact "a saved quoted password survives --reconfigure" "$(bash_reads)" "~"
+  check_exact "a saved quoted password is not quoted twice" "$(grep -c "^PG_MONITOR_PASSWORD='~'$" "$work/.env")" "1"
   # A value the server would refuse at start is refused here first, before .env changes, and never echoed.
   for mode in "" --reconfigure; do
     printf "$base" >"$work/.env"; cp "$work/.env" "$work/env.before"
@@ -663,7 +693,7 @@ check ".env writer lists all ten PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\
   done
   printf "$base" >"$work/.env"
   (cd "$work" && PG_MONITOR_PASSWORD='a.b_c~d-E9' bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
-  check_exact "an exported password using every allowed character is kept" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "PG_MONITOR_PASSWORD=a.b_c~d-E9"
+  check_exact "an exported password using every allowed character is kept" "$(bash_reads)" "a.b_c~d-E9"
 )
 # The installer checks exported PostgreSQL passwords with the server's own rule: both files must hold the same character class.
 _rule_installer="$(extract_fn pg_password_ok "$INNER_INSTALLER" | grep -oE '\*\[![^]]*\]\*')"
