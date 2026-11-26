@@ -2964,21 +2964,27 @@ def _region_bbox(
 
     The region is re-extracted later from this box, and the grid's own outer rules
     (which stick out half their thickness) must fall inside it, so it is padded by
-    the rule tolerance; the padding stops half way to a neighbouring box so two
-    tables a few points apart never overlap."""
+    the rule tolerance. Toward a neighbouring box the padding takes at most a third
+    of the distance beyond the proximity merge gap: when both sides pad, the two
+    regions are still farther apart than that gap, so two tables the merge would
+    keep apart unpadded stay apart."""
     if own is None:
         return box
     x0, y0, x1, y1 = own[0], min(own[1], box[1]), own[2], own[3]
     pad = [_RULE_TOLERANCE, 0.0, _RULE_TOLERANCE, _RULE_TOLERANCE]  # left, top, right, bottom (top reaches the box)
+
+    def room(d: float) -> float:
+        return max(0.0, (d - _PROXIMITY_MERGE_GAP) / 3.0)
+
     for ox0, oy0, ox1, oy1 in others or []:
         v_overlap = ox0 < x1 and ox1 > x0
         h_overlap = oy0 < y1 and oy1 > y0
         if h_overlap and ox1 <= x0:
-            pad[0] = min(pad[0], max(0.0, (x0 - ox1) / 2.0))
+            pad[0] = min(pad[0], room(x0 - ox1))
         if h_overlap and ox0 >= x1:
-            pad[2] = min(pad[2], max(0.0, (ox0 - x1) / 2.0))
+            pad[2] = min(pad[2], room(ox0 - x1))
         if v_overlap and oy0 >= y1:
-            pad[3] = min(pad[3], max(0.0, (oy0 - y1) / 2.0))
+            pad[3] = min(pad[3], room(oy0 - y1))
     return (x0 - pad[0], y0 - pad[1], x1 + pad[2], y1 + pad[3])
 
 
