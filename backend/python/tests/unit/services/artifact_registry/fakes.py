@@ -116,6 +116,7 @@ class FakeGraphProvider:
 
     async def get_edge(
         self, *, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str,
+        raise_on_error: bool = False,
     ) -> dict | None:
         for edge in self.edges[collection]:
             if edge["from_id"] == from_id and edge["to_id"] == to_id:

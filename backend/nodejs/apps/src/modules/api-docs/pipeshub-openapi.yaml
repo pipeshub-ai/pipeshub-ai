@@ -51953,6 +51953,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The graph store could not be read while checking that the caller uploaded the
+            attachment, so nothing was deleted. Forwarded from the query service with an empty
+            body; try again later.
         default:
           description: >
             Other status codes are forwarded from the query service (e.g. 404) with an **empty**
@@ -60334,6 +60339,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The graph store could not be read while checking that the caller uploaded the
+            attachment, so nothing was deleted. Forwarded from the query service with an empty
+            body; try again later.
         default:
           description: >
             Other status codes are forwarded from the query service (e.g. 404) with an **empty**
