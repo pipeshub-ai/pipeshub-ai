@@ -50,7 +50,7 @@ import { MigrationService } from './modules/configuration_manager/services/migra
 import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes';
 import { createProcessMetricsServer } from './libs/services/telemetry/process-metrics';
 import {
-  TELEMETRY_COLLECTION_FLAG,
+  telemetryOffMessage,
   isTelemetryEnabled,
 } from './libs/services/telemetry/telemetry-impl';
 import { KeyValueStoreService } from './libs/services/keyValueStore.service';
@@ -493,9 +493,7 @@ export class Application {
         );
         startOrgMetricsRefresh(this.logger);
       } else {
-        this.logger.info(
-          `Telemetry disabled (${TELEMETRY_COLLECTION_FLAG} is not 'true')`,
-        );
+        this.logger.info(telemetryOffMessage);
       }
 
       // Domain events are written to the outbox by whoever makes the change;

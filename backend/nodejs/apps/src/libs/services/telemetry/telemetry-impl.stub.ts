@@ -8,7 +8,7 @@ export {
 
 type Labels = Record<string, string | number>;
 
-export const TELEMETRY_COLLECTION_FLAG = 'TELEMETRY_COLLECTION_FLAG';
+export const telemetryOffMessage = 'Telemetry disabled';
 
 export const isTelemetryEnabled = (): boolean => false;
 

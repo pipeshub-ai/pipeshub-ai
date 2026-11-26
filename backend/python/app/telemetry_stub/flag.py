@@ -1,6 +1,3 @@
-TELEMETRY_COLLECTION_FLAG = "TELEMETRY_COLLECTION_FLAG"
-
-
 def telemetry_enabled() -> bool:
     return False
 
