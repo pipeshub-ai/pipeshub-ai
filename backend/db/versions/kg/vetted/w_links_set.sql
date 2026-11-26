@@ -17,7 +17,7 @@ BEGIN
   IF p_kinds IS NULL THEN RAISE EXCEPTION 'w_links_set: p_kinds is required' USING ERRCODE = '22023'; END IF;
   IF cardinality(p_kinds) > 5000 THEN RAISE EXCEPTION 'w_links_set: p_kinds takes at most 5000 items' USING ERRCODE = '22023'; END IF;
   IF EXISTS (SELECT 1 FROM unnest(p_kinds) e WHERE e IS NULL) THEN RAISE EXCEPTION 'w_links_set: p_kinds has a NULL item' USING ERRCODE = '22023'; END IF;
-  IF EXISTS (SELECT 1 FROM unnest(p_kinds) e WHERE e IS NOT NULL AND e NOT BETWEEN 1 AND 2) THEN RAISE EXCEPTION 'w_links_set: p_kinds has an item out of range' USING ERRCODE = '22023'; END IF;
+  IF EXISTS (SELECT 1 FROM unnest(p_kinds) e WHERE e IS NOT NULL AND e NOT BETWEEN 1 AND 3) THEN RAISE EXCEPTION 'w_links_set: p_kinds has an item out of range' USING ERRCODE = '22023'; END IF;
   IF p_children IS NULL THEN RAISE EXCEPTION 'w_links_set: p_children is required' USING ERRCODE = '22023'; END IF;
   IF cardinality(p_children) > 5000 THEN RAISE EXCEPTION 'w_links_set: p_children takes at most 5000 items' USING ERRCODE = '22023'; END IF;
   IF EXISTS (SELECT 1 FROM unnest(p_children) e WHERE e IS NULL) THEN RAISE EXCEPTION 'w_links_set: p_children has a NULL item' USING ERRCODE = '22023'; END IF;

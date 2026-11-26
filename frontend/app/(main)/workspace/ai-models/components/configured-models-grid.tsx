@@ -121,7 +121,7 @@ export function ConfiguredModelsGrid({
   if (isLoading) {
     return (
       <Flex align="center" justify="center" style={{ width: '100%', paddingTop: 80 }}>
-        <Text size="2" style={{ color: 'var(--gray-9)' }}>
+        <Text size="2" style={{ color: 'var(--gray-11)' }}>
           {t('workspace.aiModels.loadingModels')}
         </Text>
       </Flex>
@@ -137,7 +137,7 @@ export function ConfiguredModelsGrid({
         gap="2"
         style={{ width: '100%', paddingTop: 80 }}
       >
-        <MaterialIcon name="tune" size={48} color="var(--gray-9)" />
+        <MaterialIcon name="tune" size={48} color="var(--gray-11)" />
         <Text size="2" style={{ color: 'var(--gray-11)' }}>
           {t('workspace.aiModels.emptyConfiguredCategory')}
         </Text>
@@ -213,7 +213,7 @@ function ConfiguredModelRow({
               variant="flat"
             />
           ) : (
-            <MaterialIcon name="smart_toy" size={24} color="var(--gray-9)" />
+            <MaterialIcon name="smart_toy" size={24} color="var(--gray-11)" />
           )}
         </Flex>
 
@@ -222,7 +222,7 @@ function ConfiguredModelRow({
             {modelName}
           </Text>
           <Flex align="center" gap="2" wrap="wrap">
-            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {provider?.name ?? model.provider}
             </Text>
             <Text
@@ -336,7 +336,7 @@ function ConfiguredModelRow({
               <PopoverMenuItem
                 icon="delete"
                 label={t('workspace.aiModels.actionDelete')}
-                color="var(--red-9)"
+                color="var(--red-11)"
                 disabled={!provider || settingDefault}
                 onClick={() => {
                   setPopoverOpen(false);

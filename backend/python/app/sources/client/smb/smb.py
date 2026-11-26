@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import ipaddress
 import stat
 import threading
@@ -311,6 +312,8 @@ class SmbClient(IClient):
         except Exception as exc:
             if is_sign_in_refusal(exc):
                 raise NetworkShareAuthError(self._describe(exc)) from exc
+            if nt_status(exc) == STATUS_ACCESS_DENIED:
+                raise AccessDeniedError(share, path, str(exc)) from exc
             message = str(exc).lower()
             if "not found" in message or "no such" in message:
                 return None
@@ -335,11 +338,23 @@ class SmbClient(IClient):
             self.register()
             smbclient = self._smbclient()
             target = unc(self.host, share, path)
-            # The default share mode for "rb" is read-only, so two overlapping
-            # previews of one file fail with STATUS_SHARING_VIOLATION.
-            return smbclient.open_file(
-                target, mode="rb", buffering=0, share_access="rwd", **self._kwargs()
-            )
+            try:
+                # The default share mode for "rb" is read-only, so two overlapping
+                # previews of one file fail with STATUS_SHARING_VIOLATION.
+                return smbclient.open_file(
+                    target, mode="rb", buffering=0, share_access="rwd", **self._kwargs()
+                )
+            except Exception as exc:
+                # Listing a folder takes less than reading its files, so a file the walk found
+                # may still be refused here. smbclient also reconnects a dropped session here.
+                if is_sign_in_refusal(exc):
+                    raise NetworkShareAuthError(self._describe(exc)) from exc
+                if nt_status(exc) == STATUS_ACCESS_DENIED:
+                    raise AccessDeniedError(share, path, str(exc)) from exc
+                # errno, not the message: the message names the file.
+                if getattr(exc, "errno", None) == errno.ENOENT:
+                    raise FileNotFoundError(target) from exc
+                raise
 
     def list_shares(self) -> list[ShareInfo]:
         with self._io_lock:

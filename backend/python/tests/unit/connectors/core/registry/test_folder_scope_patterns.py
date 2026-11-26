@@ -8,7 +8,6 @@ behaviour before patterns existed.
 
 from __future__ import annotations
 
-import time
 import unicodedata
 
 import pytest
@@ -34,6 +33,7 @@ from app.connectors.core.registry.folder_scope import (
     folder_value_problems,
     saved_folder_values,
 )
+from tests.support.cpu_budget import thread_cpu
 
 KEEP, PASS, SKIP = FolderRole.KEEP, FolderRole.PASS_THROUGH, FolderRole.SKIP
 OS, FS = "os", "fs"
@@ -257,9 +257,9 @@ class TestFolderRole:
     def test_a_double_star_pattern_is_a_state_set_not_backtracking(self) -> None:
         live = scope(["**/a/**/b/**/c/**/d"])
         deep = "/".join(["a"] * 400)
-        start = time.perf_counter()
-        assert live.folder_role(deep) is PASS
-        assert time.perf_counter() - start < 1.0
+        with thread_cpu() as cpu:
+            assert live.folder_role(deep) is PASS
+        assert cpu.seconds < 1.0
 
 
 class TestListPrefixes:
@@ -579,20 +579,22 @@ class TestSchema:
         assert field["pathStyle"] == "posix"
         assert field["folderWildcards"] is True
 
-    @pytest.mark.parametrize(("module", "cls", "style"), [
-        ("app.connectors.sources.smb.connector", "SmbConnector", "windows"),
-        ("app.connectors.sources.cifs.connector", "CifsConnector", "windows"),
-        ("app.connectors.sources.azure_files.connector", "AzureFilesConnector", "windows"),
-        ("app.connectors.sources.s3.connector", "S3Connector", None),
-        ("app.connectors.sources.minio.connector", "MinIOConnector", None),
-        ("app.connectors.sources.google_cloud_storage.connector", "GCSConnector", None),
-        ("app.connectors.sources.azure_blob.connector", "AzureBlobConnector", None),
+    @pytest.mark.parametrize(("module", "cls", "style", "wildcards"), [
+        ("app.connectors.sources.smb.connector", "SmbConnector", "windows", True),
+        ("app.connectors.sources.cifs.connector", "CifsConnector", "windows", True),
+        ("app.connectors.sources.azure_files.connector", "AzureFilesConnector", "windows", False),
+        ("app.connectors.sources.s3.connector", "S3Connector", None, False),
+        ("app.connectors.sources.minio.connector", "MinIOConnector", None, False),
+        ("app.connectors.sources.google_cloud_storage.connector", "GCSConnector", None, False),
+        ("app.connectors.sources.azure_blob.connector", "AzureBlobConnector", None, False),
     ])
-    def test_each_connector_declares_its_path_style_and_no_wildcards_yet(self, module, cls, style) -> None:
+    def test_each_connector_declares_its_path_style_and_whether_it_reads_wildcards(
+        self, module, cls, style, wildcards
+    ) -> None:
         import importlib
 
         connector = getattr(importlib.import_module(module), cls)
         fields = connector._connector_metadata["config"]["filters"]["sync"]["schema"]["fields"]
         field = next(f for f in fields if f["name"] == "folder_paths")
         assert field.get("pathStyle") == style
-        assert "folderWildcards" not in field
+        assert field.get("folderWildcards", False) is wildcards

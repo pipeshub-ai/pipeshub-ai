@@ -3,19 +3,23 @@
 The answers are those of ``Neo4jProvider`` (the same shapes, errors and empty cases). Access is asked in both directions: nobody gets a collection
 they hold no role on (another user, another org, a revoked grant, a hidden collection), and everybody gets the ones they do (directly or through a team).
 
-Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none.
+Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_POOLER=none, and PG_ADMIN_URL (an owner DSN, to analyse
+before the folder-name plan test).
 """
 from __future__ import annotations
 
 import contextlib
+import os
 from typing import TYPE_CHECKING
 
+import asyncpg
 import pytest
 
 from app.config.constants.arangodb import Connectors, MimeTypes
 from app.core import org_context
 from app.core.org_context import MissingOrgContext, OrgContext, bind
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.common.utils import KB_LIST_FOLDERS_CAP
 from app.services.graph_db.postgres.kb import KbMixin
 
 from .test_access import APP, World
@@ -203,7 +207,25 @@ async def test_the_list_pages_searches_sorts_filters_and_names_the_folders(w: Wo
     assert by["k3"]["name"] == "Untitled" and by["k0"]["userRole"] == "OWNER"
     assert by["k0"]["folders"] == [{"id": "f1", "name": "f1", "createdAtTimestamp": 5, "webUrl": "/f1"}, {"id": "f2", "name": "f2", "createdAtTimestamp": 5, "webUrl": "/f2"}]
     assert by["k1"]["folders"] == []
-    assert set(by["k0"]) == {"id", "name", "description", "createdAtTimestamp", "updatedAtTimestamp", "createdBy", "userRole", "status", "folders"}
+    assert set(by["k0"]) == {"id", "name", "description", "createdAtTimestamp", "updatedAtTimestamp", "createdBy", "userRole", "status", "folders", "foldersTruncated"}
+
+
+async def test_a_collection_lists_its_first_100_folders_by_id_and_says_when_there_are_more(w: World, pg_db) -> None:
+    await users(w, "me")
+    sizes = {"over": KB_LIST_FOLDERS_CAP + 1, "at": KB_LIST_FOLDERS_CAP, "empty": 0}
+    for key, n in sizes.items():
+        await kb(w, key, orgId=w.org)
+        await grant(w, "me", "READER", key)
+        for i in reversed(range(n)):                                    # written last first: the order is the id's, not the write's
+            await folder(w, f"{key}-{i:03}", key)
+
+    async def dup(tx) -> None:                                          # 101 edges to 100 folders: not more than the cap
+        await tx.execute("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) VALUES ($1, 'belongsTo', 'records', 'at-000', 'apps', 'at', 'dup', '{}'::jsonb)", w.org)
+    await pg_db.run(dup, write=True)
+    by = {k["id"]: k for k in (await w.p.list_user_knowledge_bases("me", w.org, 0, 10))[0]}
+    for key, n in sizes.items():
+        assert [f["id"] for f in by[key]["folders"]] == [f"{key}-{i:03}" for i in range(min(n, KB_LIST_FOLDERS_CAP))], key
+        assert by[key]["foldersTruncated"] is (n > KB_LIST_FOLDERS_CAP), key
 
 
 async def test_a_failed_list_raises_and_the_next_call_answers(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -370,6 +392,40 @@ async def test_folder_checks_know_membership_trash_names_depth_and_height(w: Wor
     assert await w.p.get_and_validate_folder_in_kb("kb2", "top") is None
 
 
+@pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
+async def test_a_folder_name_check_reads_the_parent_and_not_the_whole_organisation(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creating a folder asks whether its name is taken under the parent (or at the collection's root). The check reads that parent's children or that
+    collection's records, so its cost does not grow with the records of the organisation's other connectors."""
+    admin_url = os.environ.get("PG_ADMIN_URL")
+    assert admin_url, "set PG_ADMIN_URL (an owner DSN): this test analyses graph.nodes and graph.edges before it reads the plans"
+    await kb(w)
+    await kb(w, "kb2")
+    await folder(w, "top")
+    await folder(w, "mid", parent="top")
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'n' || g,
+        jsonb_build_object('recordName', 'top', 'mimeType', $2::text, 'connectorId', 'other') FROM generate_series(1, 20000) g""", w.org, FOLDER), write=True)
+    con = await asyncpg.connect(admin_url)
+    try:
+        await con.execute("ANALYZE graph.nodes; ANALYZE graph.edges")      # as autovacuum would have by now: a plan that needs no statistics is not what is measured
+    finally:
+        await con.close()
+    sent: list[tuple[str, tuple]] = []
+    real = w.p._one
+
+    async def spy(sql: str, *args: object, **kw: object) -> object:
+        sent.append((sql, args))
+        return await real(sql, *args, **kw)
+    monkeypatch.setattr(w.p, "_one", spy)
+    assert (await w.p.find_folder_by_name_in_parent("kb1", "TOP"))["_key"] == "top"
+    assert (await w.p.find_folder_by_name_in_parent("kb1", "MID", "top"))["_key"] == "mid"
+    assert await w.p.find_folder_by_name_in_parent("kb2", "top") is None             # 20,000 records of that name in the org, none in this collection
+    for sql, args in sent:
+        plan = "\n".join(r[0] for r in await pg_db.run(lambda tx, sql=sql, args=args: tx._con.fetch("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) " + sql, *args)))
+        root = next(line for line in plan.splitlines() if line.strip().startswith("Buffers:"))
+        touched = sum(int(part.split("=")[1]) for part in root.split() if part.startswith(("hit=", "read=")))
+        assert touched < 200, (touched, plan)
+
+
 async def test_a_cycle_of_parents_ends_the_walks(w: World) -> None:
     await kb(w)
     await folder(w, "a")
@@ -422,13 +478,17 @@ async def test_the_upload_validation_lets_in_writers_only_and_hides_a_collection
     assert (await w.p._validate_folder_creation("kb1", "uid-rd"))["code"] == 403
     for who in ("none", "tn"):                                                         # no role: the collection's existence is not told
         r = await v("kb1", f"uid-{who}", w.org)
-        assert (r["valid"], r["code"], r["reason"]) == (False, 404, "Knowledge base kb1 not found")
+        assert (r["valid"], r["code"], r["reason"]) == (False, 404, "Knowledge base not found")
         assert (await w.p._validate_folder_creation("kb1", f"uid-{who}"))["code"] == 404
     assert (await v("kb1", "uid-nobody", w.org))["reason"] == "User not found: uid-nobody"
-    assert (await v("missing", "uid-own", w.org))["code"] == 404
-    r = await v("kb1", "uid-wr", w.org, "nope")
-    assert r["code"] == 404 and "was not found in knowledge base 'Docs' (kb1)" in r["reason"]
-    assert (await v("kb1", "uid-wr", w.org, "other"))["code"] == 404                  # a folder of another collection
+    r = await v("ada@example.com", "uid-own", w.org)                               # no such collection: the id is not quoted
+    assert (r["code"], r["reason"]) == (404, "Knowledge base not found")
+    missing = ("The folder was not found in knowledge base 'Docs' (kb1). "
+               "The folder may not exist or may belong to a different knowledge base.")
+    r = await v("kb1", "uid-wr", w.org, "nope")                                     # the id the client sent is not quoted
+    assert (r["code"], r["reason"]) == (404, missing)
+    r = await v("kb1", "uid-wr", w.org, "other")                                    # a folder of another collection: not named
+    assert (r["code"], r["reason"]) == (404, missing)
     r = await v("kb1", "uid-wr", w.org, "trashed")
     assert (r["valid"], r["code"]) == (False, 409) and "Recently deleted" in r["reason"]
     with other_org():                                                               # the same names in another org: nothing
@@ -480,7 +540,7 @@ async def test_uploaded_document_ids_are_the_files_of_the_connector_under_the_ro
 
 # ---- no org ---------------------------------------------------------------------------------------------------------------------------------
 
-NAMES = sorted(n for n, f in vars(KbMixin).items() if not n.startswith("__") and callable(f) and n not in ("_fetch_kb_name", "_fetch_record_name", "_kb_writer"))
+NAMES = sorted(n for n, f in vars(KbMixin).items() if not n.startswith("__") and callable(f) and n not in ("_fetch_kb_name", "_kb_writer"))
 CALLS = {
     "kb_exists": ("k",), "list_user_knowledge_bases": ("u", "o", 0, 1), "create_kb_permissions": ("k", "r", [], [], "READER"), "update_kb_permission": ("k", "r", ["u"], [], "READER"),
     "remove_kb_permission": ("k", [], []), "list_kb_permissions": ("k",), "get_kb_permissions": ("k", ["u"]), "count_kb_owners": ("k",), "validate_folder_exists_in_kb": ("k", "f"),

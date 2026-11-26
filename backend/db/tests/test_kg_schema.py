@@ -5,7 +5,7 @@ import pytest
 
 from .test_integration import connect
 
-TABLES = ("node_keys", "records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "graph_changes", "projection_state", "scopes")
+TABLES = ("node_keys", "records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "graph_changes", "projection_state", "scopes", "counts")
 READERS = ("pipeshub_connectors", "pipeshub_indexing", "pipeshub_query")
 
 
@@ -31,9 +31,12 @@ def test_the_graph_services_read_the_tables_and_nothing_can_write_them(rdb):
 def test_other_services_hold_nothing_on_kg(rdb, role):
     cluster, name = rdb
     with connect(cluster, name) as c:
-        assert not c.execute("SELECT has_schema_privilege(%s, 'kg', 'USAGE')", (role,)).fetchone()[0]
+        # the jobs role reads and deletes the analyze requests (kg_0016, the maintenance worker) and nothing else of kg
+        assert c.execute("SELECT has_schema_privilege(%s, 'kg', 'USAGE')", (role,)).fetchone()[0] == (role == "pipeshub_jobs")
         for t in TABLES:
             assert not c.execute("SELECT has_table_privilege(%s, %s, 'SELECT, INSERT, UPDATE, DELETE')", (role, f"kg.{t}")).fetchone()[0], t
+        held = [p for p in ("SELECT", "INSERT", "UPDATE", "DELETE") if c.execute("SELECT has_table_privilege(%s, 'kg.analyze_requests', %s)", (role, p)).fetchone()[0]]
+        assert held == (["SELECT", "DELETE"] if role == "pipeshub_jobs" else [])
 
 
 def test_every_table_has_a_row_policy_for_its_organisation(rdb):
@@ -51,12 +54,35 @@ def test_the_change_log_refuses_an_entry_that_names_no_node(rdb):
             c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, '{}')", ("a" * 24,))      # a valid org id: only the ends check can refuse it
 
 
+@pytest.mark.parametrize("role", READERS)
+def test_a_service_logs_a_change_only_through_the_capture_trigger(rdb, role):
+    """kg_0022: the INSERT the services hold on the change log is for the capture trigger alone. A row a service inserts itself names keys the worker would re-project
+    (or a whole connector as pending), so it is refused; a write of the graph still logs its keys, and the demotion request (one constant key) is still taken."""
+    from .rls_fixture import ORG_A
+    from .test_vetted_pins import unit
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for row in ("(org_id, ends) VALUES (%s, ARRAY['3:forged'])", "(org_id, app_id, ends) VALUES (%s, 'app1', ARRAY['3:@demote', '3:forged'])",
+                    "(org_id, ends) SELECT %s, ARRAY['3:forged'] FROM generate_series(1, 2)"):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege, match="capture triggers"), unit(c, role, ORG_A):
+                c.execute(f"INSERT INTO kg.graph_changes {row}", (ORG_A,))
+        with unit(c, role, ORG_A):
+            c.execute("INSERT INTO kg.graph_changes (org_id, app_id, ends) VALUES (%s, 'app1', ARRAY['3:@demote'])", (ORG_A,))
+        assert c.execute("SELECT app_id, ends FROM kg.graph_changes WHERE org_id = %s", (ORG_A,)).fetchall() == [("app1", ["3:@demote"])]
+        c.execute("DELETE FROM kg.graph_changes")
+        if c.execute("SELECT has_table_privilege(%s, 'graph.nodes', 'INSERT')", (role,)).fetchone()[0]:
+            with unit(c, role, ORG_A):
+                c.execute("INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES (%s, 'records', 'r1', %s::jsonb)", (ORG_A, '{"connectorId": "app1"}'))
+            assert c.execute("SELECT app_id, ends FROM kg.graph_changes WHERE org_id = %s", (ORG_A,)).fetchall() == [("app1", ["3:r1"])]
+
+
 def test_the_graph_carries_the_eight_capture_triggers_and_refuses_a_truncate(rdb):
     """Statement triggers on the partitioned parents (always enabled, so a replica session logs too); a truncate of either table is refused."""
     cluster, name = rdb
     with connect(cluster, name) as c:
         rows = {tuple(r) for r in c.execute("SELECT tgrelid::regclass::text, tgname, tgenabled FROM pg_trigger WHERE tgrelid IN ('graph.nodes'::regclass, 'graph.edges'::regclass) AND NOT tgisinternal")}
-        assert rows == {(t, f"kg_{t.split('.')[1]}_{ev}", "A") for t in ("graph.nodes", "graph.edges") for ev in ("insert", "update", "delete", "truncate")}
+        assert rows == ({(t, f"kg_{t.split('.')[1]}_{ev}", "A") for t in ("graph.nodes", "graph.edges") for ev in ("insert", "update", "delete", "truncate")}
+                        | {(t, f"stats_{t.split('.')[1]}_{ev}", "A") for t in ("graph.nodes", "graph.edges") for ev in ("insert", "update", "delete")})      # graph_0021's log
         with pytest.raises(psycopg.errors.FeatureNotSupported):
             c.execute("TRUNCATE graph.edges")
 
@@ -72,3 +98,15 @@ def test_a_downgrade_takes_the_schema_away_and_an_upgrade_brings_it_back(db):
         assert c.execute("SELECT to_regnamespace('kg')").fetchone()[0] is None
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
     assert run_migrate(url).returncode == 0
+
+
+def test_the_records_carry_the_three_counter_triggers(rdb):
+    """kg_0015: statement triggers on kg.records for the counter deltas; the function is a reviewed exemption pinned to its body."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        rows = {tuple(r) for r in c.execute("SELECT tgname, tgfoid::regprocedure::text FROM pg_trigger WHERE tgrelid = 'kg.records'::regclass AND NOT tgisinternal")}
+        assert rows == {(f"kg_records_count_{ev}", "kg.count_change()") for ev in ("insert", "update", "delete")}
+        assert c.execute("SELECT count(*) FROM kernel.trigger_exemptions WHERE proc = 'kg.count_change()'::regprocedure").fetchone()[0] == 1
+        # a restore keeps no counter row: the worker counts the restored connectors whole again
+        assert [tuple(r) for r in c.execute("SELECT tgname, tgfoid::regprocedure::text FROM pg_trigger WHERE tgrelid = 'kg.counts'::regclass AND NOT tgisinternal")] == \
+            [("kg_counts_restore", "kg.count_restored()")]

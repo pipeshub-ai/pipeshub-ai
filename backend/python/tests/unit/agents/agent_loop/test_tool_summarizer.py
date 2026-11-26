@@ -211,6 +211,37 @@ class TestFetchUrl:
         summary = self.summarizer.summarize_result("fetch_url", {}, r)
         assert "test.dev" in summary.result_summary
 
+    @pytest.mark.parametrize(
+        ("url", "secret"),
+        [
+            (
+                "https://files-bucket.s3.us-west-2.amazonaws.com/org-1/report.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+                "&X-Amz-Credential=AKIAEXAMPLE%2F20261117&X-Amz-Expires=3600&X-Amz-Signature=0123abcd",
+                "0123abcd",
+            ),
+            ("https://storage.googleapis.com/b/f.pdf?X-Goog-Credential=svc&X-Goog-Signature=abcd1234", "abcd1234"),
+            ("https://acct.blob.core.windows.net/c/f.pdf?sv=2023-11-03&sp=r&sig=c2lnbmF0dXJl", "c2lnbmF0dXJl"),
+        ],
+    )
+    def test_args_hide_a_storage_signature(self, url: str, secret: str) -> None:
+        """Everyone who can open the chat sees this label; the signed link opens the file without a sign-in."""
+        result = self.summarizer.summarize_args("dynamic__fetch_url", {"url": url})
+        assert secret not in result
+        assert "AKIAEXAMPLE" not in result
+        assert result.startswith("Reading " + url.split("?")[0])
+
+    @pytest.mark.parametrize(
+        "url",
+        ["https://docs.python.org/3/search.html?q=classes&page=2", "https://shop.example/item?code=123&state=CA&key=blue"],
+    )
+    def test_args_keep_an_ordinary_query(self, url: str) -> None:
+        assert self.summarizer.summarize_args("dynamic__fetch_url", {"url": url}) == f"Reading {url}"
+
+    def test_result_own_file(self) -> None:
+        r = _result(content=json.dumps({"ok": False, "error_type": "own_file", "error": "report.pdf is a file in PipesHub"}))
+        summary = self.summarizer.summarize_result("dynamic__fetch_url", {}, r)
+        assert summary.result_summary == "Failed to read: That's a file in PipesHub, so it's read from the knowledge base instead"
+
 
 # ---------------------------------------------------------------------------
 # sql__execute_sql_query
@@ -327,13 +358,18 @@ class TestSandbox:
     def setup_method(self):
         self.summarizer = PipesHubToolSummarizer()
 
-    def test_run_code_args(self):
-        result = self.summarizer.summarize_args("run_code", {"language": "python"})
-        assert result == "Running python code"
+    def test_run_code_args_name_language_and_first_line(self) -> None:
+        code = "# sum the first ten\n\nprint(sum(range(1, 11)))\n"
+        result = self.summarizer.summarize_args("run_code", {"language": "python", "code": code})
+        assert result == "python · print(sum(range(1, 11)))"
 
-    def test_run_code_args_no_lang(self):
-        result = self.summarizer.summarize_args("run_code", {})
-        assert result == "Running code"
+    def test_run_code_args_long_line_is_cut(self) -> None:
+        result = self.summarizer.summarize_args("run_code", {"language": "python", "code": "x = " + "1 + " * 60})
+        assert result.startswith("python · x = 1 + ") and result.endswith("…") and len(result) <= 100
+
+    def test_run_code_args_no_code(self) -> None:
+        assert self.summarizer.summarize_args("run_code", {"language": "python"}) == "Running python code"
+        assert self.summarizer.summarize_args("run_code", {}) == "Running code"
 
     def test_install_packages_args(self):
         result = self.summarizer.summarize_args("install_packages", {"packages": ["numpy", "pandas"]})
@@ -343,10 +379,29 @@ class TestSandbox:
         result = self.summarizer.summarize_args("install_packages", {"packages": []})
         assert result == "Installing packages"
 
-    def test_sandbox_result_success(self):
-        r = _result(content="output")
-        summary = self.summarizer.summarize_result("run_code", {}, r)
-        assert summary.result_summary == "Executed successfully"
+    def test_run_code_result_exit_0_first_stdout_line_and_files(self) -> None:
+        data = {"stdout": "55\nmore\n", "stderr": "", "exit_code": 0, "artifacts": ["/out/report.csv", "/out/chart.png"]}
+        summary = self.summarizer.summarize_result("run_code", {}, _result(content=json.dumps(data)))
+        assert summary.result_summary == "exit 0 · 55 · report.csv, chart.png"
+
+    def test_run_code_result_from_a_dict(self) -> None:
+        summary = self.summarizer.summarize_result("run_code", {}, _result(content={"stdout": "55\n", "exit_code": 0}))
+        assert summary.result_summary == "exit 0 · 55"
+
+    def test_run_code_result_nonzero_exit_names_first_stderr_line(self) -> None:
+        data = {"stdout": "partial", "stderr": "Traceback (most recent call last):\nZeroDivisionError", "exit_code": 1}
+        summary = self.summarizer.summarize_result("run_code", {}, _result(content=json.dumps(data)))
+        # A failed run says it failed (main #4660), with the first line of what it printed on stderr.
+        assert summary.result_summary == "Failed with exit code 1: Traceback (most recent call last):"
+
+    def test_run_code_result_no_output(self) -> None:
+        summary = self.summarizer.summarize_result("run_code", {}, _result(content=json.dumps({"stdout": "", "exit_code": 0})))
+        assert summary.result_summary == "exit 0"
+
+    def test_install_packages_result_names_what_was_installed(self) -> None:
+        data = {"success": True, "installed": ["six"], "stdout": "", "stderr": ""}
+        summary = self.summarizer.summarize_result("install_packages", {}, _result(content=json.dumps(data)))
+        assert summary.result_summary == "Installed six"
 
     def test_sandbox_result_error(self):
         r = _result(content="SyntaxError: invalid syntax", is_error=True)
@@ -367,9 +422,10 @@ class TestSandbox:
         assert summary.result_summary == "Failed with exit code 137: Killed"
 
     def test_sandbox_result_zero_exit_is_success(self) -> None:
+        # A run that succeeded shows its exit and what it printed (the harness's activity line).
         r = _result(content={"stdout": "42", "stderr": "", "exit_code": 0})
         summary = self.summarizer.summarize_result("run_code", {}, r)
-        assert summary.result_summary == "Executed successfully"
+        assert summary.result_summary == "exit 0 · 42"
 
     def test_install_packages_failure(self) -> None:
         r = _result(content={"success": False, "installed": [], "stdout": "", "stderr": "ERROR: No matching distribution"})

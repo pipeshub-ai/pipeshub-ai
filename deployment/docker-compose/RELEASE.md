@@ -12,20 +12,67 @@ bottleneck was never the code, it was the verification.
 
 ## Cutting a release
 
+First record the migration heads the release ships, on the commit you tag
+(`main`, or the release branch for a hotfix), in a pull request merged before
+you tag (`backend/db/README.md`, Released heads):
+
+```bash
+cd backend && python -m db.released_heads v0.7.1   # rewrites backend/db/released_heads.json
+```
+
+A pre-release or a hotfix needs no change only when its migration heads are the
+ones the file already records (`python -m db.released_heads --check` exits 0); one
+that adds a migration runs the writer above first. Then tag the commit that holds it:
+
 ```bash
 git tag v0.7.1
 git push origin v0.7.1
 ```
 
-That is the whole procedure. The `Release — build, publish, verify` workflow
-then does four things in order, and stops at the first failure.
+The `Release — build, publish, verify` workflow
+then does five things in order, stops at the first failure, and promotes
+nothing unless every one passed.
 
 | Stage | What happens | What it proves |
 |-------|--------------|----------------|
-| Resolve | The tag is parsed as semver | A typo cannot publish `pipeshubai/pipeshub-ai:oops` |
+| Resolve | The tag is parsed as semver, and the epochs in `backend/db/released_heads.json` must equal the tree's migration heads (on a tag push, a manual run with **promote**, or a manual run of a pre-release version) | A typo cannot publish `pipeshubai/pipeshub-ai:oops`; a release cannot ship without recording its migration heads |
 | Build | Both variants built for amd64 and arm64, pushed under a **candidate** tag | The image builds reproducibly from the tag |
 | Verify | First-run install, then upgrade from the previous release — both variants, on amd64 and arm64 | A user can install it, and an existing user can move to it, on either architecture |
+| Security | The harness security gate on the tag's commit (below) | No known security regression, leaked canary or denylisted dependency ships |
 | Promote | Candidate copied by digest onto the release tags | `:latest` only ever points at an image that passed |
+
+### The security gate
+
+`Security` runs `harness-security-gate.yml`, the workflow every harness pull
+request runs. Its stages are defined once, in `scripts/security_gate.py`:
+
+| Stage | What fails it |
+|-------|---------------|
+| `supply-chain` | A denylisted release in a lock, or an install not from a hashed lock (`scripts/supply_chain.py check`) |
+| `security` | A failed sandbox, egress, secret or red-team regression |
+| `canary` | A QA14 canary planted in a run reaching a log, trace, the activity stream or a stored key name |
+| `c13` | A sandbox reaching anything but the two gateways |
+| `docker-lane` | A failed Docker-marked case (real sandboxes, egress proxy, broker) |
+| `engines` | A failed engine lane or tools-layer licence scan, or one skipped for want of its built image |
+
+A stage also fails when a case skips that may not, when fewer cases ran than it
+holds, or when pytest wrote no report. A skip is how a gate reads green without
+testing anything: C-13 once did, for want of an image.
+
+Run the same stages before tagging:
+
+```bash
+python3 scripts/security_gate.py list          # what each stage runs
+python3 scripts/security_gate.py run supply-chain security
+REDIS_IT_URL=redis://127.0.0.1:6379 python3 scripts/security_gate.py run canary
+python3 scripts/security_gate.py run all       # the Docker stages need the sandbox and engine images
+```
+
+Build those images first, as the workflow does:
+`docker compose -f deployment/docker-compose/docker-compose.yml --profile sandbox build sandbox-image`,
+then `docker tag pipeshubai/pipeshub-sandbox:local pxh-sandbox:x1`, and
+`python3 scripts/engines/release_images.py build`. gVisor (runsc) is not on the
+runners yet, so the gate does not cover the gVisor runtime.
 
 Because promotion copies by digest, the image a user pulls is byte-identical to
 the one the tests passed against — not a rebuild that happens to come from the
@@ -96,9 +143,11 @@ The release is not published. `:latest` still points at the previous image, and
 users are unaffected. Diagnostics — container logs and the health payload — are
 attached to the run as artifacts.
 
-Fix forward and tag again. There is nothing to clean up: candidate tags are
-removed on success and are harmless if left behind, since nothing references
-them.
+Fix forward and tag again: delete the failed tag on both sides first
+(`git push --delete origin v0.7.1 && git tag -d v0.7.1`) and tag the corrected
+commit, or use the next patch version. There is nothing else to clean
+up: candidate tags are removed on success and are harmless if left behind,
+since nothing references them.
 
 ## Rolling back
 
@@ -119,6 +168,13 @@ of `.env`, and restores it if the downgrade fails.
 **A rollback undoes code, not data.** If the release you are undoing migrated
 data, the older image may not understand it and the correct recovery is
 restoring a backup. The script says so before proceeding.
+
+**A rollback keeps these Compose files.** A target image older than the release
+that put the sandbox broker behind the Docker API proxy (R43-SOCK) runs the app
+with them but not code execution. The script reads the target's
+`ai.pipeshub.sandbox-plane.version` label, says so, asks at a terminal, and
+gives the way to keep code execution: run `./install.sh --yes --upgrade` from
+that release's own `deployment/docker-compose` with this `.env`.
 
 ## Watching a deployment
 

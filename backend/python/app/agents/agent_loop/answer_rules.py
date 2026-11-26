@@ -25,7 +25,7 @@ ANSWER_COMPOSITION_RULES_ENV_VAR = "ANSWER_COMPOSITION_RULES"
 THOROUGH_RETRIEVAL_ENV_VAR = "THOROUGH_RETRIEVAL"
 MULTI_STEP_ANSWER_RULES_ENV_VAR = "MULTI_STEP_ANSWER_RULES"
 
-# Set by `chat_modes.bridge` for an enterprise-search chat under
+# Set by `chat_modes.setup.apply_mode_instructions` for an enterprise-search chat under
 # THOROUGH_RETRIEVAL, so the fetch policy in Finding Information agrees with
 # the mode text instead of telling the model one block is enough.
 READ_RECORDS_IN_FULL_STATE_KEY = "read_records_in_full"

@@ -26,20 +26,125 @@ def _kv_runtime(runtime, monkeypatch) -> RuntimeDb:
     return RuntimeDb()
 
 
-async def test_the_kv_role_reads_and_writes_configuration(
+async def test_the_kv_role_uses_the_key_value_table_and_writes_only_while_access_by_prefix_is_in_shadow(
     runtime, monkeypatch, uid
 ) -> None:
+    db = await runtime.db()
+    async with db.runtime_uow() as tx:
+        enforce = await tx.fetchval("/* pipeshub:test.kvmode */ SELECT enforce FROM platform.kv_access")
     store = PostgresKeyValueStore(
         lambda v: json.dumps(v).encode(),
         json.loads,
         runtime=_kv_runtime(runtime, monkeypatch),
     )
     assert await store.health_check()
+    await store.publish_change(f"/kv{uid}/a")
+    if enforce:  # the kv role writes no prefix
+        with pytest.raises(ConnectionError, match="row-level security"):
+            await store.create_key(f"/kv{uid}/a", {"x": 1}, overwrite=False)
+        assert await store.list_keys_in_directory(f"/kv{uid}") == []
+        return
     assert await store.create_key(f"/kv{uid}/a", {"x": 1}, overwrite=False)
     assert await store.get_key(f"/kv{uid}/a") == {"x": 1}
     assert await store.list_keys_in_directory(f"/kv{uid}") == [f"/kv{uid}/a"]
-    await store.publish_change(f"/kv{uid}/a")
     assert await store.delete_key(f"/kv{uid}/a")
+
+
+def _config_as(runtime, monkeypatch, service: str):  # noqa: ANN202
+    """The configuration service a process of ``service`` builds at start, on its own login."""
+    import logging
+
+    from app.config.configuration_service import ConfigurationService
+    from app.config.providers.encrypted_store import EncryptedKeyValueStore
+
+    dsn = runtime.cfg.dsn.replace("pipeshub_connectors_login", f"pipeshub_{service}_login")
+    monkeypatch.setenv("KV_STORE_TYPE", "postgres")
+    monkeypatch.setenv("PG_CORE_URL", dsn)
+    monkeypatch.setenv("PG_LISTEN_URL", runtime.cfg.dsn)        # change notifications on the suite's one listen connection (the hub keeps one per DSN)
+    monkeypatch.setenv("PG_RUNTIME_SERVICE", service)
+    log = logging.getLogger(f"spend-guard-{service}")
+    return ConfigurationService(log, EncryptedKeyValueStore(log))
+
+
+async def test_the_services_that_bind_the_spend_guard_start_its_key_path_in_either_mode(runtime, monkeypatch) -> None:
+    """The breaker's key path at start: ``fleet_breaker.load_install_secret`` (create the install secret if absent, then read it) in
+    indexing (indexing_main) and in parsing and extraction (the kv login, ``fleet_redis.bind_service_fleet``, which also reads the Redis
+    the breaker lives in: ``fleet_redis_config``); then indexing's pause judge reads the limits an admin saved (``spend_limits_source``).
+    Refused, the create raises and the service does not start, the Redis settings read as absent (the environment's), and so do the limits."""
+    from app.modules.pipeline.pause_budget import PauseLimits
+    from app.modules.pipeline.pause_judge import SPEND_GUARD_KEY, spend_limits_source
+    from app.services.llm_gateway.fleet_breaker import load_install_secret
+    from app.services.llm_gateway.fleet_redis import fleet_redis_config
+
+    admin = _config_as(runtime, monkeypatch, "node")
+    redis_key = "/services/redis"
+    saved_redis = await admin.get_config(redis_key, use_cache=False)
+    try:
+        assert await admin.set_config(SPEND_GUARD_KEY, {"pause": {"sends": 7, "absoluteSends": 9, "wallSeconds": 11}})     # the admin API saves the limits
+        assert await admin.set_config(redis_key, {"host": "fleet-redis.invalid", "port": 6390})                              # and the Redis
+        for service in ("indexing", "kv"):
+            svc = _config_as(runtime, monkeypatch, service)
+            try:
+                await load_install_secret(svc)
+                assert (await fleet_redis_config(svc)).host == "fleet-redis.invalid", service
+                if service == "indexing":
+                    got = await spend_limits_source(svc, PauseLimits())()
+                    assert (got.charged_sends, got.absolute_sends, got.wall_seconds) == (7, 9, 11)
+            finally:
+                await svc.close()
+    finally:
+        await admin.delete_config(SPEND_GUARD_KEY)
+        await (admin.set_config(redis_key, saved_redis) if saved_redis is not None else admin.delete_config(redis_key))
+        await admin.close()
+
+
+async def test_indexing_reads_the_parse_admission_numbers_an_admin_saved_in_either_mode(runtime, monkeypatch) -> None:
+    """The class admission's live numbers, read the way indexing does (``indexing_main.attach_parse_admission_config``):
+    ``LiveAdmissionConfig.refresh`` on the indexing login. Refused, the read sees no row and the environment defaults stay."""
+    from app.modules.parse_engine.admission import (
+        ADMISSION_CONFIG_KEY,
+        AdmissionNumbers,
+        LiveAdmissionConfig,
+    )
+
+    admin = _config_as(runtime, monkeypatch, "node")
+    try:
+        assert await admin.set_config(ADMISSION_CONFIG_KEY, {"largeCap": 0.6, "agingS": 120})
+        svc = _config_as(runtime, monkeypatch, "indexing")
+        try:
+            got = await LiveAdmissionConfig(svc, env_defaults=AdmissionNumbers()).refresh()
+            assert (got.large_cap, got.aging_s) == (0.6, 120)
+        finally:
+            await svc.close()
+    finally:
+        await admin.delete_config(ADMISSION_CONFIG_KEY)
+        await admin.close()
+
+
+async def test_query_claims_resolves_takes_over_and_releases_a_sandbox_alert_cooldown_in_either_mode(runtime, monkeypatch, uid) -> None:
+    """The code sandbox's load alert cooldown, driven the way query's alert loop does (``query_main`` starts it): ``AlertCooldown`` on
+    the query login creates the claim if absent with a TTL, reads it, marks it resolved, takes the resolved claim over (delete, then
+    create), puts the resolved value back on release and finally deletes it. Refused, the first create raises and no alert is sent."""
+    from app.services.sandbox_alerts.cooldown import STATE_RESOLVED, AlertCooldown
+
+    svc = _config_as(runtime, monkeypatch, "query")
+    c = AlertCooldown(svc, f"it{uid}", 3600, host="h")
+    try:
+        first = await c.claim_alert("warning", "a1")
+        assert first is not None and first.email
+        assert await c.claim("warning", "a2") is False
+        current = await c.read("warning")
+        assert current is not None and current["alertId"] == "a1"
+        assert await c.mark_resolved("warning", current)
+        taken = await c.claim_alert("warning", "a2")
+        assert taken is not None and taken.previous is not None and taken.previous["state"] == STATE_RESOLVED
+        assert await c.release_if_ours("warning", "a2", taken.previous)
+        assert (await c.read("warning") or {}).get("state") == STATE_RESOLVED
+        assert await c.release_if_ours("warning", "a1")
+        assert await c.read("warning") is None
+    finally:
+        await svc.delete_config(c.key("warning"))
+        await svc.close()
 
 
 async def test_the_kv_role_holds_nothing_else(runtime) -> None:

@@ -1,21 +1,21 @@
 import { injectable, inject } from 'inversify'
 import { Response, NextFunction } from 'express'
-import { Logger } from '../../../libs/services/logger.service'
 import { DEFAULT_EXPIRY_DAYS, PatService } from '../services/pat.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
-import { CreatePatRequest } from '../types/oauth.types'
+import { CreatePatRequest, UpdatePatKnowledgeLimitBody } from '../types/oauth.types'
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
-import { recordEvent } from '../../../libs/services/telemetry/event-buffer'
+import { currentOrgContext } from '../../../libs/context/orgContext';
+import { knowledgeLimitSize } from '../types/knowledge_limit';
 import {
   clientTags,
   domainFromEmail,
-} from '../../../libs/services/telemetry/identity'
-import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics'
+  recordEvent,
+  recordServiceActivity,
+} from '../../../libs/services/telemetry/telemetry-impl'
 
 @injectable()
 export class PatController {
   constructor(
-    @inject('Logger') private logger: Logger,
     @inject('PatService') private patService: PatService,
     @inject('ScopeValidatorService')
     private scopeValidatorService: ScopeValidatorService,
@@ -45,12 +45,6 @@ export class PatController {
         data,
       )
 
-      this.logger.info('Personal access token created via API', {
-        orgId,
-        userId,
-        name: data.name,
-      })
-
       // Activation signal: a token is the first step of every programmatic
       // path (MCP clients, SDKs). Scopes are counted, not listed.
       const email = req.user?.email as string | undefined
@@ -59,7 +53,7 @@ export class PatController {
         userId,
         domain: domainFromEmail(email),
         scope_count: token.scopes.length,
-        // The lifetime the token was actually minted with ('never' stays 'never').
+        // The lifetime the token was actually minted with.
         expiry_days: data.expiryDays ?? DEFAULT_EXPIRY_DAYS,
         ...clientTags(req.headers),
       })
@@ -114,15 +108,45 @@ export class PatController {
 
       await this.patService.revokeToken(orgId, userId, tokenId, reason)
 
-      this.logger.info('Personal access token revoked via API', {
-        orgId,
-        userId,
-        tokenId,
-      })
-
       res.json({ message: 'Personal access token revoked successfully' })
     } catch (error) {
       next(error)
+    }
+  }
+
+  /**
+   * Change what one of the caller's own personal access tokens may see.
+   * The token keeps its secret; the new limit applies to its next request.
+   */
+  async updateKnowledgeLimit(
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = String(currentOrgContext().orgId);
+      const userId = String(req.user?.userId ?? '');
+      const tokenId = req.params.tokenId ?? '';
+      // Validated by updatePatKnowledgeLimitSchema before this runs.
+      const { knowledgeLimit } = req.body as UpdatePatKnowledgeLimitBody;
+      const token = await this.patService.updateKnowledgeLimit(
+        orgId,
+        userId,
+        tokenId,
+        knowledgeLimit,
+      );
+      // A record of who changed a token's reach. Items are counted, never named.
+      recordEvent('pat_access_changed', {
+        orgId,
+        userId,
+        domain: domainFromEmail(req.user?.email as string | undefined),
+        limited: knowledgeLimit !== null,
+        item_count: knowledgeLimitSize(knowledgeLimit),
+        ...clientTags(req.headers),
+      });
+      res.json({ token });
+    } catch (error) {
+      next(error);
     }
   }
 
@@ -189,12 +213,6 @@ export class PatController {
         typeof req.body?.reason === 'string' ? req.body.reason : undefined
 
       await this.patService.adminRevokeToken(orgId, adminUserId, tokenId, reason)
-
-      this.logger.info('Personal access token revoked by admin via API', {
-        orgId,
-        adminUserId,
-        tokenId,
-      })
 
       res.json({ message: 'Personal access token revoked successfully' })
     } catch (error) {

@@ -4,12 +4,16 @@ Run: KERNEL_TEST_PG_BINS=<pg bin> KERNEL_TEST_PGBOUNCER=<pgbouncer> pytest tests
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.core import org_context
+from app.modules.indexing.run import IndexingPipeline
+from app.services.vector_db import membership
 from app.services.vector_db.models import CollectionConfig
 from app.services.vector_db.pgvector.config import PgVectorConfig
 from app.services.vector_db.pgvector.errors import (
@@ -19,7 +23,8 @@ from app.services.vector_db.pgvector.errors import (
     PgVectorError,
 )
 from app.services.vector_db.pgvector.pgvector import PgVectorService
-from tests.integration.db.conftest import cluster, env  # noqa: F401  (fixtures)
+from tests.integration.db.conftest import cluster, env, make  # noqa: F401  (fixtures)
+from tests.support.vector_db import make_collection_registry
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
 if TYPE_CHECKING:
@@ -149,3 +154,121 @@ async def test_a_provider_works_again_after_a_disconnect_and_a_connect(env) -> N
         assert (await s.health_check()).status.value == "healthy"
     finally:
         await s.disconnect()
+
+
+# ---- the delete of a virtual record: release its mapping and stored content unless another org still holds it ----------------------------
+async def _put_vrid(env, org: str, vrid: str) -> None:  # noqa: F811
+    c = await env.admin()
+    try:
+        await c.execute(
+            "INSERT INTO retrieval.points (org_id, collection_id, space_id, point_id, group_key, vrid, embedding, embedding_dim) "
+            "VALUES ($1, 1, 1, $2, $3, $3, '[1,0,0,0]'::ext.halfvec, 4)", org, uuid.uuid4(), vrid)
+    finally:
+        await c.close()
+
+
+async def _vrids_of(env, org: str) -> set[str]:  # noqa: F811
+    c = await env.admin()
+    try:
+        return {r[0] for r in await c.fetch("SELECT vrid FROM retrieval.points WHERE org_id = $1", org)}
+    finally:
+        await c.close()
+
+
+@pytest.fixture
+def pipeline(svc, monkeypatch):  # noqa: ANN201
+    """The indexing pipeline over the real store; the graph knows no record of any vrid, and storage records what it releases."""
+    monkeypatch.setattr(membership, "EMPTY_CONFIRM_DELAY_SECONDS", 0)
+    graph = MagicMock()
+    graph.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+    graph.delete_nodes = AsyncMock()
+    stored = MagicMock()
+    stored.release_virtual_records = AsyncMock(return_value=[])
+    p = IndexingPipeline(logging.getLogger("test"), MagicMock(), graph, make_collection_registry("records"), svc, stored_content=stored)
+    p.collection_locator.all_collections = AsyncMock(return_value=["records"])
+    return p
+
+
+async def _seed(svc, env, holders: dict[str, list[str]]) -> None:  # noqa: F811
+    for org in (ORG_A, ORG_B):
+        await svc._catalog.activate_space(org, "p:m:4", 4)
+    for org, vrids in holders.items():
+        for vrid in vrids:
+            await _put_vrid(env, org, vrid)
+
+
+async def test_deleting_the_last_copy_releases_the_mapping_and_the_stored_content(svc, env, pipeline) -> None:  # noqa: F811
+    await _seed(svc, env, {ORG_A: ["vr-last"]})
+    with in_org(ORG_A):
+        await svc.delete_points("records", await svc.filter_collection(must={"orgId": ORG_A, "virtualRecordId": "vr-last"}))
+        assert await pipeline._forget_virtual_record_mappings(["vr-last"], org_id=ORG_A) == []
+    pipeline.stored_content.release_virtual_records.assert_awaited_once_with(["vr-last"], org_id=ORG_A)
+
+
+async def test_a_vrid_another_org_still_holds_keeps_its_mapping_and_stored_content(svc, env, pipeline) -> None:  # noqa: F811
+    await _seed(svc, env, {ORG_A: ["vr-shared"], ORG_B: ["vr-shared"]})
+    with in_org(ORG_A):
+        assert await pipeline.rewrite_or_delete_vector_membership("vr-shared") == "kept"
+        assert await pipeline._forget_virtual_record_mappings(["vr-shared"], org_id=ORG_A) == []
+    assert await _vrids_of(env, ORG_A) == set() and await _vrids_of(env, ORG_B) == {"vr-shared"}     # only the caller's points went
+    pipeline.stored_content.release_virtual_records.assert_not_awaited()
+    pipeline.graph_provider.delete_nodes.assert_not_awaited()
+
+
+async def test_the_orphan_retry_deletes_the_points_and_releases_the_mapping(svc, env, pipeline) -> None:  # noqa: F811
+    await _seed(svc, env, {ORG_A: ["vr-orphan"], ORG_B: ["vr-other"]})
+    with in_org(ORG_A):                                     # what the orphan sweep runs for a mapping row no record references
+        assert await pipeline.rewrite_or_delete_vector_membership("vr-orphan") == "deleted"
+    assert await _vrids_of(env, ORG_A) == set() and await _vrids_of(env, ORG_B) == {"vr-other"}
+    pipeline.stored_content.release_virtual_records.assert_awaited_once()
+    assert pipeline.stored_content.release_virtual_records.await_args.args == (["vr-orphan"],)
+
+
+# ---- the orphan sweep on PostgreSQL: each org has its own mapping row for a shared vrid ---------------------------------------------------
+async def test_the_orphan_sweep_keeps_and_releases_each_orgs_mapping_row(svc, env, make, monkeypatch) -> None:  # noqa: F811
+    """Two orgs each have their own mapping row for one vrid and no record left on it; a third org still holds points. The real
+    PostgreSQL graph and the real store, both as the indexing role, the store answering the hold check with ``vrid_held_elsewhere``.
+    Each org's points go on the first tick and both rows stay; a backed-off row is not swept again; once the third org's points are
+    gone, each row is released after its own back-off, and one org's recheck does not release the other's."""
+    import app.indexing_main as m
+    from app.config.constants.arangodb import CollectionNames
+    from app.services.graph_db.postgres.provider import PostgresGraphProvider
+
+    monkeypatch.setattr(membership, "EMPTY_CONFIRM_DELAY_SECONDS", 0)
+    monkeypatch.setattr(membership, "_shared_row_kept", set())
+    monkeypatch.setattr(m, "_orphan_sweep_cursor", {})
+    monkeypatch.setattr(m, "_orphan_kept_until", {})
+    holder, vrid, mapping = "c3" * 12, "vr-swept", CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+    graph = PostgresGraphProvider(logging.getLogger("test"), await make("indexing", env.start_bouncer()))
+    pipeline = IndexingPipeline(logging.getLogger("test"), MagicMock(), graph, make_collection_registry("records"), svc)
+    pipeline.collection_locator.all_collections = AsyncMock(return_value=["records"])
+    for org in (ORG_A, ORG_B, holder):
+        await svc._catalog.activate_space(org, "p:m:4", 4)
+        await _put_vrid(env, org, vrid)
+    for org in (ORG_A, ORG_B):
+        with in_org(org):
+            assert await graph.create_node_if_absent(vrid, mapping, {"id": vrid, "orgId": org, "virtualRecordId": vrid})
+
+    async def sweep(org: str) -> int:
+        with in_org(org):
+            return await m._sweep_orphaned_virtual_record_mappings(
+                graph_provider=graph, pipeline=pipeline, logger=logging.getLogger("test"), page_size=100, org_id=org)
+
+    async def row(org: str) -> dict | None:
+        with in_org(org):
+            return await graph.get_document(vrid, mapping)
+
+    assert [await sweep(ORG_A), await sweep(ORG_B)] == [0, 0]
+    assert await _vrids_of(env, ORG_A) == set() and await _vrids_of(env, ORG_B) == set() and await _vrids_of(env, holder) == {vrid}
+    assert await row(ORG_A) is not None and await row(ORG_B) is not None
+    assert set(m._orphan_kept_until) == {(ORG_A, vrid), (ORG_B, vrid)}
+    assert [await sweep(ORG_A), await sweep(ORG_B)] == [0, 0]               # backed off: not swept again
+
+    with in_org(holder):
+        await svc.delete_points("records", await svc.filter_collection(must={"orgId": holder, "virtualRecordId": vrid}))
+    m._orphan_kept_until[(ORG_A, vrid)] = 0.0                                 # ORG_A's back-off ran out, ORG_B's did not
+    assert await sweep(ORG_A) == 1 and await row(ORG_A) is None
+    assert await sweep(ORG_B) == 0 and await row(ORG_B) is not None
+    m._orphan_kept_until[(ORG_B, vrid)] = 0.0
+    assert await sweep(ORG_B) == 1 and await row(ORG_B) is None
+    assert m._orphan_kept_until == {}

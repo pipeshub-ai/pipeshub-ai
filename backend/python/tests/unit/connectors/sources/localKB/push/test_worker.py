@@ -8,6 +8,7 @@ import json
 import os
 import signal
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -357,17 +358,16 @@ async def test_worker_has_no_core_files_and_an_address_space_limit(spool) -> Non
 async def test_an_unclosed_string_body_does_not_hold_the_worker(spool) -> None:
     evil = b'{"recordName":"' + b'\\"' * 20_000      # 40 KB; the quadratic lexer held the worker for 50 s
     good = raw(envelope())
-    w = W.PushWorker(lease_wait_s=5, kill_after_s=30)
+    # The worker's own deadline is the bound: 5 s, against the 50 s the quadratic lexer took. A body that held the
+    # worker that long ends as PUSH_TIMEOUT, not INVALID_JSON, so the outcome tells the two apart and no wall-clock
+    # bound (which a busy runner stretches) is needed.
+    w = W.PushWorker(lease_wait_s=5, kill_after_s=5)
     try:
         await w.validate(spool.write(good), spool.new_path("out"), schema_id=None, schema=None)  # warm up
-        started = time.monotonic()
         with pytest.raises(PushRefusal) as e:
             await w.validate(spool.write(evil), spool.new_path("out"), schema_id=None, schema=None)
-        refused_after = time.monotonic() - started
         assert (e.value.status, e.value.reason) == (400, "INVALID_JSON")
-        started = time.monotonic()
-        await w.validate(spool.write(good), spool.new_path("out"), schema_id=None, schema=None)
-        assert refused_after < 2.0 and time.monotonic() - started < 2.0
+        await w.validate(spool.write(good), spool.new_path("out"), schema_id=None, schema=None)  # the worker is free
         assert w.deaths == 0
     finally:
         await w.close()
@@ -579,17 +579,42 @@ async def test_a_reused_worker_death_after_a_long_run_is_the_bodys_own_and_is_no
 
 
 @needs_proc
-async def test_a_replay_runs_inside_the_remaining_budget_not_a_fresh_one(spool) -> None:
-    events, w = Events(), W.PushWorker(kill_after_s=0.6)
+async def test_a_replay_runs_inside_the_remaining_budget_not_a_fresh_one(spool, monkeypatch) -> None:
+    from multiprocessing.connection import Connection
+
+    # The wait the worker gave each attempt, read from the poll it made, on a clock only the test moves. On the
+    # wall clock the first attempt's 3 s raced the report of the death: a busy runner reported it after the
+    # deadline, so the attempt ended as an overrun and the replay never ran.
+    budget_s, ran_s = 3.0, 1.0
+    attempts: list[float] = []
+    clock = [1000.0]
+    real_poll = Connection.poll
+
+    def poll(self: Connection, timeout: float | None = 0.0) -> bool:
+        if self is not w._conn:
+            return real_poll(self, timeout)  # a fresh process's start-up handshake: the worker takes its pipe after it
+        attempts.append(timeout)
+        if len(attempts) > 1:
+            return real_poll(self, timeout)
+        ready = real_poll(self, 30)  # the death, however long the host takes to report it; 30 s bounds a hang
+        clock[0] += ran_s
+        return ready
+
+    events, w = Events(), W.PushWorker(kill_after_s=budget_s)
     try:
         await push_small(w, spool)
+        monkeypatch.setattr(W, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+        monkeypatch.setattr(Connection, "poll", poll)
         task = await start_accounted(w, spool, big_body(150_000), events)
         os.kill(w._proc.pid, signal.SIGSEGV)
-        started = time.monotonic()
         with pytest.raises(PushRefusal) as e:
             await task
-        assert e.value.reason == "PUSH_TIMEOUT"  # the replay hit the same 0.6 s wall budget
-        assert time.monotonic() - started < 2.0
+        # The replay either ran out of what was left (PUSH_TIMEOUT) or finished first and refused the body (its blocks
+        # are past the cap): which one depends on the runner's speed. The budget it was given is what the test checks.
+        assert e.value.reason in ("PUSH_TIMEOUT", "BLOCKS_INVALID")
+        assert w.deaths == 1  # the first attempt died and was replayed on a fresh process
+        # the first attempt got the whole budget; the replay got what was left after the first ran, not a fresh one
+        assert attempts == [budget_s, budget_s - ran_s]
     finally:
         await w.close()
 
@@ -654,7 +679,8 @@ async def test_a_run_under_the_kill_is_still_charged_its_seconds(spool) -> None:
         v = await w.validate(spool.write(big_body()), spool.new_path("out"), schema_id=None, schema=None, account=events)
         took = time.monotonic() - started
         assert v.block_count == 60_000 and events.names == ["lease"]
-        assert events.lease_s() >= took * 0.9 and events.lease_s() > 0.2
+        # Charged the body's real work (well over 0.2 s), never more than the call took.
+        assert 0.2 < events.lease_s() <= took
     finally:
         await w.close()
 

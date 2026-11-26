@@ -831,6 +831,11 @@ class CommonFields:
                 "Press Enter after each folder; names may contain spaces. "
                 "Include syncs only these folders; Exclude syncs everything except them. "
                 f"Leave empty to sync the whole {container}."
+                + (
+                    " In a folder name * matches any characters and ? one character; a ** folder"
+                    " matches any number of folders, as in customer/*/quotes or **/quotes."
+                    if wildcards else ""
+                )
             ),
             default_operator=ListOperator.IN.value,
             option_source_type=OptionSourceType.MANUAL,
@@ -845,6 +850,8 @@ class CommonFields:
         options_endpoint: str | None = None,
         extensions: list[ExtensionTypes] | None = None,
         labels: dict[str, str] | None = None,
+        *,
+        repository: bool = False,
     ) -> FilterField:
         """
         Standard file extension filter (static multiselect).
@@ -853,6 +860,7 @@ class CommonFields:
         ``labels`` replaces an option's ".ext" label. Without ``extensions`` every
         indexable type is offered, followed by common types that cannot be indexed
         (archives, databases, executables, temporary files, logs) so they can be excluded.
+        ``repository`` also offers the repository sources read as text (.vue, .tf, ...).
 
         Note: options_endpoint is reserved for a future dynamic-options implementation.
         """
@@ -869,7 +877,8 @@ class CommonFields:
             options=[
                 FilterOption(id=ext, label=(labels or {}).get(ext, f".{ext}"))
                 for ext in (
-                    [ext.value for ext in extensions] if extensions else file_types.filter_option_ids()
+                    [ext.value for ext in extensions] if extensions
+                    else file_types.filter_option_ids(repository=repository)
                 )
             ]
         )

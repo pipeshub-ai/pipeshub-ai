@@ -1,6 +1,7 @@
 // Knowledge Base API - Action Operations (CRUD)
 
 import type { AxiosRequestConfig } from 'axios';
+import { parseRetryAfter } from '@/lib/api/api-error';
 import { asArray } from '@/lib/utils/safe';
 import { apiClient, type ProcessedError } from '@/lib/api';
 import { streamSSEUpload, type SSEEvent } from '@/lib/api/streaming';
@@ -10,6 +11,10 @@ import type {
   KnowledgeHubQueryParams,
   RecordDetailsResponse,
 } from './types';
+import { getOrgIdFromToken, getUserIdFromToken } from '@/lib/utils/jwt';
+import { selectRecordPreviewCacheEnabled, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { evictRecordContent } from '@/lib/record-content';
+import { mintGrant, connectorLabel, type Grant } from '@/lib/record-content/grant';
 import { FOLDER_REINDEX_DEPTH } from './constants';
 import { DEFAULT_PAGE_SIZE } from './store';
 import { isKbCollectionsHubApp } from './utils/all-records-transformer';
@@ -25,6 +30,48 @@ const BASE_URL = '/api/v1/knowledgeBase';
 function quietListingRefusals(cursor: string | null | undefined) {
   const quietCursor = quietRejectedCursor(cursor);
   return (error: ProcessedError) => error.statusCode === 422 || error.statusCode === 503 || quietCursor(error);
+}
+
+/** How often a listing answered 503 (the database briefly unavailable or busy) is asked again before the failure is shown. */
+export const BUSY_RETRIES = 3;
+const DEFAULT_BUSY_WAIT_S = 5;
+
+/**
+ * A Knowledge Hub read that the server answers 503 is asked again by itself, after the seconds its Retry-After asked for,
+ * up to `retries` times; only the last answer can toast. The All Records table counts down on screen instead, so its
+ * reads (`quietRefusals`, `getAllRootItems`) are not retried here.
+ */
+async function getRetryingBusy<T>(url: string, config: AxiosRequestConfig, retries = BUSY_RETRIES) {
+  const quiet = config.suppressErrorToast;
+  for (let tries = 0; ; tries += 1) {
+    const last = tries >= retries;
+    try {
+      return await apiClient.get<T>(url, last ? config : {
+        ...config,
+        suppressErrorToast: (e: ProcessedError) => e.statusCode === 503 || (typeof quiet === 'function' ? quiet(e) : !!quiet),
+      });
+    } catch (error) {
+      const busy = (error as ProcessedError | undefined)?.statusCode === 503;
+      if (last || !busy || config.signal?.aborted) throw error;
+      const headers = ((error as ProcessedError).originalError as { response?: { headers?: Record<string, unknown> } } | undefined)
+        ?.response?.headers;
+      const seconds = parseRetryAfter(headers?.['retry-after']) ?? DEFAULT_BUSY_WAIT_S;
+      await waitUnlessAborted(seconds * 1000, config.signal);
+    }
+  }
+}
+
+/** Resolves after `ms`, or as soon as `signal` aborts; the next request then rejects as cancelled without being sent. */
+function waitUnlessAborted(ms: number, signal: AxiosRequestConfig['signal']) {
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener?.('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener?.('abort', done);
+  });
 }
 
 const pendingGetNodeChildren = new Map<string, Promise<KnowledgeHubApiResponse>>();
@@ -95,7 +142,7 @@ export const KnowledgeHubApi = {
    * @returns Root navigation nodes with counts
    */
   async initializeSidebar() {
-    const { data } = await apiClient.get<KnowledgeHubApiResponse>(
+    const { data } = await getRetryingBusy<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes`,
       {
         params: {
@@ -118,7 +165,7 @@ export const KnowledgeHubApi = {
    * @returns Child navigation nodes
    */
   async expandFolder(nodeId: string) {
-    const { data } = await apiClient.get<KnowledgeHubApiResponse>(
+    const { data } = await getRetryingBusy<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes`,
       {
         params: {
@@ -148,7 +195,7 @@ export const KnowledgeHubApi = {
     params?: Partial<KnowledgeHubQueryParams>,
     options?: { suppressErrorToast?: boolean; quietRefusals?: boolean; signal?: AbortSignal }
   ) {
-    const { data } = await apiClient.get<KnowledgeHubApiResponse>(
+    const { data } = await getRetryingBusy<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
       {
         params: {
@@ -161,7 +208,9 @@ export const KnowledgeHubApi = {
         suppressErrorToast:
           options?.suppressErrorToast ||
           (options?.quietRefusals ? quietListingRefusals : quietRejectedCursor)(params?.cursor),
-      }
+      },
+      // The All Records table counts a 503 down on screen and asks again itself.
+      options?.quietRefusals ? 0 : BUSY_RETRIES
     );
     return data;
   },
@@ -243,7 +292,7 @@ export const KnowledgeHubApi = {
 
     const promise = (async (): Promise<KnowledgeHubApiResponse> => {
       try {
-        const { data } = await apiClient.get<KnowledgeHubApiResponse>(
+        const { data } = await getRetryingBusy<KnowledgeHubApiResponse>(
           `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
           {
             params: {
@@ -369,7 +418,7 @@ export const KnowledgeHubApi = {
     params?: KnowledgeHubQueryParams,
     options?: { signal?: AbortSignal }
   ): Promise<KnowledgeHubApiResponse> {
-    const { data } = await apiClient.get<KnowledgeHubApiResponse>(
+    const { data } = await getRetryingBusy<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes`,
       { params, signal: options?.signal, suppressErrorToast: quietRejectedCursor(params?.cursor) }
     );
@@ -710,11 +759,16 @@ export const KnowledgeBaseApi = {
   async reindexItem(
     recordId: string,
     depth: number = 0,
-    statusFilters?: string[]
+    statusFilters?: string[],
+    // A user's Force reindex: every stored result is bypassed and paid for again.
+    force?: boolean
   ) {
-    const body: { depth: number; statusFilters?: string[] } = { depth };
+    const body: { depth: number; statusFilters?: string[]; force?: boolean } = { depth };
     if (statusFilters?.length) {
       body.statusFilters = statusFilters;
+    }
+    if (force) {
+      body.force = true;
     }
     const { data } = await apiClient.post<Record<string, unknown>>(
       `${BASE_URL}/reindex/record/${recordId}`,
@@ -801,6 +855,41 @@ export const KnowledgeBaseApi = {
       { suppressErrorToast: options?.suppressErrorToast }
     );
     return data;
+  },
+
+  /**
+   * Details call of an open: it sends the content-open header, so the server applies the stream
+   * route's connector refusals too, and it alone mints the single-use grant the content cache
+   * accepts for a connector record. A refusal evicts every variant of the record.
+   */
+  async getRecordDetailsForOpen(
+    recordId: string,
+    options?: { suppressErrorToast?: AxiosRequestConfig['suppressErrorToast'] }
+  ): Promise<{ details: RecordDetailsResponse; grant: Grant | null }> {
+    // The owner is read when the question is asked, so an answer that lands after the account changed
+    // cannot mint a grant for the new owner.
+    const asked = getOrgIdFromToken() && getUserIdFromToken() ? `${getOrgIdFromToken()}|${getUserIdFromToken()}` : null;
+    // With the cache off, this is the plain details request: no connector refusals are added to it.
+    const contentOpen = selectRecordPreviewCacheEnabled(useFeatureFlagsStore.getState());
+    try {
+      const { data } = await apiClient.get<RecordDetailsResponse>(
+        `${BASE_URL}/record/${recordId}`,
+        {
+          headers: contentOpen ? { 'X-Record-Content-Open': '1' } : undefined,
+          suppressErrorToast: options?.suppressErrorToast,
+        }
+      );
+      const answered =
+        getOrgIdFromToken() && getUserIdFromToken()
+          ? `${getOrgIdFromToken()}|${getUserIdFromToken()}`
+          : null;
+      const grant = asked && answered === asked ? mintGrant(recordId, connectorLabel(data?.record ?? {}), asked) : null;
+      return { details: data, grant };
+    } catch (error) {
+      const status = (error as { statusCode?: number })?.statusCode;
+      if (status === 403 || status === 404 || status === 409) evictRecordContent(recordId);
+      throw error;
+    }
   },
 
   /**

@@ -16,9 +16,9 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.messages import ImagePart, TextPart
 from app.agent_loop_lib.tools.base import ToolOutput
+from app.agents.agent_loop.image_parts import admitted_image_parts
 
 if TYPE_CHECKING:
-    from app.agent_loop_lib.core.messages import Part
     from app.agents.agent_loop.context import AgentContext
 
 __all__ = ["mcp_result_to_tool_output"]
@@ -27,7 +27,6 @@ _EMPTY_ERROR_MESSAGE = "MCP tool returned an error without a message."
 # Characters of tool output kept per result. The model sees at most `shape_budget_reduction`'s
 # share of it anyway; this stops one huge result being held, logged and stored in full.
 MAX_RESULT_CHARS = 200_000
-_TEXT_ONLY_MODEL_NOTE = "[image returned by the tool not shown: this model does not accept images]"
 
 
 def _capped(text: str) -> str:
@@ -120,39 +119,6 @@ def _collect_blocks(content: Any) -> tuple[list[str], list[str]]:  # noqa: ANN40
     return texts, image_uris
 
 
-async def _image_parts(image_uris: list[str], context: "AgentContext | None") -> list["Part"]:
-    """One part per image, in order: an `ImagePart` when admitted, a text note otherwise."""
-    if context is None or not context.is_multimodal_llm:
-        return [TextPart(text=_TEXT_ONLY_MODEL_NOTE) for _ in image_uris]
-
-    from app.utils.chat_helpers import image_dict_to_part
-    from app.utils.image_admission import (
-        ImageCandidate,
-        ImageOrigin,
-        admission_from_state,
-    )
-
-    admission = admission_from_state(context.tool_state)
-    await admission.warm(image_uris)
-    verdict = admission.admit([
-        ImageCandidate(ref=str(index), data_uri=uri, origin=ImageOrigin.FETCHED_RECORD, block_index=index)
-        for index, uri in enumerate(image_uris)
-    ])
-
-    parts: dict[int, "Part"] = {}
-    for candidate in verdict.admitted:
-        part = image_dict_to_part({"image_url": {"url": candidate.data_uri}})
-        if part is None:
-            parts[int(candidate.ref)] = TextPart(text="[image returned by the tool not shown: unreadable image data]")
-            continue
-        parts[int(candidate.ref)] = part
-    for degraded in verdict.degraded:
-        parts[int(degraded.candidate.ref)] = TextPart(
-            text=f"[image returned by the tool not shown: {degraded.reason.value.replace('_', ' ')}]",
-        )
-    return [parts[index] for index in sorted(parts)]
-
-
 async def mcp_result_to_tool_output(result: Any, context: "AgentContext | None" = None) -> ToolOutput:  # noqa: ANN401
     raw_structured = _field(result, "structuredContent", "structured_content")
     structured = _unwrap_fastmcp_result(result, raw_structured)
@@ -183,7 +149,7 @@ async def mcp_result_to_tool_output(result: Any, context: "AgentContext | None" 
     if not image_uris:
         return ToolOutput(success=True, data=text)
 
-    image_parts = await _image_parts(image_uris, context)
+    image_parts = await admitted_image_parts(image_uris, context, source="returned by the tool")
     if not any(isinstance(part, ImagePart) for part in image_parts):
         notes = "\n".join(part.text for part in image_parts if isinstance(part, TextPart))
         return ToolOutput(success=True, data=f"{text}\n{notes}" if text else notes)

@@ -5,7 +5,8 @@ import winston from 'winston'
 import { Logger, getLogFormat } from '../../../src/libs/services/logger.service'
 import * as seam from '../../../src/libs/services/structured-logging'
 import { bindLogContext, runWithRequestContext, setContextIdentity } from '../../../src/libs/context/request-context'
-import { NotFoundError } from '../../../src/libs/errors/http.errors'
+import { InternalServerError, NotFoundError } from '../../../src/libs/errors/http.errors'
+import { redactSecretsInText } from '../../../src/libs/utils/log-redaction.utils'
 import { withCause } from '../../../src/libs/errors/base.error'
 
 const MESSAGE = Symbol.for('message')
@@ -40,9 +41,15 @@ describe('Logger: call-site fields, the stack rule and LOG_FORMAT=json', () => {
   const winstonRoot = (): winston.Logger => (Logger.getInstance() as any).logger
   /** What the console transport prints for a record, under the current LOG_FORMAT. */
   const consoleLine = (r: Record<string, unknown>): string => {
-    const shaped = winstonRoot().format.transform({ ...r }, {}) as Record<string | symbol, unknown>
+    const shaped = winstonRoot().format.transform({ ...r } as any, {}) as Record<string | symbol, unknown>
     const console = winstonRoot().transports.find((t) => t instanceof winston.transports.Console)!
-    return String((console.format!.transform(shaped, {}) as Record<symbol, unknown>)[MESSAGE])
+    return String((console.format!.transform(shaped as any, {}) as Record<symbol, unknown>)[MESSAGE])
+  }
+  /** What error.log and combined.log get: their transports' format in initializeLogger (the text format, then winston's json()). */
+  const fileLine = (r: Record<string, unknown>): string => {
+    const shaped = winstonRoot().format.transform({ ...r }, {}) as Record<string | symbol, unknown>
+    const file = winston.format.combine(winstonRoot().format, winston.format.json())
+    return String((file.transform(shaped, {}) as Record<symbol, unknown>)[MESSAGE])
   }
   const inRequest = (fn: () => void) =>
     runWithRequestContext({ rootId: 'req-1' }, () => {
@@ -238,6 +245,62 @@ describe('Logger: call-site fields, the stack rule and LOG_FORMAT=json', () => {
       Logger.getInstance().info('x')
       expect(consoleLine(record())).to.equal('provider line')
       expect(seen).to.have.length(1)
+    })
+  })
+
+  describe('every string through the text redactor, in the console (text and json) and the file', () => {
+    // A stored setting that is not JSON: V8's SyntaxError quotes it (N5l).
+    const SECRET = 'FAKE-pw-0123456'
+    const parseError = (): Error => {
+      try {
+        JSON.parse(SECRET)
+      } catch (e) {
+        return e as Error
+      }
+      throw new Error('parsed')
+    }
+    const shapes: [string, (logger: Logger, error: Error) => void][] = [
+      ['a string field', (l, e) => l.warn('Failed to parse metrics config:', { error: e.message })],
+      ['a template message', (l, e) => l.error(`Could not read the stored config: ${e.message}`)],
+      ['a string array', (l, e) => l.warn('Some settings were skipped', { errors: ['ok', e.message] })],
+      ["a BaseError's metadata", (l, e) => l.error('x', { error: new InternalServerError('unreadable', { detail: e.message }) })],
+      ['a cause that is not an Error', (l, e) => l.error('x', { error: withCause(new Error('unreadable'), { name: e.name, message: e.message }) })],
+      ['the uncaught-exception handler', (l, e) => l.error('Uncaught Exception:', { error: { name: e.name, message: e.message } })],
+      ['the unhandled-rejection handler', (l, e) => l.error('Unhandled Rejection:', { reason: { name: e.name, message: e.message }, promise: '[object Promise]' })],
+      ['an Error in metadata', (l, e) => l.error('http.request.error', { error: e })],
+      ['an Error passed positionally', (l, e) => l.error('Failed to start application:', e)],
+    ]
+    for (const format of ['text', 'json']) {
+      for (const [shape, write] of shapes) {
+        it(`${shape}: the ${format} console and the file keep the line and drop the quoted text`, () => {
+          freshRoot(format)
+          write(Logger.getInstance({ service: 'N5l' }), parseError())
+          for (const line of [JSON.stringify(record()), consoleLine(record()), fileLine(record())]) {
+            expect(line).to.not.include(SECRET)
+            expect(line).to.not.include("token 'F'")
+            expect(line).to.match(/Unexpected token, \\*"\[REDACTED\]\\*" is not valid JSON/)
+          }
+        })
+      }
+    }
+
+    it('the json console redacts each string once more and prints the same text (the redactor is stable)', () => {
+      freshRoot('json')
+      const values = [parseError().message, 'GET /cb?code=FAKE-code-0123&state=s', 'Authorization: Bearer FAKE-bearer', 'plain text']
+      Logger.getInstance().warn(values[0]!, { values })
+      const json = JSON.parse(consoleLine(record()))
+      expect(json.message).to.equal('Unexpected token, "[REDACTED]" is not valid JSON')
+      expect(json.metadata.values).to.deep.equal(values.map(redactSecretsInText))
+      expect(json.metadata.values[1]).to.not.include('FAKE-code-0123')
+    })
+
+    it('a credential in a plain string (not only the JSON.parse quote) is redacted in the text console and the file, at WARN', () => {
+      freshRoot('text')
+      Logger.getInstance({ service: 'N5l' }).warn('Retrying GET /cb?code=FAKE-code-0123', { note: 'Authorization: Bearer FAKE-bearer-0123' })
+      for (const line of [JSON.stringify(record()), consoleLine(record()), fileLine(record())]) {
+        expect(line).to.not.include('FAKE-code-0123')
+        expect(line).to.not.include('FAKE-bearer-0123')
+      }
     })
   })
 

@@ -135,6 +135,33 @@ class TestFetchCallerRole:
             result = await fetch_caller_role(_request(_BEARER), _config_service())
         assert result == CallerRole(CallerRoleStatus.UNKNOWN)
 
+    async def test_a_personal_access_tokens_current_limit_comes_with_the_role(self) -> None:
+        """Node sends a PAT's stored limit, which its owner may have changed since it was issued."""
+        limit = {"apps": ["app-1"], "recordGroups": ["rg-1"], "records": []}
+        with _node(lambda _: httpx.Response(200, json={"role": "member", "knowledgeLimit": limit})):
+            result = await fetch_caller_role(_request(_BEARER), _config_service())
+        assert result.status is CallerRoleStatus.VALID
+        assert result.knowledge_limit_given is True
+        assert result.knowledge_limit == limit
+
+    async def test_a_null_limit_means_everything_the_owner_can_see(self) -> None:
+        with _node(lambda _: httpx.Response(200, json={"role": "member", "knowledgeLimit": None})):
+            result = await fetch_caller_role(_request(_BEARER), _config_service())
+        assert result.knowledge_limit_given is True
+        assert result.knowledge_limit is None
+
+    async def test_no_limit_key_leaves_the_tokens_own_claim_in_force(self) -> None:
+        with _node(lambda _: httpx.Response(200, json={"role": "member"})):
+            result = await fetch_caller_role(_request(_BEARER), _config_service())
+        assert result.knowledge_limit_given is False
+
+    @pytest.mark.parametrize("bad", ["everything", ["app-1"], 7, True])
+    async def test_an_unreadable_limit_fails_closed(self, bad) -> None:
+        """Taking a malformed limit as "none" would widen the token to everything its owner sees."""
+        with _node(lambda _: httpx.Response(200, json={"role": "member", "knowledgeLimit": bad})):
+            result = await fetch_caller_role(_request(_BEARER), _config_service())
+        assert result == CallerRole(CallerRoleStatus.UNKNOWN)
+
     async def test_forwards_only_the_authorization_header(self):
         seen = []
 
@@ -332,3 +359,36 @@ class TestCallerRoleCache:
         with pytest.raises(RuntimeError):
             await cache.get("tok", AsyncMock(side_effect=RuntimeError("boom")))
         assert await cache.get("tok", AsyncMock(return_value=_LIVE)) == _LIVE
+
+
+class TestFetchOwnIdentity:
+    async def test_the_token_names_exactly_the_user_and_org_asked_about(self) -> None:
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"_id": "u1", "orgId": "o1", "email": "a@example.com"})
+
+        with _node(handler):
+            body = await caller_role.fetch_own_identity(_config_with_secret(), "o1", "u1", "/api/v1/users/internal/u1")
+
+        assert body == {"_id": "u1", "orgId": "o1", "email": "a@example.com"}
+        (request,) = seen
+        assert str(request.url) == f"{_NODE}/api/v1/users/internal/u1"
+        token = request.headers["authorization"].removeprefix("Bearer ")
+        claims = jwt.decode(token, _SCOPED_SECRET, algorithms=["HS256"])
+        assert (claims["userId"], claims["orgId"], claims["scopes"]) == ("u1", "o1", [TokenScopes.USER_LOOKUP.value])
+
+    async def test_no_live_record_is_none(self) -> None:
+        with _node(lambda _request: httpx.Response(404, json={"error": "not found"})):
+            assert await caller_role.fetch_own_identity(_config_with_secret(), "o1", "u1", "/api/v1/org/internal") is None
+
+    async def test_any_other_answer_raises(self) -> None:
+        with _node(lambda _request: httpx.Response(500)), pytest.raises(httpx.HTTPStatusError):
+            await caller_role.fetch_own_identity(_config_with_secret(), "o1", "u1", "/api/v1/org/internal")
+
+    async def test_without_the_scoped_secret_nothing_is_sent(self) -> None:
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={})
+        with _node(lambda _request: pytest.fail("no request expected")), pytest.raises(RuntimeError):
+            await caller_role.fetch_own_identity(config_service, "o1", "u1", "/api/v1/org/internal")

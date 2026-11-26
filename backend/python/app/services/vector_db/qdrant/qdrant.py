@@ -9,15 +9,15 @@ import os
 import threading
 import time
 from collections.abc import Mapping
-from urllib.parse import quote
 from typing import Dict, List, NamedTuple, Optional, Union
+from urllib.parse import quote
 
 from qdrant_client import AsyncQdrantClient  # type: ignore
 from qdrant_client.http.models import (  # type: ignore
     BinaryQuantization,
     BinaryQuantizationConfig,
+    CompressionRatio,
     Distance,
-    FieldCondition as QdrantFieldCondition,
     Filter,
     FilterSelector,
     HasIdCondition,
@@ -30,7 +30,6 @@ from qdrant_client.http.models import (  # type: ignore
     PayloadSchemaType,
     ProductQuantization,
     ProductQuantizationConfig,
-    CompressionRatio,
     Range,
     ScalarQuantization,
     ScalarQuantizationConfig,
@@ -42,14 +41,18 @@ from qdrant_client.http.models import (  # type: ignore
     VectorParams,
     VectorParamsDiff,
 )
+from qdrant_client.http.models import (
+    FieldCondition as QdrantFieldCondition,
+)
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD, checked_fence
+from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
-    forbid_org_in_payload,
     forbid_fence_in_payload,
+    forbid_org_in_payload,
     is_missing,
     keep_org_in_overwrite,
     require_filter_org,
@@ -71,6 +74,7 @@ from app.services.vector_db.models import (
     ScrollResult,
     SearchFailureKind,
     SearchResult,
+    SparseVector,
     VectorCollectionInfo,
     VectorDBCapabilities,
     VectorDBHealth,
@@ -80,9 +84,13 @@ from app.services.vector_db.models import (
 from app.services.vector_db.qdrant.config import QdrantConfig
 from app.services.vector_db.qdrant.errors import classify_qdrant_search_error
 from app.services.vector_db.qdrant.memory_sizing import assess_memory, parse_memory_size
-from app.services.vector_db.qdrant.utils import MAX_HNSW_EF_CONSTRUCT, QdrantUtils, env_number
+from app.services.vector_db.qdrant.utils import (
+    MAX_HNSW_EF_CONSTRUCT,
+    MAX_TIE_READ,
+    QdrantUtils,
+    env_number,
+)
 from app.utils.logger import create_logger
-from app.services.resource_governor.feedback import get_default_downstream_feedback
 
 logger = create_logger("qdrant_service")
 
@@ -814,6 +822,39 @@ class QdrantService(IVectorDBService):
             next_offset=str(next_offset) if next_offset is not None else None,
         )
 
+    async def scroll_with_vectors(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: Optional[str] = None,
+    ) -> ScrollResult:
+        self._assert_connected()
+        raw_points, next_offset = await self.client.scroll(  # type: ignore
+            collection_name=collection_name,
+            scroll_filter=QdrantUtils.filter_expression_to_qdrant(scroll_filter),
+            limit=limit,
+            with_payload=True,
+            with_vectors=True,
+            offset=offset,
+        )
+        points: list[VectorPoint] = []
+        for p in raw_points:
+            vectors = p.vector if isinstance(p.vector, dict) else {"dense": p.vector}
+            sparse = vectors.get("sparse")
+            points.append(
+                VectorPoint(
+                    id=str(p.id),
+                    dense_vector=list(vectors["dense"]) if vectors.get("dense") is not None else None,
+                    sparse_vector=(
+                        SparseVector(indices=list(sparse.indices), values=list(sparse.values))
+                        if sparse is not None else None
+                    ),
+                    payload=p.payload or {},
+                )
+            )
+        return ScrollResult(points=points, next_offset=str(next_offset) if next_offset is not None else None)
+
     async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
         self._assert_connected()
         result = await self.client.count(  # type: ignore
@@ -855,20 +896,96 @@ class QdrantService(IVectorDBService):
         requests: List[HybridSearchRequest],
     ) -> List[List[SearchResult]]:
         self._assert_connected()
-        qdrant_requests = [QdrantUtils.search_request_to_qdrant(req) for req in requests]
-        raw_results = await self.client.query_batch_points(  # type: ignore
-            collection_name=collection_name,
-            requests=qdrant_requests,
+        legs = [QdrantUtils.search_request_to_qdrant(req) for req in requests]
+        # One round trip for every leg of every request, fused here, then one for the payloads.
+        flat = [leg for request_legs in legs for leg in request_legs]
+        raw_results = (
+            await self.client.query_batch_points(  # type: ignore
+                collection_name=collection_name,
+                requests=flat,
+            )
+            if flat
+            else []
         )
-        results: List[List[SearchResult]] = []
-        for req, batch_result in zip(requests, raw_results):
+        answers = [list(r.points) for r in raw_results]
+        await self._read_boundary_ties(collection_name, requests, legs, flat, answers)
+        position = iter(answers)
+        fused: list[list[tuple[str, float]]] = [
+            QdrantUtils.fuse_legs([next(position) for _ in request_legs], req.limit)
+            for req, request_legs in zip(requests, legs)
+        ]
+        payloads = await self._payloads_for(collection_name, requests, fused)
+        results: list[list[SearchResult]] = []
+        for req, ranked in zip(requests, fused):
+            found = payloads.get(_payload_key(req.with_payload), {})
             results.append(
                 [
-                    QdrantUtils.qdrant_result_to_search_result(p)
-                    for p in QdrantUtils.stable_top(batch_result.points, req.limit)
+                    # A point deleted between the search and the payload read is left out.
+                    SearchResult(id=point_id, score=score, payload=found[point_id] if req.with_payload else {})
+                    for point_id, score in ranked
+                    if not req.with_payload or point_id in found
                 ]
             )
         return results
+
+    async def _read_boundary_ties(
+        self,
+        collection_name: str,
+        requests: list[HybridSearchRequest],
+        legs: list[list[object]],
+        flat: list[object],
+        answers: list[list[object]],
+    ) -> None:
+        """Read a leg deeper while points tied at its fusion depth may go past what it returned.
+
+        Each leg asks for its depth and a margin. When the margin is all tied with
+        the point at the cut, Qdrant chose which of the tied points to return, and
+        another call could choose others. The leg is asked again for twice as many
+        until the tie ends inside the answer, or it has read ``MAX_TIE_READ`` points:
+        a tie at the cut that runs past that read is still Qdrant's choice. Rare: equal scores that many
+        are mostly keyword matches on the same words.
+        """
+        depths = [req.limit * 2 for req, request_legs in zip(requests, legs) for _ in request_legs]
+        # Each round at least doubles a leg's read, so this ends by MAX_TIE_READ.
+        while True:
+            deeper = [
+                i for i, points in enumerate(answers)
+                if flat[i].limit < MAX_TIE_READ and QdrantUtils.tie_at_cut(points, depths[i], flat[i].limit)
+            ]
+            if not deeper:
+                return
+            for i in deeper:
+                flat[i] = flat[i].model_copy(update={"limit": min(flat[i].limit * 2, MAX_TIE_READ)})
+            more = await self.client.query_batch_points(  # type: ignore
+                collection_name=collection_name,
+                requests=[flat[i] for i in deeper],
+            )
+            for i, result in zip(deeper, more):
+                answers[i] = list(result.points)
+
+    async def _payloads_for(
+        self,
+        collection_name: str,
+        requests: list[HybridSearchRequest],
+        fused: list[list[tuple[str, float]]],
+    ) -> dict[object, dict[str, dict]]:
+        """The fused points' payloads, read once per distinct payload selection."""
+        wanted: dict[object, tuple[bool | list[str], set[str]]] = {}
+        for req, ranked in zip(requests, fused):
+            if not req.with_payload or not ranked:
+                continue
+            key = _payload_key(req.with_payload)
+            wanted.setdefault(key, (req.with_payload, set()))[1].update(point_id for point_id, _ in ranked)
+        out: dict[object, dict[str, dict]] = {}
+        for key, (selection, ids) in wanted.items():
+            records = await self.client.retrieve(  # type: ignore
+                collection_name=collection_name,
+                ids=sorted(ids),
+                with_payload=selection,
+                with_vectors=False,
+            )
+            out[key] = {str(r.id): r.payload or {} for r in records}
+        return out
 
     async def upsert_points(
         self,
@@ -1050,3 +1167,8 @@ class QdrantService(IVectorDBService):
     def _assert_connected(self) -> None:
         if self.client is None:
             raise RuntimeError("Qdrant client not connected. Call connect() first.")
+
+
+def _payload_key(selection: object) -> object:
+    """A hashable key for a request's payload selection."""
+    return tuple(selection) if isinstance(selection, list) else bool(selection)

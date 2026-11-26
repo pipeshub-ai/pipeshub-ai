@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable
 from urllib.parse import urlparse
 
+from app.exceptions.non_retryable import NonRetryableError
 
-class AtlassianMultiSiteError(ValueError):
+
+class AtlassianMultiSiteError(ValueError, NonRetryableError):
     """OAuth token can reach multiple Atlassian sites. A single-site
     (resource-restricted) OAuth app is required. Subclasses ``ValueError`` so
     existing broad handlers keep working."""

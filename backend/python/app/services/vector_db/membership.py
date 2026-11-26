@@ -192,6 +192,9 @@ _vrid_locks: "weakref.WeakValueDictionary[tuple[int, str], asyncio.Lock]" = (
 # Cap on simultaneous graph calls when resolving one VRID's membership.
 MEMBERSHIP_RESOLVE_CONCURRENCY = 32
 
+# Records whose org is read in one query.
+OWNER_READ_BATCH = 500
+
 MEMBERSHIP_LOCK_TIMEOUT_SECONDS = 120
 
 # Ceiling on VRIDs rewritten by a single batched membership write. Bounds how
@@ -268,8 +271,16 @@ async def own_record_keys(graph_provider, virtual_record_id: str, org_id: str) -
     keys = remaining_record_keys(
         await graph_provider.get_records_by_virtual_record_id(virtual_record_id, raise_on_error=True)
     )
-    docs = await asyncio.gather(*(graph_provider.get_document(k, CollectionNames.RECORDS.value) for k in keys))
-    return [k for k, d in zip(keys, docs) if not _of_other_org(d, org_id)]
+    # Content shared by a thousand records is deleted a record at a time, each delete asking about all of them:
+    # one read per record fills the graph's connection pool and fails every other query.
+    owners: dict[str, dict] = {}
+    for start in range(0, len(keys), OWNER_READ_BATCH):
+        rows = await graph_provider.get_nodes_by_field_in(
+            CollectionNames.RECORDS.value, "id", keys[start:start + OWNER_READ_BATCH],
+            return_fields=["id", "orgId"], raise_on_error=True,
+        )
+        owners.update({row["id"]: row for row in rows})
+    return [k for k in keys if not _of_other_org(owners.get(k), org_id)]
 
 
 def _add_unique(values: list[str], seen: set[str], candidate: Any) -> None:
@@ -1017,6 +1028,8 @@ async def rewrite_or_delete_virtual_record(
 ) -> str:
     """Delete points if no graph records remain; otherwise rewrite both arrays.
 
+    Returns ``"rewritten"``, ``"deleted"``, ``"kept"`` (this org's points went, but the
+    mapping stays because another org still holds points) or ``"skipped"``.
     ``release_mapping`` replaces the plain mapping-row delete after the points
     go, so a caller can remove the virtual record's stored content first.
     """
@@ -1036,6 +1049,9 @@ _shared_row_kept: set[str] = set()
 
 
 async def _other_orgs_hold_points(vector_db, collections: Sequence[str], virtual_record_id: str, org_id: str) -> bool:  # noqa: ANN001
+    held = await vector_db.other_orgs_hold_virtual_record(virtual_record_id, org_id)
+    if held is not None:
+        return held
     filt = await vector_db.filter_collection(
         must={"virtualRecordId": virtual_record_id}, must_not={"orgId": org_id}
     )
@@ -1126,7 +1142,7 @@ async def _rewrite_or_delete_locked(
                 logger.warning(
                     "Kept the mapping of virtual record %s: another org still holds points on it", virtual_record_id,
                 )
-        return "deleted"
+        return "kept"
     _shared_row_kept.discard(virtual_record_id)
 
     if release_mapping is not None:

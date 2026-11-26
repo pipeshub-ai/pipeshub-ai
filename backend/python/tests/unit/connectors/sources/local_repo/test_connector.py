@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config import file_types
 from app.config.constants.arangodb import Connectors
+from app.connectors.core.registry.filters import Filter, FilterType, MultiselectOperator
 from app.connectors.sources.local_folder import scan
 from app.connectors.sources.local_repo import store
 from app.connectors.sources.local_repo.connector import LocalRepoConnector
@@ -19,6 +22,7 @@ from tests.unit.connectors.sources.local_folder.harness import (
     FilterCollection,
     Graph,
     User,
+    full_sync_unlinks,
     mod,
 )
 
@@ -329,29 +333,29 @@ async def test_a_failed_commit_indexes_nothing_of_it(env, monkeypatch):
 async def test_the_event_loop_stays_responsive_while_a_commit_holds_the_repository_lock(env):
     import asyncio
     import threading
-    import time
 
     push(env.repo, **{"a.py": "a = 1\n"})
-    held, release = threading.Event(), threading.Event()
+    held, release, freed = threading.Event(), threading.Event(), threading.Event()
 
     def commit_in_progress():  # a large commit: it holds the repository lock for a while
         with env.repo._lock:
             held.set()
             release.wait(10)
+        freed.set()
 
     holder = threading.Thread(target=commit_in_progress)
     holder.start()
     held.wait()
     sync = asyncio.create_task(env.c.run_sync())  # pinning a generation waits for that lock
-    gaps, last = [], time.monotonic()
     for _ in range(15):
         await asyncio.sleep(0.02)
-        now = time.monotonic()
-        gaps.append(now - last)
-        last = now
+    # The loop ran its fifteen turns while the commit still held the lock: shown by order, not by the loop's longest
+    # gap (which a busy runner stretches). A pin that waited for the lock on the loop would let these turns run only
+    # after the commit gave the lock up.
+    assert not freed.is_set(), "the loop was blocked until the commit freed the repository lock"
+    assert holder.is_alive() and not sync.done()
     release.set()
     holder.join()
-    assert max(gaps) < 0.5  # the loop kept running while the pin waited (it was blocked for the whole commit before)
     await sync
     assert "a.py" in env.graph.records
 
@@ -369,3 +373,132 @@ async def test_the_commit_and_the_sync_agree_on_which_files_are_code_records(env
         expected = code_rule.is_code_record(rel, lambda stored=stored: code_rule.read_head(stored))
         indexed = rel in env.graph.records and type(env.graph.records[rel]).__name__ == "CodeFileRecord"
         assert indexed == expected, rel
+
+
+def test_the_extension_filter_offers_the_repository_text_types_after_the_indexable_ones():
+    fields = LocalRepoConnector._connector_metadata["config"]["filters"]["sync"]["schema"]["fields"]
+    options = next(f for f in fields if f["name"] == "file_extensions")["options"]
+    ids = [o.id for o in options]
+    repository_text = ["vue", "svelte", "pl", "pm", "r", "ex", "exs", "erl", "hs", "clj", "cljs", "zsh", "fish", "ps1",
+                       "scss", "sass", "less", "proto", "graphql", "gql", "tf", "tfvars", "css", "sql"]
+    start = ids.index("vue")
+    assert ids[start:start + 24] == repository_text
+    assert ids[start - 1] == "pptm" and ids[start + 24] == file_types.EXCLUDE_ONLY_EXTENSIONS[0]
+    assert len(ids) == len(set(ids)) == 133
+    assert {o.id: o.label for o in options}["tfvars"] == ".tfvars"
+
+
+# Existing behaviour pinned: a saved filter is matched by extension string and never reads the option list.
+EXCLUDABLE = "infra/main.tf"
+REPO_FILES = {EXCLUDABLE: 'region = "eu"\n', "src/App.vue": "<template><p/></template>\n", "src/app.py": "x = 1\n"}
+
+
+def ext_filter(operator, value):
+    return FilterCollection(filters=[Filter(key="file_extensions", value=value, type=FilterType.MULTISELECT, operator=operator)])
+
+
+@pytest.mark.parametrize(
+    ("sync_filters", "kept"),
+    [
+        (FilterCollection(), {EXCLUDABLE, "src/App.vue", "src/app.py"}),
+        (ext_filter(MultiselectOperator.IN, ["py"]), {"src/app.py"}),
+        (ext_filter(MultiselectOperator.NOT_IN, ["zip"]), {EXCLUDABLE, "src/App.vue", "src/app.py"}),
+        (ext_filter(MultiselectOperator.NOT_IN, [EXCLUDABLE.rsplit(".", 1)[1]]), {"src/App.vue", "src/app.py"}),
+    ],
+)
+async def test_a_saved_extension_filter_decides_which_repository_files_get_a_record(env, sync_filters, kept):
+    push(env.repo, **REPO_FILES)
+    with patch.object(mod, "load_connector_filters", AsyncMock(return_value=(sync_filters, FilterCollection()))):
+        await env.c.run_sync()
+    assert {k for k in env.graph.records if k in REPO_FILES} == kept
+
+
+async def test_excluding_an_extension_deletes_the_record_an_earlier_sync_made(env):
+    push(env.repo, **REPO_FILES)
+    await env.c.run_sync()
+    assert EXCLUDABLE in env.graph.records
+    excluded = ext_filter(MultiselectOperator.NOT_IN, [EXCLUDABLE.rsplit(".", 1)[1]])
+    with patch.object(mod, "load_connector_filters", AsyncMock(return_value=(excluded, FilterCollection()))):
+        await env.c.run_sync()
+    assert EXCLUDABLE not in env.graph.records and "src/app.py" in env.graph.records
+
+
+# One path per family of file_role.is_sensitive_path; placeholder contents, never key-shaped text.
+CREDENTIALS = (".env", ".env.production", "deploy/prod.env", "id_rsa", "terraform.tfstate", "credentials.json", "infra/prod.tfvars", ".npmrc", "tls/server.pem")
+
+
+async def test_credential_files_get_no_record_and_are_counted_as_left_out_while_code_and_env_templates_are_kept(env):
+    # The git connectors drop these by name; here every one used to become a FILE record whose text was embedded.
+    push(env.repo, **dict.fromkeys(CREDENTIALS, "A=1\n"), **{"src/app.py": "x = 1\n", ".env.example": "A=\n", ".env.sample": "A=\n", "README.md": "# shop\n"})
+    await env.c.run_sync()
+    # no folder record either for deploy/, infra/ and tls/, which hold only credential files
+    assert sorted(env.graph.records) == [".env.example", ".env.sample", "README.md", "src", "src/app.py"]
+    assert env.repo.meta()["excludedFiles"] == dict.fromkeys(CREDENTIALS, "sensitive")
+
+
+async def test_a_credential_file_indexed_before_the_rule_loses_its_record_and_its_folder_on_the_next_sync(env):
+    push(env.repo, **{".env": "A=1\n", "tls/server.pem": "A=1\n", "app.py": "x = 1\n"})
+    with patch.object(mod, "is_sensitive_path", lambda path: False, create=True):  # the sync before the rule
+        await env.c.run_sync()
+    assert {".env", "tls", "tls/server.pem"} <= set(env.graph.records)
+    await env.c.run_sync()  # nothing pushed in between: same mtime and size, so no file is read again
+    assert sorted(env.graph.records) == ["app.py"]
+    assert {".env", "tls", "tls/server.pem"} <= set(env.graph.deleted)
+    assert env.repo.meta()["excludedFiles"] == {".env": "sensitive", "tls/server.pem": "sensitive"}
+
+
+async def test_a_credential_file_is_never_read_even_when_its_name_has_a_language(env):
+    push(env.repo, **{"id_rsa": "A=1\n"})
+    env.c._inspect = MagicMock(side_effect=AssertionError("a credential file was read"))
+    with patch.object(mod, "detect_language", lambda name: "python"):  # the rule must not depend on the language table
+        await env.c.run_sync()
+    assert env.graph.records == {}
+
+
+async def test_the_sync_summary_counts_the_credential_files_and_no_log_line_carries_their_contents(env, caplog):
+    push(env.repo, **{"id_rsa": "PLACEHOLDER-BODY\n", "a.py": "x = 1\n"})
+    env.c.logger = logging.getLogger("test.local_repo.credentials")
+    with caplog.at_level(logging.DEBUG, logger="test.local_repo.credentials"):
+        await env.c.run_sync()
+        await env.c.run_sync()  # a later sync over the same files still counts them
+    assert caplog.text.count("1 credential files left out") == 2
+    assert "PLACEHOLDER-BODY" not in caplog.text
+
+
+async def test_a_full_sync_keeps_the_links_of_a_committed_file_it_could_not_read_and_unlinks_only_what_is_gone(env):
+    push(env.repo, **{"src/app.py": "def run():\n    return 1\n", "lib/util.py": "u = 1\n", "gone.py": "g = 1\n"})
+    await env.c.run_sync()
+    assert set(env.graph.records) == {"src", "src/app.py", "lib", "lib/util.py", "gone.py"}
+    env.repo.diff([], False, ["gone.py"])
+    env.repo.commit()
+    real = scan.safe_open
+
+    def flaky(root, rel, max_links=1):
+        if rel == "lib/util.py":
+            raise scan.PathRefused("cannot open: Permission denied")
+        return real(root, rel, max_links)
+
+    with patch.object(scan, "safe_open", flaky):
+        unlinked = await full_sync_unlinks(env.c, env.graph)
+    assert "gone.py" in env.graph.deleted and "gone.py" not in env.graph.records
+    assert unlinked & {"lib", "lib/util.py"} == set()  # committed and still in the mirror: unreadable this run is not gone
+
+
+async def test_a_full_sync_does_not_keep_a_file_the_extension_filter_now_excludes_even_if_another_is_unreadable(env):
+    push(env.repo, **REPO_FILES)
+    await env.c.run_sync()
+    excluded_id = env.graph.records[EXCLUDABLE].id
+    held = {env.graph.records[r].id for r in ("src", "src/app.py")}
+    excluded = ext_filter(MultiselectOperator.NOT_IN, [EXCLUDABLE.rsplit(".", 1)[1]])
+    real = scan.safe_open
+
+    def flaky(root, rel, max_links=1):
+        if rel == "src/app.py":
+            raise scan.PathRefused("cannot open: Permission denied")
+        return real(root, rel, max_links)
+
+    with patch.object(mod, "load_connector_filters", AsyncMock(return_value=(excluded, FilterCollection()))), \
+            patch.object(scan, "safe_open", flaky):
+        unlinked = await full_sync_unlinks(env.c, env.graph)
+    assert EXCLUDABLE in env.graph.deleted and excluded_id not in env.graph.kept
+    assert held <= set(env.graph.kept) and unlinked & {"src", "src/app.py"} == set()

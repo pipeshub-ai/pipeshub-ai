@@ -2,24 +2,94 @@
 
 import importlib.abc
 import importlib.machinery
+import importlib.util
 import ipaddress
 import logging
 import os
 import sys
 import tempfile
-from collections.abc import Iterator
-from types import ModuleType
+from collections.abc import Callable, Iterator
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from hypothesis import settings
+from hypothesis.database import DirectoryBasedExampleDatabase
 
-os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only-0123456789abcdef")
-from app.utils.process_hardening import disable_vendor_telemetry
+from tests.hang_dump import pytest_exception_interact  # noqa: F401  (a hook: pytest finds it by name)
+from tests.xdist_scopes import pytest_xdist_make_scheduler  # noqa: F401  (a hook: pytest finds it by name)
 
-# Before the optional-package probes below load onnxruntime, whose telemetry uploader is native code.
-disable_vendor_telemetry()
-# The suite exercises the real metrics backend whatever the edition default.
+os.environ.setdefault("SECRET_KEY", "78aa78e734a5383b62cd145ce0e7037fa5496d3b899200385dd1cc44b2f70421")
+# LiteLLM fetches its model price map from GitHub when imported unless told to use the copy it ships (H9).
+os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+# tiktoken downloads an encoding into $TMPDIR/data-gym-cache unless TIKTOKEN_CACHE_DIR holds it. LiteLLM ships
+# cl100k_base and o200k_base there but newer releases point tiktoken at them only when its token counter is first
+# imported, so on a fresh install every test that counted tokens before that dialled out (H9).
+os.environ.setdefault(
+    "TIKTOKEN_CACHE_DIR",
+    os.path.join(os.path.dirname(importlib.util.find_spec("litellm").origin), "litellm_core_utils", "tokenizers"),
+)
+# Opik reports its own errors to Sentry; it skips that only when pytest is already imported, which a child process
+# a test spawns has not.
+os.environ["OPIK_SENTRY_ENABLE"] = "false"
+# The agent harness's server setting is on by default (ADR-OPS-06 as amended 2026-11-20); set here too so the suite does
+# not depend on the default. A test of the switch, its default or the opt-out sets or deletes it for its own duration.
+os.environ.setdefault("AGENT_HARNESS_WORKER_ENABLED", "true")
+# The security profile (ADR-OPS-07): unset reads compatibility. Most of this suite was written for the hardened
+# defaults, so the process runs as a hardened install; a test of the compatibility profile deletes it for its duration.
+os.environ.setdefault("PIPESHUB_HARDENED", "true")
+
+# The code sandbox and Docker proxy settings in a checkout's `.env` (a developer's
+# local stack) must not reach the tests: their defaults are what the tests pin, and
+# a test that needs a value sets it itself. The app loads `.env` at import with
+# `load_dotenv()`, which only fills variables that are unset, so a blank value is not
+# an option here (several of these read an empty string as a value); instead the
+# loader drops these from what it adds. Values set in the shell that runs the tests
+# (such as SANDBOX_TEST_IMAGE) are kept.
+_DOTENV_DROPPED_PREFIXES = ("SANDBOX_", "DOCKER_PROXY_")
+
+
+def _install_dotenv_filter() -> None:
+    try:
+        import dotenv
+        import dotenv.main
+    except ImportError:  # pragma: no cover - python-dotenv is a dependency
+        return
+    real = dotenv.main.load_dotenv
+    if getattr(real, "_drops_sandbox_settings", False):
+        return
+
+    def load_dotenv(*args: object, **kwargs: object) -> bool:
+        before = {key for key in os.environ if key.startswith(_DOTENV_DROPPED_PREFIXES)}
+        loaded = real(*args, **kwargs)
+        for key in [k for k in os.environ if k.startswith(_DOTENV_DROPPED_PREFIXES) and k not in before]:
+            del os.environ[key]
+        return loaded
+
+    load_dotenv._drops_sandbox_settings = True  # type: ignore[attr-defined]
+    dotenv.load_dotenv = load_dotenv
+    dotenv.main.load_dotenv = load_dotenv
+
+
+_install_dotenv_filter()
+
+# The suite exercises the real metrics backend whatever the edition default. Set before the first app import below:
+# the logger loads app.telemetry.backend, which picks the backend once, at import.
 os.environ.setdefault("TELEMETRY_COLLECTION_FLAG", "true")
+
+# Importing this configures the root logger (INFO, a stderr handler), as it does in every service. Imported
+# here so a narrow selection logs like the full run, whichever test module would have imported it first (FLK3).
+import app.utils.logger  # noqa: F401, E402
+from app.utils.process_hardening import disable_vendor_telemetry  # noqa: E402 - after the .env filter above
+from tests.support.no_network import NetworkGuard  # noqa: E402 - after the .env filter above
+from tests.support.opt_in_lanes import OPT_IN_LANES  # noqa: E402 - after the .env filter above
+from tests.support.stress_marker import skip_stress_tests  # noqa: E402 - after the .env filter above
+
+# Loaded before any test module is collected, so module-level sys.modules edits are checked too. Registered only here:
+# importing it directly as well would import it before pytest can rewrite its asserts.
+pytest_plugins = ("tests.support.sys_modules_guard",)
+# Before the optional-package probes below load onnxruntime, whose uploader is native and bypasses NetworkGuard.
+disable_vendor_telemetry()
 
 # Tests never send traces to a real Opik account. Blank values (not removed ones) also stop a
 # later `load_dotenv()` from filling them in from a checkout's `.env`, and the empty config file
@@ -32,6 +102,63 @@ with open(_EMPTY_OPIK_CONFIG, "w", encoding="utf-8") as _opik_config:
     _opik_config.write("[opik]\n")
 os.environ["OPIK_CONFIG_PATH"] = _EMPTY_OPIK_CONFIG
 
+# Installed at import, before the optional-package probes below import anything that might dial.
+_network_guard = NetworkGuard.from_env()
+if _network_guard is not None:
+    _network_guard.install()
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    skip_stress_tests(config, items)
+    expression = config.getoption("markexpr") or ""
+    closed = [lane for lane in OPT_IN_LANES if lane not in expression]
+    if not closed:
+        return
+    kept, deselected = [], []
+    for item in items:
+        (deselected if any(item.get_closest_marker(lane) for lane in closed) else kept).append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = kept
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    if _network_guard is not None:
+        _network_guard.register(config)
+    if config.pluginmanager.hasplugin("timeout"):
+        from tests.support.timeout_backstop import TimeoutBackstop
+
+        config.pluginmanager.register(TimeoutBackstop(), "pxh-timeout-backstop")
+    _own_sandbox_objects()
+
+
+def _own_sandbox_objects() -> None:
+    """SBXLEAK: the sandboxes, networks and volumes a broker makes in this run carry this process's and this run's
+    labels, and are removed when the session ends or the process does (``tests/support/sandbox_reaper.py``)."""
+    from tests.support import docker_session, sandbox_reaper
+
+    _ = sandbox_reaper.start_owner()
+    try:
+        sandbox_reaper.label_broker_objects()
+    except ImportError:
+        return
+    docker_session.at_exit(sandbox_reaper.finalize)
+    if sandbox_reaper.owns_run():
+        sandbox_reaper.install_sigterm()
+        sandbox_reaper.sweep_dead_runs_in_background()
+
+# TEST-STRATEGY §2: PRs replay the same examples; the nightly lane (`--hypothesis-profile=nightly`) searches
+# wider and keeps what it found, uploaded when it fails. A test that pins `max_examples` opts out of both.
+settings.register_profile("ci", derandomize=True, max_examples=200, deadline=None, database=None, print_blob=True)
+settings.register_profile(
+    "nightly",
+    max_examples=5_000,
+    deadline=None,
+    database=DirectoryBasedExampleDatabase(".hypothesis/examples"),
+    print_blob=True,
+)
+settings.load_profile("ci")
+
 
 @pytest.fixture(autouse=True)
 def _fresh_lane_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -43,15 +170,24 @@ def _fresh_lane_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(assignment, "_shared", {})
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     # The forced exit below must report the run's own outcome.
     session.config._exitcode = int(exitstatus)
+    # Last, so xdist's workers are down before the run's own process removes what any of them left (SBXLEAK).
+    from tests.support import sandbox_reaper
+
+    sandbox_reaper.finalize()
 
 
 def pytest_unconfigure(config):
     """Force-exit the process when running under xdist to prevent hangs
     caused by unawaited async coroutines keeping worker threads alive."""
     if os.environ.get("PYTEST_XDIST_WORKER") or getattr(config.option, "numprocesses", None):
+        from tests.support import docker_session
+
+        # os._exit skips atexit: what a test process registered to remove at exit is removed here (SBXLEAK).
+        docker_session.run_exit_handlers()
         # os._exit skips the interpreter's own flush, which dropped the summary.
         sys.stdout.flush()
         sys.stderr.flush()
@@ -278,6 +414,60 @@ _inject_document_stub()
 
 
 @pytest.fixture(autouse=True)
+def _toolset_registry_kept() -> Iterator[None]:
+    """Every test gets the process-wide ToolsetRegistry back as it found it (instance and toolsets): tests that
+    replace, clear or fill it otherwise decide what every later test in that xdist worker sees (H5: ET-3 read 5 fake
+    toolsets, NE-1 read none). Not imported before the test: it was empty, and is left empty (same instance, which
+    modules imported during the test may hold)."""
+    module = sys.modules.get("app.agents.registry.toolset_registry")
+    if module is None:
+        yield
+        module = sys.modules.get("app.agents.registry.toolset_registry")
+        instance = None if module is None else module.ToolsetRegistry._instance
+        if instance is not None and getattr(instance, "_initialized", False):
+            instance._toolsets = {}
+        return
+    from tests.support.toolset_registry import toolset_registry_restored
+
+    with toolset_registry_restored():
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _opik_client_ended() -> Iterator[None]:
+    """An Opik client a test built is ended after it: its threads otherwise dial Opik Cloud for the rest of the
+    worker, and a later test that records connects saw them (H8: test_model_egress)."""
+    from tests.support.opik_client import opik_global_client_ended
+
+    with opik_global_client_ended():
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _scope_generation_is_per_test() -> Iterator[None]:
+    """The scope generation a service resolves at start is process-wide (``scope_fields._resolved``). A test that runs a
+    service's start-up with a stubbed configuration leaves it unavailable (-2), and every later test in that xdist worker
+    then judges no stamp current (test_structural_writers failed after test_query_main)."""
+    module = sys.modules.get("app.services.permissions.scope_fields")
+    before = None if module is None else module._resolved["generation"]
+    yield
+    module = sys.modules.get("app.services.permissions.scope_fields")
+    if module is not None:
+        module._resolved["generation"] = before
+
+
+@pytest.fixture(autouse=True)
+def _sse_shutdown_state_is_per_test() -> Iterator[None]:
+    """sse_starlette ends every SSE stream in the process once a uvicorn server it watched saw an exit
+    (``AppStatus.should_exit``, a process-wide flag nothing resets). A test that stops a server must not end a
+    later test's MCP streams: they came back cut ("ASGI callable returned without completing response")."""
+    yield
+    sse = sys.modules.get("sse_starlette.sse")
+    if sse is not None:
+        sse.AppStatus.should_exit = False
+
+
+@pytest.fixture(autouse=True)
 def _reset_default_backpressure_coordinator():
     """ParsingClient/DoclingClient default to a process-wide
     BackpressureCoordinator singleton when the caller doesn't pass one
@@ -288,6 +478,19 @@ def _reset_default_backpressure_coordinator():
     set_default_backpressure_coordinator(None)
     yield
     set_default_backpressure_coordinator(None)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_process_retry_budget() -> Iterator[None]:
+    """The retry budget (``spend_guard.retry_policy``) is one per process and shared by the LLM and embeddings gateways;
+    a test that fails many calls on purpose must not leave the next one with no retries to spend."""
+    from app.services.spend_guard.retry_policy import (
+        RETRY_BUDGET_CAPACITY,
+        process_retry_budget,
+    )
+
+    process_retry_budget().refund(RETRY_BUDGET_CAPACITY)
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -304,6 +507,16 @@ def _reset_narrow_access_memo() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_log_once() -> Iterator[None]:
+    """``log_once`` remembers, per process, when each key last logged. A line throttled in one
+    test must not be silenced, or its flag left unset, in another."""
+    logging_fields = sys.modules.get("app.utils.logging_fields")
+    if logging_fields is not None:
+        logging_fields._log_once_last.clear()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_dns_for_model_endpoints(monkeypatch):
     """A model health check looks its endpoint's name up before calling it; unit tests must
     not reach a resolver, so every name resolves to a public address. Tests of the lookup
@@ -311,6 +524,74 @@ def _no_dns_for_model_endpoints(monkeypatch):
     aimodels = sys.modules.get("app.utils.aimodels")
     if aimodels is not None:
         monkeypatch.setattr(aimodels, "_resolved_addresses", lambda host: [ipaddress.ip_address("93.184.216.34")])
+
+
+@pytest.fixture
+def flow_guard_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The durable loop with the flow guard off (UX1). For rigs that compare it with today's loop or replay
+    recordings made without the guard: the guard is a deliberate difference (an external write after a read
+    waits for a person), tested on its own in test_ux1_flow_default.py and the SEC1/SEC2 flow tests."""
+    monkeypatch.setenv("HARNESS_FLOW_GUARD", "false")
+
+
+# MG-15: every model built through ``app/utils/llm.py`` asks the placement verdicts first. The unit and eval trees
+# test something else, so they run where no placement rule refuses a call; the other trees bring their own.
+_PUBLISHED_PLACEMENT_TREES = frozenset({"unit", "evals"})
+_TESTS_DIR = Path(__file__).resolve().parent
+
+
+@pytest.fixture(autouse=True)
+def _published_placement_in_unit_and_eval_trees(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A module that tests placement itself sets ``PLACEMENT_UNDER_TEST = True`` and gives its own document."""
+    try:
+        tree = request.path.resolve().relative_to(_TESTS_DIR).parts[0]
+    except ValueError:
+        return
+    if tree in _PUBLISHED_PLACEMENT_TREES and not getattr(request.module, "PLACEMENT_UNDER_TEST", False):
+        from tests.support.model_placement import no_placement_pin
+
+        no_placement_pin(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _followups_off(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Suggested next questions (UX5) are one more model call after every answered top-level run; scripted models,
+    the parity rigs and the replay corpora script none, so tests run without them unless marked ``followups``
+    (test_ux5_followups.py and the assembler's wiring test)."""
+    if request.node.get_closest_marker("followups") is not None:
+        return
+    # By import path: a test that imports the assembler only inside its body (a durable run first in its worker)
+    # must still see the switch off.
+    monkeypatch.setattr("app.harness.assembly.assembler.FOLLOWUP_SUGGESTIONS", False)
+
+
+# The harness switch as the code reads it, kept before the session-wide patch below.
+_REAL_HARNESS_ENABLED: list[Callable[[], bool]] = []
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _mcp_hub_default_off() -> Iterator[None]:
+    """D-MCP-1 turned the MCP hub on for harness runs wherever the harness is. Tests written before it say "hub off"
+    by leaving ``MCP_HUB`` unset, harness assembly tests included, so an unset flag stays off here unless a test is
+    marked ``mcp_hub_default`` (``test_dmcp1_baseline.py``, ``test_dmcp1_surface.py``); a test that sets ``MCP_HUB``
+    gets what it set. No environment is changed, so no process a test starts sees a different harness switch.
+
+    Session-wide, so a module- or class-scoped fixture that drives a run before any test's own fixtures (the
+    long-task rig's) sees the same default as the tests do."""
+    from app.harness.mcp_hub import settings as hub_settings
+
+    _REAL_HARNESS_ENABLED.append(hub_settings.harness_enabled)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(hub_settings, "harness_enabled", lambda: False)
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _mcp_hub_real_default(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A test marked ``mcp_hub_default`` reads the code's real harness switch."""
+    if request.node.get_closest_marker("mcp_hub_default") is None:
+        return
+    monkeypatch.setattr("app.harness.mcp_hub.settings.harness_enabled", _REAL_HARNESS_ENABLED[0])
 
 
 @pytest.fixture
@@ -391,3 +672,5 @@ def mock_config_service():
 def mock_blob_store():
     """Mock BlobStorage."""
     return MagicMock()
+
+

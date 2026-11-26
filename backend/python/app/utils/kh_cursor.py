@@ -41,10 +41,14 @@ import base64
 import binascii
 import hmac
 import json
+import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Sequence
@@ -55,12 +59,18 @@ if TYPE_CHECKING:
 # Version 1 carried a boundary per partition; such a cursor is refused rather
 # than reinterpreted.
 _VERSION = 2
+# A carried total older than this is counted again: the viewer's access may have narrowed since, and a total must not count what they lost.
+COUNT_MAX_AGE_SECONDS = 300
 
 # Wire keys are short because the cursor travels in a query string, and long
 # ones cost more than they explain. The mapping lives here and nowhere else.
 _B_SORT_KEY, _B_NULL_RANK, _B_LAST_ID = "sk", "nr", "id"
 
 _CURSOR_KEY_LABEL = b"kh-cursor-v1"
+# The boundary is sealed, not only signed: a page that ends where a scan stopped (``resume``) has a child the viewer may not open as its boundary,
+# and a signed payload is still readable, so its sort key (often a name) and id would reach the client.
+_BOUNDARY_KEY_LABEL = b"kh-cursor-boundary-v1"
+_B_SEALED = "x"
 
 
 class CursorError(ValueError):
@@ -202,7 +212,7 @@ class KnowledgeHubCursor:
     direction: str = "next"
     items_seen: int = 0
     total: int | None = None
-    # ``total`` is a lower bound (the provider stopped counting at its cap); carried with the
+    # ``total`` may not be exact (usually lower; see ``totalCapped`` in the API spec); carried with the
     # total so every page of the listing says the same.
     total_capped: bool = False
     counts_by_type: dict[str, int] | None = None
@@ -223,6 +233,15 @@ class KnowledgeHubCursor:
     # Connectors left out of the listing when it began because they were not ready: they stay out for every page of it, since a connector that joined
     # mid-walk would be read only past the boundary, and the carried total would not count it.
     not_ready: list[str] | None = None
+    # When ``total`` and ``counts_by_type`` were counted; ``issued_at_ms`` moves on every page, this does not.
+    counted_at_ms: int = 0
+
+    def with_fresh_counts(self, now_ms: int | None = None) -> "KnowledgeHubCursor":
+        """This cursor, minus a carried total older than ``COUNT_MAX_AGE_SECONDS`` or of unknown age, so the page counts the listing again."""
+        now = int(time.time() * 1000) if now_ms is None else now_ms
+        if self.total is None or (self.counted_at_ms > 0 and 0 <= now - self.counted_at_ms <= COUNT_MAX_AGE_SECONDS * 1000):
+            return self
+        return replace(self, total=None, total_capped=False, counts_by_type=None, counted_at_ms=0)
 
     def to_wire(self) -> dict:
         wire: dict[str, Any] = {
@@ -241,6 +260,7 @@ class KnowledgeHubCursor:
             ("pi", self.parent_id), ("pt", self.parent_type),
             ("vp", self.via_parent_id), ("m", self.mode),
             ("u", self.user_id), ("o", self.org_id), ("la", self.limit_apps), ("nx", self.not_ready or None),
+            ("ca", self.counted_at_ms or None),
         )
         wire.update({key: value for key, value in optional if value is not None})
         return wire
@@ -256,6 +276,9 @@ class KnowledgeHubCursor:
             raise CursorError(f"unknown cursor direction {direction!r}")
         if "b" not in wire:
             raise CursorError("cursor carries no boundary")
+        # a count time of another type is an unknown one: the total is counted again, never a 400
+        counted_at = wire.get("ca", 0)
+        counted_at = counted_at if isinstance(counted_at, int) and not isinstance(counted_at, bool) else 0
         items_seen = wire.get("sn", 0)
         if isinstance(items_seen, bool) or not isinstance(items_seen, int) or items_seen < 0:
             raise CursorError("items seen must be a non-negative integer")
@@ -279,6 +302,7 @@ class KnowledgeHubCursor:
             issued_at_ms=wire.get("ts", 0),
             limit_apps=wire.get("la"),
             not_ready=_strings(wire.get("nx"), "not ready connectors"),
+            counted_at_ms=counted_at,
         )
 
 
@@ -290,10 +314,38 @@ def _strings(raw: object, what: str) -> list[str] | None:
     return raw
 
 
+def _boundary_key(secret: str | bytes) -> bytes:
+    key = secret.encode("utf-8") if isinstance(secret, str) else secret
+    return hmac.new(key, _BOUNDARY_KEY_LABEL, sha256).digest()
+
+
+def _seal(boundary: dict, secret: str | bytes) -> dict:
+    nonce = os.urandom(12)
+    plain = json.dumps(boundary, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
+    return {_B_SEALED: _b64e(nonce + AESGCM(_boundary_key(secret)).encrypt(nonce, plain, None))}
+
+
+def _unseal(raw: object, secret: str | bytes | None) -> object:
+    """The boundary of a signed cursor, opened when it is sealed (a cursor issued before boundaries were sealed carries it in the clear)."""
+    if not isinstance(raw, dict) or _B_SEALED not in raw:
+        return raw
+    sealed = raw[_B_SEALED]
+    if secret is None or not isinstance(sealed, str):
+        raise CursorError("cursor boundary cannot be opened")
+    blob = _b64d(sealed)
+    try:
+        return json.loads(AESGCM(_boundary_key(secret)).decrypt(blob[:12], blob[12:], None))
+    except (InvalidTag, ValueError) as exc:
+        raise CursorError("cursor boundary cannot be opened") from exc
+
+
 def encode(cursor: KnowledgeHubCursor, secret: str | bytes | None = None) -> str:
-    """Serialise to the wire form ``payload`` or ``payload.signature``."""
+    """Serialise to the wire form ``payload`` or ``payload.signature``; with a secret the boundary is sealed too."""
+    wire = cursor.to_wire()
+    if secret is not None:
+        wire["b"] = _seal(wire["b"], secret)
     raw = json.dumps(
-        cursor.to_wire(), separators=(",", ":"), sort_keys=True, default=str
+        wire, separators=(",", ":"), sort_keys=True, default=str
     ).encode("utf-8")
     payload = _b64e(raw)
     if secret is None:
@@ -336,6 +388,8 @@ def decode(
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CursorError(f"cursor payload is not valid JSON: {exc}") from exc
 
+    if isinstance(wire, dict) and "b" in wire:
+        wire["b"] = _unseal(wire["b"], secret)
     cursor = KnowledgeHubCursor.from_wire(wire)
 
     # Binding: a cursor names partitions the issuing user could reach, so

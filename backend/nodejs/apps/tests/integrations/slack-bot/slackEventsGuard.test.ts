@@ -17,6 +17,7 @@ import {
   registerSlackEventGuards,
   resetSlackEventGuardsForTests,
 } from '../../../src/integrations/slack-bot/src/receiver'
+import { setSlackAuthTestForTests } from '../../../src/integrations/slack-bot/src/identity/home'
 
 const SIGNING_SECRET = 'test-signing-secret'
 
@@ -76,6 +77,7 @@ describe('Slack event guards', () => {
     signingSecret: SIGNING_SECRET,
     botId: 'B1',
     agentId: null,
+    teamId: 'T1',
   }
   let server: http.Server
   let handled: number
@@ -109,7 +111,7 @@ describe('Slack event guards', () => {
   })
 
   it('verifies against the cached registry and does not force a refresh', async () => {
-    const body = JSON.stringify({ type: 'event_callback', event_id: 'Ev-cache', event: { type: 'app_mention' } })
+    const body = JSON.stringify({ type: 'event_callback', team_id: 'T1', event_id: 'Ev-cache', event: { type: 'app_mention' } })
     const response = await post(server, body, String(Math.floor(Date.now() / 1000)))
 
     expect(response.status).to.equal(200)
@@ -120,7 +122,7 @@ describe('Slack event guards', () => {
   })
 
   it('acknowledges a repeated event_id without handling it again', async () => {
-    const body = JSON.stringify({ type: 'event_callback', event_id: 'Ev-dup', event: { type: 'app_mention' } })
+    const body = JSON.stringify({ type: 'event_callback', team_id: 'T1', event_id: 'Ev-dup', event: { type: 'app_mention' } })
     const timestamp = String(Math.floor(Date.now() / 1000))
 
     const first = await post(server, body, timestamp)
@@ -134,7 +136,7 @@ describe('Slack event guards', () => {
   })
 
   it('handles the retry of a delivery that failed', async () => {
-    const body = JSON.stringify({ type: 'event_callback', event_id: 'Ev-retry', event: { type: 'app_mention' } })
+    const body = JSON.stringify({ type: 'event_callback', team_id: 'T1', event_id: 'Ev-retry', event: { type: 'app_mention' } })
     const timestamp = String(Math.floor(Date.now() / 1000))
     failNext = true
 
@@ -152,8 +154,8 @@ describe('Slack event guards', () => {
       return options?.force ? [bot] : [{ ...bot, signingSecret: 'stale-secret' }]
     })
     const timestamp = String(Math.floor(Date.now() / 1000))
-    const firstBody = JSON.stringify({ type: 'event_callback', event_id: 'Ev-new-bot', event: { type: 'app_mention' } })
-    const secondBody = JSON.stringify({ type: 'event_callback', event_id: 'Ev-forged', event: { type: 'app_mention' } })
+    const firstBody = JSON.stringify({ type: 'event_callback', team_id: 'T1', event_id: 'Ev-new-bot', event: { type: 'app_mention' } })
+    const secondBody = JSON.stringify({ type: 'event_callback', team_id: 'T1', event_id: 'Ev-forged', event: { type: 'app_mention' } })
 
     const first = await post(server, firstBody, timestamp)
     const callsAfterFirst = refresh.callCount
@@ -172,7 +174,7 @@ describe('Slack event guards', () => {
     const statuses = new Set<number>()
 
     for (let i = 0; i < 305; i += 1) {
-      const body = JSON.stringify({ type: 'event_callback', event_id: `Ev-many-${i}`, event: { type: 'app_mention' } })
+      const body = JSON.stringify({ type: 'event_callback', team_id: 'T1', event_id: `Ev-many-${i}`, event: { type: 'app_mention' } })
       statuses.add((await post(server, body, timestamp)).status)
     }
 
@@ -186,7 +188,7 @@ describe('Slack event guards', () => {
     refresh.rejects(failure)
     const errorLog = sinon.spy(console, 'error')
 
-    const body = JSON.stringify({ type: 'event_callback', event_id: 'Ev-err', event: { type: 'app_mention' } })
+    const body = JSON.stringify({ type: 'event_callback', team_id: 'T1', event_id: 'Ev-err', event: { type: 'app_mention' } })
     const response = await post(server, body, String(Math.floor(Date.now() / 1000)))
 
     expect(response.status).to.equal(500)
@@ -209,11 +211,13 @@ describe('slack bot registry cache', () => {
     sinon.stub(axios, 'get').resolves({
       data: { configs: [{ botToken: 'xoxb-test', signingSecret: SIGNING_SECRET, id: 'B1' }] },
     })
+    setSlackAuthTestForTests(async () => ({ ok: true, team_id: 'T1', user_id: 'UBOT' }))
     clock = sinon.useFakeTimers({ now: 1_700_000_000_000, toFake: ['Date'] })
   })
 
   afterEach(() => {
     clock.restore()
+    setSlackAuthTestForTests()
     sinon.restore()
     delete process.env.SLACK_BOT_REGISTRY_TTL_MS
     resetSlackBotRegistryCache()

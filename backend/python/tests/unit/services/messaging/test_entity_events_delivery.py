@@ -63,6 +63,15 @@ class InMemoryGraph:
             bucket[key] = {**bucket.get(key, {}), **node}
         return True
 
+    async def update_node_fields_if_match(
+        self, key: str, collection: str, updates: dict, expected: dict, transaction: str | None = None, **_: Any,  # noqa: ANN401
+    ) -> bool:
+        node = self.nodes.get(collection, {}).get(key)
+        if node is None or any(node.get(f) != v for f, v in expected.items()):
+            return False
+        node.update(updates)
+        return True
+
     async def update_node(self, key: str, collection: str, node_updates: dict, transaction: str | None = None) -> bool:
         self._maybe_fail(f"update:{collection}")
         bucket = self.nodes.setdefault(collection, {})
@@ -109,9 +118,9 @@ class InMemoryGraph:
         ]
 
     async def get_user_by_email(self, email: str, transaction: str | None = None, *,
-                                raise_on_error: bool = False) -> SimpleNamespace | None:
+                                raise_on_error: bool = False, org_id: str | None = None) -> SimpleNamespace | None:
         for node in self.nodes.get(CollectionNames.USERS.value, {}).values():
-            if node.get("email") == email:
+            if node.get("email") == email and (org_id is None or node.get("orgId") == org_id):
                 return SimpleNamespace(id=node["id"])
         return None
 

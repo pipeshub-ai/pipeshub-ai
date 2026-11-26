@@ -77,6 +77,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -557,12 +558,18 @@ class LocalFsConnector(BaseConnector):
         self._desktop_token_minted_at: float = 0.0
         self._owner_device_cache: tuple[str, str | None] | None = None
         self._owner_device_fetched_at: float = 0.0
+        self._sync_incomplete = False
         self.record_sync_point = SyncPoint(
             connector_id=connector_id,
             org_id=data_entities_processor.org_id,
             sync_data_point_type=SyncDataPointType.RECORDS,
             data_store_provider=data_store_provider,
         )
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full run that could not look up the stored record of a file it could not hash has not
+        named everything it keeps, so it unlinks nothing."""
+        return FullSyncCoverage(complete=not self._sync_incomplete)
 
     async def init(self) -> bool:
         try:
@@ -1491,6 +1498,24 @@ class LocalFsConnector(BaseConnector):
             return "move"
         return None
 
+    async def _note_unhashed_file_kept(self, external_id: str) -> None:
+        """Note the stored record of a file the full walk saw but could not hash as kept. A failed
+        lookup leaves it unnamed, so the run is marked incomplete instead of unlinking it."""
+        try:
+            stored = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, external_id
+            )
+        except Exception:
+            self.logger.warning(
+                "Local FS: could not look up the stored record of an unhashed file; "
+                "the full sync will unlink nothing",
+                exc_info=True,
+            )
+            self._sync_incomplete = True
+            return
+        if stored is not None:
+            self.data_entities_processor.note_kept_records(self.connector_id, [stored.id])
+
     async def _apply_file_event_batch(
         self,
         events: List[LocalFsFileEvent],
@@ -1723,9 +1748,11 @@ class LocalFsConnector(BaseConnector):
                 if not in_scope:
                     retire.append(new_ext_id)
                 elif seen_external_ids is not None and not event.isDirectory:
-                    # The file is still there and in scope: a full run must not
-                    # prune its record while it cannot be read.
+                    # The file is still there and in scope: a full run must
+                    # neither prune nor unlink its record while it cannot be read.
                     seen_external_ids.add(new_ext_id)
+                    if self.data_entities_processor.full_sync_running(self.connector_id):
+                        await self._note_unhashed_file_kept(new_ext_id)
                 if moved_from_ext_id:
                     retire.append(moved_from_ext_id)
             elif not self._pass_extension_filters(
@@ -2264,7 +2291,7 @@ class LocalFsConnector(BaseConnector):
         """Tell the user a run stopped on a desktop-side failure.
 
         Plain words only, and the same words for the same failure on every
-        run: ``_suppress_notification`` keys on title + message, and exception
+        run: ``_suppress_notification`` keys on title + message (per recipient), and exception
         text carries run ids, page numbers and the relay's internal URL, which
         both read as noise to the user and change every run, so a desktop that
         kept timing out notified on every scheduled sync. The code goes in the
@@ -2308,6 +2335,7 @@ class LocalFsConnector(BaseConnector):
         means no completed baseline exists yet. ``event_service`` deletes sync
         points before a user-requested full sync.
         """
+        self._sync_incomplete = False
         await self._reload_sync_settings()
         sync_point = await self.record_sync_point.read_sync_point(
             self._sync_point_key()

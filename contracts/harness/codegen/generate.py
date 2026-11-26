@@ -1,0 +1,811 @@
+"""Regenerate pydantic (datamodel-code-generator) and zod (json-schema-to-zod) models, and the typed
+constants of ``constants.py``, for every contract root and every target, and the token vector modules.
+
+Roots: ``contracts/harness`` (groups ``core`` and ``ext/pipeshub``) and ``contracts/control-plane``.
+Targets: Python (one package per group), Node and the frontend (one tree per root each).
+Overlay: an edition's schemas under ``contracts/harness/ee/<group>/`` (``core``, ``ext/pipeshub``,
+``control-plane``), when present, are generated beside the group's own, into an ``ee`` package or directory of
+each of its targets; absent, nothing is generated for them and nothing else changes.
+Deterministic: same schemas + pinned generator versions -> byte-identical output.
+Run through ``contracts/harness/generate.sh``; the drift test (C5) calls ``main`` with ``--into <tmp>``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+HERE = Path(__file__).resolve().parent
+
+
+def _sibling(name: str) -> ModuleType:
+    """A module beside this file, under a name no other package uses (this file is also loaded by tests)."""
+    spec = importlib.util.spec_from_file_location(f"contracts_codegen_{name}", HERE / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+constants = _sibling("constants")
+extensions = _sibling("extensions")
+
+CONTRACTS = HERE.parent
+CONTRACTS_ROOT = CONTRACTS.parent
+REPO = CONTRACTS_ROOT.parent
+NODE_APP = REPO / "backend" / "nodejs" / "apps"
+
+# The token vector as code for each language that redacts, paths relative to ``--into``.
+TOKEN_VECTOR = CONTRACTS / "vectors" / "token-patterns.json"
+VECTORS_PY_OUT = "backend/python/harness_core/contracts/vectors"
+VECTORS_TS_OUT = "frontend/lib/contracts/harness/vectors"
+# Node masks what it serves to someone other than the run's owner (QA-14: the approvals queue).
+VECTORS_NODE_OUT = "backend/nodejs/apps/src/modules/agent-harness/contracts/vectors"
+
+DATAMODEL_CODEGEN_VERSION = "0.83.0"
+
+DATAMODEL_ARGS = [
+    "--input-file-type", "jsonschema",
+    "--output-model-type", "pydantic_v2.BaseModel",
+    "--target-python-version", "3.12",
+    "--formatters", "builtin",
+    "--disable-timestamp",
+    "--use-annotated",
+    "--use-title-as-name",
+    "--collapse-root-models",
+    "--enum-field-as-literal", "all",
+    "--extra-fields", "forbid",
+    "--strict-types", "str", "int", "bool",
+    "--snake-case-field",
+    "--allow-population-by-field-name",
+]
+
+
+@dataclass(frozen=True)
+class Group:
+    """One directory of schemas: one Python package, and one barrel in each TypeScript tree of its root."""
+
+    key: str
+    root: str
+    source: Path
+    stage: str
+    python_out: str
+    python_package: str
+    events: bool
+    # An edition's schemas for the group named by ``key``, generated beneath that group's own (``overlay_groups``).
+    overlay: bool = False
+
+    def schemas(self) -> list[Path]:
+        return sorted(self.source.glob("**/*.schema.json"))
+
+
+@dataclass(frozen=True)
+class TsTarget:
+    root: str
+    out: str
+    zod_import: str
+    # "emit": types written from the schema, for a compiler without strictNullChecks (z.infer needs it).
+    types: str = "infer"
+
+
+GROUPS: tuple[Group, ...] = (
+    Group(
+        "core", "harness", CONTRACTS / "core", "core",
+        "backend/python/harness_core/contracts/generated", "harness_core.contracts.generated", events=True,
+    ),
+    Group(
+        "ext/pipeshub", "harness", CONTRACTS / "ext" / "pipeshub", "ext/pipeshub",
+        "backend/python/app/harness/contracts/generated/pipeshub", "app.harness.contracts.generated.pipeshub",
+        events=True,
+    ),
+    Group(
+        "control-plane", "control-plane", CONTRACTS_ROOT / "control-plane", "control_plane",
+        "backend/python/app/control_plane/contracts/generated", "app.control_plane.contracts.generated",
+        events=False,
+    ),
+)
+
+# The Node API's zod and the frontend's are 4 (main #4674); the generator writes the zod 3 API, which zod 4 serves at
+# `zod/v3`.
+TS_TARGETS: tuple[TsTarget, ...] = (
+    TsTarget("harness", "backend/nodejs/apps/src/modules/agent-harness/contracts/generated", "zod/v3"),
+    TsTarget("control-plane", "backend/nodejs/apps/src/modules/control-plane/contracts/generated", "zod/v3"),
+    TsTarget("harness", "frontend/lib/contracts/harness/generated", "zod/v3", types="emit"),
+    TsTarget("control-plane", "frontend/lib/contracts/control-plane/generated", "zod/v3", types="emit"),
+)
+
+PY_CORE_PACKAGE = GROUPS[0].python_package
+GENERATED_INIT = "# generated by datamodel-codegen -- do not edit\n"
+
+# An edition's schema overlay: one directory per group it extends, named by the group's key.
+OVERLAY = CONTRACTS / "ee"
+OVERLAY_DIR = "ee"
+# The overlay this run reads (``main`` sets it from ``--overlay``) and what it adds to this repository's schemas
+# (``extensions.py``).
+OVERLAY_ROOT: Path | None = OVERLAY
+EXTENSIONS = extensions.Extensions.of(OVERLAY)
+
+
+def schema_doc(path: Path) -> dict[str, Any]:
+    """A schema as the generated code reads it: as written, plus what the overlay adds to it."""
+    return extensions.load(path, EXTENSIONS)
+
+
+def overlay_groups(overlay: Path | None = OVERLAY) -> tuple[Group, ...]:
+    """One group per built-in group the overlay has schemas for, generated into an ``ee`` package (Python) or
+    directory (TypeScript) beneath that group's own."""
+    if overlay is None or not overlay.is_dir():
+        return ()
+    out: list[Group] = []
+    for base in GROUPS:
+        source = overlay / base.key
+        if not any(source.glob("**/*.schema.json")):
+            continue
+        out.append(
+            Group(
+                f"{OVERLAY_DIR}/{base.key}" if base.root == "harness" else OVERLAY_DIR,
+                base.root,
+                source,
+                f"{OVERLAY_DIR}/{base.stage}",
+                f"{base.python_out}/{OVERLAY_DIR}",
+                f"{base.python_package}.{OVERLAY_DIR}",
+                events=base.events,
+                overlay=True,
+            )
+        )
+    return tuple(out)
+
+
+def all_groups(overlay: Path | None = OVERLAY) -> tuple[Group, ...]:
+    """The built-in groups, then the overlay's present ones: what one run generates."""
+    return (*GROUPS, *overlay_groups(overlay))
+
+
+def schema_files(groups: tuple[Group, ...] = GROUPS) -> list[Path]:
+    return [path for group in groups for path in group.schemas()]
+
+
+def module_stem(schema_path: Path) -> str:
+    return re.sub(r"[.-]", "_", schema_path.name.removesuffix(".schema.json"))
+
+
+def event_type(schema: dict[str, Any]) -> str | None:
+    props = schema.get("properties", {})
+    const = props.get("type", {}).get("const")
+    return const if isinstance(const, str) and "x-writer" in schema else None
+
+
+# The engines every release profile is for, in allowlist order (the first is the default engine).
+ALLOWLIST = REPO / "backend" / "python" / "harness_engines" / "allowlist.json"
+# The /pipeshub contract version engine images declare (CONTRACT-V1): Node pins it on every run (C2.07).
+PIPESHUB_CONTRACT_FILE = REPO / "backend" / "python" / "harness_engines" / "pipeshub" / "VERSION"
+
+
+@dataclass(frozen=True)
+class DataFile:
+    """A data file of a group, validated against its schema and emitted as one typed constant (``policy_data``).
+
+    ``extends``: the list an edition's overlay may add entries to, from a file of the same path under the overlay's
+    directory for the group, and the key that names an entry; an entry whose key the list already has is refused."""
+
+    group: str
+    path: str
+    constant: str
+    extends: tuple[str, str] | None = None
+
+
+DATA_FILES: tuple[DataFile, ...] = (
+    DataFile("core", "policy/policy-dimensions.json", "POLICY_DIMENSIONS", extends=("dimensions", "path")),
+    DataFile("core", "policy/release.json", "RELEASE_DEFAULTS"),
+    DataFile("core", "policy/website-rules.json", "WEBSITE_RULES"),
+    DataFile("ext/pipeshub", "commands/builtin-commands.json", "BUILTIN_COMMANDS"),
+    DataFile("ext/pipeshub", "tools/tool-display.json", "TOOL_DISPLAY"),
+)
+
+
+def resolve_def_ref(source: Path, ref: str) -> tuple[Path, str, dict[str, Any]]:
+    target, _, fragment = ref.partition("#")
+    path = ref_target(source, target, schema_ids(all_groups())) if target else source
+    name = fragment.rsplit("/", 1)[-1]
+    return path, name, schema_doc(path)["$defs"][name]
+
+
+def validated(data_path: Path, schema_path: Path) -> Any:  # noqa: ANN401 - a JSON document
+    return validated_doc(json.loads(data_path.read_text(encoding="utf-8")), data_path, schema_path)
+
+
+def validated_doc(data: Any, data_path: Path, schema_path: Path) -> Any:  # noqa: ANN401 - a JSON document
+    from jsonschema import Draft202012Validator
+    from referencing import Registry, Resource
+
+    registry = Registry().with_resources(
+        (key, Resource.from_contents(schema_doc(path)))
+        for key, path in schema_ids(all_groups(OVERLAY_ROOT)).items()
+    )
+    schema = schema_doc(schema_path)
+    errors = sorted(Draft202012Validator(schema, registry=registry).iter_errors(data), key=lambda e: str(list(e.absolute_path)))
+    if errors:
+        where = "/".join(str(p) for p in errors[0].absolute_path) or "(root)"
+        raise constants.ConstantsError(f"{data_path}: {where}: {errors[0].message}")
+    return data
+
+
+def _release_engines() -> list[dict[str, str]]:
+    engines = json.loads(ALLOWLIST.read_text(encoding="utf-8"))["engines"]
+    return [{"kind": e["kind"], "version": e["version"], "binaryDigest": e["binaryDigest"]} for e in engines]
+
+
+def _release_engine_names() -> dict[str, str]:
+    """Kind -> the name the coding-engine list shows, for the engines whose allowlist entry names one (ACP agents)."""
+    engines = json.loads(ALLOWLIST.read_text(encoding="utf-8"))["engines"]
+    return {e["kind"]: e["name"] for e in engines if e.get("name")}
+
+
+def _release_engine_successors() -> dict[str, str]:
+    """``kind@old`` -> ``kind@new`` for each version an allowlist entry declares it resumes (``resumes``, UP-02,
+    ADR-OPS-01 D6): only for a version the release no longer lists, so a listed version always runs itself."""
+    engines = json.loads(ALLOWLIST.read_text(encoding="utf-8"))["engines"]
+    listed = {f"{e['kind']}@{e['version']}" for e in engines}
+    out: dict[str, str] = {}
+    for e in engines:
+        for old in e.get("resumes", []):
+            ref = f"{e['kind']}@{old}"
+            if ref not in listed:
+                out.setdefault(ref, f"{e['kind']}@{e['version']}")
+    return out
+
+
+def _pipeshub_contract() -> dict[str, int]:
+    return {"version": int(PIPESHUB_CONTRACT_FILE.read_text(encoding="utf-8").strip())}
+
+
+def extended_data(entry: DataFile, data: Any, overlay: Path | None) -> Any:  # noqa: ANN401 - a JSON document
+    """``data`` with the entries the overlay's file of the same path adds to its ``extends`` list."""
+    added = overlay / entry.group / entry.path if overlay is not None else None
+    if entry.extends is None or added is None or not added.is_file():
+        return data
+    key, name = entry.extends
+    extra = json.loads(added.read_text(encoding="utf-8"))
+    if not isinstance(extra, dict) or set(extra) - {"$comment", key} or not isinstance(extra.get(key), list):
+        raise constants.ConstantsError(f"{added}: an overlay data file holds only `{key}`, a list")
+    known = {item[name] for item in data[key]}
+    for item in extra[key]:
+        if item.get(name) in known:
+            raise constants.ConstantsError(f"{added}: {key} {item.get(name)!r} is already defined")
+        known.add(item.get(name))
+    return {**data, key: [*data[key], *extra[key]]}
+
+
+def data_constants(group: Group) -> tuple[constants.DataConstant, ...]:
+    out: list[constants.DataConstant] = []
+    for entry in (d for d in DATA_FILES if d.group == group.key):
+        data_path = group.source / entry.path
+        schema_path = data_path.with_name(data_path.name.replace(".json", ".schema.json"))
+        title = json.loads(schema_path.read_text(encoding="utf-8"))["title"]
+        module = entry.path.removesuffix(".json")
+        written = validated(data_path, schema_path)
+        data = extended_data(entry, written, OVERLAY_ROOT)
+        if data is not written:
+            validated_doc(data, data_path, schema_path)
+        out.append(constants.DataConstant(entry.constant, title, module, data))
+    if out and group.key == "core":
+        out.append(
+            constants.DataConstant(
+                "RELEASE_ENGINES", "PinnedEngineProfile", "engine-profile", _release_engines(),
+                python=False, ts_type="ReadonlyArray<PinnedEngineProfile['engine']>",
+            )
+        )
+        out.append(
+            constants.DataConstant(
+                "RELEASE_ENGINE_NAMES", "PinnedEngineProfile", "engine-profile", _release_engine_names(),
+                python=False, ts_type="Readonly<Record<string, string>>",
+            )
+        )
+        out.append(
+            constants.DataConstant(
+                "RELEASE_ENGINE_SUCCESSORS", "PinnedEngineProfile", "engine-profile", _release_engine_successors(),
+                python=False, ts_type="Readonly<Record<string, string>>",
+            )
+        )
+        out.append(
+            constants.DataConstant(
+                "PIPESHUB_CONTRACT", "PinnedEngineProfile", "engine-profile", _pipeshub_contract(),
+                python=False, ts_type="Readonly<{ version: number }>",
+            )
+        )
+    return tuple(out)
+
+
+def extended_errors(group: Group, catalog_schema: dict[str, Any], overlay: Path | None) -> dict[str, Any] | None:
+    """The group's error catalog with the codes the overlay's catalog for the group adds; an overlay's group has
+    none of its own (its codes join the catalog of the group it extends). A code the catalog has is refused."""
+    if group.overlay:
+        return None
+    catalog = constants.error_catalog(group.source, catalog_schema)
+    added = constants.error_catalog(overlay / group.key, catalog_schema) if overlay is not None else None
+    if added is None:
+        return catalog
+    if catalog is None:
+        raise constants.ConstantsError(f"{overlay / group.key}: adds error codes to a group without a catalog")
+    known = {entry["code"] for entry in catalog["codes"]}
+    for entry in added["codes"]:
+        if entry["code"] in known:
+            raise constants.ConstantsError(f"{overlay / group.key}: error code {entry['code']} is already defined")
+    return {**catalog, "codes": [*catalog["codes"], *added["codes"]]}
+
+
+def group_constants(group: Group) -> constants.GroupConstants:
+    catalog_schema = json.loads((CONTRACTS / "core" / constants.ERROR_CATALOG_SCHEMA).read_text(encoding="utf-8"))
+    return constants.GroupConstants(
+        enums=constants.enum_constants(group.schemas(), resolve_def_ref, schema_doc),
+        errors=extended_errors(group, catalog_schema, OVERLAY_ROOT),
+        data=data_constants(group),
+    )
+
+
+def _staged(group: Group, schema: Path) -> Path:
+    return Path(group.stage) / schema.parent.relative_to(group.source) / f"{module_stem(schema)}.json"
+
+
+def schema_ids(groups: tuple[Group, ...] = GROUPS) -> dict[str, Path]:
+    """Every schema's ``$id`` -> its file; a ref across roots names the target by its ``$id``. An ``$id`` two files
+    declare would make a ref name either one."""
+    ids: dict[str, Path] = {}
+    for path in schema_files(groups):
+        key = json.loads(path.read_text(encoding="utf-8"))["$id"]
+        if key in ids:
+            raise SystemExit(f"$id {key} is declared by both {ids[key]} and {path}")
+        ids[key] = path.resolve()
+    return ids
+
+
+def ref_target(source: Path, target: str, ids: dict[str, Path]) -> Path:
+    """The file a ref's document part names: an absolute ``$id``, or a path relative to ``source``."""
+    if "://" in target:
+        return ids[target]
+    return (source.parent / target).resolve()
+
+
+def _rewrite_refs(node: object, source: Path, mapping: dict[Path, Path], ids: dict[str, Path]) -> object:
+    if isinstance(node, dict):
+        out: dict[str, object] = {}
+        for key, value in node.items():
+            if key == "$ref" and isinstance(value, str) and not value.startswith("#"):
+                target, _, frag = value.partition("#")
+                out[key] = str(mapping[ref_target(source, target, ids)]) + (f"#{frag}" if frag else "")
+            elif key in ("$id", "examples"):
+                continue
+            else:
+                out[key] = _rewrite_refs(value, source, mapping, ids)
+        return out
+    if isinstance(node, list):
+        return [_rewrite_refs(v, source, mapping, ids) for v in node]
+    return node
+
+
+def stage_for_datamodel(stage: Path, groups: tuple[Group, ...] = GROUPS) -> None:
+    """Copy schemas with absolute file refs: datamodel-codegen resolves transitive relative
+    refs against the wrong base directory (0.83.0), absolute paths sidestep that."""
+    mapping = {p.resolve(): (stage / _staged(g, p)).resolve() for g in groups for p in g.schemas()}
+    ids = schema_ids(groups)
+    for src, dst in mapping.items():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        data = _rewrite_refs(schema_doc(src), src, mapping, ids)
+        dst.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _catalog_module(entries: list[tuple[str, str, str, list[str]]]) -> str:
+    lines = [
+        "# generated by contracts/harness/codegen/generate.py -- do not edit",
+        "from __future__ import annotations",
+        "",
+        "from types import MappingProxyType",
+        "from typing import TYPE_CHECKING",
+        "",
+    ]
+    for module, cls, _type, _writers in entries:
+        lines.append(f"from {module} import {cls}")
+    lines += [
+        "",
+        "if TYPE_CHECKING:",
+        "    from collections.abc import Mapping",
+        "",
+        "    from pydantic import BaseModel",
+        "",
+        "EVENT_WRITERS: Mapping[str, frozenset[str]] = MappingProxyType({",
+    ]
+    for _module, _cls, type_, writers in entries:
+        ws = ", ".join(json.dumps(w) for w in writers)
+        lines.append(f"    {json.dumps(type_)}: frozenset({{{ws}}}),")
+    lines += ["})", "", "EVENT_MODELS: Mapping[str, type[BaseModel]] = MappingProxyType({"]
+    for _module, cls, type_, _writers in entries:
+        lines.append(f"    {json.dumps(type_)}: {cls},")
+    lines += ["})", ""]
+    return "\n".join(lines)
+
+
+def _event_entries(group: Group, groups: tuple[Group, ...] = GROUPS) -> list[tuple[str, str, str, list[str]]]:
+    """The group's event types, with those of the overlay's group for it: an overlay adds event types to the
+    catalog of the group it extends, and one the catalog already has (or a class name it already imports) is
+    refused."""
+    entries: list[tuple[str, str, str, list[str]]] = []
+    for member in (group, *(g for g in groups if g.overlay and g.key == f"{OVERLAY_DIR}/{group.key}")):
+        for path in member.schemas():
+            schema = json.loads(path.read_text(encoding="utf-8"))
+            type_ = event_type(schema)
+            if type_ is None:
+                continue
+            if any(e[2] == type_ or e[1] == schema["title"] for e in entries):
+                raise SystemExit(f"{path}: event {type_} ({schema['title']}) is already defined")
+            module = ".".join((member.python_package, *path.parent.relative_to(member.source).parts, module_stem(path)))
+            entries.append((module, schema["title"], type_, list(schema["x-writer"])))
+    return sorted(entries, key=lambda e: e[2])
+
+
+def _replace_dir(src: Path, dst: Path) -> None:
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+
+
+_CONSTR = re.compile(r"constr\(pattern=(r?'[^']*'), strict=True\)")
+_OVERRIDE_PRAGMA = "# pyright: reportIncompatibleVariableOverride=false\n"
+_CORE_IMPORT = re.compile(r"from \.+core((?:\.\w+)*) import")
+
+
+def postprocess_python(text: str, *, is_event: bool) -> str:
+    """Two fixes so generated code passes pyright strict without changing validation:
+    ``constr()`` is a call in a type expression -> ``Annotated[StrictStr, StringConstraints]``;
+    typed events narrow ``type``/``writer``/``data`` of ``InlineEnvelope``, which pydantic
+    supports but pyright reports as an invariant override."""
+    if _CONSTR.search(text):
+        text = _CONSTR.sub(r"Annotated[StrictStr, StringConstraints(pattern=\1)]", text)
+        text = re.sub(r"^(from pydantic import .*), constr$", r"\1, StringConstraints", text, flags=re.M)
+        # A long import is wrapped one name per line; keep ``constr`` where another field still calls it.
+        text = re.sub(
+            r"^    constr,$",
+            "    StringConstraints,\n    constr," if "constr(" in text else "    StringConstraints,",
+            text,
+            flags=re.M,
+        )
+        # A module whose only strict string is a map's key pattern imports no ``StrictStr`` of its own.
+        if not re.search(r"^(from pydantic import .*\bStrictStr\b|    StrictStr,$)", text, flags=re.M):
+            text = re.sub(r"^(from pydantic import .*), StringConstraints$", r"\1, StrictStr, StringConstraints", text, flags=re.M)
+            text = re.sub(r"^    StringConstraints,$", "    StrictStr,\n    StringConstraints,", text, flags=re.M)
+    if is_event:
+        text = _OVERRIDE_PRAGMA + text
+    return text
+
+
+_RELATIVE_IMPORT = re.compile(r"^from (\.+)((?:\w+)(?:\.\w+)*)? import", re.M)
+
+
+def _absolute_imports(module: Path, out: Path, groups: tuple[Group, ...], *, overlay_only: bool = False) -> str:
+    """An overlay module's relative imports as absolute ones: its package sits beneath another group's, so a
+    relative import that leaves its own group would name the wrong package. ``overlay_only``: a built-in module's
+    imports of an overlay's modules only (a schema an overlay extends may name one), the rest left as they are."""
+    here = module.parent.relative_to(out).parts
+    stages = sorted(((tuple(g.stage.split("/")), g.python_package, g.overlay) for g in groups), key=lambda e: -len(e[0]))
+
+    def absolute(match: re.Match[str]) -> str:
+        dots, name = len(match.group(1)), match.group(2)
+        parts = (*here[: len(here) - (dots - 1)], *(name.split(".") if name else ()))
+        for stage, package, overlay in stages:
+            if parts[: len(stage)] == stage:
+                if overlay_only and not overlay:
+                    return match.group(0)
+                return f"from {'.'.join((package, *parts[len(stage):]))} import"
+        raise SystemExit(f"{module}: an import of {'.'.join(parts)} names no group")
+
+    return _RELATIVE_IMPORT.sub(absolute, module.read_text(encoding="utf-8"))
+
+
+def _finish_package(group: Group, package: Path, out: Path, groups: tuple[Group, ...] = GROUPS) -> None:
+    if group.overlay:
+        for module in package.rglob("*.py"):
+            module.write_text(_absolute_imports(module, out, groups), encoding="utf-8")
+        return _finish_constants(group, package, groups)
+    if any(g.overlay for g in groups):
+        # The built-in package holds the overlay's beneath it only in staging: name an overlay module by its package.
+        for module in package.rglob("*.py"):
+            if not module.is_relative_to(out / OVERLAY_DIR):
+                module.write_text(_absolute_imports(module, out, groups, overlay_only=True), encoding="utf-8")
+    if group.stage != "core":
+        # A group imports core through core's package: its own relative import would leave the package.
+        for module in package.rglob("*.py"):
+            text = module.read_text(encoding="utf-8")
+            module.write_text(_CORE_IMPORT.sub(lambda m: f"from {PY_CORE_PACKAGE}{m.group(1)} import", text), encoding="utf-8")
+    return _finish_constants(group, package, groups)
+
+
+def _finish_constants(group: Group, package: Path, groups: tuple[Group, ...] = GROUPS) -> None:
+    if group.events and not group.overlay:
+        (package / "event_catalog.py").write_text(_catalog_module(_event_entries(group, groups)), encoding="utf-8")
+    for name, text in constants.python_modules(group_constants(group), group.python_package).items():
+        (package / name).write_text(text, encoding="utf-8")
+
+
+def generate_python(into: Path, groups: tuple[Group, ...] = GROUPS) -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        stage = Path(tmp) / "schemas"
+        out = Path(tmp) / "out"
+        stage_for_datamodel(stage, groups)
+        subprocess.run(
+            # -I: the script's directory holds constants.py and extensions.py, which must not shadow other modules.
+            [
+                sys.executable, "-I", str(HERE / "datamodel_sorted.py"),
+                "--input", str(stage), "--output", str(out), *DATAMODEL_ARGS,
+            ],
+            check=True,
+            cwd=tmp,
+        )
+        # The generator stamps the staging dir name into package __init__ headers.
+        for init in out.rglob("__init__.py"):
+            init.write_text(GENERATED_INIT, encoding="utf-8")
+        for module in out.rglob("*.py"):
+            if module.name != "__init__.py":
+                text = module.read_text(encoding="utf-8")
+                module.write_text(postprocess_python(text, is_event=module.parent.name == "events"), encoding="utf-8")
+        # The built-in groups first: each replaces its whole directory, which holds an overlay's beneath it.
+        for group in groups:
+            package = out / group.stage
+            _finish_package(group, package, out, groups)
+            target = into / group.python_out
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if group.stage.startswith("ext/"):
+                (target.parent / "__init__.py").write_text(GENERATED_INIT, encoding="utf-8")
+            _replace_dir(package, target)
+
+
+def generate_ts(target: TsTarget, into: Path, groups: tuple[Group, ...] = GROUPS) -> None:
+    mine = [g for g in groups if g.root == target.root]
+    extra = {
+        (g.key if g.root == "harness" or g.overlay else "."): constants.ts_modules(group_constants(g)) for g in mine
+    }
+    spec = {
+        "root": target.root,
+        "out": str((into / target.out).resolve()),
+        "zodImport": target.zod_import,
+        "types": target.types,
+        "events": any(g.events for g in mine),
+        "extra": {key: modules for key, modules in extra.items() if modules},
+        # `base`: the barrel of the group an overlay extends, whose event catalog takes the overlay's event types.
+        "overlays": [
+            {"dir": str(g.source.resolve()), "as": g.key, "base": g.key.removeprefix(f"{OVERLAY_DIR}/") if g.root == "harness" else "."}
+            for g in mine
+            if g.overlay
+        ],
+        # Every overlay directory, whichever root it extends: an extended schema may name another root's by its $id.
+        "refOverlays": [str(g.source.resolve()) for g in groups if g.overlay],
+        # The schemas the overlay extends, as this build reads them, so both generators apply one set of rules.
+        "extended": {
+            str(p.resolve()): schema_doc(p)
+            for p in schema_files(groups)
+            if json.loads(p.read_text(encoding="utf-8"))["$id"] in EXTENSIONS.ids()
+        },
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        spec_file = Path(tmp) / "spec.json"
+        spec_file.write_text(json.dumps(spec), encoding="utf-8")
+        subprocess.run(["node", str(HERE / "generate-zod.mjs"), str(spec_file)], check=True, cwd=NODE_APP)
+
+
+_VECTOR_HEADER = "generated by contracts/harness/codegen/generate.py from contracts/harness/vectors/token-patterns.json -- do not edit"
+
+
+def _token_vector() -> dict[str, Any]:
+    vector = json.loads(TOKEN_VECTOR.read_text(encoding="utf-8"))
+    pasted = vector["pastedInput"]
+    kinds = [
+        e["kind"]
+        for e in (*vector["patterns"], *vector["redactOnly"], *pasted["detectors"], pasted["assigned"], pasted["contextual"])
+    ]
+    if len(kinds) != len(set(kinds)):
+        raise SystemExit(f"duplicate kinds in {TOKEN_VECTOR.name}: {kinds}")
+    return vector
+
+
+def _pasted_rules(vector: dict[str, Any]) -> dict[str, Any]:
+    """The pasted-input rules (SEC-CR-07) without their examples and prose: what a detector reads."""
+    pasted = vector["pastedInput"]
+    detectors = [
+        {
+            "kind": e["kind"],
+            "source": e["source"],
+            "secretGroup": int(e.get("secretGroup", 0)),
+            "checkValue": bool(e.get("checkValue", False)),
+        }
+        for e in pasted["detectors"]
+    ]
+    assigned = {k: pasted["assigned"][k] for k in ("kind", "source", "flags", "secretGroup")}
+    contextual = {
+        k: pasted["contextual"][k] for k in ("kind", "keyword", "keywordFlags", "word", "separators", "trailing", "minBits")
+    }
+    return {
+        "detectors": detectors,
+        "assigned": assigned,
+        "contextual": contextual,
+        "minClasses": pasted["minClasses"],
+        "placeholders": pasted["placeholders"],
+        "placeholderFlags": pasted["placeholderFlags"],
+        "identifierPath": pasted["identifierPath"],
+    }
+
+
+def _py_str(text: str) -> str:
+    # A JSON string literal is a valid Python one; double quotes match the formatter.
+    return json.dumps(text, ensure_ascii=False)
+
+
+def _py_token_vector(vector: dict[str, Any]) -> str:
+    def entries(name: str, items: list[dict[str, Any]]) -> list[str]:
+        lines = [f"{name}: Final[tuple[TokenPatternSource, ...]] = ("]
+        for e in items:
+            lines += [
+                "    TokenPatternSource(",
+                f"        {_py_str(e['kind'])},",
+                f"        {_py_str(e['source'])},",
+                f"        forbidden={bool(e.get('forbidden', False))!r},",
+                "    ),",
+            ]
+        return [*lines, ")"]
+
+    return "\n".join(
+        [
+            f"# {_VECTOR_HEADER}",
+            "from __future__ import annotations",
+            "",
+            "import json",
+            "from typing import Any, Final, NamedTuple",
+            "",
+            "",
+            "class TokenPatternSource(NamedTuple):",
+            "    kind: str",
+            "    source: str",
+            "    forbidden: bool",
+            "",
+            "",
+            f"SECRET_MASK: Final = {_py_str(vector['mask'])}",
+            f"SECRET_KEY_NAME_SOURCE: Final = {_py_str(vector['secretKeyNames']['source'])}",
+            f"SECRET_KEY_NAME_FLAGS: Final = {_py_str('i' if vector['secretKeyNames']['ignoreCase'] else '')}",
+            *entries("VENDOR_PATTERN_SOURCES", vector["patterns"]),
+            *entries("REDACT_ONLY_PATTERN_SOURCES", vector["redactOnly"]),
+            "# The pasted-input rules (SEC-CR-07), read by harness_core.security.pasted_secrets.",
+            "PASTED_INPUT_RULES: Final[dict[str, Any]] = json.loads(",
+            f"    {_py_str(json.dumps(_pasted_rules(vector), ensure_ascii=False, sort_keys=True))}",
+            ")",
+            "",
+        ]
+    )
+
+
+def _ts_token_vector(vector: dict[str, Any]) -> str:
+    def entries(name: str, items: list[dict[str, Any]]) -> list[str]:
+        lines = [f"export const {name}: readonly TokenPatternSource[] = ["]
+        for e in items:
+            fields = f"kind: {json.dumps(e['kind'])}, source: {json.dumps(e['source'])}, forbidden: {json.dumps(bool(e.get('forbidden', False)))}"
+            lines.append(f"  {{ {fields} }},")
+        return [*lines, "];"]
+
+    return "\n".join(
+        [
+            f"// {_VECTOR_HEADER}",
+            "",
+            "export interface TokenPatternSource {",
+            "  readonly kind: string;",
+            "  readonly source: string;",
+            "  readonly forbidden: boolean;",
+            "}",
+            "",
+            f"export const SECRET_MASK = {json.dumps(vector['mask'], ensure_ascii=False)};",
+            "",
+            f"export const SECRET_KEY_NAME_SOURCE = {json.dumps(vector['secretKeyNames']['source'])};",
+            f"export const SECRET_KEY_NAME_FLAGS: string = {json.dumps('i' if vector['secretKeyNames']['ignoreCase'] else '')};",
+            "",
+            *entries("VENDOR_PATTERN_SOURCES", vector["patterns"]),
+            "",
+            *entries("REDACT_ONLY_PATTERN_SOURCES", vector["redactOnly"]),
+            "",
+            "export interface PastedDetectorSource {",
+            "  readonly kind: string;",
+            "  readonly source: string;",
+            "  readonly secretGroup: number;",
+            "  readonly checkValue: boolean;",
+            "}",
+            "",
+            "/** The pasted-input rules (SEC-CR-07): what a person's message is checked for before it is kept. */",
+            "export interface PastedInputRules {",
+            "  readonly detectors: readonly PastedDetectorSource[];",
+            "  readonly assigned: {",
+            "    readonly kind: string;",
+            "    readonly source: string;",
+            "    readonly flags: string;",
+            "    readonly secretGroup: number;",
+            "  };",
+            "  readonly contextual: {",
+            "    readonly kind: string;",
+            "    readonly keyword: string;",
+            "    readonly keywordFlags: string;",
+            "    readonly word: string;",
+            "    readonly separators: string;",
+            "    readonly trailing: string;",
+            "    readonly minBits: number;",
+            "  };",
+            "  readonly minClasses: number;",
+            "  readonly placeholders: string;",
+            "  readonly placeholderFlags: string;",
+            "  readonly identifierPath: string;",
+            "}",
+            "",
+            f"export const PASTED_INPUT_RULES: PastedInputRules = {json.dumps(_pasted_rules(vector), ensure_ascii=False, sort_keys=True, indent=2)};",
+            "",
+        ]
+    )
+
+
+def generate_vectors(py_out: Path, *ts_outs: Path) -> None:
+    """The token vector as code for each language that redacts: images ship only their own tree, not ``contracts/``."""
+    vector = _token_vector()
+    py_out.mkdir(parents=True, exist_ok=True)
+    (py_out / "__init__.py").write_text(f"# {_VECTOR_HEADER}\n", encoding="utf-8")
+    (py_out / "token_patterns.py").write_text(_py_token_vector(vector), encoding="utf-8")
+    for ts_out in ts_outs:
+        ts_out.mkdir(parents=True, exist_ok=True)
+        (ts_out / "token-patterns.ts").write_text(_ts_token_vector(vector), encoding="utf-8")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--into", type=Path, default=REPO, help="write every target under this directory (default: the repository)")
+    parser.add_argument("--skip-python", action="store_true")
+    parser.add_argument("--skip-ts", action="store_true")
+    parser.add_argument("--skip-vectors", action="store_true")
+    parser.add_argument(
+        "--overlay", type=Path, default=OVERLAY, help="an edition's schema overlay (default: contracts/harness/ee, if present)"
+    )
+    args = parser.parse_args(argv)
+    global EXTENSIONS, OVERLAY_ROOT  # noqa: PLW0603 - the overlay this run reads, as every schema read must see it
+    before = (EXTENSIONS, OVERLAY_ROOT)
+    OVERLAY_ROOT = args.overlay
+    EXTENSIONS = extensions.Extensions.of(args.overlay)
+    try:
+        return _generate(args)
+    finally:
+        EXTENSIONS, OVERLAY_ROOT = before
+
+
+def _generate(args: argparse.Namespace) -> int:
+    into = args.into.resolve()
+    groups = all_groups(args.overlay)
+    EXTENSIONS.check_targets(set(schema_ids(groups)))
+    if not args.skip_python:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            installed = version("datamodel-code-generator")
+        except PackageNotFoundError:
+            installed = "none"
+        if installed != DATAMODEL_CODEGEN_VERSION:
+            raise SystemExit(f"datamodel-code-generator {DATAMODEL_CODEGEN_VERSION} required, found {installed}")
+        generate_python(into, groups)
+    if not args.skip_ts:
+        for target in TS_TARGETS:
+            generate_ts(target, into, groups)
+    if not args.skip_vectors:
+        generate_vectors(into / VECTORS_PY_OUT, into / VECTORS_TS_OUT, into / VECTORS_NODE_OUT)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

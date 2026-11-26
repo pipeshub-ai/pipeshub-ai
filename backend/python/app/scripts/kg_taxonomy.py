@@ -219,6 +219,7 @@ async def execute(
 async def _main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     from app.containers.indexing import IndexingAppContainer
+    from app.core.org_context import for_org
     from app.modules.entity_resolution.consolidation import TaxonomyConsolidator
 
     container = IndexingAppContainer.init("kg_taxonomy")
@@ -229,11 +230,13 @@ async def _main(argv: list[str]) -> int:
         logger.exception("kg_taxonomy: graph unavailable")
         sys.stderr.write(json.dumps({"error": f"{type(exc).__name__}: {exc}"}) + "\n")
         return EXIT_FAILED
-    return await execute(
-        args, graph_provider,
-        lambda store: TaxonomyConsolidator(graph_provider=graph_provider, entity_store=store, logger=logger),
-        container.entity_vector_store, logger, sys.stdout, sys.stderr,
-    )
+    # The org this run acts for: the graph runs every statement under one org (PostgreSQL refuses an unbound one).
+    with for_org(args.org, job="kg_taxonomy"):
+        return await execute(
+            args, graph_provider,
+            lambda store: TaxonomyConsolidator(graph_provider=graph_provider, entity_store=store, logger=logger),
+            container.entity_vector_store, logger, sys.stdout, sys.stderr,
+        )
 
 
 if __name__ == "__main__":

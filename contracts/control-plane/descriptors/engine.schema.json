@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/descriptors/engine.schema.json",
+  "title": "CatalogEngineDescriptor",
+  "description": "An allow-listed engine version. `digest` is the canonical digest of {kind, version, binaryDigest, optionsDigest}; `optionsDigest` is null until engines carry an options schema (R2 CP10).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "kind",
+    "version",
+    "binaryDigest",
+    "optionsDigest",
+    "digest"
+  ],
+  "properties": {
+    "name": {
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Name"
+    },
+    "kind": {
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Name"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$"
+    },
+    "binaryDigest": {
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Digest"
+    },
+    "optionsDigest": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Digest"
+        }
+      ]
+    },
+    "digest": {
+      "$ref": "https://schemas.pipeshub.com/harness/v2/core/common.schema.json#/$defs/Digest"
+    }
+  },
+  "examples": [
+    {
+      "name": "opencode",
+      "kind": "opencode",
+      "version": "1.18.34",
+      "binaryDigest": "sha256:4fa437184846977f1849ffb65fc19d32686dec85a455df3d37f69a2993f22182",
+      "optionsDigest": null,
+      "digest": "sha256:fc306f69d9e7a331f4d943c1ef606fdd9e2dfa71863d5f858f7e02bf7b42a998"
+    }
+  ]
+}

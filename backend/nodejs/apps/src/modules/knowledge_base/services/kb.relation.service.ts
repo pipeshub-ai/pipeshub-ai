@@ -1,4 +1,5 @@
 import { inject, injectable } from 'inversify';
+import { withCause } from '../../../libs/errors/base.error';
 import { Logger } from '../../../libs/services/logger.service';
 import { IRecordDocument } from '../types/record';
 import { IFileRecordDocument } from '../types/file_record';
@@ -17,6 +18,7 @@ import {
 } from './records_events.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { endpoint } from '../../storage/constants/constants';
+import { parseKvObject } from '../../../libs/utils/kv-object.utils';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import {
   SyncEventProducer,
@@ -76,7 +78,7 @@ export class RecordRelationService {
     const url = (await keyValueStoreService.get<string>(endpoint)) || '{}';
 
     const storageUrl =
-      JSON.parse(url).storage.endpoint || this.defaultConfig.endpoint;
+      parseKvObject(url).storage.endpoint || this.defaultConfig.endpoint;
     const signedUrlRoute = `${storageUrl}/api/v1/document/internal/${record.externalRecordId}/download`;
     let extension = '';
     if (fileRecord && fileRecord.extension) {
@@ -147,7 +149,7 @@ export class RecordRelationService {
     const url = (await keyValueStoreService.get<string>('endpoint')) || '{}';
 
     const storageUrl =
-      JSON.parse(url).storage?.endpoint || this.defaultConfig.endpoint;
+      parseKvObject(url).storage?.endpoint || this.defaultConfig.endpoint;
     const signedUrlRoute = `${storageUrl}/api/v1/document/internal/${record.externalRecordId}/download`;
     let mimeType = '';
     if (fileRecord && fileRecord.mimeType) {
@@ -188,19 +190,16 @@ export class RecordRelationService {
       };
 
       await this.syncEventProducer.publishEvent(event);
-      logger.info(
-        `Published resync connector event for app ${resyncConnectorPayload.connectorName}`,
-      );
 
       return { success: true };
     } catch (eventError: any) {
-      logger.error('Failed to publish resync connector event', {
-        error: eventError,
-      });
       if (eventError?.statusCode === 409) {
         throw eventError;
       }
-      throw markClientSafe(new ServiceUnavailableError(RESYNC_NOT_QUEUED_MESSAGE));
+      throw withCause(
+        markClientSafe(new ServiceUnavailableError(RESYNC_NOT_QUEUED_MESSAGE)),
+        eventError,
+      );
     }
   }
 

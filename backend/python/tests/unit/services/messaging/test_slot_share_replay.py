@@ -151,6 +151,8 @@ def replay(
         while gate and in_use < SLOTS:
             record = gate.popleft()
             in_use += 1
+            if slot_share is not None:
+                slot_share.admitted(record)
             heapq.heappush(events, (now + hold_of[record], record))
 
     refill()

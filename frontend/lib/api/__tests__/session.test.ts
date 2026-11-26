@@ -22,10 +22,13 @@ vi.mock('@/config', async () => {
   };
 });
 
-const { useAuthStore, ACCESS_TOKEN_STORAGE_KEY, REFRESH_TOKEN_STORAGE_KEY } = await import('@/lib/store/auth-store');
+const { useAuthStore } = await import('@/lib/store/auth-store');
+const { SESSION_HINT_KEY } = await import('@/lib/auth/session-credential');
 const { apiClient } = await import('../axios-instance');
-const { ErrorType } = await import('../api-error');
-const { refreshAccessToken, isTokenExpired, decodeJwtPayload, REFRESH_TOKEN_ENDPOINT } = await import('../token-refresh');
+const { ErrorType, busyMessage } = await import('../api-error');
+const { refreshAccessToken, refreshOrSignOut, isTokenExpired, decodeJwtPayload, REFRESH_TOKEN_ENDPOINT } = await import(
+  '../token-refresh'
+);
 const scheduler = await import('../token-refresh-scheduler');
 const { useToastStore } = await import('@/lib/store/toast-store');
 
@@ -77,12 +80,22 @@ const bearer = (config: InternalAxiosRequestConfig) => AxiosHeaders.from(config.
 const errorToasts = () => useToastStore.getState().toasts.filter((t) => t.variant === 'error');
 const fetchMock = vi.fn<typeof fetch>();
 
+/** A refresh the server gave no verdict on: the session may still be good. */
+const noAnswer: Array<[string, () => void]> = [
+  ['500', () => fetchMock.mockResolvedValueOnce(jsonResponse(500, {}))],
+  ['502', () => fetchMock.mockResolvedValueOnce(jsonResponse(502, {}))],
+  ['504', () => fetchMock.mockResolvedValueOnce(jsonResponse(504, {}))],
+  ['503', () => fetchMock.mockResolvedValueOnce(jsonResponse(503, {}))],
+  ['429', () => fetchMock.mockResolvedValueOnce(jsonResponse(429, {}))],
+  ['a network failure', () => fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))],
+];
+
 beforeEach(() => {
   storage.clear();
   fetchMock.mockReset();
   logoutAndRedirect.mockReset();
   vi.stubGlobal('fetch', fetchMock);
-  useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'refresh-1', isAuthenticated: true });
+  useAuthStore.setState({ accessToken: jwtExpiringIn(3600), isAuthenticated: true });
   useToastStore.setState({ toasts: [] });
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -120,35 +133,51 @@ describe('the shared refresh lock', () => {
     const calls = [refreshAccessToken(), refreshAccessToken(), refreshAccessToken()];
     resolve(jsonResponse(200, { accessToken: fresh }));
 
-    expect(await Promise.all(calls)).toEqual([true, true, true]);
+    expect(await Promise.all(calls)).toEqual(['refreshed', 'refreshed', 'refreshed']);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe(REFRESH_TOKEN_ENDPOINT);
     expect(useAuthStore.getState().accessToken).toBe(fresh);
-    expect(storage.get(ACCESS_TOKEN_STORAGE_KEY)).toBe(fresh);
+    // ADR-WEB-02: the new token stays in memory; storage keeps only which account is signed in.
+    expect([...storage.values()].join('\n')).not.toContain(fresh);
   });
 
-  it('falls back to the stored refresh token after a reload', async () => {
-    useAuthStore.setState({ refreshToken: null });
-    storage.set(REFRESH_TOKEN_STORAGE_KEY, 'from-storage');
+  it('asks with the HttpOnly session cookie, never with a token the page holds', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: jwtExpiringIn(3600) }));
-    expect(await refreshAccessToken()).toBe(true);
-    expect((fetchMock.mock.calls[0][1]?.headers as Record<string, string>).Authorization).toBe('Bearer from-storage');
+    expect(await refreshAccessToken()).toBe('refreshed');
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.credentials).toBe('include');
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
   });
 
   it.each([
-    ['no refresh token at all', () => useAuthStore.setState({ refreshToken: null }), undefined],
-    ['the server refuses', () => {}, jsonResponse(401, {})],
-    ['the reply has no token', () => {}, jsonResponse(200, {})],
-    ['the network is down', () => {}, new TypeError('Failed to fetch')],
-  ])('reports failure when %s, and lets the next attempt start fresh', async (_label, setup, reply) => {
+    ['the session cookie is gone', () => {}, jsonResponse(401, {}), 'refused'],
+    ['the server refuses', () => {}, jsonResponse(401, {}), 'refused'],
+    ['the account is locked', () => {}, jsonResponse(400, {}), 'refused'],
+    ['the origin check refuses', () => {}, jsonResponse(403, {}), 'refused'],
+    ['a 4xx above 429 comes back', () => {}, jsonResponse(431, {}), 'refused'],
+    // Our server never sends 408 on this route; reading it as a refusal is a deliberate choice.
+    ['a request timeout (408) comes back', () => {}, jsonResponse(408, {}), 'refused'],
+    ['the reply has no token', () => {}, jsonResponse(200, {}), 'refused'],
+    ['the network is down', () => {}, new TypeError('Failed to fetch'), 'unreachable'],
+    ['the server fails', () => {}, jsonResponse(500, {}), 'unreachable'],
+    ['the rate limiter answers', () => {}, jsonResponse(429, {}), 'unreachable'],
+  ])('reports failure when %s, and lets the next attempt start fresh', async (_label, setup, reply, expected) => {
     setup();
     if (reply instanceof Error) fetchMock.mockRejectedValueOnce(reply);
     else if (reply) fetchMock.mockResolvedValueOnce(reply);
-    expect(await refreshAccessToken()).toBe(false);
+    expect(await refreshAccessToken()).toBe(expected);
 
-    useAuthStore.setState({ refreshToken: 'refresh-1' });
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: 'next' }));
-    expect(await refreshAccessToken()).toBe(true);
+    expect(await refreshAccessToken()).toBe('refreshed');
+  });
+
+  it('keeps the session when the refresh throws before the server answers', async () => {
+    // The cross-tab lock is aborted (for example the page is unloading): the server never gave a verdict.
+    vi.stubGlobal('navigator', { locks: { request: () => Promise.reject(new DOMException('aborted', 'AbortError')) } });
+    expect(await refreshOrSignOut()).toBe('unreachable');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
   });
 });
 
@@ -200,6 +229,28 @@ describe('apiClient requests', () => {
     expect(useAuthStore.getState().accessToken).toBeNull();
     expect(errorToasts()).toHaveLength(0);
   });
+
+  it.each(noAnswer)('keeps the session and sends with the token it has when the refresh before sending gets %s', async (_label, arrange) => {
+    const old = jwtExpiringIn(20);
+    useAuthStore.setState({ accessToken: old });
+    arrange();
+    const sent = fakeServer({ status: 200, data: { ok: 1 } });
+
+    const { data } = await apiClient.get('/api/v1/users');
+
+    expect(data).toEqual({ ok: 1 });
+    expect(sent).toHaveLength(1);
+    expect(bearer(sent[0])).toBe(`Bearer ${old}`);
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
+
+  it('keeps a token the caller set explicitly when the refresh before sending gets no answer', async () => {
+    const callerToken = jwtExpiringIn(20, { who: 'caller' });
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, {}));
+    const sent = fakeServer({ status: 200 });
+    await apiClient.get('/api/v1/users', { headers: { Authorization: `Bearer ${callerToken}` } });
+    expect(bearer(sent[0])).toBe(`Bearer ${callerToken}`);
+  });
 });
 
 describe('a 401 from the server', () => {
@@ -242,10 +293,68 @@ describe('a 401 from the server', () => {
     expect(storage.has('workspace_session_token')).toBe(false);
   });
 
-  it('logs out when the refresh fails', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(401, {}));
+  // 400 = locked account, 403 = foreign origin, 404 = no credentials (the refresh handler in userAccount.controller.ts).
+  it.each([400, 401, 403, 404])('logs out when the refresh is refused with %s', async (status) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(status, {}));
     fakeServer({ status: 401 });
     expect(await settlesSoon(apiClient.get('/a'))).toBe(false);
+    expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(noAnswer)('keeps the session, does not replay, and says to try again shortly when the refresh gets %s', async (_label, arrange) => {
+    arrange();
+    const token = useAuthStore.getState().accessToken;
+    const sent = fakeServer({ status: 401 });
+
+    await expect(apiClient.get('/api/v1/users/me')).rejects.toMatchObject({
+      type: ErrorType.SERVER_ERROR,
+      statusCode: 503,
+      message: busyMessage(),
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().accessToken).toBe(token);
+    expect(errorToasts()).toHaveLength(1);
+    expect(errorToasts()[0].title).toMatch(/try again shortly/i);
+  });
+
+  it('lets a caller suppress the toast when the refresh gets no answer', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, {}));
+    fakeServer({ status: 401 });
+    await expect(apiClient.get('/a', { suppressErrorToast: true })).rejects.toMatchObject({ statusCode: 503 });
+    expect(errorToasts()).toHaveLength(0);
+  });
+
+  it('shares one refresh between 401s during an outage, and rejects them all', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, {}));
+    fakeServer({ status: 401 }, { status: 401 });
+    const results = await Promise.allSettled([apiClient.get('/a'), apiClient.get('/b')]);
+    expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
+
+  it('leaves nothing behind after an outage: the next 401 refreshes and replays with the new token', async () => {
+    const fresh = jwtExpiringIn(3600);
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, {})).mockResolvedValueOnce(jsonResponse(200, { accessToken: fresh }));
+    const sent = fakeServer({ status: 401 }, { status: 401 }, { status: 200, data: { ok: 1 } });
+
+    await expect(apiClient.get('/a')).rejects.toMatchObject({ statusCode: 503 });
+    const { data } = await apiClient.get('/b');
+
+    expect(data).toEqual({ ok: 1 });
+    expect(sent).toHaveLength(3);
+    expect(bearer(sent[2])).toBe(`Bearer ${fresh}`);
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
+
+  it('signs out when the server refuses the refresh after an outage', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(503, {})).mockResolvedValueOnce(jsonResponse(401, {}));
+    fakeServer({ status: 401 }, { status: 401 });
+    await expect(apiClient.get('/a')).rejects.toMatchObject({ statusCode: 503 });
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+    expect(await settlesSoon(apiClient.get('/b'))).toBe(false);
     expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
   });
 });
@@ -340,6 +449,17 @@ describe('the proactive refresh timer', () => {
     expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the session when that refresh gets no answer, and does not retry in a loop', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValue(jsonResponse(503, {}));
+    scheduler.scheduleFromToken(jwtExpiringIn(30));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
+
   it('re-arms a very long-lived token instead of firing early', async () => {
     vi.useFakeTimers();
     const token = jwtExpiringIn(60 * 60 * 24 * 30); // 30 days, past setTimeout's 24.8-day limit
@@ -363,12 +483,8 @@ describe('the proactive refresh timer', () => {
       scheduler.initTokenRefreshScheduler();
     });
 
-    it('adopts a token another tab refreshed, without refreshing itself', () => {
-      const fromOtherTab = jwtExpiringIn(3600);
-      window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: fromOtherTab }));
-      expect(useAuthStore.getState().accessToken).toBe(fromOtherTab);
-      expect(fetchMock).not.toHaveBeenCalled();
-    });
+    const hintEvent = (newValue: string | null, oldValue: string | null = 'user-a:o1') =>
+      window.dispatchEvent(new StorageEvent('storage', { key: SESSION_HINT_KEY, newValue, oldValue }));
 
     it('starts over on a fresh chat page when another tab signs in as someone else', () => {
       const originalLocation = window.location;
@@ -377,22 +493,32 @@ describe('the proactive refresh timer', () => {
       try {
         useAuthStore.setState({ accessToken: tokenFor('user-a') });
 
-        window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-a', 3000) }));
+        hintEvent('user-a:o1', null);
         expect(assign).not.toHaveBeenCalled();
 
-        window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: tokenFor('user-b') }));
+        hintEvent('user-b:o1');
         // A page load drops every cache and store of the previous account, and the
         // chat it had open, which belongs to that account.
         expect(assign).toHaveBeenCalledWith('/chat/');
-        expect(useAuthStore.getState().accessToken).toBe(tokenFor('user-b'));
+        expect(fetchMock).not.toHaveBeenCalled();
       } finally {
         Object.defineProperty(window, 'location', { value: originalLocation, configurable: true });
       }
     });
 
     it('signs out here when another tab signs out', () => {
-      window.dispatchEvent(new StorageEvent('storage', { key: ACCESS_TOKEN_STORAGE_KEY, newValue: null }));
+      hintEvent(null);
       expect(useAuthStore.getState().accessToken).toBeNull();
+    });
+
+    it('signs in here from the session when another tab signs in', async () => {
+      useAuthStore.getState().logout();
+      const fresh = tokenFor('user-a');
+      storage.set(SESSION_HINT_KEY, 'user-a:o1');
+      fetchMock.mockResolvedValueOnce(jsonResponse(200, { accessToken: fresh }));
+      hintEvent('user-a:o1', null);
+      await vi.waitFor(() => expect(useAuthStore.getState().accessToken).toBe(fresh));
+      expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe('include');
     });
 
     it('ignores storage changes to other keys', () => {

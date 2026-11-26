@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from unittest.mock import MagicMock
 
 import pytest
@@ -109,9 +110,13 @@ def test_runtime_for_needs_a_running_loop_for_its_timer(tmp_path, monkeypatch) -
 
 async def test_first_use_removes_nothing_on_the_loop_and_the_timer_cleans_up_at_once(tmp_path, monkeypatch) -> None:
     """A large stale spool: ``runtime_for`` (on the event loop, in the first request) removes nothing; the timer's
-    first pass, in a thread and without waiting for its interval, removes the dead runs and keeps this one."""
+    first pass, in a thread and without waiting for its interval, removes the dead runs and keeps this one.
+
+    Checked by the thread every removal ran on, not by the loop's longest gap, which a busy runner stretches (it
+    failed at 1.49 s against 0.25 s)."""
     import asyncio
     import os
+    import threading
     import time
     from pathlib import Path
 
@@ -130,20 +135,16 @@ async def test_first_use_removes_nothing_on_the_loop_and_the_timer_cleans_up_at_
             (d / f"f{j}.in").write_bytes(b"x" * 100)
         os.utime(d, (stale, stale))
     monkeypatch.setenv("PUSH_SPOOL_DIR", str(root))
-    gaps: list[float] = []
-    stop = asyncio.Event()
+    removed_on: list[int] = []
+    real_rmtree = S.shutil.rmtree
 
-    async def ticker() -> None:
-        last = time.monotonic()
-        while not stop.is_set():
-            await asyncio.sleep(0.01)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
+    def recording_rmtree(path: object, *args: object, **kwargs: object) -> None:
+        removed_on.append(threading.get_ident())
+        real_rmtree(path, *args, **kwargs)
 
+    monkeypatch.setattr(S.shutil, "rmtree", recording_rmtree)
+    loop_thread = threading.get_ident()
     app = FastAPI()
-    t = asyncio.create_task(ticker())
-    await asyncio.sleep(0.02)
     runtime = push_api.runtime_for(app)
     try:
         assert len(list(root.glob("run-dead*"))) == 600, "runtime_for removed directories on the event loop"
@@ -154,10 +155,9 @@ async def test_first_use_removes_nothing_on_the_loop_and_the_timer_cleans_up_at_
         assert not list(root.glob("run-dead*")), "the first pass waited for the interval"
         assert Path(runtime.spool.dir, S.ALIVE).exists()
     finally:
-        stop.set()
-        await t
         await push_api.close_runtime(app)
-    assert max(gaps) < 0.25  # the margin is for a shared host
+    assert len(removed_on) >= 600  # every dead run was removed, and each removal is recorded
+    assert loop_thread not in removed_on, "a spool directory was removed on the event loop"
 
 
 async def test_close_runtime_stops_the_timer_and_removes_this_run(tmp_path, monkeypatch) -> None:
@@ -184,6 +184,7 @@ def test_the_connectors_lifespan_closes_the_push_runtime_before_the_container() 
 
     src = (Path(__file__).resolve().parents[6] / "app" / "connectors_main.py").read_text()
     teardown = src[src.index("async def lifespan"):]
-    teardown = teardown[teardown.index("\n    yield\n"):]
+    # The lifespan's yield, at any indent (it sits in a try/finally).
+    teardown = teardown[re.search(r"\n +yield\n", teardown).start():]
     assert "await kb_push_api.close_runtime(app)" in teardown
     assert teardown.index("await kb_push_api.close_runtime(app)") < teardown.index("await shutdown_container_resources(app_container)")

@@ -1,0 +1,494 @@
+{
+ "description": "R31-JOURNEY owner-shape fixture (ADR-TEST-01 D5). `derived` is scripts/owner_shape.py --derive on a large real-world org's MongoDB (read-only, structure only: counts, booleans and the run spec's own enums; no id, name, token, message or sealed field). `owner` and `shapes` are how a test stack realises each account shape the registry names, from the scripted SaaS and seed_human.py's seed. Re-derive and paste when that org's account changes shape; scripts/owner_shape.py --check holds the realisation to it.",
+ "derivedFrom": {
+  "stack": "the human-test stack",
+  "at": "2026-11-12",
+  "by": "python3 scripts/owner_shape.py --derive"
+ },
+ "derived": {
+  "runs": [
+   {
+    "agent": "saved",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 1,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": true,
+    "mounts": true,
+    "grantSources": [
+     "mcp"
+    ],
+    "count": 405
+   },
+   {
+    "agent": "saved",
+    "run": "child",
+    "executor": "engine",
+    "engine": "opencode",
+    "runKind": "child",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 1,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": false,
+    "mounts": true,
+    "grantSources": [
+     "mcp"
+    ],
+    "count": 215
+   },
+   {
+    "agent": "saved",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 1,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": false,
+    "mounts": false,
+    "grantSources": [
+     "mcp"
+    ],
+    "count": 200
+   },
+   {
+    "agent": "saved",
+    "run": "child",
+    "executor": "engine",
+    "engine": "codex",
+    "runKind": "child",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 1,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": false,
+    "mounts": true,
+    "grantSources": [
+     "mcp"
+    ],
+    "count": 95
+   },
+   {
+    "agent": "saved",
+    "run": "child",
+    "executor": "engine",
+    "engine": "claude_code",
+    "runKind": "child",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 1,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": false,
+    "mounts": true,
+    "grantSources": [
+     "mcp"
+    ],
+    "count": 95
+   },
+   {
+    "agent": "saved",
+    "run": "child",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "child",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 1,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": false,
+    "mounts": false,
+    "grantSources": [
+     "mcp"
+    ],
+    "count": 40
+   },
+   {
+    "agent": "assistant",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 1,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": true,
+    "mounts": true,
+    "grantSources": [
+     "mcp",
+     "web"
+    ],
+    "count": 28
+   },
+   {
+    "agent": "assistant",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 2,
+    "mcpNamed": 0,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": true,
+    "mounts": true,
+    "grantSources": [
+     "web"
+    ],
+    "count": 26
+   },
+   {
+    "agent": "assistant",
+    "run": "child",
+    "executor": "engine",
+    "engine": "codex",
+    "runKind": "child",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 1,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": false,
+    "mounts": true,
+    "grantSources": [
+     "mcp",
+     "web"
+    ],
+    "count": 22
+   },
+   {
+    "agent": "assistant",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 1,
+    "skills": true,
+    "knowledge": false,
+    "codeTask": true,
+    "mounts": true,
+    "grantSources": [
+     "mcp"
+    ],
+    "count": 21
+   },
+   {
+    "agent": "assistant",
+    "run": "child",
+    "executor": "engine",
+    "engine": "codex",
+    "runKind": "child",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 0,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": false,
+    "mounts": true,
+    "grantSources": [
+     "web"
+    ],
+    "count": 21
+   },
+   {
+    "agent": "assistant",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 1,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": false,
+    "mounts": false,
+    "grantSources": [
+     "mcp",
+     "web"
+    ],
+    "count": 18
+   },
+   {
+    "agent": "assistant",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 2,
+    "mcpNamed": 0,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": false,
+    "mounts": false,
+    "grantSources": [
+     "web"
+    ],
+    "count": 18
+   },
+   {
+    "agent": "assistant",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 2,
+    "mcpNamed": 0,
+    "skills": true,
+    "knowledge": false,
+    "codeTask": false,
+    "mounts": false,
+    "grantSources": [
+     "web"
+    ],
+    "count": 18
+   },
+   {
+    "agent": "assistant",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 1,
+    "mcpNamed": 0,
+    "skills": true,
+    "knowledge": false,
+    "codeTask": true,
+    "mounts": true,
+    "grantSources": [],
+    "count": 18
+   },
+   {
+    "agent": "assistant",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 1,
+    "skills": true,
+    "knowledge": false,
+    "codeTask": false,
+    "mounts": false,
+    "grantSources": [
+     "mcp",
+     "web"
+    ],
+    "count": 15
+   },
+   {
+    "agent": "assistant",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 2,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": true,
+    "mounts": true,
+    "grantSources": [
+     "mcp",
+     "web"
+    ],
+    "count": 10
+   },
+   {
+    "agent": "assistant",
+    "run": "child",
+    "executor": "engine",
+    "engine": "codex",
+    "runKind": "child",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 2,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": false,
+    "mounts": true,
+    "grantSources": [
+     "mcp",
+     "web"
+    ],
+    "count": 9
+   },
+   {
+    "agent": "assistant",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 2,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": false,
+    "mounts": false,
+    "grantSources": [
+     "mcp",
+     "web"
+    ],
+    "count": 7
+   },
+   {
+    "agent": "assistant",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 2,
+    "skills": true,
+    "knowledge": false,
+    "codeTask": false,
+    "mounts": false,
+    "grantSources": [
+     "mcp",
+     "web"
+    ],
+    "count": 7
+   },
+   {
+    "agent": "assistant",
+    "run": "child",
+    "executor": "engine",
+    "engine": "codex",
+    "runKind": "child",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 2,
+    "mcpNamed": 0,
+    "skills": true,
+    "knowledge": true,
+    "codeTask": false,
+    "mounts": true,
+    "grantSources": [
+     "web"
+    ],
+    "count": 4
+   },
+   {
+    "agent": "assistant",
+    "run": "top",
+    "executor": "loop",
+    "engine": "-",
+    "runKind": "interactive",
+    "via": "session",
+    "surface": "web",
+    "mcpWhole": 0,
+    "mcpNamed": 1,
+    "skills": true,
+    "knowledge": false,
+    "codeTask": false,
+    "mounts": false,
+    "grantSources": [
+     "mcp"
+    ],
+    "count": 1
+   }
+  ],
+  "savedAgents": 4,
+  "servers": [
+   {
+    "whole": 84,
+    "named": 1188
+   },
+   {
+    "whole": 66,
+    "named": 33
+   }
+  ],
+  "policyLayers": [
+   {
+    "kind": "org",
+    "approvals": {
+     "tools": [
+      "ask"
+     ]
+    }
+   }
+  ],
+  "principals": [
+   "user"
+  ]
+ },
+ "owner": {
+  "servers": [
+   "e2esaas",
+   "e2enotes"
+  ],
+  "firstUseServer": "e2enotes",
+  "serverUrl": "http://pxh-fake-saas:8090/mcp",
+  "why": "The real org's default chat holds two of the person's own servers whole on every Agent-mode turn (derived mcpWhole=2) and its Codex jobs inherit them; one of them (server 1) is also named tool by tool on the saved agents. e2esaas is seed.py's server (named by the seeded agents, held whole by the default chat); e2enotes is a second server of the same scripted SaaS, held whole only."
+ },
+ "shapes": {
+  "seeded": {
+   "agents": 4,
+   "namedServer": "e2esaas",
+   "skill": "release-checklist",
+   "toolRule": {
+    "create_ticket": "ask"
+   },
+   "engines": "each coder agent pins its engine in its engine profile (opencode, codex, claude_code)",
+   "why": "The real org has four saved agents (a loop agent and three coders); each names its server's tools, has skills and knowledge; one org tool rule asks (derived policy: tools ask)."
+  },
+  "owner": {
+   "skill": "pdf",
+   "engine": "the org's default coding engine, set to the job path's engine for the journey group; the person's choice org_default",
+   "why": "Derived: default-chat Agent-mode runs (agent assistant, via session, surface web) with skills, knowledge, code_task and mounts, servers held whole; their jobs are Codex children."
+  },
+  "owner_pinned": {
+   "skill": "pdf",
+   "engine": "the person's own coding-engine choice, set to the job path's engine",
+   "why": "The same account with the person's own choice: ENGPICK's user layer, which the real org's Codex jobs ran under before the org default existed."
+  },
+  "service": {
+   "why": "No service-account runs in the derived org (derived principals: user only); the shape stays in the registry so its cells are tracked, not assumed."
+  }
+ }
+}

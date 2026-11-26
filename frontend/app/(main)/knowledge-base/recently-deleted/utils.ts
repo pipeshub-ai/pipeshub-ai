@@ -251,12 +251,6 @@ export function restoreMessage(outcome: RestoreOutcome, t: TFunction): RestoreMe
   };
 }
 
-/** The page to show after rows left the list: the last one that still has rows. */
-export function pageAfterRemoval(page: number, limit: number, totalAfter: number): number {
-  const lastPage = Math.max(Math.ceil(totalAfter / limit), 1);
-  return Math.min(page, lastPage);
-}
-
 /**
  * Folders before what was deleted from inside them, so one bulk restore brings
  * back both: the server refuses an item while its folder is still in the trash.

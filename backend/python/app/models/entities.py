@@ -8,11 +8,8 @@ from enum import Enum
 from typing import Any, Optional,Dict, List, Literal, TypeVar
 from urllib.parse import quote
 from uuid import uuid4
-from app.modules.qna.prompt_templates import (
-    agent_block_group_prompt,
-)
-from pydantic import BaseModel, Field
-from app.models.blocks import BlockType, GroupType
+from pydantic import BaseModel, Field, PrivateAttr
+from app.modules.indexing.record_diagnostics import STORED_RUN_FIELDS
 from app.config.constants.arangodb import (
     AccessRule,
     CollectionNames,
@@ -28,11 +25,10 @@ from app.models._model_rebuild import rebuild_all_models
 from app.models.blocks import (
     BlocksContainer,
     SemanticMetadata,
-    group_caption,
 )
 from app.connectors.sources.localKB.push.contract import PUSH_ORIGIN_FIELD
 from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, RecordDates
-from app.utils.jinja_templates import compiled_template, one_line
+from app.utils.jinja_templates import one_line
 from app.utils.time_conversion import (
     format_day_for_llm,
     format_epoch_ms_for_llm,
@@ -107,7 +103,7 @@ def substitute_user_email(
 
 
 class LlmTextContent(BaseModel):
-    """A single LLM message-content item produced by ``to_llm_full_context``."""
+    """A single text item of LLM message content."""
 
     type: Literal["text"]
     text: str
@@ -277,6 +273,29 @@ class RelatedExternalRecord(BaseModel):
     constraint_name: Optional[str] = Field(default=None, description="Constraint name (e.g. FK constraint name)")
 
 
+# Fields an edition keeps on a record (``SourceMetadataReader``), by its own keys; stored as one ``editionFields``
+# map, which Neo4j holds as a JSON string.
+EditionFields = dict[str, Any]
+EDITION_FIELDS_KEY = "editionFields"
+
+
+def clean_edition_fields(value: object) -> EditionFields:
+    """``value`` as edition fields: a map (or its JSON text) without the keys whose value is ``None``."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return {}
+    if not isinstance(value, dict):
+        return {}
+    return {k: v for k, v in value.items() if isinstance(k, str) and v is not None}
+
+
+def edition_fields_of(doc: dict) -> EditionFields | None:
+    """A stored record's edition fields; ``None`` when it holds none."""
+    return clean_edition_fields(doc.get(EDITION_FIELDS_KEY)) or None
+
+
 class SourcePerson(BaseModel):
     """A person as the source system names them, for authorship links.
 
@@ -326,13 +345,24 @@ class Record(BaseModel):
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
     # Write-time only. Set when a record's parent is not its permission parent.
     inherit_permissions_from_group: bool = Field(default=False)
+    # Write-time only. The external id of a record group the record takes its access from (a Jira
+    # issue's security level): it inherits that group, hangs under it, and inherits nothing it is
+    # filed under. None: no such group is named (one stored is kept); "": none, so a stored one goes.
+    access_group_external_id: str | None = Field(default=None)
     # Write-time only. When set, this save replaces the record's permission edges.
     rewrite_permissions: bool = Field(default=False)
+    # Write-time only. When set, this save's permissions are some of the record's (one user's view of it):
+    # they are added, and never replace the stored ones, not even on a full sync's first write.
+    adds_permissions: bool = Field(default=False)
     # Read by the permission traversal on every visited node, so unlike
     # inherit_permissions — which is expressed as an edge — this is stored.
     # OPEN by default: a connector that says nothing gets the permissive
     # reading, and only sources that need every ancestor checked opt in.
-    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this record's own permissions combine with its ancestors': OPEN, STRICT or RESTRICTED")
+    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this record's own permissions combine with its ancestors': OPEN, STRICT, RESTRICTED or PARENT_AND_GRANT")
+    # What an edition read of the item at its source (``SourceMetadataReader``), by its own keys; ``None`` when it
+    # read none, so a record's dump (journaled with a live read) carries no empty map. A ``None`` value inside is
+    # written as null so the store drops a value the source no longer gives (the upserts merge).
+    edition_fields: EditionFields | None = Field(default=None, description="Edition-owned fields read from the source")
     parsing_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Parsing status for the record (parse phase, ahead of indexing/extraction)")
     indexing_status: str = Field(default=ProgressStatus.QUEUED.value, description="Indexing status for the record")
     extraction_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Extraction status for the record")
@@ -341,11 +371,21 @@ class Record(BaseModel):
     # Epoch Timestamps
     created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the record update")
+    incarnation_id: str | None = Field(default=None, description="Names the life of the stored vertex: minted by the graph store at insert, changed only by a restore from the trash. None for a record stored before it existed.")
     source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record creation in the source system")
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
     source_timestamp_origin: str | None = Field(default=None, description="Knowledge-base uploads only: what set the source timestamps (app.models.source_dates.SourceTimestampOrigin)")
     processing_started_at: int | None = Field(default=None, description="Epoch ms when parse/index processing began for the current attempt; null when idle")
     queued_at: int | None = Field(default=None, description="Epoch ms the platform last put this record in line for indexing. Platform-owned, unlike updated_at, which connectors may fill with source-system time; the stranded-record sweep ages on it")
+    first_queued_at: int | None = Field(default=None, description="Epoch ms the record first went in line for its current processing run. Internal: never returned by the API; set by the writer, not read back from the stored doc, so an entity round-trip does not write it")
+    indexing_attempts: int | None = Field(default=None, description="How many times processing has been attempted for the record. Internal: never returned by the API; set by the writer, not read back from the stored doc, so an entity round-trip does not write it")
+    # What the stored document said about the record's current run when it was read. Never serialised: it only lets the
+    # save path decide, from the stored values, whether a write continues the run or starts a new one.
+    _stored_run: dict | None = PrivateAttr(default=None)
+    # Write hints from the processor, never stored. ``_known_new``: the vertex is known not to exist, so the ArangoDB
+    # store inserts first. ``_promotes_stub``: the stored row is a placeholder this record replaces, so its date is the earlier.
+    _known_new: bool = PrivateAttr(default=False)
+    _promotes_stub: bool = PrivateAttr(default=False)
 
     # Source information
     weburl: str | None = None
@@ -384,6 +424,12 @@ class Record(BaseModel):
     created_by: SourcePerson | None = Field(default=None)
     last_modified_by: SourcePerson | None = Field(default=None)
     owners: list[SourcePerson] = Field(default_factory=list)
+    # People the file is shared with directly. None: the connector did not read
+    # the shares, so the stored SHARED_WITH edges stay; []: shared with nobody.
+    shared_with: list[SourcePerson] | None = Field(default=None)
+    # Person edge types (AUTHORED_BY, OWNED_BY, ...) whose people the connector
+    # could not tell this time: their stored edges stay and nothing is linked.
+    people_unknown: list[str] = Field(default_factory=list)
 
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
@@ -523,8 +569,14 @@ class Record(BaseModel):
         }
         # Omitted rather than null: the Neo4j upsert is `SET n +=`, where a null
         # key deletes the stored value, and most writers never set this field.
+        # ``incarnationId`` is never written from a record: the graph store mints it when it inserts the vertex and a restore
+        # replaces it. A copy carried from a stored record could otherwise start a new vertex under the id of a deleted one.
         if self.queued_at is not None:
             base["queuedAtTimestamp"] = self.queued_at
+        if self.first_queued_at is not None:
+            base["firstQueuedAt"] = self.first_queued_at
+        if self.indexing_attempts is not None:
+            base["indexingAttempts"] = self.indexing_attempts
         # Only written once set: a pod still on the old strict Arango schema
         # rejects these keys, even as null, during a rolling upgrade.
         delete_state = {
@@ -538,6 +590,9 @@ class Record(BaseModel):
         base.update({k: v for k, v in delete_state.items() if v is not None})
         if self.uploaded_by:
             base["uploadedBy"] = self.uploaded_by
+        # Only written once set, as the delete state: a pod on the old strict schema rejects the key.
+        if self.edition_fields:
+            base[EDITION_FIELDS_KEY] = dict(self.edition_fields)
         if self.source_timestamp_origin:
             base[SOURCE_TIMESTAMP_ORIGIN_FIELD] = self.source_timestamp_origin
         # Written only when set: an older Arango schema rejects the key, even as false.
@@ -588,7 +643,7 @@ class Record(BaseModel):
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
 
-        return Record(
+        parsed = Record(
             id=arango_base_record.get("id", arango_base_record.get("_key")),
             org_id=arango_base_record["orgId"],
             record_name=arango_base_record["recordName"],
@@ -607,6 +662,7 @@ class Record(BaseModel):
             mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
             weburl=arango_base_record.get("webUrl"),
             created_at=arango_base_record.get("createdAtTimestamp"),
+            incarnation_id=arango_base_record.get("incarnationId"),
             updated_at=arango_base_record.get("updatedAtTimestamp"),
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
@@ -622,6 +678,8 @@ class Record(BaseModel):
             hide_weburl=arango_base_record.get("hideWeburl", False),
             is_internal=arango_base_record.get("isInternal", False),
             is_placeholder=arango_base_record.get("isPlaceholder", False),
+
+            edition_fields=edition_fields_of(arango_base_record),
             md5_hash=arango_base_record.get("md5Checksum"),
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
@@ -635,6 +693,10 @@ class Record(BaseModel):
             push_origin=arango_base_record.get(PUSH_ORIGIN_FIELD) is True,
             **Record.delete_state_from_arango(arango_base_record),
         )
+        parsed._stored_run = {
+            name: arango_base_record.get(name) for name in STORED_RUN_FIELDS if name in arango_base_record
+        }
+        return parsed
 
     def to_kafka_record(self) -> dict:
         raise NotImplementedError("Implement this method in the subclass")
@@ -665,149 +727,6 @@ class FileRecord(Record):
             lines.extend(specific_lines)
 
         return "\n".join(lines)
-
-    def to_llm_full_context(self) -> list[LlmTextContent]:
-        """
-        Convert a record JSON object to message content format matching get_message_content.
-
-        Args:
-            record: The record JSON object containing block_containers and other metadata
-            ref_mapper: Optional shared CitationRefMapper for tiny-ref generation
-
-        Returns:
-            Tuple of (content list, ref_mapper)
-        """
-
-        try:
-            from app.utils.chat_helpers import (
-                _safe_stringify_content,
-                build_group_blocks,
-                format_code_locator,
-                valid_group_labels,
-            )
-
-            content: list[LlmTextContent] = []
-            context_metadata = f"record/{self.id}"
-            content.append(LlmTextContent(
-                type="text",
-                text=f"""<record>\n{context_metadata}
-    Record blocks (sorted):\n\n""",
-            ))
-            # Process blocks
-            block_containers = self.block_containers
-            blocks = block_containers.blocks
-            block_groups = block_containers.block_groups
-
-            # build_group_blocks (in chat_helpers) expects plain dicts, not Pydantic models
-            blocks_as_dicts = [b.model_dump() for b in blocks]
-            block_groups_as_dicts = [bg.model_dump() for bg in block_groups]
-
-            seen_block_groups = set()
-            for block in blocks:
-                block_type = block.type.value if block.type else None
-
-                data = block.data or ""
-
-                if block_type == BlockType.IMAGE.value:
-                    continue
-                elif block_type == BlockType.TEXT.value and block.parent_index is None:
-                    content.append(LlmTextContent(
-                        type="text",
-                        text=f"* Block Type: {block_type}\n* Block Content: {data}\n\n",
-                    ))
-                elif block_type == BlockType.CODE.value and block.parent_index is None:
-                    # Top-level code belongs to no group, so without this branch a
-                    # file with no classes renders as an empty record.
-                    qname = block.code_metadata.qualified_name if block.code_metadata else None
-                    locator = format_code_locator(getattr(self, "file_path", "") or "", qname or "")
-                    header = f"* Symbol: {locator}\n" if locator else ""
-                    content.append(LlmTextContent(
-                        type="text",
-                        text=(
-                            f"* Block Type: {block_type}\n{header}"
-                            f"* Block Content: {_safe_stringify_content(data)}\n\n"
-                        ),
-                    ))
-                elif block_type == BlockType.TABLE_ROW.value:
-                    block_group_index = block.parent_index
-                    block_group_id = f"{self.virtual_record_id or ''}-{block_group_index}"
-                    if block_group_id in seen_block_groups:
-                        continue
-                    seen_block_groups.add(block_group_id)
-                    if block_group_index is not None:
-                        corresponding_block_group = block_groups[block_group_index]
-
-                        block_type = corresponding_block_group.type.value if corresponding_block_group.type else None
-                        data = corresponding_block_group.data or {}
-
-                        if block_type == GroupType.TABLE.value:
-                            children = corresponding_block_group.children
-                            rows_to_be_included_list = []
-                            if children:
-                                for range_obj in children.block_ranges:
-                                    rows_to_be_included_list.extend(range(range_obj.start, range_obj.end + 1))
-
-                            child_results = []
-                            for row_index in rows_to_be_included_list:
-                                if row_index < len(blocks):
-                                    row_block = blocks[row_index]
-                                    block_data = row_block.data
-                                    if isinstance(block_data, dict):
-                                        row_text = block_data.get("row_natural_language_text", "")
-                                    else:
-                                        row_text = str(block_data or "")
-
-                                    child_results.append({
-                                        "content": row_text
-                                    })
-
-                            if child_results:
-                                template = compiled_template(agent_block_group_prompt)
-                                rendered_form = template.render(
-                                    block_group_index=block_group_index,
-                                    label=GroupType.TABLE.value,
-                                    blocks=child_results,
-                                )
-                                content.append(LlmTextContent(
-                                    type="text",
-                                    text=f"{rendered_form}\n\n",
-                                ))
-                elif block.parent_index is not None:
-                    parent_index = block.parent_index
-                    block_group_id = f"{self.virtual_record_id or ''}-{parent_index}"
-                    if block_group_id in seen_block_groups:
-                        continue
-                    template = compiled_template(agent_block_group_prompt)
-                    if parent_index >= len(block_groups):
-                        continue
-                    block_group = block_groups[parent_index]
-                    block_group_type = block_group.type.value if block_group.type else None
-                    if block_group_type not in valid_group_labels:
-                        continue
-
-                    virtual_record_id = self.virtual_record_id or ""
-                    group_blocks = build_group_blocks(block_groups_as_dicts, blocks_as_dicts, parent_index, virtual_record_id, self.to_kafka_record(), {})
-
-                    if not group_blocks:
-                        continue
-                    seen_block_groups.add(block_group_id)
-                    rendered_form = template.render(
-                        block_group_index=parent_index,
-                        label=block_group_type,
-                        caption=group_caption(block_group.sub_type, block_group.name, block_group.description),
-                        blocks=group_blocks,
-                        file_path=getattr(self, "file_path", "") or "",
-                    )
-                    content.append(LlmTextContent(
-                        type="text",
-                        text=f"{rendered_form}\n\n",
-                    ))
-                else:
-                    continue
-
-            return content
-        except Exception as e:
-            raise RuntimeError(f"Error in record_to_message_content: {e}") from e
 
     def to_arango_record(self) -> dict:
         return {
@@ -862,6 +781,8 @@ class FileRecord(Record):
             parent_node_id=arango_base_record.get("parentNodeId"),
             is_internal=arango_base_record.get("isInternal", False),
             is_placeholder=arango_base_record.get("isPlaceholder", False),
+
+            edition_fields=edition_fields_of(arango_base_record),
             is_file=arango_base_file_record.get("isFile", True),
             size_in_bytes=size if (size := arango_base_record.get("sizeInBytes")) is not None else arango_base_file_record.get("sizeInBytes"),
             extension=arango_base_file_record.get("extension"),
@@ -1230,6 +1151,7 @@ class WebpageRecord(Record):
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
             access_rule=read_access_rule(record_doc),
+            edition_fields=edition_fields_of(record_doc),
             **Record.delete_state_from_arango(record_doc),
             **Record.progress_state_from_arango(record_doc),
         )
@@ -1688,6 +1610,8 @@ class TicketRecord(Record):
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
+
+            edition_fields=edition_fields_of(record_doc),
             status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), Status),
             source_status=ticket_doc.get("sourceStatus"),
             priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), Priority),
@@ -1813,6 +1737,8 @@ class ProjectRecord(Record):
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
+
+            edition_fields=edition_fields_of(record_doc),
             status=project_doc.get("status"),
             priority=project_doc.get("priority"),
             lead_id=project_doc.get("leadId"),
@@ -3109,11 +3035,15 @@ class RecordGroup(BaseModel):
     # As on Record: read per node by the traversal, so stored rather than
     # inferred from an edge. A Confluence space is RESTRICTED — it carries its
     # own permission list, so inheriting from the App is never enough alone.
-    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this group's own permissions combine with its ancestors': OPEN, STRICT or RESTRICTED")
+    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this group's own permissions combine with its ancestors': OPEN, STRICT, RESTRICTED or PARENT_AND_GRANT")
     is_internal: bool | None = Field(default=False, description="Flag indicating if the record group is for internal use")
     hide_children: bool | None = Field(
         default=False,
         description="When true, child records are hidden in the knowledge-base tree UI",
+    )
+    access_only: bool = Field(
+        default=False,
+        description="Carries access only (a Jira security level): never a Knowledge Hub row, its records are listed where they are filed",
     )
     is_deleted_at_source: bool = Field(
         default=False,
@@ -3143,6 +3073,7 @@ class RecordGroup(BaseModel):
             "groupType": self.group_type.value,
             "isInternal": self.is_internal,
             "hideChildren": self.hide_children,
+            "accessOnly": self.access_only,
             "accessRule": self.access_rule.value,
             "permissionModel": (self.permission_model.value if self.permission_model else None),
             "webUrl": self.web_url,
@@ -3169,6 +3100,7 @@ class RecordGroup(BaseModel):
             connector_id=arango_base_record_group.get("connectorId"),
             is_internal=arango_base_record_group.get("isInternal", False),
             hide_children=arango_base_record_group.get("hideChildren", False),
+            access_only=bool(arango_base_record_group.get("accessOnly", False)),
             group_type=arango_base_record_group.get("groupType", RecordGroupType.KB),
             web_url=arango_base_record_group.get("webUrl"),
             created_at=arango_base_record_group.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
@@ -3301,6 +3233,8 @@ class CodeFileRecord(Record):
             hide_weburl=arango_base_record.get("hideWeburl", False),
             is_internal=arango_base_record.get("isInternal", False),
             is_placeholder=arango_base_record.get("isPlaceholder", False),
+
+            edition_fields=edition_fields_of(arango_base_record),
             md5_hash=arango_base_record.get("md5Checksum"),
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
@@ -3925,6 +3859,8 @@ class EntityType(str, Enum):
     # An external organisation (a CRM account) records belong to (KG-13).
     ORGANIZATION = "organization"
     RELATIONSHIP = "relationship"
+    # A domain concept a knowledge extractor names (a business term, a metric) that records describe.
+    CONCEPT = "concept"
     CUSTOM = "custom"
     NAMED_ENTITY = "named_entity"
 

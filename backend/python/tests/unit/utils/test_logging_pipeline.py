@@ -56,6 +56,8 @@ def logging_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         level = levels.get(lg, logging.NOTSET)
         if lg.level != level:
             lg.setLevel(level)
+    # A level left set (say by a setLevel patch still in place) slows every later test in this worker that logs.
+    assert {lg.name: lg.level for lg in levels if lg.level != levels[lg]} == {}
     L._synced.clear()
     L._synced.update(synced)
     L._SERVICE_LOGGERS.clear()
@@ -203,17 +205,20 @@ class TestSyncFromEnv:
     def test_unchanged_env_sets_no_level(self, logging_state, monkeypatch) -> None:
         self._sync(monkeypatch, LOG_LEVEL="debug")
         calls: list[int] = []
-        monkeypatch.setattr(logging.Logger, "setLevel", lambda self, level: calls.append(level))
-        L._sync_from_env()
-        create_logger("t_sync_unchanged_svc")
+        # Undone before logging_state's teardown, whose restore needs the real setLevel.
+        with monkeypatch.context() as patched:
+            patched.setattr(logging.Logger, "setLevel", lambda self, level: calls.append(level))
+            L._sync_from_env()
+            create_logger("t_sync_unchanged_svc")
         assert calls == [logging.DEBUG]  # only the new service logger's own level
 
     def test_equal_levels_are_not_set_again(self, logging_state, monkeypatch) -> None:
         self._sync(monkeypatch, LOG_LEVEL="info")
         calls: list[str] = []
         real = logging.Logger.setLevel
-        monkeypatch.setattr(logging.Logger, "setLevel", lambda self, level: (calls.append(self.name), real(self, level)))
-        self._sync(monkeypatch, LOG_LEVEL="INFO")  # a different string, the same levels
+        with monkeypatch.context() as patched:
+            patched.setattr(logging.Logger, "setLevel", lambda self, level: (calls.append(self.name), real(self, level)))
+            self._sync(monkeypatch, LOG_LEVEL="INFO")  # a different string, the same levels
         assert calls == []
 
     def test_caplog_level_survives_create_logger(self, logging_state, caplog) -> None:

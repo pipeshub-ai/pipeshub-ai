@@ -6,10 +6,12 @@ import sys
 
 from app.agent_loop_lib.sandbox.base import ExecResult
 from app.agent_loop_lib.sandbox.coding.base import (
+    WORKSPACE_DIR_NAME,
     CodingLanguage,
     EnvironmentSetupError,
     InstallResult,
 )
+from app.agent_loop_lib.sandbox.coding.output_limits import read_stdio_capped
 from app.agent_loop_lib.sandbox.coding.validation import (
     canonical_package_key,
     matches_package_set,
@@ -17,6 +19,7 @@ from app.agent_loop_lib.sandbox.coding.validation import (
     validate_package_spec,
 )
 from app.agent_loop_lib.sandbox.confinement import confine_command
+from app.utils.private_dirs import ensure_private_dir
 
 """`EnvironmentManager`: owns npm/venv setup and package installation for a
 single coding sandbox's working directory.
@@ -40,6 +43,11 @@ Key safety decisions (see the design plan's "Safety Practices Summary"):
 
 __all__ = ["EnvironmentManager"]
 
+# The same limit Docker installs get (`docker.py` `_INSTALL_TIMEOUT_S`): a
+# slow mirror or a build that hangs must not hold a sandbox slot forever.
+_INSTALL_TIMEOUT_S = 300
+_INSTALL_TIMEOUT_NOTE = "[sandbox] Package installation timed out after {seconds}s.\n"
+
 
 def sanitized_subprocess_env(working_dir: str) -> dict[str, str]:
     """Allowlist-only environment for every subprocess this sandbox spawns
@@ -60,6 +68,7 @@ def sanitized_subprocess_env(working_dir: str) -> dict[str, str]:
         "TMPDIR": working_dir,
         "LANG": os.environ.get("LANG", "en_US.UTF-8"),
         "OUTPUT_DIR": os.path.join(working_dir, "output"),
+        "WORKSPACE_DIR": os.path.join(working_dir, WORKSPACE_DIR_NAME),
     }
     if sys.platform == "win32":
         # Node/npm on Windows resolve several things (APPDATA, SystemRoot,
@@ -71,6 +80,40 @@ def sanitized_subprocess_env(working_dir: str) -> dict[str, str]:
         env["TEMP"] = working_dir
         env["TMP"] = working_dir
     return env
+
+
+async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Kill the whole process group (not just `proc` itself) so a
+    fork-bombing or backgrounding script can't outlive the timeout.
+
+    Every caller starts *proc* with ``start_new_session=True``, so its group
+    id is its pid. Killing that group directly also works once *proc* itself
+    has exited and been reaped while a child it started still holds the
+    output pipes; ``getpgid`` would fail for the reaped pid and skip the
+    kill."""
+    try:
+        if sys.platform != "win32":
+            import signal
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
+    except asyncio.TimeoutError:
+        pass
+
+
+async def _communicate_or_kill(proc: asyncio.subprocess.Process) -> tuple[bytes, bytes]:
+    """`proc.communicate()`, killing the process group if the caller is
+    cancelled. Without it a stopped pip or npm install keeps running after
+    the call that started it has given its slot back."""
+    try:
+        return await proc.communicate()
+    except asyncio.CancelledError:
+        await asyncio.shield(_kill_process_tree(proc))
+        raise
 
 
 class EnvironmentManager:
@@ -126,12 +169,17 @@ class EnvironmentManager:
     def tsc_binary(self) -> str:
         return os.path.join(self.node_bin_dir, "tsc.cmd" if sys.platform == "win32" else "tsc")
 
+    def prepare_working_dir(self) -> None:
+        """Makes the sandbox's working folder 0700, or refuses one this user does not own or others can write
+        (``PrivateDirUnsafe``): it sits under the shared temp folder and holds the run's files (R13-ROOT)."""
+        _ = ensure_private_dir(self._working_dir, "coding sandbox folder")
+
     async def ensure_typescript_runtime(self) -> None:
         """Idempotently `npm init -y` then install `tsx` + `typescript` as
         the runtime this sandbox will execute TypeScript with."""
         if self._node_initialized:
             return
-        os.makedirs(self._working_dir, exist_ok=True)
+        self.prepare_working_dir()
         init = await self._run_confined(["npm", "init", "-y"], allow_network=False)
         if init.exit_code != 0:
             raise EnvironmentSetupError(f"npm init failed: {init.stderr}")
@@ -146,18 +194,19 @@ class EnvironmentManager:
         """Idempotently create the sandbox's isolated virtualenv."""
         if self._venv_initialized:
             return
-        os.makedirs(self._working_dir, exist_ok=True)
+        self.prepare_working_dir()
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "venv", self.python_venv_path,
             cwd=self._working_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=sys.platform != "win32",
         )
-        _, stderr_bytes = await proc.communicate()
+        stdout_bytes, stderr_bytes = await _communicate_or_kill(proc)
         if proc.returncode != 0:
-            raise EnvironmentSetupError(
-                f"failed to create python venv: {stderr_bytes.decode(errors='replace')}"
-            )
+            # Debian's venv explains a missing ensurepip (python3-venv) on stdout, leaving stderr empty
+            detail = (stderr_bytes + stdout_bytes).decode(errors="replace").strip()
+            raise EnvironmentSetupError(f"failed to create python venv: {detail}")
         self._venv_initialized = True
 
     async def install_packages(
@@ -212,7 +261,13 @@ class EnvironmentManager:
             stderr=result.stderr,
         )
 
-    async def _run_confined(self, cmd: list[str], *, allow_network: bool) -> ExecResult:
+    async def _run_confined(
+        self, cmd: list[str], *, allow_network: bool, timeout: float | None = None,
+    ) -> ExecResult:
+        """Run an install step, killing its process group after `timeout`
+        seconds (`_INSTALL_TIMEOUT_S` by default). Only the head and tail of
+        its output are kept."""
+        timeout = _INSTALL_TIMEOUT_S if timeout is None else timeout
         confined_cmd = confine_command(cmd, self._working_dir, allow_network=allow_network)
         proc = await asyncio.create_subprocess_exec(
             *confined_cmd,
@@ -220,10 +275,20 @@ class EnvironmentManager:
             env=sanitized_subprocess_env(self._working_dir),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=sys.platform != "win32",
         )
-        stdout_bytes, stderr_bytes = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(read_stdio_capped(proc), timeout=timeout)
+        except asyncio.TimeoutError:
+            await _kill_process_tree(proc)
+            return ExecResult(
+                stdout="", stderr=_INSTALL_TIMEOUT_NOTE.format(seconds=f"{timeout:g}"), exit_code=-1,
+            )
+        except asyncio.CancelledError:
+            await asyncio.shield(_kill_process_tree(proc))
+            raise
         return ExecResult(
-            stdout=stdout_bytes.decode(errors="replace"),
-            stderr=stderr_bytes.decode(errors="replace"),
+            stdout=stdout,
+            stderr=stderr,
             exit_code=proc.returncode if proc.returncode is not None else -1,
         )

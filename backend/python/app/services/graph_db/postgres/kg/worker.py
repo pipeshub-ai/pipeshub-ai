@@ -1,8 +1,8 @@
 """The projection worker: projects the change log and publishes the gauges. Woken by NOTIFY, with a safety poll.
 
 ``pipeshub_kg_changes`` is sent at commit by a write unit that changed the graph (flush.wake, coalesced); it only wakes
-the worker, which reads the log itself, so a lost notification costs at most ``poll_s``. The projection default is on (``PG_KG_PROJECT=0`` is the off switch): the connectors service starts the worker
-(:func:`enabled`), which also takes each connector to ``enforce`` (:mod:`bootstrap`).
+the worker, which reads the log itself, so a lost notification costs at most ``poll_s``. The projection is on: the connectors service starts the worker, which also takes each connector
+to ``enforce`` (:mod:`bootstrap`), and refuses to start with a kg setting it does not understand, ``PG_KG_PROJECT=0`` among them (:func:`start_for`).
 """
 from __future__ import annotations
 
@@ -10,11 +10,20 @@ import asyncio
 import contextlib
 import logging
 import os
+import time
 import uuid
 from typing import TYPE_CHECKING
 
 from app.core.org_context import bind, spawn_detached
-from app.services.graph_db.postgres.kg import bootstrap, flush, legacy, net, restamp
+from app.services.graph_db.postgres import connector_stats
+from app.services.graph_db.postgres.kg import (
+    bootstrap,
+    counts,
+    flush,
+    legacy,
+    net,
+    restamp,
+)
 from app.services.graph_db.postgres.kg.drainer import PAGE, _ctx, drain_or_retry, lag
 from app.services.pg_runtime import PgListener
 from app.telemetry.backend import METRICS_BACKEND
@@ -31,10 +40,6 @@ RECHECK_S = 0.3
 STOP_TIMEOUT_S = 10.0                              # how long stop() lets the pass in flight end before it cancels it
 MAX_DOUBLINGS = 8                                  # RECHECK_S * 2**8 is past any sensible poll interval
 LOOP_FAILED = METRICS_BACKEND.counter("pipeshub_kg_worker_loop_failed_total", "Iterations of the projection worker's loop that raised and were continued", ["where"])
-
-
-def enabled() -> bool:
-    return flush.mode() != "off"
 
 
 class KgWorker:
@@ -64,7 +69,7 @@ class KgWorker:
         self._wake.set()
 
     async def run_once(self) -> int:
-        """One pass over every org: drain the change log, finish the claimable restamp jobs and publish the gauges. Returns the log rows projected plus the jobs finished. Each phase has
+        """One pass over every org: drain the change log, finish the claimable restamp jobs, fold the counters and publish the gauges. Returns the log rows projected plus the jobs finished. Each phase has
         its own error handling: a log that cannot be drained (``drain_or_retry`` counts it and leaves the rows) must not keep records hidden, and jobs that fail must not stop the projection."""
         rows = 0
         for org in await self._orgs():
@@ -83,6 +88,18 @@ class KgWorker:
                 logger.exception("kg restamp jobs failed for an org; retrying")
             if self._stop.is_set():
                 break                                      # shutting down: no new unit for the gauges
+            try:
+                rows += await counts.run(self._db, org, stop=self._stop)
+            except Exception:
+                logger.exception("kg counters failed for an org; retrying")
+            if self._stop.is_set():
+                break
+            try:
+                rows += await connector_stats.run(self._db, org, stop=self._stop)
+            except Exception:
+                logger.exception("connector stats counts failed for an org; retrying")
+            if self._stop.is_set():
+                break
             try:
                 rows += await bootstrap.bring_to_enforce(self._db, org, self._due, self._stop)
             except Exception:
@@ -143,6 +160,7 @@ class KgWorker:
     async def _verify_loop(self) -> None:
         """The periodic verify of the enforced connectors (``net.verify_due``), in a task of its own."""
         while not self._stop.is_set():
+            t0 = time.monotonic()
             try:
                 for org in await self._orgs():
                     await net.verify_due(self._db, org, self._verify_states, self._stop)
@@ -150,7 +168,7 @@ class KgWorker:
                 LOOP_FAILED.inc("verify")
                 logger.exception("kg verify iteration failed; continuing")
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(self._stop.wait(), net.VERIFY_TICK_S)
+                await asyncio.wait_for(self._stop.wait(), net.verify_rest(time.monotonic() - t0))
 
     def _died(self, task: asyncio.Task) -> None:
         if not task.cancelled() and task.exception() is not None:
@@ -186,14 +204,16 @@ class KgWorker:
 
 
 def start_for(graph_provider: object, logger: logging.Logger) -> KgWorker | None:
-    """The worker of the connectors service: started when the graph is PostgreSQL and the projection is on, else None (Neo4j and ArangoDB never reach this). It serves every org of the
-    graph. Two processes (replicas) may each start one: a page of an org's log is taken under an advisory lock (``drainer.drain``), restamp jobs are claimed, and a promotion verifies under the
-    connector's lock, so they never apply a change twice; the second only waits its turn."""
+    """The worker of the connectors service: started when the graph is PostgreSQL, else None (Neo4j and ArangoDB never reach this). It serves every org of the graph. Two processes
+    (replicas) may each start one: a page of an org's log is taken under an advisory lock (``drainer.drain``), restamp jobs are claimed, and a promotion verifies under the connector's
+    lock, so they never apply a change twice; the second only waits its turn. A kg setting it does not understand raises ``ValueError`` (``flush.check_env``), and the service does
+    not start: with ``PG_KG_PROJECT=0`` no copy would ever be made and every source that holds data would stay "preparing"."""
     from app.core.org_context import system
     from app.services.graph_db.postgres.provider import PostgresGraphProvider
     from app.services.pg_runtime import listen_dsn
-    if not isinstance(graph_provider, PostgresGraphProvider) or not enabled():
+    if not isinstance(graph_provider, PostgresGraphProvider):
         return None
+    flush.check_env()
 
     async def orgs() -> list[str]:
         with system("kg_worker"):

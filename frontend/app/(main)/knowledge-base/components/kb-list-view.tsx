@@ -44,6 +44,7 @@ import {
   getReindexNodeForTableItem,
   mapReindexOptionsToMenuActions,
 } from '../utils/reindex-label';
+import { useCollectionGroupPermissions, isReindexPermissionLocked, type CollectionGroupPermissions } from '../hooks/use-collection-group-permissions';
 import { ColumnResizeHandle, kbCol, kbColMin, useKbColumnWidths, type KbColumn } from './kb-column-widths';
 
 /** "SOME_STATUS" → "Some Status", for statuses without a dedicated label. */
@@ -60,7 +61,9 @@ export type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
 
 /** Extra columns an edition overlay can add after "Updated" (desktop only). */
 export interface KbListExtraColumns {
+  /** The column's header cell itself (a TableHeaderCell): it is not wrapped in another column header. */
   header: ReactNode;
+  /** A row's content for the column, placed inside the row's cell. */
   cell: (item: TableItem) => ReactNode;
 }
 
@@ -154,18 +157,18 @@ export function getKbItemStatusIcon(item: TableItem, isFolder: boolean): ReactNo
       case 'COMPLETED':
         return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--emerald-11)" />;
       case 'IN_PROGRESS':
-        return <LapTimerIcon size={20} color="var(--amber-9)" />;
+        return <LapTimerIcon size={20} color="var(--amber-11)" />;
       case 'FAILED':
-        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
+        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-11)" />;
       case 'FILE_TYPE_NOT_SUPPORTED':
-        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-9)" />;
+        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--red-11)" />;
       case 'NOT_STARTED':
         return (
           <MaterialIcon name={getIndexStatusIcon('NOT_STARTED')} size={16} color="var(--slate-11)" />
         );
       case 'QUEUED':
         return (
-          <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={16} color="var(--blue-9)" />
+          <MaterialIcon name={getIndexStatusIcon('QUEUED')} size={16} color="var(--blue-11)" />
         );
       case 'AUTO_INDEX_OFF':
         return (
@@ -192,15 +195,15 @@ export function getKbItemStatusIcon(item: TableItem, isFolder: boolean): ReactNo
   // For KnowledgeBaseItem, use status
   switch (item.status) {
     case 'indexed':
-      return <MaterialIcon name="check" size={16} color="var(--accent-9)" />;
+      return <MaterialIcon name="check" size={16} color="var(--accent-11)" />;
     case 'processing':
-      return <MaterialIcon name="sync" size={16} color="var(--amber-9)" />;
+      return <MaterialIcon name="sync" size={16} color="var(--amber-11)" />;
     case 'pending':
-      return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
+      return <MaterialIcon name="schedule" size={16} color="var(--blue-11)" />;
     case 'failed':
-      return <MaterialIcon name="error" size={16} color="var(--red-9)" />;
+      return <MaterialIcon name="error" size={16} color="var(--red-11)" />;
     default:
-      return <MaterialIcon name="schedule" size={16} color="var(--blue-9)" />;
+      return <MaterialIcon name="schedule" size={16} color="var(--blue-11)" />;
   }
 }
 
@@ -215,6 +218,8 @@ export interface KbItemMenuHandlers {
   onReplace?: (item: TableItem) => void;
   onMove?: (item: TableItem) => void;
   onDelete?: (item: TableItem) => void;
+  /** Group permissions: an action the caller may not take stays listed, locked. */
+  groupPermissions?: CollectionGroupPermissions;
 }
 
 /** The "…" menu of one item, shared by the list rows and the grid cards so both offer the same actions. */
@@ -226,22 +231,28 @@ export function getKbItemMenuActions(item: TableItem, t: TFunction, h: KbItemMen
   // Per-item permission (Knowledge Hub nodes only): a shared item can have a lower
   // role than the folder it is listed in.
   const canEditItem = isHubNode ? (item.permission?.canEdit ?? false) : true;
+  const reindexNode = getReindexNodeForTableItem(item, isHubNode);
   const { options: reindexMenuOptions, showMenu: showReindexMenu } = getReindexMenuState(
-    getReindexNodeForTableItem(item, isHubNode),
+    reindexNode,
     !!h.onReindex,
   );
+  const gp = h.groupPermissions;
+  const editLocked = gp ? !gp.canEdit : false;
+  const reindexLocked = isReindexPermissionLocked(reindexNode, gp);
   return [
     { icon: 'folder_open', label: t('kb.rowActions.open'), onClick: h.onOpen },
     !isFolder && h.onDownload && shouldShowDownloadForTableItem(item) && { icon: 'file_download', label: t('action.download'), onClick: () => h.onDownload!(item) },
-    h.onRename && canEditItem && { icon: 'edit', label: t('menu.rename'), onClick: h.onStartRename },
+    h.onRename && canEditItem && { icon: 'edit', label: t('menu.rename'), onClick: h.onStartRename, permissionLocked: editLocked },
     ...(showReindexMenu
-      ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) => h.onReindex!(item, statusFilters))
+      ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) => h.onReindex!(item, statusFilters)).map(
+          (action) => ({ ...action, permissionLocked: reindexLocked }),
+        )
       : []),
-    !isFolder && h.onReplace && canEditItem && { icon: 'drive_folder_upload', label: t('action.replace'), onClick: () => h.onReplace!(item) },
+    !isFolder && h.onReplace && canEditItem && { icon: 'drive_folder_upload', label: t('action.replace'), onClick: () => h.onReplace!(item), permissionLocked: editLocked },
     // Move relocates an item within its collection — a collection itself has nothing to move into.
-    h.onMove && canEditItem && !(isHubNode && item.nodeType === 'app') && { icon: 'drive_file_move', label: t('action.move'), onClick: () => h.onMove!(item) },
+    h.onMove && canEditItem && !(isHubNode && item.nodeType === 'app') && { icon: 'drive_file_move', label: t('action.move'), onClick: () => h.onMove!(item), permissionLocked: editLocked },
     // Includes "a collection only by its OWNER", the same rule the bulk bar applies.
-    h.onDelete && canDeleteKbTableItem(item) && { icon: 'delete', label: t('action.delete'), onClick: () => h.onDelete!(item), color: 'red' as const },
+    h.onDelete && canDeleteKbTableItem(item) && { icon: 'delete', label: t('action.delete'), onClick: () => h.onDelete!(item), color: 'red' as const, permissionLocked: gp ? !gp.canDelete : false },
   ];
 }
 
@@ -342,7 +353,7 @@ export function TableHeaderCell({
             backgroundColor: 'transparent',
           }}
         >
-          <Text size="1" style={{ color: 'var(--neutral-9)', fontWeight: 400 }}>
+          <Text size="1" style={{ color: 'var(--neutral-11)', fontWeight: 400 }}>
             {label}
           </Text>
           {/* The ligature name is text; hidden, the button's name is the column label alone */}
@@ -356,7 +367,7 @@ export function TableHeaderCell({
                   : 'arrow_drop_down'
               }
               size={16}
-              color={'var(--neutral-9)'}
+              color={'var(--neutral-11)'}
             />
           </span>
         </Button>
@@ -380,7 +391,7 @@ export function TableHeaderCell({
         padding: '0 var(--space-2)',
       }}
     >
-      <Text size="1" style={{ color: 'var(--neutral-9)', fontWeight: 400 }}>
+      <Text size="1" style={{ color: 'var(--neutral-11)', fontWeight: 400, ...ONE_LINE }}>
         {label}
       </Text>
     </Flex>
@@ -456,6 +467,7 @@ function TableRow({
   const canEditItem = isKnowledgeHubNode(item)
     ? (item.permission?.canEdit ?? false)
     : true;
+  const groupPermissions = useCollectionGroupPermissions();
 
   // Split name into base and extension for files
   const getNameParts = (name: string) => {
@@ -694,7 +706,7 @@ function TableRow({
             <Text
               ref={nameRef}
               size="2"
-              onClick={onRename && canEditItem && canHover ? (e: React.MouseEvent) => {
+              onClick={onRename && canEditItem && groupPermissions.canEdit && canHover ? (e: React.MouseEvent) => {
                 e.stopPropagation();
                 startEditing();
               } : undefined}
@@ -707,7 +719,7 @@ function TableRow({
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
-                cursor: onRename && canEditItem && canHover ? 'text' : 'default',
+                cursor: onRename && canEditItem && groupPermissions.canEdit && canHover ? 'text' : 'default',
               }}
             >
               {item.name}
@@ -715,7 +727,7 @@ function TableRow({
           </Tooltip>
           {/* Phones drop the Status and Source columns; their text moves under the name. */}
           {isMobile && mobileSubtitle && (
-            <Text size="1" style={{ color: 'var(--neutral-9)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <Text size="1" style={{ color: 'var(--neutral-11)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {mobileSubtitle}
             </Text>
           )}
@@ -733,7 +745,7 @@ function TableRow({
         {(() => {
           if (shouldHideIndexingStatusForHubRecord(item)) {
             return (
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 —
               </Text>
             );
@@ -758,7 +770,7 @@ function TableRow({
           <Tooltip content={item.sourceName} side="top" delayDuration={200}>
             <Box style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
               {item.sourceType === 'collection' ? (
-                <FolderIcon variant="default" size={20} color="var(--accent-9)" />
+                <FolderIcon variant="default" size={20} color="var(--accent-11)" />
               ) : (
                 <ConnectorIcon type={item.sourceType} size={16} />
               )}
@@ -770,7 +782,7 @@ function TableRow({
       {/* Size — hidden on mobile to keep the row readable */}
       {!belowDesktop && (
         <Flex role="cell" align="center" justify="center" style={{ width: kbCol('size'), minWidth: kbColMin('size'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
+          <Text size="2" style={{ color: 'var(--neutral-11)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? formatSize(item.sizeInBytes ?? undefined)
               : formatSize(item.size)
@@ -782,7 +794,7 @@ function TableRow({
       {/* Created — hidden on mobile. Skip when timestamp is 0 (source has no real value). */}
       {!belowDesktop && (
         <Flex role="cell" align="center" justify="center" style={{ width: kbCol('created'), minWidth: kbColMin('created'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
+          <Text size="2" style={{ color: 'var(--neutral-11)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? (item.createdAt ? formatDate(item.createdAt) : '-')
               : (item.createdAt ? formatDate(item.createdAt) : '-')
@@ -794,7 +806,7 @@ function TableRow({
       {/* Updated — hidden on mobile. Skip when timestamp is 0. */}
       {!isMobile && (
         <Flex role="cell" align="center" justify="center" style={{ width: kbCol('updated'), minWidth: kbColMin('updated'), padding: '0 var(--space-2)', overflow: 'hidden' }}>
-          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 500, ...ONE_LINE }}>
+          <Text size="2" style={{ color: 'var(--neutral-11)', fontWeight: 500, ...ONE_LINE }}>
             {isKnowledgeHubNode(item)
               ? (item.updatedAt ? formatDate(item.updatedAt) : '-')
               : (item.updatedAt ? formatDate(item.updatedAt) : '-')
@@ -871,6 +883,7 @@ function TableRow({
               onReplace,
               onMove,
               onDelete,
+              groupPermissions,
             })}
           />
         </Box>
@@ -1056,7 +1069,7 @@ export function KbListView({
         )}
         {!isMobile && resizeHandle('updated')}
 
-        {!belowDesktop && extraColumns ? <Box role="columnheader" style={{ display: 'contents' }}>{extraColumns.header}</Box> : null}
+        {!belowDesktop && extraColumns ? extraColumns.header : null}
 
         {/* Actions */}
         <Box role="columnheader" style={{ width: actionsWidth(isMobile, !!onGoToParent), flexShrink: 0 }}>

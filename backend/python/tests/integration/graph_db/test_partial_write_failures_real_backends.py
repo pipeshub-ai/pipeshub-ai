@@ -726,6 +726,28 @@ async def test_a_failed_permission_removal_is_raised_and_the_access_stays_until_
     assert await _readers(w, record.id, alice, bob) == {alice}
 
 
+async def test_a_users_own_grants_go_from_many_records_and_nothing_else_does(world: _World) -> None:
+    """remove_user_grants_from_records reads each record's incoming edges in the store's own shape and deletes the
+    users' own edges, a batch at a time; other users' grants stay."""
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    bob, bob_email = await _add_user(w, "bob")
+    await _add_app(w, alice, bob)
+    records = [_file(w, f"doc{i}") for i in range(3)]
+    for record in records:
+        await _upsert(w, record)
+        await w.processor.add_permission_to_record(record, _grants(alice_email, bob_email))
+
+    removed = await w.processor.remove_user_grants_from_records(
+        [r.id for r in records], {bob_email}, w.connector_id, batch=2
+    )
+
+    assert removed == 3
+    for record in records:
+        assert await _sources(w, record.id, CollectionNames.RECORDS.value) == {alice}
+        assert await _readers(w, record.id, alice, bob) == {alice}
+
+
 async def _share_with(w: _World, target: _Target, record: FileRecord) -> None:
     """Let the user group or app role read the record."""
     entity_type = EntityType.GROUP if target.kind == "user_group" else EntityType.ROLE

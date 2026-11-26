@@ -137,7 +137,23 @@ class AccessDenied(WebError):
 
 
 class BudgetExhausted(WebError):
+    """The answer's or the run's web allowance is spent: the payload says what is left and what to do next, so the
+    model finishes from what it gathered instead of trying again (WP-62)."""
+
     error_type = "budget_exhausted"
+
+    def __init__(self, message: str, *, left: Mapping[str, int] | None = None, hint: str | None = None) -> None:
+        super().__init__(message)
+        self.left = dict(left) if left is not None else None
+        self.hint = hint
+
+    def to_tool_payload(self) -> dict[str, Any]:
+        payload = super().to_tool_payload()
+        if self.left is not None:
+            payload["left"] = self.left
+        if self.hint is not None:
+            payload["hint"] = self.hint
+        return payload
 
 
 def error_for_status(status: int, headers: Mapping[str, str], *, source: str) -> WebError | None:

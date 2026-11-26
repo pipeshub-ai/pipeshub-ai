@@ -821,7 +821,7 @@ async def test_readers_fall_back_while_an_older_member_is_live(
     await world.index(world.record(vrid, A), _rev(A))
     now = int(time.time() * 1000)
 
-    entries[:] = [{"checkedAt": now, "untagged": []}]
+    entries[:] = [{"checkedAt": now, "untagged": [], "groupsChecked": ["g"], "groupsExpected": ["g"]}]
     m._READERS.clear()
     world.reads.clear()
     assert await world.read(vrid) == A and world.reads == ["served"]
@@ -834,7 +834,7 @@ async def test_readers_fall_back_while_an_older_member_is_live(
     entries[:] = [{"checkedAt": now, "untagged": ["indexing-old-0"]}]
     m._READERS.clear()
     if ignore:
-        entries[:] = [{"checkedAt": now, "untagged": []}]
+        entries[:] = [{"checkedAt": now, "untagged": [], "groupsChecked": ["g"], "groupsExpected": ["g"]}]
     world.reads.clear()
     served = await world.read(vrid)
     stored_now = await world.stored(vrid)

@@ -1,0 +1,10 @@
+# Test variant only (SK1): what Anthropic's pdf and pptx skills need beyond the engine tools image
+# (deployment/sandbox-images/opencode/tools/requirements.lock), for evaluating third-party skill packs.
+# CPython 3.12, wheels only, installed with --require-hashes --only-binary=:all: --no-deps.
+#
+# defusedxml: pptx/scripts/{add_slide,clean}.py and pptx/scripts/office/validate.py. pypdf and reportlab (the pdf
+# skill's scripts and its way to create PDFs) and charset-normalizer are in the tools lock since SKILLPACKS.
+# No "# Dependencies" header: runtime_note.py reads this file ahead of the tools lock, so this package
+# appears as a top-level package in the image's RUNTIME.md.
+defusedxml==0.7.1 \
+    --hash=sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 import pytest
-from network_share_literal_walks import load, walk, worlds
+from network_share_literal_walks import delta_kinds, load, walk, worlds
 from network_share_walk_deltas import DELTA_KINDS, EXPECTED_DELTAS
 
 GOLDEN = load()
@@ -32,6 +32,19 @@ def test_only_worlds_that_are_not_neutral_declare_a_delta() -> None:
     for world, expected in EXPECTED_DELTAS.items():
         assert expected["deltas"], world
         assert set(expected["deltas"]) <= DELTA_KINDS, world
+
+
+def test_each_declared_delta_names_why_the_world_is_not_neutral() -> None:
+    cases = {entry["case"]["world"]: entry for entry in GOLDEN}
+    for world, expected in EXPECTED_DELTAS.items():
+        assert set(expected["deltas"]) == delta_kinds(cases[world]["case"]), world
+        # A declaration that no longer differs from the recording would hide a regression there.
+        assert expected["walk"] != cases[world]["walk"], world
+
+
+def test_neutral_worlds_have_no_reason_to_differ() -> None:
+    for entry in GOLDEN:
+        assert bool(delta_kinds(entry["case"])) is not entry["case"]["n_neutral"], entry["case"]["world"]
 
 
 @pytest.mark.parametrize("entry", GOLDEN, ids=lambda entry: f"world{entry['case']['world']}")

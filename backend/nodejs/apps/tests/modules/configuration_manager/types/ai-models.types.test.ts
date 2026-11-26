@@ -105,7 +105,7 @@ describe('configuration_manager/types/ai-models.types', () => {
         ],
       }
       expect(modelsConfig.llm).to.have.lengthOf(1)
-      expect(modelsConfig.llm![0].modelKey).to.equal('gpt-4')
+      expect(modelsConfig.llm![0]!.modelKey).to.equal('gpt-4')
     })
   })
 })

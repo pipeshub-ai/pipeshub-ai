@@ -6,12 +6,7 @@ import { useChatStore } from '@/chat/store';
 import { KnowledgeBaseApi } from '@/knowledge-base/api';
 import type { CitationData, CitationCallbacks, CitationOrigin, CitationMaps } from './types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
-import {
-  isPresentationFile,
-  isDocxFile,
-  isLegacyWordDocFile,
-  resolvePreviewMimeAfterStream,
-} from '@/app/components/file-preview/utils';
+import { loadRecordPreview } from '@/chat/record-preview';
 
 /**
  * Hook that provides citation interaction callbacks:
@@ -105,109 +100,19 @@ export function useCitationActions(): CitationCallbacks {
             }))
         : [];
 
-      try {
-        // 1. Show loading state immediately
-        setPreviewFile({
-          id: citation.recordId,
-          name: citation.recordName,
-          url: '',
-          type: citation.mimeType || citation.extension || '',
-          isLoading: true,
+      await loadRecordPreview(
+        {
+          recordId: citation.recordId,
+          recordName: citation.recordName,
+          mimeType: citation.mimeType,
+          extension: citation.extension,
           initialPage,
           highlightBox,
           citations: recordCitations,
           initialCitationId: citation.citationId,
-        });
-        setPreviewMode('sidebar');
-
-        // 2. Fetch details first so non-previewable records skip the stream.
-        const recordDetails = await KnowledgeBaseApi.getRecordDetails(citation.recordId);
-        const record = recordDetails?.record;
-        if (!record) {
-          throw new Error('Record details unavailable');
-        }
-        if (record.previewRenderable === false) {
-          setPreviewFile({
-            id: citation.recordId,
-            name: citation.recordName,
-            url: '',
-            type: record.mimeType || citation.mimeType || citation.extension || '',
-            size: record.sizeInBytes,
-            isLoading: false,
-            recordDetails,
-            webUrl: record.webUrl ?? undefined,
-            previewRenderable: false,
-            initialPage,
-            highlightBox,
-            citations: recordCitations,
-            initialCitationId: citation.citationId,
-          });
-          return;
-        }
-
-        // Prefer fresh record metadata for conversion; citation fields are fallbacks.
-        const previewMime = record.mimeType || citation.mimeType;
-        const previewName = record.recordName || citation.recordName;
-        // PPT/PPTX and legacy Word (.doc) may be converted to PDF server-side for preview.
-        const streamAsPdf =
-          isPresentationFile(previewMime, previewName) ||
-          isLegacyWordDocFile(previewMime, previewName);
-        const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const blob = await KnowledgeBaseApi.streamRecord(citation.recordId, streamOptions);
-
-        // 3. Build the preview-state payload.
-        // For DOCX we pass the Blob straight through to `DocxRenderer`
-        // (it calls `blob.arrayBuffer()` and hands the buffer to
-        // `docx-preview.renderAsync`), so no blob URL is needed. For every
-        // other renderer we still materialise a blob URL the way we used to.
-        const recordMime = record.mimeType || citation.extension || '';
-        const resolvedType = resolvePreviewMimeAfterStream(
-          recordMime,
-          previewName,
-          blob,
-          !!streamOptions,
-        );
-        // Match old UI: drive everything from record + citation metadata so we always
-        // pass the streamed Blob to DocxRenderer (avoid `fetch(blob:...)` blank previews).
-        const fr = record.fileRecord;
-        const isDocx = isDocxFile(
-          record.mimeType,
-          citation.recordName,
-          record.recordName,
-          citation.extension,
-          fr?.extension,
-        );
-        const url = isDocx ? '' : URL.createObjectURL(blob);
-
-        // 4. Update state with actual file URL and/or blob and record details
-        const webUrl = record.webUrl ?? undefined;
-        setPreviewFile({
-          id: citation.recordId,
-          name: citation.recordName,
-          url,
-          blob: isDocx ? blob : undefined,
-          type: resolvedType,
-          size: record.sizeInBytes,
-          isLoading: false,
-          recordDetails,
-          webUrl,
-          previewRenderable: record.previewRenderable,
-          initialPage,
-          highlightBox,
-          citations: recordCitations,
-          initialCitationId: citation.citationId,
-        });
-      } catch (error) {
-        console.error('Failed to load file preview:', error);
-        setPreviewFile({
-          id: citation.recordId,
-          name: citation.recordName,
-          url: '',
-          type: citation.mimeType || '',
-          error: error instanceof Error ? error.message : 'Failed to load file',
-          isLoading: false,
-        });
-      }
+        },
+        { setPreviewFile, setPreviewMode },
+      );
     },
     [setPreviewFile, setPreviewMode],
   );

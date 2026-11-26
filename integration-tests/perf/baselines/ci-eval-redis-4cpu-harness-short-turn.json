@@ -1,0 +1,6 @@
+{
+  "placeholder": true,
+  "benchmark": "harness",
+  "label": "ci-eval-redis-4cpu",
+  "note": "Placeholder: no CI run has been recorded yet. Replace this file with the harness-short-turn.json artifact of a trusted run of Harness Performance (perf-harness.yml) on main. The local measurement behind the P1a gate is baselines/local-m4-eval-redis-harness-short-turn.json."
+}

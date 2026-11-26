@@ -20,6 +20,11 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.connectors.core.constants import IconPaths
+from app.connectors.core.base.source_metadata import (
+    apply_source_metadata,
+    held_metadata,
+    source_metadata,
+)
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -87,6 +92,13 @@ ITEM_FIELDS = (
     'type,id,name,size,created_at,modified_at,path_collection,etag,sha1,shared_link,'
     'owned_by,created_by,modified_by'
 )
+
+
+def item_fields() -> str:
+    """What a listing asks for: the item's own fields and any the source metadata reader adds."""
+    return ','.join([ITEM_FIELDS, *source_metadata().box_fields()])
+
+
 # Box service accounts and app users sign in under this domain.
 _BOX_APP_LOGIN_DOMAIN = '@boxdevedition.com'
 
@@ -297,8 +309,6 @@ class BoxConnector(BaseConnector):
         # One sync at a time per connector: runs share the As-User context, the read flag and the cursor.
         self._sync_lock = asyncio.Lock()
         self._sync_owner: asyncio.Task | None = None
-        self._webhook_run_pending = False
-        self._webhook_tasks: set[asyncio.Task] = set()
 
     @asynccontextmanager
     async def _one_sync_at_a_time(self) -> AsyncGenerator[None, None]:
@@ -563,6 +573,12 @@ class BoxConnector(BaseConnector):
                     file_record.external_record_group_id = None
                 file_record.shared_with_me_record_group_ids = [f"0S:{user_email.lower()}"]
 
+            # Every read carries what the metadata reader asks for; a change in Box may move no timestamp, so it is
+            # applied each time.
+            metadata_moved = is_file and apply_source_metadata(
+                file_record, existing_record, source_metadata().box_metadata(entry, held_metadata(existing_record))
+            )
+
             # Determine if new or updated
             if existing_record:
                 is_content_modified = existing_record.source_updated_at != source_updated_at
@@ -572,7 +588,7 @@ class BoxConnector(BaseConnector):
                     is_new=False,
                     is_updated=True,
                     is_deleted=False,
-                    metadata_changed=is_content_modified,
+                    metadata_changed=is_content_modified or metadata_moved,
                     content_changed=is_content_modified,
                     permissions_changed=permissions is not None,
                     new_permissions=permissions or [],
@@ -1148,7 +1164,7 @@ class BoxConnector(BaseConnector):
         offset = 0
         limit = 1000
 
-        fields = ITEM_FIELDS
+        fields = item_fields()
 
         if not self.current_user_id:
             try:
@@ -2135,7 +2151,7 @@ class BoxConnector(BaseConnector):
                                 continue
                             entry = self._to_dict(folder_response.data)
                         else:
-                            file_response = await self.data_source.files_get_file_by_id(item_id, fields=ITEM_FIELDS)
+                            file_response = await self.data_source.files_get_file_by_id(item_id, fields=item_fields())
                             if not file_response.success:
                                 self.logger.warning(f"Failed to fetch file {item_id} as shared-with-me: {file_response.error}")
                                 self._mark_read_incomplete(file_response.error)
@@ -2182,7 +2198,7 @@ class BoxConnector(BaseConnector):
             await self.data_source.set_as_user_context(owner_id)
 
             # 2. Parallel Fetch of File Details
-            tasks = [self.data_source.files_get_file_by_id(fid, fields=ITEM_FIELDS) for fid in file_ids]
+            tasks = [self.data_source.files_get_file_by_id(fid, fields=item_fields()) for fid in file_ids]
             responses = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Convert each response to a dict once and reuse it for logging + both passes below.
@@ -2371,7 +2387,7 @@ class BoxConnector(BaseConnector):
         """
         offset = 0
         limit = 1000
-        fields = ITEM_FIELDS
+        fields = item_fields()
         effective_email = user_email or "incremental_sync_user"
 
         while True:
@@ -2566,23 +2582,9 @@ class BoxConnector(BaseConnector):
             return False
 
     def handle_webhook_notification(self, notification: Dict) -> None:
-        """Queue one incremental sync; notifications that arrive while it waits are covered by it."""
-        if self._webhook_run_pending:
-            self.logger.info("Box webhook received; an incremental sync is already queued and will include it.")
-            return
-        self.logger.info("Box webhook received. Queuing an incremental sync.")
-        self._webhook_run_pending = True
-        task = asyncio.create_task(self._run_queued_sync())
-        self._webhook_tasks.add(task)
-        task.add_done_callback(self._webhook_tasks.discard)
-
-    async def _run_queued_sync(self) -> None:
-        async with self._one_sync_at_a_time():
-            # Cleared as the run starts, so a change that lands during it queues the next one.
-            self._webhook_run_pending = False
-            # run_sync, not run_incremental_sync: after an incomplete full sync it must be a full sync
-            # again, and an incremental run here would store or refresh the cursor over the gap.
-            await self.run_sync()
+        """Ask for a sync; one asked for while another runs is re-issued after it."""
+        self.logger.info("Box webhook received. Requesting a sync.")
+        self.request_sync()
 
     @classmethod
     async def create_connector(

@@ -68,7 +68,9 @@ def _make_connector_class(
 
 
 def _make_graph_provider():
-    return AsyncMock()
+    gp = AsyncMock()
+    gp.get_all_orgs.return_value = [{"_key": "org-1"}]
+    return gp
 
 
 # ===========================================================================
@@ -229,12 +231,12 @@ class TestGetConnectorInstanceFromDb:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_a_data_store_that_cannot_be_built_is_raised(self):
         registry, container = _make_registry()
         container.data_store = AsyncMock(side_effect=Exception("db error"))
 
-        result = await registry._get_connector_instance_from_db("conn1")
-        assert result is None
+        with pytest.raises(Exception, match="db error"):
+            await registry._get_connector_instance_from_db("conn1")
 
 
 # ===========================================================================

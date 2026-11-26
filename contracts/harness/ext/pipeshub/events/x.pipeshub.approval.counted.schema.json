@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/events/x.pipeshub.approval.counted.schema.json",
+  "title": "PipeshubApprovalCountedEvent",
+  "description": "One approval of a call that a rule of the run's edition says needs several distinct approvals, journaled by Node inside the decision's transaction. The ask stays open until the approvals it needs are counted; the approval that completes it resolves it (`interaction.resolved`, by that person). Ids and counts only. Audited; the run's timeline shows the count on the card; folds ignore it.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../../../core/envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "x.pipeshub.approval.counted"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/PipeshubApprovalCountedData"
+    }
+  },
+  "$defs": {
+    "PipeshubApprovalCountedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interactionId",
+        "by",
+        "counted",
+        "required"
+      ],
+      "properties": {
+        "interactionId": {
+          "$ref": "../../../core/common.schema.json#/$defs/Id"
+        },
+        "by": {
+          "$ref": "../../../core/common.schema.json#/$defs/PrincipalRef"
+        },
+        "counted": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "description": "Distinct people who have approved the call, this one included."
+        },
+        "required": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 16,
+          "description": "Distinct approvals the call needs."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 12,
+      "runId": "run_1",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-06T12:00:00.123Z",
+      "visibility": "audit",
+      "writer": "node",
+      "type": "x.pipeshub.approval.counted",
+      "data": {
+        "interactionId": "ix.approve.t1.0",
+        "by": "p_u_admin_1",
+        "counted": 1,
+        "required": 2
+      }
+    }
+  ]
+}

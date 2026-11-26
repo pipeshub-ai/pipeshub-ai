@@ -4,6 +4,7 @@ import React, { useState, useRef, useContext, useMemo, useEffect, useId } from '
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { NO_CREDENTIAL_AUTOFILL_PROPS, secretInputProps } from '@/app/components/ui/secret-text-field';
 import { FormField, labelEndsWithOptional, useFormFieldControl } from '@/app/(main)/workspace/components/form-field';
 import {
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
@@ -276,7 +277,7 @@ export function SchemaFormField({
 
       {/* Description below the field (when not using FormField wrapper for checkbox/boolean) */}
       {field.description && (fieldType === 'CHECKBOX' || fieldType === 'BOOLEAN') && (
-        <Text id={helpId} size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text id={helpId} size="1" style={{ color: 'var(--gray-11)' }}>
           {field.description}
         </Text>
       )}
@@ -352,7 +353,7 @@ function FieldExamples({
       }}
     >
       <Flex align="center" gap="1" style={{ marginBottom: 6 }}>
-        <MaterialIcon name="info" size={14} color="var(--gray-10)" />
+        <MaterialIcon name="info" size={14} color="var(--gray-11)" />
         <Text size="1" weight="medium" style={{ color: 'var(--gray-11)' }}>
           {examples.length > 1 ? 'Examples' : 'Example'}
         </Text>
@@ -478,6 +479,7 @@ function TextInput({
       <StartAdornmentOverlay startAdornment={startAdornment}>
         <input
           {...control}
+          {...NO_CREDENTIAL_AUTOFILL_PROPS}
           type={htmlType}
           value={String(value ?? '')}
           placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
@@ -674,7 +676,7 @@ function PasswordInput({
       <StartAdornmentOverlay startAdornment={startAdornment}>
         <input
           {...control}
-          type={showPassword ? 'text' : 'password'}
+          {...secretInputProps(!showPassword)}
           value={String(value ?? '')}
           placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
           disabled={disabled}
@@ -746,8 +748,8 @@ function TextareaInput({
       <textarea
         {...control}
         value={String(value ?? '')}
+        {...(isSecret ? NO_CREDENTIAL_AUTOFILL_PROPS : {})}
         spellCheck={isSecret ? false : undefined}
-        autoComplete={isSecret ? 'off' : undefined}
         placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
         disabled={disabled}
         onChange={(e) => onChange(field.name, e.target.value)}
@@ -1374,7 +1376,7 @@ function FileInput({
           {field.displayName}
         </Text>
         {isOptional && !labelEndsWithOptional(field.displayName, t('form.optional')) && (
-          <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
             {t('form.optional')}
           </Text>
         )}
@@ -1446,30 +1448,30 @@ function FileInput({
           <MaterialIcon
             name="upload_file"
             size={20}
-            color={displayError ? 'var(--red-a10)' : 'var(--gray-10)'}
+            color={displayError ? 'var(--red-a11)' : 'var(--gray-11)'}
           />
-          <Text size="2" style={{ color: displayError ? 'var(--red-a10)' : 'var(--gray-11)' }}>
+          <Text size="2" style={{ color: displayError ? 'var(--red-a11)' : 'var(--gray-11)' }}>
             {'placeholder' in field && field.placeholder ? field.placeholder : 'Click to upload file'}
           </Text>
           {acceptedTypes && acceptedTypes.length > 0 && (
-            <Text size="1" style={{ color: 'var(--gray-9)' }}>
+            <Text size="1" style={{ color: 'var(--gray-11)' }}>
               {acceptedTypes.join(', ')}
             </Text>
           )}
-          <Text size="1" style={{ color: 'var(--gray-9)' }}>
+          <Text size="1" style={{ color: 'var(--gray-11)' }}>
             Max {MAX_CONNECTOR_FILE_BYTES / 1024} KB
           </Text>
         </Flex>
       )}
 
       {displayError && (
-        <Text id={errorId} role="alert" size="1" style={{ color: 'var(--red-a10)' }}>
+        <Text id={errorId} role="alert" size="1" style={{ color: 'var(--red-a11)' }}>
           {displayError}
         </Text>
       )}
 
       {field.description && (
-        <Text id={helpId} size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text id={helpId} size="1" style={{ color: 'var(--gray-11)' }}>
           {field.description}
         </Text>
       )}

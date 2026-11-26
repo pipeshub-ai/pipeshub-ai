@@ -9,16 +9,24 @@ deltas:
   - id: DELTA-02
     public:
       connector: Google Drive
-      source: "A file shared with your whole domain, or with anyone who has the link"
-      differs: "It does not give everyone in the organisation access in PipesHub. People it is shared with directly or through a group still see it."
+      source: "A file shared by link only: anyone with the link, or anyone in your domain with the link, can open it, but it cannot be found in Drive search"
+      differs: "The link gives no one access in PipesHub. People it is shared with directly or through a group still see it. So do the people a share with your domain or with anyone reaches when the share can be found in Drive search, unless the file is in another organisation's shared drive."
     direction: under-share
-    scenarios: [DRIVE-C-08]
-    pairs: [DRIVE-C-08/mo/roadmap]
+    scenarios: [DRIVE-S-03]
+    pairs: [DRIVE-S-03/fay/notes]
     reason: >
-      The Drive team connector stores no grant for a domain share (google/drive/team/connector.py:1157-1159) and the
-      processor writes no edge for a domain or anyone entity (data_source_entities_processor.py:2317-2331), so a
-      discoverable domain share gives the org no grant. Safe but incomplete.
-    fix: "Write a discoverable domain share (and a discoverable anyone share) as an org grant after a verified-domain check; link-only shares stay ungranted."
+      Anyone who holds the link of a link-only share can open the file ("Anyone on the internet who has the link can
+      open the file", https://support.google.com/drive/answer/2494822), but the permission names no one, so the
+      connector cannot know who holds it and stores no grant for it (allowFileDiscovery false,
+      google/drive/team/connector.py:1393-1394). Google: allowFileDiscovery is "Whether the permission allows the file
+      to be discovered through search. This is only applicable for permissions of type domain or anyone."
+      (https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions). A discoverable domain or
+      anyone share is granted to its audience group since #5726 (DRIVE-C-08), so only the link-only share differs,
+      except on an item in a shared drive the account's own listing does not return (drives.list with
+      useDomainAdminAccess, connector.py:2421): there audiences_apply is false (connector.py:1817) and no audience
+      is granted, which the public text names.
+      Fail-closed by design.
+    fix: "None planned: Drive does not say who holds a link. People it is shared with directly, through a group or with a discoverable share keep their access."
   - id: DELTA-05
     public:
       connector: Confluence
@@ -43,3 +51,15 @@ deltas:
       A Gmail delegate added at the source gets no access in PipesHub: the connector writes only the owner's grant
       (google/gmail/team/connector.py:1310-1324, _create_owner_permission); 'delegation' in that connector means domain-wide impersonation.
     fix: "Read mailbox delegates and grant them the mailbox, or accept and document the gap."
+  - id: DELTA-18
+    direction: under-share
+    scenarios: [REGR-16]
+    pairs: [REGR-16/a/i]
+    reason: >
+      Jira Cloud shows a leveled issue to its reporter when the project's Browse permission names the reporter and the level holds them,
+      here through a group. When the level also names a person Browse does not name on the issue (the assignee), that person reads it
+      only through the project. An access rule belongs to the record, not to a grant, so one issue cannot hold "the reporter alone, or the
+      project and the assignee": the connector keeps the issue STRICT with the assignee's grant
+      (atlassian/core/jira_issue_security.py, apply_issue_access_settled), and the reporter needs the project too. OPEN would admit the
+      assignee without the project. Fail-closed by design.
+    fix: "A per-grant condition in the access model, or a second record carrying the reporter's grant; not planned."

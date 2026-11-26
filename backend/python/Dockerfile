@@ -1,5 +1,5 @@
 ##### BUILD STAGE ########
-FROM python:3.12 AS builder
+FROM python:3.12@sha256:cad37dd20c7cac861af9003af8796d03ea7a998ec1e3a664429740fc9d7d2691 AS builder
 
 WORKDIR /build
 
@@ -8,13 +8,15 @@ RUN python -m venv /venv
 
 # Activate the virtual environment and install build dependencies
 ENV PATH="/venv/bin:$PATH"
-# Install dependencies
+# Install dependencies from the hashed locks (SEC-SC-07); pyinstaller comes from tools.lock
 COPY ./pyproject.toml ./
-RUN pip3 install --no-cache-dir -e . && \
-    pip3 install --no-cache-dir pyinstaller
+COPY ./requirements/ ./requirements/
+RUN PYTHON=/venv/bin/python PIP_NO_CACHE_DIR=1 sh requirements/install.sh runtime --project . --editable && \
+    PYTHON=/venv/bin/python PIP_NO_CACHE_DIR=1 sh requirements/install.sh tools
 
 # Copy application files
 COPY app/ ./app/
+COPY harness_core/ ./harness_core/
 
 # Set PYTHONPATH
 ENV PYTHONPATH="/build:$PYTHONPATH"
@@ -39,7 +41,7 @@ RUN pyinstaller --hidden-import=requests --hidden-import=urllib3 \
     --collect-submodules=dependency_injector --collect-all=dateutil app/query_main.py
 
 ##### FINAL STAGE #####
-FROM python:3.12 AS final
+FROM python:3.12@sha256:cad37dd20c7cac861af9003af8796d03ea7a998ec1e3a664429740fc9d7d2691 AS final
 
 WORKDIR /app
 

@@ -103,7 +103,7 @@ class TestPgVectorClock:
         env = await self.make(vector_service, WorldStore().world("golden/confluence_hr"))
         try:
             await env.change((Mutation("moved", "page:Handbook", "space:ALL", "space:ALL"),))
-            await ahead_of_the_database_clock(vector_service, 300)
+            await ahead_of_the_database_clock(vector_service, 20)      # (within the 30 s a row may be ahead before any writer replaces it)
             with caplog.at_level(logging.WARNING), pytest.raises(RewriteIncomplete):
                 await env.job.run_connector(ORG, "w:app")
             assert env.pending() and any("refused or lost the write" in r.getMessage() for r in caplog.records)
@@ -116,10 +116,24 @@ class TestPgVectorClock:
         finally:
             await self.drop(vector_service, env)
 
+    async def test_a_row_far_ahead_of_the_database_clock_is_replaced_by_the_rewrite_and_the_root_clears(self, vector_service: PgVectorService) -> None:
+        env = await self.make(vector_service, WorldStore().world("golden/confluence_hr"))
+        try:
+            await env.change((Mutation("moved", "page:Handbook", "space:ALL", "space:ALL"),))
+            await ahead_of_the_database_clock(vector_service, 7 * 86400)      # a host a week ahead wrote it: waiting for the clock is no bound
+            await env.job.run_connector(ORG, "w:app")
+            assert not env.pending()      # (the rows it did not need to write stay ahead until a writer replaces them)
+            seen = Log()
+            await env.audit(seen)
+            assert not seen.leaks and not seen.pending_admits
+            assert not await env.problems()
+        finally:
+            await self.drop(vector_service, env)
+
     async def test_the_stale_marker_a_row_ahead_refuses_fails_the_run_and_does_not_pass_for_written(self, vector_service: PgVectorService) -> None:
         env = await self.make(vector_service, WorldStore().world("golden/confluence_hr"))
         try:
-            await ahead_of_the_database_clock(vector_service, 300)
+            await ahead_of_the_database_clock(vector_service, 20)
             with pytest.raises(RewriteIncomplete, match="stale marker did not land"):
                 await env.job._mark_stale(ORG, "w:app", [env.vrids()["page:Handbook"]], await env.job._epoch("w:app"))
         finally:
@@ -137,7 +151,7 @@ class TestPgVectorClock:
         monkeypatch.setattr(scope_backfill, "scope_fields_for_state", stale)      # (after the world is stamped: it starts clean)
         monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
         try:
-            await ahead_of_the_database_clock(vector_service, 300)
+            await ahead_of_the_database_clock(vector_service, 20)
             with caplog.at_level(logging.ERROR):
                 failed = await env.backfill.run_connector(ORG, "w:app", restart=True)
             assert failed.state == "failed" and "could not be marked stale" in caplog.text, failed.line()

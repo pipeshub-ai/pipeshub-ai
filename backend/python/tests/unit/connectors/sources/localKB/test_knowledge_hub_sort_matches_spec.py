@@ -7,11 +7,9 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 from app.connectors.sources.localKB.api.knowledge_hub_models import SortField
-
-SPEC = Path(__file__).resolve().parents[6] / "nodejs" / "apps" / "src" / "modules" / "api-docs" / "pipeshub-openapi.yaml"
+from tests.support.openapi_spec import openapi_spec
 
 
 @pytest.mark.parametrize("path", [
@@ -19,7 +17,7 @@ SPEC = Path(__file__).resolve().parents[6] / "nodejs" / "apps" / "src" / "module
     "/knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}",
 ])
 def test_the_sort_by_enum_is_the_api_sort_field_enum(path: str) -> None:
-    operation = yaml.safe_load(SPEC.read_text(encoding="utf-8"))["paths"][path]["get"]
+    operation = openapi_spec()["paths"][path]["get"]
     sort_by = next(p for p in operation["parameters"] if p.get("name") == "sortBy")
 
     assert sort_by["schema"]["enum"] == [field.value for field in SortField]

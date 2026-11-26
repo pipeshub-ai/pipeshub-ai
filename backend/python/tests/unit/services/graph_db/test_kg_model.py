@@ -4,8 +4,14 @@ from __future__ import annotations
 import pytest
 
 from app.services.graph_db.postgres.kg.model import (
+    FILE_DIR,
+    FILE_FILE,
+    FILE_OTHER,
+    FILE_UNSAID,
+    KB_COLS,
     LINK_GROUP,
     LINK_HIERARCHY,
+    LINK_PARENT_CHILD,
     PRINCIPALS,
     UAR,
     GEdge,
@@ -14,6 +20,7 @@ from app.services.graph_db.postgres.kg.model import (
     derive,
     edge_ends,
     flag,
+    kb_listing,
     listing_ts,
     sql_true,
 )
@@ -66,7 +73,21 @@ def test_a_second_parent_and_a_second_group_are_links() -> None:
     primary_parent = min(snap.sk[REC], snap.sk[("records", "p2")])
     primary_group = min(snap.sk[G], snap.sk[("recordGroups", "g2")])
     assert (row["parent_sk"], row["group_sk"]) == (primary_parent, primary_group)
-    assert d.links == {(max(snap.sk[REC], snap.sk[("records", "p2")]), LINK_HIERARCHY, snap.sk[CHILD]), (max(snap.sk[G], snap.sk[("recordGroups", "g2")]), LINK_GROUP, snap.sk[CHILD])}
+    assert d.links == {(max(snap.sk[REC], snap.sk[("records", "p2")]), LINK_HIERARCHY, snap.sk[CHILD]), (max(snap.sk[G], snap.sk[("recordGroups", "g2")]), LINK_GROUP, snap.sk[CHILD]),
+                       (snap.sk[REC], LINK_PARENT_CHILD, snap.sk[CHILD])}      # the PARENT_CHILD parent, primary or not; the attachment's parent and the bookmark are not
+
+
+def test_every_parent_child_parent_is_a_kind_3_link_and_an_attachment_parent_is_not() -> None:
+    """The move guards follow PARENT_CHILD relations only: each such parent of a record is a kind-3 link (the primary parent too); an ATTACHMENT parent, a parent that
+    is not there and a relation of another kind give none."""
+    p2, p3, gone = ("records", "p2"), ("records", "p3"), ("records", "gone")
+    nodes = {APP: {}, REC: {"connectorId": "a"}, p2: {"connectorId": "a"}, p3: {"connectorId": "a"}, CHILD: {"connectorId": "a"}}
+    edges = [edge("nodeRelations", *REC, *CHILD, relationshipType="PARENT_CHILD"), edge("nodeRelations", *p2, *CHILD, relationshipType="PARENT_CHILD"),
+             edge("nodeRelations", *p3, *CHILD, relationshipType="ATTACHMENT"), edge("nodeRelations", *gone, *CHILD, relationshipType="PARENT_CHILD"),
+             edge("nodeRelations", *p3, *REC, relationshipType="LINKED")]
+    snap = world(nodes, edges)
+    d = derive({CHILD, REC}, snap)
+    assert {lk for lk in d.links if lk[1] == LINK_PARENT_CHILD} == {(snap.sk[REC], LINK_PARENT_CHILD, snap.sk[CHILD]), (snap.sk[p2], LINK_PARENT_CHILD, snap.sk[CHILD])}
 
 
 def test_grants_are_read_from_both_ends_and_the_membership_is_a_closure_row() -> None:
@@ -103,7 +124,8 @@ def test_a_node_that_is_gone_is_reported_and_derives_no_row() -> None:
     ("permission", ("users", "u"), ("blocks", "b"), {}, {("users", "u")}),
     ("userAppRelation", ("users", "u"), ("apps", "a"), {}, {("apps", "a")}),
     ("authenticatedAs", ("users", "u"), ("users", "acct"), {}, {("users", "u")}),
-    ("isOfType", ("records", "r"), ("files", "r"), {}, set()),
+    ("isOfType", ("records", "r"), ("files", "r"), {}, {("records", "r")}),       # the file a record is typed as: its listing columns (kg_0026)
+    ("isOfType", ("records", "r"), ("mails", "r"), {}, set()),
 ])
 def test_the_ends_an_edge_changes(coll: str, frm: tuple, to: tuple, doc: dict, ends: set) -> None:
     assert edge_ends(coll, frm, to, doc) == ends
@@ -182,7 +204,8 @@ def test_the_primary_parent_is_a_parent_child_one_in_the_same_connector_then_the
     snap = world(nodes, edges)
     d = derive({CHILD}, snap)
     assert d.records[snap.sk[CHILD]]["parent_sk"] == snap.sk[pc]
-    assert d.links == {(snap.sk[att], LINK_HIERARCHY, snap.sk[CHILD]), (snap.sk[foreign], LINK_HIERARCHY, snap.sk[CHILD])}
+    assert d.links == {(snap.sk[att], LINK_HIERARCHY, snap.sk[CHILD]), (snap.sk[foreign], LINK_HIERARCHY, snap.sk[CHILD]),
+                       (snap.sk[foreign], LINK_PARENT_CHILD, snap.sk[CHILD]), (snap.sk[pc], LINK_PARENT_CHILD, snap.sk[CHILD])}
 
 
 def test_the_primary_group_is_one_of_the_records_own_connector_first() -> None:
@@ -197,7 +220,36 @@ def test_a_record_row_has_exactly_the_columns_the_writer_takes() -> None:
     from app.services.graph_db.postgres.kg.writers import RECORD_COLS
     snap = basic()
     row = derive({CHILD}, snap).records[snap.sk[CHILD]]
-    assert set(row) == set(RECORD_COLS) - {"sk"} | {"folder", "hide_children", "alien", "name_sort"}      # the listing columns have a writer of their own (w_listing_set)
+    # the listing columns, the trash columns, pc_top and the knowledge-base listing's have writers of their own (w_listing_set, w_trash_set, w_pc_top_set, w_kb_listing_set)
+    assert set(row) == set(RECORD_COLS) - {"sk"} | {"folder", "hide_children", "alien", "name_sort", "deleted_ms", "delete_batch", "pc_top", *KB_COLS}
+
+
+def test_pc_top_is_a_record_with_no_parent_child_parent_that_is_a_record() -> None:
+    """What a knowledge base's root lists (the walk: no PARENT_CHILD relation from a record): an attachment, a record below a group or an App by PARENT_CHILD and a record
+    whose parent record is gone are on it; a record with a parent record, one with a second parent record and every App and group are not. It agrees with the kind-3 links,
+    which the fill of an older copy reads it from."""
+    kids = {k: ("records", k) for k in ("top", "kid", "second", "attached", "under_group", "under_app", "orphan")}
+    nodes = {APP: {}, G: {"connectorId": "a"}, REC: {"connectorId": "a"}, **{k: {"connectorId": "a"} for k in kids.values()}}
+    pc, att = {"relationshipType": "PARENT_CHILD"}, {"relationshipType": "ATTACHMENT"}
+    edges = [edge("nodeRelations", *REC, *kids["kid"], **pc), edge("nodeRelations", *REC, *kids["second"], **att), edge("nodeRelations", *kids["top"], *kids["second"], **pc),
+             edge("nodeRelations", *REC, *kids["attached"], **att), edge("nodeRelations", *G, *kids["under_group"], **pc), edge("nodeRelations", *APP, *kids["under_app"], **pc),
+             edge("nodeRelations", "records", "gone", *kids["orphan"], **pc)]
+    snap = world(nodes, edges)
+    d = derive(set(nodes), snap)
+    tops = {k[1] for k in nodes if d.records[snap.sk[k]]["pc_top"]}
+    assert tops == {"r", "top", "attached", "under_group", "under_app", "orphan"}
+    by_link = {k[1] for k in nodes if k[0] == "records" and not any(lk == LINK_PARENT_CHILD and c == snap.sk[k] and p in {snap.sk[x] for x in nodes if x[0] == "records"}
+                                                                   for p, lk, c in d.links)}
+    assert by_link == tops
+
+
+def test_the_trash_columns_are_the_delete_time_and_batch_as_the_walk_reads_them() -> None:
+    nodes = {APP: {}, REC: {"connectorId": "a", "isDeleted": True, "deletedAtTimestamp": 1790000000000, "deleteBatchId": "bt1"},
+             ("records", "live"): {"connectorId": "a"}, ("records", "odd"): {"connectorId": "a", "deletedAtTimestamp": "12", "deleteBatchId": 7}}
+    snap = world(nodes, [])
+    rows = derive(set(nodes), snap).records
+    assert {k[1]: (rows[snap.sk[k]]["deleted_ms"], rows[snap.sk[k]]["delete_batch"]) for k in nodes if k[0] == "records"} == {
+        REC[1]: (1790000000000, "bt1"), "live": (None, None), "odd": (12, "7")}       # doc->>'deletedAtTimestamp' cast to bigint, doc->>'deleteBatchId' as text
 
 
 def test_the_listing_columns_follow_the_hub_types_the_hidden_children_and_the_organisation() -> None:
@@ -249,3 +301,38 @@ def test_the_name_sort_orders_names_by_utf16_code_unit_not_by_code_point() -> No
     assert by_sort == sorted(names, key=lambda n: n.lower().encode("utf-16-be", "surrogatepass"))
     assert by_sort.index("\U00010000x") < by_sort.index("x") < by_sort.index("�x")
     assert sorted(names, key=str.lower).index("\U00010000x") > sorted(names, key=str.lower).index("�x")      # by code point it is the other way round
+
+
+
+def test_the_knowledge_base_listing_columns_are_what_the_walk_orders_and_filters_by() -> None:
+    """A record's status, connector name and own created/updated times, and the kind and size of the file it is typed as (kg_0026), from the documents a snapshot loads."""
+    doc = {"connectorId": "a", "recordName": "R", "indexingStatus": "COMPLETED", "connectorName": "KB", "createdAtTimestamp": 5, "updatedAtTimestamp": 7.0,
+           "sourceCreatedAtTimestamp": 1}
+    nodes = {APP: {}, REC: doc, CHILD: {"connectorId": "a", "recordName": "Kid"}}
+    snap = world(nodes, [])
+    snap.files = {REC: [{"isFile": True, "sizeInBytes": 42}]}
+    rows = derive(set(nodes), snap).records
+    assert {c: rows[snap.sk[REC]][c] for c in KB_COLS} == {"indexing_status": "COMPLETED", "connector_name": "KB", "doc_created_ms": 5, "doc_updated_ms": 7, "file_size": 42,
+                                                            "file_kind": FILE_FILE, "kb_odd": False}
+    assert {c: rows[snap.sk[CHILD]][c] for c in KB_COLS} == {**dict.fromkeys(KB_COLS, None), "kb_odd": False}           # typed as no file
+    assert {c: rows[snap.sk[APP]][c] for c in KB_COLS} == {**dict.fromkeys(KB_COLS, None), "kb_odd": False}
+
+
+@pytest.mark.parametrize(("files", "kind"), [([{"isFile": "false"}], FILE_DIR), ([{"isFile": False}], FILE_DIR), ([{"isFile": "true"}], FILE_FILE),
+                                             ([{"isFile": 1}], FILE_OTHER), ([{}], FILE_UNSAID), ([None], None), ([], None)])
+def test_the_file_kind_is_the_file_documents_is_file_as_the_walk_reads_its_text(files: list, kind: int | None) -> None:
+    assert kb_listing({"recordName": "n"}, files, "n") == {**dict.fromkeys(KB_COLS, None), "file_kind": kind, "kb_odd": False}
+
+
+@pytest.mark.parametrize("doc", [{"recordName": "n", "createdAtTimestamp": "5"}, {"recordName": "n", "updatedAtTimestamp": 1.5}, {"recordName": "n", "createdAtTimestamp": True},
+                                 {"recordName": "n", "createdAtTimestamp": 2 ** 63}, {"recordName": "n", "indexingStatus": 3}, {"recordName": "n", "connectorName": "x" * 257},
+                                 {"recordName": "n", "recordType": ["FILE"]}, {"recordName": "n", "externalRecordId": 7}, {"recordName": 5}, {"recordName": "other"}])
+def test_a_value_the_columns_cannot_hold_as_the_walk_reads_it_marks_the_row_odd(doc: dict) -> None:
+    """A listing that meets such a record is the walk's: kg's bigint or text would order, filter or match it differently."""
+    assert kb_listing(doc, [], "n") == {**dict.fromkeys(KB_COLS, None), "kb_odd": True}
+
+
+def test_a_record_typed_as_two_files_or_a_file_of_an_odd_size_is_odd() -> None:
+    assert kb_listing({"recordName": "n"}, [{"isFile": True}, {"isFile": False}], "n")["kb_odd"]
+    assert kb_listing({"recordName": "n"}, [{"isFile": True, "sizeInBytes": "12"}], "n")["kb_odd"]
+    assert not kb_listing({"recordName": "n"}, [{"isFile": True, "sizeInBytes": 12.0}], "n")["kb_odd"]

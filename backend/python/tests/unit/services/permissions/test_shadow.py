@@ -337,3 +337,25 @@ async def test_a_failing_connector_read_means_no_connector_is_current_and_the_co
     c._graph.get_nodes_by_field_in = AsyncMock(side_effect=RuntimeError("graph down"))
     assert await c.compare(ORG, USER, {"a"}, {"a"}, AsyncMock(), AsyncMock()) == {}
     assert _generation_and_metrics.skipped.total("no_current_connector") == 1
+
+
+async def test_a_search_the_serving_plan_already_filtered_is_counted_as_skipped_not_compared_to_a_false_zero(_generation_and_metrics) -> None:
+    """c1 is switched to `scopes`: its stamp hides v2, which the viewer may read. The real search already carried the filter, so v2 is in
+    neither side, and a comparison would report no recall loss. It is counted as skipped instead."""
+    c = comparator()
+    ran: list[ScopeFilter] = []
+
+    async def run_scoped(flt: ScopeFilter) -> list[dict]:
+        ran.append(flt)
+        return result("v1")
+
+    async def check(vrids: set[str]) -> set[str]:
+        return vrids
+
+    c.submit(ORG, USER, {"v1"}, {"v1"}, run_scoped, check, served=True)
+    await c.wait()
+    assert not ran and _generation_and_metrics.skipped.total("served") == 1
+    assert _generation_and_metrics.compared.calls == []
+    c.submit(ORG, USER, {"v1", "v2"}, {"v1", "v2"}, run_scoped, check)      # the same search on the classic check: the loss shows
+    await c.wait()
+    assert _generation_and_metrics.compared.total("recall_loss") == 1

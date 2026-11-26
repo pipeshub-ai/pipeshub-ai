@@ -115,7 +115,7 @@ export class OIDCProviderController {
   ): Promise<void> {
     const backendUrl = this.appConfig.oauthIssuer;
     const baseUrl = `${backendUrl}/api/v1/oauth2`;
-    const dcrEnabled = process.env.PIPESHUB_ENABLE_DCR === 'true';
+    const dcrEnabled = process.env.PIPESHUB_ENABLE_DCR !== 'false';
     const deviceEnabled = process.env.PIPESHUB_ENABLE_DEVICE_GRANT !== 'false';
     const deviceClientId = deviceEnabled
       ? await this.firstPartyDeviceAppService.getOrCreate()
@@ -221,7 +221,7 @@ export class OIDCProviderController {
         renderAuthMd({
           origin,
           deviceClientId,
-          dcrEnabled: process.env.PIPESHUB_ENABLE_DCR === 'true',
+          dcrEnabled: process.env.PIPESHUB_ENABLE_DCR !== 'false',
           // Same condition as the agent_auth block in discovery.
           agentSignup: agentAuthEnabled() && deviceClientId !== null,
           agentScopes: AgentMcpScopes.filter((s) => offered.has(s)),

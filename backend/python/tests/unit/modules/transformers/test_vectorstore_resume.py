@@ -243,6 +243,26 @@ class TestResume:
         assert len(chain.embedder.batches) == _batches(len(wanted))  # only the batch in flight at the cut is lost
         assert chain.embedder.cut_calls == 1
 
+    async def test_the_points_a_resumed_run_keeps_are_recorded_as_written(self) -> None:
+        # Kills: a resumed embed that notes only the points it embeds again. The points the cut run left are this revision's points
+        # too; left out of the recorded set (``pointedBlocks``) they would never be expected, so their later loss would not be healed.
+        from app.modules.transformers import vectorstore as vs_mod
+
+        chain = await Chain().start()
+        with pytest.raises(Cut):
+            await chain.attempt(cut_after=3)
+        kept = {p.payload["metadata"]["blockId"] for p in chain.db.collections[COLL].values()}
+        assert kept, "the cut run left points"
+        log = vs_mod._PointLog()
+        token = vs_mod._POINTED.set(log)
+        try:
+            await chain.attempt()
+        finally:
+            vs_mod._POINTED.reset(token)
+        stored = {p.payload["metadata"]["blockId"] for p in chain.db.collections[COLL].values()}
+        assert kept <= log.wrote, "points kept from the interrupted run are not recorded"
+        assert stored <= log.wrote
+
     async def test_without_the_stored_blocks_a_retry_cannot_reuse_what_was_written(self) -> None:
         # Kills: a resume that parses again. Block ids are random per parse, so no point id matches.
         chain = await Chain().start()
@@ -469,15 +489,13 @@ class TestFailuresDeleteNothing:
             await chain.attempt(cut_after=3)
         kept = chain.ids()
         embedded = chain.embedder.texts
-        deletes = AsyncMock()
-        chain.db.delete_points = deletes  # type: ignore[method-assign]
         chain.db.existing_point_ids = AsyncMock(side_effect=RuntimeError("backend down"))  # type: ignore[method-assign]
         with pytest.raises(Exception) as failed:
             await chain.attempt()
         assert "backend down" in _chain_text(failed.value)
-        deletes.assert_not_awaited()
+        # Only points of another revision or setup are dropped before the check, and the cut run left none: nothing is deleted.
+        assert chain.ids() == kept
         assert chain.embedder.texts == embedded
-        assert kept <= chain.ids()
         assert chain.parse_calls == 1
 
     async def test_an_upsert_error_after_the_first_write_deletes_nothing(self) -> None:
@@ -486,14 +504,11 @@ class TestFailuresDeleteNothing:
             await chain.attempt(cut_after=3)
         kept = chain.ids()
         real = chain.db.upsert_points
-        deletes = AsyncMock()
-        chain.db.delete_points = deletes  # type: ignore[method-assign]
         chain.db.upsert_points = AsyncMock(side_effect=RuntimeError("write refused"))  # type: ignore[method-assign]
         with pytest.raises(Exception) as failed:
             await chain.attempt()
         assert "write refused" in _chain_text(failed.value)
-        deletes.assert_not_awaited()
-        assert kept <= chain.ids()
+        assert chain.ids() == kept
         chain.db.upsert_points = real  # type: ignore[method-assign]
 
     async def test_a_marker_that_cannot_be_written_fails_the_attempt_before_any_point(self) -> None:
@@ -569,6 +584,47 @@ class TestTheEndOfAResumedRun:
         chain.db.upsert_points = lossy  # type: ignore[method-assign]
         with pytest.raises(IndexingError, match="incomplete"):
             await chain.attempt()
+
+    @pytest.mark.parametrize("stop", [Cut(), RuntimeError("vector store unavailable")], ids=["cut", "delete-error"])
+    async def test_a_retry_after_a_stop_before_the_full_delete_embeds_over_the_older_revision_in_one_go(self, stop: BaseException) -> None:
+        # Kills: a resume that counts the older revision's points as its own. They share this run's ids (the pipeline gives blocks
+        # content-derived ids, and the point id follows the block and its text), so they were skipped, the end fence deleted every
+        # one, and the retry failed as incomplete with the record holding no points until the next.
+        from app.modules.reconciliation.block_identity import BlockIdentity
+
+        chain = await Chain().start()
+        parse = chain.parse
+
+        async def parse_with_content_ids() -> BlocksContainer:
+            container = await parse()
+            BlockIdentity.assign(container, ORG, VRID)
+            return container
+
+        chain.parse = parse_with_content_ids  # type: ignore[method-assign]
+        await chain.attempt("d0", rev="rev0")
+        wanted = chain.ids()
+        assert wanted and wanted == await chain.wanted_ids()
+
+        delete = chain.store.delete_embeddings
+        stopped: list[bool] = []
+
+        async def stop_once(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+            if not stopped:
+                stopped.append(True)
+                raise stop
+            await delete(*args, **kwargs)
+
+        chain.store.delete_embeddings = stop_once  # type: ignore[method-assign]
+        with pytest.raises(BaseException) as first:
+            await chain.attempt("d1", rev="rev1", complete=False)  # new bytes, the same blocks: the marker is written, the delete stops
+        assert first.value is stop or str(stop) in _chain_text(first.value)
+        assert chain.ids() == wanted
+
+        embedded = chain.embedder.texts
+        await chain.attempt("d1", rev="rev1")
+        assert chain.ids() == wanted
+        assert {p.payload["metadata"].get("contentRev") for p in chain.db.collections[COLL].values()} == {"rev1"}
+        assert chain.embedder.texts - embedded == len(wanted)  # what a full replace embeds, in this one retry
 
     async def test_a_fresh_attempt_asks_the_vector_store_nothing_it_did_not_before(self) -> None:
         # Kills: a probe or a fence on the first attempt.
@@ -742,8 +798,12 @@ class PdfChain(Chain):
 
 
 @pytest.mark.asyncio
-async def test_a_cut_pdf_is_resumed_from_its_stored_blocks_with_the_ids_the_first_attempt_wrote() -> None:
+async def test_a_cut_pdf_is_resumed_from_its_stored_blocks_with_the_ids_the_first_attempt_wrote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Kills: resuming by re-parsing (every pdfplumber block id is random), and an id-pinning shortcut.
+    # Rule-based tables only, as in tests/unit/modules/parsers: the layout model is a download a unit test may not make.
+    monkeypatch.setenv("PDF_TABLE_MODEL", "off")
     chain = await PdfChain(content=_tables_pdf()).start()
     with pytest.raises(Cut):
         await chain.attempt(cut_after=2)

@@ -240,6 +240,16 @@ class InMemoryVectorDBService(IVectorDBService):
             next_offset=next_offset,
         )
 
+    async def scroll_with_vectors(
+        self, collection_name: str, scroll_filter: FilterExpression, limit: int, offset: str | None = None,
+    ) -> ScrollResult:
+        page = await self.scroll(collection_name, scroll_filter, limit, offset)
+        stored = self._points(collection_name)
+        for point in page.points:
+            point.dense_vector = list(stored[point.id].dense_vector) if stored[point.id].dense_vector is not None else None
+            point.sparse_vector = copy.deepcopy(stored[point.id].sparse_vector)
+        return page
+
     async def retrieve_points(self, collection_name: str, ids: list[str]) -> list[VectorPoint]:
         points = self._points(collection_name)
         return [

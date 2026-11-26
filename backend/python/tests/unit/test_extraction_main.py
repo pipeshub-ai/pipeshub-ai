@@ -6,6 +6,16 @@ from fastapi import FastAPI
 import app.extraction_main as extraction_main
 
 
+@pytest.fixture(autouse=True)
+def _no_fleet_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests stand in for the services' collaborators; the fleet Redis binding is exercised, unpatched, in
+    tests/unit/services/messaging/test_fleet_state_startup.py and the spend integration tests."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    monkeypatch.setattr("app.extraction_main.bind_service_fleet", AsyncMock(return_value=MagicMock(aclose=AsyncMock())))
+
+
+
 @pytest.mark.parametrize(("raw", "slots"), [(None, 8), ("eight", 8), ("", 8), ("0", 1), ("3", 3)])
 async def test_entity_extraction_slots_fall_back_instead_of_failing_startup(monkeypatch, raw, slots):
     if raw is None:

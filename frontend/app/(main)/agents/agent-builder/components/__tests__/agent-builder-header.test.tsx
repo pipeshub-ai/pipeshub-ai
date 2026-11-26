@@ -11,7 +11,7 @@ vi.mock('@/lib/hooks/use-is-mobile', () => ({
   useIsBelowDesktop: () => viewport.belowDesktop,
 }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
-vi.mock('@/config', () => ({ PermissionLockIcon: () => <span>Locked</span> }));
+vi.mock('@/config', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/config')>()), PermissionLockIcon: () => <span>Locked</span> }));
 vi.mock('@/app/(main)/workspace/users/api', () => ({ UsersApi: { getUsersByIds: vi.fn(async () => []) } }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
@@ -60,7 +60,7 @@ describe('AgentBuilderHeader', () => {
     renderHeader();
 
     const convert = screen.getByRole('button', { name: /convert to service agent/i });
-    const save = screen.getByRole('button', { name: /save changes/i });
+    const save = screen.getByRole('button', { name: /save draft/i });
     expect(convert.className).toContain('rt-variant-soft');
     // In the right-hand action group (after the share control, before save), not under the name field.
     const share = screen.getByText('Share with everyone');
@@ -68,11 +68,12 @@ describe('AgentBuilderHeader', () => {
     expect(save.compareDocumentPosition(convert) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   });
 
-  it('while the agent loads, says "Save changes", disables actions and the name field', () => {
+  it('while the agent loads, offers the edit actions (Save draft, Publish) disabled, and the name field too', () => {
     renderHeader({ editing: true, loading: true, isDirty: true, agentName: '' });
 
     expect(screen.queryByText(/create agent/i)).toBeNull();
-    expect((screen.getByRole('button', { name: /save changes/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: /save draft/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: /publish$/i }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: /convert to service agent/i }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('textbox') as HTMLInputElement).disabled).toBe(true);
   });

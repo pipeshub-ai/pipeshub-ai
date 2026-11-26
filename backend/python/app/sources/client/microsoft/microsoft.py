@@ -20,13 +20,14 @@ try:
     from kiota_authentication_azure.azure_identity_authentication_provider import (  #type: ignore
         AzureIdentityAuthenticationProvider,
     )
-    from kiota_http.httpx_request_adapter import HttpxRequestAdapter  #type: ignore
     from msgraph import GraphServiceClient  #type: ignore
     from msgraph_core import GraphClientFactory  # type: ignore
 except ImportError:
     raise ImportError("azure-identity is not installed. Please install it with `pip install azure-identity`")
 
 from app.sources.client.iclient import IClient
+from app.sources.client.microsoft.send_safe_middleware import send_safe_graph_adapter
+from app.sources.client.resilience import ResiliencePolicy
 
 
 class GraphMode(str, Enum):
@@ -101,8 +102,10 @@ class MSGraphClientWithClientIdSecret:
         client_secret: str,
         tenant_id: str,
         scopes: list[str] | None = None,
-        mode: GraphMode = GraphMode.APP
+        mode: GraphMode = GraphMode.APP,
+        resilience: ResiliencePolicy | None = None,
     ) -> None:
+        """``resilience``: a syncing connector's policy, which paces every request (G-31)."""
         if scopes is None:
             scopes = ["https://graph.microsoft.com/.default"]
         self.mode = mode
@@ -114,7 +117,7 @@ class MSGraphClientWithClientIdSecret:
             # Requires Application permissions + Admin consent.
             self.credential = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
             auth_provider = AzureIdentityAuthenticationProvider(_KeepOpenCredential(self.credential), scopes=scopes)
-            adapter = HttpxRequestAdapter(auth_provider)
+            adapter = send_safe_graph_adapter(auth_provider, resilience=resilience)
             self.client = GraphServiceClient(request_adapter=adapter)
         else:
             raise ValueError(f"Invalid mode: {mode}")
@@ -147,8 +150,10 @@ class MSGraphClientWithDelegatedAuth:
         self,
         access_token: str,
         tenant_id: str,
-        logger: logging.Logger
+        logger: logging.Logger,
+        resilience: ResiliencePolicy | None = None,
     ) -> None:
+        """``resilience``: a syncing connector's policy, which paces every request (G-31)."""
         self.mode = GraphMode.DELEGATED
         self.logger = logger
         self._user_oid: str | None = None
@@ -157,7 +162,7 @@ class MSGraphClientWithDelegatedAuth:
         # _StaticTokenProvider needed: BaseBearerTokenAuthenticationProvider requires AccessTokenProvider interface, can't accept raw token string
         token_provider = self._StaticTokenProvider(access_token)
         auth_provider = BaseBearerTokenAuthenticationProvider(token_provider)
-        adapter = HttpxRequestAdapter(authentication_provider=auth_provider)
+        adapter = send_safe_graph_adapter(auth_provider, resilience=resilience)
         self.client = GraphServiceClient(request_adapter=adapter)
 
         # Extract user OID from JWT for /me endpoint resolution
@@ -260,8 +265,12 @@ class MSGraphClientWithClientIdSecretConfig:
     client_secret: str
     tenant_id: str
 
-    def create_client(self, mode: GraphMode = GraphMode.APP) -> MSGraphClientWithClientIdSecret:
-        return MSGraphClientWithClientIdSecret(self.client_id, self.client_secret, self.tenant_id, mode=mode)
+    def create_client(
+        self, mode: GraphMode = GraphMode.APP, resilience: ResiliencePolicy | None = None
+    ) -> MSGraphClientWithClientIdSecret:
+        return MSGraphClientWithClientIdSecret(
+            self.client_id, self.client_secret, self.tenant_id, mode=mode, resilience=resilience
+        )
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
@@ -324,14 +333,19 @@ class MSGraphClient(IClient):
     def build_with_config(
         cls,
         config: MSGraphUsernamePasswordConfig | MSGraphClientWithClientIdSecretConfig | MSGraphClientWithCertificatePathConfig, #type:ignore
-        mode: GraphMode = GraphMode.APP) -> 'MSGraphClient':
+        mode: GraphMode = GraphMode.APP,
+        resilience: ResiliencePolicy | None = None) -> 'MSGraphClient':
         """
         Build MSGraphClient with configuration (placeholder for future OAuth2/enterprise support)
         Args:
             config: MSGraphConfigBase instance
+            resilience: A syncing connector's policy, pacing every request (G-31); the client id and
+                secret client is the only one that sends any
         Returns:
             MSGraphClient instance with placeholder implementation
         """
+        if isinstance(config, MSGraphClientWithClientIdSecretConfig):
+            return cls(config.create_client(mode, resilience=resilience))
         return cls(config.create_client(mode))
 
     @classmethod
@@ -840,9 +854,7 @@ class MSGraphClient(IClient):
             #   adapter = HttpxRequestAdapter(auth_provider, base_url=GRAPH_BASE_URL)
             # This caused 'me-token-to-replace' because path_parameters were
             # out of sync with the adapter's base_url.
-            adapter = HttpxRequestAdapter(
-                authentication_provider=auth_provider,
-            )
+            adapter = send_safe_graph_adapter(auth_provider)
 
             # GraphServiceClient's constructor will:
             # 1. Set adapter.base_url = "https://graph.microsoft.com/v1.0"

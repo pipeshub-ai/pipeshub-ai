@@ -26,8 +26,10 @@ def downgrade():
     # grants of the vetted role for the tables those pins named are then recomputed from the pins that remain (kernel._sync_vetted_privs), so a grant another function's pin
     # needs stays and the rest goes. A database stopped at kg_0001 must pass the catalog check; nothing else of kg or of any other schema is touched, and the functions are
     # dropped without cascade. The signatures reach the statement as a bound parameter.
-    sigs = [f.signature for f in load(Path(__file__).parent / "vetted" / "manifest.yaml") if f.qualified in {"kg." + n for n in WRITERS}]
-    assert len(sigs) == len(WRITERS), "the manifest names every writer of this revision"
+    fns = [f for f in load(Path(__file__).parent / "vetted" / "manifest.yaml") if f.qualified in {"kg." + n for n in WRITERS}]
+    assert len(fns) == len(WRITERS), "the manifest names every writer of this revision"
+    # kg_0013 added the projection code epoch as the last argument of some: a database below it has them without (by exact signature, as the rest)
+    sigs = [f.signature for f in fns] + [f"{f.qualified}({', '.join(a.type for a in f.args[:-1])})" for f in fns if f.args and f.args[-1].name == "p_projector_epoch"]
     op.execute(sa.text("SELECT set_config('kg_0002.writers', :sigs, true)").bindparams(sigs=json.dumps(sigs)))
     op.execute("""
 DO $$

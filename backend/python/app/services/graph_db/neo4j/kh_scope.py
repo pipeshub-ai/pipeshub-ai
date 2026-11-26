@@ -8,15 +8,16 @@ request, the open scopes come from the scope tree and the user's grants, and the
 What the walk does, per hop from parent p to child c (``_kh_v3_granted_hop`` plus the flatten's declared stop):
 - dead:  c deleted, p hides its children, or p is a RECORD_GROUP_LEVEL group of this App;
 - free:  c inherits from p and its rule is STRICT/OPEN;
-- gate:  c is STRICT/OPEN without inheriting, or RESTRICTED and inheriting;
+- gate:  c is STRICT/OPEN without inheriting, or RESTRICTED/PARENT_AND_GRANT and inheriting;
 - block: anything else.
 The walk stops after ``MAX_DEPTH`` hops from the App, so a node deeper than that is never in a scope.
 
 A connector is listed this way only when the precomputation says exactly what the walk would: a RECORD_LEVEL App,
 no RECORD_GROUP_LEVEL group, no node that hides its children, no node with several parents, and no child that
 belongs to another connector. The seed arms (granted OPEN nodes the walk does not reach, and the OPEN nodes below
-them) depend on the user's grants and stay a walk per request. Any other case, a stale stamp, or any error falls
-back to the full query, and the reason is returned so the caller can log it.
+them, or PARENT_AND_GRANT ones that inherit and are granted) depend on the user's grants and stay a walk per
+request. Any other case, a stale stamp, or any error falls back to the full query, and the reason is returned so
+the caller can log it.
 
 Freshness: a sync marks its connector stale before it writes and re-stamps when it ends. The stamp sets ``fresh``
 only if no sync started in the meantime (``generation`` is compared and set), and refuses to run while one is.
@@ -42,7 +43,7 @@ BATCH = 5000
 # The full walk's hop limit (``{1,50}`` in the flatten): a node deeper than this is only listed as a seed.
 MAX_DEPTH = 50
 # Bumped whenever what a stamp writes changes meaning; a meta of another version is restamped, never read.
-STAMP_VERSION = 2
+STAMP_VERSION = 3
 
 # The listing's sort fields and the stored property each reads. Dates are not here: the listing shows a
 # connector node's source date, which no stamped property holds, so a date sort is always the full query's.
@@ -72,7 +73,7 @@ INDEX_WAIT_SECONDS = 120
 ORDERED = """
 MATCH (n:{label}) USING INDEX n:{label}(connectorId, {prop})
 WHERE n.connectorId = $c AND n.{prop} >= {low} AND n.khScope IN $open
-  AND n.orgId = $org AND NOT n:KhPlaceholder AND NOT n:KhDeleted {keyset}
+  AND n.orgId = $org AND NOT n:KhPlaceholder AND NOT n:KhDeleted AND NOT coalesce(n.accessOnly, false) {keyset}
 RETURN n.id AS id, n.{prop} AS sortKey
 ORDER BY n.connectorId {sdir}, n.{prop} {sdir}, n.id {iddir}
 LIMIT $limit
@@ -81,7 +82,7 @@ LIMIT $limit
 SEEK = """
 MATCH (n:Record) USING INDEX n:Record(khScope, {prop})
 WHERE n.khScope IN $open AND n.{prop} >= {low} AND n.connectorId = $c
-  AND n.orgId = $org AND NOT n:KhPlaceholder AND NOT n:KhDeleted {keyset}
+  AND n.orgId = $org AND NOT n:KhPlaceholder AND NOT n:KhDeleted AND NOT coalesce(n.accessOnly, false) {keyset}
 RETURN n.id AS id, n.{prop} AS sortKey
 ORDER BY n.{prop} {sdir}, n.id {iddir}
 LIMIT $limit
@@ -93,7 +94,7 @@ CALL () {{
     MATCH (n:RecordGroup) WHERE n.connectorId = $c RETURN n
 }}
 WITH n WHERE n.khSortName IS NULL AND n.khScope IN $open AND n.orgId = $org AND NOT n:KhPlaceholder
-  AND NOT n:KhDeleted {keyset}
+  AND NOT n:KhDeleted AND NOT coalesce(n.accessOnly, false) {keyset}
 RETURN n.id AS id ORDER BY n.id LIMIT $limit
 """
 KEYSET = "AND n.{prop} {cmp}= $ks AND (n.{prop} {cmp} $ks OR n.id {idcmp} $kid)"
@@ -113,8 +114,10 @@ WHERE sd.connectorId = $c AND NOT sd:KhDeleted AND coalesce(sd.accessRule, 'OPEN
                      AND all(h IN relationships(above) WHERE h.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']) }
 OPTIONAL MATCH (sd) ((pc)-[h:NODE_RELATION]->(cc)
       WHERE h.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND NOT cc:KhDeleted AND NOT pc:KhHidesChildren
-        AND coalesce(cc.accessRule, 'OPEN') = 'OPEN'
-        AND (EXISTS { (cc)-[:INHERIT_PERMISSIONS]->(pc) } OR cc.id IN $granted)){1,50} (nc)
+        AND (coalesce(cc.accessRule, 'OPEN') = 'OPEN'
+             OR (coalesce(cc.accessRule, 'OPEN') = 'PARENT_AND_GRANT' AND cc.id IN $granted))
+        AND (EXISTS { (cc)-[:INHERIT_PERMISSIONS]->(pc) }
+             OR (coalesce(cc.accessRule, 'OPEN') = 'OPEN' AND cc.id IN $granted))){1,50} (nc)
 WITH collect(DISTINCT sd) + collect(DISTINCT nc) AS xs
 UNWIND xs AS x
 WITH DISTINCT x
@@ -133,7 +136,8 @@ K, DEL, HIDES, RULE, PM, PH, FOLDER, ORG, NULLNAME, PARENT, NPARENTS, INH, OLD, 
 _NOT_NUMBER = "NOT ({p} IS :: INTEGER NOT NULL OR {p} IS :: FLOAT NOT NULL)"
 _NODE_FIELDS = f"""
     n.id AS id, n:KhDeleted AS del, n:KhHidesChildren AS hides, coalesce(n.accessRule, 'OPEN') AS rule,
-    n.permissionModel AS pm, n:KhPlaceholder AS ph, n:KhFolder AS folder, n.orgId = $org AS sameOrg,
+    n.permissionModel AS pm, n:KhPlaceholder AS ph, n:KhFolder AS folder,
+    n.orgId = $org AND NOT coalesce(n.accessOnly, false) AS sameOrg,
     n.khSortName IS NULL AS nullName, n.khScope AS old,
     {_NOT_NUMBER.format(p="n.updatedAtTimestamp")} AS nullUpd,
     {_NOT_NUMBER.format(p="n.createdAtTimestamp")} AS nullCre, n.origin AS origin,
@@ -150,6 +154,21 @@ async def _q(client: Neo4jClient, cypher: str, params: dict | None = None) -> li
 
 
 LISTS = "kh_lists"
+
+
+def by_id(v: str, labels: str, key: str) -> str:
+    """``MATCH (v:labels {id: key})`` alone in a subquery, so its only seek is the labels' unique id index. The statement tests ``v``'s
+    org or App after it: Neo4j moves a test written beside the match, or after a plain ``WITH``, into the seek, and a plan could then seek
+    the org or App index and test the id after, reading every node of the org or App once per id. ``key`` is a variable or a
+    ``$parameter``."""
+    imports = "" if key.startswith("$") else key
+    return f"CALL ({imports}) {{ MATCH ({v}:{labels} {{id: {key}}}) RETURN {v} }}"
+
+
+def by_ids(v: str, labels: str, ids: str) -> str:
+    """``MATCH (v:labels) WHERE v.id IN ids`` as `by_id`, each id once."""
+    key = f"kh_bid_{v}"
+    return f"UNWIND {ids} AS {key} WITH DISTINCT * {by_id(v, labels, key)}"
 
 
 @lru_cache(maxsize=512)
@@ -291,14 +310,15 @@ async def reset_syncing(client: Neo4jClient, keep: Collection[str] | None = None
     """, {"seen": seen, "keep": list(keep or ())})
 
 
-async def stale_connectors(client: Neo4jClient) -> list[str]:
-    """Apps (not KBs) without a fresh stamp of this version."""
+async def stale_connectors(client: Neo4jClient, org_id: str) -> list[str]:
+    """The org's Apps (not KBs) without a fresh stamp of this version. An App with no orgId (not backfilled yet) is
+    taken by whichever org comes first: stamping is idempotent."""
     rows = await _q(client, """
-        MATCH (a:App) WHERE coalesce(a.type, '') <> 'KB'
+        MATCH (a:App) WHERE coalesce(a.type, '') <> 'KB' AND coalesce(a.orgId, $org) = $org
         OPTIONAL MATCH (m:KhScopeMeta {connectorId: a.id})
         WITH a, m WHERE m IS NULL OR NOT coalesce(m.fresh, false) OR coalesce(m.version, 0) <> $v
         RETURN a.id AS id
-    """, {"v": STAMP_VERSION})
+    """, {"v": STAMP_VERSION, "org": org_id})
     return [r["id"] for r in rows]
 
 
@@ -319,7 +339,7 @@ def _classify(c: tuple, p: tuple) -> str:
     inherits, rule = c[INH], c[RULE]
     if inherits and rule in ("STRICT", "OPEN"):
         return "free"
-    if (not inherits and rule in ("STRICT", "OPEN")) or (inherits and rule == "RESTRICTED"):
+    if (not inherits and rule in ("STRICT", "OPEN")) or (inherits and rule in ("RESTRICTED", "PARENT_AND_GRANT")):
         return "gate"
     return "block"
 

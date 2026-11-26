@@ -2522,21 +2522,17 @@ class TestSetUserStatus:
         assert kwargs["profile"]["status_emoji"] == ":taco:"
 
     @pytest.mark.asyncio
-    async def test_set_status_with_duration(self):
-        slack = _build_slack()
-        slack.client.users_profile_set = AsyncMock(return_value=_ok({"profile": {}}))
-        # `time` is imported inside the method (`import time as _time`); we
-        # can't patch a module attribute that doesn't exist on slack.slack.
-        # Instead, sanity-check the expiration is a future epoch ≥ now+duration.
+    async def test_set_status_with_duration(self, monkeypatch):
         import time
 
-        before = int(time.time())
+        slack = _build_slack()
+        slack.client.users_profile_set = AsyncMock(return_value=_ok({"profile": {}}))
+        # the method imports time itself, so the module's clock is frozen: a window around the wall clock flaked on a slow runner
+        monkeypatch.setattr(time, "time", lambda: 1_800_000_000.5)
         await slack.set_user_status("Away", duration_seconds=3600)
         kwargs = slack.client.users_profile_set.await_args.kwargs
+        assert kwargs["status_expiration"] == 1_800_003_600
         assert isinstance(kwargs["status_expiration"], int)
-        # expiration must be roughly now + 3600 (allow a small window)
-        assert kwargs["status_expiration"] >= before + 3600
-        assert kwargs["status_expiration"] <= before + 3600 + 5
 
     @pytest.mark.asyncio
     async def test_set_status_with_zero_duration_does_not_expire(self):

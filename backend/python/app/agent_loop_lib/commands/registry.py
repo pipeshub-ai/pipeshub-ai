@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from app.agent_loop_lib.commands.base import ARGUMENTS_PLACEHOLDER, Command
+from app.agent_loop_lib.commands.base import Command
+from app.agent_loop_lib.commands.render import render_command
 from app.agent_loop_lib.core.exceptions import RegistryError
 
 """Holds loaded Commands and expands one into the text that becomes an agent
@@ -30,16 +31,8 @@ class CommandRegistry:
         return [{"name": c.name, "description": c.description} for c in self._commands.values()]
 
     def render(self, name: str, args: str = "") -> str:
-        """Expand a command's body: substitute every `$ARGUMENTS` with
-        `args`, or — for a command with no placeholder — append `args` as a
-        trailing line so extra text the user typed after `/name` isn't
-        silently dropped."""
-        command = self.resolve(name)
-        if ARGUMENTS_PLACEHOLDER in command.body:
-            return command.body.replace(ARGUMENTS_PLACEHOLDER, args)
-        if args:
-            return f"{command.body}\n\n{args}"
-        return command.body
+        """Expand a command's body with what the user typed after `/name` (see `render.render_command`)."""
+        return render_command(self.resolve(name).body, [], args).text
 
     def load_dir(self, root: str) -> int:
         from app.agent_loop_lib.commands.loader import load_commands_from_dir

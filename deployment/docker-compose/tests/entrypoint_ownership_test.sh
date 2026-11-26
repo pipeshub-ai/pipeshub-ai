@@ -245,7 +245,9 @@ done
 (( STATIC_FAILS )) || echo "  ok   - marker paths match in the entrypoint, process_monitor.sh and docker-compose.yml"
 
 # The app service's entrypoint as compose runs it, $$ unescaped.
-docker compose -f "$COMPOSE_DIR/docker-compose.yml" --env-file "$COMPOSE_DIR/env.template" \
+# env.template ships every store credential empty (SEC-D-06), which Compose refuses to render: give it test ones.
+printf 'REDIS_PASSWORD=ci\nQDRANT_API_KEY=ci\nMONGO_PASSWORD=ci\nKAFKA_PASSWORD=ci\n' >"$TMP_ROOT/stores.env"
+docker compose -f "$COMPOSE_DIR/docker-compose.yml" --env-file "$COMPOSE_DIR/env.template" --env-file "$TMP_ROOT/stores.env" \
   config --format json >"$TMP_ROOT/compose.json" || { echo "docker compose config failed"; exit 1; }
 python3 - "$TMP_ROOT/compose.json" >"$TMP_ROOT/compose-entrypoint.sh" <<'PY' || exit 1
 import json, sys

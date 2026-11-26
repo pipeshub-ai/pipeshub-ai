@@ -38,7 +38,7 @@ import { useOnboardingTourStore } from '@/app/(main)/components/tours/onboarding
 import { useInlineCitationPopoverStore } from '@/app/(main)/chat/components/message-area/response-tabs/citations/citation-popover-store';
 import { useUploadStore } from '@/lib/store/upload-store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
-import { useOrgStore } from '@/lib/store/org-store';
+import { useOrgStore } from '@/config';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { useLanguageStore } from '@/lib/store/language-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
@@ -51,6 +51,8 @@ import { useUploadLimits, DEFAULT_MAX_FILE_SIZE_BYTES } from '@/lib/hooks/use-up
 import { fetchOrgWithLogo } from '@/app/(main)/chat/api';
 import { fetchModelsForContext } from '@/app/(main)/chat/utils/fetch-models-for-context';
 import { ASSISTANT_CTX } from '@/chat/store';
+import { useAuthStore } from '@/config';
+import { openRecordContent } from '@/lib/record-content';
 
 interface AnyStore {
   getState(): object;
@@ -168,5 +170,41 @@ describe('shared in-flight requests at session end', () => {
     const next = renderHook(() => useUploadLimits());
     expect(next.result.current.maxFileSizeBytes).toBe(DEFAULT_MAX_FILE_SIZE_BYTES);
     expect(callsTo('limits')).toBe(pendingBefore + 2);
+  });
+});
+
+// The preview's lease is never released by hand here: the session end alone must revoke every URL.
+describe('record content cache at session end', () => {
+  const jwt = (orgId: string, userId: string) => {
+    const b64 = (o: object) => btoa(JSON.stringify(o)).replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+    return `${b64({ alg: 'none' })}.${b64({ orgId, userId, exp: 4_102_444_800 })}.sig`;
+  };
+
+  it('is emptied with a lease held and nothing released', async () => {
+    const revoke = vi.fn();
+    let n = 0;
+    Object.assign(URL, { createObjectURL: vi.fn(() => `blob:t/${++n}`), revokeObjectURL: revoke });
+    useAuthStore.setState({ accessToken: jwt('o1', 'u1') } as never);
+    http.client.get.mockResolvedValueOnce({
+      status: 200,
+      data: new Blob(['x'], { type: 'application/pdf' }),
+      headers: { etag: '"v1"' },
+    });
+    const lease = await openRecordContent('rec-1', 'original').promise;
+    const url = lease.url;
+    expect(revoke).not.toHaveBeenCalled();
+
+    clearSessionCache();
+
+    expect(revoke).toHaveBeenCalledWith(url);
+    expect(() => lease.release()).not.toThrow();
+    expect(revoke).toHaveBeenCalledTimes(1);
+    // The next open of the same record goes to the network again, unconditionally.
+    http.client.get.mockClear();
+    void openRecordContent('rec-1', 'original');
+    await Promise.resolve();
+    const [, config] = http.client.get.mock.calls[0] as [string, { headers?: Record<string, string> }];
+    expect(config.headers?.['If-None-Match']).toBeUndefined();
+    useAuthStore.setState({ accessToken: null } as never);
   });
 });

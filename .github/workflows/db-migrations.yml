@@ -11,6 +11,17 @@ on:
       - 'backend/python/app/edition.py'
       - 'scripts/assert_no_skips.py'
       - '.github/workflows/db-migrations.yml'
+  # Two pull requests that each add the next revision of a branch both pass on their own; after both merge, main has two
+  # heads, and only a run on main sees it.
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/db/**'
+      - 'deployment/docker-compose/postgres/pg-roles.sh'
+      - 'backend/python/app/edition.py'
+      - 'scripts/assert_no_skips.py'
+      - '.github/workflows/db-migrations.yml'
 
 permissions:
   contents: read
@@ -20,8 +31,8 @@ jobs:
     name: migrations (${{ matrix.pg }}, ${{ matrix.shard }})
     runs-on: ubuntu-latest
     # The tests run in shards, each with its own PostgreSQL (the tests drop and recreate the cluster's roles, so two runs must not share a
-    # cluster). tests/test_unit.py::test_every_test_file_is_in_exactly_one_shard keeps the lists complete.
-    # min_tests are the case counts of the files, so the shards sum to the total; a suite that did not run fails its shard.
+    # cluster). tests/test_unit.py::test_every_test_file_is_in_exactly_one_shard keeps the lists complete. Each shard checks its run
+    # against its own collection, so no count is written here.
     strategy:
       fail-fast: false
       matrix:
@@ -30,40 +41,22 @@ jobs:
         include:
           - shard: rls
             files: tests/test_rls.py tests/test_roles.py tests/test_unit.py tests/test_wait_schema.py
-            min_tests: 450
-            suites: ''
           - shard: integration
-            files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py
-            min_tests: 56
-            suites: ''
+            files: tests/test_integration.py tests/test_import_role.py tests/test_restore_window.py tests/test_kv_access_map.py
           - shard: graph
             files: tests/test_graph.py tests/test_retrieval.py
-            min_tests: 166
-            suites: '--expect-suite tests.test_graph=144 --expect-suite tests.test_retrieval=22'
           - shard: vetted
             files: tests/test_vetted.py tests/test_vetted_kernel.py tests/test_change_log.py
-            min_tests: 534
-            suites: ''
           - shard: pins
             files: tests/test_vetted_pins.py tests/test_vetted_pins_k2.py tests/test_vetted_pins_k3.py tests/test_vetted_org_policy.py
-            min_tests: 351
-            suites: ''
           - shard: placement
             files: tests/test_placement.py
-            min_tests: 16
-            suites: '--expect-suite tests.test_placement=16'
           - shard: upkeep
             files: tests/test_upkeep.py
-            min_tests: 36
-            suites: '--expect-suite tests.test_upkeep=36'
           - shard: upgrade
             files: tests/test_pins_upgrade.py
-            min_tests: 8
-            suites: ''
           - shard: kg
-            files: tests/test_kg_schema.py tests/test_kg_writers.py tests/test_kg_downgrade.py
-            min_tests: 377
-            suites: '--expect-suite tests.test_kg_schema=8 --expect-suite tests.test_kg_writers=358 --expect-suite tests.test_kg_downgrade=11'
+            files: tests/test_kg_schema.py tests/test_kg_writers.py tests/test_kg_downgrade.py tests/test_kg_stats.py
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -78,7 +71,7 @@ jobs:
 
       - name: Install
         run: |
-          pip install -r backend/db/requirements.txt pytest
+          pip install --require-hashes --no-deps -r backend/db/requirements-test.lock
           sudo apt-get update -qq && sudo apt-get install -y -qq pgbouncer
 
       - name: Start PostgreSQL ${{ matrix.pg }} in memory, with no fsync
@@ -89,7 +82,7 @@ jobs:
         # The images are pinned by digest, the same ones as deployment/docker-compose/postgres/Dockerfile, so a new PostgreSQL minor
         # release reaches this job only through a pull request that bumps both and reviews the built-in functions (backend/db/README.md).
         env:
-          IMAGE: ${{ matrix.pg == '17' && 'pgvector/pgvector:0.8.7-pg17-bookworm@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d' || 'pgvector/pgvector:0.8.7-pg18-bookworm@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11' }}
+          IMAGE: ${{ matrix.pg == '17' && 'pgvector/pgvector:0.8.7-pg17-bookworm@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd' || 'pgvector/pgvector:0.8.7-pg18-bookworm@sha256:38681dc6eaf55308e2a4c6de392d131652dcfac70e1263e35cd9b5ea3fe39782' }}
         run: |
           docker run -d --name pg --network host --tmpfs /pgdata:rw,mode=0700 -e PGDATA=/pgdata -e POSTGRES_HOST_AUTH_METHOD=trust \
             "$IMAGE" -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c jit=off
@@ -131,18 +124,19 @@ jobs:
           MIGRATE_TEST_PG_EXTERNAL: 127.0.0.1:5432
           MIGRATE_TEST_PGBOUNCER: /usr/sbin/pgbouncer
           FILES: ${{ matrix.files }}
-        run: python -m pytest -q --durations=25 --junitxml="$RUNNER_TEMP/db-junit.xml" $FILES
+        run: |
+          # shellcheck disable=SC2086
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/db.collected" $FILES
+          # shellcheck disable=SC2086
+          python -m pytest -q --durations=25 --junitxml="$RUNNER_TEMP/db-junit.xml" $FILES
 
       - name: No unexpected skips
         # The generated vetted-function suite skips the checks that do not apply to a function by design (a function with no organisation
-        # argument has no foreign-organisation case); those are listed by function. Anything else skipped, or fewer cases than
-        # expected, or a graph suite that did not run, fails the job.
+        # argument has no foreign-organisation case); those are listed by function. Anything else skipped, or a collected case that did
+        # not run, or a file that collected nothing, fails the job.
         if: ${{ always() }}
-        env:
-          SUITES: ${{ matrix.suites }}
         run: |
-          # shellcheck disable=SC2086
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/db-junit.xml" --min-tests ${{ matrix.min_tests }} $SUITES \
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/db-junit.xml" --collected "$RUNNER_TEMP/db.collected" \
             --allow='-kernel.org_parent_ids]' --allow='-kernel.org_lineage]' --allow='-platform.job_start]' --allow='-platform.job_finish]' \
             --allow='-platform.job_checkpoint]' --allow='-identity.oldest_org]' --allow='-identity.org_count]' \
             --allow='-identity.gauge_user_counts]' --allow='-identity.gauge_live_orgs]' --allow='-identity.gauge_auth_configs]' \

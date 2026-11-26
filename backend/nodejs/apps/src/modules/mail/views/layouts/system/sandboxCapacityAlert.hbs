@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+  {{>head}}
+  <body>
+    <main>
+      <table {{{containerstyle}}}>
+        <tr>
+          <td>{{> header}}</td>
+        </tr>
+        <tr>
+          <td>
+            <table class="mobile-width" {{{bodytablestyle}}}>
+              <tr>
+                <td
+                  style="
+                    padding: 40px 30px;
+                    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                  "
+                >
+                  <div
+                    style="
+                      font-size: 20px;
+                      font-weight: 700;
+                      color: #1d1c1d;
+                      letter-spacing: -0.25px;
+                      line-height: 28px;
+                      margin: 0 0 16px 0;
+                    "
+                  >
+                    {{heading}}
+                  </div>
+                  <div
+                    style="
+                      font-size: 15px;
+                      font-weight: 400;
+                      color: #434245;
+                      line-height: 22px;
+                      margin: 0 0 24px 0;
+                    "
+                  >
+                    <div>{{intro}}</div>
+                    <div style="height: 12px; line-height: 12px;">&nbsp;</div>
+                    <div><strong>Why runs were held back:</strong> {{reasonText}}</div>
+                    {{#if indexingText}}
+                    <div style="height: 12px; line-height: 12px;">&nbsp;</div>
+                    <div><strong>Already done:</strong> {{indexingText}} Runs were still held back after that, so the machine is short of capacity for this load.</div>
+                    {{/if}}
+                    <div style="height: 12px; line-height: 12px;">&nbsp;</div>
+                    <div><strong>What you can do:</strong></div>
+                    <ul style="margin: 8px 0 0 0; padding-left: 20px;">
+                      {{#each actions}}
+                      <li style="margin: 0 0 6px 0;">{{this}}</li>
+                      {{/each}}
+                      <li style="margin: 0 0 6px 0;">Read the load alerts guide: <a href="{{docsUrl}}" style="color: #1a73e8;">{{docsUrl}}</a></li>
+                    </ul>
+                  </div>
+                  <table
+                    style="
+                      border-collapse: collapse;
+                      width: 100%;
+                      font-size: 14px;
+                      color: #434245;
+                      margin: 0 0 24px 0;
+                    "
+                    cellspacing="0"
+                    cellpadding="0"
+                  >
+                    {{#each stats}}
+                    <tr>
+                      <td style="padding: 6px 12px 6px 0; border-bottom: 1px solid #e8e8e8; color: #868686;">{{label}}</td>
+                      <td style="padding: 6px 0; border-bottom: 1px solid #e8e8e8;">{{value}}</td>
+                    </tr>
+                    {{/each}}
+                  </table>
+                  <div
+                    style="
+                      font-size: 13px;
+                      font-weight: 400;
+                      color: #868686;
+                      line-height: 20px;
+                      border-top: 1px solid #e8e8e8;
+                      padding-top: 16px;
+                      margin-top: 8px;
+                    "
+                  >
+                    {{#if footerNote}}{{footerNote}}{{else}}Admins are notified in the app each time code runs are held back again; this email is sent at most once a day for each level. It goes to each admin of this workspace.{{/if}}
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td>{{> footer}}</td>
+        </tr>
+      </table>
+    </main>
+  </body>
+</html>

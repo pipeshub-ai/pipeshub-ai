@@ -26,15 +26,29 @@ class DownloadAhead:
         self.limit = max(0, limit)
         self._semaphore = asyncio.Semaphore(self.limit) if self.limit else None
         self._in_use = 0
+        self._waiting = 0
 
     async def acquire(self, timeout: float | None = None) -> bool:
         """Take a slot; False if *timeout* passed first. Always True when the bound is off."""
         if self._semaphore is None:
             return True
+        self._waiting += 1
         try:
             await asyncio.wait_for(self._semaphore.acquire(), timeout)
         except TimeoutError:
             return False
+        finally:
+            self._waiting -= 1
+        self._in_use += 1
+        return True
+
+    async def try_acquire(self) -> bool:
+        """Take a slot only if one is free right now (never waits, never queues); True when the bound is off."""
+        if self._semaphore is None:
+            return True
+        if self._waiting or self._in_use >= self.limit:
+            return False
+        await self._semaphore.acquire()  # a slot is free and nobody is queued: this does not suspend
         self._in_use += 1
         return True
 
@@ -46,3 +60,8 @@ class DownloadAhead:
 
     def stats(self) -> dict[str, int]:
         return {"limit": self.limit, "in_use": self._in_use}
+
+    @property
+    def waiting(self) -> int:
+        """Records queued for a slot right now."""
+        return self._waiting

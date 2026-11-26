@@ -7,6 +7,8 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 import { settle } from './chat-test-harness'
 import { ORG, OWNER, RUN, appConfig, delta, finalAnswer, startStream, type Flow, type StreamHandler } from './streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const FIRST_QUESTION = 'What changed in the release?'
 
@@ -67,7 +69,7 @@ function editFlow(options: {
       sinon.stub(ChatSessionMessage, 'deleteMany').callsFake(((filter: { _id: { $in: unknown[] } }) => {
         const doomed = new Set(filter._id.$in.map(String))
         for (let i = store.messages.length - 1; i >= 0; i -= 1) {
-          if (doomed.has(String(store.messages[i]._id))) store.messages.splice(i, 1)
+          if (doomed.has(String(store.messages[i]!._id))) store.messages.splice(i, 1)
         }
         return Promise.resolve({ deletedCount: doomed.size })
       }) as never)
@@ -138,6 +140,9 @@ const sentFiles = (run: Awaited<ReturnType<typeof startStream>>) =>
   filesOf(run.ai.streamCalls[0]?.body as Record<string, unknown>)
 
 describe('es_controller editing the last question', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   afterEach(() => {
     sinon.restore()
   })

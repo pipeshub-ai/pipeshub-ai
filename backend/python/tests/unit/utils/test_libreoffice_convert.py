@@ -5,7 +5,9 @@ import asyncio
 import os
 import shlex
 import signal
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,6 +28,9 @@ from app.utils.libreoffice_convert import (
     unreadable_file_as_parse_error,
 )
 from app.utils.pdf_stream_conversion import libreoffice_to_pdf
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def _fake_proc(returncode: int = 0, stderr: bytes = b"") -> MagicMock:
@@ -168,10 +173,22 @@ async def test_a_timed_out_conversion_that_ignores_terminate_is_killed(monkeypat
 
 
 def _alive(pid: int) -> bool:
+    # Z and X are both dead: a reaped zombie passes through X (EXIT_DEAD) before its /proc entry goes,
+    # so a check that counts only Z can see a dead worker come back to life.
     try:
-        return Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1][0] != "Z"
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1][0] not in "ZX"
     except (FileNotFoundError, ProcessLookupError):
         return False
+
+
+async def _until(predicate: Callable[[], bool], seconds: float) -> bool:
+    """Poll ``predicate`` until it holds or ``seconds`` pass; the last answer, so a slow host only waits longer."""
+    deadline = time.monotonic() + seconds
+    while not predicate():
+        if time.monotonic() >= deadline:
+            return predicate()
+        await asyncio.sleep(0.02)
+    return True
 
 
 def _tree_script(pid_file: Path) -> str:
@@ -181,17 +198,21 @@ def _tree_script(pid_file: Path) -> str:
     )
 
 
+def _written_pid(pid_file: Path) -> int | None:
+    text = pid_file.read_text() if pid_file.exists() else ""
+    return int(text) if text.endswith("\n") else None
+
+
 async def _read_pid(pid_file: Path) -> int:
-    for _ in range(100):
-        if pid_file.exists() and pid_file.read_text().strip():
-            return int(pid_file.read_text())
-        await asyncio.sleep(0.05)
-    raise AssertionError("worker never started")
+    assert await _until(lambda: _written_pid(pid_file) is not None, seconds=10), "worker never started"
+    pid = _written_pid(pid_file)
+    assert pid is not None
+    return pid
 
 
 @pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="reads process state from /proc")
 @pytest.mark.asyncio
-@pytest.mark.parametrize("how", ["timeout", "cancel"])
+@pytest.mark.parametrize("how", ["timeout", "cancel", "cancel-twice"])
 async def test_no_process_of_the_conversion_survives_a_timeout_or_cancel(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, how: str
 ) -> None:
@@ -201,25 +222,55 @@ async def test_no_process_of_the_conversion_survives_a_timeout_or_cancel(
     monkeypatch.setattr(
         libreoffice_convert, "LIBREOFFICE_CONVERT_TIMEOUT_SECONDS", 1.0 if how == "timeout" else 60
     )
+    slots = CrossLoopSemaphore(1)
+    monkeypatch.setattr(libreoffice_convert, "conversion_slots", slots)
+    signals: list[signal.Signals] = []
+    terminated = asyncio.Event()
+    real_signal = libreoffice_convert._signal
+
+    def signal_and_note(process: object, sig: signal.Signals, **kwargs: object) -> None:
+        real_signal(process, sig, **kwargs)
+        signals.append(sig)
+        terminated.set()
+
+    monkeypatch.setattr(libreoffice_convert, "_signal", signal_and_note)
+    outdirs: list[Path] = []
+    fake_exec = libreoffice_convert.asyncio.create_subprocess_exec
+
+    async def note_outdir(*args: str, **kwargs: object) -> asyncio.subprocess.Process:
+        if "--outdir" in args:
+            outdirs.append(Path(args[args.index("--outdir") + 1]))
+        return await fake_exec(*args, **kwargs)
+
+    monkeypatch.setattr(libreoffice_convert.asyncio, "create_subprocess_exec", note_outdir)
 
     task = asyncio.create_task(convert_with_libreoffice(b"doc data", "doc", "docx"))
     await asyncio.wait_for(running.wait(), timeout=10)
-    worker = int(pid_file.read_text())
+    worker = await _read_pid(pid_file)
     assert _alive(worker)
-    if how == "cancel":
+    if how.startswith("cancel"):
         task.cancel()
+        if how == "cancel-twice":
+            # The second cancel lands while the stop waits out the grace period after TERM.
+            await asyncio.wait_for(terminated.wait(), timeout=5)
+            task.cancel()
+            # The worker ignores TERM: until the stop ends, its slot and temp dir stay taken.
+            while not task.done():
+                assert slots.in_use == 1
+                assert outdirs[0].is_dir()
+                await asyncio.sleep(0.01)
         with pytest.raises(asyncio.CancelledError):
             await task
     else:
         with pytest.raises(DocumentProcessingError, match="timed out"):
             await task
 
+    assert signal.SIGKILL in signals  # the whole group was killed before the conversion returned
     assert started[0].returncode is not None  # reaped, not a zombie
-    for _ in range(100):  # the kernel reaps the killed worker asynchronously
-        if not _alive(worker):
-            break
-        await asyncio.sleep(0.05)
-    assert not _alive(worker)
+    assert slots.in_use == 0
+    assert not outdirs[0].exists()
+    # The worker was killed, but its new parent (init) reaps it in its own time.
+    assert await _until(lambda: not _alive(worker), seconds=10), f"worker {worker} survived"
 
 
 @pytest.mark.asyncio

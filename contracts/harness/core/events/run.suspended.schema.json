@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/events/run.suspended.schema.json",
+  "title": "RunSuspendedEvent",
+  "description": "Run suspended.",
+  "x-writer": [
+    "node"
+  ],
+  "allOf": [
+    {
+      "$ref": "../envelope.schema.json#/$defs/InlineEnvelope"
+    }
+  ],
+  "properties": {
+    "type": {
+      "const": "run.suspended"
+    },
+    "writer": {
+      "const": "node"
+    },
+    "data": {
+      "$ref": "#/$defs/RunSuspendedData"
+    }
+  },
+  "$defs": {
+    "RunSuspendedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "$ref": "../common.schema.json#/$defs/SuspendReason"
+        },
+        "interactionId": {
+          "$ref": "../common.schema.json#/$defs/Id"
+        },
+        "wakeAt": {
+          "$ref": "../common.schema.json#/$defs/Timestamp"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.suspended",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "reason": "approval",
+        "interactionId": "int_1"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "run.suspended",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "owner",
+      "data": {
+        "reason": "timer",
+        "wakeAt": "2026-10-01T12:00:00.123Z"
+      }
+    }
+  ]
+}

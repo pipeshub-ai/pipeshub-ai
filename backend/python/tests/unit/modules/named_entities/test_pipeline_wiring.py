@@ -19,6 +19,8 @@ from app.modules.named_entities.domain.models import (
     NamedEntityExtraction,
 )
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+from app.services.base_client import ServiceUnavailableError
+from app.utils.llm import LLMUnavailableError
 
 _SECRET_NAME = "Zebulon Quartermaine"
 
@@ -197,6 +199,46 @@ async def test_extraction_failure_returns_failed_and_does_not_raise(caplog):
         result = await sink.extract_named_entities(ctx)
     assert result.status == "FAILED"
     assert _SECRET_NAME not in caplog.text
+
+
+async def test_a_provider_outage_behind_the_extraction_service_is_reported_as_unavailable() -> None:
+    """The service's 424 reaches the stage as every window unavailable, so the stage pauses on it (and counts the sends
+    the service made) instead of retrying the document as a model failure."""
+    from app.modules.pipeline.stages.entities import _provider_down
+    from app.utils.llm import LLMUnavailableError
+
+    sink = _sink()
+    with patch(
+        "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
+        AsyncMock(return_value=True),
+    ), patch.object(stage, "extract_named_entities", AsyncMock(side_effect=LLMUnavailableError("provider down"))):
+        result = await sink.extract_named_entities(SimpleNamespace(record=_record()))
+    assert result.status == "FAILED"
+    assert _provider_down(result)
+
+
+@pytest.mark.parametrize(
+    ("raised", "sent", "retry_after"),
+    [
+        (LLMUnavailableError("down", retry_after=120.0), True, 120.0),
+        (ServiceUnavailableError("circuit open", delivered=False), False, None),
+        (ServiceUnavailableError("503", delivered=True), True, None),
+    ],
+    ids=["provider-down", "service-unreachable", "service-5xx"],
+)
+async def test_the_extraction_carries_what_the_stage_needs_to_pause(raised, sent, retry_after) -> None:
+    """A service that was never reached has sent nothing (the pause is not a send against the budget); the provider's
+    retry-after survives to the stage's pause."""
+    from app.modules.pipeline.models import StageResult
+
+    sink = _sink()
+    with patch(
+        "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
+        AsyncMock(return_value=True),
+    ), patch.object(stage, "extract_named_entities", AsyncMock(side_effect=raised)):
+        result = await sink.extract_named_entities(SimpleNamespace(record=_record()))
+    paused = StageResult.paused_for(result.pause_cause, "down")
+    assert (paused.sent, paused.retry_after_s) == (sent, retry_after)
 
 
 @pytest.mark.parametrize("config", [{"budgets": {"max_turns": "lots"}}, {"tz": 7}])
@@ -639,3 +681,31 @@ async def test_a_year_less_date_is_written_in_the_year_nearest_the_records_creat
     # Created 2025-10-01: September 10 is 2025, and now has a start a date query can match.
     assert [(v["timex"], v["startMs"] is not None) for v in values] == [("2025-09-10", True)]
     assert kept.entities[0].value.ambiguous
+
+
+async def _persist_with_vector_store(upsert, monkeypatch) -> str:
+    monkeypatch.setattr("app.modules.entity_resolution.lookup.LOOKUP_RETRY_DELAY_SECONDS", 0.0)
+    graph = MagicMock(
+        find_named_entities=AsyncMock(return_value=[]),
+        resolve_named_entity_redirects=AsyncMock(return_value={}),
+        schedule_named_entity_persist_retry=AsyncMock(return_value=1),
+    )
+    with patch.object(stage.NamedEntityGraphWriter, "write", AsyncMock(return_value=[object()])):
+        return await stage.persist_named_entities(
+            SimpleNamespace(record=_record()), _extraction(), graph_provider=graph, graph_data_store=_store(), enabled=True,
+            entity_vector_store=SimpleNamespace(upsert_entities_batch=upsert),
+        )
+
+
+async def test_entity_points_that_were_not_written_make_the_persist_a_failure_for_the_caller_to_retry(monkeypatch) -> None:
+    from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
+
+    assert await _persist_with_vector_store(AsyncMock(return_value=EntityWriteOutcome(failed=1)), monkeypatch) == "failed"
+    assert await _persist_with_vector_store(AsyncMock(return_value=EntityWriteOutcome(written=1)), monkeypatch) == "written"
+
+
+async def test_an_entity_write_that_could_not_be_confirmed_is_a_failure_for_the_caller_to_retry(monkeypatch) -> None:
+    from app.services.vector_db.precision_guard import PrecisionUnreadable
+
+    upsert = AsyncMock(side_effect=PrecisionUnreadable("pin unreadable"))
+    assert await _persist_with_vector_store(upsert, monkeypatch) == "failed"

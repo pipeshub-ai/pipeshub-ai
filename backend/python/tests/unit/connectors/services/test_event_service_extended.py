@@ -12,6 +12,7 @@ Targets:
 import asyncio
 import logging
 from collections.abc import Coroutine
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -21,6 +22,12 @@ from app.connectors.services.event_service import EventService
 from app.exceptions.non_retryable import NonRetryableError
 from app.models.entities import FileRecord, RecordType
 from tests.unit.connectors.services.coordinator_stub import installed_stub, spawned
+
+
+@pytest.fixture(autouse=True)
+def _one_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keys these tests can name: each delete request's entry is stored as ``r``."""
+    monkeypatch.setattr("app.connectors.services.connector_intents.uuid4", lambda: SimpleNamespace(hex="r"))
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -575,6 +582,8 @@ class TestHandleDelete:
         service.graph_provider.delete_connector_instance = AsyncMock(
             return_value={"success": False, "error": "boom"}
         )
+        # Still there after the failed delete; a connector that reads as gone has its lane freed.
+        service.graph_provider.get_document = AsyncMock(return_value={"type": "Gmail"})
         with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
              patch(
                  "app.connectors.services.event_service.free_lane_of_deleted_connector",
@@ -598,7 +607,9 @@ class TestHandleDelete:
         release_may_finish = asyncio.Event()
 
         async def release(*_a):
-            from app.connectors.core.base.data_processor.storage_cleanup import StorageReleaseResult
+            from app.connectors.core.base.data_processor.storage_cleanup import (
+                StorageReleaseResult,
+            )
             await release_may_finish.wait()
             return StorageReleaseResult(completed=True)
 
@@ -620,7 +631,9 @@ class TestHandleDelete:
 
     @staticmethod
     def _helper(calls, completed=True):
-        from app.connectors.core.base.data_processor.storage_cleanup import StorageReleaseResult
+        from app.connectors.core.base.data_processor.storage_cleanup import (
+            StorageReleaseResult,
+        )
 
         helper = AsyncMock()
         helper.release_connector_storage = AsyncMock(
@@ -635,6 +648,8 @@ class TestHandleDelete:
         calls = []
         config = mock_container.config_service.return_value
         config.set_config = AsyncMock(side_effect=lambda key, _v: calls.append(key) or True)
+        config.list_keys_in_directory = AsyncMock(side_effect=lambda prefix: [f"{prefix}r"] if "/pending/" in prefix else [])
+        config.get_config = AsyncMock(side_effect=lambda key, *_a, **_k: {"orgId": "org1", "connectorId": "c1", "requestedAt": 1} if "/pending/org1/" in key else None)
         config.delete_config = AsyncMock(side_effect=lambda key: calls.append(f"clear:{key}") or True)
         service.graph_provider.delete_connector_instance = AsyncMock(
             side_effect=lambda **kw: calls.append("graph") or {"success": True}
@@ -644,13 +659,13 @@ class TestHandleDelete:
         assert await self._delete_with_helper(service, helper) is True
 
         assert [c for c in calls if "/services/connectors/" not in c][:5] == [
-            "/services/entityCleanup/pending/c1",
-            "/services/storageRelease/pending/c1",
-            "/services/lateWriteSweep/pending/c1",
+            "/services/entityCleanup/pending/org1/c1/r",
+            "/services/storageRelease/pending/org1/c1/r",
+            "/services/lateWriteSweep/pending/org1/c1/r",
             "graph",
             "release",
         ]
-        assert "clear:/services/storageRelease/pending/c1" in calls
+        assert "clear:/services/storageRelease/pending/org1/c1/r" in calls
         helper.release_connector_storage.assert_awaited_once_with("org1", "c1")
         helper.close.assert_awaited_once()
 
@@ -664,9 +679,9 @@ class TestHandleDelete:
         assert await self._delete_with_helper(service, self._helper([], completed=False)) is True
 
         cleared = [c.args[0] for c in config.delete_config.await_args_list]
-        assert "/services/storageRelease/pending/c1" not in cleared
+        assert "/services/storageRelease/pending/org1/c1/r" not in cleared
         key, intent = config.set_config.await_args.args
-        assert key == "/services/storageRelease/pending/c1" and intent["attempts"] == 1
+        assert key == "/services/storageRelease/pending/org1/c1/r" and intent["attempts"] == 1
 
     @pytest.mark.asyncio
     async def test_a_release_that_raises_does_not_fail_the_delete(self, service):
@@ -856,10 +871,13 @@ class TestStageReruns:
         {"orgId": "o1", "connectorId": "c1", "stages": ["embed"]},
         {"orgId": "o1", "connectorId": "c1", "stages": ["classify", "entities"]},
         {"orgId": "o1", "connectorId": "c1", "stages": "classify"},
+        {"orgId": "o1", "connectorId": "c1", "stages": []},
     ])
     async def test_stage_reruns_are_connector_wide_and_name_known_stages(self, service, payload) -> None:
+        """A payload fault: redelivering the same event cannot make it valid."""
         service._ensure_connector = AsyncMock()
-        assert await service._handle_reindex("gmail", payload) is False
+        with pytest.raises(NonRetryableError):
+            await service._handle_reindex("gmail", payload)
         service._ensure_connector.assert_not_awaited()
 
     @pytest.mark.asyncio

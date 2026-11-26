@@ -48,6 +48,9 @@ class RecordsStore:
     def add(self, key: str, **fields: Any) -> None:  # noqa: ANN401
         self.records[key] = {"_key": key, "orgId": ORG, "recordType": "FILE", **fields}
 
+    async def write_attempt_start(self, key: str, fields: dict[str, Any], now: int | None = None, transaction: str | None = None) -> bool:
+        return await self.update_node(key, CollectionNames.RECORDS.value, fields)
+
     async def update_node(self, key: str, collection: str, fields: dict[str, Any]) -> bool:
         assert collection == CollectionNames.RECORDS.value
         hook = self.before_write.pop((key, fields.get("indexingStatus")), None)

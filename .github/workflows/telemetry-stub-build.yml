@@ -1,0 +1,113 @@
+name: telemetry-stub-build
+
+# A PR that adds telemetry code without its stub would break a downstream build
+# that swaps in the stubs (telemetry-impl.stub.ts, app/telemetry_stub). This job does that
+# swap without building an image:
+#   - Node: delete the real telemetry files, rename *.stub.ts, then tsc
+#   - Python: stub/real parity test (names and parameters the app imports)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/nodejs/apps/**'
+      - 'backend/python/**'
+      - '.github/workflows/telemetry-stub-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telemetry-stub-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # The two checks below cannot see these: a direct metrics library keeps
+  # recording in a stub build, and neither tsc nor the parity test reads these
+  # import forms. A file that must use one says so with the marker comment.
+  no-telemetry-bypass:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Telemetry goes through the stub-swappable entry points
+        run: |
+          set -eu
+          marker='telemetry-direct-metrics: allowed'
+          bad=0
+          check() {
+            message=$1 pattern=$2
+            shift 2
+            # git grep exits 1 for "no match"; anything else is a broken check.
+            files=$(git grep -lE "$pattern" -- "$@") || [ $? -eq 1 ]
+            for f in $files; do
+              if ! grep -qF "$marker" "$f"; then
+                echo "::error file=$f::$message"
+                bad=1
+              fi
+            done
+          }
+          node=(backend/nodejs/apps/src ':!backend/nodejs/apps/src/libs/services/telemetry')
+          python=(backend/python/app ':!backend/python/app/telemetry' ':!backend/python/app/telemetry_stub')
+          code='^([[:space:]]*|[[:space:]]*[^/*[:space:]][^/]*)'
+          check "Use metricsBackend from telemetry-impl instead of prom-client" \
+            "^[[:space:]]*(import|export|[}])[^/]*from ['\"]prom-client['\"]|$code(require|import)[(]['\"]prom-client['\"]" \
+            "${node[@]}"
+          check "require() of a telemetry file is not type-checked; use a static import of telemetry-impl" \
+            "${code}require[(]['\"][^'\"]*services/telemetry/" \
+            "${node[@]}"
+          check "Use app.telemetry.backend instead of prometheus_client" \
+            '^[[:space:]]*(from|import)[[:space:]]+prometheus_client' \
+            "${python[@]}"
+          check "Write 'from app.telemetry... import ...'; the parity test reads only that form" \
+            '^[[:space:]]*(import[[:space:]]+app[.]telemetry|from[[:space:]]+app[[:space:]]+import[[:space:]].*\btelemetry\b)' \
+            "${python[@]}"
+          exit $bad
+
+  node-stub-compiles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend/nodejs/apps
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: Swap in the stubs
+        run: |
+          set -e
+          cd src/libs/services/telemetry
+          find . -type f ! -name '*.stub.ts' ! -name identity.ts ! -name process-metrics.ts -delete
+          find . -mindepth 1 -type d -empty -delete
+          for f in *.stub.ts; do mv "$f" "${f%.stub.ts}.ts"; done
+          cd ../../../..
+          rm src/libs/middlewares/telemetry.middleware.ts \
+             src/modules/user_management/services/metrics.refresh.service.ts
+      - name: Compile (a file that bypasses the door fails here)
+        run: npx tsc --noEmit -p tsconfig.json
+
+  python-stub-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install the locked dependencies
+        working-directory: backend/python
+        run: requirements/install.sh dev
+      - name: Stub matches what the app imports from app.telemetry
+        working-directory: backend/python
+        run: python -m pytest tests/unit/telemetry/test_stub_parity.py -p no:cacheprovider -q --confcutdir=tests/unit/telemetry

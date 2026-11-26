@@ -173,7 +173,7 @@ export function ActionsCatalogLayout({
             style={{ width: '100%' }}
           >
             <TextField.Slot>
-              <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+              <MaterialIcon name="search" size={16} color="var(--gray-11)" />
             </TextField.Slot>
           </TextField.Root>
         </Box>
@@ -216,7 +216,7 @@ export function ActionsCatalogLayout({
           gap="2"
           style={{ width: '100%', paddingTop: 80 }}
         >
-          <MaterialIcon name="extension" size={48} color="var(--gray-9)" />
+          <MaterialIcon name="extension" size={48} color="var(--gray-11)" />
           <Text size="2" style={{ color: 'var(--gray-11)' }}>
             {emptyLabel}
           </Text>

@@ -17,9 +17,9 @@ import inspect
 import logging
 import os
 import sys
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import Callable, Coroutine, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from app.telemetry.backend import METRICS_BACKEND
@@ -54,6 +54,10 @@ class OrgContext:
     kind: Literal["user", "service", "job", "system"]
     source: str  # "jwt" | "scoped_jwt" | "envelope" | "legacy-payload" | "job:<name>" | "system:<reason>"
     request_id: str
+    # The producer's event id of the envelope this context came from (None for any other source). Never
+    # serialised and never an authority: the consumer copies it into the payload as ``_event_id`` so the
+    # handler can tell a redelivery of an event from a new one.
+    event_id: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if (self.kind == "system") != (self.org_id is None):
@@ -92,6 +96,25 @@ def current_org_id() -> str:
     org_id = current().org_id
     assert org_id is not None
     return org_id
+
+
+def bound_org_id() -> str | None:
+    """The bound org, or None where none is bound or the scope is cross-org: for a route whose own refusal answers
+    an unbound request (a token with no org), as its read of the claims did."""
+    ctx = _ctx.get()
+    return ctx.org_id if ctx is not None and ctx.kind != "system" else None
+
+
+def org_of(row: Mapping[str, Any] | None) -> str | None:
+    """The org a stored row, document or wire record names (``orgId``, else ``org_id``); None when it names none.
+
+    For a tenancy check of the row against the bound org, never a value to bind from: only an entry point binds."""
+    if not row:
+        return None
+    value = row.get("orgId")
+    if value is None:
+        value = row.get("org_id")
+    return None if value is None else str(value)
 
 
 def set_request_context(ctx: OrgContext) -> None:
@@ -211,9 +234,9 @@ def spawn_in_request(coro: Coroutine[Any, Any, Any], *, name: str | None = None)
 
 
 # --- shadow / enforce -------------------------------------------------------
-# `shadow` (default) logs and counts an access with no context, or with one for a
-# different org, and lets it through. `enforce` fails closed. Flip per deployment
-# with ORG_CONTEXT_MODE once the shadow counters stay at zero.
+# `enforce` (default) fails closed on an access with no context, or with one for a
+# different org. `shadow` is the escape hatch: it logs and counts such an access
+# and lets it through, with a warning that the mode is on.
 
 _logger = logging.getLogger(__name__)
 VIOLATIONS = METRICS_BACKEND.counter(
@@ -225,19 +248,27 @@ SYSTEM_ORG_ID = "system"
 
 
 def validate_mode() -> bool:
-    """True in enforce mode. An unknown ``ORG_CONTEXT_MODE`` raises ValueError (never silently shadow)."""
-    mode = os.getenv("ORG_CONTEXT_MODE", "shadow").strip().lower() or "shadow"
+    """True in enforce mode (the default). An unknown ``ORG_CONTEXT_MODE`` raises ValueError (never silently shadow)."""
+    mode = os.getenv("ORG_CONTEXT_MODE", "").strip().lower() or "enforce"
     if mode not in ("shadow", "enforce"):
         raise ValueError(f"ORG_CONTEXT_MODE must be 'shadow' or 'enforce', got {mode!r}")
+    if mode == "shadow" and log_once("org_context:shadow_mode"):
+        _logger.warning("ORG_CONTEXT_MODE=shadow: an org-scoped access with no org or another org's is logged and allowed, not refused")
     return mode == "enforce"
 
 
 enforcing = validate_mode
 
 
+# Frames that wrap every store call; naming one as the caller would hide which code made the call.
+_WRAPPER_FILES = ("/app/telemetry/modules/db_metrics.py",)
+
+
 def _caller(depth: int) -> str:
     try:
         f = sys._getframe(depth)
+        while f.f_back is not None and f.f_code.co_filename.endswith(_WRAPPER_FILES):
+            f = f.f_back
         return f"{f.f_code.co_filename.rsplit('/app/', 1)[-1]}:{f.f_lineno}"
     except ValueError:
         return "?"
@@ -246,8 +277,8 @@ def _caller(depth: int) -> str:
 def ambient_org(explicit_org_id: str | None, *, site: str, caller: Callable[[], str] | str | None = None) -> str | None:
     """Check an explicit org argument against the ambient context at an org-scoped choke point.
 
-    Returns the explicit org (or the ambient one when none was given). Shadow mode
-    never raises; the first violation per (kind, site) is logged with the call site,
+    Returns the explicit org (or the ambient one when none was given). Enforce mode raises;
+    shadow mode never does; the first violation per (kind, site) is logged with the call site,
     every one is counted.
     """
     ctx = _ctx.get()

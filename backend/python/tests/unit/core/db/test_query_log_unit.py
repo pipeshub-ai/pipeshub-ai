@@ -23,7 +23,6 @@ from app.core.db.errors import PoolTimeout
 from app.core.db.uow import Tx, describe_pg_error
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.base import PgBase
-from app.services.graph_db.postgres.kg import flush  # noqa: F401  # PgBase() imports it lazily; loaded here, at collection, a test's patch.dict(sys.modules) can't drop it and a re-import re-register guard.py's metric
 from app.utils import error_class as EC
 from app.utils.logger import log_record_fields
 
@@ -321,7 +320,8 @@ async def _run_unit(step: str, error: BaseException) -> None:
     ("commit", OSError("connection reset"), CommitOutcomeUnknown, "unavailable", None),
 ])
 async def test_each_unit_step_writes_one_record(records, step: str, error: Exception, raised: type, cls: str,
-                                                code: str | None) -> None:
+                                                code: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DB_SLOW_QUERY_MS", "0")  # a busy runner can make an earlier step slow: count the failure record alone
     with pytest.raises(raised):
         await _run_unit(step, error)
     (record,) = _db_records(records)

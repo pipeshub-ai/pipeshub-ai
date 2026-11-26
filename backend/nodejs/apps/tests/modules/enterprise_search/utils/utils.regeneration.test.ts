@@ -127,6 +127,7 @@ interface StreamCall {
   messageId?: mongoose.Types.ObjectId | string | null
   onComplete?: (data: IAIResponse) => void
   accumulator?: StreamedContentAccumulator
+  onUpstreamError?: (code: unknown) => void
   onAskUserQuestion?: (payload: unknown) => void
 }
 
@@ -138,12 +139,10 @@ const feed = (res: FakeResponse, call: StreamCall): string => {
     call.conversation ? asDoc(call.conversation) : null,
     call.messageId ?? null,
     null,
-    'req-regen',
     asRes(res),
     call.onComplete ?? ((): void => undefined),
-    AGUI_PROTOCOL,
     call.accumulator,
-    undefined,
+    call.onUpstreamError,
     call.onAskUserQuestion,
   )
 }
@@ -235,6 +234,49 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       expect(conversation.failReason).to.equal('The AI model is not configured.')
       expect(at(conversation.conversationErrors).messageId?.toString()).to.equal(messageId.toString())
       expect(conversation.save.calledOnce).to.equal(true)
+    })
+
+    it("reports RUN_ERROR to the caller with Python's raw code", async () => {
+      const res = makeRes()
+      const onUpstreamError = sinon.spy()
+
+      feed(res, { chunk: frameAGUI('RUN_ERROR', { message: 'nope', code: 'llm_config' }), onUpstreamError })
+
+      expect(onUpstreamError.calledOnceWithExactly('llm_config')).to.equal(true)
+    })
+
+    it('neither reports nor passes on a RUN_ERROR whose data is null, so the run ends on the awaited no-answer path', async () => {
+      const res = makeRes()
+      const conversation = makeConversation()
+      const messageId = new mongoose.Types.ObjectId()
+      const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId } as never)
+      const onUpstreamError = sinon.spy()
+
+      expect(() =>
+        feed(res, { chunk: 'event: RUN_ERROR\ndata: null\n\n', conversation, messageId, onUpstreamError }),
+      ).to.not.throw()
+      await settle()
+
+      expect(onUpstreamError.called).to.equal(false)
+      expect(replace.called, 'no detached write').to.equal(false)
+      expect(written(res), 'not forwarded').to.equal('')
+    })
+
+    it("forwards a sub-agent's RUN_ERROR without reporting it or touching the message", async () => {
+      const res = makeRes()
+      const conversation = makeConversation()
+      const messageId = new mongoose.Types.ObjectId()
+      const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId } as never)
+      const onUpstreamError = sinon.spy()
+      const frame = frameAGUI('RUN_ERROR', { runId: 'child', parentRunId: 'root', message: 'tool timeout', code: 'agent_error' })
+
+      feed(res, { chunk: frame, conversation, messageId, onUpstreamError })
+      await settle()
+
+      expect(onUpstreamError.called).to.equal(false)
+      expect(replace.called).to.equal(false)
+      expect(conversation.failReason).to.equal(undefined)
+      expect(written(res), 'forwarded once').to.equal(frame)
     })
 
     it('saves the standard failure text when RUN_ERROR carries no message', async () => {
@@ -649,8 +691,8 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const res = makeRes()
       const conversation = makeConversation({ save: sinon.stub().rejects(new Error('write conflict')) })
       const messageId = new mongoose.Types.ObjectId()
-      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 2 })
-      sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 2 } as any)
+      sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId } as any)
       const reload = sinon.stub(ChatSession, 'findById')
 
       await handleRegenerationError(

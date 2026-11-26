@@ -3,7 +3,8 @@
 The reader trusts every row kg holds for a served connector. Verifying the connector when it is promoted proves the rows were right then; two checks keep watching afterwards:
 
 - a share of the checks the reader answers (``PG_KG_SHADOW_SAMPLE``, 1 % unless set) is repeated by the walk, off the caller's path, in one snapshot (:func:`sample`, called by ``read``);
-- the worker verifies each enforced connector now and then (``PG_KG_VERIFY_EVERY_S``, an hour unless set, 0 = never), a few connectors per pass (:func:`verify_due`).
+- the worker verifies each enforced connector now and then (``PG_KG_VERIFY_EVERY_S``, an hour unless set, 0 = never), a few connectors per pass (:func:`verify_due`), working at most ``VERIFY_SHARE`` of the time.
+  A verify that finds no difference then compares the connector's counters with a recount of its rows (``counts.check``), which only reports.
 
 Any difference takes the connector back to the walk at once (``backfill.demote``: mode legacy, no cursor), logs an error and is counted: kg admitting what the walk denies is a leak, and kg
 denying what the walk admits is a gap the reader must not have either. The connector is taken to enforce again only by the bootstrap (copy, verify, promote), and not before ``HOLD_S``
@@ -27,7 +28,14 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import bind, spawn_detached
 from app.services.graph_db.postgres import access as access_sql
-from app.services.graph_db.postgres.kg import backfill, bootstrap, drainer, locks
+from app.services.graph_db.postgres.kg import (
+    backfill,
+    bootstrap,
+    counts,
+    drainer,
+    locks,
+)
+from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 from app.services.graph_db.postgres.kg.verify import (
     Cursor,
     verify_chunk,
@@ -50,21 +58,27 @@ SAMPLE_IDS = 500                 # nodes kg decided that a sample repeats (a cal
 MAX_SAMPLES = 2
 VERIFY_PER_PASS = 2              # connectors one verify pass works on; the rest wait for the next pass
 VERIFY_TICK_S = 5.0              # how often the verify task looks for a connector whose turn has come
+# The share of the time the verify task works: after a pass that worked t seconds it rests t * (1 / share - 1). An organisation whose connectors take longer than the interval to
+# verify otherwise kept a database connection busy without a break (about 0.8 s of database time a second at 10M records); each page still checks what it checked, the cycle is longer.
+VERIFY_SHARE = 0.2
 SKIP_RETRY_S = 30.0              # a verify that found a change waiting in the log starts again this much later, from the beginning
-VERIFY_BUDGET_S = 20.0           # seconds one connector's chunks run per pass; the next pass goes on from the cursor
+VERIFY_BUDGET_S = 4.0            # seconds one connector's chunks run per pass (at least one page); the next pass goes on from the cursor. Short, so that the turns go round the connectors often
 VERIFY_TIMEOUT = "30s"           # one chunk of a verify (a page of a connector), in a snapshot of its own
 OVERDUE_INTERVALS = 24           # a full verify not completed within this many intervals is logged as an error and raised on the gauge
 MARKER = "3:@demote"             # the one key of a demotion request in the change log, a record that is not there. The drain never takes a row that holds it (drainer.py), so it stays until the worker has acted
+# A row of this key alone is the only one a service may insert into the change log itself (kg_0022's stamp trigger spells it too); every other row is the capture trigger's.
 # One worker serves the org (OSS runs one process), so the hold and the distrusted set are per process: a second process would hold its own.
 HOLD_S = 300.0                   # after a demotion by the net, the bootstrap leaves the connector alone this long
 
 NET = METRICS_BACKEND.counter("pipeshub_kg_net_total", "Checks of an enforced connector against the walk, by where they ran and what they found (over: kg admitted what the walk denies; under: kg denied what the walk admits; same; skipped; busy: a sample found the process at its limit; error)", ["source", "result"])
 LAST_VERIFIED = METRICS_BACKEND.gauge("pipeshub_kg_net_last_verified_seconds", "Unix time a connector's last complete verify against the graph finished (alert when it is older than a few verify intervals)", ["org", "connector"])
 OVERDUE = METRICS_BACKEND.gauge("pipeshub_kg_net_verify_overdue", "Enforced connectors whose full verify has not completed within 24 verify intervals", ["org"])
+OLDER = METRICS_BACKEND.gauge("pipeshub_kg_net_older_epoch", "Enforced connectors whose copy is of an older projection code epoch: not served or verified until the bootstrap brings them up to date (alert when it stays above 0)", ["org"])
 DEMOTED = METRICS_BACKEND.counter("pipeshub_kg_net_demoted_total", "Connectors taken back to the walk because kg differs from it", ["source"])
 
+# A copy of another epoch is not served, and its verify compares columns that code did not write: the bootstrap brings it up to date first (``bootstrap.bring_to_enforce``).
 ENFORCED = """/* pipeshub:kg.net_enforced */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
-    WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' ORDER BY k.id"""
+    WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' AND s.code_epoch = $2 ORDER BY k.id"""
 
 _SAMPLES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[asyncio.Task]] = weakref.WeakKeyDictionary()     # per loop: a loop that died leaves no sample counted as in flight
 _RETRY: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Task] = weakref.WeakKeyDictionary()
@@ -287,18 +301,45 @@ def maybe_sample(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaitable[Any]]
     rate = sample_rate()
     if rate <= 0 or random.random() >= rate:
         return
+    nodes = list(decided)
+    ids = random.sample(nodes, min(len(nodes), SAMPLE_IDS))
+    _start("sample", org, lambda: _sample(run, db, org, ids, access))
+
+
+def maybe_compare(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaitable[Any]], db: KernelDB, org: str, apps: Iterable[str], source: str,
+                  differs: Callable[[Tx], Awaitable[bool]]) -> None:
+    """Repeat a share of a read of kg's structure (``kg.hierarchy``) by the walk, off the caller's path: ``differs`` reads both in one snapshot (``run``) and says whether they
+    differ. A difference takes ``apps``, the connectors the read was answered for, back to the walk."""
+    rate = sample_rate()
+    apps = sorted(set(apps))
+    if rate <= 0 or not apps or random.random() >= rate:
+        return
+
+    async def check() -> None:
+        try:
+            diff = await run(differs)
+        except Exception:
+            NET.inc(source, "error")
+            logger.warning("kg %s against the walk failed; nothing changes", source, exc_info=True)
+            return
+        NET.inc(source, "diff" if diff else "same")
+        if diff:
+            await demote(db, org, apps, source=source, why="kg's structure gives another answer than the walk")
+    _start(source, org, check)
+
+
+def _start(source: str, org: str, work: Callable[[], Awaitable[None]]) -> None:
+    """``work`` on a task of its own in the org, within the process's limit of samples in flight."""
     loop = asyncio.get_running_loop()
     live = _SAMPLES.setdefault(loop, set())
     if len(live) >= MAX_SAMPLES:
-        NET.inc("sample", "busy")
+        NET.inc(source, "busy")
         return
-    nodes = list(decided)
-    ids = random.sample(nodes, min(len(nodes), SAMPLE_IDS))
 
     async def in_org() -> None:
         with bind(drainer._ctx(org)):                       # a detached task has no org of its own
-            await _sample(run, db, org, ids, access)
-    task = spawn_detached(in_org(), name="kg-sample")
+            await work()
+    task = spawn_detached(in_org(), name=f"kg-{source}")
     live.add(task)
     task.add_done_callback(live.discard)
 
@@ -311,12 +352,19 @@ async def settle() -> None:
 
 # ---- the periodic verify --------------------------------------------------------------------------------------------------------------------
 
+# A copy of another epoch is not served, and its verify compares columns that code did not write: the bootstrap brings it up to date first (``bootstrap.bring_to_enforce``).
 ENFORCED = """/* pipeshub:kg.net_enforced */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
-    WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' ORDER BY k.id"""
+    WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' AND s.code_epoch = $2 ORDER BY k.id"""
+OLDER_EPOCH = """/* pipeshub:kg.net_older_epoch */ SELECT count(*) FROM kg.projection_state WHERE org_id = $1 AND app_sk <> 0 AND mode = 'enforce' AND code_epoch <> $2"""
 
 
 # The planner profile of the reader (no bitmap or sequential scans: with no statistics, or a connector that holds most of the org's rows, one can read the whole org to sort a page) and the limit of one page.
 CHUNK_PROFILE = "/* pipeshub:kg.net_verify_limit */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('enable_seqscan', 'off', true), set_config('statement_timeout', $1, true)"
+
+
+def verify_rest(worked: float) -> float:
+    """Seconds the verify task rests after a pass that worked ``worked`` seconds: at least VERIFY_TICK_S, and enough that it works VERIFY_SHARE of the time."""
+    return max(VERIFY_TICK_S, worked * (1 / VERIFY_SHARE - 1))
 
 
 def _jitter() -> float:
@@ -331,14 +379,15 @@ class VerifyState:
     since: float | None = None
     flagged: bool = False
     mark: int = 0                  # the connector's write count when the scan began (read under its lock, see _begin)
+    turn: float = 0.0              # when it last had a pass: the passes go round the connectors whose turn has come, so a large scan in progress does not hold the others back
 
 
 async def _chunk(db: KernelDB, org: str, app: str, cur: Cursor) -> str:
-    """One page of the verify in a snapshot of its own: ``skipped`` when the connector is not served in it (a change waits in the log, so kg is behind the graph by design), else ``done`` or
-    ``more``."""
+    """One page of the verify in a snapshot of its own: ``skipped`` when the connector is not served in it (a change waits in the log, so kg is behind the graph by design) or a restamp
+    job hides rows of it (their stamps are outdated by design until the job is over them), else ``done`` or ``more``."""
     async def go(tx: Tx) -> str:
         await tx.fetchval(CHUNK_PROFILE, VERIFY_TIMEOUT)
-        if not await drainer.serves(tx, org, app):
+        if not await drainer.serves(tx, org, app) or await drainer.fenced(tx, org, app):
             return "skipped"
         return "done" if await verify_chunk(tx, org, app, cur) else "more"
     with bind(drainer._ctx(org)):
@@ -370,11 +419,11 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
     if every <= 0:
         return 0
 
-    async def enforced(tx: Tx) -> list[str]:
-        return [r["id"] for r in await tx.fetch(ENFORCED, org)]
+    async def enforced(tx: Tx) -> tuple[list[str], int]:
+        return [r["id"] for r in await tx.fetch(ENFORCED, org, CODE_EPOCH)], await tx.fetchval(OLDER_EPOCH, org, CODE_EPOCH)
     try:
         with bind(drainer._ctx(org)):
-            apps = await db.run(enforced, isolation="repeatable_read")
+            apps, older = await db.run(enforced, isolation="repeatable_read")
     except Exception:
         NET.inc("verify", "error")
         logger.warning("kg verify could not list the enforced connectors of an org", exc_info=True)
@@ -393,10 +442,13 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
                 st.flagged = True
                 logger.error("kg connector %s of org %s has not completed a verify in %d intervals", app, org, OVERDUE_INTERVALS)
     OVERDUE.set(org, value=overdue)
-    turn = sorted((a for a in apps if states[(org, a)].cursor is not None or states[(org, a)].due <= now), key=lambda a: states[(org, a)].due)[:VERIFY_PER_PASS]
+    OLDER.set(org, value=older)
+    turn = sorted((a for a in apps if states[(org, a)].cursor is not None or states[(org, a)].due <= now),
+                  key=lambda a: (states[(org, a)].turn, states[(org, a)].due))[:VERIFY_PER_PASS]
     completed = 0
     for app in turn:
         st = states[(org, app)]
+        st.turn = time.monotonic()
         deadline = time.monotonic() + VERIFY_BUDGET_S
         while True:
             if st.cursor is not None and locks.written(org, app) != st.mark:
@@ -444,6 +496,7 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
                 await demote(db, org, [app], source="verify", why="the copy differs from the graph")
             else:
                 LAST_VERIFIED.set(org, app, value=time.time())
+                await counts.check(db, org, app)
             st.cursor, st.since, st.flagged, st.due = None, None, False, time.monotonic() + every
             completed += 1
             break

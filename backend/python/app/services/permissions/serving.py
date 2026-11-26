@@ -15,12 +15,14 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from app.services.vector_db.filters import ScopeFilter, ScopeFilterTooLarge
 
 from .errors import ViewerScopesUnavailable
 from .metrics import SCOPES_UNAVAILABLE, SERVING_PLAN
+from .mode import AclFilterMode
 from .scope_fields import SCOPE_FIELDS_VERSION, current_scope_generation
 
 if TYPE_CHECKING:
@@ -38,6 +40,10 @@ PLAN_BUDGET_SECONDS = 0.25
 #: 34 vs 85. The cap is the count at which serving stays within about 3x of the legacy request on the small table and level on the large one.
 # shortcut: array overlap against the viewer's lists, fine to a few hundred ids; a probe against a hashed set per viewer removes the cap.
 MAX_SERVED_TERMS = 300
+#: How long a process trusts its read of the connectors switched to `scopes` (their app documents), on a deployment whose default is not `scopes`:
+#: an admin's opt-in reaches search within this. A rollback is not delayed: a connector it names is still decided by its app document, read for
+#: each search.
+SWITCHED_TTL_SECONDS = 30.0
 
 
 def stamp_filter(scopes: ViewerScopes, served: frozenset[str], *, defer: bool) -> ScopeFilter:
@@ -50,8 +56,33 @@ def stamp_filter(scopes: ViewerScopes, served: frozenset[str], *, defer: bool) -
 
 
 class ServingPlanner:
-    def __init__(self, scopes: ViewerScopeService, currency: StampCurrency, budget_seconds: float = PLAN_BUDGET_SECONDS) -> None:
-        self._scopes, self._currency, self._budget = scopes, currency, budget_seconds
+    def __init__(self, scopes: ViewerScopeService, currency: StampCurrency, budget_seconds: float = PLAN_BUDGET_SECONDS,
+                 default: AclFilterMode = AclFilterMode.SCOPES) -> None:
+        """``default``: the deployment's mode, which a connector whose own mode is `inherit` takes."""
+        self._scopes, self._currency, self._budget, self._default = scopes, currency, budget_seconds, default
+        self._switched_by_org: dict[str, tuple[float, frozenset[str]]] = {}
+        self._switched_locks: dict[str, asyncio.Lock] = {}
+
+    async def _switched(self, org_id: str) -> frozenset[str]:
+        """The connectors an admin switched to `scopes`, read from their app documents (no cache in between) at most every ``SWITCHED_TTL_SECONDS``.
+        A read that fails or is slow is none switched: the legacy request."""
+        at, ids = self._switched_by_org.get(org_id, (float("-inf"), frozenset()))
+        if time.monotonic() - at <= SWITCHED_TTL_SECONDS:
+            return ids
+        # one read per organisation at a time: the searches that find the memo expired together wait for that read instead of each running it, and
+        # reads never overlap, so an older answer cannot land after a newer one
+        async with self._switched_locks.setdefault(org_id, asyncio.Lock()):
+            at, ids = self._switched_by_org.get(org_id, (float("-inf"), frozenset()))
+            if time.monotonic() - at <= SWITCHED_TTL_SECONDS:
+                return ids
+            started = time.monotonic()      # the answer is as old as the read's start
+            try:
+                ids = await asyncio.wait_for(self._currency.switched(org_id), self._budget)
+            except Exception as exc:
+                _logger.warning("switched connectors not read: %s", type(exc).__name__)
+                ids = frozenset()
+            self._switched_by_org[org_id] = (started, ids)
+            return ids
 
     async def plan(self, org_id: str, user_key: str) -> ScopeFilter | None:
         """The filter to search with, or None for the legacy request. Never raises. Runs inside the organisation."""
@@ -60,6 +91,8 @@ class ServingPlanner:
     async def plan_exact(self, org_id: str, user_key: str) -> tuple[ScopeFilter | None, bool]:
         """`plan`, and whether every connector the viewer is gated into is served and exact and the viewer has no legacy app: then no point the request returns is left to the arms'
         guess, so it needs no over-fetch for the post-check's denials (the post-check itself stays on every hit)."""
+        if self._default is not AclFilterMode.SCOPES and not await self._switched(org_id):
+            return None, False      # no connector can be served: nothing is read, as when no planner exists
         try:
             flt, exact, reason = await asyncio.wait_for(self._plan(org_id, user_key), self._budget)
         except TimeoutError:
@@ -80,7 +113,8 @@ class ServingPlanner:
             return None, False, "miss"
         if len(scopes.readable_groups) + len(scopes.readable_scopes) + len(scopes.unreadable_restricted) > MAX_SERVED_TERMS:
             return None, False, "broad"
-        served, exact = await self._currency.read(scopes.gated_apps)
+        apps = scopes.gated_apps if self._default is AclFilterMode.SCOPES else scopes.gated_apps & await self._switched(org_id)
+        served, exact = await self._currency.read(apps, default=self._default)
         if not served:
             return None, False, "no_served"
         flt = stamp_filter(scopes, served, defer=True)

@@ -12,6 +12,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import {
   useFeatureFlagsStore,
   selectActionsEnabled,
+  selectFeatureFlagsKnown,
   selectFeatureFlagsLoaded,
 } from '@/lib/store/feature-flags-store';
 import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
@@ -79,6 +80,8 @@ function PersonalActionsPageContent() {
   const addToast = useToastStore((s) => s.addToast);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const flagsLoaded = useFeatureFlagsStore(selectFeatureFlagsLoaded);
+  // A failed read's stand-in never redirects: only an answer that says it is off (UIADOPT1-FU-1).
+  const flagsKnown = useFeatureFlagsStore(selectFeatureFlagsKnown);
   const toolsetTypeParam = searchParams.get('toolsetType');
   const instanceTabParam = searchParams.get('instanceTab');
   const instanceFilterTab = useMemo((): ActionInstanceAuthTab => {
@@ -200,10 +203,10 @@ function PersonalActionsPageContent() {
   }, [addToast, t, catalogTab, debouncedCatalogSearch]);
 
   useEffect(() => {
-    if (flagsLoaded && !actionsEnabled) {
+    if (flagsKnown && !actionsEnabled) {
       router.replace('/workspace/general');
     }
-  }, [flagsLoaded, actionsEnabled, router]);
+  }, [flagsKnown, actionsEnabled, router]);
 
   useEffect(() => {
     if (toolsetTypeParam || (flagsLoaded && !actionsEnabled)) return;

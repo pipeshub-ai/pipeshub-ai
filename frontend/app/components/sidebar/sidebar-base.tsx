@@ -12,6 +12,7 @@ import {
   HEADER_HEIGHT,
   FOOTER_HEIGHT,
   CONTENT_PADDING,
+  MOBILE_NAV_ID,
 } from './constants';
 import { useSidebarWidthStore, useAppliedSidebarWidth, clampSidebarWidth } from '@/lib/store/sidebar-width-store';
 import { useMobileSidebarRegistration } from '@/lib/store/mobile-sidebar-store';
@@ -137,6 +138,7 @@ export function SidebarBase({ header, children, footer, footerHeight = FOOTER_HE
         <Box
           {...dialogProps}
           ref={dialogRef}
+          id={MOBILE_NAV_ID}
           tabIndex={-1}
           style={{
             position: 'fixed',
@@ -155,6 +157,8 @@ export function SidebarBase({ header, children, footer, footerHeight = FOOTER_HE
       <Flex
         {...dialogProps}
         ref={dialogRef}
+        id={MOBILE_NAV_ID}
+        tabIndex={-1}
         direction="column"
         style={{
           position: 'fixed',
@@ -162,10 +166,11 @@ export function SidebarBase({ header, children, footer, footerHeight = FOOTER_HE
           zIndex: 200,
           backgroundColor: 'var(--olive-1)',
           fontFamily: 'Manrope, sans-serif',
+          outline: 'none',
         }}
       >
-        {/* Mobile header: logo area + × close button */}
-        {header && (
+        {/* Mobile header: logo area + × close button; a sidebar without a header still gets the button */}
+        {(header || onMobileClose) && (
           <Box
             style={{
               height: `${HEADER_HEIGHT}px`,

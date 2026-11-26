@@ -1,8 +1,11 @@
 import asyncio
+import functools
 import json
 import logging
 import re
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, time
 from typing import Any
 
@@ -39,8 +42,6 @@ from app.modules.parsers.excel.prompt_template import (
     TableHeaders,
     excel_header_detection_prompt,
     excel_header_generation_prompt,
-    row_text_prompt,
-    row_text_prompt_for_csv,
     sheet_summary_prompt,
     table_summary_prompt,
 )
@@ -55,19 +56,30 @@ from app.modules.parsers.excel.workbook_model import (
     load_workbook_model,
 )
 from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
+from app.services.paid_cache.access import cached_model_call
+from app.services.paid_cache.keys import (
+    KIND_EXCEL_HEADERS,
+    KIND_TABLE_SUMMARY,
+)
 from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
 from app.services.resource_governor.kinds import ParseKind
-from app.utils.aimodels import coerce_message_content_to_text
-from app.utils.concurrency import max_table_rows_for_llm
+from app.utils.aimodels import INDEXING_SDK_RETRIES, coerce_message_content_to_text
+from app.utils.concurrency import max_table_rows_for_llm, table_row_batch_size
 from app.utils.env_config import env_int, env_positive_int
-from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.error_class import log_failure
+from app.utils.indexing_helpers import generate_simple_row_text
+from app.utils.indexing_metrics import note_rows_over_budget
+from app.utils.is_truncated import is_truncated
 from app.utils.llm import get_llm_for_role
 from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import (
-    invoke_with_row_descriptions_and_reflection,
     invoke_with_structured_output_and_reflection,
 )
-from app.utils.table_enrichment import fallback_table_summary
+from app.utils.table_enrichment import (
+    RetryBudget,
+    describe_row_dicts,
+    fallback_table_summary,
+)
 from app.utils.user_errors import EXCEL_TOO_LARGE, UNREADABLE_FILE
 
 __all__ = ["ExcelParser", "get_cell_background_color", "get_cell_font_color"]
@@ -512,7 +524,6 @@ class ExcelParser:
         # Store prompts
         self.sheet_summary_prompt = sheet_summary_prompt
         self.table_summary_prompt = table_summary_prompt
-        self.row_text_prompt = row_text_prompt
 
         # Configure retry parameters
         self.max_retries = 3
@@ -526,7 +537,9 @@ class ExcelParser:
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
             document_parser = self.new_document_parser()
-            llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+            llm, _ = await get_llm_for_role(
+                self.config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+            )
             # openpyxl's load is synchronous and can take seconds on large
             # workbooks; keep it off the event loop.
             await asyncio.to_thread(document_parser.load_workbook_from_binary, content)
@@ -579,6 +592,8 @@ class ExcelParser:
             if error.cause == "timed_out":
                 # the pool stopped the worker: a workbook that takes this long is refused, not retried
                 raise _too_large(f"the load ran past {EXCEL_LOAD_MAX_SECONDS} s") from None
+            if error.cause == "at_memory_limit":
+                raise _too_large(f"the load stayed at its {EXCEL_LOAD_MAX_BYTES}-byte allowance") from None
             raise
         except LoaderFailure as failure:
             raise _loader_error(failure) from None
@@ -1309,8 +1324,16 @@ class ExcelParser:
             )
 
             # Use centralized utility with reflection
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                llm, messages, ExcelHeaderDetection
+            parsed_response = await cached_model_call(
+                KIND_EXCEL_HEADERS,
+                llm=llm,
+                template=excel_header_detection_prompt,
+                rendered=rows_text,
+                params={"flow": "detect"},
+                call=lambda: invoke_with_structured_output_and_reflection(llm, messages, ExcelHeaderDetection),
+                encode=lambda detected: detected.model_dump(),
+                decode=ExcelHeaderDetection.model_validate,
+                config_service=self.config_service,
             )
 
             if parsed_response is not None:
@@ -1395,8 +1418,17 @@ class ExcelParser:
                     self.logger.info("Calling LLM for header generation (initial attempt)")
 
                 # Use centralized utility with reflection for parse errors
-                parsed_response = await invoke_with_structured_output_and_reflection(
-                    llm, messages, TableHeaders
+                parsed_response = await cached_model_call(
+                    KIND_EXCEL_HEADERS,
+                    llm=llm,
+                    template=excel_header_generation_prompt,
+                    rendered="\n".join(str(getattr(m, "content", m)) for m in messages),
+                    params={"flow": "generate", "columns": column_count},
+                    call=functools.partial(invoke_with_structured_output_and_reflection, llm, messages, TableHeaders),
+                    encode=lambda generated: generated.model_dump(),
+                    decode=TableHeaders.model_validate,
+                    cacheable=lambda generated: len(generated.headers) == column_count,
+                    config_service=self.config_service,
                 )
 
                 if parsed_response is not None and parsed_response.headers:
@@ -1563,27 +1595,76 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             messages = self.table_summary_prompt.format_messages(
                 headers=[_cut_for_prompt(h, _PROMPT_SAMPLE_CHARS) for h in table["headers"]], sample_data=json.dumps(sample_data, indent=2, ensure_ascii=False)
             )
-            response = await self._call_llm(messages)
-            # Gemini and similar return content as a list of blocks, not a string.
-            summary = coerce_message_content_to_text(response.content)
-            if '</think>' in summary:
-                summary = summary.split('</think>')[-1]
+            truncated = False
+
+            async def paid_summary() -> str:
+                nonlocal truncated
+                response = await self._call_llm(messages)
+                truncated = is_truncated(response)
+                # Gemini and similar return content as a list of blocks, not a string.
+                text = coerce_message_content_to_text(response.content)
+                if '</think>' in text:
+                    text = text.split('</think>')[-1]
+                return text
+
+            summary = await cached_model_call(
+                KIND_TABLE_SUMMARY,
+                llm=self.llm,
+                template=self.table_summary_prompt,
+                rendered="\n".join(str(getattr(m, "content", m)) for m in messages),
+                call=paid_summary,
+                encode=lambda text: text,
+                decode=str,
+                cacheable=lambda text: bool(text.strip()) and not truncated,
+                config_service=self.config_service,
+            )
             self.logger.info("Table summary generated")
-            return summary
+            return summary or ""
 
         except NonRetryableError:
             raise
         except Exception as e:
-            self.logger.warning("Table summary unavailable (%s); using a plain one", e)
+            log_failure(self.logger, "table_summary.failed", e, include_error_text=False, parser="excel")
             return fallback_table_summary(table["headers"], len(table["data"]))
 
+    @contextmanager
+    def _row_prompt_guard(self, rows_data: list[dict[str, Any]]) -> Iterator[list[dict[str, Any]]]:
+        """The rows as they go into a prompt, with their cost charged to the output budget.
+
+        The prompt is built and copied several times (cut values, json, numbered text, messages):
+        it is charged before it is built and given back once the call is made.
+        """
+        prompt_chars = sum(
+            min(len(v), _PROMPT_ROW_VALUE_CHARS) for row in rows_data for v in row.values() if isinstance(v, str)
+        )
+        prompt_charge = _PROMPT_COPIES * prompt_chars
+        self._output.charge(prompt_charge)
+        try:
+            yield [
+                {
+                    k: _cut_for_prompt(v, _PROMPT_ROW_VALUE_CHARS) if isinstance(v, str) else v
+                    for k, v in row.items()
+                }
+                for row in rows_data
+            ]
+        finally:
+            self._output.release(prompt_charge)
+
     async def get_rows_text(
-        self, rows: list[list[dict[str, Any]]], table_summary: str
+        self,
+        rows: list[list[dict[str, Any]]],
+        table_summary: str,
+        *,
+        retry_budget: RetryBudget | None = None,
     ) -> list[str]:
-        """Convert multiple rows into natural language text using context from summaries in a single prompt"""
+        """Convert rows into natural language text, addressing each row by its number.
+
+        A row the model leaves out, or a batch it does not answer, gets plain ``column: value``
+        text for that row alone (a short batch is split and retried first), never another row's
+        description.
+        """
         self.logger.info(f"Converting {len(rows)} rows to natural language text")
         try:
-            # Prepare rows data
             rows_data = [
                 {
                     cell["header"]: (
@@ -1595,47 +1676,19 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 }
                 for row in rows
             ]
-
-            # Get natural language text from LLM with count validation
-            # Use CSV prompt which includes explicit row count validation
-            # The prompt is built and copied several times (cut values, json, numbered text, messages):
-            # charge it before it is built, give it back once the call is made.
-            prompt_chars = sum(
-                min(len(v), _PROMPT_ROW_VALUE_CHARS) for row in rows_data for v in row.values() if isinstance(v, str)
+            descriptions = await describe_row_dicts(
+                self.llm,
+                rows_data,
+                table_summary,
+                self.logger,
+                # The table operation hands its budget in; a direct call gets one of its own.
+                budget=retry_budget or RetryBudget.for_batches(1),
+                config_service=self.config_service,
+                prompt_guard=self._row_prompt_guard,
+                # The output budget's refusal ends the load; it is not a model failure.
+                propagate=(ParseError,),
             )
-            prompt_charge = _PROMPT_COPIES * prompt_chars
-            self._output.charge(prompt_charge)
-            try:
-                prompt_rows = [
-                    {
-                        k: _cut_for_prompt(v, _PROMPT_ROW_VALUE_CHARS) if isinstance(v, str) else v
-                        for k, v in row.items()
-                    }
-                    for row in rows_data
-                ]
-                messages = row_text_prompt_for_csv.format_messages(
-                    table_summary=table_summary,
-                    numbered_rows_data=format_rows_with_index(prompt_rows),
-                    row_count=len(rows_data)
-                )
-                del prompt_rows
-
-                # Use centralized utility with reflection and count validation
-                parsed_response = await invoke_with_row_descriptions_and_reflection(
-                    self.llm, messages, expected_count=len(rows_data)
-                )
-                del messages
-            finally:
-                self._output.release(prompt_charge)
-
-            if parsed_response is not None and parsed_response.descriptions:
-                descriptions = parsed_response.descriptions
-                self.logger.info(f"Successfully generated natural language descriptions for {len(descriptions)} rows")
-            else:
-                self.logger.warning(f"LLM failed to generate descriptions, using fallback for {len(rows_data)} rows")
-                # simple text representations of rows, built only when the LLM gave none
-                descriptions = [generate_simple_row_text(row) for row in rows_data]
-
+            self.logger.info(f"Generated natural language descriptions for {len(descriptions)} rows")
             return descriptions
         except Exception as e:
             self.logger.error(f"Error converting rows to natural language text: {e}", exc_info=True)
@@ -1695,8 +1748,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
             if use_llm_for_rows:
                 self.logger.info(f"Using LLM for row processing (under threshold of {threshold})")
-                # Process rows in batches of 50 in parallel using LLM
-                batch_size = 50
+                # Process rows in batches (INDEXING_TABLE_ROW_BATCH_SIZE, default 50) in parallel using LLM
+                batch_size = table_row_batch_size()
 
                 # Create batches
                 batches = []
@@ -1705,13 +1758,19 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                     batches.append((i, batch))  # Store start index and batch data
 
                 self.logger.info(f"Processing {len(table['data'])} rows in {len(batches)} batches of {batch_size}")
+                table_retry_budget = RetryBudget.for_batches(len(batches))
 
                 # Limit parallel processing to at most 10 concurrent batches
                 semaphore = asyncio.Semaphore(10)
 
-                async def limited_get_rows_text(batch: list[Any], _sem: asyncio.Semaphore = semaphore, _ts: str = table_summary) -> list[str]:
+                async def limited_get_rows_text(
+                    batch: list[Any],
+                    _sem: asyncio.Semaphore = semaphore,
+                    _ts: str = table_summary,
+                    _budget: RetryBudget = table_retry_budget,
+                ) -> list[str]:
                     async with _sem:
-                        texts = await self.get_rows_text(batch, _ts)
+                        texts = await self.get_rows_text(batch, _ts, retry_budget=_budget)
                     # charged as the batch arrives, before the other batches' texts are gathered
                     self._output.charge_text(*texts)
                     return texts
@@ -1729,6 +1788,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 except BaseException:
                     for _, _, task in batch_tasks:
                         task.cancel()
+                    # Wait for them: no task is pending, and no call completes, once the error leaves.
+                    await asyncio.gather(*[task for _, _, task in batch_tasks], return_exceptions=True)
                     raise
                 self.logger.info(f"Completed processing {len(batch_tasks)} batches with LLM")
 
@@ -1749,6 +1810,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                             )
             else:
                 self.logger.info(f"Using simple format for row processing (exceeded threshold of {threshold})")
+                note_rows_over_budget(len(table["data"]))
                 # Use simple format for rows (skip LLM)
                 for row in table["data"]:
                     if row:

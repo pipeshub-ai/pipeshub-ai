@@ -218,3 +218,32 @@ async def test_the_extraction_is_kept_as_the_stage_output_only() -> None:
     assert not hasattr(stage, "output_present") and not hasattr(stage, "restore_output")
     result = await stage.run(_job(), _IO())
     assert NamedEntityExtraction.model_validate_json(result.output or "").status == "COMPLETED"
+
+
+@pytest.mark.parametrize(
+    ("sent", "retry_after"), [(True, 120.0), (False, None), (False, 30.0)], ids=["sent", "not-sent", "open-circuit"]
+)
+@pytest.mark.asyncio
+async def test_the_pause_keeps_what_the_unavailable_error_said(sent: bool, retry_after: float | None) -> None:
+    """The provider's retry-after and whether a request was sent come from the error the extraction met, as classify takes
+    them: a pause that sent nothing is not a send against the budget, and the wait is the provider's when it gave one."""
+    from app.utils.llm import LLMUnavailableError
+
+    for status in ("FAILED", "PARTIAL"):
+        io = _IO()
+        io.extraction = NamedEntityExtraction(
+            status=status, termination_reason="llm_error", strategy="deterministic",
+            stats=ExtractionStats(windows_total=1, windows_run=1, windows_failed=1, windows_unavailable=1),
+            pause_cause=LLMUnavailableError("down", sent=sent, retry_after=retry_after),
+        )
+        result = await EntitiesStage().run(_job(), io)
+        assert result.outcome is StageOutcome.PAUSED
+        assert (result.sent, result.retry_after_s) == (sent, retry_after)
+
+
+def test_the_pause_cause_is_not_part_of_the_stored_extraction() -> None:
+    from app.utils.llm import LLMUnavailableError
+
+    stored = NamedEntityExtraction(status="FAILED", pause_cause=LLMUnavailableError("down", retry_after=5))
+    assert "pause_cause" not in stored.model_dump() and "pause_cause" not in stored.model_dump_json()
+    assert NamedEntityExtraction.model_validate_json(stored.model_dump_json()).pause_cause is None

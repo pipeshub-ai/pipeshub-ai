@@ -1,14 +1,16 @@
 """Web search and fetch for one caller: access checks, fallback across sources, deadlines."""
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from app.web.budget import WebBudget
-from app.web.chain import ChainOutcome, Cooldowns, run_chain
+from app.web.chain import ChainOutcome, Cooldowns, InFlight, run_chain
 from app.web.deadline import Deadline
-from app.web.errors import AccessDenied, InvalidUrl
+from app.web.errors import AccessDenied, InvalidUrl, WebError
+from app.web.fetch.images import fetch_image_data_uri
 from app.web.models import Attempt, CallerContext, WebPage, WebResult
 from app.web.ports import AccessRequest, ContentFetcher, SearchProvider, WebAccessGate
 from app.web.url import canonical_url
@@ -17,6 +19,12 @@ SEARCH_DEADLINE_S = 12.0
 SEARCH_ATTEMPT_S = 5.0
 FETCH_DEADLINE_S = 20.0
 FETCH_ATTEMPT_S = 15.0
+# Shared by every image of one page: past it the page is answered without the rest.
+IMAGES_DEADLINE_S = 10.0
+# Images of one page read at once: each may be MAX_IMAGE_MB, held in memory until it is sent.
+IMAGES_IN_FLIGHT = 4
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -58,11 +66,13 @@ class WebSearchService(_Guarded):
         cooldowns: Cooldowns,
         budget: WebBudget | None = None,
         clock: Callable[[], float] = time.monotonic,
+        in_flight: InFlight | None = None,
     ) -> None:
         super().__init__(gate, budget)
         self._providers = tuple(providers)
         self._cooldowns = cooldowns
         self._clock = clock
+        self._in_flight = in_flight
 
     async def search(self, query: str, caller: CallerContext) -> SearchOutcome:
         """Results from the first provider that answers, deduplicated by page, without any the
@@ -76,6 +86,7 @@ class WebSearchService(_Guarded):
             Deadline.after(SEARCH_DEADLINE_S, self._clock),
             attempt_s=SEARCH_ATTEMPT_S,
             cooldowns=self._cooldowns,
+            in_flight=self._in_flight,
         )
         return SearchOutcome(query, await self._visible(outcome.value, caller), outcome.served_by, outcome.attempts)
 
@@ -125,3 +136,27 @@ class WebFetchService(_Guarded):
             attempt_s=FETCH_ATTEMPT_S,
             cooldowns=self._cooldowns,
         )
+
+    async def fetch_images(self, urls: Sequence[str], caller: CallerContext) -> list[str | None]:
+        """Each of ``urls`` as a ``data:`` URI, in order, or None where the gate refuses it or
+        it cannot be read (not an image, too large, unreachable, out of time). The gate is asked
+        about every image and every redirect, as for a page. Never raises: an image is extra."""
+        deadline = Deadline.after(IMAGES_DEADLINE_S, self._clock)
+        gate = asyncio.Semaphore(IMAGES_IN_FLIGHT)
+
+        async def allow_hop(target: str) -> bool:
+            return await self._allowed(target, caller)
+
+        async def one(url: str) -> str | None:
+            try:
+                if not await self._allowed(url, caller):
+                    return None
+                async with gate:
+                    return await fetch_image_data_uri(url, deadline, allow_hop=allow_hop)
+            except WebError as e:
+                logger.info("Page image not read (%s): %s", e.error_type, e.message)
+            except Exception:
+                logger.warning("Page image not read", exc_info=True)
+            return None
+
+        return list(await asyncio.gather(*(one(url) for url in urls)))

@@ -20,7 +20,6 @@ Within each priority tier, largest results are compacted first.
 
 from __future__ import annotations
 
-import json
 import logging
 
 from app.agent_loop_lib.context.compaction_memo import (
@@ -33,38 +32,9 @@ from app.agent_loop_lib.context.watermark import watermarks
 from app.agent_loop_lib.core.messages import ToolMessage
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
+from harness_core.context.artifacts import artifact_reference as _compact_reference
 
 logger = logging.getLogger(__name__)
-
-
-def _compact_reference(msg: ToolMessage) -> str:
-    """Build the compact reference string that replaces full content."""
-    meta = msg.artifact_meta
-    if meta is None:
-        return msg.text
-
-    lines = [f"[artifact:{meta.artifact_id}]"]
-    content_type = meta.tool_name.replace("__", ".") if meta.tool_name else "tool_result"
-    lines.append(f"type: {content_type}")
-    if meta.tool_name:
-        lines.append(f"tool: {meta.tool_name}")
-    if meta.tool_args:
-        args_str = json.dumps(meta.tool_args, default=str)
-        if len(args_str) > 200:
-            args_str = args_str[:200] + "..."
-        lines.append(f"args: {args_str}")
-    if msg.tool_call_id:
-        lines.append(f"tool_call_id: {msg.tool_call_id}")
-    if meta.summary:
-        lines.append(f"summary: {meta.summary}")
-    if meta.result_schema:
-        lines.append(f"schema: {json.dumps(meta.result_schema)}")
-    lines.append(f"original_tokens: {meta.original_token_count}")
-    lines.append(
-        f'hint: Use retrieve_artifact_content(artifact_id="{meta.artifact_id}") '
-        "to read, filter, and curate this data before using it"
-    )
-    return "\n".join(lines)
 
 
 LAYER = "artifact_compaction"

@@ -396,6 +396,8 @@ class TestRecordGroupHierarchy:
 
         assert order.index("group:org-777") < order.index("group:555")
         assert order.index("group:org-777") < order.index("issues")
+        # Indexing links a PR to the code-file records it changed; a file not walked yet has none.
+        assert order.index("code") < order.index("prs")
 
     async def test_org_group_is_not_rewritten_when_a_repo_adds_no_grant(self) -> None:
         """The per-repo flush is gated on the union actually widening, so repos

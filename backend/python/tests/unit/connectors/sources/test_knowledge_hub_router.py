@@ -126,6 +126,25 @@ class TestHandleGetNodes:
         assert result.success is True
 
     @pytest.mark.asyncio
+    async def test_a_source_still_being_prepared_answers_its_empty_page_not_a_503(self) -> None:
+        from app.connectors.sources.localKB.api.knowledge_hub_models import (
+            AppliedFilters,
+            FiltersInfo,
+            KnowledgeHubNodesResponse,
+            PaginationInfo,
+        )
+        preparing = KnowledgeHubNodesResponse(success=True, id="app1", items=[], preparing=True, filters=FiltersInfo(applied=AppliedFilters()),
+                                              pagination=PaginationInfo(limit=50, totalItems=0, hasNext=False, hasPrev=False))
+        svc = _make_knowledge_hub_service()
+        svc.get_nodes = AsyncMock(return_value=preparing)
+        result = await _handle_get_nodes(
+            request=_make_request(), knowledge_hub_service=svc, parent_id="0b9a4f1e-2c3d-4e5f-8a9b-0c1d2e3f4a5b", parent_type="app", only_containers=False, page=1, limit=50,
+            sort_by="updatedAt", sort_order="desc", q=None, node_types=None, record_types=None, origins=None, connector_ids=None, indexing_status=None,
+            created_at=None, updated_at=None, size=None, flattened=False, include=None,
+        )
+        assert result.preparing is True and result.items == []
+
+    @pytest.mark.asyncio
     async def test_missing_user_id(self):
         request = _make_request(user_id=None)
         svc = _make_knowledge_hub_service()

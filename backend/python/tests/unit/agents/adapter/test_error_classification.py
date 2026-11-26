@@ -4,9 +4,11 @@ message, shared by `RespondPipeline` and `stream_bridge.py`."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from app.agents.agent_loop.error_classification import classify_error
+from app.agents.agent_loop.error_classification import classify_error, run_error_text
 
 
 @pytest.mark.parametrize(
@@ -32,6 +34,28 @@ from app.agents.agent_loop.error_classification import classify_error
         ),
         ("Your credit balance is too low to access the Anthropic API", "quota_exceeded"),
         ("APIConnectionError: Connection error.", "server_error"),
+        # Azure OpenAI failures inside an open stream: no status code, only the wording.
+        (
+            "LLM call failed: OpenAI API error (stream): The system is currently "
+            "experiencing high demand and cannot process your request. Please try again later.",
+            "server_error",
+        ),
+        (
+            "LLM call failed: OpenAI API error (stream): The server had an error processing "
+            "your request. Sorry about that! You can retry your request.",
+            "server_error",
+        ),
+        (
+            "LLM call failed: OpenAI API error (stream): Your requests to gpt-5.4-mini for "
+            "gpt-5.4-mini in eastus2 have exceeded token rate limit.",
+            "rate_limit",
+        ),
+        (
+            "LLM call failed: OpenAI API error (stream): Your input exceeds the context "
+            "window of this model. Please adjust your input and try again.",
+            "request_too_large",
+        ),
+        ("Anthropic API error: overloaded_error: Overloaded", "server_error"),
         (
             # Real Azure OpenAI prompt-shield rejection body (400 with
             # code=content_filter / ResponsibleAIPolicyViolation).
@@ -283,3 +307,23 @@ def test_classify_exception_classifies_other_exceptions_by_text() -> None:
     from app.agents.agent_loop.error_classification import classify_exception
 
     assert classify_exception(RuntimeError("Error code: 429 - rate limit"))[0] == "rate_limit"
+
+
+class TestRunErrorText:
+    """What the user's answer is classified from: the raw text an `AgentResult` keeps, else `error` (a duck-typed
+    result, like the stubs the chat-stream e2e tests and older callers pass, keeps none)."""
+
+    def test_an_agent_result_gives_its_raw_text(self) -> None:
+        from app.agent_loop_lib.core.types import AgentResult, Goal
+
+        result = AgentResult(goal=Goal(description="q"), success=False, error="LLM call failed: rate_limited (X, HTTP 429)")
+        assert run_error_text(result.with_error_detail("LLM call failed: Error code: 429")) == "LLM call failed: Error code: 429"
+        assert run_error_text(result.with_error_detail(None)) == "LLM call failed: rate_limited (X, HTTP 429)"
+
+    @pytest.mark.parametrize(("result", "expected"), [
+        (SimpleNamespace(success=True, error=None), None),
+        (SimpleNamespace(success=False, error="tool exploded"), "tool exploded"),
+        (SimpleNamespace(success=True), None),
+    ])
+    def test_a_result_without_raw_text_gives_its_error(self, result: object, expected: str | None) -> None:
+        assert run_error_text(result) == expected

@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-import yaml
 
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     CountsInfo,
@@ -17,10 +15,9 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
 from app.utils.kh_cursor import Boundary, KnowledgeHubCursor, decode, encode
+from tests.support.openapi_spec import openapi_spec
 
 from .test_kh_search import ORG, SECRET, USER_ID, USER_KEY, FakeProvider, row
-
-SPEC = Path(__file__).resolve().parents[3] / "nodejs" / "apps" / "src" / "modules" / "api-docs" / "pipeshub-openapi.yaml"
 
 
 class CappedProvider(FakeProvider):
@@ -52,9 +49,9 @@ def test_a_cursor_carries_the_flag_only_when_it_is_set_and_old_cursors_read_as_e
 
 def test_a_capped_total_is_flagged_on_the_first_page_and_carried_to_the_next() -> None:
     provider = CappedProvider({"c1": _rows(12)}, cap=5)
-    first = asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4))
+    first = asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=2))
     assert first.total == 5 and first.total_capped is True and first.next_cursor
-    second = asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4, cursor_token=first.next_cursor))
+    second = asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=2, cursor_token=first.next_cursor))
     assert second.total == 5 and second.total_capped is True                           # the total was counted once; so was the cap
 
 
@@ -98,7 +95,7 @@ async def test_the_response_says_whether_the_total_is_a_lower_bound(service, cap
 def test_the_models_default_to_exact_and_the_spec_documents_the_new_fields() -> None:
     assert PaginationInfo(limit=1, totalItems=0, hasNext=False, hasPrev=False).totalCapped is False
     assert CountsInfo(items=[], total=0).capped is False
-    schemas = yaml.safe_load(SPEC.read_text(encoding="utf-8"))["components"]["schemas"]
+    schemas = openapi_spec()["components"]["schemas"]
     pagination = schemas["KnowledgeHubNodesResponse"]["properties"]["pagination"]
     assert pagination["properties"]["totalCapped"]["type"] == "boolean" and "totalCapped" not in pagination["required"]
     counts = schemas["KnowledgeHubNodesResponse"]["properties"]["counts"]["properties"]
@@ -116,3 +113,37 @@ async def test_a_connector_page_that_stops_early_with_no_rows_goes_on_and_keeps_
     out = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True, limit=20)
     assert [i.id for i in out.items] == ["r1"]                                            # the empty page went on from where the scan stopped
     assert out.pagination.totalItems == 10_000 and out.pagination.totalCapped is True     # and its total stayed a lower bound
+
+
+def test_a_capped_total_below_the_rows_shown_is_raised_to_them_on_every_page() -> None:
+    """A capped count admits what the access check says of its first candidates, which can be fewer than a page that read on: "3+" over 9 rows."""
+    provider = CappedProvider({"c1": _rows(12)}, cap=2)
+    first = asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4))
+    assert len(first.rows) == 4 and first.total == 4 and first.total_capped is True
+    second = asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4, cursor_token=first.next_cursor))
+    assert second.end_index == 8 and second.total == 8 and second.total_capped is True       # the rows shown so far, not the carried count
+    back = asyncio.run(search_page(provider, user_key=USER_KEY, user_id=USER_ID, org_id=ORG, secret=SECRET, limit=4, cursor_token=second.prev_cursor))
+    assert back.end_index == 4 and back.total == 8                                           # going back keeps what was shown
+
+
+def _connector_page(n: int, total: int, capped: bool, start: int = 0) -> dict:
+    rows = [{"id": f"r{i}", "name": f"R{i}", "nodeType": "record", "sortKey": f"r{i:03d}", "nullRank": 0, "origin": "CONNECTOR", "createdAt": 1, "updatedAt": 2,
+             "hasChildren": False} for i in range(start, start + n)]
+    return {"rows": rows, "hasMore": True, "total": total, "totalCapped": capped, "counts": None, "scope": None}
+
+
+@pytest.mark.asyncio
+async def test_a_connector_listing_never_reports_fewer_than_its_page(service) -> None:
+    service.graph_provider.get_knowledge_hub_connector_page_v3.return_value = _connector_page(9, 3, True)
+    out = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True, limit=9, q="x")
+    assert len(out.items) == 9 and out.pagination.totalItems >= len(out.items) and out.pagination.totalCapped is True
+    service.graph_provider.get_knowledge_hub_connector_page_v3.return_value = _connector_page(9, 0, False, start=9)
+    nxt = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True, limit=9, q="x", cursor=out.pagination.nextCursor)
+    assert nxt.pagination.totalItems == 18 and nxt.pagination.totalCapped is True              # page two adds to what page one showed
+
+
+@pytest.mark.asyncio
+async def test_an_exact_connector_total_is_kept(service) -> None:
+    service.graph_provider.get_knowledge_hub_connector_page_v3.return_value = _connector_page(9, 40, False)
+    out = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True, limit=9, q="x")
+    assert out.pagination.totalItems == 40 and out.pagination.totalCapped is False

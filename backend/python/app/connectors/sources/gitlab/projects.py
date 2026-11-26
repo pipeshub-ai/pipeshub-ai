@@ -104,15 +104,14 @@ class ProjectsSync:
             for step_name, step in (
                 ("members", lambda: self._sync_project_members_as_pseudo(project)),
                 ("issues", lambda: self.c.issues.fetch_issues_batched(project_id)),
-                ("merge_requests", lambda: self.c.merge_requests.fetch_prs_batched(project_id)),
+                # Before the MRs: indexing links an MR to the code files it changed (MODIFIES) through
+                # the code checkpoint, which a first walk writes only when it ends. An MR indexed before
+                # that is never linked, and it is not indexed again until it changes.
                 (
                     "code",
-                    lambda: self.c.repos.run(
-                        project_id,
-                        project_path,
-                        project.default_branch or "main",
-                    ),
+                    lambda: self.c.repos.run(project_id, project_path, project.default_branch),
                 ),
+                ("merge_requests", lambda: self.c.merge_requests.fetch_prs_batched(project_id)),
             ):
                 try:
                     await step()
@@ -658,6 +657,8 @@ class ProjectsSync:
                     )
                     if not pseudo_group:
                         pseudo_group = await self._create_pseudo_group(principal_id)
+                    else:
+                        await self._keep_pseudo_group(principal_id)
                     if pseudo_group:
                         self.logger.debug(
                             "Using pseudo-group for user %s (no email available)", principal_id
@@ -672,6 +673,17 @@ class ProjectsSync:
         except Exception as e:
             self.logger.error("Failed to create permission from principal: %s", e)
             return None
+
+    async def _keep_pseudo_group(self, account_id: str) -> None:
+        """Note every stored copy of a reused pseudo-group kept, so the unlink after a full
+        sync leaves them alone (older syncs could store several, and grants may sit on any);
+        a lookup that fails makes the run incomplete instead."""
+        c = self.c
+        try:
+            await c.data_entities_processor.note_kept_user_group(c.connector_id, account_id)
+        except Exception as e:
+            self.logger.error("Could not keep the pseudo-group of user %s: %s", account_id, e)
+            c.note_sync_problem(f"pseudo-group of user {account_id}: could not be kept: {e}")
 
     async def _create_pseudo_group(self, account_id: str) -> AppUserGroup | None:
         """Create a pseudo-group for a user without an email address.

@@ -4,12 +4,12 @@ import { useCallback, useLayoutEffect, useRef, useState, type CSSProperties } fr
 import { Box, Flex, Tabs, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { formatDate } from '@/lib/utils/formatters';
-import { isRateLimitPause } from '@/lib/utils/rate-limit-pause';
 import { formatFileSize } from '@/app/components/file-preview/utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
 import { buildStageTrackSteps } from './stage-track-steps';
+import { indexingStatusHint } from './indexing-reason-hint';
 
 interface RecordMetadataPanelProps {
   recordDetails: RecordDetailsResponse;
@@ -40,7 +40,7 @@ const ROW_LAST_STYLE: CSSProperties = {
 };
 
 const LABEL_STYLE: CSSProperties = {
-  color: 'var(--olive-10)',
+  color: 'var(--olive-11)',
   minWidth: '38%',
   flexShrink: 0,
 };
@@ -226,29 +226,13 @@ function StageStep({
       <Text
         size="1"
         weight="medium"
-        style={{ color: 'var(--olive-10)', whiteSpace: 'nowrap' }}
+        style={{ color: 'var(--olive-11)', whiteSpace: 'nowrap' }}
       >
         {label}
       </Text>
       <IndexingStatusChip status={status || 'NOT_STARTED'} />
       {hint ? <ReasonHintButton content={hint} ariaLabel={hintAriaLabel} /> : null}
     </Flex>
-  );
-}
-
-function shouldShowIndexingReasonTooltip(
-  status: string | undefined,
-  reason: string | undefined,
-  retryNotBefore?: number | null,
-): boolean {
-  if (!reason?.trim()) return false;
-  return (
-    isRateLimitPause(status, reason, retryNotBefore) ||
-    status === 'FAILED' ||
-    status === 'AUTO_INDEX_OFF' ||
-    status === 'FILE_TYPE_NOT_SUPPORTED' ||
-    status === 'PASSWORD_PROTECTED' ||
-    status === 'NOT_STARTED'
   );
 }
 
@@ -423,7 +407,7 @@ function MetadataSection({
         size="2"
         weight="medium"
         style={{
-          color: 'var(--olive-10)',
+          color: 'var(--olive-11)',
         }}
       >
         {title}
@@ -452,7 +436,7 @@ function StageTrack({
       <Flex align="center" gap="2" wrap="wrap" style={{ minWidth: 0, flex: '1 1 12rem' }}>
         {steps.map((step, i) => (
           <Flex key={step.key} align="center" gap="2" style={{ minWidth: 0 }}>
-            {i > 0 ? <MaterialIcon name="chevron_right" size={16} color="var(--olive-8)" /> : null}
+            {i > 0 ? <MaterialIcon name="chevron_right" size={16} color="var(--olive-11)" /> : null}
             <StageStep
               label={step.label}
               status={step.status}
@@ -488,11 +472,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
     record.sourceLastModifiedTimestamp ?? record.updatedAtTimestamp,
   );
 
-  const showReasonHint = shouldShowIndexingReasonTooltip(
-    record.indexingStatus,
-    record.reason,
-    record.retryNotBefore,
-  );
+  const statusHint = indexingStatusHint(record);
   const isAttachment = record.connectorName?.toUpperCase() === 'ATTACHMENTS';
   const connectorIconType = resolveConnectorType(record.connectorId || 'generic');
   const shortConnectorId =
@@ -584,8 +564,11 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                 </Text>
                 <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
                   <IndexingStatusChip status={record.indexingStatus} />
-                  {showReasonHint && record.reason ? (
-                    <ReasonHintButton content={record.reason} ariaLabel={t('recordView.indexingReasonAria')} />
+                  {statusHint ? (
+                    <ReasonHintButton
+                      content={statusHint.content}
+                      ariaLabel={t(statusHint.kind === 'note' ? 'recordView.indexingNoteAria' : 'recordView.indexingReasonAria')}
+                    />
                   ) : null}
                 </Flex>
               </Flex>
@@ -648,7 +631,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                       />
                       {shortConnectorId ? (
                         <Tooltip content={record.connectorId} delayDuration={200}>
-                          <Text size="2" style={{ color: 'var(--olive-10)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <Text size="2" style={{ color: 'var(--olive-11)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {t('recordView.labels.connectorId')}: {shortConnectorId}
                           </Text>
                         </Tooltip>
@@ -657,14 +640,14 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                   </Flex>
                 ) : isAttachment ? (
                   <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
-                    <MaterialIcon name="attach_file" size={20} color="var(--accent-9)" />
+                    <MaterialIcon name="attach_file" size={20} color="var(--accent-11)" />
                     <Text size="2" style={{ color: 'var(--olive-12)' }}>
                       Chat Attachment
                     </Text>
                   </Flex>
                 ) : (
                   <Flex align="center" gap="2" style={{ minWidth: 0, flex: 1 }}>
-                    <MaterialIcon name="folder" size={20} color="var(--accent-9)" />
+                    <MaterialIcon name="folder" size={20} color="var(--accent-11)" />
                     <Text size="2" style={{ color: 'var(--olive-12)' }}>
                       {t('recordView.collectionUpload')}
                     </Text>
@@ -692,7 +675,7 @@ export function RecordMetadataPanel({ recordDetails }: RecordMetadataPanelProps)
                 {mailCc ? <DetailRow label={t('recordView.mail.cc')} value={mailCc} /> : null}
                 {mailLabels?.length ? (
                   <Box style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', minWidth: 0 }}>
-                    <Text size="2" weight="medium" style={{ color: 'var(--olive-10)' }}>
+                    <Text size="2" weight="medium" style={{ color: 'var(--olive-11)' }}>
                       {t('recordView.mail.labels')}
                     </Text>
                     <MetadataChipRow

@@ -110,7 +110,6 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
             () =>
               attachUpstreamAbort(
                 res,
-                'req-1',
                 () => {
                   saved = raw.appendMessages(s._id, org, [
                     bot('partial answer', { status: 'stopped' }),

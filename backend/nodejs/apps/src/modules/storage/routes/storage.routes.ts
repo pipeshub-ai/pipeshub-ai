@@ -4,7 +4,6 @@ import { ValidationMiddleware } from '../../../libs/middlewares/validation.middl
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import { extensionToMimeType } from '../mimetypes/mimetypes';
-import { Logger } from '../../../libs/services/logger.service';
 import {
   UploadNewSchema,
   DocumentIdParams,
@@ -29,21 +28,35 @@ import {
   ArtifactFileParams,
   PurgeArtifactSetSchema,
   ListArtifactSetsSchema,
+  PresignPaidResultsSchema,
+  PaidResultFileParams,
+  ListPaidResultsSchema,
+  DeletePaidResultsSchema,
+  DeleteIfMatchPaidResultsSchema,
+  PurgeCutoffPaidResultsSchema,
+  PurgePaidResultsSchema,
+  PurgeBatchPaidResultsSchema,
+  PurgeOrgPaidResultsSchema,
 } from '../validators/validators';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessorService } from '../../../libs/middlewares/file_processor/fp.service';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
-import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/util';
-import { KB_UPLOAD_LIMITS } from '../../knowledge_base/constants/kb.constants';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { StorageController } from '../controllers/storage.controller';
+import type { StorageControllerFactory } from '../container/storage.container';
 import { NotFoundError } from '../../../libs/errors/http.errors';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
-import { ARTIFACT_FILE_MAX_BYTES } from '../constants/constants';
-
-const logger = Logger.getInstance({ service: 'StorageRoutes' });
+import {
+  checkInternalUploadLimit,
+  internalUploadMaxBytes,
+} from '../utils/internal-upload-limit';
+import { orgHarnessOn } from '../../agent-harness/config';
+import {
+  ARTIFACT_FILE_MAX_BYTES,
+  PAID_RESULT_FILE_MAX_BYTES,
+} from '../constants/constants';
 
 // Service-token routes only. Storage scopes by org, not by record ACL, so a user
 // token must never reach these handlers; users go through /api/v1/knowledgeBase.
@@ -56,23 +69,20 @@ export function createStorageRouter(container: Container): Router {
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   storageController.watchStorageType(keyValueStoreService);
 
-  // Resolve the platform-configured per-file upload cap so internal routes
-  // honour the same limit as the user-facing KB upload route.
-  const resolveMaxUploadSize = async (): Promise<number> => {
-    try {
-      const settings = await getPlatformSettingsFromStore(keyValueStoreService);
-      return settings.fileUploadMaxSizeBytes;
-    } catch {
-      return KB_UPLOAD_LIMITS.defaultMaxFileSizeBytes;
-    }
-  };
+  // J-26: a bad HARNESS_INPUT_MAX_MB stops the app at start, not at a run's first large input.
+  checkInternalUploadLimit();
 
   router.post(
     '/internal/upload',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
     async (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       try {
-        const maxFileSize = await resolveMaxUploadSize();
+        const orgId: unknown = req.tokenPayload?.orgId;
+        const maxFileSize = internalUploadMaxBytes(
+          // The same limit as the user-facing KB upload route.
+          await storageController.uploadSizeLimitBytes(req),
+          await orgHarnessOn(typeof orgId === 'string' ? orgId : null),
+        );
         const service = new FileProcessorService({
           fieldName: 'file',
           allowedMimeTypes: Object.values(extensionToMimeType),
@@ -231,6 +241,189 @@ export function createStorageRouter(container: Container): Router {
     ): Promise<void> => {
       try {
         await storageController.purgeArtifactSet(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Paid-result cache: model outputs filed per (org, record). Registered ahead of
+  // /internal/:documentId, which would otherwise take "paid-results" for a document id.
+  router.post(
+    '/internal/paid-results/presign',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PresignPaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.presignPaidResults(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.delete(
+    '/internal/paid-results/org',
+    // Express matches paths case-insensitively: `/Org` is a record id, never the whole-org purge, so only the exact
+    // spelling reaches this route and any other falls through to the record route.
+    (req: Request, _res: Response, next: NextFunction): void => {
+      if (req.path.replace(/\/$/, '') === '/internal/paid-results/org') {
+        next();
+      } else {
+        next('route');
+      }
+    },
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PurgeOrgPaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.purgePaidResultsOfOrg(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.put(
+    '/internal/paid-results/:recordId/files/*',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PaidResultFileParams),
+    express.raw({ type: () => true, limit: PAID_RESULT_FILE_MAX_BYTES }),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.putPaidResultFile(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/internal/paid-results/:recordId/files/*',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PaidResultFileParams),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.getPaidResultFile(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    '/internal/paid-results/:recordId/delete',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(DeletePaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.deletePaidResults(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    '/internal/paid-results/:recordId/delete-if-match',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(DeleteIfMatchPaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.deletePaidResultsIfMatch(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/internal/paid-results/:recordId',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(ListPaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.listPaidResults(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    '/internal/paid-results/:recordId/purge-cutoff',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PurgeCutoffPaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.paidResultsPurgeCutoff(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Registered ahead of the per-record routes: "purge-batch" is also a well-formed record id.
+  router.post(
+    '/internal/paid-results/purge-batch',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PurgeBatchPaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.purgePaidResultsBatch(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.delete(
+    '/internal/paid-results/:recordId',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PurgePaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.purgePaidResultsOfRecord(req, res, next);
       } catch (error) {
         next(error);
       }
@@ -517,8 +710,7 @@ export function createStorageRouter(container: Container): Router {
     ): Promise<void> => {
       try {
         return await storageController.createDocumentBuffer(req, res, next);
-      } catch (error: any) {
-        logger.error(`Failed to upload buffer: ${error.message}`);
+      } catch (error) {
         next(error);
       }
     },
@@ -529,7 +721,7 @@ export function createStorageRouter(container: Container): Router {
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
     async (req: AuthenticatedServiceRequest, res: Response, next: NextFunction) => {
       try {
-        const maxFileSize = await resolveMaxUploadSize();
+        const maxFileSize = await storageController.uploadSizeLimitBytes(req);
         const service = new FileProcessorService({
           fieldName: 'file',
           allowedMimeTypes: Object.values(extensionToMimeType),
@@ -656,16 +848,17 @@ export function createStorageRouter(container: Container): Router {
           .rebind<DefaultStorageConfig>('StorageConfig')
           .toDynamicValue(() => storageConfig);
 
+        const controllerFactory = container.get<StorageControllerFactory>(
+          'StorageControllerFactory',
+        );
         container
           .rebind<StorageController>('StorageController')
-          .toDynamicValue(() => {
-            return new StorageController(
-              storageConfig,
-              logger,
-              keyValueStoreService,
-              updatedConfig.scopedJwtSecret,
-            );
-          });
+          .toDynamicValue(() =>
+            controllerFactory(storageConfig, updatedConfig),
+          );
+        // The handlers above hold this variable, so the new configuration
+        // reaches them only through it.
+        storageController = controllerFactory(storageConfig, updatedConfig);
         res.status(200).json({
           message: 'Storage configuration updated successfully',
         });

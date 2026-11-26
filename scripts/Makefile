@@ -150,8 +150,6 @@ install-deps-linux: ## Install system dependencies on Linux
 	@echo "$(BLUE)Installing Linux dependencies...$(NC)"
 	sudo apt update
 	sudo apt-get install -y libreoffice
-	@echo "$(BLUE)Installing uv package manager...$(NC)"
-	curl -LsSf https://astral.sh/uv/install.sh | sh
 	@echo "$(GREEN)Linux dependencies installed successfully!$(NC)"
 
 install-deps-mac: ## Install system dependencies on macOS
@@ -160,8 +158,6 @@ install-deps-mac: ## Install system dependencies on macOS
 	@bash -c "$$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || echo "Homebrew already installed"
 	brew install python@3.12 || true
 	brew install libreoffice || true
-	@echo "$(BLUE)Installing uv package manager...$(NC)"
-	curl -LsSf https://astral.sh/uv/install.sh | sh
 	@echo "$(GREEN)macOS dependencies installed successfully!$(NC)"
 
 install-deps-windows: ## Show Windows installation instructions
@@ -454,7 +450,7 @@ setup-nodejs: ## Setup Node.js backend
 		fi; \
 	fi
 	@echo "$(BLUE)Installing Node.js dependencies...$(NC)"
-	cd $(ROOT_DIR)/backend/nodejs/apps && npm install
+	cd $(ROOT_DIR)/backend/nodejs/apps && npm ci
 	@echo "$(GREEN)Node.js backend setup complete!$(NC)"
 	@echo "$(YELLOW)To run: cd backend/nodejs/apps && npm run dev$(NC)"
 
@@ -487,24 +483,13 @@ setup-python: ## Setup Python backend (create venv and install dependencies)
 		fi; \
 	fi
 	@if [ ! -d $(ROOT_DIR)/backend/python/venv ]; then \
-		echo "$(BLUE)Select Python version for virtual environment:$(NC)"; \
-		echo "  1) Python 3.10"; \
-		echo "  2) Python 3.11"; \
-		echo "  3) Python 3.12"; \
-		read -p "Enter choice [1-3] (default: 3): " pychoice; \
-		case "$$pychoice" in \
-			1) PYTHON_VERSION="3.10" ;; \
-			2) PYTHON_VERSION="3.11" ;; \
-			3|"") PYTHON_VERSION="3.12" ;; \
-			*) echo "$(RED)Invalid choice. Using Python 3.12$(NC)"; PYTHON_VERSION="3.12" ;; \
-		esac; \
-		echo "$(BLUE)Creating Python virtual environment with Python $$PYTHON_VERSION...$(NC)"; \
-		cd $(ROOT_DIR)/backend/python && uv venv venv --python $$PYTHON_VERSION; \
+		echo "$(BLUE)Creating Python virtual environment with Python 3.12 (the version the locks are resolved for)...$(NC)"; \
+		cd $(ROOT_DIR)/backend/python && python3.12 -m venv venv; \
 	fi
 	@echo "$(BLUE)Installing Python dependencies...$(NC)"
-	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install "setuptools<75" && uv pip install -e . --no-build-isolation-package grpcio-tools
+	cd $(ROOT_DIR)/backend/python && PYTHON=venv/bin/python requirements/install.sh dev --project . --editable
 	@echo "$(BLUE)Installing additional language models...$(NC)"
-	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install pip && python -c "import nltk; nltk.download('punkt')"
+	cd $(ROOT_DIR)/backend/python && venv/bin/python -c "import nltk; nltk.download('punkt')"
 	@echo "$(GREEN)Python backend setup complete!$(NC)"
 	@echo "$(YELLOW)To activate venv: cd backend/python && source venv/bin/activate$(NC)"
 	@echo "$(YELLOW)To run services (in separate terminals):$(NC)"
@@ -520,7 +505,7 @@ setup-python-deps: ## Install Python dependencies (requires existing venv)
 		echo "$(RED)Error: Virtual environment not found. Run 'make setup-python' first$(NC)"; \
 		exit 1; \
 	fi
-	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install "setuptools<75" && uv pip install -e . --no-build-isolation-package grpcio-tools
+	cd $(ROOT_DIR)/backend/python && PYTHON=venv/bin/python requirements/install.sh dev --project . --editable
 
 implode-setup-python: ## Remove Python setup
 	@echo "$(YELLOW)Removing Python setup...$(NC)"
@@ -593,7 +578,7 @@ setup-frontend: ## Setup frontend
 		fi; \
 	fi
 	@echo "$(BLUE)Installing frontend dependencies...$(NC)"
-	cd $(ROOT_DIR)/frontend && npm install
+	cd $(ROOT_DIR)/frontend && npm ci
 	@echo "$(GREEN)Frontend setup complete!$(NC)"
 	@echo "$(YELLOW)To run: cd frontend && npm run dev$(NC)"
 
@@ -767,12 +752,12 @@ test-nodejs-coverage: ## Run Node.js unit tests with coverage
 
 test-python: ## Run Python unit tests (parallel)
 	@echo "$(BLUE)Running Python unit tests (parallel)...$(NC)"
-	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install -e ".[dev]" --quiet && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 -q
+	@cd $(ROOT_DIR)/backend/python && PYTHON=venv/bin/python requirements/install.sh dev --project . --editable -- --quiet && source venv/bin/activate && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 -q
 	@echo "$(GREEN)Python unit tests complete!$(NC)"
 
 test-python-coverage: ## Run Python unit tests with coverage report (parallel)
 	@echo "$(BLUE)Running Python unit tests with coverage (parallel)...$(NC)"
-	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install -e ".[dev]" --quiet && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 --cov=app --cov-report=term-missing --cov-report=html:coverage_html -q
+	@cd $(ROOT_DIR)/backend/python && PYTHON=venv/bin/python requirements/install.sh dev --project . --editable -- --quiet && source venv/bin/activate && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 --cov=app --cov-report=term-missing --cov-report=html:coverage_html -q
 	@echo "$(GREEN)Python unit tests with coverage complete!$(NC)"
 	@echo "$(YELLOW)Coverage report available at: backend/python/coverage_html/$(NC)"
 

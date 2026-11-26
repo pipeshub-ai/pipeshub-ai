@@ -7,9 +7,22 @@ atomic on one event loop — the same guarantee a single-statement graph CAS giv
 
 import asyncio
 from collections.abc import Sequence
+from typing import ClassVar
 
 from app.config.constants.arangodb import ProgressStatus
-from app.modules.pipeline.models import HeadlineField, StageState, StageStatePatch
+from app.modules.pipeline.models import (
+    HeadlineField,
+    RecordView,
+    StageFingerprint,
+    StageJob,
+    StageOutcome,
+    StageResult,
+    StageState,
+    StageStatePatch,
+    Workload,
+)
+from app.modules.pipeline.policy import DEFAULT_POLICY, PipelinePolicy
+from app.modules.pipeline.stage import Deadline, StageIO
 
 
 class Clock:
@@ -118,3 +131,49 @@ class RecordingProducer:
 
     def jobs(self, topic: str | None = None) -> list[dict[str, object]]:
         return [payload for t, _, payload, _ in self.sent if topic is None or t == topic]
+
+
+class StubIO:
+    """``StageIO`` with the default policy and nothing else."""
+
+    def __init__(self, job: StageJob, deadline: Deadline) -> None:
+        self._deadline = deadline
+
+    @property
+    def policy(self) -> PipelinePolicy:
+        return DEFAULT_POLICY
+
+    @property
+    def deadline(self) -> Deadline:
+        return self._deadline
+
+
+class ClassifyStage:
+    """A ``classify`` stage after ``embed`` whose result, delay and config a test sets; counts its runs."""
+
+    name: ClassVar[str] = "classify"
+    version: ClassVar[int] = 1
+    requires: ClassVar[frozenset[str]] = frozenset({"embed"})
+    workload: ClassVar[Workload] = Workload.LLM
+    headline: ClassVar[HeadlineField | None] = HeadlineField.EXTRACTION
+    budget_s: ClassVar[float] = 5.0
+
+    def __init__(self) -> None:
+        self.config = "model-a"
+        self.result: StageResult | BaseException = StageResult(outcome=StageOutcome.COMPLETED)
+        self.delay = 0.0
+        self.runs = 0
+
+    def applies(self, view: RecordView, policy: PipelinePolicy) -> bool:
+        return True
+
+    async def fingerprint(self, job: StageJob, io: StageIO) -> StageFingerprint:
+        return StageFingerprint(stage=self.name, stage_version=self.version, input_digest=job.text_digest, config_digest=self.config)
+
+    async def run(self, job: StageJob, io: StageIO) -> StageResult:
+        self.runs += 1
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result

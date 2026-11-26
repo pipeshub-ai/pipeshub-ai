@@ -54,7 +54,7 @@ async def test_arango_migration_logs_person_and_user_keys(caplog: pytest.LogCapt
     assert "Person p1 -> user u1: migrated (0 edge(s) moved)" in messages
 
 
-async def test_arango_migration_failure_logs_user_key(caplog: pytest.LogCaptureFixture) -> None:
+async def test_arango_migration_failure_is_left_to_the_caller(caplog: pytest.LogCaptureFixture) -> None:
     provider = _arango()
     provider.get_person_by_email = AsyncMock(side_effect=RuntimeError("graph down"))
 
@@ -62,7 +62,7 @@ async def test_arango_migration_failure_logs_user_key(caplog: pytest.LogCaptureF
         await provider.migrate_person_to_user(EMAIL, "u1", "org-1", transaction="txn-1")
 
     assert not any(EMAIL in m for m in _messages(caplog))
-    assert _messages(caplog, logging.ERROR) == ["Migrate person to user failed for user u1 in org org-1: graph down"]
+    assert _messages(caplog, logging.ERROR) == []  # re-raised: the caller logs it (batch_upsert_app_users below)
 
 
 async def test_neo4j_migration_logs_user_key(caplog: pytest.LogCaptureFixture) -> None:
@@ -76,14 +76,14 @@ async def test_neo4j_migration_logs_user_key(caplog: pytest.LogCaptureFixture) -
     assert "Person -> user u1: migrated (2 permission, 1 app-relation edges moved)" in messages
 
 
-async def test_neo4j_migration_failure_logs_user_key(caplog: pytest.LogCaptureFixture) -> None:
+async def test_neo4j_migration_failure_is_left_to_the_caller(caplog: pytest.LogCaptureFixture) -> None:
     provider = _neo4j(AsyncMock(side_effect=RuntimeError("graph down")))
 
     with pytest.raises(RuntimeError):
         await provider.migrate_person_to_user(EMAIL, "u1", "org-1")
 
     assert not any(EMAIL in m for m in _messages(caplog))
-    assert _messages(caplog, logging.ERROR) == ["Migrate person to user failed for user u1 in org org-1: graph down"]
+    assert _messages(caplog, logging.ERROR) == []  # re-raised: the caller logs it (batch_upsert_app_users below)
 
 
 # ---- callers: batch_upsert_app_users adopts a Person for each new app user, and a failed adoption is logged, not raised ----
@@ -95,14 +95,19 @@ def _app_user(*, is_guest: bool = False) -> AppUser:
     )
 
 
-def _assert_adoption_failure_logged_by_id(caplog: pytest.LogCaptureFixture) -> None:
+def _assert_adoption_failure_logged_text_free(caplog: pytest.LogCaptureFixture) -> None:
     messages = _messages(caplog)
     assert not any(EMAIL in m or "Alice Liddell" in m for m in messages)
-    assert _messages(caplog, logging.ERROR) == ["Person adoption failed for user u1 in org org-1: graph down"]
+    [record] = [r for r in caplog.records if r.name == LOGGER_NAME and r.levelno >= logging.ERROR]
+    assert record.getMessage() == "graph.provider.step_failed"
+    assert (record.op, record.step) == ("batch_upsert_app_users", "person_adoption")
+    assert not hasattr(record, "target_user_id")  # AppUser.id is a per-sync uuid, not the PipesHub user id the field means
+    assert (record.error_type, getattr(record, "error_message", None)) == ("RuntimeError", None)
+    assert "graph down" not in str(record.exc_text)  # a step's error text is left out, even unstamped
 
 
 @pytest.mark.parametrize("provider_cls", [ArangoHTTPProvider, Neo4jProvider])
-async def test_batch_upsert_app_users_logs_a_failed_adoption_by_user_id(provider_cls, caplog: pytest.LogCaptureFixture) -> None:
+async def test_batch_upsert_app_users_logs_a_failed_adoption_without_its_text(provider_cls, caplog: pytest.LogCaptureFixture) -> None:
     provider = provider_cls.__new__(provider_cls)
     provider.logger = logging.getLogger(LOGGER_NAME)
     provider.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1", "id": "org-1"}])
@@ -112,9 +117,9 @@ async def test_batch_upsert_app_users_logs_a_failed_adoption_by_user_id(provider
     provider.batch_create_edges = AsyncMock()
     provider.migrate_person_to_user = AsyncMock(side_effect=RuntimeError("graph down"))
 
-    await provider.batch_upsert_app_users([_app_user()], transaction="txn-1")
+    await provider.batch_upsert_app_users([_app_user()], transaction="txn-1", org_id="org-1")
 
-    _assert_adoption_failure_logged_by_id(caplog)
+    _assert_adoption_failure_logged_text_free(caplog)
 
 
 @pytest.mark.parametrize("provider_cls", [ArangoHTTPProvider, Neo4jProvider])
@@ -128,7 +133,7 @@ async def test_batch_upsert_app_users_logs_an_active_guest_by_graph_key(provider
     provider.batch_create_edges = AsyncMock()
     provider.delete_edge = AsyncMock()
 
-    await provider.batch_upsert_app_users([_app_user(is_guest=True)], transaction="txn-1")
+    await provider.batch_upsert_app_users([_app_user(is_guest=True)], transaction="txn-1", org_id="org-1")
 
     messages = _messages(caplog)
     assert not any(EMAIL in m or "Alice Liddell" in m for m in messages)
@@ -136,7 +141,7 @@ async def test_batch_upsert_app_users_logs_an_active_guest_by_graph_key(provider
     provider.delete_edge.assert_not_awaited()
 
 
-async def test_postgres_batch_upsert_app_users_logs_a_failed_adoption_by_user_id(caplog: pytest.LogCaptureFixture) -> None:
+async def test_postgres_batch_upsert_app_users_logs_a_failed_adoption_without_its_text(caplog: pytest.LogCaptureFixture) -> None:
     pytest.importorskip("app.services.graph_db.postgres.provider")
     from app.core.org_context import OrgContext, bind
     from app.services.graph_db.postgres.provider import PostgresGraphProvider
@@ -151,6 +156,6 @@ async def test_postgres_batch_upsert_app_users_logs_a_failed_adoption_by_user_id
     provider.migrate_person_to_user = AsyncMock(side_effect=RuntimeError("graph down"))
 
     with bind(OrgContext("org-1", "user-1", "job", "job:test", "t")):
-        await provider.batch_upsert_app_users([_app_user()], transaction="txn-1")
+        await provider.batch_upsert_app_users([_app_user()], transaction="txn-1", org_id="org-1")
 
-    _assert_adoption_failure_logged_by_id(caplog)
+    _assert_adoption_failure_logged_text_free(caplog)

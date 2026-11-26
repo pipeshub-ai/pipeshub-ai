@@ -16,7 +16,7 @@ export interface PaginationState {
   /** Authoritative flags for sources whose page number is only an estimate. */
   hasPrev?: boolean;
   hasNext?: boolean;
-  /** `totalCount` is a lower bound (the source stopped counting): the total and the page count read as "at least". */
+  /** `totalCount` may not be exact (usually lower): the total and the page count read as "at least". */
   totalCapped?: boolean;
 }
 
@@ -52,7 +52,7 @@ export function PaginationFooter({
         flexShrink: 0,
       }}
     >
-      <Text size="1" style={{ color: 'var(--slate-10)' }}>
+      <Text size="1" style={{ color: 'var(--slate-11)' }}>
         {t(pagination.totalCapped ? 'common.pagination.showingAtLeast' : 'common.pagination.showing', { start, end, total: totalCount })}
       </Text>
       <Flex gap="2" align="center">

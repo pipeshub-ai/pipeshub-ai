@@ -48,6 +48,7 @@ def _capture(caplog: pytest.LogCaptureFixture) -> None:
 
 def _user_added_provider(existing_user: object = None) -> AsyncMock:
     gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value=None)
     gp.get_user_by_email = AsyncMock(return_value=existing_user)
     gp.get_document = AsyncMock(return_value={"_key": "org-1", "accountType": "enterprise"})
     gp.get_nodes_by_filters = AsyncMock(return_value=[])
@@ -126,11 +127,13 @@ async def test_user_updated_logs_ids_only(caplog: pytest.LogCaptureFixture) -> N
 
 async def test_user_deleted_logs_ids_only(caplog: pytest.LogCaptureFixture) -> None:
     gp = AsyncMock()
-    gp.get_entity_id_by_email = AsyncMock(return_value="graph-key-1")
+    gp.get_user_by_user_id = AsyncMock(return_value=None)
+    gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="graph-key-1", user_id=None))
     svc = _service(gp)
     svc._remove_mcp_data = AsyncMock()
     svc._remove_personal_toolsets = AsyncMock()
     svc._remove_api_toolset_data = AsyncMock()
+    svc._remove_personal_oauth_apps = AsyncMock()
 
     assert await svc.process_event("userDeleted", dict(PAYLOAD)) is True
 
@@ -143,7 +146,7 @@ async def test_user_deleted_logs_ids_only(caplog: pytest.LogCaptureFixture) -> N
 async def test_user_deleted_without_user_id_still_succeeds(caplog: pytest.LogCaptureFixture) -> None:
     """`userId` is optional on this event; logging it must not turn into a KeyError."""
     gp = AsyncMock()
-    gp.get_entity_id_by_email = AsyncMock(return_value="graph-key-1")
+    gp.get_user_by_email = AsyncMock(return_value=MagicMock(id="graph-key-1", user_id="u-1"))      # an event without one names no other user
     payload = {"orgId": "org-1", "email": PERSONAL["email"]}
 
     assert await _service(gp).process_event("userDeleted", payload) is True
@@ -155,10 +158,42 @@ async def test_user_deleted_without_user_id_still_succeeds(caplog: pytest.LogCap
 
 async def test_user_deleted_with_no_graph_user_logs_ids_only(caplog: pytest.LogCaptureFixture) -> None:
     gp = AsyncMock()
-    gp.get_entity_id_by_email = AsyncMock(return_value=None)
+    gp.get_user_by_user_id = AsyncMock(return_value=None)
+    gp.get_user_by_email = AsyncMock(return_value=None)
 
     assert await _service(gp).process_event("userDeleted", dict(PAYLOAD)) is False
 
     errors = [r.getMessage() for r in caplog.records if r.name == LOGGER_NAME and r.levelno == logging.ERROR]
     _assert_no_personal_data(caplog)
-    assert errors == ["No graph user has the deleted user's email (user u-1)"]
+    assert errors == ["No graph user is the deleted user (user u-1)"]
+
+
+async def test_a_kept_api_toolset_credential_of_a_deleted_user_is_logged_not_raised(caplog: pytest.LogCaptureFixture) -> None:
+    from app.agents.openapi.models import (
+        ApiToolsetCredentials,
+        ApiToolsetInstance,
+        AuthScheme,
+        AuthType,
+        CompiledOperation,
+    )
+    from app.agents.openapi.store import ApiToolsetStore
+    from tests.support.in_memory_config import InMemoryConfigService
+
+    class KeepsKeys(InMemoryConfigService):
+        async def delete_config(self, key: str) -> bool:
+            return False
+
+    config = KeepsKeys()
+    store = ApiToolsetStore(config)
+    await store.save_instance(ApiToolsetInstance(
+        id="i1", org_id="org-1", created_by="a", name="i1", spec_title="T", openapi_version="3.1.0", spec_hash="h",
+        base_url="https://api.acme.test", timeout_seconds=10, created_at=1, updated_at=1,
+        auth_scheme=AuthScheme(name="k", type=AuthType.API_KEY, location="header", param_name="K"),
+        operations=[CompiledOperation(tool_name="t", method="GET", path="/t", input_schema={})],
+    ))
+    await store.save_credentials("i1", "u-1", ApiToolsetCredentials(api_key="k"))
+    svc = _service(AsyncMock())
+    svc.app_container.config_service.return_value = config
+    await svc._remove_api_toolset_data("org-1", "u-1")
+    failed = [r for r in caplog.records if r.name == LOGGER_NAME and r.getMessage() == "entity_event.step_failed"]
+    assert len(failed) == 1 and failed[0].error_class == "unavailable" and failed[0].step == "remove_api_toolset_data"

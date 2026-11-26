@@ -11,6 +11,8 @@ import { storedKnowledgeLimitFilter } from '../../../modules/oauth_provider/type
 import { mapMongoError } from '../mongo';
 import { toPlain } from '../plain';
 import {
+  APP_OWNER_FORMAT,
+  NO_APP_CREATOR,
   OAuthAppStatus,
   OAuthGrantType,
   type NewOAuthApp,
@@ -62,6 +64,7 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
     try {
       const app = await OAuthApp.create({
         ...input,
+        ownerFormat: APP_OWNER_FORMAT,
         orgId: oid(input.orgId),
         createdBy: oid(input.createdBy),
         ...(input.tokenIdentityUserId !== undefined && {
@@ -222,6 +225,38 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
     );
   }
 
+  async disownInstanceApps(
+    orgId: string,
+    dynamicClientOrgId: string,
+  ): Promise<number> {
+    const apps = await OAuthApp.find({
+      orgId: oid(orgId),
+      ownerFormat: null,
+      $or: [{ isDynamic: true }, { clientId: FIRST_PARTY_DEVICE_CLIENT_ID }],
+    })
+      .select('_id isDynamic')
+      .lean<{ _id: Types.ObjectId; isDynamic?: boolean }[]>();
+    const disowned = {
+      createdBy: oid(NO_APP_CREATOR),
+      ownerFormat: APP_OWNER_FORMAT,
+    };
+    // The marker goes in the same write as every change it certifies: a write that fails leaves the
+    // app unmarked, so the next run repairs it.
+    const dynamic = apps.filter((a) => a.isDynamic === true).map((a) => a._id);
+    const device = apps.filter((a) => a.isDynamic !== true).map((a) => a._id);
+    if (dynamic.length > 0) {
+      await OAuthApp.updateMany(
+        { _id: { $in: dynamic } },
+        { $set: { ...disowned, orgId: oid(dynamicClientOrgId) } },
+      );
+    }
+    if (device.length > 0) {
+      await OAuthApp.updateMany({ _id: { $in: device } }, { $set: disowned });
+    }
+    // Each app once, as PostgreSQL's one UPDATE counts.
+    return apps.length;
+  }
+
   async setDynamicGrant(
     orgId: string,
     id: string,
@@ -283,5 +318,33 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
       { orgId: oid(orgId), createdBy: oid(fromUserId), isDeleted: false },
       { $set: { createdBy: oid(toUserId) } },
     );
+  }
+
+  async listClientSecrets(
+    orgId: string,
+  ): Promise<Array<{ id: string; clientSecretEncrypted: string }>> {
+    const apps = await OAuthApp.find({ orgId: oid(orgId) })
+      .select('clientSecretEncrypted')
+      .sort({ _id: 1 })
+      .lean()
+      .exec();
+    return apps.map((app) => ({
+      id: String(app._id),
+      clientSecretEncrypted: app.clientSecretEncrypted,
+    }));
+  }
+
+  async replaceClientSecret(
+    orgId: string,
+    id: string,
+    expected: string,
+    next: string,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(id)) return false;
+    const result = await OAuthApp.updateOne(
+      { _id: oid(id), orgId: oid(orgId), clientSecretEncrypted: expected },
+      { $set: { clientSecretEncrypted: next } },
+    );
+    return result.modifiedCount === 1;
   }
 }

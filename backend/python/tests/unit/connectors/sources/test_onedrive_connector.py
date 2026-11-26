@@ -754,6 +754,7 @@ class TestRunSyncDeep:
                     new_callable=AsyncMock, return_value=(MagicMock(), MagicMock())):
             connector._sync_user_groups = AsyncMock()
             connector._process_users_in_batches = AsyncMock()
+            connector._remove_deleted_drives = AsyncMock()
 
             await connector.run_sync()
 
@@ -1147,6 +1148,45 @@ class TestProcessUsersInBatches:
         await connector._process_users_in_batches([MagicMock(email="u@t.com")])
 
         connector._run_sync_with_yield.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_user_whose_drive_is_not_known_is_left_for_the_stored_drive_check(self) -> None:
+        connector = _make_connector()
+        connector.msgraph_client = MagicMock()
+        connector.max_concurrent_batches = 10
+        user = MagicMock(email="u@t.com", source_user_id="su1")
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[MagicMock(email="u@t.com")])
+        connector._user_has_onedrive = AsyncMock(return_value=OneDriveUserStatus.AVAILABLE)
+        connector._run_sync_with_yield = AsyncMock(side_effect=RuntimeError("delta failed"))
+        connector._keep_stored_drive = AsyncMock()
+
+        await connector._process_users_in_batches([user])
+
+        connector._keep_stored_drive.assert_not_awaited()
+        assert connector._unsynced_drive_owners == {"su1"}
+
+
+class TestKeepStoredNodesOutsideAFullSync:
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_noted_kept_when_the_processor_does_not_say_a_full_sync_is_running(self) -> None:
+        connector = _make_connector()
+        processor = connector.data_entities_processor
+        processor.get_records_in_record_group = AsyncMock(return_value=[])
+        processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="r-1"))
+
+        await connector._keep_stored_drive("d-1")
+        await connector._keep_stored_record_group("d-1")
+        await connector._keep_stored_item("i-1")
+        connector._keep_stored_record("r-1")
+        await connector._keep_stored_group("g-1")
+
+        processor.note_kept_record_group.assert_not_called()
+        processor.note_kept_records.assert_not_called()
+        processor.note_kept_user_group.assert_not_called()
+        processor.get_records_in_record_group.assert_not_awaited()
+        processor.get_record_by_external_id.assert_not_awaited()
+        assert connector.full_sync_coverage().complete is True
 
 
 # ===========================================================================
@@ -3338,6 +3378,16 @@ class TestProcessUsersInBatchesCoverage:
             await connector._process_users_in_batches([MagicMock()])
 
     @pytest.mark.asyncio
+    async def test_the_active_users_are_read_so_that_a_failed_read_raises(self) -> None:
+        # An empty answer for a failed read would put every user's drive out of scope.
+        connector = _make_connector_cov()
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+
+        await connector._process_users_in_batches([MagicMock(email="u@t.com")])
+
+        connector.data_entities_processor.get_all_active_users.assert_awaited_once_with(raise_on_error=True)
+
+    @pytest.mark.asyncio
     async def test_user_without_email_filtered(self):
         """User with None email is filtered out."""
         connector = _make_connector_cov()
@@ -3564,6 +3614,7 @@ class TestRunSyncCoverage:
         connector.msgraph_client.get_all_users = AsyncMock(return_value=[MagicMock()])
         connector._sync_user_groups = AsyncMock()
         connector._process_users_in_batches = AsyncMock()
+        connector._remove_deleted_drives = AsyncMock()
 
         with patch("app.connectors.sources.microsoft.onedrive.connector.load_connector_filters",
                     new_callable=AsyncMock, return_value=(MagicMock(), MagicMock())):
@@ -3588,6 +3639,7 @@ class TestRunIncrementalSync:
         connector.msgraph_client = MagicMock()
         connector.msgraph_client.get_all_users = AsyncMock(return_value=[MagicMock()])
         connector._process_users_in_batches = AsyncMock()
+        connector._remove_deleted_drives = AsyncMock()
 
         await connector.run_incremental_sync()
         connector._process_users_in_batches.assert_awaited_once()

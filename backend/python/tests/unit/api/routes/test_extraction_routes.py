@@ -18,11 +18,14 @@ from app.api.routes.extraction import router as extraction_router
 from app.models.blocks import SemanticMetadata
 from app.modules.transformers.document_extraction import (
     DocumentClassification,
+    ExtractionContentFilteredError,
     ExtractionLLMError,
     SubCategories,
     semantic_metadata_from_classification,
 )
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import MARK, SENTINELS, openai_error, with_cause
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -162,6 +165,38 @@ def test_classify_forwards_record_name_and_type() -> None:
     assert call_kwargs["record_type"] == "FILE"
 
 
+def test_classify_runs_its_model_calls_as_the_callers_stage_job() -> None:
+    """The job key in the request is the job the gateway admits the calls as, so the half-open trial of an open breaker
+    rotates over the waiting jobs and one job does not carry every trial of a long outage."""
+    from app.services.llm_gateway.gateway import current_job_key
+
+    seen: list[str] = []
+
+    async def classify(**_kwargs: object) -> None:
+        seen.append(current_job_key())
+
+    mock_extraction = MagicMock()
+    mock_extraction.classify = classify
+    client = TestClient(_build_app(mock_extraction))
+    for body in ({"job_key": "classify:vr-1:rev-a"}, {}):
+        response = client.post(
+            "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123", **body}
+        )
+        assert response.status_code == 200
+    assert seen == ["classify:vr-1:rev-a", ""]
+
+
+def test_classify_refuses_an_oversized_job_key() -> None:
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(return_value=None)
+    response = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify",
+        json={"block_container": _empty_bc_dict(), "org_id": "org-123", "job_key": "k" * 1000},
+    )
+    assert response.status_code == 422
+    mock_extraction.classify.assert_not_called()
+
+
 def test_classify_record_name_and_type_default_to_empty() -> None:
     mock_extraction = MagicMock()
     mock_extraction.classify = AsyncMock(return_value=None)
@@ -246,9 +281,11 @@ def test_classify_refusal_is_not_answered_as_retryable() -> None:
 
     assert response.status_code == 422
     assert response.status_code not in TRANSIENT_STATUS_CODES
-    assert response.json() == {
+    body = response.json()
+    assert {k: body[k] for k in ("success", "classification", "error", "error_code")} == {
         "success": False, "classification": None, "error": "over budget", "error_code": None,
     }
+    assert isinstance(body["usage"], dict), "a refused request still says what it spent"
 
 
 def test_classify_invalid_block_container_returns_422() -> None:
@@ -549,6 +586,7 @@ def test_classify_without_a_configured_llm_returns_422_with_error_code() -> None
     [
         (LLMUnavailableError("connection refused"), "LLM_UNAVAILABLE"),
         (ExtractionLLMError("no usable output"), "LLM_FAILED"),
+        (ExtractionContentFilteredError(), "LLM_CONTENT_FILTERED"),
     ],
 )
 def test_model_failures_answer_424_with_a_code(error: Exception, code: str) -> None:
@@ -588,3 +626,169 @@ def test_an_outage_before_the_circuit_opens_names_no_wait() -> None:
     )
     assert response.status_code == 424
     assert "Retry-After" not in response.headers
+
+
+def test_the_424_body_says_whether_a_request_reached_the_provider() -> None:
+    from app.services.llm_gateway.gateway import ProviderUnavailableError
+
+    for error, expected in [
+        (ProviderUnavailableError("circuit open", provider="p", sent=False), (False, False, False)),
+        (ProviderUnavailableError("failed", provider="p", sent=True, chargeable=True), (True, False, True)),
+        (ProviderUnavailableError("trial failed", provider="p", sent=True, trial=True), (True, True, False)),
+        (LLMUnavailableError("bare"), (True, False, False)),
+    ]:
+        mock_extraction = MagicMock()
+        mock_extraction.classify = AsyncMock(side_effect=error)
+        body = TestClient(_build_app(mock_extraction)).post(
+            "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123"}
+        ).json()
+        assert (body["sent"], body["trial"], body["chargeable"]) == expected
+
+
+def test_an_open_breaker_refusal_is_not_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """While the breaker is open every paused job's wake is refused without a request: logging each at WARNING would
+    write one line per job per wake. A request that reached the provider and failed is still a WARNING."""
+    from app.services.llm_gateway.gateway import ProviderUnavailableError
+
+    caplog.set_level(logging.DEBUG, logger="app.api.routes.extraction")
+    for error in (
+        ProviderUnavailableError("circuit open", provider="p", sent=False),
+        ProviderUnavailableError("failed", provider="p", sent=True),
+        LLMUnavailableError("bare"),
+    ):
+        mock_extraction = MagicMock()
+        mock_extraction.classify = AsyncMock(side_effect=error)
+        TestClient(_build_app(mock_extraction)).post(
+            "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123"}
+        )
+    levels = [r.levelno for r in caplog.records if r.getMessage() == "document_classify.failed"]
+    assert levels == [logging.DEBUG, logging.WARNING, logging.WARNING]
+
+
+def test_the_424_body_carries_the_key_digest_size_class_and_requests() -> None:
+    """The indexing side needs them to charge, hold and read the key's ledger."""
+    from app.services.llm_gateway.gateway import ProviderUnavailableError
+
+    error = ProviderUnavailableError(
+        "down", provider="ChatX:m@host", sent=True, chargeable=True, pk="abc123", size_class="l", requests=3
+    )
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(side_effect=error)
+    body = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123"}
+    ).json()
+    assert (body["pk"], body["size_class"], body["provider"], body["requests"]) == ("abc123", "l", "ChatX:m@host", 3)
+
+
+def test_entities_answers_a_provider_outage_with_a_424_and_what_it_spent(entities_app) -> None:
+    """An outage of the model provider behind entity extraction is a 424 with the job's spend, not a 500: the caller
+    pauses its job and counts the sends, instead of retrying the document until it dead-letters."""
+    from app.services.llm_gateway.gateway import current_job_trace
+    from app.utils.llm import LLMUnavailableError
+
+    app, _, extract = entities_app
+
+    async def outage(_request: object) -> object:
+        trace = current_job_trace()
+        assert trace is not None and trace.meter.allowance == 4, "the job's remaining allowance bounds the service's calls"
+        trace.meter.failed += 2
+        trace.note_attempt("pk-1", "l", "P", chargeable=True, trial=False)
+        raise LLMUnavailableError("provider down", pk="pk-1", size_class="l", requests=2, chargeable=True)
+
+    extract.side_effect = outage
+    response = _post_entities(app, org_id="org-123", job_key="entities:vr:rev", send_allowance=4)
+
+    assert response.status_code == 424
+    body = response.json()
+    assert body["error_code"] == "LLM_UNAVAILABLE"
+    assert (body["usage"]["failed"], body["usage"]["charged"], body["usage"]["pk"]) == (2, 1, "pk-1")
+    assert not app.state.entity_extraction_semaphore.locked()
+
+
+def test_a_second_delivery_of_a_request_is_refused_without_spending(entities_app, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The caller's client sent a request again after losing the reply: the service spends nothing for it and answers
+    409 with what the first delivery spent."""
+    from app.services.llm_gateway import remote_usage
+
+    app, _, extract = entities_app
+
+    async def already(job_key: str, request_id: str) -> dict:
+        return {"failed": 2, "charged": 1}
+
+    monkeypatch.setattr(remote_usage, "claim", already)
+    response = _post_entities(app, org_id="org-123", job_key="entities:vr:rev", request_id="req-1")
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "REPLAYED" and response.json()["usage"] == {"failed": 2, "charged": 1}
+    extract.assert_not_awaited()
+    assert not app.state.entity_extraction_semaphore.locked()
+
+
+def test_a_request_records_what_it_spent_whatever_its_outcome(entities_app, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.llm_gateway import remote_usage
+
+    app, _, extract = entities_app
+    recorded: list[tuple[str, str, object]] = []
+
+    async def first(job_key: str, request_id: str) -> bool:
+        return True
+
+    async def record(job_key: str, request_id: str, usage: object) -> None:
+        recorded.append((job_key, request_id, usage))
+
+    monkeypatch.setattr(remote_usage, "claim", first)
+    monkeypatch.setattr(remote_usage, "record", record)
+    extract.side_effect = RuntimeError("model blew up")
+    response = _post_entities(app, org_id="org-123", job_key="entities:vr:rev", request_id="req-1")
+    assert response.status_code == 500
+    assert [(k, r) for k, r, _ in recorded] == [("entities:vr:rev", "req-1")]
+    assert isinstance(recorded[0][2], dict) and "failed" in recorded[0][2]
+
+
+
+def test_a_model_failure_answer_carries_what_the_request_spent() -> None:
+    """A 424 for a model failure (and every other refusal) carries ``usage``: the caller retries the document and must
+    count the failed sends behind this answer."""
+    from app.modules.transformers.document_extraction import ExtractionLLMError
+    from app.services.llm_gateway.gateway import current_job_trace
+
+    async def failing(**_kwargs: object) -> None:
+        trace = current_job_trace()
+        assert trace is not None
+        trace.meter.failed += 2
+        raise ExtractionLLMError("no usable output")
+
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(side_effect=failing)
+    response = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify",
+        json={"block_container": _empty_bc_dict(), "org_id": "org-123", "job_key": "classify:vr:rev"},
+    )
+    assert response.status_code == 424
+    assert response.json()["usage"]["failed"] == 2
+
+
+@pytest.mark.parametrize(
+    ("error", "error_class", "level"),
+    [
+        (lambda: with_cause(ExtractionLLMError(f"call failed: {MARK}"), openai_error(400)), "bad_request",
+         logging.WARNING),
+        (lambda: with_cause(LLMUnavailableError(f"p could not serve the call: {MARK}"), openai_error(429)),
+         "rate_limited", logging.WARNING),
+        (lambda: ExtractionLLMError("Document classification and the fallback summary both failed"), "bad_request",
+         logging.WARNING),
+    ],
+    ids=["model-400", "outage-429", "both-failed"],
+)
+def test_a_model_failure_is_one_text_free_line_with_the_org(caplog, error, error_class, level) -> None:
+    caplog.set_level(logging.DEBUG)
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(side_effect=error())
+
+    response = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify", json={"block_container": _empty_bc_dict(), "org_id": "org-123"}
+    )
+
+    assert response.status_code == 424
+    fields = failure_line(caplog.records, "document_classify.failed", error_class, level, *SENTINELS)
+    assert fields["org_id"] == "org-123"
+    assert_text_free(caplog.records, *SENTINELS)

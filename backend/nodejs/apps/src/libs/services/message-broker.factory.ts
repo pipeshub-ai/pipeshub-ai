@@ -18,6 +18,7 @@ import {
   BaseRedisStreamsProducerConnection,
   BaseRedisStreamsConsumerConnection,
   RedisStreamsAdminService,
+  RedisStreamsBroadcastConsumer,
 } from './redis-streams.service';
 import {
   BasePgQueueProducerConnection,
@@ -191,13 +192,56 @@ export function createMessageConsumer(
   return createMessageConsumerByParts(brokerType, kafka, redis, logger);
 }
 
+/**
+ * A subscriber that sees every message of its topics, whatever else
+ * subscribes (a work-queue consumer shares them with its group instead).
+ * Redis Streams: it holds no consumer group, so a process that dies leaves
+ * nothing on the server. Kafka: a group of its own, `identity`, which must
+ * differ per process; the broker removes it once the process is gone and its
+ * offsets expire. PostgreSQL: an ephemeral group `identity`, which the queue's
+ * sweep removes once its consumer stops polling.
+ */
+export function createBroadcastMessageConsumer(
+  resolved: ResolvedMessageBrokerConfig,
+  logger: Logger,
+  identity: string,
+): IMessageConsumer {
+  if (resolved.type === MessageBrokerType.KAFKA) {
+    return new ConcreteKafkaConsumer(
+      { ...resolved.kafka, clientId: identity, groupId: identity },
+      logger,
+    );
+  }
+  if (resolved.type === MessageBrokerType.POSTGRES) {
+    // An ephemeral group of its own: it starts at the tail and the queue drops it once the process stops polling.
+    return new ConcretePgConsumer(
+      { clientId: identity, groupId: identity, ephemeral: true },
+      logger,
+    );
+  }
+  return new RedisStreamsBroadcastConsumer(
+    { ...resolved.redis, clientId: identity },
+    logger,
+  );
+}
+
+export function createMessageAdmin(
+  resolved: ResolvedMessageBrokerConfig,
+  logger: Logger,
+): IMessageAdmin {
+  const { brokerType, kafka, redis } = resolvedToParts(resolved);
+  return createMessageAdminByParts(brokerType, kafka, redis, logger);
+}
+
 const NOTIFICATION_CONSUMER_GROUP = 'notification-consumer-group';
 const NOTIFICATION_CLIENT_ID = 'notification-consumer';
 
-/** Dedicated consumer group/stream group for the notification topic (Kafka + Redis). */
-export function createNotificationMessageConsumer(
+/** A consumer in its own consumer group (Kafka) / stream group (Redis), so it sees every message. */
+export function createDedicatedMessageConsumer(
   appConfig: AppConfig,
   logger: Logger,
+  clientId: string,
+  groupId: string,
 ): IMessageConsumer {
   const resolved = resolveMessageBrokerConfig(appConfig);
   if (resolved.type === MessageBrokerType.POSTGRES) {
@@ -213,11 +257,7 @@ export function createNotificationMessageConsumer(
     );
   }
   if (resolved.type === MessageBrokerType.KAFKA) {
-    const kafka: KafkaConfig = {
-      ...resolved.kafka,
-      clientId: NOTIFICATION_CLIENT_ID,
-      groupId: NOTIFICATION_CONSUMER_GROUP,
-    };
+    const kafka: KafkaConfig = { ...resolved.kafka, clientId, groupId };
     return createMessageConsumerByParts(
       MessageBrokerType.KAFKA,
       kafka,
@@ -225,15 +265,25 @@ export function createNotificationMessageConsumer(
       logger,
     );
   }
-  const redis = buildRedisBrokerConfig(appConfig.redis, {
-    clientId: NOTIFICATION_CLIENT_ID,
-    groupId: NOTIFICATION_CONSUMER_GROUP,
-  });
+  const redis = buildRedisBrokerConfig(appConfig.redis, { clientId, groupId });
   return createMessageConsumerByParts(
     MessageBrokerType.REDIS,
     undefined,
     redis,
     logger,
+  );
+}
+
+/** Dedicated consumer group/stream group for the notification topic (Kafka + Redis). */
+export function createNotificationMessageConsumer(
+  appConfig: AppConfig,
+  logger: Logger,
+): IMessageConsumer {
+  return createDedicatedMessageConsumer(
+    appConfig,
+    logger,
+    NOTIFICATION_CLIENT_ID,
+    NOTIFICATION_CONSUMER_GROUP,
   );
 }
 
@@ -356,9 +406,9 @@ export async function ensureMessageTopicsExist(
   logger: Logger,
   topics?: TopicDefinition[],
 ): Promise<void> {
-  const { brokerType, kafka, redis } = resolvedToParts(resolved);
-  const admin = createMessageAdminByParts(brokerType, kafka, redis, logger);
-  await admin.ensureTopicsExist(topics ?? REQUIRED_TOPICS);
+  await createMessageAdmin(resolved, logger).ensureTopicsExist(
+    topics ?? REQUIRED_TOPICS,
+  );
 }
 
 export async function ensureMessageTopicsExistFromConfig(

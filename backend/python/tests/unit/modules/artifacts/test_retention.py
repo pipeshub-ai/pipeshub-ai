@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import types
 from dataclasses import dataclass, field
@@ -692,6 +693,35 @@ async def test_failures_in_a_row_end_the_page_and_the_walk_resumes_after_them() 
 
     assert report.cut_short and report.failed == 3 and key == "d"
     assert store.deleted == ["a@r1"] and store.list_calls == 4
+
+
+async def test_a_slot_freed_by_a_failure_starts_nothing_until_the_vrids_in_flight_answer() -> None:
+    """Hung storage fails the listings in flight one answer at a time. A vrid started on the slot the first failure
+    freed would wait out a whole listing timeout too; the page must end on the failures it already has."""
+    graph, store = FakeGraph(), FakeStore()
+    for vrid in "abcdef":
+        graph.map(vrid, "r3", "r2")
+        _revs(store, vrid, "r1")
+    answer = {vrid: asyncio.Event() for vrid in "abcdef"}
+    listed: list[str] = []
+
+    async def hung(org_id: str, vrid: str, *, timeout_seconds: float | None = None) -> list[dict[str, Any]]:
+        listed.append(vrid)
+        await answer[vrid].wait()
+        raise TimeoutError("storage did not answer")
+
+    store.list_revisions = hung  # type: ignore[method-assign]
+    page = asyncio.ensure_future(_sweep(graph, store, concurrency=3).run_page(None))
+    for vrid in "abc":
+        answer[vrid].set()
+        for _ in range(50):  # loop turns, not time: room for a freed slot to start another vrid
+            await asyncio.sleep(0)
+    for event in answer.values():
+        event.set()
+    key, report = await page
+
+    assert listed == ["a", "b", "c"]
+    assert report.cut_short and report.failed == 3 and key == "c"
 
 
 async def test_a_failure_between_successes_is_passed_over_when_the_page_is_cut_short(

@@ -338,7 +338,7 @@ async def test_the_role_walk_is_a_superset_of_the_access_check_when_rules_roles_
     assert extra > 0                                       # the walk is not the access decision
 
 
-async def test_the_role_walk_ignores_the_access_rule_and_the_gate_and_lists_placeholders(w: World) -> None:
+async def test_the_role_walk_gives_no_inherited_role_to_a_record_that_needs_its_own_grant_ignores_the_gate_and_lists_placeholders(w: World) -> None:
     await entity_world(w, "other-org")
     await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
     await w.nodes("records", rec("shut", **done(accessRule="RESTRICTED")), rec("stub", **done(isPlaceholder=True)))
@@ -347,7 +347,8 @@ async def test_the_role_walk_ignores_the_access_rule_and_the_gate_and_lists_plac
         await w.edge("mentionsEntity", ("records", r), ("namedEntities", "E"))
     await w.edge("permission", ("users", "u"), ("recordGroups", "g"), type="USER", role="READER")
     assert "shut" not in await w.allowed("u", "shut")                                       # the access check shuts a restricted record that only inherits
-    assert {"shut", "stub"} <= await walk(w, "u")                                            # the role walk does not read the rule; a stub is a record
+    walked = await walk(w, "u")
+    assert "stub" in walked and "shut" not in walked                                         # a restricted record takes no role from what it inherits; a stub is a record
     assert "stub" in await w.allowed("u", "stub")
     await user(w, "nogate")
     await w.edge("permission", ("users", "nogate"), ("records", "old"), type="USER", role="READER")
@@ -451,6 +452,20 @@ async def test_the_record_groups_a_user_reaches_by_each_grant_and_what_inherits_
     ex = await w.p.get_entity_access_context("uid-c1", w.org, exclude_app_ids=frozenset({"conn"}))
     assert ex["record_group_ids"] == ["srcgrp"]                                                                   # its record groups drop out with the app
     assert (await w.p.get_entity_access_context("uid-other", w.org)) is None
+
+
+async def test_the_inheritance_walk_stays_inside_the_seeds_connector(w: World) -> None:
+    """No writer records a group inheriting across connectors; the walk still does not follow one, nor go past it."""
+    await context_world(w)
+    await w.nodes("apps", {"_key": "conn2", "type": "CONFLUENCE", "name": "Confluence", "permissionModel": "RECORD_LEVEL"})
+    await w.edge("userAppRelation", ("users", "c1"), ("apps", "conn2"))
+    await w.nodes("recordGroups", {"_key": "seed", "connectorId": "conn"}, {"_key": "same", "connectorId": "conn"}, {"_key": "other", "connectorId": "conn2"},
+                  {"_key": "beyond", "connectorId": "conn"})
+    await w.edge("permission", ("users", "c1"), ("recordGroups", "seed"), type="USER", role="READER")
+    for parent, child_ in (("seed", "same"), ("seed", "other"), ("other", "beyond")):
+        await w.edge("inheritPermissions", ("recordGroups", child_), ("recordGroups", parent))
+    got = await w.p.get_entity_access_context("uid-c1", w.org)
+    assert "conn2" in {a["id"] for a in got["apps"]} and got["record_group_ids"] == ["same", "seed"]
 
 
 @pytest.mark.parametrize(("seed", "hard"), [(77, False), (78, True)])

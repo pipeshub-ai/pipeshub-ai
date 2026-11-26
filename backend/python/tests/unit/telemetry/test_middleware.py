@@ -1,5 +1,6 @@
 """Unit tests for app.telemetry.middleware — the ASGI metrics middleware."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -33,10 +34,6 @@ def make_request(
     if user is not None:
         request.state.user = user
     return request
-
-
-def make_middleware(service_name="query_service") -> MetricsMiddleware:
-    return MetricsMiddleware(app=MagicMock(), service_name=service_name)
 
 
 class TestRouteTemplate:
@@ -109,24 +106,38 @@ class TestIdentityExtraction:
 
 
 class TestDispatch:
+    @staticmethod
+    async def _call(scope: dict, app) -> list[dict]:
+        sent: list[dict] = []
+
+        async def receive() -> dict:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict) -> None:
+            sent.append(message)
+
+        await MetricsMiddleware(app=app, service_name="query_service")(scope, receive, send)
+        return sent
+
     async def test_records_count_and_latency_on_success(self):
-        middleware = make_middleware()
         request = make_request(
             path="/api/v1/search",
             method="POST",
             route=SimpleNamespace(path_format="/api/v1/search", path="/api/v1/search"),
             user={"orgId": "org-9", "email": "a@b.io"},
         )
-        response = MagicMock(status_code=201)
-        call_next = AsyncMock(return_value=response)
+
+        async def app(_scope, _receive, send) -> None:
+            await send({"type": "http.response.start", "status": 201, "headers": []})
+            await send({"type": "http.response.body", "body": b"{}"})
 
         with (
             patch("app.telemetry.middleware.HTTP_REQUESTS") as requests_mock,
             patch("app.telemetry.middleware.HTTP_REQUEST_DURATION") as duration_mock,
         ):
-            result = await middleware.dispatch(request, call_next)
+            sent = await self._call(request.scope, app)
 
-        assert result is response
+        assert [m["type"] for m in sent] == ["http.response.start", "http.response.body"]
         requests_mock.inc.assert_called_once_with(
             "query_service", "/api/v1/search", "POST", "201", "org-9", "b.io"
         )
@@ -134,20 +145,48 @@ class TestDispatch:
         assert args == ("query_service", "/api/v1/search", "POST")
         assert kwargs["value"] >= 0
 
+    async def test_a_response_still_streaming_is_already_counted(self) -> None:
+        """Recorded when the response starts, as before: a long stream is in every push while it runs."""
+        request = make_request(
+            path="/api/v1/stream", route=SimpleNamespace(path_format="/api/v1/stream", path="/api/v1/stream")
+        )
+        body_may_go, started = asyncio.Event(), asyncio.Event()
+
+        async def app(_scope, _receive, send) -> None:
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            started.set()
+            await body_may_go.wait()
+            await send({"type": "http.response.body", "body": b"done"})
+
+        with (
+            patch("app.telemetry.middleware.HTTP_REQUESTS") as requests_mock,
+            patch("app.telemetry.middleware.HTTP_REQUEST_DURATION") as duration_mock,
+        ):
+            call = asyncio.ensure_future(self._call(request.scope, app))
+            await started.wait()
+            requests_mock.inc.assert_called_once_with(
+                "query_service", "/api/v1/stream", "GET", "200", "unknown", "unknown"
+            )
+            duration_mock.observe.assert_called_once()
+            body_may_go.set()
+            await call
+
+        requests_mock.inc.assert_called_once()
+        duration_mock.observe.assert_called_once()
+
     async def test_records_500_when_handler_raises(self):
-        middleware = make_middleware()
         request = make_request(
             path="/api/v1/boom",
             route=SimpleNamespace(path_format="/api/v1/boom", path="/api/v1/boom"),
         )
-        call_next = AsyncMock(side_effect=RuntimeError("kaboom"))
+        app = AsyncMock(side_effect=RuntimeError("kaboom"))
 
         with (
             patch("app.telemetry.middleware.HTTP_REQUESTS") as requests_mock,
             patch("app.telemetry.middleware.HTTP_REQUEST_DURATION"),
         ):
             with pytest.raises(RuntimeError):
-                await middleware.dispatch(request, call_next)
+                await self._call(request.scope, app)
 
         requests_mock.inc.assert_called_once_with(
             "query_service", "/api/v1/boom", "GET", "500", "unknown", "unknown"

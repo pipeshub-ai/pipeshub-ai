@@ -72,6 +72,7 @@ class Connectors(Enum):
     SALESFORCE = "SALESFORCE"
     S3 = "S3"
     MINIO = "MINIO"
+    CLOUDFLARE_R2 = "CLOUDFLARE R2"
     GCS = "GCS"
     AZURE_BLOB = "AZURE BLOB"
     AZURE_FILES = "AZURE FILES"
@@ -130,6 +131,13 @@ class AccessRule(Enum):
     ``STRICT``: every ancestor up to the App must be accessible as well.
     ``RESTRICTED``: implies strict, and inheritance alone is not sufficient —
     the node's own grant is required on top of it.
+    ``PARENT_AND_GRANT``: the node must inherit from its parent, the parent
+    must be accessible (by its own rule, which for ``STRICT`` consults the
+    ancestors above it), and the node needs its own grant. The rule adds no
+    requirement of its own on the ancestors above the parent, so, as for
+    ``OPEN``, a parent read only through its own direct grant counts. For
+    content only some readers of its parent may see (a comment restricted to
+    a group). The node is never readable through its grant alone.
 
     A missing value reads as ``OPEN`` (a connector that declares nothing gets
     the permissive reading), but an *unrecognised* value reads as
@@ -140,6 +148,7 @@ class AccessRule(Enum):
     OPEN = "OPEN"
     STRICT = "STRICT"
     RESTRICTED = "RESTRICTED"
+    PARENT_AND_GRANT = "PARENT_AND_GRANT"
 
 
 class AppGroups(Enum):
@@ -158,6 +167,7 @@ class AppGroups(Enum):
     GITHUB = "Github"
     S3 = "S3"
     MINIO = "MinIO"
+    CLOUDFLARE_R2 = "Cloudflare R2"
     GOOGLE_CLOUD = "Google Cloud"
     AZURE = "Azure"
     LINEAR = "Linear"
@@ -298,6 +308,8 @@ class CollectionNames(Enum):
     # Agent Builder collections
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"
+    # Immutable published versions of an agent (OWD-14); the agent document is the draft.
+    AGENT_VERSIONS = "agentVersions"
 
     # Agent Builder Graph collections
     AGENT_KNOWLEDGE = "agentKnowledge"
@@ -322,6 +334,10 @@ class CollectionNames(Enum):
 
     # Agent -> Skill assignment edge (Agent Builder), mirrors AGENT_HAS_TOOLSET
     AGENT_HAS_SKILL = "agentHasSkill"
+
+    # Knowledge publications (D21): container -publishedVia-> publication
+    KNOWLEDGE_PUBLICATIONS = "knowledgePublications"
+    PUBLISHED_VIA = "publishedVia"
 
 
 class QdrantCollectionNames(Enum):
@@ -393,6 +409,16 @@ class ExtensionTypes(Enum):
     JSON = "json"
     YAML = "yaml"
     YML = "yml"
+    MSG = "msg"
+    ODT = "odt"
+    RTF = "rtf"
+    XLSM = "xlsm"
+    LOG = "log"
+    CFG = "cfg"
+    DOCM = "docm"
+    DOTX = "dotx"
+    POTX = "potx"
+    PPTM = "pptm"
 
 # Common file types PipesHub cannot index. Sync filters offer them so a user can
 # exclude them (Not in); they are kept out of ExtensionTypes because that enum
@@ -461,6 +487,27 @@ class MimeTypes(Enum):
     SQL_TABLE = "application/vnd.sql.table"  
     SQL_VIEW = "application/vnd.sql.view"  
     SQL_COLUMN = "application/vnd.sql.column"
+    MSG = "application/vnd.ms-outlook"
+    ODT = "application/vnd.oasis.opendocument.text"
+    RTF = "application/rtf"
+    XLSM = "application/vnd.ms-excel.sheet.macroEnabled.12"
+    DOCM = "application/vnd.ms-word.document.macroEnabled.12"
+    DOTX = "application/vnd.openxmlformats-officedocument.wordprocessingml.template"
+    POTX = "application/vnd.openxmlformats-officedocument.presentationml.template"
+    PPTM = "application/vnd.ms-powerpoint.presentation.macroEnabled.12"
+    LOG = "text/x-log"
+    CFG = "text/x-cfg"
+
+    @classmethod
+    def _missing_(cls, value: object) -> "MimeTypes | None":
+        # Mime types are case-insensitive, and connectors build members from guessed or
+        # server-sent spellings ("application/vnd.ms-excel.sheet.macroenabled.12").
+        if isinstance(value, str):
+            lowered = value.lower()
+            for member in cls:
+                if member.value.lower() == lowered:
+                    return member
+        return None
 
 
 # Every mimeType a folder record has been written with. Folders are written as
@@ -645,6 +692,8 @@ class EntityRelations(Enum):
     FOR_ACCOUNT = "FOR_ACCOUNT"
     # Record -> an organisation its content names (KG-13 slice 3b, EXTRACTED).
     MENTIONS = "MENTIONS"
+    # Record -> a person the source says it is shared with (not the owner).
+    SHARED_WITH = "SHARED_WITH"
 
 
 class EntityOrigin(str, Enum):
@@ -672,6 +721,9 @@ class EventTypes(Enum):
     # Vectors-only cleanup for records moved to the trash; never touches blob or Mongo.
     SOFT_DELETE_RECORDS = "softDeleteRecords"
     DELETE_STORED_DOCUMENTS = "deleteStoredDocuments"
+    # The delayed second purge of a deleted record's stored model outputs.
+    PURGE_PAID_RESULTS = "purgePaidResults"
+    PURGE_PAID_RESULTS_BATCH = "purgePaidResultsBatch"
     BUILD_CODE_EDGES = "buildCodeEdges"
 
 

@@ -1,7 +1,7 @@
 """Async LibreOffice document conversion.
 
 DocParser, PPTParser and XLSParser each convert legacy Office formats
-(.doc/.ppt/.xls) to their OOXML equivalents via headless LibreOffice before
+(.doc/.ppt/.xls), and OpenDocument text and RTF, to their OOXML equivalents via headless LibreOffice before
 handing off to the OOXML-capable parser. The conversion uses
 ``asyncio.create_subprocess_exec`` so LibreOffice's ~seconds-long runtime
 neither blocks the event loop nor occupies a slot in a bounded thread pool.
@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import signal
 import tempfile
@@ -20,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from app.core.org_context import spawn_detached, spawn_in_request
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.llm_gateway.limiter import CrossLoopSemaphore
 from app.services.parsing.interface import (
@@ -74,6 +76,13 @@ _PROBE_SAMPLES: dict[str, tuple[str, str]] = {
     "doc": ("fodt", _FODT),
     "xls": ("fods", _FODS),
     "ppt": ("fodp", _FODP),
+    "odt": ("fodt", _FODT),
+    "rtf": ("fodt", _FODT),
+}
+# Formats previewed as PDF that indexing does not convert with LibreOffice.
+_PREVIEW_PROBE_SAMPLES: dict[str, tuple[str, str]] = {
+    "docx": ("fodt", _FODT),
+    "pptx": ("fodp", _FODP),
 }
 # Formats LibreOffice can write but not open, in any release (its only EPUB
 # filter is export-only). Converting from them is refused before LibreOffice
@@ -83,7 +92,10 @@ _IMPORT_UNSUPPORTED = frozenset({"epub"})
 # A passing probe is kept for the life of the process. A failing one is retried
 # after a while, so one bad moment does not keep every file of that type retrying.
 _PROBE_FAILURE_TTL_SECONDS = 300.0
+# A refusal that is final for the caller needs a recent answer: the host may have failed since.
+_RECENT_PROBE_SECONDS = 60.0
 _format_probe_results: dict[tuple[str, str], tuple[bool, float]] = {}
+_probes_in_flight: dict[tuple[str, str], asyncio.Task[bool]] = {}
 
 
 class LibreOfficeCouldNotReadFileError(DocumentProcessingError):
@@ -139,7 +151,28 @@ async def stop_process(process: asyncio.subprocess.Process) -> None:
     soffice.bin running, so a group is killed even when the launcher has
     already exited. A process without its own group is killed only if it
     outlives the grace period.
+
+    Callers run this while handling a cancellation, then release the
+    conversion slot and remove the temp dir. A further cancel must neither
+    abort the stop between TERM and KILL nor let the caller move on before
+    it ends, so it is waited out (bounded by two grace periods) and the
+    cancellation is raised afterwards.
     """
+    stop = spawn_in_request(_stop_process(process), name="libreoffice-stop")
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            await asyncio.shield(stop)
+            break
+        except asyncio.CancelledError as exc:
+            if stop.done():
+                raise
+            cancelled = exc
+    if cancelled is not None:
+        raise cancelled
+
+
+async def _stop_process(process: asyncio.subprocess.Process) -> None:
     group = _leads_own_group(process)
     _signal(process, signal.SIGTERM, group=group)
     try:
@@ -221,19 +254,44 @@ async def _run_libreoffice(binary: bytes, input_ext: str, output_ext: str, stem:
         )
 
 
-async def _libreoffice_can_convert(input_ext: str, output_ext: str) -> bool | None:
+def source_not_loaded(stderr: str) -> bool:
+    """Whether LibreOffice said it could not load its input file."""
+    return _SOURCE_NOT_LOADED in stderr
+
+
+async def can_convert_known_good_file(input_ext: str, output_ext: str) -> bool:
+    """Whether a failure to load is about the file: True only when LibreOffice on
+    this host is seen, within the last minute, to convert a known-good *input_ext* file."""
+    return await _libreoffice_can_convert(input_ext, output_ext, success_ttl=_RECENT_PROBE_SECONDS) is True
+
+
+async def _libreoffice_can_convert(
+    input_ext: str, output_ext: str, *, success_ttl: float = math.inf
+) -> bool | None:
     """Whether LibreOffice on this host converts a known-good *input_ext* file
     to *output_ext*, or None when there is no sample to check that format with.
     Only run after a conversion has already failed."""
-    sample = _PROBE_SAMPLES.get(input_ext)
+    sample = _PROBE_SAMPLES.get(input_ext) or _PREVIEW_PROBE_SAMPLES.get(input_ext)
     if sample is None:
         return None
     key = (input_ext, output_ext)
     now = time.monotonic()
     cached = _format_probe_results.get(key)
-    if cached is not None and (cached[0] or now - cached[1] < _PROBE_FAILURE_TTL_SECONDS):
+    if cached is not None and now - cached[1] < (success_ttl if cached[0] else _PROBE_FAILURE_TTL_SECONDS):
         return cached[0]
 
+    # Files that fail together share one probe.
+    loop = asyncio.get_running_loop()
+    probe = _probes_in_flight.get(key)
+    if probe is None or probe.done() or probe.get_loop() is not loop:
+        # Detached: its answer serves every caller, so it runs in none of their contexts.
+        probe = spawn_detached(_probe_format(key, sample), name="libreoffice-probe")
+        _probes_in_flight[key] = probe
+    return await asyncio.shield(probe)
+
+
+async def _probe_format(key: tuple[str, str], sample: tuple[str, str]) -> bool:
+    input_ext, output_ext = key
     sample_ext, sample_text = sample
     ok = False
     try:
@@ -244,7 +302,7 @@ async def _libreoffice_can_convert(input_ext: str, output_ext: str) -> bool | No
     # Any failure here, expected or not, means support could not be confirmed.
     except Exception:
         logger.debug("LibreOffice probe for .%s -> .%s raised", input_ext, output_ext, exc_info=True)
-    _format_probe_results[key] = (ok, now)
+    _format_probe_results[key] = (ok, time.monotonic())
     return ok
 
 
@@ -293,7 +351,7 @@ async def convert_with_libreoffice(binary: bytes, input_ext: str, output_ext: st
 
     # Anything other than LibreOffice's own load-failure message (a profile or
     # disk problem, a crash, a failed export) is about the host, not the file.
-    load_failed = _SOURCE_NOT_LOADED in run.stderr
+    load_failed = source_not_loaded(run.stderr)
     if not load_failed and (returncode != 0 or run.stderr.strip()):
         raise DocumentProcessingError(message, details=details)
 

@@ -52,13 +52,20 @@ def test_submit_does_not_block_caller() -> None:
     release = threading.Event()
 
     try:
-        blocker = lease.submit(release.wait, 20)
-        start = time.monotonic()
-        queued = [lease.submit(int) for _ in range(200)]
-        elapsed = time.monotonic() - start
+        # The blocker holds the lease's only slot until the test releases it, so a submit that waited for a
+        # slot could never return. Proved by an event, not timed: 200 submits took 1.5 s on a busy CI runner.
+        blocker = lease.submit(release.wait)
+        queued: list = []
+        submitted = threading.Event()
 
-        # A blocking implementation would have waited on the blocker for 20s.
-        assert elapsed < 1.0
+        def submit_all() -> None:
+            queued.extend(lease.submit(int) for _ in range(200))
+            submitted.set()
+
+        threading.Thread(target=submit_all, daemon=True).start()
+        # A bound on a hang only: a blocked submit never sets the event, however long the wait.
+        assert submitted.wait(timeout=20), "submit blocked behind the busy slot"
+        assert not blocker.done()
         assert not any(future.done() for future in queued)
         assert lease.queued == 200
 

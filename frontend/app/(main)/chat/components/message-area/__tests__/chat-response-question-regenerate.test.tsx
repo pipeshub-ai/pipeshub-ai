@@ -50,7 +50,8 @@ function precedes(a: Node, b: Node): boolean {
   return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 }
 
-const belowCard = () => screen.queryByTestId('activity-below-question-card');
+// The question sits at the step that asked it (UXINT direction C): the card, its receipt or a re-run card.
+const shownQuestion = () => screen.getByTestId('interaction');
 const click = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
 const pick = (name: string) => fireEvent.click(screen.getByRole('radio', { name }));
 
@@ -74,8 +75,8 @@ describe('ChatResponse — answering the card, and the work after it', () => {
     });
     const view = renderInTheme(<Row persistedParts={parts(beforeNarration, askCall)} />);
 
-    expect(precedes(screen.getByText('Reading your request'), screen.getByText('Pick where to look'))).toBe(true);
-    expect(belowCard()).toBeNull();
+    expect(shownQuestion().textContent).toContain('Pick where to look');
+    expect(precedes(screen.getByText('Reading your request'), shownQuestion())).toBe(true);
 
     pick('Apollo');
     expect(pending()?.answers['q-project']?.selectedOptionIds).toEqual(['apollo']);
@@ -98,16 +99,16 @@ describe('ChatResponse — answering the card, and the work after it', () => {
     expect(message).toContain('Zeus');
     expect(message).toContain('Closed');
     expect(message).not.toContain('Apollo');
-    expect(options).toEqual({ resumeAskUserQuestion: true });
+    // CARDFAIL: the answer names its turn (the same id on a retry) and hears whether it reached the server.
+    expect(options).toEqual({ resumeAskUserQuestion: true, runId: expect.any(String), onSendOutcome: expect.any(Function) });
 
     view.rerender(
       <Row isStreaming streamingContent="" streamingParts={parts(beforeNarration, askCall, afterNarration, afterTool)} />,
     );
-    const shownCard = screen.getByText('Pick where to look');
+    const shownCard = shownQuestion();
     const after = screen.getByText('Searching Zeus for closed issues');
     expect(precedes(screen.getByText('Reading your request'), shownCard)).toBe(true);
     expect(precedes(shownCard, after)).toBe(true);
-    expect(belowCard()?.contains(after)).toBe(true);
   });
 
   it('cannot submit the card twice once its answers are sent', () => {
@@ -136,8 +137,9 @@ describe('ChatResponse — answering the card, and the work after it', () => {
       />,
     );
 
-    const shownCard = screen.getByText('Pick where to look');
+    const shownCard = shownQuestion();
     const after = screen.getByText('Searching Zeus for closed issues');
+    expect(shownCard.textContent).toContain('Zeus');
     expect(precedes(screen.getByText('Reading your request'), shownCard)).toBe(true);
     expect(precedes(shownCard, after)).toBe(true);
     expect(precedes(after, screen.getByText('Three closed issues.'))).toBe(true);
@@ -158,9 +160,8 @@ describe('ChatResponse — answering the card, and the work after it', () => {
       />,
     );
 
-    const shownCard = screen.getByText('Pick where to look');
+    const shownCard = shownQuestion();
     const after = screen.getByText('Searching Zeus for closed issues');
     expect(precedes(shownCard, after)).toBe(true);
-    expect(belowCard()?.contains(after)).toBe(true);
   });
 });

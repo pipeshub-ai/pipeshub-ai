@@ -1,6 +1,7 @@
 'use client';
 
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
+import type { RecordRangeTransport } from '@/lib/record-content/pdf-range-transport';
 
 /**
  * Source types that determine which tabs are available
@@ -80,6 +81,8 @@ export interface FilePreviewProps {
     name: string;
     url: string;
     type: string;
+    /** The original file's type when `type` is a conversion of it (a PPTX previewed as PDF): the header badge shows this. */
+    sourceType?: string;
     size?: number;
     /**
      * In-memory file data. Used by renderers that work better with a raw
@@ -157,6 +160,8 @@ export interface FilePreviewProps {
    * citation [2] even when multiple citations share the same page.
    */
   initialCitationId?: string;
+  /** Increments on every jump within the shown record; makes the same citation twice navigate again. */
+  jumpSeq?: number;
 
   /**
    * Hide the "File Details" tab. Used for previews that don't correspond
@@ -209,7 +214,7 @@ export interface PaginationControls {
   onTotalPagesDetected?: (totalPages: number) => void;
   /**
    * PDF-only: zoom level (0.5–2), matching the legacy viewer step behavior.
-   * When omitted, the PDF uses scale 1.
+   * When omitted, the PDF fits the page width, never above scale 1, and reports that scale through `onScaleChange`.
    */
   scale?: number;
   onScaleChange?: (scale: number) => void;
@@ -242,6 +247,11 @@ export interface FilePreviewRendererProps {
    * the `fileUrl`.
    */
   fileBlob?: Blob;
+  /**
+   * A large PDF opened by byte ranges: the PDF renderer reads only the pages shown through it, and `fileUrl`
+   * may be empty.
+   */
+  rangeTransport?: RecordRangeTransport;
   pagination?: PaginationControls;
   /** Bounding box for highlighting in PDF (normalized 0-1 coordinates) */
   highlightBox?: Array<{ x: number; y: number }>;
@@ -275,6 +285,8 @@ export interface FilePreviewRendererProps {
 export interface PDFRendererProps {
   fileUrl: string;
   fileName: string;
+  /** Load the document by byte ranges through this transport instead of from `fileUrl`. */
+  rangeTransport?: RecordRangeTransport;
   pagination?: PaginationControls;
   /** Bounding box for highlighting in PDF (normalized 0-1 coordinates) */
   highlightBox?: Array<{ x: number; y: number }>;

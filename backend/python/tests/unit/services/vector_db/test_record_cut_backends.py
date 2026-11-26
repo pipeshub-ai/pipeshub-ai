@@ -41,12 +41,24 @@ def test_the_deepest_request_is_the_cap() -> None:
 
 
 def test_qdrant_legs() -> None:
-    query = QdrantUtils.search_request_to_qdrant(
+    legs = QdrantUtils.search_request_to_qdrant(
         _request(sparse_query=SparseVector(indices=[1], values=[1.0]))
     )
 
-    assert query.limit == 300 + TIE_MARGIN
-    assert [leg.limit for leg in query.prefetch] == [600, 600]
+    assert [leg.limit for leg in legs] == [600 + TIE_MARGIN, 600 + TIE_MARGIN]
+
+
+def test_qdrant_legs_carry_no_payload_and_survive_grpc() -> None:
+    from qdrant_client.conversions.conversion import RestToGrpc
+
+    # Payloads are read once for the fused points, with the named fields only
+    # (test_qdrant_search_params); the legs ask for none.
+    (leg,) = QdrantUtils.search_request_to_qdrant(_request(with_payload=["page_content", "metadata"]))
+
+    assert leg.with_payload is False
+    # The service talks gRPC: the leg must convert.
+    grpc = RestToGrpc.convert_query_request(leg, "c")
+    assert grpc.with_payload.enable is False
 
 
 def test_opensearch_window_and_k() -> None:

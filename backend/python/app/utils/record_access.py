@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.utils.error_class import log_failure
 
 # The permission type on the org -> record edge that makes a service account's
 # chat upload readable. Distinct from "ORG" (an org-wide share from a
@@ -40,6 +41,21 @@ def service_account_upload_permission_edges(
         }
         for record_key in record_keys
     ]
+
+
+def attachment_reader_id(user_id: str | None, user_info: object) -> str | None:
+    """Whose grant a chat attachment is read under: the person who sent the turn (R33JGAPS-FU-6).
+
+    A service-account agent's chat runs as the agent (``user_id`` is its account), but the files in it were attached
+    by the person chatting, and attaching one is that person's grant to the run they started: so the read is
+    checked as them (``callerUserId``), never as the account. Scoped by construction: only the attachments of this
+    conversation reach the resolver, and another run of the agent carries its own caller, who cannot read them. A
+    request with no person behind it (the Slack bot's own upload) keeps ``user_id``, whose uploads the org edge grants.
+    """
+    from app.harness.knowledge.caller import UNRESOLVED_CALLER, caller_user_id_of
+
+    caller = caller_user_id_of(user_info)
+    return caller if caller is not None and caller != UNRESOLVED_CALLER else user_id
 
 
 async def caller_can_read_virtual_record(
@@ -84,12 +100,8 @@ async def caller_can_read_virtual_record(
                     user_id, org_id, record_id,
                 ):
                     return True
-            except Exception:
-                logger.warning(
-                    "Attachment access check failed for record %s",
-                    record_id,
-                    exc_info=True,
-                )
+            except Exception as exc:
+                log_failure(logger, "record_access.check_failed", exc, record_id=record_id, include_error_text=False)
         if is_service_account and await _org_permission_grants(
             graph_provider, org_id, record_id, logger,
         ):

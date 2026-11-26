@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useRef, useState, useCallback, useEffect } from 'react';
+import React, { useRef } from 'react';
+import { useScrollEdges } from '@/lib/hooks/use-scroll-edges';
 import { Flex, Text, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -89,7 +90,7 @@ function CollectionPill({ item, removable = false, onRemove }: CollectionPillPro
             flexShrink: 0,
           }}
         >
-          <MaterialIcon name="close" size={14} color="var(--slate-9)" />
+          <MaterialIcon name="close" size={14} color="var(--slate-11)" />
         </IconButton>
       )}
     </Flex>
@@ -119,29 +120,9 @@ export function SelectedCollections({
   removable = false,
   onRemove,
 }: SelectedCollectionsProps) {
+  const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [canScrollLeft, setCanScrollLeft] = useState(false);
-  const [canScrollRight, setCanScrollRight] = useState(false);
-
-  const updateScrollState = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    setCanScrollLeft(el.scrollLeft > 0);
-    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
-  }, []);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    updateScrollState();
-    el.addEventListener('scroll', updateScrollState);
-    const ro = new ResizeObserver(updateScrollState);
-    ro.observe(el);
-    return () => {
-      el.removeEventListener('scroll', updateScrollState);
-      ro.disconnect();
-    };
-  }, [collections, updateScrollState]);
+  const { start: canScrollLeft, end: canScrollRight } = useScrollEdges(scrollRef, collections);
 
   const scrollBy = (direction: 'left' | 'right') => {
     scrollRef.current?.scrollBy({
@@ -156,6 +137,7 @@ export function SelectedCollections({
     <Flex align="center" style={{ width: '100%', minWidth: 0, flex: 1 }}>
       {canScrollLeft && (
         <IconButton
+          aria-label={t('common.scrollLeft')}
           variant="ghost"
           size="1"
           onClick={() => scrollBy('left')}
@@ -189,6 +171,7 @@ export function SelectedCollections({
 
       {canScrollRight && (
         <IconButton
+          aria-label={t('common.scrollRight')}
           variant="ghost"
           size="1"
           onClick={() => scrollBy('right')}

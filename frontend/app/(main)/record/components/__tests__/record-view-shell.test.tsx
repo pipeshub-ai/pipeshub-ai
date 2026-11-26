@@ -18,15 +18,34 @@ vi.mock('@/app/components/file-preview/renderers/file-preview-renderer', () => (
 vi.mock('../record-metadata-panel', () => ({ RecordMetadataPanel: () => <div data-testid="metadata" /> }));
 vi.mock('../zoom-action-bar', () => ({ ZoomActionBar: () => <div data-testid="zoom-bar" /> }));
 vi.mock('@/app/components/ui/auth-guard', () => ({ LoadingScreen: () => <div>loading</div> }));
-vi.mock('@/app/(main)/knowledge-base/api', () => ({
-  KnowledgeBaseApi: {
-    getRecordDetails: vi.fn(async () => ({
-      record: { id: 'r1', recordName: 'Plan.pdf', recordType: 'FILE', mimeType: 'application/pdf', origin: 'UPLOAD' },
-    })),
-    streamRecord: vi.fn(async () => new Blob(['x'], { type: 'application/pdf' })),
-    deleteRecord: vi.fn(async () => undefined),
-  },
-}));
+vi.mock('@/app/(main)/knowledge-base/api', () => {
+  const getRecordDetails = vi.fn(async (..._args: unknown[]) => ({
+    record: { id: 'r1', recordName: 'Plan.pdf', recordType: 'FILE', mimeType: 'application/pdf', origin: 'UPLOAD' },
+  }));
+  return {
+    KnowledgeBaseApi: {
+      getRecordDetails,
+      getRecordDetailsForOpen: async (...args: unknown[]) => ({ details: await getRecordDetails(...args), grant: null }),
+      streamRecord: vi.fn(async () => new Blob(['x'], { type: 'application/pdf' })),
+      deleteRecord: vi.fn(async () => undefined),
+    },
+  };
+});
+// Content opens go through the record-content cache; its transport is the faked `streamRecord`.
+vi.mock('@/lib/record-content', async () => {
+  const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+  const { PartyLeftError, SessionEndedError } = await vi.importActual<typeof import('@/lib/record-content')>('@/lib/record-content');
+  return {
+    PartyLeftError,
+    SessionEndedError,
+    openRecordContent: (id: string, variant: string) => ({
+      promise: KnowledgeBaseApi.streamRecord(id, variant === 'pdf' ? { convertTo: 'application/pdf' } : undefined).then(
+        (blob: Blob) => ({ url: 'blob:x', blob, mime: blob.type, etag: null, release: () => {} }),
+      ),
+      leave: () => {},
+    }),
+  };
+});
 
 import { RecordViewShell } from '../record-view-shell';
 

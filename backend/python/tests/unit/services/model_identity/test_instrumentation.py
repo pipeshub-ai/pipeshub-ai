@@ -23,6 +23,7 @@ from app.services.model_identity.settings import (
 from app.services.model_identity.transport import httpx_hook
 from app.services.model_identity.transport.client_paths import iter_http_clients
 from app.services.model_identity.transport.httpx_hook import (
+    IdentityHook,
     has_identity_hook,
     install_identity_hook,
 )
@@ -32,6 +33,7 @@ from app.services.model_identity.transport.instrument import (
     settings_from_config,
 )
 from app.services.model_identity.workload import Workload
+from tests.support.settle import settle
 
 if TYPE_CHECKING:
     from langchain_openai import ChatOpenAI
@@ -262,19 +264,21 @@ class TestHook:
         assert "group:g1" in rec.seen[0]["x-litellm-tags"]
 
     async def test_a_slow_group_lookup_does_not_hold_the_request(self, alice) -> None:
+        never = asyncio.Event()
+
         class Slow:
             async def resolve(self, org_id, subject) -> None:
-                await asyncio.sleep(5)
+                await never.wait()
 
         rec = Recorder()
         client = rec.async_client()
         install_identity_hook(client, settings(), LiteLLMHeadersForwarder())
         handle = GroupsHandle(Slow(), alice, budget_seconds=0.02)
-        started = time.monotonic()
         async with bind_call_context(ctx_for(alice, groups=handle)):
-            await client.post("http://gw/v1")
-            await client.post("http://gw/v1")
-        assert time.monotonic() - started < 1
+            await settle(client.post("http://gw/v1"))
+            await settle(client.post("http://gw/v1"))
+        assert not handle._task.done(), "both requests went out while the lookup is still pending"
+        assert len(rec.seen) == 2
         assert rec.seen[0]["x-pipeshub-groups-incomplete"] == "true"
         handle._task.cancel()
 
@@ -356,7 +360,9 @@ class TestInstrumentModel:
         instrument_model(model, "litellmProxy", cfg())
         instrument_model(model, "litellmProxy", cfg())
         for c in iter_http_clients(model):
-            assert len(c.event_hooks["request"]) == 1
+            # The wire hook (llm_gateway.wire) shares the list; the identity hook must be there once.
+            identity = [h for h in c.event_hooks["request"] if isinstance(getattr(h, "__self__", None), IdentityHook)]
+            assert len(identity) == 1
 
     def test_langchain_invoke_carries_identity(self, alice) -> None:
         rec = Recorder(body=_chat_completion())
@@ -395,7 +401,8 @@ class TestInstrumentModel:
             pass
 
         model = NoHttp()
-        assert instrument_model(model, "bedrock", cfg()) is model
+        # A local model: nothing to observe on a wire, so it is not refused (a remote one would be).
+        assert instrument_model(model, "huggingFace", cfg()) is model
         assert metrics.counter_value(metrics.IDENTITY_FORWARDED, "headers", "-", "no_client") == 1
 
     def test_embeddings_are_instrumented_too(self, alice) -> None:

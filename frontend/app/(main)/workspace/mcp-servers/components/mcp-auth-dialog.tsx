@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Dialog, Flex, Text, TextField } from '@radix-ui/themes';
+import { Button, Dialog, Flex, Text } from '@radix-ui/themes';
 import { toast } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api';
 import { LoadingButton } from '@/app/components/ui/loading-button';
@@ -15,6 +15,7 @@ import {
   needsMultiEnvAuth,
 } from '../stdio-env-auth';
 import type { McpMyServerEntry, McpServerTemplate } from '../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 /**
  * Auth dialog for `api_token` / `headers` MCP auth modes. Shared by the personal
@@ -108,9 +109,8 @@ export function McpAuthDialog({ instance, template, open, onOpenChange, onAuthen
               label={t('workspace.mcpServers.form.headerValue', { headerName: instance.headerName || 'Authorization' })}
               required
             >
-              <TextField.Root
+              <SecretTextField
                 size="2"
-                type="password"
                 value={headerValue}
                 onChange={(e) => setHeaderValue(e.target.value)}
                 autoFocus
@@ -126,9 +126,9 @@ export function McpAuthDialog({ instance, template, open, onOpenChange, onAuthen
                   required={isRequired}
                   optional={!isRequired}
                 >
-                  <TextField.Root
+                  <SecretTextField
                     size="2"
-                    type={isSecretFieldName(envKey) ? 'password' : 'text'}
+                    masked={isSecretFieldName(envKey)}
                     value={envValues[envKey] ?? ''}
                     onChange={(e) => setEnvValues((prev) => ({ ...prev, [envKey]: e.target.value }))}
                     autoFocus={index === 0}
@@ -138,16 +138,15 @@ export function McpAuthDialog({ instance, template, open, onOpenChange, onAuthen
             })
           ) : (
             <FormField label={authHint?.label || t('workspace.mcpServers.form.apiToken')} required>
-              <TextField.Root
+              <SecretTextField
                 size="2"
-                type="password"
                 value={apiToken}
                 onChange={(e) => setApiToken(e.target.value)}
                 placeholder={authHint?.placeholder ?? undefined}
                 autoFocus
               />
               {authHint?.helpText && (
-                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)' }}>
                   {authHint.helpText}
                 </Text>
               )}

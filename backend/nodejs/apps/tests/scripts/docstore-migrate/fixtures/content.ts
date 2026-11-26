@@ -133,6 +133,8 @@ export const contentDocs = (): Record<string, unknown[]> => ({
     { _id: oid(), orgId: ORG_A, type: 'sync', title: 'Done', message: 'Sync finished', severity: 'success', status: 'unread', originService: 'Connector Service', assignedTo: USER_1, payload: { count: 3, detail: { a: [1, 2] } }, isDeleted: false, createdAt: at('2026-10-01T10:00:00.000Z'), updatedAt: at('2026-10-01T10:00:00.000Z'), __v: 0 },
     { _id: oid(), orgId: ORG_A, type: 'old', assignedTo: USER_2, redirectLink: '/x', createdAt: at('2019-03-05T10:00:00.000Z'), updatedAt: at('2019-03-06T10:00:00.000Z') },
     { _id: oid(), orgId: ORG_B, type: 'gone', status: 'archived', assignedTo: USER_2, isDeleted: true, deletedBy: USER_2, createdAt: at('2026-09-01T10:00:00.000Z'), updatedAt: at('2026-09-02T10:00:00.000Z'), __v: 1 },
+    // scheduled: not visible before visibleAt (here a time long past, so it reads as visible; the migration must carry the field)
+    { _id: oid(), orgId: ORG_A, type: 'scheduled', title: 'Later', assignedTo: USER_1, isDeleted: false, visibleAt: at('2026-10-02T10:00:00.000Z'), createdAt: at('2026-10-02T10:00:00.000Z'), updatedAt: at('2026-10-02T10:00:00.000Z'), __v: 0 },
   ],
   outbox_events: [
     {
@@ -283,6 +285,9 @@ export const contentDocs = (): Record<string, unknown[]> => ({
   slack_conversations: [
     { _id: oid(), threadId: '1700000000.000100', botId: 'B1', email: 'a@example.test', conversationId: SESSION_1, createdAt: at('2026-07-01T10:00:00.000Z'), updatedAt: at('2026-07-02T10:00:00.000Z'), __v: 0 },
     { _id: oid(), threadId: '1700000000.000200', botId: 'B1', email: 'b@example.test', conversationId: SESSION_2, createdAt: at('2026-07-03T10:00:00.000Z'), updatedAt: at('2026-07-03T10:00:00.000Z') },
+  ],
+  slack_user_links: [
+    { _id: oid(), orgId: String(ORG_A), workspaceId: 'E1', slackUserId: 'U1', teamId: 'T1', userId: String(USER_1), email: 'a@example.test', slackName: 'ada', linkedAt: at('2026-11-01T10:00:00.000Z'), createdAt: at('2026-11-01T10:00:00.000Z'), updatedAt: at('2026-11-01T10:00:00.000Z'), __v: 0 },
   ],
   serviceAccountDelegations: [
     { _id: oid(), orgId: ORG_A, serviceAccountId: SERVICE_ACCOUNT, subjectUserId: USER_1, grantedBy: USER_2, reason: 'reports', createdAt: at('2026-08-01T10:00:00.000Z'), updatedAt: at('2026-08-01T10:00:00.000Z'), __v: 0 },

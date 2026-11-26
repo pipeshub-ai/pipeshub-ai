@@ -25,75 +25,20 @@ import {
   type AppServices,
 } from '@/lib/store/services-health-store';
 import { apiClient } from '@/lib/api';
+import { HealthWarnings, readHealthWarnings } from './health-warnings';
 import { VectorDbMemoryWarning } from './vector-db-memory';
 import { getVectorDbMemoryReport, type VectorDbMemoryReport } from './api';
+import { AgentHarnessHealthRow, agentHarnessHealthOf, type AgentHarnessHealth } from './agent-harness-health';
+import { serviceRowExtras } from '@/config';
+import { ServiceReason } from './service-reason';
+import { buildInfraServices, type Deployment, type ServiceMeta } from './infra-services';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Service metadata
 // ========================================
 
-interface ServiceMeta {
-  key: string;
-  icon?: string;
-  logoSlug?: string;
-  label: string;
-  description: string;
-}
-
-interface Deployment {
-  kvStoreType: string;
-  messageBrokerType: string;
-  graphDbType: string;
-  vectorDbType?: string;
-  // Process-env setting (REDIS_MODE), not tied to kvStoreType -- 'standalone'
-  // (default), 'cluster', or an EE-registered mode like 'memorydb'.
-  redisMode?: string;
-}
-
 const LOGO_SIZE = 22;
-
-function redisLabel(mode: string | undefined, t: TFunction): string {
-  const baseLabel = t('workspace.services.infra.redis.label');
-  if (mode === 'cluster') {
-    return `${baseLabel} (${t('workspace.services.infra.redis.modeCluster')})`;
-  }
-  if (mode === 'memorydb') {
-    return `${baseLabel} (${t('workspace.services.infra.redis.modeMemorydb')})`;
-  }
-  return baseLabel;
-}
-
-function buildInfraServices(deployment: Deployment | null, t: TFunction): ServiceMeta[] {
-  const services: ServiceMeta[] = [];
-
-  const redisDesc = deployment?.kvStoreType === 'redis'
-    ? t('workspace.services.infra.redis.descriptionWithKvStore')
-    : t('workspace.services.infra.redis.description');
-  services.push({
-    key: 'redis',
-    logoSlug: 'redis',
-    label: redisLabel(deployment?.redisMode, t),
-    description: redisDesc,
-  });
-
-  services.push({ key: 'mongodb', logoSlug: 'mongodb', label: t('workspace.services.infra.mongodb.label'), description: t('workspace.services.infra.mongodb.description') });
-
-  const brokerSlug = deployment?.messageBrokerType === 'redis' ? 'redis' : 'apachekafka';
-  services.push({ key: 'messageBroker', logoSlug: brokerSlug, label: t('workspace.services.infra.messageBroker.label'), description: t('workspace.services.infra.messageBroker.description') });
-
-  if (deployment?.kvStoreType === 'etcd') {
-    services.push({ key: 'KVStoreservice', logoSlug: 'etcd', label: t('workspace.services.infra.etcd.label'), description: t('workspace.services.infra.etcd.description') });
-  }
-
-  const graphSlug = deployment?.graphDbType === 'neo4j' ? 'neo4j' : 'arangodb';
-  services.push({ key: 'graphDb', logoSlug: graphSlug, label: t('workspace.services.infra.graphDb.label'), description: t('workspace.services.infra.graphDb.description') });
-
-  const vectorSlug = deployment?.vectorDbType || 'qdrant';
-  services.push({ key: 'vectorDb', logoSlug: vectorSlug, label: t('workspace.services.infra.vectorDb.label'), description: t('workspace.services.infra.vectorDb.description') });
-
-  return services;
-}
 
 function buildAppServices(t: TFunction, appServices: AppServices | null): ServiceMeta[] {
   const services: ServiceMeta[] = [
@@ -109,6 +54,10 @@ function buildAppServices(t: TFunction, appServices: AppServices | null): Servic
   }
   if (appServices && 'extraction' in appServices) {
     services.push({ key: 'extraction', icon: 'data_object', label: t('workspace.services.app.extraction.label'), description: t('workspace.services.app.extraction.description') });
+  }
+  for (const extra of serviceRowExtras) {
+    const row = extra(t, appServices);
+    if (row) services.push(row);
   }
 
   return services;
@@ -152,7 +101,7 @@ function ServiceRow({
 }) {
   return (
     <Flex
-      align="center"
+      align={meta.reason ? 'start' : 'center'}
       gap="3"
       style={{
         padding: '12px 14px',
@@ -199,7 +148,7 @@ function ServiceRow({
         <Text
           size="1"
           style={{
-            color: 'var(--slate-10)',
+            color: 'var(--slate-11)',
             display: 'block',
             marginTop: 2,
             fontWeight: 300,
@@ -210,6 +159,7 @@ function ServiceRow({
         >
           {meta.description}
         </Text>
+        <ServiceReason text={meta.reason} />
       </Box>
 
       {/* Status badge */}
@@ -241,11 +191,16 @@ export default function ServicesPage() {
   const [localServiceNames, setLocalServiceNames] = useState<Record<string, string> | null>(null);
   const [localDeployment, setLocalDeployment] = useState<Deployment | null>(null);
   const [localLastChecked, setLocalLastChecked] = useState(lastChecked);
+  const [agentHarness, setAgentHarness] = useState<AgentHarnessHealth | null>(null);
+  const [localWarnings, setLocalWarnings] = useState<string[]>([]);
   const [vectorDbMemory, setVectorDbMemory] = useState<VectorDbMemoryReport | null>(null);
   // Each refresh starts a new memory request; only the latest may set the state.
   const memoryRequest = useRef(0);
 
-  const infraServiceList = useMemo(() => buildInfraServices(localDeployment, t), [localDeployment, t]);
+  const infraServiceList = useMemo(
+    () => buildInfraServices(localDeployment, localInfra, t),
+    [localDeployment, localInfra, t],
+  );
   const appServiceList = useMemo(() => buildAppServices(t, localApp), [t, localApp]);
 
   useEffect(() => {
@@ -277,6 +232,8 @@ export default function ServicesPage() {
       setLocalApp(servicesData?.services ?? null);
       setLocalServiceNames(infraData?.serviceNames ?? null);
       setLocalDeployment(infraData?.deployment ?? null);
+      setAgentHarness(agentHarnessHealthOf(infraData?.agentHarness));
+      setLocalWarnings(readHealthWarnings(infraData?.warnings));
       setLocalLastChecked(Date.now());
 
       if (showToast) {
@@ -331,14 +288,14 @@ export default function ServicesPage() {
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.services.pageTitle')}
             </Heading>
-            <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
+            <Text size="2" style={{ color: 'var(--slate-11)', marginTop: 4, display: 'block' }}>
               {t('workspace.services.pageSubtitle')}
             </Text>
           </Box>
 
           <Flex align="center" gap="3">
             {lastCheckedLabel && (
-              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
                 {lastCheckedLabel}
               </Text>
             )}
@@ -365,6 +322,8 @@ export default function ServicesPage() {
           </Flex>
         </Flex>
 
+        <HealthWarnings warnings={localWarnings} />
+
         {/* ── Infrastructure Services section ── */}
         <Flex
           direction="column"
@@ -382,7 +341,7 @@ export default function ServicesPage() {
             </Text>
             <Text
               size="1"
-              style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
+              style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2, fontWeight: 300 }}
             >
               {t('workspace.services.infraSubtitle')}
             </Text>
@@ -420,7 +379,7 @@ export default function ServicesPage() {
             </Text>
             <Text
               size="1"
-              style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}
+              style={{ color: 'var(--slate-11)', display: 'block', marginTop: 2, fontWeight: 300 }}
             >
               {t('workspace.services.appSubtitle')}
             </Text>
@@ -435,6 +394,7 @@ export default function ServicesPage() {
                 status={localApp?.[meta.key as keyof typeof localApp]}
               />
             ))}
+            <AgentHarnessHealthRow health={agentHarness} />
           </Flex>
         </Flex>
 
@@ -450,7 +410,7 @@ export default function ServicesPage() {
           }}
         >
           <Box style={{ flexShrink: 0, marginTop: 2 }}>
-            <MaterialIcon name="info" size={16} color="var(--accent-9)" />
+            <MaterialIcon name="info" size={16} color="var(--accent-11)" />
           </Box>
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>

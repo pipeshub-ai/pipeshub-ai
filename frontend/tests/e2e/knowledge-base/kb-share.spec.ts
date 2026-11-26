@@ -71,7 +71,8 @@ function collectionEntry(page: Page, kbName: string) {
   return page.getByRole('button', { name: new RegExp(`^(?!More options for )(.*\\s)?${escaped}$`) });
 }
 
-test.describe('Share a collection', () => {
+// @disposable (WP-71): invites a second person by email and needs SMTP, which only a stack made for the run may be given.
+test.describe('Share a collection', { tag: '@disposable' }, () => {
   test.describe.configure({ mode: 'serial' });
 
   let member: Member | undefined;

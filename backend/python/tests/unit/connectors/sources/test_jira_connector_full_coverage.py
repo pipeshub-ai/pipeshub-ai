@@ -199,7 +199,8 @@ class TestSyncUserGroups:
 
         result = await connector._sync_user_groups([user])
         assert "g1" in result
-        assert "developers" in result
+        assert "developers" not in result  # by id only: a name resolves through _group_ids_by_name
+        assert connector._group_ids_by_name == {"developers": "g1"}
         assert len(result["g1"]) == 1
         connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
 
@@ -224,7 +225,7 @@ class TestSyncUserGroups:
         connector._fetch_group_members = AsyncMock(side_effect=Exception("API error"))
 
         result = await connector._sync_user_groups([])
-        assert result == {"g1": None, "devs": None}, "members unknown, not empty"
+        assert result == {"g1": None}, "members unknown, not empty"
 
     @pytest.mark.asyncio
     async def test_returns_none_on_exception(self):
@@ -1633,6 +1634,7 @@ class TestFetchProjectPermissionScheme:
     async def test_user_permission(self):
         connector = _make_connector()
         connector._user_read_unfinished = True  # no user map: the grant's own email is only used after a cut-short user read
+        connector._licensed_account_ids = {"acc-1"}  # a licensed account the cut-short read did not show
         mock_ds = MagicMock()
         mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response(200, {"id": 1}))
         mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response(200, {

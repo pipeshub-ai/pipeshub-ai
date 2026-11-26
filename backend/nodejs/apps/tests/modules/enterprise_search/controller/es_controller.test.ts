@@ -21,6 +21,7 @@ import {
   listAllArchivesConversation,
   searchArchivedConversations,
   search,
+  retrieve,
   searchHistory,
   getSearchById,
   deleteSearchById,
@@ -70,7 +71,9 @@ import { Logger } from '../../../../src/libs/services/logger.service'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
 import { runWithRequestContext } from '../../../../src/libs/context/request-context'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
-import { BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
+import { BadRequestError, ConflictError, InternalServerError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema'
@@ -197,7 +200,7 @@ function stubChatSessionMessageLeanFind(messages: any[]): sinon.SinonStub {
 }
 
 function serviceTokenClaims(call: CapturedAICall): Record<string, unknown> {
-  const token = call.headers.authorization.replace(/^Bearer /, '')
+  const token = call.headers.authorization!.replace(/^Bearer /, '')
   const claims = jwt.verify(token, createMockAppConfig().scopedJwtSecret) as Record<string, unknown>
   expect(claims.scopes).to.deep.equal(['conversation:permissions'])
   return claims
@@ -380,6 +383,7 @@ let restoreSessionDocs: () => void = () => undefined
 
 describe('Enterprise Search Controller', () => {
   beforeEach(() => {
+    registerAppUpstreams(createMockAppConfig())
     if (!(conversationArtifacts.deleteConversationArtifacts as any).restore) {
       sinon.stub(conversationArtifacts, 'deleteConversationArtifacts').resolves()
     }
@@ -423,6 +427,11 @@ describe('Enterprise Search Controller', () => {
     if (!(searchUtils.reserveRun as any).restore) {
       sinon.stub(searchUtils, 'reserveRun').resolves(null)
     }
+    // The run heartbeat is covered in utils.persistence.test.ts. These fake streams never close, so the real
+    // one would keep a 60 s interval alive after the test and log into whichever test file runs next.
+    if (!(searchUtils.keepRunAlive as any).restore) {
+      sinon.stub(searchUtils, 'keepRunAlive')
+    }
     // getConversationById / getAllConversations(source=shared) / getAllAgentConversations
     // call this on every request to extend the access filter with
     // project-shared conversations; default to "no accessible projects" so
@@ -447,6 +456,7 @@ describe('Enterprise Search Controller', () => {
   afterEach(() => {
     sinon.restore()
     restoreSessionDocs()
+    registerUpstreams({})
   })
 
   // -----------------------------------------------------------------------
@@ -2962,14 +2972,64 @@ describe('Enterprise Search Controller', () => {
     })
 
     // The error goes through the real error middleware, so the body is what a client gets.
-    const bodyOf = (error: any, requestId?: string): { status: number; body: any } => {
+    const bodyOf = (error: any, requestId?: string): { status: number; body: any; setHeader: any } => {
       const res: any = { status: sinon.stub(), json: sinon.stub(), setHeader: sinon.stub(), headersSent: false }
       res.status.returns(res)
       res.json.returns(res)
-      ErrorMiddleware.handleError()(error, { method: 'POST', params: {}, context: { requestId } } as any, res, sinon.stub())
-      return { status: res.status.firstCall.args[0], body: res.json.firstCall.args[0] }
+      ErrorMiddleware.handleError()(error, { method: 'POST', params: {}, context: { requestId } } as any, res, sinon.stub() as any)
+      return { status: res.status.firstCall.args[0], body: res.json.firstCall.args[0], setHeader: res.setHeader }
     }
     const NOTICES = [{ code: 'connector_syncing', connectorId: 'c1', connectorName: 'Jira' }]
+
+    it('relays the Retry-After of a search the embedding provider refused as rate limited', async () => {
+      const message =
+        "Search is busy right now because the embedding model's provider is limiting requests, so no results are shown. Please try again in a minute."
+      const execute = sinon.stub(AIServiceCommand.prototype, 'execute')
+      execute.resolves({
+        statusCode: 503,
+        data: { searchResults: [], status: 'embedding_rate_limited', status_code: 503, message },
+        headers: { 'retry-after': '60' },
+      } as any)
+
+      for (const handler of [search(createMockAppConfig()), retrieve(createMockAppConfig())]) {
+        const next = createMockNext()
+        await handler(
+          createMockRequest({ body: { query: 'q' }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+          createMockResponse(),
+          next,
+        )
+
+        const error: any = next.firstCall.args[0]
+        expect(error.statusCode).to.equal(503)
+        expect(error.message).to.equal(message)
+        expect(error.metadata).to.deep.equal({ retryAfter: '60' })
+        expect(bodyOf(error).setHeader.args).to.deep.equal([['Retry-After', '60']])
+      }
+    })
+
+    it('passes on no other header of a failed search', async () => {
+      const execute = sinon.stub(AIServiceCommand.prototype, 'execute')
+      execute.resolves({
+        statusCode: 503,
+        data: { searchResults: [], status: 'error', status_code: 503, message: 'x' },
+        headers: { 'retry-after': '60', 'set-cookie': 'sid=secret', server: 'secret', 'x-internal': 'secret' },
+      } as any)
+
+      for (const handler of [search(createMockAppConfig()), retrieve(createMockAppConfig())]) {
+        const next = createMockNext()
+        const res = createMockResponse()
+        await handler(
+          createMockRequest({ body: { query: 'q' }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+          res,
+          next,
+        )
+
+        const error: any = next.firstCall.args[0]
+        expect(error.metadata).to.deep.equal({ retryAfter: '60' })
+        expect(bodyOf(error).setHeader.args).to.deep.equal([['Retry-After', '60']])
+        expect(JSON.stringify({ ...error, message: error.message })).to.not.contain('secret')
+      }
+    })
 
     for (const [status, notices] of [
       [404, NOTICES],
@@ -6169,7 +6229,7 @@ describe('Enterprise Search Controller', () => {
       expect(usersFindOne.called).to.be.false
     })
 
-    it('should scope the user lookup to the sole org', async () => {
+    it('never looks a Slack-minted token up by its email (SEC-C-03, ADR-SLACKID-01)', async () => {
       const handler = streamChatInternal(createMockAppConfig())
 
       stubMongooseFind(Org, 'find', [{ _id: new mongoose.Types.ObjectId(VALID_OID2) }])
@@ -6190,9 +6250,9 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      expect(usersFindOne.calledOnce).to.be.true
-      const lookupFilter = usersFindOne.firstCall.args[0] as { orgId?: unknown }
-      expect(String(lookupFilter.orgId)).to.equal(VALID_OID2)
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(usersFindOne.called).to.be.false
     })
   })
 
@@ -6564,7 +6624,7 @@ describe('Enterprise Search Controller', () => {
         c.args[0]?.some((m: any) => m.tools?.[0]?.toolName === 'ask_user_question'),
       )
       expect(toolCallInsert).to.exist
-      expect(toolCallInsert.args[0][0].tools[0].toolResult).to.deep.equal(toolData)
+      expect(toolCallInsert!.args[0][0].tools[0].toolResult).to.deep.equal(toolData)
 
       const forwarded = res.write.args.map((a: any) => a[0]).join('')
       expect(forwarded).to.include('ask_user_question')
@@ -7381,7 +7441,7 @@ describe('Enterprise Search Controller', () => {
         c.args[0]?.some((m: any) => m.tools?.[0]?.toolName === 'ask_user_question'),
       )
       expect(toolCallInsert).to.exist
-      expect(toolCallInsert.args[0][0].tools[0].toolResult).to.deep.equal(toolData)
+      expect(toolCallInsert!.args[0][0].tools[0].toolResult).to.deep.equal(toolData)
 
       const forwarded = res.write.args.map((a: any) => a[0]).join('')
       expect(forwarded).to.include('ask_user_question')
@@ -8517,7 +8577,7 @@ describe('Enterprise Search Controller', () => {
       expect(next.called).to.be.false
     })
 
-    it('should return empty agents when backend responds non-200', async () => {
+    it('should pass a non-200 backend answer on as an error, never as empty agents', async () => {
       const handler = getModelUsage(createMockAppConfig())
       const req = createMockRequest({
         params: { model_key: 'model-1' },
@@ -8533,9 +8593,9 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      expect(res.status.calledOnceWith(200)).to.be.true
-      expect(res.json.calledOnceWith({ success: true, agents: [] })).to.be.true
-      expect(next.called).to.be.false
+      expect(res.json.called).to.be.false
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].statusCode).to.equal(503)
     })
 
     it('should call next when AI backend throws', async () => {
@@ -14299,6 +14359,29 @@ describe('Enterprise Search Controller', () => {
         const lines = debug.getCalls().filter((c) => c.args[0] === 'upstream.call.end')
         expect(lines.map((c) => [c.args[1].method, c.args[1].status])).to.deep.equal([['DELETE', 204]])
       })
+
+      for (const [name, aiBackend, reason] of [
+        ['an AI backend that is not a registered service', 'http://169.254.169.254', 'not a registered PipesHub service'],
+        ['an AI backend with embedded credentials', 'http://user:pass@localhost:8000', 'must not contain embedded credentials'],
+      ] as const) {
+        it(`sends nothing to ${name}, and hands the refusal to the error middleware`, async () => {
+          const fetchStub = sinon.stub(globalThis, 'fetch').resolves({ status: 204, ok: true } as Response)
+          const res = createMockResponse()
+          const next = createMockNext()
+
+          await deleteChatAttachment({ ...createMockAppConfig(), aiBackend })(
+            createMockRequest({ params: { recordId: 'my-record-id' }, headers: { authorization: 'Bearer tok' } }),
+            res,
+            next,
+          )
+
+          expect(fetchStub.called, 'fetch reached').to.equal(false)
+          expect(next.calledOnce).to.equal(true)
+          expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+          expect(next.firstCall.args[0].message).to.include(reason)
+          expect(res.status.called).to.equal(false)
+        })
+      }
     })
   })
 

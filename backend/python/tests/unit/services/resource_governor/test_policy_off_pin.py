@@ -27,21 +27,89 @@ EDITED = {
         "docling_working_set_gb", "resolve_heavy_working_set", "class HeavyWorkingSet", "HeavyWorkingSet.gb",  # new
         "HeavyWorkingSet.source", "HeavyWorkingSet.as_dict",
         "assign:PDF_PARENT_WORKING_SET_GB", "assign:DOCLING_WORKING_SET_DEFAULT_GB",
+        # The code sandbox yield: only acts with host_yield=True, which the grid never passes.
+        "assign:YIELD_INDEX_SHRINK_FACTOR", "assign:YIELD_GROW_CONFIRM_SAMPLES", "assign:YIELD_POOLS",
+        "_yield_shrink_target", "_yield_holdoff",
+        "assign:YIELD_REPEAT_WINDOW_SAMPLES", "assign:YIELD_HEAVY_MAX_HOLDOFF_SAMPLES",
+        # Read-only admission explain: a rule tag on the returned state, no change to any limit.
+        "_with_rule", "_feedback_services", "assign:_GROWTH_HOLDS", "assign:_SHRINK_CAUSE",
+        "_feedback_for", "assign:SERVICE_POOL",  # a Docling-only report brakes INDEX_HEAVY only; no memory gate reads feedback
+        "resolve_ceilings",  # two keyword arguments (cells, profile); profile="legacy" (the default) runs the old body, so the capacity-profile test pins the equality
     },
-    "memory_budget.py": {"kind_reservation_cost"},  # new; record_memory_cost itself is unchanged
+    "memory_budget.py": {
+        "kind_reservation_cost",  # new; record_memory_cost itself is unchanged
+        "MemoryBudget._enqueue", "MemoryBudget.reserve", "MemoryBudget.__init__", "MemoryBudget:Expr",  # __init__: the set of ahead waiters (empty unless ahead is passed)
+        # PARSE_ADMISSION=classes: one keyword (ahead, default False); without it the queue order is unchanged (test_memory_ahead_off_is_unchanged)
+    },
     "consumer_concurrency.py": {
         "reserve_record_memory", "acquire_parsing_slot",  # optional kind; no kind or no excess = the old path
         "record_parse_kind",
+        "wait_out_held_service",  # new; waits out a held service's pause before the parse permit and reserves nothing (test_docling_hold_recheck)
+        "parse_ceiling", "parse_lease_pool",  # one heavy lease for both tiers, only with USE_PARSING_SERVICE and PARSING_SERVICE_CONCURRENCY set; otherwise unchanged
         "RequeueWithoutAttempt.pauses_consumer",  # read only by the PostgreSQL consumer's stage admission, not by a memory gate
+        "RequeueWithoutAttempt.__init__",  # adds the level the consumer logs the hand-back at; reserves nothing
         "class ProgressRequeue", "ProgressRequeue.__init__", "ProgressRequeue.counts_toward_backstop",  # new exception, raised after the handler has unwound and its memory is released
         "ProgressRequeue:Expr", "requeue_after_productive_cut",  # new; runs in the consumers' timeout handler and reserves nothing
         "if:TYPE_CHECKING",  # one more type-only import
+        # Read-only admission explain: counters and a tag, no change to any admission decision.
+        "class AdmissionBacklog", "AdmissionBacklog.__slots__", "AdmissionBacklog.__init__", "AdmissionBacklog.add", "AdmissionBacklog._observed",
+        "AdmissionBacklog.remove", "AdmissionBacklog.totals", "AdmissionBacklog.lease_waiting",
+        "AdmissionBacklog.reset", "AdmissionBacklog:Expr",
+        "class LocalPermits", "LocalPermits.__slots__", "LocalPermits.__init__", "LocalPermits:Expr",
+        "assign:PHASE_GATE", "assign:PHASE_LEASE", "assign:PHASE_DOWNLOAD", "assign:PHASE_PARSE",
+        "assign:_PHASES", "assign:_SLOT", "assign:_SUM",
+        "in_phase", "_counted", "at_gate", "_read_paused_for_admission", "consumer_id", "_lease_pools", "_local_permits_name", "admission_explain",
+        "GateWaiterToken.__slots__", "GateWaiterToken.__init__", "GateWaiterToken._backlog",
+        "GateWaiterToken.enter_gate", "GateWaiterToken._leave_gate", "GateWaiterToken.admit",
+        "GateWaiterToken.release",
+        # The waiter counter also tells admitted records from waiting ones; the pool a parse waits on has one decision.
+        "GateWaiters.__slots__", "GateWaiters.__init__", "GateWaiters.reset", "GateWaiters.retain",
+        "GateWaiters.unretain", "GateWaiters.retained_snapshot", "GateWaiters.view", "admission_parse_lease_pool",
+        "acquire_index_slot",  # the legacy semaphore path counts its holders and waiters
+        "_wait_for_heavy_parse_slots",  # counts a caller that has to wait for the shared slots
+        # PARSE_ADMISSION=classes. Every edit below is behind `wiring.classes_enabled()` or an argument only the class path
+        # passes (`ctx`, a CostClass level, `ahead`), so with the flag off each runs its old body (the recorded trace above, and
+        # tests/unit/services/messaging/test_class_admission_off.py, which compares the off path against a copy of the old bodies).
+        "effective_index_tier",  # a CostClass level (never produced with the flag off) routes to the heavy pool
+        "dispatch_tier", "_payload_size",  # the class branch is first and guarded; the old body follows unchanged
+        "GateWaiters.__init__", "GateWaiters.count", "GateWaiters.snapshot",  # a defaultdict seeded with the same two tiers; same counts
+        "DispatchBudget.allows", "DispatchBudget.tiers",  # type widening only
+        "_tier_ceiling", "_class_ceiling", "dispatch_budget",  # class levels only with the flag on; `waiters.get(tier, 0)` equals `waiters[tier]` for both tiers
+        "acquire_index_slot", "acquire_download_slot", "acquire_parsing_slot",  # keyword `ctx` (None = the old body); a CostClass tier takes the class gate first
+        "_acquire_parsing_slot_by_class", "_acquire_remote_by_class", "_backlog_tier", "class_context", "class_kwargs", "reclass_index_slot", "reclass_download_slot",  # new; reached only with a `ctx`
+        "class BigAdmissionTimeout", "BigAdmissionTimeout.__init__", "BigAdmissionTimeout.counts_toward_backstop",  # new exception, raised only by the class path
+        "BigAdmissionTimeout.pauses_consumer", "BigAdmissionTimeout:Expr",
+        # Inspection and the requeue: `first_admission_kwargs` is new and returns {} for anything but a BigAdmissionTimeout
+        # (so the consumers' requeue call is unchanged with the flag off); `spaced` on acquire_parsing_slot defaults to True and only
+        # the class path passes False (test_policy_off_pin's recorded acquire_parsing_slot calls and test_class_admission_off cover it).
+        "first_admission_kwargs",
+        # The backstop's give-up reason: `give_up_label` is None for every hand-back but a same-bytes update, and
+        # `backstop_give_up_reason` then returns the old admission wording unchanged (tests/unit/events/
+        # test_update_coalescing.py::test_the_give_up_reason_names_a_same_bytes_hand_back_and_only_that).
+        "RequeueWithoutAttempt.give_up_label", "backstop_give_up_reason",
+        # Logging only: a failed clear is one structured WARNING (index.retry_clear_failed) instead of a plain ERROR, and is
+        # still swallowed; it runs after settlement and reserves nothing (tests/unit/services/messaging/test_indexing_end.py::
+        # test_redis_retry_tracker_failure_after_the_ack_is_a_second_line).
+        "clear_retry_tracking",
+        # A Docling 429 holds only the records that call Docling (F57f): read and dispatch decisions, no gate or memory charge.
+        "downstream_read_pause", "read_pausing_services", "held_pools", "held_downstream",
     },
     "controller.py": {
         "ResourceGovernor.__init__", "ResourceGovernor._sample_once", "ResourceGovernor.stats",
         "ResourceGovernor.try_acquire_heavy_parse_slots", "ResourceGovernor.heavy_working_set",
+        # PIPESHUB_CAPACITY_PROFILE=auto only: __init__ (inputs and the container link), _sample_once (one step on the shared limits), stats (one extra key). Flag off: the branches are not taken.
         "ResourceGovernor._policy_working_set", "ResourceGovernor._measured_base_applies",
         "ResourceGovernor._resolve_heavy_working_set",
+        # The code sandbox yield signal: without one (every governor but indexing's) none of it runs.
+        "ResourceGovernor._read_yield", "ResourceGovernor._after_yield_read", "ResourceGovernor._yield_stats",
+        "ResourceGovernor.close",
+        # Read-only admission explain.
+        "ResourceGovernor.admission_explain", "ResourceGovernor.slot_wait", "ResourceGovernor.report_memory_incident",
+        "if:TYPE_CHECKING",  # Iterator, for slot_wait; YieldSignal, for the yield signal
+        # A monotonic count of brake entries per pool and reason, incremented where the decision is made
+        # (_sample_once, report_memory_incident) and shown in admission_explain: no limit, state or
+        # admission outcome changes. Reason: load notifications must not miss an entry a delayed read skipped.
+        "ResourceGovernor._count_brake_entries",
     },
 }
 
@@ -137,6 +205,7 @@ def test_governor_limits_and_health_fields_are_unchanged(monkeypatch: pytest.Mon
     now = json.loads(json.dumps(trace.governor_trace(), default=str))
     for value in (*now.values(), *RECORDED["governor"].values()):
         value["lanes"] = {"mode": value["lanes"]["mode"]}  # the plan reads this host's CPU count
+        value["keys"] = [k for k in value["keys"] if k != "admission"]  # the read-only explain section
     assert now == RECORDED["governor"]
     for value in now.values():
         assert "heavy_working_set" not in value["keys"]
@@ -190,4 +259,5 @@ def test_governor_trace_ignores_downstream_feedback_left_by_other_tests(monkeypa
         set_default_downstream_feedback(None)
     for value in (*now.values(), *RECORDED["governor"].values()):
         value["lanes"] = {"mode": value["lanes"]["mode"]}
+        value["keys"] = [k for k in value["keys"] if k != "admission"]
     assert now == RECORDED["governor"]

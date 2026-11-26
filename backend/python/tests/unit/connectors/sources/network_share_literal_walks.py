@@ -201,6 +201,45 @@ def n_neutral(world: dict[str, Any]) -> bool:
     )
 
 
+def _nested_pairs(folders: list[str]) -> set[tuple[int, int]]:
+    return {(i, j) for i, f in enumerate(folders) for j, o in enumerate(folders) if i != j and f.startswith(o)}
+
+
+def delta_kinds(world: dict[str, Any]) -> set[str]:
+    """Why comparing names as a file share does may decide ``world`` differently, one kind per step.
+
+    The steps go from the raw comparison to the share's: ``\\`` separates
+    (backslash), then Unicode form (unicode_form), then case (case). A step
+    counts when it changes a value or how some path relates to the values.
+    equal_values: two values name the same folder, or one lies in the other,
+    only once compared as a share does.
+    """
+    values = world["values"]
+    paths = [f"{d}/{name}" if d else name for d, entries in world["tree"].items() for name, _is_dir, _fid in entries]
+    steps = [
+        ("backslash", lambda v: v.replace("\\", "/"), lambda p: p),
+        ("unicode_form", lambda v: unicodedata.normalize("NFC", v), lambda p: p),
+        ("case", share_n, share_n),
+    ]
+    kinds: set[str] = set()
+    folders = [_as_folder(v) for v in values]
+    nfc_paths = [unicodedata.normalize("NFC", p) for p in paths]
+    for kind, value_step, path_step in steps:
+        next_folders = [_as_folder(value_step(v)) for v in values]
+        next_paths = [path_step(p) for p in nfc_paths]
+        if next_folders != folders or any(
+            _relations(p, folders) != _relations(q, next_folders) for p, q in zip(nfc_paths, next_paths, strict=True)
+        ):
+            kinds.add(kind)
+        values = [value_step(v) for v in values]
+        folders, nfc_paths = next_folders, next_paths
+    if _nested_pairs([_as_folder(share_n(v)) for v in world["values"]]) != _nested_pairs(
+        [_as_folder(v) for v in world["values"]]
+    ):
+        kinds.add("equal_values")
+    return kinds
+
+
 def _entries(raw: list[list[Any]]) -> list[DirectoryEntry]:
     return [
         DirectoryEntry(name, is_dir, False, 0 if is_dir else 4, BASE_TIME + timedelta(minutes=fid),

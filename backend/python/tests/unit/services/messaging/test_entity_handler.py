@@ -14,11 +14,19 @@ from app.config.constants.arangodb import (
     CollectionNames,
     ConnectorScopes,
 )
-from app.connectors.core.base.connector.connector_service import connector_sync_lock
+from app.connectors.core.base.connector.connector_service import (
+    connector_sync_lock,
+    syncs_started,
+)
 from app.connectors.core.sync.sync_runner import _run_sync_alone
+from app.core.org_context import for_org
 from app.exceptions.non_retryable import NonRetryableError
+from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.graph_db.postgres.identity import IdentityMixin
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 from app.utils.logger import log_record_fields
+from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -30,7 +38,13 @@ def _make_entity_service(graph_provider=None, app_container=None, logger=None):
 
     logger = logger or MagicMock()
     graph_provider = graph_provider or AsyncMock()
-    app_container = app_container or MagicMock()
+    if app_container is None:
+        app_container = MagicMock()
+        # An empty store: a user's deletion removes their OAuth apps, and that step raises on failure.
+        store = app_container.config_service.return_value
+        store.list_keys_in_directory = AsyncMock(return_value=[])
+        # EE reads each org's keys through an org-scoped wrapper of the raw service.
+        store.get_raw_service.return_value = store
     app_container.messaging_producer = AsyncMock()
     app_container.messaging_producer.send_message = AsyncMock()
 
@@ -360,6 +374,7 @@ class TestUserAdded:
         existing_user.id = "existing-key"
 
         graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
         graph_provider.get_user_by_email = AsyncMock(return_value=existing_user)
         graph_provider.get_document = AsyncMock(
             return_value={"_key": "org-1", "accountType": "enterprise"}
@@ -509,7 +524,7 @@ class TestUserUpdated:
         both providers do, rather than against the call arguments."""
         store = {"user-key-1": {"id": "user-key-1", "isActive": True}}
 
-        async def read_then_delete(user_id: str) -> dict:
+        async def read_then_delete(user_id: str, **_: object) -> dict:
             seen = dict(store["user-key-1"])
             # `_handle_user_deleted` on the other replica, in the window.
             store["user-key-1"]["isActive"] = False
@@ -577,20 +592,28 @@ class TestUserUpdated:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_db_error_raises(self):
-        graph_provider = AsyncMock()
-        graph_provider.get_user_by_user_id = AsyncMock(
-            side_effect=Exception("DB fail")
-        )
+    @pytest.mark.parametrize("provider", ["arango", "neo4j", "postgres"])
+    async def test_a_failed_user_lookup_raises_instead_of_not_found(self, provider: str) -> None:
+        """The providers' own failure path: each answers None to a failed read unless asked to raise."""
+        down = RuntimeError("graph down")
+        if provider == "arango":
+            graph_provider = ArangoHTTPProvider.__new__(ArangoHTTPProvider)
+            graph_provider.logger = MagicMock()
+            graph_provider.http_client = MagicMock(execute_aql=AsyncMock(side_effect=down))
+        elif provider == "neo4j":
+            graph_provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+            graph_provider.client = MagicMock(execute_query=AsyncMock(side_effect=down))
+        else:
+            graph_provider = object.__new__(IdentityMixin)
+            graph_provider.logger = MagicMock()
+            graph_provider._one = AsyncMock(side_effect=down)
+        graph_provider.batch_upsert_nodes = AsyncMock()
         svc = _make_entity_service(graph_provider=graph_provider)
 
-        payload = {
-            "userId": "u-1",
-            "orgId": "org-1",
-            "email": "alice@test.com",
-        }
-        with pytest.raises(Exception, match="DB fail"):
+        payload = {"userId": "u-1", "orgId": "org-1", "email": "alice@test.com"}
+        with for_org("org-1", job="t"), pytest.raises(RuntimeError, match="graph down"):
             await svc.process_event("userUpdated", payload)
+        graph_provider.batch_upsert_nodes.assert_not_awaited()
 
 
 # ===================================================================
@@ -603,9 +626,7 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_success(self):
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(
-            return_value="user-key-1"
-        )
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-key-1", user_id=None))
         graph_provider.batch_upsert_nodes = AsyncMock()
 
         svc = _make_entity_service(graph_provider=graph_provider)
@@ -623,9 +644,29 @@ class TestUserDeleted:
         assert user_data["id"] == "user-key-1"
 
     @pytest.mark.asyncio
+    async def test_a_late_delete_finds_its_user_by_user_id_not_the_new_holder_of_the_address(self) -> None:
+        """u-old was deleted after u-new took the address. Its late userDeleted deactivates u-old, never u-new."""
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "key-old", "orgId": "org-1", "email": "old@test.com"})
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-new", user_id="u-new"))
+        svc = _make_entity_service(graph_provider=graph_provider)
+        assert await svc.process_event("userDeleted", {"orgId": "org-1", "userId": "u-old", "email": "alice@test.com"}) is True
+        written = graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert (written["id"], written["email"], written["isActive"]) == ("key-old", "old@test.com", False)
+
+    @pytest.mark.asyncio
+    async def test_a_delete_never_deactivates_a_user_of_another_user_id_found_by_address(self) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
+        graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="key-new", user_id="u-new"))
+        svc = _make_entity_service(graph_provider=graph_provider)
+        assert await svc.process_event("userDeleted", {"orgId": "org-1", "userId": "u-old", "email": "alice@test.com"}) is False
+        graph_provider.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_user_not_found_returns_false(self):
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(return_value=None)
+        graph_provider.get_user_by_email = AsyncMock(return_value=None)
 
         svc = _make_entity_service(graph_provider=graph_provider)
 
@@ -639,8 +680,7 @@ class TestUserDeleted:
     @pytest.mark.asyncio
     async def test_db_error_raises(self):
         graph_provider = AsyncMock()
-        graph_provider.get_entity_id_by_email = AsyncMock(
-            side_effect=Exception("DB fail")
+        graph_provider.get_user_by_email = AsyncMock(side_effect=Exception("DB fail")
         )
         svc = _make_entity_service(graph_provider=graph_provider)
 
@@ -773,6 +813,7 @@ class TestAppDisabled:
             }
         )
         graph_provider.update_node = AsyncMock()
+        graph_provider.write_attempt_start = attempt_start_via(graph_provider)
 
         svc = _make_entity_service(graph_provider=graph_provider)
 
@@ -806,6 +847,7 @@ class TestAppDisabled:
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(return_value={"_key": "conn-1", "name": "Legacy"})
         graph_provider.update_node = AsyncMock()
+        graph_provider.write_attempt_start = attempt_start_via(graph_provider)
         svc = _make_entity_service(graph_provider=graph_provider)
 
         with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc:
@@ -1012,7 +1054,14 @@ class _KbGraph:
         self.lookup_fails = lookup_fails
         self.user_lookup_fails = user_lookup_fails
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> SimpleNamespace | None:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict | None:
+        if self.user_lookup_fails:  # As both providers do: raise only when asked, else answer "nobody".
+            if raise_on_error:
+                raise RuntimeError("LockAcquisitionTimeout")
+            return None
+        return next((u for u in self.users.values() if u.get("userId") == user_id), None)
+
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False, org_id: str | None = None) -> SimpleNamespace | None:
         if self.user_lookup_fails:  # As both providers do: raise only when asked, else answer "nobody".
             if raise_on_error:
                 raise RuntimeError("LockAcquisitionTimeout")
@@ -1022,6 +1071,9 @@ class _KbGraph:
 
     async def get_document(self, key: str, collection: str, **_: object) -> dict | None:
         return {"_key": key, "accountType": "enterprise"}
+
+    async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, *_a: object, **_k: object) -> bool:
+        return True  # the default claimed: this fake keeps no marker, so every writer reads none
 
     async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
         pass
@@ -1370,8 +1422,7 @@ class TestHandleUserDeletedExtended:
     @pytest.mark.asyncio
     async def test_user_deleted_exception(self):
         svc = _make_service()
-        svc.graph_provider.get_entity_id_by_email = AsyncMock(
-            side_effect=Exception("DB error")
+        svc.graph_provider.get_user_by_email = AsyncMock(side_effect=Exception("DB error")
         )
         with pytest.raises(Exception, match="DB error"):
             await svc.process_event(
@@ -1587,6 +1638,8 @@ class TestGetOrCreateKnowledgeBaseCreationActive:
         assert kb_data["vectorMembershipBackfilled"] is True
         failed = [r for r in caplog.records if r.getMessage() == "entity_event.step_failed"]
         assert [log_record_fields(r)["step"] for r in failed] == ["register_kb_connector"]
+        # Since F27 this is the only line for a KB connector that fails to start: it names the instance.
+        assert log_record_fields(failed[0])["connector_id"] == result["kb_id"]
 
 
 # ===================================================================
@@ -1876,6 +1929,106 @@ class TestUserAddedConnectorLink:
         async with connector_sync_lock("c1"):
             assert await svc._link_connector("c1") is False
         c.link_new_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_pass_moves_the_sync_start_time_and_rewrites_its_mark_until_it_ends(self, no_debounce: None) -> None:
+        """A reindex sees a sync by its start time, and a pass writes access too: it moves a pseudo-group's grants onto its user.
+        A reindex in another process sees the pass by its mark, which it rewrites while it runs and never clears: an
+        overlapping pass in a third process may share it."""
+        events: list[str] = []
+
+        async def link() -> None:
+            await asyncio.sleep(0.05)
+
+        c = _connector(link=link)
+        svc = _link_service({"c1": c})
+        written: list[dict] = []
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(
+            side_effect=lambda nodes, collection: (events.append(collection), written.append(dict(nodes[0]))),
+        )
+        before = syncs_started("c1")
+        with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
+            assert await svc._link_connector("c1") is True
+        start, *refreshes = written
+        assert start["userLinkStartedAtTimestamp"] == start["lastSyncStartedAtTimestamp"]
+        assert refreshes and all(set(r) == {"id", "userLinkStartedAtTimestamp"} for r in refreshes)
+        assert all(r["userLinkStartedAtTimestamp"] >= start["userLinkStartedAtTimestamp"] for r in refreshes)
+        assert set(events) == {CollectionNames.APPS.value}
+        assert syncs_started("c1") == before + 1      # a reindex in this process sees it even when the store refuses both writes
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer", [RuntimeError("rejected"), False, None])
+    async def test_a_pass_whose_start_is_not_recorded_does_not_run(self, no_debounce: None, answer: object) -> None:
+        """A store may refuse by raising or by answering False (the interface allows both)."""
+        c = _connector()
+        svc = _link_service({"c1": c})
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(
+            side_effect=answer if isinstance(answer, Exception) else None, return_value=answer,
+        )
+        assert await svc._link_connector("c1") is True
+        c.link_new_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer", [RuntimeError("rejected"), False])
+    async def test_a_pass_whose_mark_cannot_be_rewritten_stops(self, no_debounce: None, answer: object) -> None:
+        """Past its TTL a reindex in another process no longer sees the mark, so the pass must not run on unseen."""
+        stopped = asyncio.Event()
+
+        async def link() -> None:
+            try:
+                await asyncio.sleep(2)
+            except asyncio.CancelledError:
+                stopped.set()
+                raise
+
+        c = _connector(link=link)
+        svc = _link_service({"c1": c})
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(side_effect=[True, answer])
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
+            assert await svc._link_connector("c1") is True
+        # wall-clock-ok: stopped 10 ms in; without the stop the pass waits out the 5 s rewrite
+        assert loop.time() - began < 1      # stopped at the refused rewrite, 10 ms in
+        assert stopped.is_set() and svc.graph_provider.batch_upsert_nodes.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_pass_whose_mark_rewrite_stalls_stops_before_the_mark_expires(self, no_debounce: None) -> None:
+        """A rewrite that hangs (a stalled store) would leave the last mark to expire while the pass runs on unseen: each
+        write has a quarter of the TTL, so the pass stops before the mark it holds is older than the TTL."""
+        stopped = asyncio.Event()
+
+        async def link() -> None:
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                stopped.set()
+                raise
+
+        async def write(nodes: list, collection: str) -> bool:
+            if written:
+                await asyncio.sleep(5)      # the rewrite never answers in time
+            written.append(nodes[0])
+            return True
+
+        written: list[dict] = []
+        c = _connector(link=link)
+        svc = _link_service({"c1": c})
+        svc.graph_provider.batch_upsert_nodes = AsyncMock(side_effect=write)
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        with patch("app.services.messaging.kafka.handlers.entity.USER_LINK_MARK_TTL_MS", 40):
+            assert await svc._link_connector("c1") is True
+        assert stopped.is_set() and len(written) == 1       # cancelled at the rewrite's deadline; the stalled rewrite never landed
+        # wall-clock-ok: a watchdog: without the deadline the pass waits out the 5 s rewrite
+        assert loop.time() - began < 1      # a watchdog only: without the deadline the pass waits out the 5 s rewrite
+
+    @pytest.mark.asyncio
+    async def test_a_pass_that_fails_partway_writes_nothing_after_it(self, no_debounce: None) -> None:
+        c = _connector(link=AsyncMock(side_effect=RuntimeError("source down")))
+        svc = _link_service({"c1": c})
+        assert await svc._link_connector("c1") is True
+        assert svc.graph_provider.batch_upsert_nodes.await_count == 1      # its mark goes stale
 
     @pytest.mark.asyncio
     async def test_a_sync_admitted_during_a_pass_runs_after_it(self, no_debounce: None) -> None:

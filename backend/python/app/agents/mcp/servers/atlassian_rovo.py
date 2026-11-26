@@ -1,6 +1,12 @@
 """Atlassian Rovo MCP server template — official remote server (SSE), OAuth 3LO."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -30,6 +36,13 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Sign in with your Atlassian account.",
         ),
         tags=["issues", "docs", "project-management"],
+        category=MCPCategory.PROJECTS,
+        capabilities=[
+            "Create and update Jira issues",
+            "Search Confluence pages",
+            "Track sprint work",
+            "Read Bitbucket repositories",
+        ],
     )
 )
 class AtlassianRovoMCPServer:

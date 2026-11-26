@@ -11,6 +11,7 @@ AG-UI formatter, serialised exactly as `stream_bridge.py` writes them.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from types import SimpleNamespace
@@ -19,6 +20,8 @@ from typing import TYPE_CHECKING, Any, NoReturn
 import pytest
 
 from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER
+from app.harness.credentials.sources import ToolsetSecretSource
+from app.harness.credentials.tool_credentials import scope_of, toolset_reference
 from app.utils.logger import log_record_fields
 from tests.support.agent_routes import (
     AGENTS,
@@ -28,12 +31,22 @@ from tests.support.agent_routes import (
     make_client,
     user_key,
 )
+from tests.unit.harness.credentials.support import owned_toolsets
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from fastapi.testclient import TestClient
     from httpx import Response
+
+
+def _resolved(config: object, reference: dict[str, Any]) -> Any:  # noqa: ANN401
+    """The record a toolset reference names, as the effect boundary resolves it (P2.4a)."""
+    scope = scope_of(reference)
+    assert scope is not None
+    secret = asyncio.run(ToolsetSecretSource(config).read("org", scope))
+    assert secret is not None
+    return secret.material
 
 
 def _sse(frames: list[dict[str, Any]]) -> list[str]:
@@ -251,28 +264,30 @@ class TestChatStreamToolsets:
 
     def test_credentials_are_the_executing_users(self, graph, loop) -> None:
         self._with_toolset(graph, "shared")
-        config = FakeConfigService({
+        config = FakeConfigService(owned_toolsets({
             "/services/toolsets/inst-1/u-alice": {"isAuthenticated": True, "who": "alice"},
             "/services/toolsets/inst-1/u-bob": {"isAuthenticated": True, "who": "bob"},
-        })
+        }, org_id="org"))
         c, _ = make_client(graph, config)
         response = _stream(c, "shared", "bob", {"query": "hi", "tools": ["jira.search"]})
         assert response.status_code == 200
         (call,) = loop.calls
-        assert call["query_info"]["toolsetConfigs"] == {"inst-1": {"isAuthenticated": True, "who": "bob"}}
+        # A reference, never the record; it resolves to the executing user's record.
+        assert call["query_info"]["toolsetConfigs"] == {"inst-1": toolset_reference("inst-1", "u-bob")}
+        assert _resolved(config, call["query_info"]["toolsetConfigs"]["inst-1"])["who"] == "bob"
         (toolset,) = call["query_info"]["toolsets"]
         assert [t["fullName"] for t in toolset["tools"]] == ["jira.search"]
 
     def test_service_account_uses_the_agents_own_credentials(self, graph, loop) -> None:
         self._with_toolset(graph, "sa")
-        config = FakeConfigService({
+        config = FakeConfigService(owned_toolsets({
             "/services/toolsets/inst-1/sa": {"isAuthenticated": True, "who": "agent"},
             "/services/toolsets/inst-1/u-bob": {"isAuthenticated": True, "who": "bob"},
-        })
+        }, org_id="org"))
         c, _ = make_client(graph, config)
         _stream(c, "sa", "bob")
         (call,) = loop.calls
-        assert call["query_info"]["toolsetConfigs"]["inst-1"]["who"] == "agent"
+        assert _resolved(config, call["query_info"]["toolsetConfigs"]["inst-1"])["who"] == "agent"
 
     @pytest.mark.parametrize("stored,fragment", [
         (None, "not configured: 'Jira'"),
@@ -425,6 +440,88 @@ class TestChatStreamKnowledge:
         assert call["query_info"]["filters"]["apps"] == ["conn-1"]
         assert call["query_info"]["filters"]["strictScope"] is True
         assert {k["connectorId"] for k in call["query_info"]["knowledge"]} == {"conn-1", "kb-1"}
+
+    @staticmethod
+    def _sources(graph: InMemoryGraph, agent: str) -> None:
+        """alice's own database and drive, the org's database and drive, another org's database, a collection."""
+        for key, kind, scope, org, created_by in (
+            ("pg-alice", "POSTGRESQL", "personal", "org-1", "u-alice"),
+            ("pg-team", "POSTGRESQL", "team", "org-1", "u-alice"),
+            ("pg-other-org", "POSTGRESQL", "team", "org-2", "u-mallory"),
+            ("drive-alice", "DRIVE", "personal", "org-1", "u-alice"),
+            ("drive-team", "DRIVE", "team", "org-1", "u-alice"),
+            ("kb-1", "KB", "team", "org-1", "u-alice"),
+        ):
+            graph.add_node("apps", {
+                "_key": key, "type": kind, "scope": scope, "orgId": org, "createdBy": created_by, "isConfigured": True,
+            })
+            graph.add_node("agentKnowledge", {"_key": f"k-{key}", "connectorId": key, "type": kind})
+            graph.add_edge("agentHasKnowledge", {"_from": f"{AGENTS}/{agent}", "_to": f"agentKnowledge/k-{key}"})
+
+    @staticmethod
+    def _knowledge(call: dict) -> set[str]:
+        return {k["connectorId"] for k in call["query_info"]["knowledge"]}
+
+    def test_a_service_account_agent_uses_only_the_sources_shared_with_the_org(self, graph, loop) -> None:
+        self._sources(graph, "sa")
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob")
+        (call,) = loop.calls
+        assert call["user_info"]["userId"] == "u-alice"
+        assert self._knowledge(call) == {"pg-team", "drive-team"}
+        assert sorted(call["query_info"]["filters"]["apps"]) == ["drive-team", "pg-team"]
+        # The same bound limits every tool that reads a record by id (fetch_full_record and the rest).
+        assert sorted(call["query_info"]["filters"]["allowedApps"]) == ["drive-team", "pg-team"]
+
+    def test_a_service_account_agent_bound_to_a_service_account_keeps_its_collections(self, graph, loop) -> None:
+        graph.add_node("users", {"_key": "k-svc", "userId": "u-svc", "orgId": "org-1", "email": "svc@acme.test",
+                                 "kind": "service", "isActive": True})
+        graph.add_agent("sa-bound", "alice", share_with_org=True, isServiceAccount=True, serviceAccountUserId="u-svc")
+        self._sources(graph, "sa-bound")
+        c, _ = make_client(graph)
+        _stream(c, "sa-bound", "bob")
+        (call,) = loop.calls
+        assert call["user_info"]["userId"] == "u-svc"
+        assert self._knowledge(call) == {"pg-team", "drive-team", "kb-1"}
+
+    def test_a_service_account_agent_cannot_be_pointed_at_a_personal_source(self, graph, loop) -> None:
+        self._sources(graph, "sa")
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob", {"query": "hi", "filters": {"apps": ["pg-alice", "drive-alice"], "kb": ["kb-1"]}})
+        (call,) = loop.calls
+        assert call["query_info"]["filters"]["apps"] == []
+        assert self._knowledge(call).isdisjoint({"pg-alice", "drive-alice", "kb-1"})
+
+    def test_a_service_account_agent_keeps_no_connector_when_the_lookup_fails(self, graph, loop) -> None:
+        self._sources(graph, "sa")
+        graph.fail("get_user_connector_instances")
+        c, _ = make_client(graph)
+        _stream(c, "sa", "bob")
+        (call,) = loop.calls
+        assert self._knowledge(call) == set()
+
+    @pytest.mark.parametrize("bound", [False, True])
+    def test_a_service_account_agent_drops_a_source_whose_app_could_not_be_read(self, graph, loop, bound) -> None:
+        # The graph types an entry UNKNOWN when it cannot read the app, so it may be anything.
+        graph.add_node("users", {"_key": "k-svc", "userId": "u-svc", "orgId": "org-1", "email": "svc@acme.test",
+                                 "kind": "service", "isActive": True})
+        graph.add_agent("sa-x", "alice", share_with_org=True, isServiceAccount=True,
+                        **({"serviceAccountUserId": "u-svc"} if bound else {}))
+        self._sources(graph, "sa-x")
+        for key in ("pg-alice", "kb-1"):
+            graph.nodes["agentKnowledge"][f"k-{key}"]["type"] = "UNKNOWN"
+        c, _ = make_client(graph)
+        _stream(c, "sa-x", "bob")
+        (call,) = loop.calls
+        assert self._knowledge(call).isdisjoint({"pg-alice", "kb-1"})
+
+    def test_an_agent_run_by_its_owner_keeps_the_owners_sources(self, graph, loop) -> None:
+        self._sources(graph, "private")
+        c, _ = make_client(graph)
+        _stream(c, "private", "alice")
+        (call,) = loop.calls
+        assert {"pg-alice", "pg-team", "drive-alice", "drive-team", "kb-1"} <= self._knowledge(call)
+        assert not graph.calls_to("get_user_connector_instances")
 
     def test_loop_failure_becomes_a_plain_error_frame(self, graph, monkeypatch, caplog) -> None:
         def boom(*_a: object, **_k: object) -> NoReturn:

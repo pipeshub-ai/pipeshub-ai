@@ -1,20 +1,22 @@
-import { forOrg } from '../../../libs/context/orgContext';
 import { injectable, inject } from 'inversify'
 import { Logger } from '../../../libs/services/logger.service'
 import { BadRequestError, ForbiddenError } from '../../../libs/errors/http.errors'
 import { InvalidClientError, InvalidScopeError } from '../../../libs/errors/oauth.errors';
-import { getIdentityPort } from '../../../libs/repositories/identity'
-import { getUserRepository } from '../../../libs/repositories/user'
 import {
   DYNAMIC_ACCESS_TOKEN_LIFETIME,
   DYNAMIC_REFRESH_TOKEN_LIFETIME,
   OAuthAppService,
 } from './oauth.app.service'
 import { ScopeValidatorService } from './scope.validator.service'
-import { AgentMcpScopes, mcpDiscoveryScopes } from '../config/scopes.config';
+import {
+  AgentMcpScopes,
+  McpToolScopes,
+  mcpDiscoveryScopes,
+} from '../config/scopes.config';
 import { AppConfig } from '../../tokens_manager/config/config'
 import {
   getOAuthAppRepository,
+  NO_APP_CREATOR,
   OAuthAppStatus,
   OAuthGrantType,
   type OAuthAppDto,
@@ -24,12 +26,19 @@ import {
   fetchClientMetadataDocument,
   isClientIdMetadataUrl,
 } from './client_metadata_document';
+import { dynamicClientOwnerOrg } from './dynamic-client-org';
+
+/** Who consented to an authorization request. */
+export interface Consenter {
+  orgId: string;
+  userId: string;
+}
 
 /** The client of an authorization request, and how to keep it once the person consents. */
 export interface AuthorizeClient {
   app: OAuthAppDto;
-  /** Stores a metadata document client seen for the first time; the app as it is otherwise. */
-  store(): Promise<OAuthAppDto>;
+  /** Stores a metadata document client seen for the first time, as the consenting person's; the app as it is otherwise. */
+  store(consenter: Consenter): Promise<OAuthAppDto>;
 }
 
 type NewDynamicClient = Parameters<OAuthAppService['createDynamicClient']>[0];
@@ -71,10 +80,14 @@ export class OAuthDcrService {
     @inject('ScopeValidatorService')
     private scopeValidatorService: ScopeValidatorService,
     @inject('AppConfig') private appConfig: AppConfig,
+    /** Which organisation stores a dynamic client: `dynamicClientOrg` from `src/config.ts`. */
+    private clientOrg: (
+      consenter?: Consenter,
+    ) => Promise<string | null> = dynamicClientOwnerOrg,
   ) {}
 
   async register(body: DcrRequestBody): Promise<DcrResponse> {
-    if (process.env.PIPESHUB_ENABLE_DCR !== 'true') {
+    if (process.env.PIPESHUB_ENABLE_DCR === 'false') {
       throw new ForbiddenError('dynamic client registration is disabled')
     }
 
@@ -102,12 +115,16 @@ export class OAuthDcrService {
       (body.token_endpoint_auth_method ?? 'none') !== 'none'
     const tokenEndpointAuthMethod = body.token_endpoint_auth_method ?? 'none'
 
-    const { orgId, createdBy } = await this.resolveRegistrationOrg()
+    // Anyone may register, so no person did: the client is the instance's and names no creator.
+    const orgId = await this.clientOrg()
+    if (!orgId) {
+      throw new BadRequestError('Instance is not initialized')
+    }
     const allowedScopes = this.resolveScopes(body.scope)
 
     const created = await this.oauthAppService.createDynamicClient({
       orgId,
-      createdBy,
+      createdBy: NO_APP_CREATOR,
       name: body.client_name || 'Dynamically registered client',
       redirectUris,
       allowedGrantTypes: grantTypes,
@@ -228,7 +245,7 @@ export class OAuthDcrService {
     };
     return {
       app: unsaved,
-      store: () => this.storeMetadataClient(clientId, fresh),
+      store: (consenter) => this.storeMetadataClient(clientId, fresh, consenter),
     };
   }
 
@@ -238,18 +255,22 @@ export class OAuthDcrService {
       NewDynamicClient,
       'clientId' | 'orgId' | 'createdBy' | 'isConfidential'
     >,
+    consenter: Consenter,
   ): Promise<OAuthAppDto> {
-    const { orgId, createdBy } = await this.resolveRegistrationOrg();
+    const orgId = await this.clientOrg(consenter);
+    if (!orgId) {
+      throw new BadRequestError('Instance is not initialized');
+    }
     try {
       await this.oauthAppService.createDynamicClient({
         ...fresh,
         clientId,
         orgId,
-        createdBy,
+        createdBy: consenter.userId,
         isConfidential: false,
       });
       this.logger.info('Stored client from its metadata document', {
-        clientId,
+        client_id: clientId,
       });
     } catch (error) {
       // Two first consents at once: the other one stored it. Anything else is a real failure.
@@ -311,11 +332,15 @@ export class OAuthDcrService {
     const memberAllowed = new Set(
       this.scopeValidatorService.getAllowedScopeNamesForRole(false),
     )
-    // With no scope asked for, the agent preset is offered as far as this instance's MCP_SCOPES allows (a scope an operator has not
-    // enabled, such as code:write, is left out); a scope that is asked for by name and not allowed is still refused.
+    // With no scope asked for (Cursor registers this way), the client gets the /mcp tool scopes discovery advertises in
+    // scopes_supported, offline_access included, plus the agent preset. Otherwise its /authorize request for scopes_supported
+    // is partly refused and it never gets a refresh token. Only what this instance's MCP_SCOPES enables and a member may
+    // hold is offered (code:write, when not enabled, is left out); a scope asked for by name and not allowed is still refused.
     const requested = scope
       ? this.scopeValidatorService.parseScopes(scope)
-      : AgentMcpScopes.filter((s) => mcp.size === 0 || mcp.has(s))
+      : [...new Set<string>([...McpToolScopes, ...AgentMcpScopes])].filter(
+          (s) => memberAllowed.has(s) && (mcp.size === 0 || mcp.has(s)),
+        );
 
     const granted: string[] = []
     for (const s of requested) {
@@ -331,24 +356,5 @@ export class OAuthDcrService {
       throw new InvalidScopeError('at least one scope is required')
     }
     return granted
-  }
-
-  private async resolveRegistrationOrg(): Promise<{
-    orgId: string
-    createdBy: string
-  }> {
-    const orgId = await getIdentityPort().oldestOrgId()
-    if (!orgId) {
-      throw new BadRequestError('Instance is not initialized')
-    }
-    // No session here: the server itself reads the install's organisation.
-    const oldestUserId = await forOrg(orgId, 'oauth.dcr', () =>
-      getUserRepository().getOldestId(orgId),
-    )
-    if (!oldestUserId) {
-      throw new BadRequestError('Instance has no users')
-    }
-    this.logger.info('DCR bound to instance org', { orgId })
-    return { orgId, createdBy: oldestUserId }
   }
 }
