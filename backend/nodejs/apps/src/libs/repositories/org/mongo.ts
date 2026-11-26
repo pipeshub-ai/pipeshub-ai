@@ -8,6 +8,7 @@ import {
   OrgAuthConfig,
 } from '../../../modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../modules/auth/schema/userCredentials.schema';
+import { Logger } from '../../services/logger.service';
 import { sessionOf } from '../mongo';
 import { toPlain } from '../plain';
 import type { Tx } from '../uow';
@@ -176,23 +177,44 @@ export class MongoOrgRepository implements OrgRepository {
 
     const session = sessionOf(tx);
     const opts = session ? { session } : undefined;
-    const written: Array<{ deleteOne(): Promise<unknown> }> = [];
+    const docs = [
+      authConfig,
+      allUsersGroup,
+      standardUsersGroup,
+      adminUser,
+      credentials,
+      org,
+    ];
+    let started = 0;
     try {
-      for (const doc of [
-        authConfig,
-        allUsersGroup,
-        standardUsersGroup,
-        adminUser,
-        credentials,
-        org,
-      ]) {
+      for (const doc of docs) {
+        // Counted before the save: an insert the server applied but whose reply was lost must be removed too.
+        started += 1;
         await doc.save(opts);
-        written.push(doc);
       }
     } catch (error) {
       // Without a transaction nothing undoes the rows already written, so remove them: the organisation is created whole or not at all.
-      if (!session)
-        await Promise.allSettled(written.map((doc) => doc.deleteOne()));
+      if (!session) {
+        const tried = docs.slice(0, started);
+        const undone = await Promise.allSettled(
+          tried.map((doc) => doc.deleteOne()),
+        );
+        tried.forEach((doc, i) => {
+          const r = undone[i];
+          if (r?.status === 'rejected')
+            Logger.getInstance().warn(
+              'Organisation create failed and a row it wrote could not be removed',
+              {
+                collection: doc.collection.collectionName,
+                id: String(doc._id),
+                error:
+                  r.reason instanceof Error
+                    ? r.reason.message
+                    : String(r.reason),
+              },
+            );
+        });
+      }
       throw error;
     }
     return {

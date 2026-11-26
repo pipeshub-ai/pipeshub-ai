@@ -156,6 +156,7 @@ export function describeOrgContract(fx: OrgFixture): void {
       expect(await orgs.getLive(ids.orgId)).to.equal(null);
       expect(await users.getLive(ids.orgId, ids.adminUserId)).to.equal(null);
       expect(await groups.groupsOfUser(ids.orgId, ids.adminUserId)).to.deep.equal([]);
+      expect((await groups.list(ids.orgId, { skip: 0, limit: 10 })).total, 'no group of the organisation, members or not').to.equal(0);
       expect(await fx.orgAuth.getLive(ids.orgId)).to.equal(null);
     });
 

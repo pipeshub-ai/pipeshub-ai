@@ -35,6 +35,7 @@ import { ServiceAccountDelegation } from '../../src/modules/oauth_provider/schem
 import { DelegationEvent } from '../../src/modules/oauth_provider/schema/delegation-event.schema';
 import { Counter } from '../../src/libs/repositories/slug/mongo';
 import { describeRestContract } from './contract/rest.contract';
+import { Logger } from '../../src/libs/services/logger.service';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -89,6 +90,65 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
       const stub = sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential write refused'));
       return async () => stub.restore();
     },
+  });
+
+  describe('organisation create on a failed write', () => {
+    const orgs = new MongoOrgRepository();
+    const uow = new MongoUnitOfWork(rsAvailable);
+    const create = (ids: { orgId: string; adminUserId: string }) =>
+      uow.run((tx) =>
+        orgs.createWithAdmin(
+          {
+            ids,
+            org: { registeredName: 'Lost', domain: 'lost.example.com', contactEmail: `${randomUUID()}@lost.example.com`, accountType: 'business' },
+            admin: { fullName: 'Lost', email: `${randomUUID()}@lost.example.com` },
+            passwordHash: 'hash-value',
+            ipAddress: '10.0.0.3',
+          },
+          tx,
+        ),
+      );
+    const leftOf = async (ids: { orgId: string; adminUserId: string }) => ({
+      orgs: await Org.countDocuments({ _id: ids.orgId }),
+      users: await Users.countDocuments({ _id: ids.adminUserId }),
+      groups: await UserGroups.countDocuments({ orgId: ids.orgId }),
+      authConfigs: await OrgAuthConfig.countDocuments({ orgId: ids.orgId }),
+      credentials: await UserCredentials.countDocuments({ userId: ids.adminUserId }),
+    });
+    const none = { orgs: 0, users: 0, groups: 0, authConfigs: 0, credentials: 0 };
+    afterEach(() => sinon.restore());
+
+    it('removes an organisation whose insert was applied but whose reply was lost', async () => {
+      const save = Org.prototype.save;
+      sinon.stub(Org.prototype, 'save').callsFake(async function (this: InstanceType<typeof Org>, ...args: unknown[]) {
+        await (save as (...a: unknown[]) => Promise<unknown>).apply(this, args);
+        throw new Error('reply lost');
+      });
+      const ids = orgs.allocateIds();
+      let message = '';
+      await create(ids).catch((e: Error) => (message = e.message));
+      expect(message).to.equal('reply lost');
+      expect(await leftOf(ids)).to.deep.equal(none);
+    });
+
+    it('logs each row it could not remove, by collection and id, and still throws the original error', async () => {
+      sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential write refused'));
+      sinon.stub(Users.prototype, 'deleteOne').rejects(new Error('connection lost'));
+      const warn = sinon.stub(Logger.getInstance(), 'warn');
+      const ids = orgs.allocateIds();
+      let message = '';
+      await create(ids).catch((e: Error) => (message = e.message));
+      expect(message).to.equal('credential write refused');
+      const calls = warn.getCalls().filter((c) => c.args[0].includes('could not be removed'));
+      if (rsAvailable) {
+        // The transaction undoes the writes; nothing is deleted by hand.
+        expect(calls).to.have.length(0);
+        expect(await leftOf(ids)).to.deep.equal(none);
+      } else {
+        expect(calls.map((c) => c.args[1])).to.deep.equal([{ collection: 'users', id: ids.adminUserId, error: 'connection lost' }]);
+        expect(await leftOf(ids)).to.deep.equal({ ...none, users: 1 });
+      }
+    });
   });
 
   it('lists a legacy project-wide pin first for the owner only', async () => {
