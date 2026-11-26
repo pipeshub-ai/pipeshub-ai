@@ -1,0 +1,30 @@
+# GitLab simulator for the gitlab_sim suite (integration-tests/connectors/gitlab/gitlab_sim_*_test.py).
+# An override, used after the stack's own file:
+#
+#   docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.gitlab-sim.yml up -d
+#
+# GitLab is self-hosted: the connector takes an instance URL, so it reaches the simulator by its service name
+# (http://gitlab-sim, a private address PipesHub accepts for a source an admin configures unless
+# PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on). The GitLab client refuses to send a token over plain http to a host that is
+# not loopback unless the server opts in, so the app container sets PIPESHUB_GITLAB_ALLOW_INSECURE_HTTP=true: a
+# network the operator trusts, which a compose network is. CONNSIM_GITLAB_PUBLIC_URL makes the links the simulator
+# hands out (redirects, GraphQL web URLs) carry the name the connector used. The simulator holds no data until a test
+# loads its instance (PUT /_sim/gitlab/scenario); the test process drives its control API on the published port
+# (integration-tests/connectors/gitlab_sim.env). The live gitlab suite is unaffected.
+services:
+  gitlab-sim:
+    image: ${GITLAB_SIM_IMAGE:-pipeshub/connectors-simulator:it}
+    restart: always
+    command: ["gitlab"]
+    environment:
+      CONNSIM_SOURCES: gitlab
+      # The instance lives in one process's memory.
+      CONNSIM_WORKERS: "1"
+      CONNSIM_GITLAB_PUBLIC_URL: http://gitlab-sim
+    # 8113, the simulator's own port: 8089-8098, 8101-8103, 8106-8112 and 8118 are the stack's other services'.
+    ports:
+      - "127.0.0.1:8113:80"
+    mem_limit: 512m
+  pipeshub-ai:
+    environment:
+      - PIPESHUB_GITLAB_ALLOW_INSECURE_HTTP=true
