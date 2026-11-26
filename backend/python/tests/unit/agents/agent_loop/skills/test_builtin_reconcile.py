@@ -28,6 +28,8 @@ from tests.unit.agents.adapter.test_builtin_skill_seeder import (
 )
 from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
 
+CONFIG = SimpleNamespace(get_config=AsyncMock(return_value={}))  # no setting saved: skills are on
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
@@ -197,7 +199,7 @@ async def test_concurrent_callers_share_one_reconcile(packs_root_v1: str) -> Non
     with patch.object(mf, "get_builtin_seeder", return_value=seeder):
         mf.schedule_builtin_skill_reconcile(graph, "org-1")
         await asyncio.gather(
-            mf.reconcile_builtin_skills_for_orgs(graph),
+            mf.reconcile_builtin_skills_for_orgs(graph, CONFIG),
             mf.sync_builtin_skills(graph, "org-1", manager),
             mf.reconcile_builtin_skills(graph, "org-1"),
         )
@@ -210,7 +212,7 @@ async def test_concurrent_callers_share_one_reconcile(packs_root_v1: str) -> Non
 async def test_startup_reconciles_every_org(packs_root_v1: str) -> None:
     graph = _graph_with_orgs({"_key": "org-1"}, {"id": "org-2"}, {})
     with patch.object(mf, "get_builtin_seeder", return_value=BuiltinSkillSeeder(packs_root_v1)):
-        await mf.reconcile_builtin_skills_for_orgs(graph)
+        await mf.reconcile_builtin_skills_for_orgs(graph, CONFIG)
 
     assert await _builtin_names(graph, "org-1") == {"pack-a", "pack-b"}
     assert await _builtin_names(graph, "org-2") == {"pack-a", "pack-b"}
@@ -220,7 +222,7 @@ async def test_startup_does_not_seed_a_deleted_org(packs_root_v1: str) -> None:
     """A deleted org is soft-deleted (``isActive`` False, data stripped); seeding it would write skills back into it."""
     graph = _graph_with_orgs({"_key": "org-1"}, {"_key": "org-gone", "isActive": False})
     with patch.object(mf, "get_builtin_seeder", return_value=BuiltinSkillSeeder(packs_root_v1)):
-        await mf.reconcile_builtin_skills_for_orgs(graph)
+        await mf.reconcile_builtin_skills_for_orgs(graph, CONFIG)
 
     assert await _builtin_names(graph, "org-1") == {"pack-a", "pack-b"}
     assert await _builtin_names(graph, "org-gone") == set()
@@ -239,7 +241,7 @@ async def test_startup_seeds_each_org_inside_its_own_org_context(packs_root_v1: 
 
     seeder.sync = AsyncMock(side_effect=_sync)  # type: ignore[method-assign]
     with patch.object(mf, "get_builtin_seeder", return_value=seeder):
-        await mf.reconcile_builtin_skills_for_orgs(graph)
+        await mf.reconcile_builtin_skills_for_orgs(graph, CONFIG)
 
     assert bound == ["org-1", "org-2"]
     assert org_context.peek() is None
@@ -259,7 +261,7 @@ async def test_startup_failure_of_one_org_is_logged_and_the_next_org_still_seeds
 
     with patch.object(mf, "get_builtin_seeder", return_value=BuiltinSkillSeeder(packs_root_v1)), \
          patch.object(mf, "reconcile_builtin_skills", side_effect=_reconcile):
-        await mf.reconcile_builtin_skills_for_orgs(graph)
+        await mf.reconcile_builtin_skills_for_orgs(graph, CONFIG)
 
     warnings = [r for r in caplog.records if r.name == mf.logger.name and r.levelno == logging.WARNING]
     assert len(warnings) == 1 and "org-1" in warnings[0].getMessage() and "RuntimeError" in warnings[0].getMessage()
@@ -273,7 +275,7 @@ async def test_startup_org_list_failure_is_one_warning_and_does_not_raise(
     graph = FakeGraphProvider()
     graph.get_all_orgs = AsyncMock(side_effect=ConnectionError("db down"))  # type: ignore[attr-defined]
     with patch.object(mf, "get_builtin_seeder", return_value=BuiltinSkillSeeder(packs_root_v1)):
-        await mf.reconcile_builtin_skills_for_orgs(graph)
+        await mf.reconcile_builtin_skills_for_orgs(graph, CONFIG)
 
     warnings = [r for r in caplog.records if r.name == mf.logger.name and r.levelno == logging.WARNING]
     assert len(warnings) == 1 and "ConnectionError" in warnings[0].getMessage()
@@ -292,3 +294,17 @@ async def test_list_route_sync_skips_once_reconciled(packs_root_v1: str) -> None
 
     assert seeder.sync.await_count == 1
     manager.catalog_snapshot.assert_not_called()
+
+
+async def test_startup_reads_each_orgs_own_skills_switch(packs_root_v1: str) -> None:
+    graph = _graph_with_orgs({"_key": "org-off"}, {"_key": "org-on"})
+
+    async def enabled(_config: object) -> bool:
+        return org_context.current_org_id() == "org-on"
+
+    with patch.object(mf, "get_builtin_seeder", return_value=BuiltinSkillSeeder(packs_root_v1)), \
+         patch.object(mf, "is_skills_enabled", side_effect=enabled):
+        await mf.reconcile_builtin_skills_for_orgs(graph, CONFIG)
+
+    assert await _builtin_names(graph, "org-off") == set()
+    assert await _builtin_names(graph, "org-on") == {"pack-a", "pack-b"}
