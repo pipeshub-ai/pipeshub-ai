@@ -4,18 +4,25 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 from collections import Counter
 
+import asyncpg
 import pytest
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, Connectors
 from app.services.graph_db.postgres import connector_stats
+from app.services.graph_db.postgres.kg.locks import LOCK_CLASS
+from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.lookups import STATS_CONNECTOR, STATS_KB
+from tests.support import plan_gate
 
 from .test_access import APP, World, _org
 from .test_access import w as w
 from .test_grants import in_org
+from .test_kg_read import _admin
 
 pytestmark = pytest.mark.integration
 
@@ -179,3 +186,100 @@ async def test_a_log_row_that_names_nothing_does_not_stop_the_projection(w: Worl
     await pg_db.run(lambda tx: tx.execute("INSERT INTO graph.stats_changes (org_id, keys) VALUES ($1, ARRAY['x', '', 'q:1', 'r'])", w.org), write=True)
     await w.nodes("records", {"_key": "a", "indexingStatus": "FAILED"})
     await same(w, pg_db)
+
+
+async def test_a_new_install_drops_the_log_until_an_app_is_counted_whole(w: World, pg_db) -> None:
+    """The log of a graph written before any app was counted names nothing the first counts (seeds, which read the graph after the drop) miss: it is dropped in one unit,
+    not recounted a record at a time (on a new install that was every record of the org, and a moved group's subtree, in one unit). The counts are the walk's after."""
+    await world(w, pg_db)
+    assert await connector_stats.drain(pg_db, w.org) > 0
+    rows = await pg_db.run(lambda tx: tx.fetchval("""SELECT (SELECT count(*) FROM graph.stats_changes WHERE org_id = $1)
+        + (SELECT count(*) FROM graph.stats_records WHERE org_id = $1)""", w.org))
+    assert rows == 0                                                              # dropped, nothing recounted
+    await settle(w, pg_db)                                                        # counted whole from the graph: the walk's numbers
+    for app in (APP, KB_APP):
+        assert await kept(w, app) == await walk(w, app), app
+    await w.nodes("records", {"_key": "a", "indexingStatus": "FAILED"})        # once an app is counted, the log is recounted again
+    assert await connector_stats.drain(pg_db, w.org) == 1
+    assert await kept(w, APP) == await walk(w, APP)
+
+
+# graph's tables with no statistics, as after a restore or on a leaf written since the last analyse; RESTORE_GRAPH analyses them again.
+NO_GRAPH_STATS = """DELETE FROM pg_statistic WHERE starelid IN (SELECT oid FROM pg_class WHERE relnamespace = 'graph'::regnamespace);
+    UPDATE pg_class SET reltuples = -1, relpages = 0, relallvisible = 0 WHERE relnamespace = 'graph'::regnamespace AND relkind IN ('r', 'p', 'i')"""
+RESTORE_GRAPH = """DO $$ DECLARE t regclass; BEGIN
+    FOR t IN SELECT c.oid::regclass FROM pg_class c WHERE c.relnamespace = 'graph'::regnamespace AND c.relkind IN ('r', 'p') LOOP EXECUTE format('ANALYZE %s', t); END LOOP; END $$"""
+LIVE_KEYS = {"nodes": r"\bid = ", "edges": r"\bfrom_id >= "}      # a node by its id, a link by its source (the primary key's order)
+
+
+async def test_the_live_rows_read_each_node_and_link_by_its_key_with_no_statistics_and_analysed(w: World, pg_db) -> None:
+    """EXPLAIN gate of LIVE as the drain and the read run it (under reader.seeks): every read of graph.nodes is by id and every read of graph.edges by its source, with
+    graph's statistics cleared and analysed. As joins, PostgreSQL 18 costed the primary key as a skip scan over to_id and read the org's links once per hop instead."""
+    await world(w, pg_db)
+    ids = ["a", "b", "twice", "deep", "stray", "k1", "k2"]
+
+    async def go(tx) -> tuple[int, dict]:
+        async with seeks(tx):
+            n = len(await tx.fetch(connector_stats.LIVE, w.org, ids, FOLDER_MIME_TYPES, connector_stats.KB))
+            ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + connector_stats.LIVE, w.org, ids, FOLDER_MIME_TYPES, connector_stats.KB)
+        return n, json.loads(ran) if isinstance(ran, str) else ran
+    try:
+        for state in ("no statistics", "analysed"):
+            await _admin(NO_GRAPH_STATS if state == "no statistics" else RESTORE_GRAPH)
+            n, ran = await pg_db.run(go, custom_plan=True)
+            assert n == 6, state                                                   # a, b (by group), twice, deep, a and k1 (the collection); stray and k2 count nowhere
+            assert plan_gate.scans(ran, "edges"), state
+            if bad := plan_gate.violations(ran, LIVE_KEYS):
+                pytest.fail(f"{state}: not a read by key: {bad}\n{json.dumps(ran, indent=1)[:6000]}")
+    finally:
+        await _admin(RESTORE_GRAPH)
+
+
+async def test_the_drop_of_a_new_install_log_is_one_batch_a_unit_and_no_app_is_counted_before_it_ends(w: World, pg_db, monkeypatch) -> None:
+    """A unit drops one batch of the log (a bounded unit, and the org's lock held that long), however much is logged or keeps being logged; a pass that ends on a full
+    batch counts no app yet, so no app is counted while dropped rows are left to recount a record at a time. When the log is gone, the counts are the walk's."""
+    await world(w, pg_db)
+    logged = await pg_db.run(lambda tx: tx.fetchval("SELECT count(*) FROM graph.stats_changes WHERE org_id = $1", w.org))
+    assert logged > 4, logged
+    monkeypatch.setattr(connector_stats, "DROP_ROWS", 2)
+    monkeypatch.setattr(connector_stats, "UNITS_PER_PASS", 1)
+    assert await connector_stats.drain(pg_db, w.org) == 2
+    assert await pg_db.run(lambda tx: tx.fetchval("SELECT count(*) FROM graph.stats_changes WHERE org_id = $1", w.org)) == logged - 2
+    passes = 0
+    while await pg_db.run(lambda tx: tx.fetchval("SELECT count(*) FROM graph.stats_changes WHERE org_id = $1", w.org)):
+        assert await connector_stats.run(pg_db, w.org) == 2
+        assert await kept(w, APP) is None and await kept(w, KB_APP) is None
+        passes += 1
+        assert passes <= logged, "the drop did not end"
+    await settle(w, pg_db)
+    for app in (APP, KB_APP):
+        assert await kept(w, app) == await walk(w, app), app
+
+
+async def test_a_pass_whose_drain_finds_the_org_held_counts_no_app(w: World, pg_db, monkeypatch) -> None:
+    """A drain that finds another unit holding the org (another worker, perhaps dropping the log) reports that, not an empty log: the pass ends without counting an app,
+    even if the holder lets go before the pass would seed. Counted then, the rest of a new install's log would be recounted a record at a time."""
+    await world(w, pg_db)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    holder = con.transaction()
+    await holder.start()
+    await con.execute("SELECT pg_advisory_xact_lock($1::int, hashtext($2))", LOCK_CLASS, f"{w.org}|stats")
+    drain, released = connector_stats.drain, []
+
+    async def contended(db, org):  # noqa: ANN202
+        n = await drain(db, org)
+        await holder.commit()                                                     # the other unit ends right after
+        released.append(True)
+        return n
+    monkeypatch.setattr(connector_stats, "drain", contended)
+    try:
+        await connector_stats.run(pg_db, w.org)
+    finally:
+        if not released:
+            await holder.rollback()
+        await con.close()
+    monkeypatch.setattr(connector_stats, "drain", drain)
+    assert await pg_db.run(lambda tx: tx.fetchval("SELECT count(*) FROM graph.stats_apps WHERE org_id = $1", w.org)) == 0
+    await settle(w, pg_db)
+    for app in (APP, KB_APP):
+        assert await kept(w, app) == await walk(w, app), app
