@@ -16,7 +16,7 @@ import {
 } from './orgContext';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Logger } from '../services/logger.service';
-import { metricsBackend } from '../services/telemetry/metrics-backend';
+import { metricsBackend } from '../services/telemetry/telemetry-impl';
 import {
   ENVELOPE_REQUEST_ID,
   sanitizeRootId,

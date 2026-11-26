@@ -215,6 +215,56 @@ async def test_a_connector_kg_serves_has_an_exact_total_beyond_the_scan_and_one_
     assert walked["totalCapped"] is True and 0 < walked["total"] <= 9
 
 
+async def _service_pages(p, org: str, limit: int) -> list:
+    """Every page the Knowledge Hub service gives ``u1`` for the connector, flattened and by name, by cursor."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+    from tests.permissions.kh_layer import _Config
+    service, pages, cursor = KnowledgeHubService(logging.getLogger("kh-flat"), p, _Config()), [], None
+    for _ in range(50):
+        with ctx(org):
+            page = await service.get_nodes(user_id="uid1", org_id=org, parent_id="app1", parent_type="app", flattened=True, limit=limit, sort_by="name", sort_order="asc",
+                                           **({"cursor": cursor} if cursor else {}))
+        assert page.success, page.error
+        pages.append(page)
+        cursor = page.pagination.nextCursor
+        if not cursor:
+            return pages
+    raise AssertionError("did not end")
+
+
+async def test_a_capped_total_is_never_below_the_rows_the_listing_has_shown(pg_db, monkeypatch) -> None:
+    """The readable rows lie past the first COUNT_SCAN candidates the lower bound asks the check about: it admits fewer of them than page one already shows."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 12)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com", "userId": "uid1"}], "users")
+    await _admin("DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND from_id = 'u1' AND to_id < 'r0003'", org)
+    await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+    monkeypatch.setattr(kh_listing, "COUNT_SCAN", 5)
+    with ctx(org):
+        raw = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=[f"r{i:04d}" for i in range(3, 12)]), limit=9)
+    assert len(raw["rows"]) == 9 and raw["total"] < 9 and raw["totalCapped"] is True      # the provider's count: what the check admitted among the first five candidates
+    pages = await _service_pages(p, org, 9)
+    shown = 0
+    for page in pages:
+        shown += len(page.items)
+        assert page.pagination.totalItems >= shown and page.pagination.totalCapped is True, (shown, page.pagination)
+    assert shown == 9
+
+
+async def test_an_exact_total_through_the_service_is_the_walks(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 12, readable=7)
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com", "userId": "uid1"}], "users")
+    pages = await _service_pages(p, org, 3)
+    ids = [i.id for page in pages for i in page.items]
+    assert ids == [f"r{i:04d}" for i in range(7)]
+    assert all(page.pagination.totalItems == len(ids) and page.pagination.totalCapped is False for page in pages)
+
+
 async def test_the_exact_total_stops_at_its_cap_and_says_so(pg_db, monkeypatch) -> None:
     p, org = prov(pg_db), new_org()
     await seed(p, pg_db, org, 12, readable=9)

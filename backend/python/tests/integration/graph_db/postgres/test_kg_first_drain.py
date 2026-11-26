@@ -175,6 +175,23 @@ async def test_the_marks_and_stamp_lookups_of_a_drain_are_seeks_with_no_statisti
                 pytest.fail(f"{state} {name}: not a seek per key: {bad}\n{json.dumps(ran, indent=1)[:6000]}")
 
 
+async def test_a_unit_plans_without_jit_where_the_server_has_it_on(pg_provider, pg_db) -> None:
+    """The marks of every file's grants, outside reader.seeks, with jit_above_cost at 0 in the unit (on a large org the estimate of 5,000 keys' seeks passes the default 100,000:
+    the server's default jit=on then compiled a 10 ms read for 370 ms). Every unit turns jit off, so the plan carries no JIT section, whatever the server's setting."""
+    p, org = pg_provider, new_org()
+    await _world(p, org)
+    assert (await flip(pg_db, org))[0] == 1
+
+    async def go(tx) -> tuple[str, dict[str, Any]]:
+        sks = [r["sk"] for r in await tx.fetch("SELECT sk FROM kg.records WHERE org_id = $1 AND coll = 3 AND NOT folder ORDER BY sk", org)]
+        await tx.fetchval("/* pipeshub:test.jit_above_cost */ SELECT set_config('jit_above_cost', '0', true)")
+        ran = await tx.fetchval("EXPLAIN (ANALYZE, FORMAT JSON) " + grant_marks.ON_NODES, org, sks)
+        return await tx.fetchval("SELECT current_setting('jit')"), (json.loads(ran) if isinstance(ran, str) else ran)[0]
+    with ctx(org):
+        jit, plan = await pg_db.run(go, custom_plan=True)
+    assert jit == "off" and "JIT" not in plan, plan.get("JIT")
+
+
 @pytest.mark.pg_table_lock           # changes the planner statistics or storage settings of shared tables
 async def test_clearing_kg_statistics_is_undone_at_teardown(no_stats) -> None:
     """The fixture's own check (its teardown asserts the same for every test that uses it): cleared here, so the teardown has to bring them back."""

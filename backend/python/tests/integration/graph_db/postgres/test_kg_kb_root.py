@@ -336,6 +336,9 @@ async def test_a_fill_page_reads_at_most_a_page_of_rows_and_relabels_on_the_last
         assert await pg_db.run(epoch) == bf.LISTING_FROM                          # the knowledge-base listing's fill takes it on from there
     assert await bf.fill_kb_listing(pg_db, org, KB, page=2) == ("enforce", None)
     with ctx(org):
+        assert await pg_db.run(epoch) == bf.PARENTS_FROM                          # the grants' node_parent is filled last (``fill_grant_parents``)
+    assert await bf.fill_grant_parents(pg_db, org, KB) == ("enforce", None)
+    with ctx(org):
         assert await pg_db.run(epoch) == CODE_EPOCH
         assert sorted(_ids(await pg_provider.get_kb_children(KB, 0, 50))) == ["a", "d", "e"]
 

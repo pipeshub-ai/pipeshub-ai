@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -18,6 +19,9 @@ from app.services.ai_models.discovery.http import MAX_MODELS, MAX_PAGES, Discove
 from app.services.ai_models.discovery.types import DiscoveryErrorCode, DiscoveryHttpError, RawModel
 
 _SHOW_TTL_S = 300
+# us-east-1, us-gov-west-1, us-isob-east-1, eusc-de-east-1. Anything else ("us", "us-east") is not
+# an AWS region, and botocore would build an endpoint host that does not exist and fail in DNS.
+_AWS_REGION = re.compile(r"[a-z]{2,4}(-[a-z]+)+-\d{1,2}")
 _show_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _show_sem: asyncio.Semaphore | None = None
 _hf_calls: deque[float] = deque()
@@ -881,10 +885,31 @@ class BedrockStrategy(DiscoveryStrategy):
     required_fields = ("region",)
 
     async def list_models(self, configuration, http, query):
-        from botocore.exceptions import ClientError, NoCredentialsError
+        from botocore.exceptions import (
+            ClientError,
+            NoCredentialsError,
+            ReadTimeoutError,
+        )
+        from botocore.exceptions import ConnectionError as AwsConnectionError
 
+        region = str(configuration.get("region") or "")
+        if not _AWS_REGION.fullmatch(region):
+            raise DiscoveryHttpError(
+                DiscoveryErrorCode.INVALID_RESPONSE,
+                f'"{region}" is not an AWS region. Use the full region code, for example us-east-1.',
+            )
         try:
             summaries, profiles = await asyncio.to_thread(list_bedrock_pages, configuration)
+        except AwsConnectionError as exc:
+            raise DiscoveryHttpError(
+                DiscoveryErrorCode.UNREACHABLE,
+                f'Could not reach Bedrock in region "{region}". Check that Bedrock is offered in that '
+                "region and that this server can connect to AWS.",
+            ) from exc
+        except ReadTimeoutError as exc:
+            raise DiscoveryHttpError(
+                DiscoveryErrorCode.TIMEOUT, f'Bedrock in region "{region}" did not answer in time.'
+            ) from exc
         except NoCredentialsError as exc:
             raise DiscoveryHttpError(
                 DiscoveryErrorCode.AUTH_ERROR, "Bedrock credentials are missing."
