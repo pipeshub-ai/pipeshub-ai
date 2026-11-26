@@ -200,9 +200,14 @@ export class MongoOrgRepository implements OrgRepository {
         started += 1;
         await doc.save(opts);
       }
-      // Matches only the hidden row: applied after the cleanup removed it, it changes nothing.
+      // Matches only the hidden row as it was written: applied after the cleanup removed it or hid it again (which moves
+      // updatedAt on), it changes nothing.
       await Org.updateOne(
-        { _id: org._id, pendingCreate: true },
+        {
+          _id: org._id,
+          pendingCreate: true,
+          updatedAt: org.get('updatedAt') as Date | undefined,
+        },
         { $set: { isDeleted: false }, $unset: { pendingCreate: 1 } },
         opts,
       );
@@ -211,6 +216,39 @@ export class MongoOrgRepository implements OrgRepository {
     } catch (error) {
       // Without a transaction nothing undoes the rows already written, so remove them: the organisation is created whole or not at all.
       if (!session) {
+        // Hide the organisation again before removing anything: the activation may have applied with its reply lost, and
+        // removing the administrator of a live organisation is worse than leaving the create whole.
+        try {
+          await Org.updateOne(
+            { _id: org._id },
+            {
+              $set: {
+                isDeleted: true,
+                pendingCreate: true,
+                updatedAt: new Date(
+                  Math.max(
+                    Date.now(),
+                    ((org.get('updatedAt') as Date | undefined)?.getTime() ??
+                      0) + 1,
+                  ),
+                ),
+              },
+            },
+            { timestamps: false },
+          );
+        } catch (hideError) {
+          Logger.getInstance().warn(
+            'Organisation create failed and the organisation could not be hidden again; its rows are left as they are',
+            {
+              id: String(org._id),
+              error:
+                hideError instanceof Error
+                  ? hideError.message
+                  : String(hideError),
+            },
+          );
+          throw error;
+        }
         const tried = docs.slice(0, started);
         const undone = await Promise.allSettled(
           tried.map((doc) => doc.deleteOne()),

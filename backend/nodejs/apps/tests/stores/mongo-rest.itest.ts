@@ -132,25 +132,44 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
     });
 
     // The driver can reject a write the server still applies later, after the cleanup ran: that write must not make the
-    // organisation live without its administrator.
-    const appliesLate = (real: (...a: unknown[]) => Promise<unknown>) =>
-      async function (this: unknown, ...args: unknown[]) {
-        setTimeout(() => void real.apply(this, args).catch(() => undefined), 300);
-        throw new Error('reply lost');
+    // organisation live without its administrator. `done()` is the late write's own result, so a test waits for it and a
+    // database error in it fails the test.
+    const lateWrite = () => {
+      let done: Promise<unknown> = Promise.resolve();
+      return {
+        fake: (real: () => Promise<unknown>): Promise<never> => {
+          done = new Promise((r) => setTimeout(r, 300))
+            .then(real)
+            .catch((e: Error) => {
+              // In a transaction that was aborted the server never applies it; anything else is a real failure.
+              if (rsAvailable && e.name === 'MongoExpiredSessionError') return { matchedCount: 0 };
+              throw e;
+            });
+          return Promise.reject(new Error('reply lost'));
+        },
+        done: () => done,
       };
-    const settle = () => new Promise((r) => setTimeout(r, 600));
+    };
+    /** Org.updateOne whose first call (the activation) goes through `first`; later calls are the real ones. */
+    const firstOrgUpdate = (first: (real: () => Promise<unknown>) => Promise<unknown>) => {
+      const real = Org.updateOne.bind(Org) as (...a: unknown[]) => Promise<unknown>;
+      let calls = 0;
+      return sinon.stub(Org, 'updateOne').callsFake(((...args: unknown[]) =>
+        (calls += 1) === 1 ? first(() => real(...args)) : real(...args)) as never);
+    };
 
     it('an organisation insert that applies after the cleanup never shows a live organisation', async () => {
+      const late = lateWrite();
       // The bytes already sent: the server inserts the document as it was when save was called.
       sinon.stub(Org.prototype, 'save').callsFake(async function (this: InstanceType<typeof Org>) {
         // The stub skips the save hook that numbers the slug; a unique one keeps the late insert from failing on the index.
         const sent = { ...this.toObject(), slug: `org-late-${randomUUID()}` };
-        return appliesLate(() => Org.collection.insertOne(sent))();
+        return late.fake(() => Org.collection.insertOne(sent));
       });
       const ids = orgs.allocateIds();
       let message = '';
       await create(ids).catch((e: Error) => (message = e.message));
-      await settle();
+      await late.done();
       expect(message).to.equal('reply lost');
       expect(await orgs.getLive(ids.orgId)).to.equal(null);
       expect({ ...(await leftOf(ids)), orgs: 0 }).to.deep.equal(none);
@@ -158,14 +177,15 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
 
     it('a half-made organisation left by a late insert is no organisation: setup still sees none and a retry succeeds', async () => {
       const before = { count: await orgs.count(), summary: await orgs.liveSummary() };
+      const late = lateWrite();
       sinon.stub(Org.prototype, 'save').callsFake(async function (this: InstanceType<typeof Org>) {
         // The stub skips the save hook that numbers the slug; a unique one keeps the late insert from failing on the index.
         const sent = { ...this.toObject(), slug: `org-late-${randomUUID()}` };
-        return appliesLate(() => Org.collection.insertOne(sent))();
+        return late.fake(() => Org.collection.insertOne(sent));
       });
       const ids = orgs.allocateIds();
       await create(ids).catch(() => undefined);
-      await settle();
+      await late.done();
       sinon.restore();
       expect(await Org.countDocuments({ _id: ids.orgId }), 'the late insert left its hidden row').to.equal(1);
       expect(await orgs.count(), 'setup and signup count no organisation for it').to.equal(before.count);
@@ -178,16 +198,67 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
     });
 
     it('the final write that applies after the cleanup never shows a live organisation', async () => {
-      // Every write of the create succeeds except the last one, which applies late.
-      const realUpdate = Org.updateOne.bind(Org);
-      sinon.stub(Org, 'updateOne').callsFake(appliesLate(realUpdate as never) as never);
+      // Every write of the create succeeds except the activation, which applies late.
+      const late = lateWrite();
+      firstOrgUpdate(late.fake);
       const ids = orgs.allocateIds();
       let message = '';
       await create(ids).catch((e: Error) => (message = e.message));
-      await settle();
+      const applied = (await late.done()) as { matchedCount: number };
       expect(message).to.equal('reply lost');
+      expect(applied.matchedCount, 'the late activation found no organisation to make live').to.equal(0);
       expect(await orgs.getLive(ids.orgId)).to.equal(null);
       expect(await leftOf(ids)).to.deep.equal(none);
+    });
+
+    // The activation applied, its reply was lost, and the cleanup cannot delete the organisation row.
+    const orgDeleteFails = () => sinon.stub(Org.prototype, 'deleteOne').rejects(new Error('connection lost'));
+
+    it('an activation that applied but whose reply was lost never leaves a live organisation without its administrator', async () => {
+      firstOrgUpdate(async (real) => {
+        await real();
+        throw new Error('reply lost');
+      });
+      orgDeleteFails();
+      const before = await orgs.count();
+      const ids = orgs.allocateIds();
+      await create(ids).catch(() => undefined);
+      expect(await orgs.getLive(ids.orgId)).to.equal(null);
+      if (!rsAvailable) {
+        expect(await leftOf(ids)).to.deep.equal({ ...none, orgs: 1 });
+        expect(await orgs.count(), 'the row left behind is a failed create, not an organisation').to.equal(before);
+      }
+    });
+
+    it('an activation still on its way after the cleanup hid the organisation again changes nothing', async () => {
+      const late = lateWrite();
+      firstOrgUpdate(late.fake);
+      orgDeleteFails();
+      const ids = orgs.allocateIds();
+      await create(ids).catch(() => undefined);
+      const applied = (await late.done()) as { matchedCount: number };
+      expect(await orgs.getLive(ids.orgId)).to.equal(null);
+      if (!rsAvailable) expect(applied.matchedCount, 'the cleanup moved the row on, so the late activation matches nothing').to.equal(0);
+    });
+
+    it('if the organisation cannot be hidden again, the cleanup removes nothing and says so', async () => {
+      let calls = 0;
+      const real = Org.updateOne.bind(Org) as (...a: unknown[]) => Promise<unknown>;
+      sinon.stub(Org, 'updateOne').callsFake(((...args: unknown[]) => {
+        calls += 1;
+        if (calls === 1) return real(...args).then(() => Promise.reject(new Error('reply lost')));
+        return Promise.reject(new Error('connection lost'));
+      }) as never);
+      const warn = sinon.stub(Logger.getInstance(), 'warn');
+      const ids = orgs.allocateIds();
+      let message = '';
+      await create(ids).catch((e: Error) => (message = e.message));
+      expect(message).to.equal('reply lost');
+      if (!rsAvailable) {
+        // Live and whole: better than live without its administrator.
+        expect(await leftOf(ids)).to.deep.equal({ orgs: 1, users: 1, groups: 2, authConfigs: 1, credentials: 1 });
+        expect(warn.getCalls().map((c) => c.args[0])).to.include('Organisation create failed and the organisation could not be hidden again; its rows are left as they are');
+      }
     });
 
     it('logs each row it could not remove, by collection and id, and still throws the original error', async () => {
