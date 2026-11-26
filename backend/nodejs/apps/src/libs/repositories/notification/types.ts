@@ -9,6 +9,9 @@
  */
 export type NotificationStatus = 'read' | 'unread' | 'archived';
 
+export type NotificationSeverity =
+  'info' | 'warning' | 'error' | 'critical' | 'success';
+
 export interface NotificationRow {
   _id: string;
   orgId: string;
@@ -94,4 +97,11 @@ export interface NotificationRepository {
     scope: NotificationScope,
     id: string,
   ): Promise<NotificationRow | null>;
+  /**
+   * Erasure of a conversation (CLEANUP-3): removes outright every notification of the org that links to it
+   * (`payload.conversationId`), whoever it was for, deleted or past retention. Returns how many went.
+   */
+  eraseForConversation(orgId: string, conversationId: string): Promise<number>;
+  /** An org's erasure (CLEANUP-G1): removes up to `limit` of the org's notifications outright; how many went. */
+  eraseForOrg(orgId: string, limit: number): Promise<number>;
 }

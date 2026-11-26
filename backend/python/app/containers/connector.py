@@ -226,8 +226,8 @@ async def _kh_listing_background(
 async def _kh_plan_keeper(
     graph_provider: "IGraphDBProvider", config_service: ConfigurationService, logger: logging.Logger,
 ) -> None:
-    """Keep the knowledge hub's browse statements planned (see ``warm_browse_plans``):
-    once at start, then every KH_PLAN_KEEPER_SECONDS (0 turns it off)."""
+    """Keep the knowledge hub's browse statements planned (see ``warm_browse_plans``), and the plans of the listing
+    statements in use young (``kh_refresh_plans``): once at start, then every KH_PLAN_KEEPER_SECONDS (0 turns it off)."""
     from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
         KnowledgeHubService,
     )
@@ -249,6 +249,10 @@ async def _kh_plan_keeper(
             await service.warm_browse_plans()
         except Exception as e:
             logger.warning(f"Knowledge hub plan keeper failed: {e}")
+        try:
+            await graph_provider.kh_refresh_plans()
+        except Exception as e:
+            logger.warning(f"Knowledge hub plan refresh failed: {e}")
         await asyncio.sleep(every)
 
 

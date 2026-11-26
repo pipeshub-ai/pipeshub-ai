@@ -592,6 +592,8 @@ class ExcelParser:
             if error.cause == "timed_out":
                 # the pool stopped the worker: a workbook that takes this long is refused, not retried
                 raise _too_large(f"the load ran past {EXCEL_LOAD_MAX_SECONDS} s") from None
+            if error.cause == "at_memory_limit":
+                raise _too_large(f"the load stayed at its {EXCEL_LOAD_MAX_BYTES}-byte allowance") from None
             raise
         except LoaderFailure as failure:
             raise _loader_error(failure) from None

@@ -1,0 +1,82 @@
+{
+  "description": "GA-15 / G-27 (WP-73): the model each engine role of a run calls, for Node (domain/model-roles.ts) and Python (harness_core.access.model_roles). A run's roles are primary, fast (an engine's background and small calls), subagent (an engine's own helper) and compaction (summarising the conversation). `models.roles` maps a role key to a route (`<provider>:<model>`, split at the first colon, both parts non-empty); only the reserved keys fast, subagent and compaction name an engine role, exactly as written (a sub-agent role such as `researcher` or `default` is a child run's, MA1); a value that is not such a route is ignored. A role with no route calls the primary route. A run whose primary route is pinned to a model account (A1: a person's own key, an org cloud account) calls that route for every role, so nobody's account pays for another's model. `neutralIds`: the model id an engine names for each role; any other id is refused. `expect` maps each engine role to its route, or `primary`. Written by hand.",
+  "neutralIds": {
+    "primary": "engine-model",
+    "fast": "engine-model-fast",
+    "subagent": "engine-model-subagent",
+    "compaction": "engine-model-compaction"
+  },
+  "cases": [
+    {
+      "id": "none",
+      "behaviour": "No roles: every role calls the primary route",
+      "roles": null,
+      "primaryAccount": false,
+      "expect": { "fast": "primary", "subagent": "primary", "compaction": "primary" }
+    },
+    {
+      "id": "empty",
+      "behaviour": "An empty map is the same as none",
+      "roles": {},
+      "primaryAccount": false,
+      "expect": { "fast": "primary", "subagent": "primary", "compaction": "primary" }
+    },
+    {
+      "id": "fast-only",
+      "behaviour": "The fast role mapped; the others call the primary route",
+      "roles": { "fast": "anthropic:claude-haiku-4-5" },
+      "primaryAccount": false,
+      "expect": { "fast": "anthropic:claude-haiku-4-5", "subagent": "primary", "compaction": "primary" }
+    },
+    {
+      "id": "all-three",
+      "behaviour": "Every engine role mapped to its own route",
+      "roles": {
+        "fast": "anthropic:claude-haiku-4-5",
+        "subagent": "openai:gpt-5.4-mini",
+        "compaction": "openai:gpt-5.4-nano"
+      },
+      "primaryAccount": false,
+      "expect": {
+        "fast": "anthropic:claude-haiku-4-5",
+        "subagent": "openai:gpt-5.4-mini",
+        "compaction": "openai:gpt-5.4-nano"
+      }
+    },
+    {
+      "id": "sub-agent-keys",
+      "behaviour": "Sub-agent role keys (and default) are a child run's, never an engine role",
+      "roles": { "researcher": "openai:gpt-5.4-mini", "default": "anthropic:claude-haiku-4-5" },
+      "primaryAccount": false,
+      "expect": { "fast": "primary", "subagent": "primary", "compaction": "primary" }
+    },
+    {
+      "id": "exact-key",
+      "behaviour": "Only the exact reserved key names a role",
+      "roles": { "Fast": "anthropic:claude-haiku-4-5", "fast ": "anthropic:claude-haiku-4-5", "sub-agent": "openai:gpt-5.4-mini" },
+      "primaryAccount": false,
+      "expect": { "fast": "primary", "subagent": "primary", "compaction": "primary" }
+    },
+    {
+      "id": "malformed",
+      "behaviour": "A value that is not a route is ignored",
+      "roles": { "fast": "claude-haiku-4-5", "subagent": ":gpt-5.4-mini", "compaction": 7 },
+      "primaryAccount": false,
+      "expect": { "fast": "primary", "subagent": "primary", "compaction": "primary" }
+    },
+    {
+      "id": "first-colon",
+      "behaviour": "A route splits at its first colon",
+      "roles": { "fast": "bedrock:anthropic.claude-haiku:v1" },
+      "primaryAccount": false,
+      "expect": { "fast": "bedrock:anthropic.claude-haiku:v1", "subagent": "primary", "compaction": "primary" }
+    },
+    {
+      "id": "pinned-account",
+      "behaviour": "A primary route on a model account serves every role",
+      "roles": { "fast": "anthropic:claude-haiku-4-5", "compaction": "openai:gpt-5.4-nano" },
+      "primaryAccount": true,
+      "expect": { "fast": "primary", "subagent": "primary", "compaction": "primary" }
+    }
+  ]
+}

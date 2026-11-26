@@ -1,0 +1,80 @@
+# DEV-ONLY overlay for deployment/e2e/run.sh with E2E_DOC_STORE=postgres (WP114-FU-E2E): Node's document store, every
+# harness and control-plane store included, on PostgreSQL behind PgBouncer in transaction mode, as an install runs it
+# (backend/env.template "PostgreSQL runtime"; backend/db/README.md):
+#
+#   postgres     pgvector/pgvector:pg17 (the extension the retrieval branch needs, at the surface snapshot's version)
+#   pgbouncer    pxh-e2e-pgbouncer (Dockerfile.pgbouncer), the node and jobs logins (pgbouncer.sh)
+#   pg-migrate   one shot: db.bootstrap_roles, then db.migrate to every head (pg_migrate.sh), before the app starts
+#
+# MongoDB stays attached: what is not Node's document store (the Python services' reads, the shared lane fixtures)
+# still uses it. Variables come from the env file run.sh writes.
+
+x-e2e-labels: &e2e-labels
+  pipeshub.harness.owner: x-lead
+  io.pipeshub.e2e.run: ${E2E_RUN:?set E2E_RUN}
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
+    labels: *e2e-labels
+    restart: "no"
+    environment:
+      - POSTGRES_PASSWORD=${PG_ADMIN_PASSWORD:?}
+      - POSTGRES_DB=${PG_DATABASE:?}
+    # The lane's data is disposable: no fsync. The migrate job's empty-database build holds many locks per revision.
+    command: ["postgres", "-c", "max_connections=200", "-c", "fsync=off", "-c", "synchronous_commit=off",
+              "-c", "full_page_writes=off", "-c", "max_locks_per_transaction=256"]
+    networks:
+      - pipeshub
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${PG_DATABASE}"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  pg-migrate:
+    image: python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+    labels: *e2e-labels
+    restart: "no"
+    user: "${E2E_UID:?}:${E2E_GID:?}"
+    entrypoint: ["bash", "/e2e/pg_migrate.sh"]
+    environment:
+      - HOME=/tmp
+      - PG_DATABASE=${PG_DATABASE}
+      - PG_ADMIN_PASSWORD=${PG_ADMIN_PASSWORD}
+      - PG_MIGRATE_PASSWORD=${PG_MIGRATE_PASSWORD:?}
+      - PG_NODE_PASSWORD=${PG_NODE_PASSWORD:?}
+      - PG_JOBS_PASSWORD=${PG_JOBS_PASSWORD:?}
+    volumes:
+      - ${E2E_SRC:?}/backend:/backend:ro
+      - ${E2E_PG_MIGRATE_SITE:?}:/site:ro
+      - ${E2E_SRC}/deployment/e2e:/e2e:ro
+    networks:
+      - pipeshub
+
+  pgbouncer:
+    image: ${E2E_PGBOUNCER_IMAGE:?}
+    labels: *e2e-labels
+    restart: "no"
+    environment:
+      - PG_DATABASE=${PG_DATABASE}
+      - PG_NODE_PASSWORD=${PG_NODE_PASSWORD}
+      - PG_JOBS_PASSWORD=${PG_JOBS_PASSWORD}
+    volumes:
+      - ${E2E_SRC}/deployment/e2e:/e2e:ro
+    networks:
+      - pipeshub
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U pipeshub_node_login -d ${PG_DATABASE}"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  pipeshub-ai:
+    environment:
+      - DOC_STORE=postgres
+      - PG_POOLER=pgbouncer_txn
+      - PG_NODE_URL=postgresql://pipeshub_node_login:${PG_NODE_PASSWORD}@pgbouncer:6432/${PG_DATABASE}
+      - PG_JOBS_URL=postgresql://pipeshub_jobs:${PG_JOBS_PASSWORD}@pgbouncer:6432/${PG_DATABASE}
+      # LISTEN cannot go through a transaction pooler: one direct connection per process.
+      - PG_LISTEN_URL=postgresql://pipeshub_node_login:${PG_NODE_PASSWORD}@postgres:5432/${PG_DATABASE}

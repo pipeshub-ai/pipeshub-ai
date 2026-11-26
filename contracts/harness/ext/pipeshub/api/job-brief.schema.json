@@ -1,0 +1,552 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/job-brief.schema.json",
+  "title": "JobBrief",
+  "description": "`GET /api/v1/conversations/{sessionId}/runs/{runId}/brief` and the agent's (ADR-UI-01 D3, UI-B1 G4): a job's brief for its conversation's owner, fixed when the job was admitted. What it was told (`goal`, null once the conversation's content was erased), what it was sent (files of the turn, the sources the parent had read when it handed the work over, what it may search), what it was not given and why (`withheld`: the chat around its task, keys and sign-ins that stay outside its sandbox, the parent's tools, knowledge, skills and websites it was not handed, files it was not given), and how far it reaches. Plain fields: no spec, digest, policy layer or grant key. A run that is no job (a chat's own answer) is not found.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runId",
+    "parentRunId",
+    "sessionId",
+    "agent",
+    "goal",
+    "task",
+    "sent",
+    "withheld",
+    "reach"
+  ],
+  "properties": {
+    "runId": {
+      "$ref": "../../../core/common.schema.json#/$defs/Id"
+    },
+    "parentRunId": {
+      "$ref": "../../../core/common.schema.json#/$defs/Id"
+    },
+    "sessionId": {
+      "$ref": "../../../core/common.schema.json#/$defs/Id"
+    },
+    "agent": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "engine"
+          ],
+          "properties": {
+            "kind": {
+              "const": "engine"
+            },
+            "engine": {
+              "$ref": "../../../core/common.schema.json#/$defs/Name"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "role"
+          ],
+          "properties": {
+            "kind": {
+              "const": "sub_agent"
+            },
+            "role": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "goal": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 200000
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "task": {
+      "description": "The job's task in its parts, as the harness composed it when it handed the work over (ADR-RUN-01 D5, BGUI-10): the person's request, the chat agent's notes, what earlier work produced, the file to deliver, its limits and the tool calls the chat made before it (by tool only, never their arguments or results). Null for a job admitted before the parts were kept, a sub-agent, or once the conversation's content was erased.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JobTask"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "files",
+        "sources",
+        "sourcesComplete",
+        "knowledge",
+        "skills",
+        "continuesRunId"
+      ],
+      "properties": {
+        "files": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifactId",
+              "version"
+            ],
+            "properties": {
+              "artifactId": {
+                "$ref": "../../../core/common.schema.json#/$defs/Id"
+              },
+              "version": {
+                "anyOf": [
+                  {
+                    "$ref": "../../../core/common.schema.json#/$defs/PosInt"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "sources": {
+          "type": "array",
+          "maxItems": 2000,
+          "items": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "recordId",
+                  "attachment"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "record"
+                  },
+                  "recordId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024
+                  },
+                  "attachment": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "connector",
+                  "externalRecordId"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "connector_item"
+                  },
+                  "connector": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024
+                  },
+                  "externalRecordId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "sourcesComplete": {
+          "description": "False: some of what the parent had read cannot be named (content of unknown origin).",
+          "type": "boolean"
+        },
+        "knowledge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "apps",
+            "collections"
+          ],
+          "properties": {
+            "apps": {
+              "type": "array",
+              "items": {
+                "$ref": "../../../core/common.schema.json#/$defs/Id"
+              }
+            },
+            "collections": {
+              "type": "array",
+              "items": {
+                "$ref": "../../../core/common.schema.json#/$defs/Id"
+              }
+            }
+          }
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "$ref": "../../../core/common.schema.json#/$defs/Name"
+          }
+        },
+        "continuesRunId": {
+          "description": "An earlier job of the conversation whose work it carries on from.",
+          "anyOf": [
+            {
+              "$ref": "../../../core/common.schema.json#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "withheld": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "what",
+          "reason"
+        ],
+        "properties": {
+          "what": {
+            "enum": [
+              "conversation",
+              "credentials",
+              "tools",
+              "knowledge",
+              "skills",
+              "internet",
+              "files"
+            ]
+          },
+          "reason": {
+            "enum": [
+              "task_only",
+              "outside_sandbox",
+              "not_granted",
+              "not_handed_off"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        }
+      }
+    },
+    "reach": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "internet",
+        "sandbox",
+        "tools",
+        "allowedWithoutAsking"
+      ],
+      "properties": {
+        "internet": {
+          "enum": [
+            "none",
+            "allowed_sites"
+          ]
+        },
+        "sandbox": {
+          "type": "boolean"
+        },
+        "tools": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "toolId",
+              "app",
+              "name"
+            ],
+            "properties": {
+              "toolId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "app": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            }
+          }
+        },
+        "allowedWithoutAsking": {
+          "description": "Conversation grants it started with: tool and destination pairs it may use without asking.",
+          "$ref": "../../../core/common.schema.json#/$defs/UInt"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "runId": "run_2",
+      "parentRunId": "run_1",
+      "sessionId": "ses_1",
+      "agent": {
+        "kind": "engine",
+        "engine": "claude_code"
+      },
+      "goal": "Fix PAY-1423: the refund total rounds twice. Open a pull request with the fix and a test.",
+      "task": {
+        "request": "Fix PAY-1423 and open a pull request.",
+        "notes": "Fix PAY-1423: the refund total rounds twice. Open a pull request with the fix and a test.",
+        "earlier": "",
+        "fileName": null,
+        "dueAt": "2026-11-11T10:12:00Z",
+        "maxCostUsd": 5,
+        "carried": [
+          {
+            "tool": "jira__get_issue",
+            "failed": false
+          },
+          {
+            "tool": "load_skill",
+            "failed": false,
+            "skill": "pdf"
+          }
+        ]
+      },
+      "sent": {
+        "files": [
+          {
+            "artifactId": "art_1",
+            "version": 2
+          }
+        ],
+        "sources": [
+          {
+            "kind": "record",
+            "recordId": "rec_1",
+            "attachment": false
+          },
+          {
+            "kind": "connector_item",
+            "connector": "JIRA",
+            "externalRecordId": "PAY-1423"
+          }
+        ],
+        "sourcesComplete": true,
+        "knowledge": {
+          "apps": [],
+          "collections": []
+        },
+        "skills": [],
+        "continuesRunId": null
+      },
+      "withheld": [
+        {
+          "what": "conversation",
+          "reason": "task_only"
+        },
+        {
+          "what": "credentials",
+          "reason": "outside_sandbox"
+        },
+        {
+          "what": "tools",
+          "reason": "not_granted",
+          "items": [
+            "send_message"
+          ]
+        }
+      ],
+      "reach": {
+        "internet": "allowed_sites",
+        "sandbox": true,
+        "tools": [
+          {
+            "toolId": "github@inst-1/create_pull_request",
+            "app": "github",
+            "name": "create_pull_request"
+          }
+        ],
+        "allowedWithoutAsking": 1
+      }
+    }
+  ],
+  "$defs": {
+    "JobTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request",
+        "notes",
+        "earlier",
+        "fileName",
+        "dueAt",
+        "maxCostUsd",
+        "carried"
+      ],
+      "properties": {
+        "request": {
+          "description": "The person's request as they wrote it; empty when the run named none.",
+          "type": "string",
+          "maxLength": 200000
+        },
+        "notes": {
+          "description": "What the chat agent wrote the job is to do (code_task's goal), harness instructions removed; empty when it only repeated the request.",
+          "type": "string",
+          "maxLength": 200000
+        },
+        "earlier": {
+          "description": "What earlier work in this conversation already produced, as the chat agent wrote it (code_task's context); empty for none.",
+          "type": "string",
+          "maxLength": 200000
+        },
+        "fileName": {
+          "description": "The file the job is to deliver, as the run's pin names it.",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dueAt": {
+          "description": "When the job's slice of its parent's time runs out; null when no deadline binds it.",
+          "anyOf": [
+            {
+              "description": "RFC 3339 UTC timestamp with a literal Z.",
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxCostUsd": {
+          "description": "The most model spend the job's slice allows; null for no money cap.",
+          "anyOf": [
+            {
+              "$ref": "../../../core/common.schema.json#/$defs/Usd"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "carried": {
+          "description": "The tool calls the chat made before handing over, oldest first, whose results the job started from (HANDOFF-CTX).",
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "tool",
+              "failed"
+            ],
+            "properties": {
+              "tool": {
+                "description": "The tool's name as the chat called it.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "failed": {
+                "type": "boolean"
+              },
+              "skill": {
+                "description": "The skill a skill load named.",
+                "$ref": "../../../core/common.schema.json#/$defs/Name"
+              }
+            }
+          }
+        },
+        "sources": {
+          "description": "ADR-OWD-07 D-DISC-2: the connected sources the job's tools come from (MCP servers and connector toolsets), each by the name a person knows it by and one line from its own metadata; absent for a job handed none.",
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "kind",
+              "summary"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "kind": {
+                "enum": [
+                  "mcp",
+                  "toolset"
+                ]
+              },
+              "summary": {
+                "description": "What the source covers, from its instance, its catalog entry or its server; empty when none says.",
+                "type": "string",
+                "maxLength": 200
+              },
+              "tools": {
+                "description": "How many of its tools the job may call; absent for a server granted whole whose tools the job has not listed yet (ADR-OWD-07 D-LAZY-7).",
+                "$ref": "../../../core/common.schema.json#/$defs/PosInt"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

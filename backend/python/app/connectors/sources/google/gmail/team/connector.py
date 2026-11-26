@@ -167,6 +167,13 @@ def _service_account_client_id(auth: dict) -> str | None:
     .with_description("Sync emails and messages from Gmail")\
     .with_categories(["Email"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_resilience_config(
+        # The vendor's quota is the org's shared budget (app.services.rate_budget.families), which this policy
+        # takes from; the rate is this process's own cap when that budget is unreachable. Retries stay the
+        # connector's own (max_retries 0), as before.
+        rate_limit=100,
+        max_retries=0,
+    )\
     .with_auth([
         AuthBuilder.type(AuthType.CUSTOM).fields([
                 AuthField(
@@ -408,6 +415,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                 self.gmail_data_source = GoogleGmailDataSource(
                     self.gmail_client.get_client(),
                     executor=self._gmail_executor,
+                    resilience=self.resilience,
                 )
 
                 self.logger.info(
@@ -1216,6 +1224,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             user_gmail_data_source = GoogleGmailDataSource(
                 user_gmail_client.get_client(),
                 executor=self._gmail_executor,
+                resilience=self.resilience,
             )
 
             return user_gmail_data_source
@@ -1246,6 +1255,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         return GoogleGmailDataSource(
             gmail_service,
             executor=self._gmail_executor,
+            resilience=self.resilience,
         )
 
     async def _get_gmail_service_with_fallback(

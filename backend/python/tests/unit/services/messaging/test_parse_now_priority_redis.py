@@ -234,7 +234,8 @@ class TestPerOrgShare:
 class TestBackpressureFromTheParser:
     async def _dispatch(self, *, paused: bool) -> AsyncMock:
         coordinator = MagicMock()
-        coordinator.is_paused.return_value = paused
+        coordinator.pause_remaining.return_value = 5.0 if paused else 0.0
+        coordinator.paused_services = frozenset({"ParsingService"} if paused else ())
         consumer = _consumer(governor=make_test_governor(), backpressure_coordinator=coordinator)
         consumer.running = True
         consumer.redis = AsyncMock()

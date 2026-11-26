@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Final, Literal
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-REGISTRY_VERSION: Final = 3
+REGISTRY_VERSION: Final = 4
 
 Tier = Literal["heavy", "light"]
 MimeRole = Literal["gate", "parse", "tier", "kind", "ext_hint", "code", "reconcile", "ooxml"]
@@ -75,6 +75,7 @@ class FilterRole(StrEnum):
     OFFER = "offer"  # offered by the extension filter; the FILE gate accepts the extension
     OFFER_LEGACY = "offer_legacy"  # offered, but the FILE gate refuses the extension
     EXCLUDE_ONLY = "exclude_only"  # not indexable; offered so it can be excluded
+    OFFER_REPOSITORY = "offer_repository"  # offered only by a repository connector's extension filter; read as text when filed as code
     HIDDEN = "hidden"
 
 
@@ -320,10 +321,10 @@ def _new(**kw: object) -> FileType:
 
 
 def _repo_text(key: str, mime: str | None = None) -> FileType:
-    """A repository source file read as text."""
+    """A repository source file read as text; only a repository's extension filter offers it."""
     return FileType(
         key=key, format="txt", extensions=(key,), mimes=(mime,) if mime else (),
-        repo_code=True, upload=mime is not None,
+        repo_code=True, upload=mime is not None, filter=FilterRole.OFFER_REPOSITORY,
     )
 
 
@@ -521,6 +522,11 @@ FILE_TYPES: tuple[FileType, ...] = (
     _new(key="potx", format="potx", password_check_by_name=False, extensions=("potx",), mimes=(f"{_PPTX_BASE}.template",),
          tier="heavy", mime_tier="heavy", kind="docling_docx", mime_kind="docling_docx",
          route=Route.PPTX, prep=Prep.OOXML_SLIDES, ooxml_container=True, blocks_like="pptx"),
+    # Read as the pptx it is: python-pptx opens a macro-enabled deck, so nothing rewrites it first.
+    _new(key="pptm", format="pptx", extensions=("pptm",),
+         mimes=("application/vnd.ms-powerpoint.presentation.macroEnabled.12",), tier="heavy",
+         mime_tier="heavy", kind="docling_docx", mime_kind="docling_docx", route=Route.PPTX,
+         ooxml_container=True, blocks_like="pptx", since=3, route_since=4),
     # Exclude-only, in filter order.
     _exclude("zip", "application/zip", file_mime_map=True),
     _exclude("7z", "application/x-7z-compressed"),
@@ -559,18 +565,12 @@ FILE_TYPES: tuple[FileType, ...] = (
     _exclude("m4a", "audio/x-m4a"),
     _exclude("aac", "audio/aac"),
     _exclude("ogg", "application/ogg"),
-    # Repository sources read as text; not offered by the filter.
+    # Repository sources read as text; offered by the repository extension filter only.
     *(_repo_text(k) for k in ("vue", "svelte", "pl", "pm", "r", "ex", "exs", "erl", "hs", "clj", "cljs",
                               "zsh", "fish", "ps1", "scss", "sass", "less", "proto", "graphql", "gql",
                               "tf", "tfvars")),
     _repo_text("css", "text/css"),
     _repo_text("sql", "application/sql"),
-    # An Office container only the password check knows.
-    # Read by its mime only, as the pptx it is: python-pptx opens a macro-enabled deck as it is.
-    FileType(key="pptm", format="pptx", extensions=("pptm",),
-             mimes=("application/vnd.ms-powerpoint.presentation.macroEnabled.12",), mime_indexable=True,
-             mime_tier="heavy", mime_kind="docling_docx", route=Route.PPTX, ooxml_container=True,
-             since=3, route_since=3),
     # PipesHub's own types: connectors write these mimes, no file carries them.
     _internal("gmail", "text/gmail_content", "application/vnd.google-apps.gmail", format="html",
               mime_indexable=True, mime_tier="light", route=Route.GMAIL),
@@ -755,6 +755,8 @@ def _problems() -> Iterator[str]:
             yield f"{ft.key}: OFFER_LEGACY, but the gate accepts its extension"
         if ft.filter is FilterRole.EXCLUDE_ONLY and ft.indexable:
             yield f"{ft.key}: exclude-only, but indexable"
+        if ft.filter is FilterRole.OFFER_REPOSITORY and (ft.ext_indexable or not ft.repo_code):
+            yield f"{ft.key}: offered to repositories, but not a repository-only type"
         if ft.alias_mime is not None and (ft.mimes or owned.get(ft.alias_mime) in (None, ft)):
             yield f"{ft.key}: alias_mime must be another type's mime, on a type owning none"
         if ft.mime_indexable and not any("gate" in mime_roles(m) for m in ft.mimes):
@@ -852,6 +854,26 @@ _FORMAT_BY_MIME: Final = {
     **{normalize_mime(m): ft.format for m, ft in _spellings("parse") if ft.format},
     **{m: ft.format for m, ft in _routed_spellings("format").items()},
 }
+_TIER_BY_FORMAT: Final = {ft.format: ft.tier or ft.mime_tier for ft in FILE_TYPES if ft.format and (ft.tier or ft.mime_tier)}
+
+
+def _kind_by_format() -> dict[str, str]:
+    """The kind of each parse format: its own type's (`txt` is text, though code read as text shares it), else the one
+    kind every type of that format has. A format with no kind (an image, epub, blocks) is left out."""
+    kinds: dict[str, set[str]] = {}
+    for ft in FILE_TYPES:
+        if ft.format and (ft.kind or ft.mime_kind):
+            kinds.setdefault(ft.format, set()).add(ft.kind or ft.mime_kind)  # type: ignore[arg-type]
+    index: dict[str, str] = {}
+    for fmt, found in kinds.items():
+        own = _BY_EXTENSION.get(fmt)
+        own_kind = own.kind or own.mime_kind if own is not None else None
+        if own_kind or len(found) == 1:
+            index[fmt] = own_kind or next(iter(found))
+    return index
+
+
+_KIND_BY_FORMAT: Final = _kind_by_format()
 
 
 # The mimes the dispatch matched before the registry's second version, each as it matched it
@@ -904,14 +926,23 @@ def _extension_decides(ft: FileType, mime_type: object) -> bool:
     return not ft.ext_wins or _new_type_wins(ft, mime_type)
 
 
-def tier(extension: str | None, mime_type: str | None) -> Tier:
-    """Parse tier: by extension, else by mime, else heavy (the safe side for an unknown format).
+def _labels_reader(extension: str | None, mime_type: str | None) -> Dispatch | None:
+    """The reader the labels select; none for a malformed mime (not a string), which the old rule judges as before."""
+    return labels_route(extension, mime_type) if isinstance(mime_type, str) or not mime_type else None
 
-    The mime is lower-cased before the extension is looked at, so a malformed mime fails the
-    same way whatever the extension.
+
+def tier(extension: str | None, mime_type: str | None) -> Tier:
+    """Parse tier: the tier of the reader the labels select (`labels_route`); for labels that select none, by
+    extension, else by mime, else heavy (the safe side for an unknown format).
+
+    Both labels are normalised before anything is looked up, so a malformed one fails the same way whatever the other.
     """
     mime_key = (mime_type or "").lower()
-    ft = _BY_EXTENSION.get(normalize_extension(extension))
+    ext_key = normalize_extension(extension)
+    reader = read_tier(_labels_reader(extension, mime_type))
+    if reader is not None:
+        return reader
+    ft = _BY_EXTENSION.get(ext_key)
     if ft is not None and ft.tier and _extension_decides(ft, mime_type):
         return ft.tier
     ft = _TIER_BY_MIME.get(mime_key) or _TIER_BY_MIME.get(normalize_mime(mime_key))
@@ -921,8 +952,13 @@ def tier(extension: str | None, mime_type: str | None) -> Tier:
 
 
 def kind(extension: str | None, mime_type: str | None) -> str | None:
-    """Parse kind: by extension, else by mime, else None."""
-    ft = _BY_EXTENSION.get(normalize_extension(extension))
+    """Parse kind: the kind of the reader the labels select (`labels_route`); for labels that select none, or a reader
+    with no kind, by extension, else by mime, else None. A malformed extension fails before anything is looked up."""
+    ext_key = normalize_extension(extension)
+    reader = read_kind(_labels_reader(extension, mime_type))
+    if reader is not None:
+        return reader
+    ft = _BY_EXTENSION.get(ext_key)
     if ft is not None and ft.kind and (_extension_decides(ft, mime_type) or ft.key in _KIND_BY_EXTENSION_BEFORE):
         return ft.kind
     mime_key = (mime_type or "").lower()
@@ -965,6 +1001,16 @@ def ext_wins(extension: str | None) -> bool:
     """Whether the extension alone decides how the file is read."""
     ft = _ext_type(extension)
     return ft is not None and ft.ext_wins
+
+
+def service_extension(mime_type: str | None, extension: str | None, record_name: str | None) -> str | None:
+    """The extension a request to the parsing service carries: the file's own, else the mime's, else the name's suffix."""
+    if extension:
+        return extension
+    derived = extension_for_mime(mime_type)
+    if not derived and record_name and "." in record_name:
+        derived = record_name.rsplit(".", 1)[-1]
+    return derived
 
 
 def parse_format(mime_type: str | None, extension: str | None) -> str | None:
@@ -1116,6 +1162,53 @@ def legacy_route(
     return found
 
 
+def read_tier(dispatch: Dispatch | None) -> Tier | None:
+    """The parse tier of the in-process reader *dispatch* names (the code parser is light), or None for no reader.
+
+    A type with no tier of its own (a Google Docs export) is read as its parsing format (docx), so it has that one's.
+    """
+    if dispatch is None:
+        return None
+    ft = dispatch.file_type
+    if ft is None:
+        return "light"
+    return ft.tier or ft.mime_tier or format_tier(ft.format)
+
+
+def format_tier(format_key: str | None) -> Tier | None:
+    """The parse tier of the parsing service's reader for *format_key* (see `parse_format`), or None."""
+    return _TIER_BY_FORMAT.get(format_key) if format_key else None
+
+
+def kind_of_format(format_key: str | None) -> str | None:
+    """The parse kind of the reader for *format_key* (see `parse_format`), or None for a format with no kind."""
+    return _KIND_BY_FORMAT.get(format_key) if format_key else None
+
+
+def read_kind(dispatch: Dispatch | None) -> str | None:
+    """The parse kind of the in-process reader *dispatch* names (the code parser's is ``code``), or None.
+
+    A type with no kind of its own (a Google export, Gmail) is read as its parsing format, so it has that one's.
+    """
+    if dispatch is None:
+        return None
+    ft = dispatch.file_type
+    if ft is None:
+        return "code"
+    return ft.kind or ft.mime_kind or kind_of_format(ft.format)
+
+
+def labels_route(
+    extension: object, mime_type: object, *, file_path: object = None, record_name: object = None,
+) -> Dispatch | None:
+    """The in-process reader a record event's labels select, before the record handler has read the record (so no
+    record type). The path and the name stand in for a missing extension, as they do for the reader."""
+    mime = mime_type if isinstance(mime_type, str) and mime_type else "unknown"
+    ext = extension if isinstance(extension, str) and extension else "unknown"
+    code_ext = code_extension(ext, file_path, record_name)
+    return legacy_route(mime, ext, code_ext=code_ext, reads_as_code_file=reads_as_source(mime, code_ext))
+
+
 def _names_nothing(mime_type: object) -> bool:
     """Whether a mime says nothing about the bytes: absent, or a placeholder (`_UNNAMED_MIMES`)."""
     return mime_type is None or (isinstance(mime_type, str) and normalize_mime(mime_type) in _UNNAMED_MIMES)
@@ -1252,10 +1345,18 @@ def gate_decision(
     if not supported:
         return GateDecision(False, judged, None, "type")
     if decisive is not None and decisive.key in disabled:
-        return GateDecision(False, judged, decisive, "disabled")
+        return GateDecision(False, _reported_as(judged, decisive), decisive, "disabled")
     if limited_as is not None and isinstance(size_bytes, int) and size_bytes > TEXT_LOG_HARD_LIMIT_BYTES:
         return GateDecision(False, judged, decisive, "too_large", limited_as)
     return GateDecision(True, judged, decisive, None, limited_as, route)
+
+
+def _reported_as(judged: object, file_type: FileType) -> str | None:
+    """The extension a type turned off is refused under: the judged one when the type owns it, else
+    the type's own (None for a type no extension names), since another label may have decided it."""
+    if isinstance(judged, str) and normalize_extension(judged) in file_type.extensions:
+        return judged
+    return file_type.extensions[0] if file_type.extensions else None
 
 
 def _limited_as(judged: object, record_name: str | None) -> str | None:
@@ -1346,16 +1447,20 @@ def canonical_mime_for_new_extension(extension: str | None) -> str | None:
     return ft.canonical_mime if ft is not None and ft.since > 1 else None
 
 
-def filter_option_ids() -> tuple[str, ...]:
-    """The extension filter's options: every offered type, then the exclude-only ones."""
-    offered = (FilterRole.OFFER, FilterRole.OFFER_LEGACY)
+_OFFERED: Final = (FilterRole.OFFER, FilterRole.OFFER_LEGACY)
+
+
+def filter_option_ids(*, repository: bool = False) -> tuple[str, ...]:
+    """The extension filter's options: every offered type, then the exclude-only ones.
+
+    ``repository`` adds the repository sources read as text.
+    """
+    offered = (*_OFFERED, FilterRole.OFFER_REPOSITORY) if repository else _OFFERED
     return (*_extensions(ft for ft in FILE_TYPES if ft.filter in offered), *EXCLUDE_ONLY_EXTENSIONS)
 
 
 def offered_extensions() -> frozenset[str]:
-    return frozenset(_extensions(
-        ft for ft in FILE_TYPES if ft.filter in (FilterRole.OFFER, FilterRole.OFFER_LEGACY)
-    ))
+    return frozenset(_extensions(ft for ft in FILE_TYPES if ft.filter in _OFFERED))
 
 
 def preview_extensions() -> frozenset[str]:

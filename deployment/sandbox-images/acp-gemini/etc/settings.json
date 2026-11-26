@@ -1,0 +1,74 @@
+{
+  "security": {
+    "auth": {
+      "selectedType": "gateway",
+      "enforcedType": "gateway"
+    },
+    "disableYoloMode": true,
+    "disableAlwaysAllow": true,
+    "enablePermanentToolApproval": false,
+    "autoAddToPolicyByDefault": false
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "telemetry": {
+    "enabled": false,
+    "logPrompts": false
+  },
+  "general": {
+    "enableAutoUpdate": false,
+    "enableAutoUpdateNotification": false,
+    "checkpointing": {
+      "enabled": false
+    },
+    "plan": {
+      "enabled": false
+    },
+    "topicUpdateNarration": false
+  },
+  "ide": {
+    "enabled": false
+  },
+  "mcp": {
+    "allowed": [
+      "tools"
+    ]
+  },
+  "tools": {
+    "allowed": [],
+    "confirmationRequired": [
+      "replace",
+      "write_file",
+      "run_shell_command"
+    ],
+    "discoveryCommand": "",
+    "callCommand": "",
+    "disableLLMCorrection": true
+  },
+  "advanced": {
+    "autoConfigureMemory": false,
+    "ignoreLocalEnv": true
+  },
+  "experimental": {
+    "enableAgents": false,
+    "autoMemory": false,
+    "extensionManagement": false,
+    "extensionConfig": false,
+    "worktrees": false
+  },
+  "admin": {
+    "extensions": {
+      "enabled": false
+    }
+  },
+  "hooksConfig": {
+    "enabled": false
+  },
+  "skills": {
+    "disabled": [
+      "skill-creator",
+      "antigravity-support"
+    ]
+  }
+}

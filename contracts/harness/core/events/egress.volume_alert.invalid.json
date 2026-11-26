@@ -1,0 +1,123 @@
+[
+  {
+    "description": "writer allowlist: only node writes egress.volume_alert",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 12,
+      "runId": "run_1",
+      "type": "egress.volume_alert",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "audit",
+      "data": {
+        "kind": "run_cap",
+        "direction": "total",
+        "bytes": 2048,
+        "thresholdBytes": 1024,
+        "alias": "tunnel",
+        "attemptId": "att_1"
+      }
+    }
+  },
+  {
+    "description": "an unknown kind",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 12,
+      "runId": "run_1",
+      "type": "egress.volume_alert",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "kind": "dns_entropy",
+        "direction": "total",
+        "bytes": 2048,
+        "thresholdBytes": 1024,
+        "alias": "tunnel",
+        "attemptId": "att_1"
+      }
+    }
+  },
+  {
+    "description": "a host beside the counts",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 12,
+      "runId": "run_1",
+      "type": "egress.volume_alert",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "kind": "run_cap",
+        "direction": "total",
+        "bytes": 2048,
+        "thresholdBytes": 1024,
+        "alias": "tunnel",
+        "attemptId": "att_1",
+        "host": "attacker.example"
+      }
+    }
+  },
+  {
+    "description": "a negative byte count",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 12,
+      "runId": "run_1",
+      "type": "egress.volume_alert",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "kind": "run_cap",
+        "direction": "total",
+        "bytes": -1,
+        "thresholdBytes": 1024,
+        "alias": "tunnel",
+        "attemptId": "att_1"
+      }
+    }
+  },
+  {
+    "description": "an alias outside the fixed set",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 12,
+      "runId": "run_1",
+      "type": "egress.volume_alert",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-11-01T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "kind": "run_cap",
+        "direction": "total",
+        "bytes": 2048,
+        "thresholdBytes": 1024,
+        "alias": "attacker.example",
+        "attemptId": "att_1"
+      }
+    }
+  }
+]

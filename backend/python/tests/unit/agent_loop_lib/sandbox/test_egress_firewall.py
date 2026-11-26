@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import ipaddress
 from unittest.mock import MagicMock
 
 import pytest
 
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     BLOCKED_CIDRS,
+    DEFAULT_OPEN_EGRESS_POOL,
+    ENV_OPEN_EGRESS_SUBNETS,
     FIREWALL_UNAVAILABLE_EXIT_CODE,
+    EgressNetworkUnsafe,
     build_firewall_script,
     ensure_egress_network_sync,
     firewall_unavailable,
     firewalled_container_kwargs,
     new_firewall_token,
+    open_egress_pool,
+    open_egress_subnets,
     parse_cidrs,
 )
 
@@ -179,13 +185,14 @@ class TestEnsureEgressNetwork:
         legacy.remove.assert_called_once()
         client.networks.create.assert_called_once()
 
-    def test_in_use_network_with_icc_on_is_kept(self) -> None:
+    def test_in_use_network_with_icc_on_is_refused(self) -> None:
         client = MagicMock()
         legacy = _network("egress", icc_off=False, containers={"c": {}})
         client.networks.list.return_value = [legacy]
         client.networks.get.return_value = legacy
 
-        assert ensure_egress_network_sync(client, "egress", {}) == ["172.30.0.0/16"]
+        with pytest.raises(EgressNetworkUnsafe, match="inter-container traffic"):
+            ensure_egress_network_sync(client, "egress", {})
         legacy.remove.assert_not_called()
         client.networks.create.assert_not_called()
 
@@ -205,6 +212,85 @@ class TestEnsureEgressNetwork:
         client.networks.create.side_effect = RuntimeError("create failed")
         with pytest.raises(RuntimeError, match="create failed"):
             ensure_egress_network_sync(client, "egress", {})
+
+
+def _subnet_of_create(call) -> str:
+    (pool,) = call.kwargs["ipam"]["Config"]
+    assert pool["Gateway"] == str(next(ipaddress.ip_network(pool["Subnet"]).hosts()))
+    return pool["Subnet"]
+
+
+_OVERLAP = RuntimeError("400 Client Error: invalid pool request: Pool overlaps with other one on this address space")
+
+
+class TestEgressBridgeAddresses:
+    """The open-egress bridge never asks the daemon's default pools for an address: on a host whose ~30 default
+    pools other stacks hold, that create fails ("all predefined address pools have been fully subnetted") and with
+    it every open-egress sandbox (round 7 Docker lane)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_pool_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(ENV_OPEN_EGRESS_SUBNETS, raising=False)
+
+    def test_a_new_bridge_takes_the_first_22_of_the_default_pool(self) -> None:
+        client = MagicMock()
+        created = _network("egress", subnet="10.212.0.0/22")
+        client.networks.list.side_effect = [[], [created]]
+        client.networks.get.return_value = created
+
+        assert ensure_egress_network_sync(client, "egress", {}) == ["10.212.0.0/22"]
+        assert _subnet_of_create(client.networks.create.call_args) == "10.212.0.0/22"
+        assert DEFAULT_OPEN_EGRESS_POOL == "10.212.0.0/16"
+
+    def test_a_subnet_another_network_holds_is_skipped(self) -> None:
+        client = MagicMock()
+        created = _network("egress", subnet="10.212.4.0/22")
+        client.networks.list.side_effect = [[], [created]]
+        client.networks.get.return_value = created
+        client.networks.create.side_effect = [_OVERLAP, MagicMock()]
+
+        assert ensure_egress_network_sync(client, "egress", {}) == ["10.212.4.0/22"]
+        tried = [_subnet_of_create(c) for c in client.networks.create.call_args_list]
+        assert tried == ["10.212.0.0/22", "10.212.4.0/22"]
+
+    def test_the_operators_pool_is_used(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(ENV_OPEN_EGRESS_SUBNETS, "192.168.250.0/24")
+        client = MagicMock()
+        created = _network("egress", subnet="192.168.250.0/24")
+        client.networks.list.side_effect = [[], [created]]
+        # Read back after the create: it must have inter-container traffic and IPv6 off.
+        client.networks.get.return_value = created
+
+        ensure_egress_network_sync(client, "egress", {})
+        assert _subnet_of_create(client.networks.create.call_args) == "192.168.250.0/24"
+
+    def test_a_full_pool_names_the_setting(self) -> None:
+        client = MagicMock()
+        client.networks.list.return_value = []
+        client.networks.create.side_effect = _OVERLAP
+
+        with pytest.raises(RuntimeError, match=ENV_OPEN_EGRESS_SUBNETS):
+            ensure_egress_network_sync(client, "egress", {}, pool="10.212.0.0/21")
+        assert client.networks.create.call_count == 2
+
+    def test_a_recreated_bridge_keeps_its_old_subnet_first(self) -> None:
+        client = MagicMock()
+        legacy = _network("egress", icc_off=False, subnet="10.215.7.0/28")
+        fresh = _network("egress", subnet="10.215.7.0/28")
+        client.networks.list.side_effect = [[legacy], [fresh]]
+        client.networks.get.side_effect = [legacy, fresh]
+
+        assert ensure_egress_network_sync(client, "egress", {}) == ["10.215.7.0/28"]
+        assert _subnet_of_create(client.networks.create.call_args) == "10.215.7.0/28"
+
+    @pytest.mark.parametrize("raw", ["fd00::/64", "10.212.0.0/30", "10.212.0.1/16", "nope"])
+    def test_a_bad_pool_is_refused_not_replaced(self, raw: str) -> None:
+        with pytest.raises(ValueError):
+            open_egress_pool(raw)
+
+    def test_a_small_pool_is_one_subnet(self) -> None:
+        assert open_egress_subnets(open_egress_pool("10.9.9.0/24")) == ["10.9.9.0/24"]
+        assert len(open_egress_subnets(open_egress_pool(None))) == 64
 
 
 class TestCreateSandboxContainerDiskQuota:
@@ -273,6 +359,64 @@ class TestCreateSandboxContainerDiskQuota:
         assert "storage_opt" not in client.containers.create.call_args.kwargs
 
 
+class TestCreateSandboxContainerOomScoreAdj:
+    """Sandboxes are created first-to-kill; an older proxy that refuses the
+    field must not break every run."""
+
+    _OLD_PROXY = "403 Client Error: docker-proxy: HostConfig: field 'OomScoreAdj' is not permitted"
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch) -> None:
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        monkeypatch.setattr(ef, "_oom_score_adj_usable", True)
+        monkeypatch.setenv("SANDBOX_DISK_QUOTA", "0")
+
+    def test_every_create_is_marked(self) -> None:
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        client = MagicMock()
+        ef.create_sandbox_container(client, image="img", detach=True)
+        assert client.containers.create.call_args.kwargs["oom_score_adj"] == 1000
+
+    def test_an_older_proxy_falls_back_and_warns_once(self, caplog) -> None:
+        import logging
+
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        client = MagicMock()
+        ok = MagicMock()
+        client.containers.create.side_effect = [Exception(self._OLD_PROXY), ok, ok]
+        with caplog.at_level(logging.WARNING):
+            assert ef.create_sandbox_container(client, image="img", detach=True) is ok
+            ef.create_sandbox_container(client, image="img", detach=True)
+        first, second, third = client.containers.create.call_args_list
+        assert first.kwargs["oom_score_adj"] == 1000
+        assert "oom_score_adj" not in second.kwargs and "oom_score_adj" not in third.kwargs
+        warns = [r for r in caplog.records if "first-to-kill" in r.getMessage()]
+        assert len(warns) == 1
+
+    @pytest.mark.parametrize("message", [
+        "403 Client Error: docker-proxy: HostConfig.OomScoreAdj may not be negative: -5",
+        "403 Client Error: docker-proxy: HostConfig: field 'Privileged' is not permitted",
+        "image not found",
+    ])
+    def test_other_refusals_are_raised(self, message: str) -> None:
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        client = MagicMock()
+        client.containers.create.side_effect = Exception(message)
+        with pytest.raises(Exception, match="."):
+            ef.create_sandbox_container(client, image="img", detach=True)
+        assert client.containers.create.call_count == 1
+        assert ef._oom_score_adj_usable is True
+
+    def test_the_quota_fallback_keeps_the_mark(self, monkeypatch) -> None:
+        import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
+        monkeypatch.setattr(ef, "_storage_opt_usable", None)
+        monkeypatch.setenv("SANDBOX_DISK_QUOTA", "10g")
+        client = MagicMock()
+        client.containers.create.side_effect = [Exception("--storage-opt is not supported"), MagicMock()]
+        ef.create_sandbox_container(client, image="img", detach=True)
+        assert client.containers.create.call_args.kwargs["oom_score_adj"] == 1000
+
+
 class TestIsStorageOptRejected:
     def test_recognises_storage_opt_rejections(self) -> None:
         import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
@@ -283,3 +427,48 @@ class TestIsStorageOptRejected:
     def test_other_errors_are_not_rejections(self) -> None:
         import app.agent_loop_lib.sandbox.coding.egress_firewall as ef
         assert ef._is_storage_opt_rejected(Exception("No such image: img")) is False
+
+
+class TestDeadlineCommand:
+    def test_argv(self) -> None:
+        from app.agent_loop_lib.sandbox.coding.egress_firewall import deadline_command
+
+        argv = deadline_command(["sh", "-c", "python3 main.py"], 30)
+        assert argv[:2] == ["sh", "-c"]
+        assert argv[3:] == ["sandbox-deadline", "30", "sh", "-c", "python3 main.py"]
+        assert 'exec timeout -s KILL "$s" "$@"' in argv[2]
+
+    def _run(self, tmp_path, *, with_timeout: bool) -> str:
+        import os
+        import subprocess
+
+        from app.agent_loop_lib.sandbox.coding.egress_firewall import deadline_command
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        if with_timeout:
+            stub = bin_dir / "timeout"
+            stub.write_text('#!/bin/sh\necho "timeout $*"\n')
+            stub.chmod(0o755)
+        # Only the stub directory and the shell's own: no real `timeout` on PATH.
+        env = {"PATH": f"{bin_dir}:/nonexistent"}
+        argv = deadline_command(["/bin/echo", "ran", "it"], 30)
+        argv[0] = "/bin/sh"
+        return subprocess.run(argv, env=env, capture_output=True, text=True, check=True, cwd=os.getcwd()).stdout
+
+    def test_execs_timeout_when_the_image_has_it(self, tmp_path) -> None:
+        assert self._run(tmp_path, with_timeout=True) == "timeout -s KILL 30 /bin/echo ran it\n"
+
+    def test_runs_the_command_directly_without_timeout(self, tmp_path) -> None:
+        assert self._run(tmp_path, with_timeout=False) == "ran it\n"
+
+    def test_composes_inside_the_firewall_wrapper(self) -> None:
+        from app.agent_loop_lib.sandbox.coding.egress_firewall import (
+            deadline_command,
+            firewalled_container_kwargs,
+        )
+
+        inner = deadline_command(["sh", "-c", "python3 main.py"], 30)
+        kwargs = firewalled_container_kwargs(inner, network_cidrs=["172.30.0.0/16"], token="0" * 32)
+        assert kwargs["command"][3] == "sandbox-egress"
+        assert kwargs["command"][4:] == inner

@@ -89,10 +89,27 @@ _SENSITIVE_FILENAMES = frozenset({
     "credentials", "credentials.json", "credentials.yml", "credentials.yaml", "credentials.xml",
     "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
     "terraform.tfstate", "terraform.tfstate.backup",
+    "kubeconfig", "kubeconfig.yaml", "kubeconfig.yml",
+    ".dockercfg", ".envrc", ".vault-token", ".s3cfg", "_netrc", ".boto", ".my.cnf",
+    "application_default_credentials.json", "credentials.toml", "credentials.tfrc.json",
+    ".terraformrc", "terraform.rc", "secring.gpg", "accesstokens.json", "msal_token_cache.json",
 })
 _SENSITIVE_SUFFIXES = (
     ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx", ".ppk",
-    ".tfvars", ".tfstate", ".tfstate.backup",
+    ".tfvars", ".tfstate", ".tfstate.backup", ".tfvars.json", ".kubeconfig", ".keytab", ".p8",
+)
+# Generic names that hold credentials only inside the tool's own folder (the one right above the file).
+_SENSITIVE_IN_FOLDER = frozenset({(".kube", "config"), (".docker", "config.json"), ("gh", "hosts.yml")})
+# Google service-account and OAuth-client downloads, whose names vary.
+_SENSITIVE_NAME = re.compile(
+    r"(?:service[_-]?account(?:[_-]?key)?|sa[_-]?key|[\w.-]*firebase-adminsdk[\w.-]*"
+    r"|client_secrets?(?:[_.-][\w.-]*)?)\.json"
+)
+# SSH private keys under custom names. Case-sensitive and dot-free: ssh-keygen writes lower case and
+# `.pub` for the public half, and Linux Kconfig stamps (`CRYPTO_RSA`) are upper case.
+_SSH_KEY_NAME = re.compile(
+    r"id_(?:rsa|dsa|ecdsa|ed25519)[_-][\w-]*|[a-z0-9][a-z0-9_-]*_(?:rsa|dsa|ecdsa|ed25519)"
+    r"|ssh_host_\w+_key|deploy[_-]?key"
 )
 _ENV_TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist", ".defaults")
 
@@ -258,12 +275,18 @@ def is_ignored_path(file_path: str) -> bool:
 
 
 def is_sensitive_path(file_path: str) -> bool:
-    """True for files that hold credentials or keys (S-2)."""
-    name = _basename(file_path)
+    """True for files that hold credentials or keys (S-2). Give it the repo path: `.kube/config` is known by its folder."""
+    segs = _segments(file_path)
+    name = segs[-1] if segs else ""
     lower = name.lower()
     if lower.startswith(".env.") or lower.endswith(".env"):
         return not lower.endswith(_ENV_TEMPLATE_SUFFIXES)
-    return lower in _SENSITIVE_FILENAMES or lower.endswith(_SENSITIVE_SUFFIXES)
+    return (
+        lower in _SENSITIVE_FILENAMES
+        or lower.endswith(_SENSITIVE_SUFFIXES)
+        or (len(segs) > 1 and (segs[-2].lower(), lower) in _SENSITIVE_IN_FOLDER)
+        or bool(_SENSITIVE_NAME.fullmatch(lower) or _SSH_KEY_NAME.fullmatch(name))
+    )
 
 
 def classify_file_role(file_path: str, file_name: str | None = None) -> FileRole:
@@ -313,7 +336,7 @@ def classify_file_role(file_path: str, file_name: str | None = None) -> FileRole
 def should_index_code_file(file_path: str, file_name: str | None = None) -> tuple[bool, FileRole]:
     """Return ``(should_index, role)`` for a repository blob."""
     role = classify_file_role(file_path, file_name)
-    if is_ignored_path(file_path) or role in SKIPPED_ROLES or is_sensitive_path(file_name or file_path):
+    if is_ignored_path(file_path) or role in SKIPPED_ROLES or is_sensitive_path(file_path or file_name):
         return False, role
     return True, role
 

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/conversation-grant-revocation.schema.json",
+  "title": "ConversationGrantRevocation",
+  "description": "`DELETE /api/v1/conversations/{sessionId}/grants/{grantId}` and the agent's (ADR-GRANT-01 D8, UI-B1 G5): the owner took the grant back. It answers no ask from now on, on every open run of the conversation (`runs`: how many were told) and on every later one; the next call to that tool and destination asks again.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "revoked",
+    "runs"
+  ],
+  "properties": {
+    "revoked": {
+      "$ref": "conversation-grants.schema.json#/$defs/ConversationGrant"
+    },
+    "runs": {
+      "$ref": "../../../core/common.schema.json#/$defs/UInt"
+    }
+  },
+  "examples": [
+    {
+      "revoked": {
+        "grantId": "cg_0000000000000000000000000000000000000000",
+        "toolId": "web@searxng/fetch_url",
+        "tool": {
+          "app": "web",
+          "name": "fetch_url"
+        },
+        "destination": "onyx.app",
+        "sensitivity": "private",
+        "grantedBy": "5f1d7c2e9b1a4c3d2e1f0a9b",
+        "grantedByName": "Ada Lovelace",
+        "grantedAt": "2026-11-07T12:32:30.000Z"
+      },
+      "runs": 2
+    }
+  ]
+}

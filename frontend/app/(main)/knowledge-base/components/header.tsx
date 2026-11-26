@@ -53,6 +53,8 @@ interface KBHeaderProps {
   onCreateFolder?: () => void;
   onUpload?: () => void;
   onShare?: () => void;
+  /** Knowledge publications (P2.13): only passed while the org's Labs flag is on. */
+  onPublish?: () => void;
   createPermissionDenied?: boolean;
   folderPermissionDenied?: boolean;
   uploadPermissionDenied?: boolean;
@@ -205,7 +207,7 @@ function BreadcrumbItem({
 }
 
 function BreadcrumbSeparator() {
-  return <MaterialIcon name="chevron_right" size={16} color="var(--slate-8)" style={{ flexShrink: 0 }} />;
+  return <MaterialIcon name="chevron_right" size={16} color="var(--slate-11)" style={{ flexShrink: 0 }} />;
 }
 
 export function Header({
@@ -222,6 +224,7 @@ export function Header({
   onCreateFolder,
   onUpload,
   onShare,
+  onPublish,
   createPermissionDenied,
   folderPermissionDenied,
   uploadPermissionDenied,
@@ -518,6 +521,13 @@ export function Header({
               </DropdownMenu.Root>
             )}
 
+            {onPublish && (
+              <Button type="button" variant="soft" size="2" onClick={onPublish} aria-label={t('publications.open')}>
+                <MaterialIcon name="campaign" size={16} />
+                {t('publications.open')}
+              </Button>
+            )}
+
             {/* Share: the full avatar group on desktop, a single icon button on phones */}
             {onShare && (isMobile ? (
               <Flex align="center" gap="1">
@@ -570,12 +580,12 @@ export function Header({
             size="1"
             data-icon-only=""
           >
-            <SegmentedControl.Item value="grid">
+            <SegmentedControl.Item value="grid" aria-label={t('artifacts.gridView')}>
               <Flex align="center" justify="center">
                 <MaterialIcon name="grid_on" size={16} />
               </Flex>
             </SegmentedControl.Item>
-            <SegmentedControl.Item value="list">
+            <SegmentedControl.Item value="list" aria-label={t('artifacts.listView')}>
               <Flex align="center" justify="center">
                 <MaterialIcon name="view_list" size={16} />
               </Flex>

@@ -1,0 +1,16 @@
+id: quick-ask-user-question
+description: The request is ambiguous; the agent asks instead of guessing.
+chat_mode: quick
+task: Build me the sales report
+script:
+  turns:
+    - reply:
+        tool_calls:
+          - id: call-ask
+            name: internaltools__ask_user_question
+            args:
+              user_intent: The user wants a sales report but did not say which region.
+              questions:
+                - question: Which region should the report cover?
+                  options: [{label: North America}, {label: Europe}, {label: Enter a region, isUserInput: true}]
+                  multiSelect: false

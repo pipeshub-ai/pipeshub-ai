@@ -13,6 +13,7 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
+    ToolProvider,
     ToolsetBuilder,
     ToolsetCategory,
 )
@@ -88,7 +89,7 @@ tools: List[ToolDefinition] = [
 
 
 # Register Azure Blob Storage toolset
-@ToolsetBuilder("Azure Blob Storage")\
+@ToolsetBuilder("Azure Blob Storage", provider=ToolProvider.CONNECTOR)\
     .in_group("Storage")\
     .with_description("Azure Blob Storage integration for object storage and container management")\
     .with_category(ToolsetCategory.APP)\
@@ -142,7 +143,7 @@ class AzureBlob:
         parameters=[
             ToolParameter(name="container_name", type=ParameterType.STRING, description="Container name"),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def create_container(self, container_name: str) -> Tuple[bool, str]:
         try:
@@ -159,7 +160,7 @@ class AzureBlob:
         parameters=[
             ToolParameter(name="container_name", type=ParameterType.STRING, description="Container name"),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_container(self, container_name: str) -> Tuple[bool, str]:
         try:
@@ -176,7 +177,7 @@ class AzureBlob:
         parameters=[
             ToolParameter(name="container_name", type=ParameterType.STRING, description="Container name"),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_container(self, container_name: str) -> Tuple[bool, str]:
         try:
@@ -195,7 +196,7 @@ class AzureBlob:
             ToolParameter(name="blob_name", type=ParameterType.STRING, description="Blob name"),
             ToolParameter(name="content", type=ParameterType.STRING, description="Blob text content"),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write"), Tag(key="effect", value="write")],
     )
     async def upload_blob(self, container_name: str, blob_name: str, content: str) -> Tuple[bool, str]:
         try:
@@ -221,7 +222,7 @@ class AzureBlob:
             ToolParameter(name="container_name", type=ParameterType.STRING, description="Container name"),
             ToolParameter(name="blob_name", type=ParameterType.STRING, description="Blob name"),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_blob(self, container_name: str, blob_name: str) -> Tuple[bool, str]:
         try:
@@ -239,7 +240,7 @@ class AzureBlob:
             ToolParameter(name="container_name", type=ParameterType.STRING, description="Container name"),
             ToolParameter(name="blob_name", type=ParameterType.STRING, description="Blob name"),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_blob(self, container_name: str, blob_name: str) -> Tuple[bool, str]:
         try:
@@ -257,7 +258,7 @@ class AzureBlob:
             ToolParameter(name="where", type=ParameterType.STRING, description="Tag query, e.g. '@tag = \"value\"'"),
             ToolParameter(name="maxresults", type=ParameterType.INTEGER, description="Max results", required=False),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def search_blobs_by_tags(self, where: str, maxresults: Optional[int] = None) -> Tuple[bool, str]:
         try:

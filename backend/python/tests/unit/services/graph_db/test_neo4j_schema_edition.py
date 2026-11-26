@@ -15,7 +15,9 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 EXISTENCE = "IS NOT NULL"
 
 
-def _provider(edition: str | Exception, refuse: tuple[str, ...] = ()) -> Neo4jProvider:
+def _provider(
+    edition: str | Exception, refuse: tuple[str, ...] = (), existing: tuple[dict, ...] | Exception = (),
+) -> Neo4jProvider:
     p = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
 
     async def run(query: str, parameters=None, **_) -> list[dict]:
@@ -23,6 +25,10 @@ def _provider(edition: str | Exception, refuse: tuple[str, ...] = ()) -> Neo4jPr
             if isinstance(edition, Exception):
                 raise edition
             return [{"edition": edition}]
+        if query.startswith("SHOW CONSTRAINTS") and "PROPERTY_EXISTENCE" in query:
+            if isinstance(existing, Exception):
+                raise existing
+            return list(existing)
         if "RETURN count(key) AS keys" in query:
             return [{"keys": 0}]
         if any(marker in query for marker in refuse):
@@ -91,3 +97,66 @@ async def test_a_refused_statement_is_logged_and_the_rest_still_run() -> None:
     assert "✅ 1 of 2 unique id constraints in place" in _infos(p)
     level, *_ = p.logger.log.call_args_list[0].args
     assert level == logging.WARNING
+
+
+def _existing(name: str, label: str, field: str) -> dict:
+    return {"name": name, "labels": [label], "properties": [field]}
+
+
+def _drops(p: Neo4jProvider) -> list[str]:
+    return [c.args[0] for c in p.client.execute_query.await_args_list if c.args[0].startswith("DROP CONSTRAINT")]
+
+
+async def test_an_existence_constraint_the_schema_no_longer_requires_is_dropped_first() -> None:
+    """A person a source names without an email is stored without one. A database first set up
+    when email was required kept the constraint, and refused every sync that met such a person."""
+    p = _provider("enterprise", existing=(_existing("person_email_exists", "Person", "email"),))
+
+    assert await p.ensure_schema()
+
+    assert _drops(p) == ["DROP CONSTRAINT `person_email_exists` IF EXISTS"]
+    sent = [c.args[0] for c in p.client.execute_query.await_args_list]
+    assert sent.index(_drops(p)[0]) < sent.index(_existence_constraints_sent(p)[0])
+
+
+async def test_a_required_field_keeps_its_constraint() -> None:
+    wanted = Neo4jProvider._generate_required_field_constraints(_provider("enterprise"))
+    assert any(q.startswith("CREATE CONSTRAINT person_createdAtTimestamp_exists ") for q in wanted)
+    p = _provider("enterprise", existing=(
+        _existing("person_createdAtTimestamp_exists", "Person", "createdAtTimestamp"),
+    ))
+
+    assert await p.ensure_schema()
+
+    assert _drops(p) == []
+
+
+@pytest.mark.parametrize("row", [
+    _existing("my_own_rule", "Person", "email"),
+    _existing("customer_email_exists", "Customer", "email"),
+    {"name": "person_email_exists", "labels": ["Person"], "properties": ["email", "orgId"]},
+    {"name": "person_email_exists", "labels": ["Person", "User"], "properties": ["email"]},
+], ids=["another name", "a label that is not ours", "several properties", "several labels"])
+async def test_a_constraint_this_provider_did_not_create_is_left_alone(row: dict) -> None:
+    p = _provider("enterprise", existing=(row,))
+
+    assert await p.ensure_schema()
+
+    assert _drops(p) == []
+
+
+async def test_community_edition_is_not_asked_for_them() -> None:
+    p = _provider("community", existing=(_existing("person_email_exists", "Person", "email"),))
+
+    assert await p.ensure_schema()
+
+    assert _drops(p) == []
+
+
+async def test_a_listing_that_fails_does_not_stop_the_schema() -> None:
+    p = _provider("enterprise", existing=RuntimeError("no privilege"))
+
+    assert await p.ensure_schema()
+
+    assert _drops(p) == []
+    assert _existence_constraints_sent(p)

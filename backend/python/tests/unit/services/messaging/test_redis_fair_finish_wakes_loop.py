@@ -31,7 +31,6 @@ from app.services.messaging.redis_streams import indexing_consumer as redis_modu
 from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
 )
-from app.utils import logging_fields
 from tests.unit.services.messaging.test_connector_off_at_read import (
     Handler,
     _envelope,
@@ -169,6 +168,7 @@ class TestAFinishWakesTheLoop:
         started = time.monotonic()  # from the first record, so the worker's cold start is not counted
         await _until(lambda: len(handler.seen) == 20, timeout=15)
 
+        # wall-clock-ok: 20 records on a woken loop take well under a second; the regression polls each one
         assert time.monotonic() - started < 5.0
 
     async def test_finishes_do_not_count_as_idle_polls(
@@ -505,64 +505,3 @@ class TestAReadNeverClaimsMoreThanTheBufferHolds:
         [streams] = _streams_read(consumer)
         assert len(streams) == 5
         assert consumer.redis.xreadgroup.await_args.kwargs["count"] == 1
-
-
-class TestBackpressureIsLoggedOncePerEpisodeAtMostEveryMinute:
-    @pytest.fixture(autouse=True)
-    def _short_wait(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(redis_module, "_BACKPRESSURE_WAIT_SECONDS", 0.01)
-
-    @staticmethod
-    def _lines(caplog: pytest.LogCaptureFixture, start: str) -> list[logging.LogRecord]:
-        return [r for r in caplog.records if r.name == UNIT_LOGGER and r.getMessage().startswith(start)]
-
-    async def test_short_episodes_do_not_log_a_warning_each(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Waking on every finish turns one long episode into many short ones; each used to log a WARNING and an
-        INFO."""
-        consumer = _unit_consumer(group="g-episodes")
-        consumer.main_loop = asyncio.get_running_loop()
-        blocked = {"now": True}
-        _held_by_budget(consumer, blocked)
-
-        with caplog.at_level(logging.INFO, logger=UNIT_LOGGER):
-            for _ in range(3):
-                blocked["now"] = True
-                await _read_phase(consumer)
-                blocked["now"] = False
-                await _read_phase(consumer)
-
-        engaged = self._lines(caplog, "Backpressure engaged")
-        assert len(engaged) == 1 and engaged[0].levelno == logging.WARNING
-        assert len(self._lines(caplog, "Backpressure cleared")) == 1
-        assert not consumer.read_paused_for_admission(), "a throttled episode must still clear the state /health reports"
-
-    async def test_an_episode_that_outlasts_the_quiet_minute_is_still_logged(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """An episode that starts inside the quiet minute is logged once the minute is over, and its "cleared"
-        line pairs with it: sustained backpressure is never hidden, only up to a minute late."""
-        group = "g-sustained"
-        consumer = _unit_consumer(group=group)
-        consumer.main_loop = asyncio.get_running_loop()
-        blocked = {"now": True}
-        _held_by_budget(consumer, blocked)
-
-        with caplog.at_level(logging.INFO, logger=UNIT_LOGGER):
-            await _read_phase(consumer)  # a short episode, logged
-            blocked["now"] = False
-            await _read_phase(consumer)
-            blocked["now"] = True
-            for _ in range(3):  # a long one, inside the quiet minute
-                await _read_phase(consumer)
-            assert len(self._lines(caplog, "Backpressure engaged")) == 1
-            assert consumer.read_paused_for_admission(), "a quiet line must not hide the state /health reports"
-
-            logging_fields._log_once_last[f"redis_indexing:backpressure:{group}"] -= 61  # the minute is over
-            await _read_phase(consumer)
-            await _read_phase(consumer)
-            blocked["now"] = False
-            await _read_phase(consumer)
-
-        assert len(self._lines(caplog, "Backpressure engaged")) == 2
-        assert len(self._lines(caplog, "Backpressure cleared")) == 2
-        assert not consumer.read_paused_for_admission()

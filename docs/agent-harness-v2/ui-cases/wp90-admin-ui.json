@@ -1,0 +1,21 @@
+{
+  "title": "WP-90 Admin UI: who agent messages are from (Workspace settings > AI Access, read only)",
+  "spec": null,
+  "unitTests": [
+    "frontend/app/(main)/workspace/ai-access/__tests__/wp23-agent-data.test.tsx"
+  ],
+  "mock": "docs/agent-harness-v2/impl/mocks/wp90-admin-ui.html",
+  "mocks": [
+    "docs/agent-harness-v2/impl/mocks/wp90-admin-ui.html"
+  ],
+  "screenshots": {
+    "pattern": "<name>-<desktop|phone>-<light|dark>.png",
+    "viewports": {
+      "desktop": "1280x900",
+      "phone": "390x844"
+    },
+    "where": "No Playwright stack spec ran in this package; the unit tests above cover the card."
+  },
+  "routed": "Nothing new is routed: the card reads GET /api/v1/agents and the existing AI Access routes",
+  "cases": []
+}

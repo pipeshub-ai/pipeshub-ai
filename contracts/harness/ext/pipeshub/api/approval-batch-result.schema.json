@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/ext/pipeshub/api/approval-batch-result.schema.json",
+  "title": "ApprovalBatchResult",
+  "description": "`POST /api/v1/agent-harness/approvals/decisions` (G-13, GA-08): one person's decision on calls with the same pattern across runs and sessions, each decided by its run's own decision rule and journaled per call. A batch that mixes patterns, or names a call its run never asked or one decided only on its own card, is refused whole (BATCH_PATTERN_MISMATCH) and decides nothing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {"$ref": "#/$defs/BatchOutcome"}
+    }
+  },
+  "$defs": {
+    "BatchOutcome": {
+      "description": "decided: this request decided it; already_decided: an earlier decision stands (another tab, a retried request); not_decided: it ended or was decided between the check and its turn, with the catalogue code that says why.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "interactionId", "status"],
+      "properties": {
+        "runId": {"$ref": "../../../core/common.schema.json#/$defs/Id"},
+        "interactionId": {"$ref": "../../../core/common.schema.json#/$defs/Id"},
+        "status": {"enum": ["decided", "already_decided", "not_decided"]},
+        "decision": {"type": "string", "minLength": 1, "maxLength": 32},
+        "code": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    }
+  },
+  "examples": [
+    {
+      "items": [
+        {"runId": "r1", "interactionId": "ix_1", "status": "decided", "decision": "approved"},
+        {"runId": "r2", "interactionId": "ix_2", "status": "already_decided", "decision": "approved"},
+        {"runId": "r3", "interactionId": "ix_3", "status": "not_decided", "code": "RUN_ENDED"}
+      ]
+    }
+  ]
+}

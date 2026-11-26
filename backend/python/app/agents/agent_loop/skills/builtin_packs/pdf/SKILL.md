@@ -9,8 +9,9 @@ metadata:
     tags: [pdf, pdfkit, pdf-lib, reportlab, pypdf, pdfplumber]
     status: active
     source: builtin
+    requires: [office-utils]
     pack_name: pdf
-    pack_version: 1.3.0
+    pack_version: 1.4.1
 ---
 
 # PDF documents
@@ -25,6 +26,28 @@ metadata:
 | Extract tables from an existing PDF | — (no good Node equivalent) | `pdfplumber` (`page.extract_tables()`) |
 
 All of the above are already installed/allowlisted — no extra setup either way. **Default to `pdfkit`/`pdf-lib` in TypeScript for generation and form-filling** per this environment's Node-first policy for office-document creation; extraction has no solid Node option here, so stays Python.
+
+## Pitfalls that break the layout
+
+- **pdfkit takes the position as arguments: `doc.text(str, x, y, { width })`.** An `x` or `y` inside the options object (`doc.text(str, { x, y, width })`) is ignored without an error: the text goes to the current `doc.x`/`doc.y` and flows down from there, over everything else. A helper that wraps `doc.text` must pass `x, y` positionally too.
+- **Never rely on `doc.x`/`doc.y` after drawing a shape.** `rect`, `roundedRect`, `circle` and `image` with explicit coordinates do not move them; text placed after a shape without an explicit `x, y` lands wherever the last text ended. Track your own `y`.
+- **Set real margins** (`margins: { top: 50, bottom: 50, left: 50, right: 50 }`). With margins of 0, any text that misses its position sits on the page edge.
+- **Draw backgrounds first, then text.** Whatever is drawn later covers what is under it.
+- reportlab `canvas`: positions are from the *bottom-left* (`c.drawString(x, y, s)`, y grows upward); prefer `platypus` flowables, which place things for you.
+
+## Check before you deliver (required)
+
+Text extraction (pdftotext, pypdf, pdfplumber `extract_text`) only proves the words are in the file. It cannot see that they were drawn in the wrong place, so it is not a check of a generated PDF. After writing the PDF, run:
+
+```
+python skills/office-utils/scripts/check_layout.py report.pdf
+```
+
+(a coding engine finds the skills folder at `/skills`; with `run_code`, call it with `subprocess` from a Python program in the sandbox that holds the PDF, packages `pdfplumber` and `pypdfium2`.) It renders every page to `layout_check/<name>/<name>-page-N.png`, and flags text off the page or inside the margin, text over other text, text on a fill of nearly its own colour or covered by a shape, boxes and panels with nothing inside, and blank pages, each with a fix. It exits 1 while anything is flagged.
+
+1. Fix every fault and rerun until it prints `layout: clean`. A flagged fault is a bug in your program, not in the checker; if you are sure one is intended (say, a full-bleed band of text), say so to the user.
+2. If you can view images (a file-reading tool that shows you a PNG, or an image viewer), open the page PNGs and look at them too: the checker cannot judge whether the page *looks* right.
+3. Keep `layout_check/` out of the folder you deliver from. Tell the user what you checked: the checker's `checked:` line, and whether you looked at the pages. If the script is missing, say the layout was not checked.
 
 ## Generating a new PDF (pdfkit)
 

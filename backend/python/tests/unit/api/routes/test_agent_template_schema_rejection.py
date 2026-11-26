@@ -39,8 +39,8 @@ async def test_a_schema_rejected_template_is_a_400_and_counted() -> None:
     graph.batch_create_edges.assert_not_awaited()
 
 
-async def test_the_rejection_log_line_names_the_field_not_the_value(caplog) -> None:
-    """The route's own log line quotes the exception: the tag a user typed must not reach it (F36)."""
+async def test_the_rejected_value_is_not_logged(caplog) -> None:
+    """The tag a user typed must not reach a log line (F36)."""
     seeded = "Q3 layoffs: Grace Seeded"
 
     async def upsert(nodes: list[dict], collection: str) -> bool:
@@ -64,7 +64,6 @@ async def test_the_rejection_log_line_names_the_field_not_the_value(caplog) -> N
         await create_agent_template(request)
 
     assert exc.value.status_code == 400 and exc.value.detail == "Invalid agent template: tags"
-    rejected = [r.getMessage() for r in caplog.records if "rejected by schema validation" in r.getMessage()]
-    assert len(rejected) == 1
-    assert seeded not in rejected[0]
-    assert "'tags'" in rejected[0]
+    # The caller's mistake is the request's INFO line (reason=schema_rejected); the route writes nothing of its own.
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert seeded not in caplog.text

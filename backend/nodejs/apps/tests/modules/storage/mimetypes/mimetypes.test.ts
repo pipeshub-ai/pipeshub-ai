@@ -19,6 +19,7 @@ const ADDED_SINCE_MAIN: Record<string, string> = {
   docm: 'application/vnd.ms-word.document.macroEnabled.12',
   dotx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
   potx: 'application/vnd.openxmlformats-officedocument.presentationml.template',
+  pptm: 'application/vnd.ms-powerpoint.presentation.macroEnabled.12',
   xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12',
 }
 

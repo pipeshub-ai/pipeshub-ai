@@ -11,7 +11,6 @@ if [ "$(id -u)" = "0" ]; then
         /root/.cache/huggingface/.pipeshub-ownership-v1 || true
 fi
 
-LOG_FILE="/app/process_monitor.log"
 CHECK_INTERVAL=${CHECK_INTERVAL:-20}
 NODEJS_PORT=${NODEJS_PORT:-3000}
 EMBEDDING_PORT=${EMBEDDING_SERVER_PORT:-8002}
@@ -24,14 +23,18 @@ DOCLING_PID=""
 INDEXING_PID=""
 CONNECTOR_PID=""
 QUERY_PID=""
+AGENT_HARNESS_WORKER_PID=""
+MODEL_GATEWAY_PID=""
 PARSING_PID=""
 EXTRACTION_PID=""
+# The monitoring loop's sleep, which cleanup stops so its final wait does not sit it out.
+IDLE_PID=""
 
 PARSING_PORT=${PARSING_SERVICE_PORT:-8092}
 EXTRACTION_PORT=${EXTRACTION_SERVICE_PORT:-8093}
 
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
 }
 
 # The container's CPU and memory facts, read once here and inherited by every Python process, so
@@ -168,6 +171,8 @@ await_services() {
 start_nodejs() {
     log "Starting Node.js service..."
     cd /app/backend
+    # AsyncLocalStorage without async hooks (PERF-E3) is Node 24's default, and Node 24
+    # refuses --experimental-async-context-frame ("bad option"), so the image starts Node with no flag.
     node dist/index.js &
     NODEJS_PID=$!
     log "Node.js started with PID: $NODEJS_PID"
@@ -272,6 +277,49 @@ start_query() {
     log "Query started with PID: $QUERY_PID"
 }
 
+start_agent_harness_worker() {
+    log "Starting durable agent harness worker..."
+    cd /app/python
+    # The worker and the model gateway connect as the connectors role (PG_CORE_CONNECTORS_URL when set): platform_0012 grants that
+    # role the harness keys they write; there is no harness role. Each keeps its own capacity name.
+    (use_own_pg_login connectors; PIPESHUB_SERVICE=harness exec python -m app.harness_main) &
+    AGENT_HARNESS_WORKER_PID=$!
+    log "Agent harness worker started with PID: $AGENT_HARNESS_WORKER_PID"
+}
+
+# The harness's one boolean parse (F3; backend/python/app/utils/env_flags.py is the same):
+# 1/true/yes/on or 0/false/no/off in any case; unset or blank is the default ($2);
+# anything else stops the container rather than reading as the default.
+env_flag() {
+    local value="${!1:-}"
+    case "${value,,}" in
+        "") [ "$2" = "true" ] ;;
+        1|true|yes|on) return 0 ;;
+        0|false|no|off) return 1 ;;
+        *) log "ERROR: $1='$value' is not a boolean: use one of 1/true/yes/on or 0/false/no/off"; exit 1 ;;
+    esac
+}
+
+harness_worker_enabled() {
+    env_flag AGENT_HARNESS_WORKER_ENABLED true
+}
+
+# Engines reach models only through this gateway (E3); it follows the worker
+# unless MODEL_GATEWAY_ENABLED says otherwise.
+model_gateway_enabled() {
+    local follows=false
+    harness_worker_enabled && follows=true
+    env_flag MODEL_GATEWAY_ENABLED "$follows"
+}
+
+start_model_gateway() {
+    log "Starting model gateway (port ${MODEL_GATEWAY_PORT:-8096})..."
+    cd /app/python
+    (use_own_pg_login connectors; PIPESHUB_SERVICE=model_gateway exec python -m app.model_gateway_main) &
+    MODEL_GATEWAY_PID=$!
+    log "Model gateway started with PID: $MODEL_GATEWAY_PID"
+}
+
 spawn_parsing() {
     log "Starting Parsing service (port ${PARSING_PORT})..."
     cd /app/python
@@ -309,18 +357,42 @@ check_process() {
     return 0
 }
 
+# Durable agent runs drain on SIGTERM (finish the boundary, commit, yield) and
+# commit through Node, so their processes stop first and Node after them. The
+# worker's drain is bounded at 30 s plus a release; the app's stop grace
+# (compose stop_grace_period, Helm terminationGracePeriodSeconds) covers this.
+DRAIN_WAIT_S=40
+
+stop_and_wait() {
+    local pid live i
+    for pid in "$@"; do
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+    done
+    for ((i = 0; i < DRAIN_WAIT_S * 2; i++)); do
+        live=0
+        for pid in "$@"; do
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then live=1; fi
+        done
+        [ "$live" -eq 0 ] && return 0
+        sleep 0.5
+    done
+    log "Drain wait of ${DRAIN_WAIT_S}s over; stopping the other services"
+}
+
 cleanup() {
     log "Shutting down all services..."
-    
+    [ -n "$IDLE_PID" ] && kill "$IDLE_PID" 2>/dev/null || true
+    stop_and_wait "$AGENT_HARNESS_WORKER_PID" "$QUERY_PID"
+
     [ -n "$NODEJS_PID" ] && kill "$NODEJS_PID" 2>/dev/null || true
     [ -n "$SLACKBOT_PID" ] && kill "$SLACKBOT_PID" 2>/dev/null || true
     [ -n "$EMBEDDING_PID" ] && kill "$EMBEDDING_PID" 2>/dev/null || true
     [ -n "$DOCLING_PID" ] && kill "$DOCLING_PID" 2>/dev/null || true
     [ -n "$INDEXING_PID" ] && kill "$INDEXING_PID" 2>/dev/null || true
     [ -n "$CONNECTOR_PID" ] && kill "$CONNECTOR_PID" 2>/dev/null || true
-    [ -n "$QUERY_PID" ] && kill "$QUERY_PID" 2>/dev/null || true
     [ -n "$PARSING_PID" ] && kill "$PARSING_PID" 2>/dev/null || true
     [ -n "$EXTRACTION_PID" ] && kill "$EXTRACTION_PID" 2>/dev/null || true
+    [ -n "$MODEL_GATEWAY_PID" ] && kill "$MODEL_GATEWAY_PID" 2>/dev/null || true
     
     wait
     log "All services stopped."
@@ -397,6 +469,16 @@ fi
 spawn_embedding
 spawn_connector
 start_query
+# Both flags are parsed before anything starts, so a malformed value stops the container now.
+model_gateway_enabled || true
+if harness_worker_enabled; then
+    start_agent_harness_worker
+else
+    log "AGENT_HARNESS_WORKER_ENABLED=false — skipping durable agent worker"
+fi
+if model_gateway_enabled; then
+    start_model_gateway
+fi
 start_docling
 # Conditionally start the standalone Parsing and Extraction services.
 # Set USE_PARSING_SERVICE=true in the environment to enable them.
@@ -467,8 +549,13 @@ start_indexing
 
 log "All services started. Beginning monitoring cycle (checking every ${CHECK_INTERVAL}s)..."
 
+# Bash runs a trap only once its foreground command returns, so a stop that landed in a foreground sleep began its
+# drain up to CHECK_INTERVAL late, out of the stop grace the drain needs. A wait returns as the signal arrives.
 while true; do
-    sleep "$CHECK_INTERVAL"
+    sleep "$CHECK_INTERVAL" &
+    IDLE_PID=$!
+    wait "$IDLE_PID" || true
+    IDLE_PID=""
     
     if ! check_process "$NODEJS_PID" "Node.js"; then
         start_nodejs
@@ -496,6 +583,14 @@ while true; do
     
     if ! check_process "$QUERY_PID" "Query"; then
         start_query
+    fi
+
+    if harness_worker_enabled && ! check_process "$AGENT_HARNESS_WORKER_PID" "Agent harness worker"; then
+        start_agent_harness_worker
+    fi
+
+    if model_gateway_enabled && ! check_process "$MODEL_GATEWAY_PID" "Model gateway"; then
+        start_model_gateway
     fi
 
     if [ "${USE_PARSING_SERVICE:-false}" = "true" ]; then

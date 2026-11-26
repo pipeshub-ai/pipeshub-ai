@@ -1,6 +1,7 @@
 """Tests for app.sandbox.artifact_cleanup."""
 
 import asyncio
+import contextlib
 import os
 import time
 from unittest.mock import AsyncMock, patch
@@ -15,6 +16,8 @@ from app.sandbox.artifact_cleanup import (
     start_cleanup_task,
     stop_cleanup_task,
 )
+from app.sandbox.roots import BROKER, sandbox_root
+from tests.support.settle import settle
 
 
 class TestConfig:
@@ -182,7 +185,7 @@ class TestCleanupLoop:
 
         task = mod.start_cleanup_task()
         try:
-            await asyncio.wait_for(tick_event.wait(), timeout=1.0)
+            await settle(tick_event.wait())
         finally:
             mod.stop_cleanup_task()
             # give the task loop a chance to observe the cancellation
@@ -196,8 +199,35 @@ class TestCleanupLoop:
         assert any("pipeshub_sandbox" in root for root in call_roots)
 
     @pytest.mark.asyncio
+    async def test_cleanup_2_the_loop_sweeps_the_broker_work_root(self, monkeypatch) -> None:
+        """CLEANUP-2: a broker run's files (its output, kept for the upload) are swept like the other executors'."""
+        import app.sandbox.artifact_cleanup as mod
+        broker_root = sandbox_root(BROKER)
+
+        monkeypatch.setattr(mod, "_get_interval_seconds", lambda: 0)
+        monkeypatch.setattr(mod, "_get_ttl_seconds", lambda: 0)
+        roots: list[str] = []
+        swept = asyncio.Event()
+
+        def _fake_cleanup(root: str, ttl: int) -> int:
+            roots.append(root)
+            if root == broker_root:
+                swept.set()
+            return 0
+
+        monkeypatch.setattr(mod, "_cleanup_temp_directories", _fake_cleanup)
+        task = mod.start_cleanup_task()
+        try:
+            await settle(swept.wait())
+        finally:
+            mod.stop_cleanup_task()
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                await asyncio.wait_for(task, timeout=1.0)
+        assert broker_root in roots
+
+    @pytest.mark.asyncio
     async def test_loop_swallows_docker_import_error(self, monkeypatch):
-        """If ``from app.sandbox.docker_executor import _SANDBOX_ROOT`` raises
+        """If ``from app.sandbox.docker_executor import _sandbox_root`` raises
         ImportError, the loop must swallow it and keep running."""
         import app.sandbox.artifact_cleanup as mod
 
@@ -220,15 +250,15 @@ class TestCleanupLoop:
             # Only raise for the *docker_executor* import the loop does.
             # Do NOT pop the module from sys.modules -- doing so would leave
             # test_docker_executor.py holding a reference to a stale module
-            # object and break its monkeypatching of _SANDBOX_ROOT.
-            if name == "app.sandbox.docker_executor" and fromlist and "_SANDBOX_ROOT" in fromlist:
+            # object and break its monkeypatching of _sandbox_root.
+            if name == "app.sandbox.docker_executor" and fromlist and "_sandbox_root" in fromlist:
                 raise ImportError("no docker")
             return real_import(name, globals, locals, fromlist, level)
 
         with patch("builtins.__import__", side_effect=_patched_import):
             task = mod.start_cleanup_task()
             try:
-                await asyncio.wait_for(tick_event.wait(), timeout=1.0)
+                await settle(tick_event.wait())
             finally:
                 mod.stop_cleanup_task()
                 try:

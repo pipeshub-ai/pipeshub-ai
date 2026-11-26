@@ -3,7 +3,7 @@ import { act, cleanup, renderHook } from '@testing-library/react';
 
 import { useChatStore } from '@/chat/store';
 import type { Conversation } from '@/chat/types';
-import { useAuthStore } from '@/lib/store/auth-store';
+import { useAuthStore } from '@/config';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { clearSessionCache } from '@/lib/api/session-cache';
@@ -15,6 +15,13 @@ vi.mock('@/chat/api', () => ({
     fetchConversations: (...args: unknown[]) => fetchConversations(...args),
   },
 }));
+
+// The org switch refetches the flags (onSessionEnd); answer it as the server would. An unmocked request does not
+// settle under fake timers, so the flags stayed null and the list's key with them.
+vi.mock('@/lib/api/axios-instance', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api/axios-instance')>();
+  return { ...actual, apiClient: { ...actual.apiClient, get: vi.fn(async () => ({ data: { featureFlags: {} } })) } };
+});
 
 // SWR's default cache binds the real setTimeout for focus events when it loads.
 const realSetTimeout = globalThis.setTimeout;

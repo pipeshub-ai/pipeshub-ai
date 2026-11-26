@@ -1,4 +1,25 @@
-import { injectable, inject } from 'inversify';
+import { injectable, inject, optional } from 'inversify';
+import { erasureOnDelete } from '../../agent-harness/config';
+import {
+  PRINCIPAL_DELETION,
+  PrincipalDeletionService,
+} from './principal-deletion.service';
+import {
+  MODEL_ACCOUNT_ERASER,
+  ModelAccountEraser,
+} from '../../agent-harness/ports/model-accounts';
+import {
+  MEMORY_ERASER,
+  MemoryEraser,
+} from '../../agent-harness/ports/memory-store';
+import {
+  DATA_ERASER_EXTENSION,
+  DataEraserExtension,
+} from '../../agent-harness/ports/data-eraser-extension';
+import {
+  PERSONAL_INSTANCE_ERASER,
+  PersonalInstanceEraser,
+} from '../../agent-harness/ports/personal-instances';
 import { randomUUID } from 'crypto';
 import { getUserRepository } from '../../../libs/repositories/user';
 import type { UserDto } from '../../../libs/repositories/user';
@@ -106,6 +127,21 @@ export class ServiceAccountsService {
   constructor(
     @inject('EntitiesEventProducer')
     private readonly eventService: EntitiesEventProducer,
+    @inject(MODEL_ACCOUNT_ERASER)
+    @optional()
+    private readonly modelAccounts: ModelAccountEraser | null = null,
+    @inject(MEMORY_ERASER)
+    @optional()
+    private readonly memories: MemoryEraser | null = null,
+    @inject(PRINCIPAL_DELETION)
+    @optional()
+    private readonly principalDeletion: PrincipalDeletionService | null = null,
+    @inject(PERSONAL_INSTANCE_ERASER)
+    @optional()
+    private readonly personalInstances: PersonalInstanceEraser | null = null,
+    @inject(DATA_ERASER_EXTENSION)
+    @optional()
+    private readonly extension: DataEraserExtension | null = null,
   ) {}
 
   private tokenRevoker?: ServiceAccountTokenRevoker;
@@ -493,8 +529,25 @@ export class ServiceAccountsService {
     return toView(account, orgId);
   }
 
-  async remove(orgId: string, id: string): Promise<void> {
+  async remove(orgId: string, id: string, by?: string): Promise<void> {
     const account = await this.findOrThrow(orgId, id);
+
+    // CLEANUP-G2: what the account started goes; what it shares with people moves to an admin. Only where a delete
+    // erases for the org (ADR-OPS-08); otherwise its conversations stay as a release without CLEANUP-G2 kept them.
+    if (await erasureOnDelete(orgId)) {
+      await this.principalDeletion?.handOverUser(
+        orgId,
+        idOf(account),
+        by ?? idOf(account),
+      );
+    }
+
+    await this.modelAccounts?.eraseUser(orgId, idOf(account));
+    await this.memories?.eraseUser(orgId, idOf(account));
+    // An account acts through the API like a person, so stores this build does not know of may hold its data.
+    await this.extension?.eraseUser(orgId, idOf(account));
+    // An account is an ordinary user record, so it may have added its own actions and MCP servers (main #4324).
+    await this.personalInstances?.eraseUser(orgId, idOf(account));
 
     await getUserRepository().markDeleted(orgId, account._id);
     auditUserChange('service_account.delete', idOf(account));

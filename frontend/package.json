@@ -32,7 +32,7 @@
     "test:e2e:report": "npx playwright show-report",
     "test:e2e:cleanup": "npx playwright test tests/e2e/seed/cleanup.spec.ts --project=seed",
     "test:e2e:coverage": "COVERAGE=true npx playwright test",
-    "test:e2e:coverage-report": "npx open-cli coverage/e2e/report.html",
+    "test:e2e:coverage-report": "xdg-open coverage/e2e/report.html 2>/dev/null || open coverage/e2e/report.html",
     "build:electron": "node scripts/electron/next-build-electron.mjs",
     "build:electron:typescript": "tsc -p electron/tsconfig.json",
     "electron:prepare": "npm run build:electron:typescript && node scripts/electron/electron-prepare.mjs",
@@ -93,6 +93,7 @@
     "swr": "^2.5.1",
     "tiptap-markdown": "^0.9.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "zod": "^4.3.6",
     "zustand": "^5.0.9"
   },
   "devDependencies": {
@@ -109,6 +110,7 @@
     "electron-builder": "^26.18.0",
     "eslint": "^10.13.0",
     "eslint-config-next": "^16.3.8",
+    "fast-check": "^4.10.2",
     "jsdom": "^26.1.0",
     "jszip": "^3.10.2",
     "monocart-reporter": "^2.15.1",
