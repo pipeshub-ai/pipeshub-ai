@@ -2724,7 +2724,7 @@
       "rotateCredentialsPlaceholder": "새 API 키",
       "rotateCredentialsSave": "키 업데이트",
       "rotateCredentialsFailed": "키를 업데이트하지 못했습니다",
-      "connectionEndpointsDiffer": "이 연결의 일부 모델이 다른 엔드포인트를 사용합니다: {{models}}. 연결의 엔드포인트로 되돌리거나 삭제한 후 다시 시도하세요.",
+      "connectionEndpointsDiffer": "이 연결의 다음 모델은 {{reference}}와(과) 다른 엔드포인트를 사용합니다: {{models}}. 연결의 모든 모델이 같은 엔드포인트를 사용하도록 설정한 후 다시 시도하세요.",
       "identity": {
         "menuItem": "ID 전달",
         "title": "ID 전달",

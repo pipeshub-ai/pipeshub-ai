@@ -2567,7 +2567,7 @@
       "rotateCredentialsPlaceholder": "नई API कुंजी",
       "rotateCredentialsSave": "कुंजी अपडेट करें",
       "rotateCredentialsFailed": "कुंजी अपडेट नहीं हो सकी",
-      "connectionEndpointsDiffer": "इस कनेक्शन के कुछ मॉडल अलग एंडपॉइंट का उपयोग करते हैं: {{models}}। उन्हें कनेक्शन के एंडपॉइंट पर वापस ले जाएं या हटा दें, फिर से प्रयास करें।",
+      "connectionEndpointsDiffer": "इस कनेक्शन के ये मॉडल {{reference}} से अलग एंडपॉइंट का उपयोग करते हैं: {{models}}। कनेक्शन के सभी मॉडल को एक ही एंडपॉइंट पर रखें, फिर से प्रयास करें।",
       "identity": {
         "menuItem": "पहचान अग्रेषण",
         "title": "पहचान अग्रेषण",

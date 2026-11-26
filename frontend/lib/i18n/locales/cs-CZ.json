@@ -2867,7 +2867,7 @@
       "rotateCredentialsPlaceholder": "Nový API klíč",
       "rotateCredentialsSave": "Aktualizovat klíč",
       "rotateCredentialsFailed": "Klíč se nepodařilo aktualizovat",
-      "connectionEndpointsDiffer": "Některé modely v tomto připojení používají jiný koncový bod: {{models}}. Vraťte je na koncový bod připojení nebo je odstraňte a zkuste to znovu.",
+      "connectionEndpointsDiffer": "Tyto modely v připojení používají jiný koncový bod než {{reference}}: {{models}}. Nastavte všem modelům připojení stejný koncový bod a zkuste to znovu.",
       "batchStatus": {
         "pending": "Čeká",
         "checking": "Kontrola",
