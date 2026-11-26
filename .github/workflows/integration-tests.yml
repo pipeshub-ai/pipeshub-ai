@@ -38,6 +38,7 @@ on:
             - zendesk
             - servicenow
             - linear
+            - linear_sim
             - github_teams
             - github
             - gitlab
@@ -434,6 +435,15 @@ jobs:
       CONNSIM_ZAMMAD_REF: 8dac96d3a89c5fe85f56224e93151fb357dc4378
       ZAMMAD_SIM_IMAGE: pipeshub/connectors-simulator:zammad-it
       NEEDS_ZAMMAD_SIM: ${{ (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad_sim')) && 'true' || 'false' }}
+      # The linear_sim suite runs against the Linear simulator on shard 1. The connector calls Linear's fixed host names
+      # over HTTPS, so docker-compose.integration.linear-sim.yml answers them through a TLS front and has the app trust
+      # its CA (sim-tls/make-certs.sh). Every call to those names from that stack goes to the simulator, so the live
+      # linear suite (shard 4) stays off its shard; so does sharepoint_sim (shard 3), whose front's CA bundle takes the
+      # same place in the app container. CONNSIM_LINEAR_REF is a connectors-simulator commit with connsim/sources/linear
+      # and faults for named GraphQL operations (pipeshub-ai/connectors-simulator#112, until it merges).
+      CONNSIM_LINEAR_REF: 42cf47db1b5a89aec25f05dd87c77b8bd5c370f6
+      LINEAR_SIM_IMAGE: pipeshub/connectors-simulator:linear-it
+      NEEDS_LINEAR_SIM: ${{ (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'linear_sim')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
       SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
@@ -538,9 +548,13 @@ jobs:
       # finish earlier until they are fixed. servicenow's 60 min (shard 2),
       # servicenow_sim's 25 min (shard 4, ~261 min with it) and zammad_sim's
       # 30 min (shard 2, ~262 min with it) are still estimates.
+      # linear_sim's 27 min (shard 1, ~265 min with it) is one Neo4j leg
+      # measured locally, doubled.
       # Shard 1 keeps nextcloud and bookstack, the only suites needing
-      # selfhosted-sources, and the bookstack_sim and local_fs_sim suites,
-      # whose simulator steps run only there. Shard 2 keeps smb (smb-source),
+      # selfhosted-sources, and the bookstack_sim, local_fs_sim and linear_sim
+      # suites, whose simulator steps run only there (the Linear simulator
+      # answers Linear's host names for the whole stack, so the live linear
+      # suite stays off shard 1). Shard 2 keeps smb (smb-source),
       # zendesk (its token is minted only there), the Gmail suites (the
       # Gmail simulator starts only there) and zammad_sim (the Zammad
       # simulator starts only there; shard 3, beside the live zammad suite,
@@ -555,7 +569,7 @@ jobs:
       # only.
       # Rebalance with scripts/shard_balance.py when a suite grows, and keep
       # CONNECTOR_SHARDS in scripts/pr_changes.py the same as these lines.
-      CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or web or local_fs or local_fs_sim or github or sharepoint"
+      CONN_SHARD_1: "nextcloud or bookstack or bookstack_sim or mariadb or minio or web or local_fs or local_fs_sim or github or sharepoint or linear_sim"
       CONN_SHARD_2: "jira or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual or servicenow or zammad_sim"
       CONN_SHARD_3: "notion or confluence or gcs or zammad or sharepoint_sim or postgres or salesforce"
       CONN_SHARD_4: "google_drive_individual or gitlab or azure_blob or rss or github_teams or linear or servicenow_sim"
@@ -808,6 +822,27 @@ jobs:
           echo "ZAMMAD_SIM_COMPOSE=-f docker-compose.integration.zammad-sim.yml" >> "$GITHUB_ENV"
           grep -Ev '^\s*(#|$)' integration-tests/connectors/zammad_sim.env >> "$GITHUB_ENV"
 
+      - name: Check out the Linear simulator
+        if: env.NEEDS_LINEAR_SIM == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_LINEAR_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator-linear
+          persist-credentials: false
+
+      # No dataset: each test loads its own workspace. make-certs.sh makes one CA for every simulator front on the stack,
+      # for this run only (its key is deleted, both certificates expire in two days).
+      - name: Use the Linear simulator
+        if: env.NEEDS_LINEAR_SIM == 'true'
+        run: |
+          docker build -q -t "$LINEAR_SIM_IMAGE" connectors-simulator-linear
+          deployment/docker-compose/sim-tls/make-certs.sh "$RUNNER_TEMP/sim-tls"
+          echo "SIM_TLS_DIR=$RUNNER_TEMP/sim-tls" >> "$GITHUB_ENV"
+          echo "LINEAR_SIM_COMPOSE=-f docker-compose.integration.linear-sim.yml" >> "$GITHUB_ENV"
+          grep -Ev '^\s*(#|$)' integration-tests/connectors/linear_sim.env >> "$GITHUB_ENV"
+
       - name: Pull pre-built base images
         run: |
           for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
@@ -886,7 +921,7 @@ jobs:
       - name: 'Neo4j: Start services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE up -d
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $LINEAR_SIM_COMPOSE up -d
 
       - name: 'Neo4j: Wait for core services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
@@ -1056,10 +1091,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/neo4j
-          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE ps -a \
+          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $LINEAR_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE config --services); do
-            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $LINEAR_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $LINEAR_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -1079,13 +1114,13 @@ jobs:
       - name: 'Neo4j: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE down -v
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $LINEAR_SIM_COMPOSE down -v
 
       - name: 'ArangoDB: Start services'
         id: arango-start
         if: ${{ !cancelled() && steps.ai-provider.outcome == 'success' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE up -d
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $LINEAR_SIM_COMPOSE up -d
 
       - name: 'ArangoDB: Wait for core services'
         id: arango-core
@@ -1230,10 +1265,10 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/arango
-          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE ps -a \
+          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $LINEAR_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE config --services); do
-            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $LINEAR_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $LINEAR_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
           # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
@@ -1253,7 +1288,7 @@ jobs:
       - name: 'ArangoDB: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE down -v
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE $BOOKSTACK_SIM_COMPOSE $SALESFORCE_SIM_COMPOSE $SERVICENOW_SIM_COMPOSE $ZAMMAD_SIM_COMPOSE $LINEAR_SIM_COMPOSE down -v
 
       - name: Collect Playwright artifacts into reports
         if: always() && env.RUN_PLAYWRIGHT == 'true'
