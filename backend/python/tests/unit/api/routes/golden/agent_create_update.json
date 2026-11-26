@@ -7695,7 +7695,7 @@
    }
   },
   "rolled_back": 0,
-  "status": 400
+  "status": 500
  },
  "update-fail-update-agent": {
   "body": {
@@ -7856,7 +7856,7 @@
    }
   },
   "rolled_back": 0,
-  "status": 400
+  "status": 500
  },
  "update-knowledge-clear": {
   "body": {
