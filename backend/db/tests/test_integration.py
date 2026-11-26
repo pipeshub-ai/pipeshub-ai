@@ -493,6 +493,50 @@ def test_profile_fence_is_volatile_read_committed_and_callable_by_the_login(db):
         assert {("pipeshub_query_login", "USAGE"), ("pipeshub_node_login", "USAGE")} <= grants
 
 
+def test_the_write_fences_refuse_only_an_org_whose_writes_are_held(db):
+    """kernel.org_writes_held holds no org here, so both fences answer as before; a body that holds one org (as an extra migration
+    location would plant) refuses that org's write units with 25006, and only them."""
+    cluster, name = db
+    assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
+    held, other = "a" * 24, "b" * 24
+
+    def prologue(login: str, role: str, fence: str, org: str) -> None:
+        with connect(cluster, name, login) as c:
+            c.autocommit = False
+            try:      # the units' shape: the org is set in the statement that calls the fence
+                c.execute(f"SELECT set_config('role', %s, true), set_config('app.org_id', %s, true), {fence}(1) AS fence", (role, org))
+            finally:
+                c.rollback()
+
+    def every_unit(org: str) -> None:
+        prologue("pipeshub_node_login", "pipeshub_node", "kernel.assert_profile_epoch", org)
+        prologue("pipeshub_node_login", "pipeshub_node", "kernel.assert_store_epoch", org)
+
+    for org in (held, other, ""):
+        every_unit(org)
+    def hold_body(body: str) -> None:      # what an extra migration location's run does: the owner replaces the body
+        with connect(cluster, name) as c:
+            c.execute("GRANT CREATE ON SCHEMA kernel TO pipeshub_vetted_kernel")
+            c.execute("SET ROLE pipeshub_vetted_kernel")
+            c.execute("CREATE OR REPLACE FUNCTION kernel.org_writes_held(p_org text) RETURNS boolean LANGUAGE plpgsql STABLE SECURITY DEFINER "
+                      f"SET search_path = pg_catalog, kernel, pg_temp SET standard_conforming_strings = on AS $fn$ BEGIN {body} END $fn$")
+            c.execute("RESET ROLE")
+            c.execute("REVOKE CREATE ON SCHEMA kernel FROM pipeshub_vetted_kernel")
+
+    hold_body(f"RETURN p_org = '{held}';")
+    try:
+        for fence in ("kernel.assert_profile_epoch", "kernel.assert_store_epoch"):
+            with pytest.raises(psycopg.errors.ReadOnlySqlTransaction, match="writes are held"):
+                prologue("pipeshub_node_login", "pipeshub_node", fence, held)
+        every_unit(other)
+        every_unit("")
+    finally:
+        hold_body("RETURN false;")
+    with connect(cluster, name) as c:      # nobody but the fences' owner can call the hook
+        for role in ("pipeshub_node", "pipeshub_jobs"):
+            assert c.execute("SELECT has_function_privilege(%s, 'kernel.org_writes_held(text)', 'EXECUTE')", (role,)).fetchone()[0] is False
+
+
 def test_a_downgrade_to_the_previous_revision_leaves_a_clean_catalog_and_upgrades_again(db):
     cluster, name = db
     url = cluster.url(name, MIGRATE)

@@ -758,7 +758,7 @@ def test_a_hostile_argument_name_or_message_cannot_break_out_of_the_generated_sq
 def test_the_checked_in_sql_matches_the_shipped_manifest():
     expected = vetted.render_all(vetted.load(CORE))
     here = CORE.parent
-    assert sorted(p.name for p in here.glob("*.sql") if p.name not in ("assert_profile_epoch.sql", "profile_epoch.sql")) == sorted(expected)      # the fence is hand-written
+    assert sorted(p.name for p in here.glob("*.sql") if p.name not in ("assert_profile_epoch.sql", "profile_epoch.sql", "org_write_hold.sql")) == sorted(expected)      # the fences are hand-written
     for name, sql in expected.items():
         assert (here / name).read_text(encoding="utf-8") == sql, f"{name}: run python -m db.lib.vetted render {CORE}"
     assert vetted.main(["check", str(CORE)]) == 0
@@ -767,7 +767,7 @@ def test_the_checked_in_sql_matches_the_shipped_manifest():
 def test_only_a_named_extension_point_may_be_extended(tmp_path):
     ext = tmp_path / "m.yaml"
     lineage = vetted.load(CORE)[1]
-    assert lineage.qualified == "kernel.org_lineage" and vetted.EXTENSION_POINTS == {"kernel.org_parent_ids"}
+    assert lineage.qualified == "kernel.org_lineage" and vetted.EXTENSION_POINTS == {"kernel.org_parent_ids", "kernel.org_writes_held"}
     ext.write_text(yaml.safe_dump({"functions": [{"name": "kernel.org_lineage", "class": "read", "scope": "lineage", "extends": True, "org_arg": "p_org",
         "returns": "text[]", "no_org": "'{}'", "args": [{"name": "p_org", "type": "text", "pattern": "^[0-9a-f]{24}$"}], "body": "RETURN ARRAY['x'];"}]}))
     with pytest.raises(vetted.ManifestError, match="not an extension point"):
