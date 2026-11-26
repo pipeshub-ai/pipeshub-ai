@@ -124,7 +124,7 @@ Each journey is a scripted E2E test with a recorded-model variant (deterministic
 |---|---|---|---|---|
 | KN-01 | `knowledge_search` returns only records accessible to the principal | Verified against `get_accessible_virtual_record_ids` for users with disjoint access | I | P0 |
 | KN-02 | ACL revoked mid-session | The next search excludes the record; a previously offloaded file under `/pipeshub/knowledge` is not refreshed with new content | I | P1 |
-| KN-03 | Service-account principal | Searches as the service account's access, never as the initiating user's broader access, and the reverse | I | P0 |
+| KN-03 | Service-account agent | Searches as the person running it, never as the agent's creator or bound account; the agent keeps only the sources shared with the org | I | P0 |
 | KN-04 | Filters (connector, date, KB/collection, record type) | Applied server-side; invalid filters return an actionable error | I | P0 |
 | KN-05 | Citations | Each result carries a stable citation ID and a deep link (text fragments built by `app/utils/text_fragments/`); citations in the final answer resolve in the UI | E | P0 |
 | KN-06 | Large result set | Concise by default; `response_format=detailed` honored; output above the cap is offloaded to `/pipeshub/knowledge/<id>.md` with a summary and path | I | P0 |
@@ -1092,7 +1092,7 @@ Updated by the work packages in the project tracker. ☐ not started · ◐ part
 | WS-15 | ✅ | backend/python/tests/unit/harness_engines/pipeshub/test_ph_cli.py::test_ph14..ph19; `ph ask`, `ph publish` (WP-67): `backend/python/tests/unit/harness_engines/pipeshub/test_c312_ph_ask_publish.py` (PH-20..PH-32), `backend/python/tests/unit/harness_core/engines/test_c312_publish_tool.py` (PUB-1..PUB-8); D `ph_e2e` `test_ph_e2e_c312_*` on opencode, Codex and Claude Code |
 | KN-01 | ✅ | `backend/python/tests/unit/harness/engines/test_e2e3_tool_matrix.py::test_kn_knowledge_tools_on_the_real_graph` |
 | KN-02 | ☐ | |
-| KN-03 | ✅ | `backend/python/tests/unit/harness/assembly/test_service_account_identity.py::test_the_slack_caller_names_the_user_and_the_creator_scopes_the_knowledge` |
+| KN-03 | ✅ | `backend/python/tests/unit/harness/assembly/test_service_account_identity.py::test_every_agent_runs_as_the_person_and_ignores_the_caller_fields`, `backend/python/tests/unit/harness/assembly/test_service_account_identity.py::test_a_service_agent_keeps_only_the_sources_shared_with_the_org` |
 | KN-04 | ✅ | `backend/python/tests/unit/harness/knowledge/test_wp12_knowledge_service.py::test_kn04_*` |
 | KN-05 | ✅ | `backend/python/tests/unit/harness/engines/test_e2e3_tool_matrix.py::test_kn_knowledge_tools_on_the_real_graph` |
 | KN-06 | ✅ | `backend/python/tests/unit/harness/knowledge/test_wp12_knowledge_service.py::test_kn06_*`, `backend/python/tests/unit/harness/gateway/test_wp12_knowledge_shelf.py` |
