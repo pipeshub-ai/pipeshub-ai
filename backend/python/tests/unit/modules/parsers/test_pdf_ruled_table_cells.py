@@ -1786,3 +1786,33 @@ def test_a_key_opening_with_an_underscore_after_a_blank_line_starts_a_record() -
     specs = [("REG1", 2.0, 10.0), ("Enabled.", 52.0, 10.0),
              ("_MODE2", 2.0, 30.0), ("Disabled.", 52.0, 30.0)]  # a blank line between them
     assert _groups(specs, cols) == [1, 1]
+
+
+def test_a_box_starting_inside_the_ruled_table_keeps_the_edge_text_of_the_table_it_publishes() -> None:
+    # The box starts 1.5 pt inside the table's left rule, right of a mark set against that rule: the grid published
+    # with the table's own extent holds the mark.
+    def draw(c: canvas.Canvas) -> list[Fixture]:
+        fx = draw_ruled_table(c, 36, 240, names=[f"K{i}" for i in range(6)], prose=SHORT_ROWS)
+        c.setFont("Helvetica", 3)
+        c.drawString(36.4, _top(255), "7")
+        return [fx]
+
+    pdf, page, fx = make_page(draw)
+    try:
+        x0, y0, x1, y1 = fx[0].bbox
+        grid, own = ola._reextract_grid_and_bbox(page, (x0 + 1.5, y0, x1, y1), PAGE_W, PAGE_H)
+        assert own is not None and own[0] <= x0 + 0.5
+        assert "7" in " ".join(c or "" for r in grid for c in r)
+    finally:
+        pdf.close()
+
+
+def test_long_identifiers_on_one_line_do_not_join_the_record_after_a_blank_line() -> None:
+    # Three columns of long identifiers that fill their cells, then a blank line and a record of short values.
+    cols = [(0.0, 60.0), (60.0, 120.0), (120.0, 180.0)]
+    specs = [("ABCDEFGHIJKLMN", 1.0, 10.0), ("OPQRSTUVWXYZAB", 61.0, 10.0), ("CDEFGHIJKLMNOP", 121.0, 10.0),
+             ("Next", 1.0, 30.0), ("One", 61.0, 30.0), ("Two", 121.0, 30.0)]
+    assert _groups(specs, cols) == [1, 1]
+    # right below, the same lines are one record: the identifiers broke across the lines
+    tight = [*specs[:3], ("Next", 1.0, 19.0), ("One", 61.0, 19.0), ("Two", 121.0, 19.0)]
+    assert _groups(tight, cols) == [2]

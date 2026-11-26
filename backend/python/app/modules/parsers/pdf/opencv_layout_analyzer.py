@@ -3617,9 +3617,21 @@ def _extract_table_by_words(
             matching,
             key=lambda t: (-round(_iou(tuple(t.bbox), target), 2), -len(t.cells), t.bbox[1], t.bbox[0]),
         )
-    if target is not None and info is not None:
-        info["bbox"] = tuple(float(v) for v in largest.bbox)
-    return _table_grid_by_words(largest, region=page, within=target, split_rows=target is not None)
+    if target is None:
+        return _table_grid_by_words(largest, region=page)
+    own = tuple(float(v) for v in largest.bbox)
+    if info is not None:
+        info["bbox"] = own
+    # The table is published with its own extent reaching up to the target's top (``_region_bbox``): its cells hold
+    # every word of that extent, edge cells outside the target included, and nothing below or beside it.
+    return _table_grid_by_words(largest, region=page, within=_published_extent(own, target), split_rows=True)
+
+
+def _published_extent(
+    own: tuple[float, float, float, float], target: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """The words a ruled table matched to *target* is published with: its own extent, up to the target's top."""
+    return (own[0], min(own[1], target[1]), own[2], own[3])
 
 
 # Share of the characters inside a table's bbox its grid must keep. Below it the
@@ -3777,9 +3789,7 @@ def _reextract_grid_and_bbox(
             try:
                 ref = [
                     w for w in ruled_sub.extract_words()
-                    if _word_center_in_bbox(w, target) and (
-                        own is None or _word_center_in_bbox(w, (own[0], target[1], own[2], own[3]))
-                    )
+                    if _word_center_in_bbox(w, target if own is None else _published_extent(own, target))
                 ]
             except Exception:
                 ref = bbox_words

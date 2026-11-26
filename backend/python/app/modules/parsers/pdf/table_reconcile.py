@@ -315,8 +315,9 @@ def _row_boxes(t: Table) -> list[tuple[float, float]]:
 def undrawn_cut_crossings(
     t: Table, words: list[dict[str, Any]], vrules: Sequence[Rule],
 ) -> float:
-    """Share of (line, cut) pairs in the body rows where the text runs into the cut without a drawn
-    rule: a word crosses it, or the gap across it is under 0.6 line heights."""
+    """Share of (line, cut) pairs in the body rows where the text runs into the cut: a word crosses it,
+    drawn or not (a rule drawn through running text does not make it cells), or the gap across it is
+    under 0.6 line heights with no drawn rule there."""
     lines = band_lines(words)
     pairs = cross = 0
     for (top, bot), row in list(zip(_row_boxes(t), t.rows))[1:]:
@@ -729,17 +730,20 @@ def apply(
     legacy: list[ola.LayoutRegion], decisions: list[Decision],
 ) -> tuple[list[ola.LayoutRegion], list[tuple[float, float, float, float]]]:
     """The regions after the decisions, and the boxes that are not tables (their words stay text).
-    A decision replaces the legacy table regions its new tables overlap (a not-table box: the ones it
-    covers); legacy tables elsewhere in the box stay."""
+    A decision replaces the legacy table regions its new tables overlap; a not-table box drops the ones
+    it covers more than half of. Legacy tables elsewhere in the box stay."""
     out = list(legacy)
     suppressed: list[tuple[float, float, float, float]] = []
     for d in decisions:
         if d.kind == "none":
             continue
-        covered = [t.bbox for t in d.tables] or [d.box]
         out = [
             r for r in out
-            if r.type != ola.LayoutRegionType.TABLE or not any(ola._boxes_overlap(r.bbox, c) for c in covered)
+            if r.type != ola.LayoutRegionType.TABLE or not (
+                any(ola._boxes_overlap(r.bbox, t.bbox) for t in d.tables) if d.tables
+                # nothing replaces what a not-table box drops: only a table the box mostly covers goes
+                else ola._overlap_ratio(r.bbox, d.box) > 0.5
+            )
         ]
         out.extend(d.tables)
         if d.kind == "not_table":
