@@ -629,7 +629,8 @@ _KH_OWN_PROPERTIES = _KH_INTERNAL_PROPERTIES | _KH_EDGE_INTERNAL_PROPERTIES
 
 
 def _owned(doc: dict[str, Any]) -> dict[str, Any]:
-    """``doc`` without `_KH_OWN_PROPERTIES`, as a new dict."""
+    """``doc`` without `_KH_OWN_PROPERTIES`, as a new dict: a caller's document before it is written, and every node or edge document
+    before it is handed out."""
     return {k: v for k, v in doc.items() if k not in _KH_OWN_PROPERTIES}
 
 
@@ -2182,10 +2183,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         if in_place:
             arango_node = neo4j_node
-            for k in _KH_INTERNAL_PROPERTIES:
+            for k in _KH_OWN_PROPERTIES:
                 arango_node.pop(k, None)
         else:
-            arango_node = {k: v for k, v in neo4j_node.items() if k not in _KH_INTERNAL_PROPERTIES}
+            arango_node = _owned(neo4j_node)
 
         # Convert id to _key
         if "id" in arango_node:
@@ -2217,7 +2218,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Returns:
             Edge in ArangoDB format (with _key, _from, _to)
         """
-        arango_edge = {k: v for k, v in neo4j_edge.items() if k not in _KH_EDGE_INTERNAL_PROPERTIES}
+        arango_edge = _owned(neo4j_edge)
 
         # If we have from_id and to_id, construct _from and _to
         if "from_id" in arango_edge and "to_id" in arango_edge:
@@ -3452,8 +3453,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if results:
                 # properties(r) returns a dict directly, so we can use it as-is
                 edge_data = results[0].get("r", {})
-                if not isinstance(edge_data, dict):
-                    edge_data = {}
+                edge_data = _owned(edge_data) if isinstance(edge_data, dict) else {}
                 # Return in generic format
                 edge_data["from_id"] = from_id
                 edge_data["from_collection"] = from_collection
@@ -3948,13 +3948,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
 
-            # Convert results
-            documents = []
-            for record in results:
-                node = record.get("n", {})
-                documents.append(node)
-
-            return documents
+            return [_owned(record.get("n") or {}) for record in results]
 
         except Exception as e:
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
@@ -4711,10 +4705,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             edges = []
             for record in results:
-                # properties(r) returns a dict directly
+                # properties(r) returns a dict directly; handed out less what the backend keeps for itself
                 edge = record.get("r", {})
-                if not isinstance(edge, dict):
-                    edge = {}
+                edge = _owned(edge) if isinstance(edge, dict) else {}
                 from_id = record.get("from_id", "")
                 to_id = record.get("to_id", "")
                 from_labels = record.get("from_labels", [])
@@ -18907,7 +18900,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             edges = []
             for result in results:
-                edge_dict = result.get("r", {})  # properties(r) already returns a dict
+                edge_dict = _owned(result.get("r") or {})  # properties(r), less what the backend keeps for itself
                 target_labels = result.get("target_labels", [])
                 target_id = result.get("target_id")
 
@@ -18980,7 +18973,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             edges = []
             for result in results:
-                edge_dict = result.get("r", {})  # properties(r) already returns a dict
+                edge_dict = _owned(result.get("r") or {})  # properties(r), less what the backend keeps for itself
                 target_labels = result.get("target_labels", [])
                 target_id = result.get("target_id")
                 target_name = result.get("target_name")

@@ -192,3 +192,68 @@ def test_the_helpers_drop_the_backend_keys() -> None:
     assert set(p._arango_to_neo4j_node(forged, "records")) == {"id", "recordName"}
     rows = p._edges_by_labels([{**forged, "from_id": "p", "from_collection": "records", "to_id": "r", "to_collection": "records"}])
     assert [set(row["props"]) for group in rows.values() for row in group] == [{"id", "recordName"}]
+
+
+# --------------------------------------------------------------------------- documents handed out
+
+# A public method that returns a whole node or edge document (``properties(v)``, ``v {.*}``, ``collect(v)``, ``RETURN v``) of a record, a
+# group or a hierarchy edge (or of a label or type its caller names) hands it out through a helper that drops what the backend keeps for
+# itself, or one built on such a helper: a caller that writes the document back would carry the stamps with it.
+HANDS_OUT = ("_owned(", "_neo4j_to_arango_node(", "_neo4j_to_arango_edge(", "_create_typed_record_from_neo4j_simple(")
+_BOUND = re.compile(r"\((\w+):(?:Record|RecordGroup|\{[^}]*\})[^)]*\)|\[(\w+):(?:NODE_RELATION|\{[^}]*\})[^\]]*\]")
+
+# Public methods the scan flags whose result carries no whole document of those, and why.
+NO_DOCUMENT_HANDED_OUT = {
+    "update_node": "returns whether a node was written",
+    "batch_update_nodes": "returns whether every node was written",
+    "split_link_edges": "a migration: returns counts",
+    "migrate_legacy_kb_to_app": "a migration: returns counts",
+    "get_entity_access_context": "returns App maps of named fields and group ids",
+    "upsert_sync_point": "SyncPoint nodes",
+    "check_edge_exists": "returns whether the edge exists",
+    "get_uploaded_document_ids": "returns ids",
+    "delete_records_recursive": "returns the deleted records' ids and counts",
+    "soft_delete_records": "returns the marked records' ids and counts",
+    "stage_state_get": "StageState nodes",
+    "stage_states_for_revision": "StageState nodes",
+    "stage_states_stale": "StageState nodes",
+    "stage_states_delete_unheld_revisions": "StageState nodes",
+    "migrate_person_to_user": "a migration of a person's edges: returns its mode and counts",
+    "reap_stale_external_app_relations": "user-app edges: returns counts",
+    "get_records_by_weburls": "returns maps of named fields",
+    "get_selection_nodes": "returns maps of named fields",
+    "get_knowledge_hub_connector_page_v3": "returns rows of named fields",
+    "get_knowledge_hub_breadcrumbs": "returns crumbs of named fields",
+    "move_taxonomy_edges": "taxonomy edges: returns counts",
+    "heal_taxonomy_alias_nodes": "taxonomy nodes: returns counts",
+    "get_team_with_users": "a team's permission edges and team fields",
+    "get_user_teams": "a team's permission edges and team fields",
+    "get_team_users": "a team's permission edges and team fields",
+    "get_team_permissions_and_owner_count": "Teams nodes and permission edges",
+    "delete_all_edges_for_node": "returns counts",
+    "hard_delete_agent": "agent nodes and edges: returns counts",
+}
+
+
+def _readers_handing_out_documents() -> set[str]:
+    source = inspect.getsource(neo4j_provider)
+    tree = ast.parse(source)
+    provider = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Neo4jProvider")
+    out = set()
+    for fn in provider.body:
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.name.startswith("_"):
+            continue
+        seg = ast.get_source_segment(source, fn) or ""
+        for v in {a or b for a, b in _BOUND.findall(seg)}:
+            if re.search(rf"properties\({v}\)|\b{v}\s*\{{\s*\.\*|collect\(\s*(?:DISTINCT\s+)?{v}\s*\)"
+                         rf"|RETURN\s+(?:DISTINCT\s+)?{v}\s*(?:,|AS\b|\n|$|LIMIT)|,\s*{v}\s*(?:AS\b|\n)", seg):
+                out.add(fn.name)
+    return out
+
+
+def test_every_document_handed_out_drops_the_backend_keys() -> None:
+    sources = _sources()
+    readers = _readers_handing_out_documents()
+    raw = sorted(n for n in readers if not any(h in sources[n] for h in HANDS_OUT) and n not in NO_DOCUMENT_HANDED_OUT)
+    assert raw == [], f"public methods handing out a document without dropping the backend's own keys: {raw}"
+    assert sorted(n for n in NO_DOCUMENT_HANDED_OUT if n not in readers or any(h in sources[n] for h in HANDS_OUT)) == []

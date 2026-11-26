@@ -276,3 +276,34 @@ async def test_the_legacy_relation_migration_stamps_edges_an_earlier_run_moved(s
         assert await p.count_stale_kh_children_order() == 0
     finally:
         await _cypher(neo4j_settings, "MATCH (n) WHERE n.id IN ['lm-p', 'lm-c'] DETACH DELETE n")
+
+
+async def test_no_document_read_back_carries_the_backend_keys(state_graph, neo4j_provider) -> None:
+    """A stamped hierarchy edge and a record with its listing state, read through every public reader that hands out their documents:
+    none carries what the backend keeps for itself (the sort name and scope, the children order stamps). A caller that writes a document
+    back would otherwise carry them with it."""
+    p = neo4j_provider
+    own = {"khSortName", "khScope", "khFrom", "khOrd", "khChild"}
+    await p.batch_upsert_nodes([_node("lr-p", recordName="Parent", recordType="FILE"),
+                                _node("lr-c", recordName="Child", recordType="FILE", indexingStatus="QUEUED")], R)
+    await p.batch_create_edges([_edge("lr-p", R, "lr-c", R, relationshipType="PARENT_CHILD")], NR)
+    assert await p.count_stale_kh_children_order() == 0      # the edge carries its stamps
+    try:
+        edges = {
+            "get_edge": [await p.get_edge("lr-p", R, "lr-c", R, NR)],
+            "get_edges_to_node": await p.get_edges_to_node(f"{R}/lr-c", NR),
+            "get_edges_from_node": await p.get_edges_from_node(f"{R}/lr-p", NR),
+            "get_edges_from_node_with_target_name": await p.get_edges_from_node_with_target_name(f"{R}/lr-p", NR),
+        }
+        for reader, docs in edges.items():
+            assert docs and all(d for d in docs), reader
+            assert [sorted(own & set(d)) for d in docs] == [[] for _ in docs], reader
+        nodes = {
+            "get_document": [await p.get_document("lr-c", R)],
+            "get_documents_by_status": [d for d in await p.get_documents_by_status(R, "QUEUED") if d.get("id") == "lr-c"],
+        }
+        for reader, docs in nodes.items():
+            assert docs and all(d for d in docs), reader
+            assert [sorted(own & set(d)) for d in docs] == [[] for _ in docs], reader
+    finally:
+        await p.delete_nodes_and_edges(["lr-p", "lr-c"], R)
