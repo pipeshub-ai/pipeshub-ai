@@ -489,6 +489,38 @@ async def test_connector_checks_that_miss_together_share_one_read() -> None:
         assert len(reads_made) == 1                                                   # and the answer is reused for its ttl
 
 
+@pytest.mark.asyncio
+async def test_the_unconnected_points_scan_runs_only_for_a_user_who_reads_every_connector() -> None:
+    """The scan of the org's points (22 s at 10 M points, so it always ran out of its budget) ran for every user with a connector arm, though
+    only a user who reads every connector can have the arms dropped."""
+    import asyncio
+
+    from app.core import org_context
+
+    asked: list[str] = []
+
+    class Db:
+        async def run(self, fn, **opts: object) -> object:
+            class Tx:
+                async def fetch(self, sql: str, *a: object) -> list:
+                    asked.append("list")
+                    return [{"member_id": "c1"}, {"member_id": "c2"}]
+
+                async def fetchval(self, sql: str, *a: object) -> object:
+                    asked.append("scan" if "unconnected" in sql else "budget")
+                    return False
+
+            return await fn(Tx())
+
+    for apps, scanned, found in ((["c1"], False, None), (["c1", "c2", "c9"], True, frozenset({"c1", "c2"}))):
+        asked.clear()
+        sizer = dense.Sizer(Db(), T)
+        with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
+            assert await sizer.connectors(ORG, 1, apps) is None
+            await asyncio.wait_for(asyncio.gather(*sizer._connectors_inflight.values()), 10)
+            assert ("scan" in asked) is scanned and await sizer.connectors(ORG, 1, apps) == found
+
+
 class _SlowPoolDb:
     """A unit of work like the kernel's: it first waits ``wait_s`` for a pooled connection, and a caller's ``timeout_ms`` covers that wait
     and the statements together (a wait longer than it is a timeout). The checked org has one connector and no unconnected point."""
