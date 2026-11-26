@@ -289,3 +289,111 @@ class TestTheWireRecord:
         wire.record_unsent(httpx2.ConnectError("x"))
         wire.record_lost(httpx2.ReadError("x"))
         assert wire.current_record() is None
+
+
+async def test_the_mcp_client_tunnels_to_the_checked_address_and_names_the_host_in_tls() -> None:
+    """The same through httpx2: CONNECT names the checked address, the ClientHello the host."""
+    import asyncio
+
+    from tests.unit.agents.mcp.test_url_guard import _client_hello_sni
+
+    seen: dict[str, object] = {}
+
+    async def proxy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        seen["connect"] = (await reader.readline()).decode()
+        while (await reader.readline()) not in (b"\r\n", b""):
+            pass
+        writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+        await writer.drain()
+        seen["sni"] = _client_hello_sni(await reader.read(4096))
+        writer.close()
+
+    server = await asyncio.start_server(proxy, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    real_getaddrinfo = socket.getaddrinfo
+
+    def getaddrinfo(host: str, *args: object, **kwargs: object) -> list:
+        if host == "mcp.example.com":
+            return _resolves_to(_PUBLIC_IP)(host)
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    with patch.object(url_guard.urllib.request, "getproxies", return_value={"https": f"http://127.0.0.1:{port}"}), \
+         patch.object(url_guard.urllib.request, "proxy_bypass", return_value=False), \
+         patch("socket.getaddrinfo", getaddrinfo):
+        transport = url_guard._McpGuardedBase("https://mcp.example.com/mcp", allow_private=False)
+        async with httpx2.AsyncClient(transport=transport, timeout=5) as client:
+            with pytest.raises(httpx2.HTTPError):
+                await client.post("https://mcp.example.com/mcp", json={})
+    server.close()
+    await server.wait_closed()
+
+    assert seen["connect"] == f"CONNECT {_PUBLIC_IP}:443 HTTP/1.1\r\n"
+    assert seen["sni"] == "mcp.example.com"
+
+
+async def test_the_mcp_client_moves_past_a_refused_connect_and_brackets_ipv6() -> None:
+    """The same through httpx2: a 502 to the IPv6 CONNECT, then the IPv4 address."""
+    import asyncio
+
+    from tests.unit.agents.mcp.test_url_guard import (
+        _DUAL_STACK,
+        _PUBLIC_IPV6,
+        _through_local_proxy,
+    )
+
+    connects: list[str] = []
+
+    async def proxy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        line = (await reader.readline()).decode()
+        connects.append(line)
+        while (await reader.readline()) not in (b"\r\n", b""):
+            pass
+        writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n" if "[" in line else b"HTTP/1.1 200 Connection established\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(proxy, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    with _through_local_proxy(port, _DUAL_STACK):
+        transport = url_guard._McpGuardedBase("https://mcp.example.com/mcp", allow_private=False)
+        async with httpx2.AsyncClient(transport=transport, timeout=5) as client:
+            with pytest.raises(httpx2.HTTPError) as raised:
+                await client.post("https://mcp.example.com/mcp", json={})
+    server.close()
+    await server.wait_closed()
+
+    assert not isinstance(raised.value, httpx2.ProxyError)
+    assert connects == [f"CONNECT [{_PUBLIC_IPV6}]:443 HTTP/1.1\r\n", f"CONNECT {_PUBLIC_IP}:443 HTTP/1.1\r\n"]
+
+
+async def test_the_mcp_client_moves_past_a_plain_http_proxys_502_for_a_get() -> None:
+    import asyncio
+
+    from tests.unit.agents.mcp.test_url_guard import (
+        _DUAL_STACK,
+        _PUBLIC_IPV6,
+        _through_local_proxy,
+    )
+
+    sent: list[str] = []
+
+    async def proxy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        line = (await reader.readline()).decode()
+        sent.append(line.split()[1])
+        while (await reader.readline()) not in (b"\r\n", b""):
+            pass
+        writer.write(b"HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n" if "[" in line else b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(proxy, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    with _through_local_proxy(port, _DUAL_STACK):
+        transport = url_guard._McpGuardedBase("http://mcp.example.com:8080/mcp", allow_private=False)
+        async with httpx2.AsyncClient(transport=transport, timeout=5) as client:
+            response = await client.get("http://mcp.example.com:8080/mcp")
+    server.close()
+    await server.wait_closed()
+
+    assert response.status_code == 200
+    assert sent == [f"http://[{_PUBLIC_IPV6}]:8080/mcp", f"http://{_PUBLIC_IP}:8080/mcp"]
