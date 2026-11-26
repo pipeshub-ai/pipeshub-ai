@@ -1990,6 +1990,7 @@ func kernel.apply_rls(regclass,text,boolean,boolean,text,boolean) owner=pipeshub
 func kernel.apply_rls_partition(regclass,regclass,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=11c43c9acfff84c19685af9a65f2ddb8 ext=-
 func kernel.assert_profile_epoch(integer) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=cc876dc61477062d7871f416a9a653b6 ext=-
 func kernel.assert_store_epoch(integer) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=75d08837d920da2585b2a05c27d5a707 ext=-
+func kernel.assert_org_writable(text) owner=pipeshub_vetted_kernel secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp;standard_conforming_strings=on body=acf233f5241cac6f42be89b04a33b13a ext=-
 func kernel.declare_extension_schema(name) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=b9da3c6332da59a2fbc1ddb6040080c5 ext=-
 func kernel.exempt_constraint(regclass,name,text,text,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=32c4a15e8a767e354922828a28af36e8 ext=-
 func kernel.exempt_trigger(regprocedure,text,text) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=ba198108fb9374224c91da29e844c153 ext=-
@@ -2180,6 +2181,7 @@ funcacl identity.gauge_live_orgs() pipeshub_jobs EXECUTE
 funcacl identity.gauge_user_counts() pipeshub_jobs EXECUTE
 funcacl identity.oldest_org() pipeshub_node EXECUTE
 funcacl identity.org_count(boolean) pipeshub_node EXECUTE
+funcacl kernel.assert_org_writable(text) pipeshub_jobs EXECUTE
 funcacl kernel.assert_profile_epoch(integer) pipeshub_connectors EXECUTE
 funcacl kernel.assert_profile_epoch(integer) pipeshub_connectors_login EXECUTE
 funcacl kernel.assert_profile_epoch(integer) pipeshub_indexing EXECUTE

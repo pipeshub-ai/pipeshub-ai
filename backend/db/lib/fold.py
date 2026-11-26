@@ -141,8 +141,12 @@ def keeps_bounds(jobs: psycopg.Connection) -> None:
 
 
 def org_lock(jobs: psycopg.Connection, org: str, lock_class: int = LOCK_CLASS) -> bool:
-    """Take the org's transaction-scoped advisory lock of this job class (False: another run of the same job holds it)."""
-    return jobs.execute("SELECT pg_try_advisory_xact_lock(%s, hashtext(%s))", (lock_class, org)).fetchone()[0]
+    """Take the org's transaction-scoped advisory lock of this job class (False: another run of the same job holds it). Raises
+    ReadOnlySqlTransaction for an org whose writes are held (kernel.assert_org_writable): the step writes nothing and the org is
+    reported as failed, for the next pass."""
+    if not jobs.execute("SELECT pg_try_advisory_xact_lock(%s, hashtext(%s))", (lock_class, org)).fetchone()[0]:
+        return False
+    return jobs.execute("SELECT kernel.assert_org_writable(%s)", (org,)).fetchone()[0]
 
 
 def fold_org(jobs: psycopg.Connection, org: str) -> int:
