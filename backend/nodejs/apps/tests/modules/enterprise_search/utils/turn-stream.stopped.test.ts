@@ -4,7 +4,9 @@ import sinon from 'sinon'
 import { resetActiveRunsForTests, stopAllRuns } from '../../../../src/modules/enterprise_search/utils/active-runs'
 import { StreamedTranscript, stoppedAnswer } from '../../../../src/modules/enterprise_search/utils/turn-stream'
 import { settle } from '../controller/chat-test-harness'
-import { delta, flows, RUN, startStream } from '../controller/streaming-flows'
+import { appConfig, delta, flows, RUN, startStream } from '../controller/streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const OPENING = "I'll look up the release guidance, then list the tips."
 const SEARCH = 'knowledgegraph__search'
@@ -31,6 +33,8 @@ const searchStep = (status: string, extra: Record<string, unknown> = {}): Record
 })
 
 describe('a stopped run keeps what it streamed', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
   describe('StreamedTranscript', () => {
     it('keeps the text before a tool call as a step, the call, and the text after it as the answer so far', () => {
       const transcript = new StreamedTranscript()

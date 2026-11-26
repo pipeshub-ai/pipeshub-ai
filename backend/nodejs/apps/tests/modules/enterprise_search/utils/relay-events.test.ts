@@ -8,7 +8,9 @@ import {
   StreamRelay,
 } from '../../../../src/modules/enterprise_search/utils/relay-events'
 import { settle } from '../controller/chat-test-harness'
-import { RUN, Run, delta, finalAnswer, flows, startStream } from '../controller/streaming-flows'
+import { appConfig, delta, finalAnswer, flows, RUN, Run, startStream } from '../controller/streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 type Row = Record<string, unknown>
 
@@ -24,6 +26,8 @@ const relayed = (relay: StreamRelay, type: string, data: Row | string): Row | un
 }
 
 describe('stream relay: what reaches the browser', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
   afterEach(() => sinon.restore())
 
   it('the events it forwards are a closed list; a new one is not forwarded until it is named here', () => {
@@ -180,6 +184,8 @@ describe('stream relay: what reaches the browser', () => {
 })
 
 describe('stream relay: every stream the browser reads', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
   afterEach(() => sinon.restore())
 
   const drive = async (run: Run): Promise<void> => {

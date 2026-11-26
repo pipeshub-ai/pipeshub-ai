@@ -6,6 +6,8 @@ import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './cha
 import { AGENT_KEY, ORG, OWNER, appConfig, finalAnswer, seedConversation } from './streaming-flows'
 import { turnDeps } from '../helpers/turn-deps'
 import { withOwnerGrant } from '../helpers/conversation-grant'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 /** The answer a regenerate targets is the newest answer, then its question, however many rows came after them. */
 
@@ -37,6 +39,8 @@ function regenerate(w: ReturnType<typeof world>, agent: boolean, messageId: stri
 }
 
 describe('regenerate the latest answer', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
   afterEach(() => sinon.restore())
 
   for (const agent of [false, true]) {

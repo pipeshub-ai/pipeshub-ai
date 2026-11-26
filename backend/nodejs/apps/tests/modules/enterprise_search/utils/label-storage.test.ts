@@ -17,7 +17,9 @@ import { labelContentHash } from '../../../../src/modules/enterprise_search/serv
 import { LEGACY_LABEL_VER } from '../../../../src/modules/enterprise_search/services/conversation/privacy/label.types'
 import type { IAIResponse, IChatSessionDocument } from '../../../../src/modules/enterprise_search/types/conversation.interfaces'
 import { InMemoryChatStore, settle } from '../controller/chat-test-harness'
-import { Flow, RUN, Run, flows, startStream } from '../controller/streaming-flows'
+import { appConfig, Flow, flows, RUN, Run, startStream } from '../controller/streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 type Row = Record<string, unknown>
 
@@ -66,6 +68,8 @@ const finalConversation = (run: Run): Row => {
 }
 
 describe('answer labels in storage', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
   afterEach(() => sinon.restore())
 
   describe('a streamed answer', () => {

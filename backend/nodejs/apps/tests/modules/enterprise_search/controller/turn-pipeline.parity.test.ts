@@ -3,7 +3,9 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { formatPreviousConversations } from '../../../../src/modules/enterprise_search/utils/utils'
 import { ACTORS } from '../helpers/conversation-world'
-import { Kind, turnWorld } from '../helpers/turn-world'
+import { Kind, turnWorld, worldAppConfig } from '../helpers/turn-world'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const SOLO = { projectId: undefined, projectVisibility: undefined, isShared: false, sharedWith: [] }
 const BODY = { query: 'And the roadmap?', runId: 'client-run-1', clientMessageId: 'k-1', baseSeq: 0, filesShared: true }
@@ -30,6 +32,8 @@ const legacyPayload = (kind: Kind, conversationId: string, history: unknown[]) =
 const inert = ['authorUserId', 'requestedBy', 'inReplyTo']
 
 describe('by default a follow-up behaves as before', () => {
+  beforeEach(() => registerAppUpstreams(worldAppConfig))
+  afterEach(() => registerUpstreams({}))
   afterEach(() => sinon.restore())
 
   for (const kind of ['chat', 'agent'] as const) {

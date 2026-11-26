@@ -10,7 +10,9 @@ import {
   RunWatchdog,
 } from '../../../../src/modules/enterprise_search/utils/turn-stream'
 import { settle } from '../controller/chat-test-harness'
-import { delta, finalAnswer, flows, startStream } from '../controller/streaming-flows'
+import { appConfig, delta, finalAnswer, flows, startStream } from '../controller/streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const frame = (type: string, fields: Record<string, unknown> = {}): string =>
   `event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`
@@ -23,6 +25,8 @@ const streamSignal = (): AbortSignal | undefined => {
 }
 
 describe('run limits', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
   let clock: sinon.SinonFakeTimers
 
   beforeEach(() => {

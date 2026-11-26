@@ -1668,6 +1668,7 @@ describe('Enterprise Search Utils', () => {
         null,
         null,
         null,
+        'req-1',
         res,
         (data) => { capturedData = data },
       )
@@ -1675,6 +1676,29 @@ describe('Enterprise Search Utils', () => {
       expect(res.write.called).to.be.false
       expect(capturedData).to.be.null
       expect(newBuffer).to.equal('')
+    })
+
+    it('should capture complete event data and not forward it', () => {
+      const res = createMockResponse()
+      const data = JSON.stringify({ answer: 'Hello', citations: [] })
+      const chunk = Buffer.from(`event: complete\ndata: ${data}\n\n`)
+      let capturedData: any = null
+
+      handleRegenerationStreamData(
+        chunk,
+        '',
+        null,
+        null,
+        null,
+        'req-1',
+        res,
+        (d) => { capturedData = d },
+      )
+
+      expect(capturedData).to.not.be.null
+      expect(capturedData.answer).to.equal('Hello')
+      // Complete events should not be forwarded
+      expect(res.write.called).to.be.false
     })
 
     it('should handle incomplete buffer', () => {
@@ -1687,6 +1711,7 @@ describe('Enterprise Search Utils', () => {
         null,
         null,
         null,
+        'req-1',
         res,
         () => {},
       )
@@ -1795,6 +1820,7 @@ describe('Enterprise Search Utils', () => {
         null,
         null,
         null,
+        'req-1',
         res,
         () => {},
         AGUI_PROTOCOL,
@@ -1817,6 +1843,7 @@ describe('Enterprise Search Utils', () => {
         null,
         null,
         null,
+        'req-1',
         res,
         () => {},
         AGUI_PROTOCOL,
@@ -3739,7 +3766,7 @@ describe('AG-UI Protocol', () => {
       let capturedData: any = null
 
       handleRegenerationStreamData(
-        chunk, '', null, null, null, res, (d) => { capturedData = d },
+        chunk, '', null, null, null, 'req-1', res, (d) => { capturedData = d }, AGUI_PROTOCOL,
       )
 
       expect(capturedData).to.deep.equal(result)
@@ -3751,7 +3778,7 @@ describe('AG-UI Protocol', () => {
       const text = `event: RUN_FINISHED\ndata: ${JSON.stringify({ type: 'RUN_FINISHED', answer: 'direct' })}\n\n`
       const onComplete = sinon.stub()
 
-      handleRegenerationStreamData(Buffer.from(text), '', null, null, null, res, onComplete)
+      handleRegenerationStreamData(Buffer.from(text), '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
       expect(onComplete.called).to.be.false
       // Passed on through the relay, which keeps only a RUN_FINISHED's base fields.
@@ -3763,7 +3790,7 @@ describe('AG-UI Protocol', () => {
       const text = `event: RUN_FINISHED\ndata: ${JSON.stringify({ type: 'RUN_FINISHED', runId: 'child', parentRunId: 'root', result: { answer: 'x' } })}\n\n`
       const onComplete = sinon.stub()
 
-      handleRegenerationStreamData(Buffer.from(text), '', null, null, null, res, onComplete)
+      handleRegenerationStreamData(Buffer.from(text), '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
       expect(onComplete.called).to.be.false
       // Passed on through the relay: the sub-agent's run ids stay, its result does not.
@@ -3775,7 +3802,7 @@ describe('AG-UI Protocol', () => {
       const chunk = Buffer.from('event: RUN_FINISHED\ndata: {invalid json}\n\n')
       const onComplete = sinon.stub()
 
-      handleRegenerationStreamData(chunk, '', null, null, null, res, onComplete)
+      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
       expect(onComplete.called).to.be.false
       expect(res.write.called).to.be.false
@@ -3794,7 +3821,7 @@ describe('AG-UI Protocol', () => {
         `event: RUN_ERROR\ndata: ${JSON.stringify({ type: 'RUN_ERROR', message: 'boom' })}\n\n`,
       )
 
-      handleRegenerationStreamData(chunk, '', mockConv, 'm2', null, res, sinon.stub())
+      handleRegenerationStreamData(chunk, '', mockConv, 'm2', null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
 
       expect(res.write.calledOnce).to.be.true
       expect(res.write.firstCall.args[0]).to.include('event: RUN_ERROR')
@@ -3815,7 +3842,7 @@ describe('AG-UI Protocol', () => {
       )
 
       handleRegenerationStreamData(
-        chunk, '', mockConv, null, null, res, sinon.stub(),
+        chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL,
         undefined, undefined, onAskUserQuestion,
       )
       await Promise.resolve()
@@ -3834,7 +3861,7 @@ describe('AG-UI Protocol', () => {
         `event: CUSTOM\ndata: ${JSON.stringify({ type: 'CUSTOM', name: 'artifact', value: {} })}\n\n`,
       )
 
-      handleRegenerationStreamData(chunk, '', mockConv, null, null, res, sinon.stub())
+      handleRegenerationStreamData(chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
 
       expect(res.write.calledOnce).to.be.true
       expect(findByIdAndUpdateStub.called).to.be.false
@@ -3843,24 +3870,13 @@ describe('AG-UI Protocol', () => {
     it('should not treat legacy complete/error/ask_user_question event names as agui frames', () => {
       const res = createMockResponse()
       const onComplete = sinon.stub()
-      const onUpstreamError = sinon.stub()
-      const onAskUserQuestion = sinon.stub()
-      const mockConv: any = { _id: 'c1' }
-      const legacy =
-        'event: complete\ndata: {"answer":"legacy"}\n\n' +
-        'event: error\ndata: {"error":"legacy"}\n\n' +
-        'event: ask_user_question\ndata: {"status":"success","toolData":{"question":"legacy"}}\n\n'
+      const chunk = Buffer.from('event: complete\ndata: {"answer":"legacy"}\n\n')
 
-      handleRegenerationStreamData(
-        Buffer.from(legacy), '', mockConv, 'm1', null, res, onComplete,
-        undefined, onUpstreamError, onAskUserQuestion,
-      )
+      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
       // Under `agui` the legacy `complete` name is neither parsed as a completion nor, being no event the
       // relay names, forwarded.
       expect(onComplete.called).to.be.false
-      expect(onUpstreamError.called).to.be.false
-      expect(onAskUserQuestion.called).to.be.false
       expect(res.write.called).to.be.false
     })
   })

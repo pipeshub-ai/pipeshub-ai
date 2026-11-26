@@ -7,10 +7,12 @@ import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { settle } from './chat-test-harness'
-import { finalAnswer } from './streaming-flows'
+import { appConfig, finalAnswer } from './streaming-flows'
 import { invokeRoute, RouteOutcome } from '../helpers/route-invoker'
 import { AGENT_KEY as KEY, CONVERSATION_ROUTES, ConversationRoute, urlOf } from '../helpers/conversation-routes'
 import { ACTORS as WORLD, ActorName as WorldActor, Env, NOT_FOUND as WORLD_NOT_FOUND, ORG, Seed as World, buildRouters, seed } from '../helpers/conversation-world'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 // The agent-kind rows of the shared actor world: A owner, B write, C read, P project viewer, D stranger, E other org.
 const ACTOR_OF = { owner: 'A', write: 'B', read: 'C', projectViewer: 'P', stranger: 'D', crossOrg: 'E' } as const
@@ -120,6 +122,8 @@ function assertOutcome(out: Outcome, expected: Expectation, label: string, ok?: 
 }
 
 describe('agent conversation routes: guard decisions through the router', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
   before(() => {
     off = buildRouters({ stop: false })
   })

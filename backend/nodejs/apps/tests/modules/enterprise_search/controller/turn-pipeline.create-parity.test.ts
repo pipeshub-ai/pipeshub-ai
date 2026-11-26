@@ -2,8 +2,10 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { ACTORS } from '../helpers/conversation-world'
-import { Kind, turnWorld } from '../helpers/turn-world'
+import { Kind, turnWorld, worldAppConfig } from '../helpers/turn-world'
 import { settle } from './chat-test-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const BODY = { query: 'Roadmap?', runId: 'client-run-1', clientMessageId: 'k-1', filesShared: true, shareToolResults: true }
 const aiPath = (kind: Kind): RegExp => (kind === 'chat' ? /\/api\/v1\/chat\/stream$/ : /\/agent\/agent-1\/chat\/stream$/)
@@ -32,6 +34,8 @@ const inert = ['authorUserId', 'requestedBy', 'inReplyTo']
 const flagOnly = ['creationKey', 'activeRun', 'clientMessageId', 'filesShared', 'shareToolResults', 'runId']
 
 describe('by default a first send behaves as before', () => {
+  beforeEach(() => registerAppUpstreams(worldAppConfig))
+  afterEach(() => registerUpstreams({}))
   afterEach(() => sinon.restore())
 
   for (const kind of ['chat', 'agent'] as const) {

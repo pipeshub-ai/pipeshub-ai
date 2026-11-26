@@ -11,7 +11,9 @@ import {
 import { DEFAULT_RUN_LIMITS, StreamedTranscript, toLiveCitation } from '../../../../src/modules/enterprise_search/utils/turn-stream'
 import { resetActiveRunsForTests, stopAllRuns } from '../../../../src/modules/enterprise_search/utils/active-runs'
 import { settle } from '../controller/chat-test-harness'
-import { delta, finalAnswer, flows, RUN, startStream } from '../controller/streaming-flows'
+import { appConfig, delta, finalAnswer, flows, RUN, startStream } from '../controller/streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 /** What the extension was told of one run's answer as it was written. */
 function recordingLive(): LiveAnswer & {
@@ -80,6 +82,8 @@ const discardedCopy = (normalizedAnswer: string, rawSoFar: string, citations: un
 }
 
 describe('the answer as it is written, for the run extension (liveAnswer)', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
   beforeEach(() => resetActiveRunsForTests())
   afterEach(() => {
     resetActiveRunsForTests()

@@ -19,6 +19,8 @@ import {
   notAllowed,
   testAdminRefusals,
 } from '../helpers/admin-refusals'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const refusedResponse = (status: number, body: unknown) =>
   ({
@@ -37,6 +39,8 @@ const openStream = () =>
   )
 
 describe('enterprise_search/utils/ai-stream', () => {
+  beforeEach(() => registerAppUpstreams({ aiBackend: 'http://ai.test' }))
+  afterEach(() => registerUpstreams({}))
   afterEach(() => useAdminRefusals(undefined))
 
   describe('refusals only an admin can lift', () => {

@@ -16,6 +16,8 @@ import {
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from '../controller/chat-test-harness'
 import { appConfig, delta, finalAnswer, flows, requestFor, startStream } from '../controller/streaming-flows'
 import { turnDeps } from '../helpers/turn-deps'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const streamSignal = (): AbortSignal | undefined => {
   const call = (globalThis.fetch as unknown as sinon.SinonStub)
@@ -25,6 +27,8 @@ const streamSignal = (): AbortSignal | undefined => {
 }
 
 describe('active runs', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
   beforeEach(() => {
     resetActiveRunsForTests()
   })

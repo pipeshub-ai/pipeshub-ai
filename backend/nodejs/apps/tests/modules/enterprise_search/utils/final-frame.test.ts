@@ -6,9 +6,11 @@ import Citation from '../../../../src/modules/enterprise_search/schema/citation.
 import * as agui from '../../../../src/modules/enterprise_search/utils/agui'
 import { FULL_FRAME_MAX_ROWS } from '../../../../src/modules/enterprise_search/utils/utils'
 import { FakeQuery, InMemoryChatStore, oid, settle } from '../controller/chat-test-harness'
-import { AGENT_KEY, Flow, ORG, OWNER, Run, RUN, StreamHandler, finalAnswer, flows, seedConversation, startStream } from '../controller/streaming-flows'
+import { AGENT_KEY, appConfig, finalAnswer, Flow, flows, ORG, OWNER, Run, RUN, seedConversation, startStream, StreamHandler } from '../controller/streaming-flows'
 import { configureVisibility, resetVisibility } from '../../../../src/modules/enterprise_search/services/conversation/privacy/visibility'
 import { labelContentHash } from '../../../../src/modules/enterprise_search/services/conversation/privacy/label'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 type Row = Record<string, unknown>
 
@@ -87,6 +89,8 @@ const finishedConversation = (run: Run): Row => {
 const idsOf = (rows: Row[]): string[] => rows.map((m) => String(m._id))
 
 describe('final stream frame', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
   afterEach(() => {
     sinon.restore()
     delete (mongoose.connection as unknown as { readyState?: number }).readyState

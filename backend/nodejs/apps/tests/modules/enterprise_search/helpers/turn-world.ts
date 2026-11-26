@@ -11,6 +11,8 @@ export type Kind = 'chat' | 'agent'
 export type Mode = 'stream' | 'plain'
 
 const appConfig = { aiBackend: 'http://ai.test', jwtSecret: 'test-jwt-secret', scopedJwtSecret: 'test-scoped-secret' } as never
+/** The world's services: since OSS #6192 a suite whose turns reach them registers them as upstreams. */
+export const worldAppConfig = appConfig
 
 export interface TurnWorldOptions {
   deps?: Partial<ConversationTurnDeps>

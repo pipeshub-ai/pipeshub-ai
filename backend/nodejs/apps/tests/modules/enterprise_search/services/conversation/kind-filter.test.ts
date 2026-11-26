@@ -11,6 +11,8 @@ import { EXCLUDE_AGENT, ONLY_AGENT } from '../../../../../src/modules/enterprise
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from '../../controller/chat-test-harness'
 import { withOwnerGrant } from '../../helpers/conversation-grant'
 import { turnDeps } from '../../helpers/turn-deps'
+import { registerUpstreams } from '../../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../../src/modules/tokens_manager/config/config'
 
 /** A guard may authorize a conversation of another kind than the route's; the handlers then read that kind. */
 
@@ -20,6 +22,8 @@ const AGENT_KEY = 'agent-1'
 const appConfig = { aiBackend: 'http://ai.test', jwtSecret: 'test-jwt-secret', scopedJwtSecret: 'test-scoped-secret' } as never
 
 describe('kindFilterOf', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
   afterEach(() => sinon.restore())
 
   it('is the handler’s own filter when no guard ran, or the guard set none', () => {

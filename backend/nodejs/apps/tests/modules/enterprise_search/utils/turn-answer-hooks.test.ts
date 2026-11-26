@@ -10,6 +10,8 @@ import { behindGuard, realGuards } from '../helpers/guarded-chat'
 import { turnDeps } from '../helpers/turn-deps'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore } from '../controller/chat-test-harness'
 import { ORG, OWNER, RUN, appConfig, finalAnswer, flows, seedConversation, startStream } from '../controller/streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const MENTION = { name: 'agent_mention', value: { type: 'participant', ref: 'participant_2' } }
 
@@ -39,6 +41,8 @@ const withHooks = (hooks: TurnAnswerHooks): void => {
 }
 
 describe("the turn extension's answer hooks", () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
   afterEach(() => sinon.restore())
 
   for (const flow of flows) {

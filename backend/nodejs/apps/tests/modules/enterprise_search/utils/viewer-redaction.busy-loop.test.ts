@@ -7,6 +7,8 @@ import {
   readableRecordIds,
 } from '../../../../src/modules/enterprise_search/utils/viewer-redaction'
 import { accessCheckBreaker } from '../../../../src/modules/enterprise_search/utils/access-check-breaker'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 /**
  * The breaker around the viewer access check opens for a query service that is slow, never for a process too busy
@@ -53,6 +55,7 @@ const queryService = async (delayMs: number): Promise<QueryService> => {
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const { port } = server.address() as AddressInfo
+  registerAppUpstreams({ aiBackend: `http://127.0.0.1:${port}` })
   return {
     appConfig: {
       aiBackend: `http://127.0.0.1:${port}`,
@@ -70,6 +73,7 @@ const queryService = async (delayMs: number): Promise<QueryService> => {
 }
 
 describe('the access check breaker, a slow service and a busy process', () => {
+  afterEach(() => registerUpstreams({}))
   let service: QueryService | undefined
 
   beforeEach(() => accessCheckBreaker.reset())

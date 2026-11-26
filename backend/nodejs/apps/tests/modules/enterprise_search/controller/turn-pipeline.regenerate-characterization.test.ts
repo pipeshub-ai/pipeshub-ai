@@ -1,7 +1,9 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { Kind, turnWorld } from '../helpers/turn-world'
+import { Kind, turnWorld, worldAppConfig } from '../helpers/turn-world'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const KINDS: Kind[] = ['chat', 'agent']
 
@@ -64,6 +66,8 @@ const expected = (extended: boolean) => {
 }
 
 describe('regenerate characterization (frames and rows recorded before the turn pump is unified)', () => {
+  beforeEach(() => registerAppUpstreams(worldAppConfig))
+  afterEach(() => registerUpstreams({}))
   afterEach(() => sinon.restore())
   for (const kind of KINDS) {
     it(`${kind}: the SSE frames and the resulting rows are unchanged`, async () => {
