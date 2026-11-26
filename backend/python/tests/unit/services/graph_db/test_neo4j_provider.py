@@ -988,8 +988,8 @@ class TestHardDeleteAgent:
                 [{"rel_count": 2}],  # step 6 agent->toolset rel delete
                 [{"deleted_count": 2}],  # step 7 toolset delete
                 [{"sid_list": ["m1"], "rel_count": 1}],  # step 7b agent->MCP server rel delete
-                [{"deleted_count": 1, "rel_count": 1}],  # step 7b orphaned MCP tool delete, with its server->tool rel
-                [{"deleted_count": 1, "rel_count": 1}],  # step 7b orphaned MCP server delete, with its rel to a tool another server holds
+                # step 7b orphaned MCP server, under its lock: 1 server, 1 tool only it held, its 2 server->tool rels
+                [{"deleted_count": 1, "tool_count": 1, "rel_count": 2}],
                 [{"deleted_count": 1}],  # step 8 delete agent
             ]
         )
@@ -1004,7 +1004,7 @@ class TestHardDeleteAgent:
             "edges_deleted": 10,  # 2 + 3 + 2 + 1 agent->server + 2 server->tool
             "mcp_servers_deleted": 1,
         }
-        assert neo4j_provider.client.execute_query.await_count == 11
+        assert neo4j_provider.client.execute_query.await_count == 10
 
     @pytest.mark.asyncio
     async def test_skips_knowledge_and_toolset_branches_when_lists_empty(

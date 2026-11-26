@@ -29163,36 +29163,31 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 mcp_server_ids = result[0].get("sid_list", []) or []
                 edges_deleted += result[0].get("rel_count", 0) or 0
             if mcp_server_ids:
-                result = await self.client.execute_query(
-                    f"""
-                    MATCH (server:{mcp_label})-[r:{mcp_tool_rel}]->(tool:{tool_label})
-                    WHERE server.id IN $isolated_ids AND NOT EXISTS {{ MATCH (server)<-[:{has_mcp_rel}]-() }}
-                      AND NOT EXISTS {{ MATCH (tool)<-[:{mcp_tool_rel}]-(other) WHERE other <> server }}
-                    WITH tool, count(r) as rels
-                    DETACH DELETE tool
-                    RETURN count(tool) as deleted_count, sum(rels) as rel_count
-                    """,
-                    parameters={"isolated_ids": mcp_server_ids},
-                    txn_id=transaction
-                )
-                if result:
-                    tools_deleted += result[0].get("deleted_count", 0) or 0
-                    edges_deleted += result[0].get("rel_count", 0) or 0
+                # One statement per cleanup, under each server's write lock: of two deletes that both find a server orphaned,
+                # the second waits for the first and then finds nothing, instead of deleting the server between the other's
+                # tool and server steps and leaving its tools behind.
+                # A statement run on its own is sent again by the client when it loses to the other's delete (lost_to_a_delete).
                 result = await self.client.execute_query(
                     f"""
                     MATCH (server:{mcp_label})
-                    WHERE server.id IN $isolated_ids AND NOT EXISTS {{ MATCH (server)<-[:{has_mcp_rel}]-() }}
-                    OPTIONAL MATCH (server)-[r:{mcp_tool_rel}]->()
-                    WITH server, count(r) as rels
+                    WHERE server.id IN $isolated_ids
+                    SET server.{_MATCH_LOCK} = true
+                    REMOVE server.{_MATCH_LOCK}
+                    WITH server WHERE NOT EXISTS {{ MATCH (server)<-[:{has_mcp_rel}]-() }}
+                    OPTIONAL MATCH (server)-[r:{mcp_tool_rel}]->(tool:{tool_label})
+                    WITH server, count(r) as rels,
+                         collect(DISTINCT CASE WHEN NOT EXISTS {{ MATCH (tool)<-[:{mcp_tool_rel}]-(other) WHERE other <> server }} THEN tool END) as solo
+                    FOREACH (t IN solo | DETACH DELETE t)
                     DETACH DELETE server
-                    RETURN count(server) as deleted_count, sum(rels) as rel_count
+                    RETURN count(server) as deleted_count, sum(size(solo)) as tool_count, sum(rels) as rel_count
                     """,
                     parameters={"isolated_ids": mcp_server_ids},
                     txn_id=transaction
                 )
                 if result:
                     mcp_servers_deleted = result[0].get("deleted_count", 0) or 0
-                    edges_deleted += result[0].get("rel_count", 0) or 0      # its links to tools another server still holds
+                    tools_deleted += result[0].get("tool_count", 0) or 0
+                    edges_deleted += result[0].get("rel_count", 0) or 0
 
             # ── Step 8: DETACH DELETE the agent node ──
             # This removes the agent AND any remaining relationships (permissions,

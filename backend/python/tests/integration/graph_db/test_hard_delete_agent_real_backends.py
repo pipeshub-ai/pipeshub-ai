@@ -125,3 +125,48 @@ async def test_deleting_every_agent_leaves_no_agent_subgraph(world: tuple[IGraph
     result = await graph.hard_delete_all_agents()
     assert result["agents_deleted"] >= 2 and result["mcp_servers_deleted"] >= 2
     assert await _present(graph, ids) == {"loose_mcp", "kept_tool"}      # a server no agent uses keeps its tool
+
+
+@pytest.fixture(params=["neo4j", "arango"])
+async def store(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[IGraphDBProvider]:
+    try:
+        graph = await (connect_neo4j(logger, monkeypatch) if request.param == "neo4j" else connect_arango(logger, ARANGO_DB))
+    except Exception as exc:
+        backend_unavailable(request.param, exc)
+    yield graph
+    disconnect = getattr(graph, "disconnect", None)
+    if disconnect is not None:
+        await disconnect()
+
+
+ROUNDS = 20
+
+
+async def test_concurrent_deletes_of_two_agents_sharing_a_server_never_fail_and_leave_nothing(store: IGraphDBProvider) -> None:
+    """Both deletes may find the shared server orphaned at once and remove its tool links, tools and node together: neither may
+    fail on the other's removals (a write-write conflict, a document already gone), and nothing of the server may stay."""
+    graph = store
+    now = get_epoch_timestamp_in_ms()
+    agent = {"description": "d", "startMessage": "s", "systemPrompt": "p", "models": [], "createdBy": "u", "createdAtTimestamp": now,
+             "updatedAtTimestamp": now}
+    failures, left = [], []
+    for round_ in range(ROUNDS):
+        run = uuid.uuid4().hex[:10]
+        a, b, server = f"a-cc-{run}", f"b-cc-{run}", f"s-cc-{run}"
+        tools = [f"t{i}-cc-{run}" for i in range(5)]
+        assert await graph.batch_upsert_nodes([{"_key": a, "name": "a", **agent}, {"_key": b, "name": "b", **agent}], C.AGENT_INSTANCES.value)
+        assert await graph.batch_upsert_nodes([{"_key": server, "name": "s", "displayName": "s", "instanceId": f"i-{run}", "userId": "u", "createdBy": "u",
+                                                "createdAtTimestamp": now}], C.AGENT_MCP_SERVERS.value)
+        assert await graph.batch_upsert_nodes([{"_key": t, "name": t, "fullName": f"x.{t}", "toolsetName": "x", "createdBy": "u", "createdAtTimestamp": now}
+                                               for t in tools], C.AGENT_TOOLS.value)
+        assert await graph.batch_create_edges([_edge(C.AGENT_INSTANCES.value, x, C.AGENT_MCP_SERVERS.value, server) for x in (a, b)],
+                                              C.AGENT_HAS_MCP_SERVER.value)
+        assert await graph.batch_create_edges([_edge(C.AGENT_MCP_SERVERS.value, server, C.AGENT_TOOLS.value, t) for t in tools],
+                                              C.MCP_SERVER_HAS_TOOL.value)
+        results = await asyncio.gather(graph.hard_delete_agent(a), graph.hard_delete_agent(b))
+        # a failed delete answers zero counts (it never raises): each must have deleted its own agent
+        failures += [round_ for r in results if r["agents_deleted"] != 1]
+        left += [k for k, coll in ((server, C.AGENT_MCP_SERVERS.value), *((t, C.AGENT_TOOLS.value) for t in tools), (a, C.AGENT_INSTANCES.value),
+                                   (b, C.AGENT_INSTANCES.value)) if await graph.get_document(k, coll) is not None]
+    assert failures == [], f"a delete failed in rounds {failures}"
+    assert left == [], f"left behind: {left}"

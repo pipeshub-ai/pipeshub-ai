@@ -14919,6 +14919,32 @@ class TestHardDeleteAgent:
         assert (result["mcp_servers_deleted"], result["tools_deleted"], result["edges_deleted"], result["agents_deleted"]) == (1, 1, 2, 1)
 
     @pytest.mark.asyncio
+    async def test_a_conflict_with_a_concurrent_cleanup_of_the_server_is_run_again(self, connected_provider) -> None:
+        """Another delete cleaning up the same orphaned server can win a write-write conflict on its tool links: the step runs
+        again (it is idempotent) instead of failing the delete."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        conflict = ArangoQueryError("Query failed", 409, '{"code":409,"error":true,"errorMessage":"write-write conflict","errorNum":1200}')
+        connected_provider.execute_query = AsyncMock(side_effect=[
+            [],                                  # no knowledge
+            [],                                  # no toolsets
+            [],                                  # no toolset edges
+            ["agentMcpServers/s1"],              # the agent's server links, removed
+            ["agentMcpServers/s1"],              # s1 is orphaned
+            conflict,                            # the other delete holds s1's tool links
+            [],                                  # run again: the other delete removed them
+            [None],                              # s1 already removed by the other delete (ignored, nothing returned)
+            [],                                  # no permissions
+            [{"_key": "a1"}],                    # agent deleted
+        ])
+
+        with patch("app.services.graph_db.arango.arango_http_provider.asyncio.sleep", new=AsyncMock()):
+            result = await connected_provider.hard_delete_agent("a1")
+
+        assert (result["agents_deleted"], result["mcp_servers_deleted"], result["tools_deleted"]) == (1, 0, 0)
+        assert "ignoreErrors" in connected_provider.execute_query.await_args_list[7].args[0]
+
+    @pytest.mark.asyncio
     async def test_exception_returns_zeros(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("db error"))
         result = await connected_provider.hard_delete_agent("a1")

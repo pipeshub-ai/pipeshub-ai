@@ -29507,26 +29507,24 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN msid
                 """
 
-                mcp_server_ids = await self.execute_query(
-                    find_orphaned_mcp_servers_query,
-                    bind_vars={"server_ids": attached_server_ids},
-                    transaction=transaction
-                )
+                # Another delete may be cleaning up the same orphaned server at once: every statement below is idempotent
+                # (a removal that finds nothing does nothing) and is run again on a write-write conflict.
+                async def run(query: str, bind_vars: dict) -> list:
+                    return await self._retry_write_conflicts(
+                        lambda: self.execute_query(query, bind_vars=bind_vars, transaction=transaction), transaction)
+
+                mcp_server_ids = await run(find_orphaned_mcp_servers_query, {"server_ids": attached_server_ids})
 
                 if mcp_server_ids:
                     delete_mcp_tool_edges_query = f"""
                     FOR msid IN @mcp_server_ids
                         FOR edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
                             FILTER edge._from == msid
-                            REMOVE edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value}
+                            REMOVE edge IN {CollectionNames.MCP_SERVER_HAS_TOOL.value} {_remove_opts(transaction)}
                             RETURN OLD._to
                     """
 
-                    mcp_tool_ids = await self.execute_query(
-                        delete_mcp_tool_edges_query,
-                        bind_vars={"mcp_server_ids": mcp_server_ids},
-                        transaction=transaction
-                    )
+                    mcp_tool_ids = [t for t in await run(delete_mcp_tool_edges_query, {"mcp_server_ids": mcp_server_ids}) or [] if t]
 
                     if mcp_tool_ids:
                         edges_deleted += len(mcp_tool_ids)
@@ -29540,30 +29538,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                     RETURN 1
                             )
                             FILTER remaining == null
-                            REMOVE PARSE_IDENTIFIER(tid).key IN {CollectionNames.AGENT_TOOLS.value}
+                            REMOVE PARSE_IDENTIFIER(tid).key IN {CollectionNames.AGENT_TOOLS.value} {_remove_opts(transaction)}
                             RETURN OLD
                         """
 
-                        deleted_mcp_tools = await self.execute_query(
-                            delete_orphaned_mcp_tools_query,
-                            bind_vars={"mcp_tool_ids": mcp_tool_ids},
-                            transaction=transaction
-                        )
+                        deleted_mcp_tools = await run(delete_orphaned_mcp_tools_query, {"mcp_tool_ids": mcp_tool_ids})
 
                         if deleted_mcp_tools:
-                            tools_deleted += len(deleted_mcp_tools)
+                            tools_deleted += len([d for d in deleted_mcp_tools if d])
 
                     delete_orphaned_mcp_servers_query = f"""
                     FOR msid IN @mcp_server_ids
-                        REMOVE PARSE_IDENTIFIER(msid).key IN {CollectionNames.AGENT_MCP_SERVERS.value} OPTIONS {{ ignoreErrors: true }}
+                        REMOVE PARSE_IDENTIFIER(msid).key IN {CollectionNames.AGENT_MCP_SERVERS.value} {_remove_opts(transaction)}
                         RETURN OLD
                     """
 
-                    deleted_mcp_servers = await self.execute_query(
-                        delete_orphaned_mcp_servers_query,
-                        bind_vars={"mcp_server_ids": mcp_server_ids},
-                        transaction=transaction
-                    )
+                    deleted_mcp_servers = await run(delete_orphaned_mcp_servers_query, {"mcp_server_ids": mcp_server_ids})
 
                     if deleted_mcp_servers:
                         mcp_servers_deleted = len([d for d in deleted_mcp_servers if d])
