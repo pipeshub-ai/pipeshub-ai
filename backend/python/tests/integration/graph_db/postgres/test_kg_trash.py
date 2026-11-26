@@ -275,6 +275,7 @@ async def _rows(tx: Any, org: str) -> dict:  # noqa: ANN401
     return {r["id"]: (r["deleted_ms"], r["delete_batch"]) for r in await tx.fetch("SELECT id, deleted_ms, delete_batch FROM kg.records WHERE org_id = $1 AND coll = 3", org)}
 
 
+@pytest.mark.pg_table_lock           # runs kg_0019's relabel, which takes every org's copy to epoch 7
 async def test_a_filled_copy_taken_down_to_kg_0018_and_up_again_is_filled_again_before_it_is_served(pg_provider, pg_db, tally) -> None:
     """A copy filled and enforced at epoch 8, after a downgrade to kg_0018 and an upgrade back: the columns are new and empty, and kg_0019 relabels the copy epoch 7. The
     bootstrap fills it again: enforced and served, and its listing is the walk's (before the relabel it was served with empty columns and listed nothing)."""
