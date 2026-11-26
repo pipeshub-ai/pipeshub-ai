@@ -100,6 +100,17 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           world.ledger.learn({ orgId: ids.orgId, adminUserId: ids.adminUserId });
           return r;
         }),
+      failCredentialWrites: async () => {
+        await world.stack.admin((c) =>
+          c.query(`CREATE FUNCTION identity.it_refuse_credential() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'credential write refused'; END $$;
+            CREATE TRIGGER it_refuse_credential BEFORE INSERT ON identity.user_credentials FOR EACH ROW EXECUTE FUNCTION identity.it_refuse_credential()`),
+        );
+        return async () => {
+          await world.stack.admin((c) =>
+            c.query('DROP TRIGGER it_refuse_credential ON identity.user_credentials; DROP FUNCTION identity.it_refuse_credential()'),
+          );
+        };
+      },
     });
 
     describe('organisation contract', () => {
