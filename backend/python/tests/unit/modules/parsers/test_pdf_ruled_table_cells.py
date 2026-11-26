@@ -661,6 +661,7 @@ def test_a_box_shifted_down_over_a_ruled_table_never_merges_records_or_takes_the
         for t in tables:
             for row in norm(t.table_grid):
                 assert sum(1 for c in row if c.startswith("K")) <= 1 and not any("K0 K1" in c for c in row)
+                assert not any("NOTELINE" in c for c in row)
     finally:
         pdf.close()
 
