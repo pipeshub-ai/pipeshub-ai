@@ -29387,6 +29387,59 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     toolsets_deleted = result[0].get("toolset_count", 0) or 0
                     self.logger.debug(f"Deleted {toolsets_deleted} toolset nodes")
 
+            # Step 9b: MCP servers attached to agents and their tool nodes, as the ArangoDB provider deletes them
+            # (the agents' DETACH DELETE below would leave them behind)
+            mcp_label = collection_to_label(CollectionNames.AGENT_MCP_SERVERS.value)
+            has_mcp_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_MCP_SERVER.value)
+            mcp_tool_rel = edge_collection_to_relationship(CollectionNames.MCP_SERVER_HAS_TOOL.value)
+            mcp_servers_deleted = 0
+            result = await self.client.execute_query(
+                f"""
+                MATCH (:{agent_label})-[:{has_mcp_rel}]->(server:{mcp_label})
+                RETURN collect(DISTINCT server.id) as server_ids
+                """,
+                txn_id=transaction
+            )
+            server_ids = result[0].get("server_ids", []) if result else []
+            if server_ids:
+                result = await self.client.execute_query(
+                    f"""
+                    MATCH (server:{mcp_label})-[r:{mcp_tool_rel}]->(tool:{tool_label})
+                    WHERE server.id IN $server_ids
+                    WITH tool, count(r) as rels
+                    DETACH DELETE tool
+                    RETURN sum(rels) as rel_count, count(tool) as tool_count
+                    """,
+                    parameters={"server_ids": server_ids},
+                    txn_id=transaction
+                )
+                if result:
+                    edges_deleted += result[0].get("rel_count", 0) or 0
+                    tools_deleted += result[0].get("tool_count", 0) or 0
+                result = await self.client.execute_query(
+                    f"""
+                    MATCH (:{agent_label})-[mr:{has_mcp_rel}]->(:{mcp_label})
+                    DELETE mr
+                    RETURN count(mr) as rel_count
+                    """,
+                    txn_id=transaction
+                )
+                if result:
+                    edges_deleted += result[0].get("rel_count", 0) or 0
+                result = await self.client.execute_query(
+                    f"""
+                    MATCH (server:{mcp_label})
+                    WHERE server.id IN $server_ids
+                    DETACH DELETE server
+                    RETURN count(server) as server_count
+                    """,
+                    parameters={"server_ids": server_ids},
+                    txn_id=transaction
+                )
+                if result:
+                    mcp_servers_deleted = result[0].get("server_count", 0) or 0
+                    self.logger.debug(f"Deleted {mcp_servers_deleted} MCP server nodes")
+
             # Step 10: Delete all permission relationships pointing to agents
             result = await self.client.execute_query(
                 f"""
@@ -29421,7 +29474,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             self.logger.debug(
                 f"Hard deleted {agents_deleted} agents, {toolsets_deleted} toolsets, "
-                f"{tools_deleted} tools, {knowledge_deleted} knowledge, and {edges_deleted} relationships"
+                f"{tools_deleted} tools, {knowledge_deleted} knowledge, {mcp_servers_deleted} MCP servers and {edges_deleted} relationships"
             )
 
             return {
@@ -29430,6 +29483,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "tools_deleted": tools_deleted,
                 "knowledge_deleted": knowledge_deleted,
                 "edges_deleted": edges_deleted,
+                "mcp_servers_deleted": mcp_servers_deleted,
             }
 
         except Exception as e:
@@ -29441,6 +29495,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "tools_deleted": 0,
                 "knowledge_deleted": 0,
                 "edges_deleted": 0,
+                "mcp_servers_deleted": 0,
             }
 
     async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, role: str, transaction: str | None = None) -> dict | None:

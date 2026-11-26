@@ -1073,6 +1073,10 @@ class TestHardDeleteAllAgents:
                 [{"tool_count": 2}],  # step 7
                 [{"rel_count": 1}],  # step 8
                 [{"toolset_count": 1}],  # step 9
+                [{"server_ids": ["m1"]}],  # step 9b MCP servers of agents
+                [{"rel_count": 1, "tool_count": 1}],  # step 9b MCP server -> tool rels and tools
+                [{"rel_count": 1}],  # step 9b agent -> MCP server rels
+                [{"server_count": 1}],  # step 9b MCP servers
                 [{"perm_count": 4}],  # step 10
                 [{"agent_count": 5}],  # step 11 count
                 [],  # step 11 detach delete
@@ -1084,9 +1088,10 @@ class TestHardDeleteAllAgents:
         assert result == {
             "agents_deleted": 5,
             "toolsets_deleted": 1,
-            "tools_deleted": 2,
+            "tools_deleted": 3,  # 2 toolset tools + 1 MCP tool
             "knowledge_deleted": 2,
-            "edges_deleted": 10,  # 3 + 2 + 1 + 4
+            "edges_deleted": 12,  # 3 + 2 + 1 + 1 + 1 + 4
+            "mcp_servers_deleted": 1,
         }
 
     @pytest.mark.asyncio
@@ -1097,6 +1102,7 @@ class TestHardDeleteAllAgents:
                 [{"rel_count": 0}],  # step 2
                 [{"toolset_ids": []}],  # step 4
                 [{"rel_count": 0}],  # step 8
+                [{"server_ids": []}],  # step 9b: no MCP server
                 [{"perm_count": 0}],  # step 10
                 [{"agent_count": 0}],  # step 11 count
                 [],  # detach delete
@@ -1111,6 +1117,7 @@ class TestHardDeleteAllAgents:
             "tools_deleted": 0,
             "knowledge_deleted": 0,
             "edges_deleted": 0,
+            "mcp_servers_deleted": 0,
         }
 
     @pytest.mark.asyncio
@@ -1125,6 +1132,7 @@ class TestHardDeleteAllAgents:
             "tools_deleted": 0,
             "knowledge_deleted": 0,
             "edges_deleted": 0,
+            "mcp_servers_deleted": 0,
         }
 
 

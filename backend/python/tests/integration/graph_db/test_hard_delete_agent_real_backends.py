@@ -98,3 +98,14 @@ async def test_the_agent_subgraph_goes_and_what_another_agent_uses_stays(world: 
                for name in ("agent", "other", "knowledge", "toolset", "tool", "mcp", "mcp_tool", "shared_mcp", "shared_tool")}
     assert present == {"agent": False, "knowledge": False, "toolset": False, "tool": False, "mcp": False, "mcp_tool": False,
                        "other": True, "shared_mcp": True, "shared_tool": True}
+
+
+async def test_deleting_every_agent_leaves_no_agent_subgraph(world: tuple[IGraphDBProvider, dict[str, str]]) -> None:
+    """``hard_delete_all_agents`` (migrations, cleanup) takes every agent's knowledge, toolsets, MCP servers and their tools.
+    It deletes every agent of the store: the suite runs serially, and each test seeds and removes its own agents."""
+    graph, ids = world
+    result = await graph.hard_delete_all_agents()
+    assert result["agents_deleted"] >= 2 and result["mcp_servers_deleted"] >= 2
+    left = {name for name in ("agent", "other", "knowledge", "toolset", "tool", "mcp", "mcp_tool", "shared_mcp", "shared_tool")
+            if await graph.get_document(ids[name], ids[f"{name}__coll"]) is not None}
+    assert left == set()
