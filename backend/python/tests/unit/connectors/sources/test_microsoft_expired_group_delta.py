@@ -42,6 +42,11 @@ def _expired() -> ODataError:
 
 def test_an_expired_link_is_told_from_another_bad_request() -> None:
     assert is_expired_delta_link_error(_expired())
+    # Graph's code, which the SDK error's text leaves out.
+    sync_state_lost = ODataError()
+    sync_state_lost.error = MainError(code="syncStateNotFound", message="The sync state generation is not found. Please re-sync.")
+    sync_state_lost.response_status_code = 400
+    assert is_expired_delta_link_error(sync_state_lost)
     assert is_expired_delta_link_error("DeltaLink older than 30 days is not supported. (status 400)")
     assert not is_expired_delta_link_error(_error("Invalid filter clause", 400))
 
@@ -116,7 +121,9 @@ ID = "00000000-0000-4000-8000-00000000000{}".format
 MS_SITE_GROUP, EVERYONE = "host,site,web-5", "sharepoint-everyone"
 
 
-async def _remove(lookups: dict[str, int | None], *, listed: tuple[str, ...] = (), deleted: bool = True) -> tuple[int, list[str]]:
+async def _remove(
+    lookups: dict[str, int | None], *, listed: tuple[str, ...] = (), deleted: bool = True, logger: MagicMock | None = None,
+) -> tuple[int, list[str]]:
     """``lookups``: the status Graph answers for a group that is stored and not listed; None is found."""
     async def look_up(group_id: str) -> object:
         status = lookups[group_id]
@@ -136,12 +143,22 @@ async def _remove(lookups: dict[str, int | None], *, listed: tuple[str, ...] = (
         gone.append(group_id)
         return deleted
 
-    return await remove_groups_gone_from_directory(processor, "c1", graph, delete, MagicMock()), gone
+    return await remove_groups_gone_from_directory(processor, "c1", graph, delete, logger or MagicMock()), gone
 
 
 async def test_only_a_group_the_directory_confirms_is_gone_is_removed() -> None:
-    lookups = {ID(1): 404, ID(2): None, ID(3): 403, ID(4): 503}
+    lookups = {ID(1): 404, ID(2): None}
     assert await _remove(lookups, listed=(ID(9),)) == (1, [ID(1)])
+
+
+@pytest.mark.parametrize("status", [403, 429, 503])
+async def test_a_group_that_could_not_be_looked_up_is_kept_and_the_run_raises(status: int) -> None:
+    """The caller then keeps the old link, so the next run looks the group up again."""
+    logger = MagicMock()
+    with pytest.raises(RuntimeError, match=r"1 Entra group\(s\) could not be looked up; 1 deleted"):
+        await _remove({ID(1): 404, ID(2): status}, logger=logger)
+    logged = logger.error.call_args.args
+    assert ID(2) in logged and status in logged and "Request_BadRequest" in logged
 
 
 async def test_a_removal_that_fails_raises() -> None:
@@ -161,3 +178,36 @@ async def test_the_expired_link_stays_when_the_deleted_groups_could_not_be_found
         c._health.skipped.assert_called()
     assert NEW not in _saved_links(c)
     c.notify.assert_not_awaited()
+
+
+@pytest.mark.parametrize("cls", [OneDriveConnector, SharePointConnector])
+async def test_the_expired_link_stays_when_a_stored_group_could_not_be_looked_up(cls: type) -> None:
+    c = _connector(cls, {"deltaLink": OLD}, _expired())
+    c.data_entities_processor.get_all_user_groups = AsyncMock(return_value=[MagicMock(source_user_group_id=ID(5))])
+    c.msgraph_client.get_all_user_groups = AsyncMock(return_value=[])
+    c.msgraph_client.rate_limiter = asyncio.Semaphore(1)
+
+    async def unavailable() -> None:
+        raise _error("Service unavailable", 503)
+
+    c.msgraph_client.client.groups.by_group_id = lambda _g: MagicMock(get=unavailable)
+    if cls is OneDriveConnector:
+        with pytest.raises(RuntimeError, match="could not be looked up"):
+            await _sync(cls, c)
+    else:
+        await _sync(cls, c)
+        c._health.skipped.assert_called()
+    assert NEW not in _saved_links(c)
+    c.notify.assert_not_awaited()
+
+
+async def test_sharepoint_takes_the_new_link_before_draining_the_saved_one() -> None:
+    """A group deleted between the drain and a later link would be reported by neither."""
+    c = _connector(SharePointConnector, {"deltaLink": OLD}, True)
+    c._refresh_all_groups = True
+    order: list[str] = []
+    c._get_initial_delta_link = AsyncMock(side_effect=lambda: order.append("new link") or NEW)
+    c._perform_delta_sync = AsyncMock(side_effect=lambda *_a: order.append("drain") or True)
+    await _sync(SharePointConnector, c)
+    assert order == ["new link", "drain"]
+    assert NEW in _saved_links(c)

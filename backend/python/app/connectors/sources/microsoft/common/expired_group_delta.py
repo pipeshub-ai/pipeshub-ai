@@ -35,8 +35,9 @@ async def remove_groups_gone_from_directory(
 ) -> int:
     """Remove the stored Entra groups the directory confirms it no longer has. Returns how many.
 
-    Raises when the groups could not be read or one could not be removed, so the caller keeps the old link and
-    the next run tries again. A group that could not be looked up is kept.
+    Raises when the groups could not be read, one could not be removed, or one could not be looked up, so the
+    caller keeps the old link and the next run tries again. A group that could not be looked up is kept until then:
+    once the new link is saved, nothing would report its deletion any more.
     """
     stored = await processor.get_all_user_groups(connector_id, raise_on_error=True)
     candidates = {
@@ -46,6 +47,7 @@ async def remove_groups_gone_from_directory(
     if candidates:
         candidates -= {g.id for g in await graph.get_all_user_groups()}
     removed = 0
+    unresolved = 0
     for group_id in sorted(candidates):
         try:
             async with graph.rate_limiter:
@@ -53,9 +55,17 @@ async def remove_groups_gone_from_directory(
             continue
         except ODataError as e:
             if e.response_status_code != _NOT_FOUND:
-                logger.warning("Entra group %s could not be looked up; it is kept", group_id)
+                logger.error(
+                    "Entra group %s could not be looked up (status %s, %s: %s); it is kept and looked up again "
+                    "on the next run",
+                    group_id, e.response_status_code,
+                    (e.error.code if e.error else None) or "no code", (e.error.message if e.error else None) or "",
+                )
+                unresolved += 1
                 continue
         if not await delete(group_id):
             raise RuntimeError(f"Entra group {group_id} is gone from the directory and could not be removed")
         removed += 1
+    if unresolved:
+        raise RuntimeError(f"{unresolved} Entra group(s) could not be looked up; {removed} deleted group(s) removed")
     return removed

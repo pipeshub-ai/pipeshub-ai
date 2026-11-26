@@ -3559,6 +3559,11 @@ class SharePointConnector(BaseConnector):
 
         read_every_group = delta_link is None or self._refresh_all_groups
         caught_up, expired = True, False
+        new_delta_link, link_taken = None, False
+        if read_every_group:
+            # Taken before the saved link is drained: a group deleted between the drain and a later link would be
+            # reported by neither, and the full read does not list it.
+            new_delta_link, link_taken = await self._get_initial_delta_link(), True
         if delta_link is not None:
             # Only the stored link reports the groups deleted since it was taken: the full read below lists
             # the groups that exist, and the new link starts after the deletions.
@@ -3576,8 +3581,9 @@ class SharePointConnector(BaseConnector):
                     raise
         if read_every_group:
             self.logger.info("Reading every Entra group's members...")
-            # The delta link is taken before the groups are read, so no change made meanwhile is missed.
-            new_delta_link = await self._get_initial_delta_link()
+            if not link_taken:
+                # The saved link expired: groups deleted before this one are found by the lookup below.
+                new_delta_link = await self._get_initial_delta_link()
             complete = await self._perform_initial_full_sync()
             if expired:
                 try:
