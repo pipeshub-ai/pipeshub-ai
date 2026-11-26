@@ -1080,8 +1080,17 @@ def cleanup_content(response_text: str) -> str:
     return response_text.strip()
 
 
+class _NoStructuredAnswerError(ValueError):
+    """The model replied without the structured answer: a tool-calling parser yields None for a reply with no tool call."""
+
+
 # An answer that does not fit the schema is the model's doing, not a bug of ours: a WARNING, as before.
-_ANSWER_PARSE_ERRORS = (ValidationError, OutputParserException)
+_ANSWER_PARSE_ERRORS = (ValidationError, OutputParserException, _NoStructuredAnswerError)
+
+
+def _require_answer(reply: Any) -> None:  # noqa: ANN401 - whatever the structured model returns
+    if reply is None:
+        raise _NoStructuredAnswerError("the reply did not contain the requested JSON answer")
 
 
 def _is_oversized_number(exc: BaseException) -> bool:
@@ -1445,7 +1454,10 @@ async def invoke_with_structured_output_and_reflection(
 
     # Try to parse the response
     parsed_response = None
+    # Unset when there is no reply text to show the model in the reflection turn.
+    response_content = None
     try:
+        _require_answer(response)
 
         if isinstance(response, dict):
             if 'content' in response:
@@ -1501,7 +1513,8 @@ async def invoke_with_structured_output_and_reflection(
         reflection_messages = list(messages)  # Copy the original messages
 
         # Add the failed response to context
-        reflection_messages.append(AIMessage(content=response_content))
+        if response_content is not None:
+            reflection_messages.append(AIMessage(content=response_content))
 
         reflection_prompt = f"""Your previous response could not be parsed correctly.
 Error: {str(parse_error)}
@@ -1517,6 +1530,7 @@ Respond only with valid JSON that matches the schema."""
             reflection_content = None
             try:
                 reflection_response = await _call(reflection_messages)
+                _require_answer(reflection_response)
                 if isinstance(reflection_response, dict):
                     if 'content' in reflection_response:
                         # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
