@@ -358,7 +358,7 @@ export class TeamsController {
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (isSuccess(aiResponse.statusCode)) {
-        await this.cleanupDeletedTeam(String(orgId), teamId, requestId);
+        await this.cleanupDeletedTeam(String(orgId), teamId);
       }
       handleAIServiceResponse(
         aiResponse,
@@ -388,13 +388,11 @@ export class TeamsController {
   private async cleanupDeletedTeam(
     orgId: string,
     teamId: string,
-    requestId: unknown,
   ): Promise<void> {
     try {
       await conversationExtensions().lifecycle.teamDeleted(orgId, teamId);
     } catch (error) {
       this.logger.error('Failed to clean up deleted team references', {
-        requestId,
         teamId,
         error: error instanceof Error ? error.message : String(error),
       });

@@ -3336,11 +3336,13 @@ async function regenerateAnswersInternal(
         existingConversation,
         messageId || null,
         session,
+        requestId || '',
         res,
         (data: IAIResponse) => {
           completeData = data;
           streamRun.sawResult(completeData);
         },
+        protocol,
         contentAccumulator,
         (code: unknown) => {
           upstreamAiErrorEventForwarded = true;

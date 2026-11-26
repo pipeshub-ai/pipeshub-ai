@@ -111,6 +111,7 @@ import {
   aguiRunErrorMetadata,
   frameAGUI,
   isAGUI,
+  readRunFrame,
   SSEProtocol,
 } from './agui';
 import type { StreamedTranscript } from './turn-stream';
