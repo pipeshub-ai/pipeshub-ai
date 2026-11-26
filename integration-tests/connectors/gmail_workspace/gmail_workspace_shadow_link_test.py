@@ -20,9 +20,7 @@ from typing import Any
 
 import pytest
 from app.config.constants.arangodb import CollectionNames
-from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    LISTED_AUTHENTICATORS_KEY,
-)
+from app.connectors.core.base.connector.listed_authenticators import LISTED_AUTHENTICATORS_KEY
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 from connectors.gmail.gmail_users import ensure_active_user
