@@ -733,6 +733,14 @@ class TestSelectionAppsUnderAConnectionLimit:
         assert turn["selectionApps"] == []
 
     @pytest.mark.asyncio
+    async def test_an_app_the_request_names_outside_the_limit_is_not_recorded(self) -> None:
+        turn = await prepare_turn_scope(
+            self._graph(), "u", "o", {"apps": ["app-in", "app-out"], "recordGroups": ["g-in"]},
+            connection_sources={"apps": [], "recordGroups": ["g-in"], "records": []},
+        )
+        assert turn["selectionApps"] == ["app-in"]
+
+    @pytest.mark.asyncio
     async def test_without_a_limit_the_selection_apps_are_as_before(self) -> None:
         turn = await prepare_turn_scope(self._graph(), "u", "o", {"recordGroups": ["g-out"]})
         assert turn["selectionApps"] == ["app-out"]

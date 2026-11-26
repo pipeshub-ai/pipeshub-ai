@@ -2316,10 +2316,11 @@ class StoragePatternMatch:
                 # name is never scanned, whatever the request names.
                 return named & frozenset(limit.get("apps") or ())
             if limit is not None:
-                # A limit that names folders or files reaches the apps they
-                # sit in (recorded at the start of the turn, inside the limit);
-                # the record check holds each record to the folder or file.
-                return named | frozenset(filters.get(SELECTION_APPS_FILTER_KEY) or ())
+                # A limit that names folders or files reaches only the apps
+                # recorded at the start of the turn, inside the limit; filters
+                # that did not record them reach nothing. The record check
+                # holds each record to the folder or file.
+                return frozenset(filters.get(SELECTION_APPS_FILTER_KEY) or ())
             return named
         scope = derive_scope(self.state)
         if scope.is_empty():

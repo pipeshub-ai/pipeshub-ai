@@ -673,7 +673,12 @@ async def prepare_turn_scope(
             # Only the apps the limit reaches: a folder the request names in
             # another app must not send a scan there.
             limit = await connection_bound_scope(graph_provider, user_key, org_id, turn)
-            touched &= limit.connector_ids if limit is not None else frozenset()
+            reach = limit.connector_ids if limit is not None else frozenset()
+            touched &= reach
+            if names_below_apps(connection_sources):
+                # Tools that work per app scan only the recorded apps under such a
+                # limit, so whole apps the request names are recorded too, inside it.
+                touched |= reach & frozenset(i for key in CONTAINER_SCOPE_FILTER_KEYS for i in _ids(turn, key))
         turn[SELECTION_APPS_FILTER_KEY] = sorted(touched)
     return turn
 

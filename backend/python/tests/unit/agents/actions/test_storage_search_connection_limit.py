@@ -32,9 +32,11 @@ def test_a_limit_with_no_whole_app_searches_nothing() -> None:
     assert tool._scope_connector_ids() == frozenset()
 
 
-def test_a_limit_naming_folders_leaves_the_apps_to_the_record_check() -> None:
+def test_a_limit_naming_folders_scans_no_app_the_turn_did_not_record() -> None:
+    """Filters not built by ``prepare_turn_scope`` record no app under the limit: nothing is scanned."""
     tool = _make_tool(filters=_limited(connectionApps=[], connectionRecordGroups=["g-in"]))
-    assert tool._scope_connector_ids() == frozenset({"app-in", "app-out"})
+    assert tool._scope_connector_ids() == frozenset()
+    assert tool._out_of_scope_error("app-out") is not None
 
 
 def test_a_turn_without_a_limit_is_unchanged() -> None:
@@ -89,6 +91,12 @@ def test_a_folder_only_limit_searches_the_app_the_folder_sits_in() -> None:
     tool = _make_tool(filters=_folder_only())
     assert tool._scope_connector_ids() == frozenset({"app-in"})
     assert tool._out_of_scope_error("app-in") is None
+    assert tool._out_of_scope_error("app-out") is not None
+
+
+def test_a_folder_only_limit_never_scans_an_app_the_request_names_outside_it() -> None:
+    tool = _make_tool(filters=_folder_only(apps=["app-out"]))
+    assert tool._scope_connector_ids() == frozenset({"app-in"})
     assert tool._out_of_scope_error("app-out") is not None
 
 
