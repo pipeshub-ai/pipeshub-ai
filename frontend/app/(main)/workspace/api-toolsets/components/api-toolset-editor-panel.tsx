@@ -2,12 +2,19 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Callout, Checkbox, Flex, Switch, Text } from '@radix-ui/themes';
+import { Button, Callout, Checkbox, Flex, Switch, Text, TextArea } from '@radix-ui/themes';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 import { toast } from '@/lib/store/toast-store';
 import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { FormField, SelectDropdown, WorkspaceRightPanel } from '../../components';
+import {
+  FormField,
+  FormFieldTextArea,
+  FormFieldTextField,
+  SelectDropdown,
+  WorkspaceRightPanel,
+} from '../../components';
 import { ApiToolsetsApi } from '../api';
 import {
   NO_AUTH_SCHEME,
@@ -31,7 +38,6 @@ import {
 } from '../toolset-form';
 import type { ApiCompiledSpec, ApiToolsetConfig } from '../types';
 import { ApiOperationsChecklist } from './api-operations-checklist';
-import { LabeledSecretTextField, LabeledTextArea, LabeledTextField } from './labeled-controls';
 import { PanelSection } from './panel-section';
 
 const SPEC_FILE_TYPES = '.json,.yaml,.yml,application/json,application/yaml,text/yaml';
@@ -257,12 +263,12 @@ export function ApiToolsetEditorPanel({ open, editingId, onOpenChange, onSaved }
                 <Text size="2" weight="medium">
                   {t('workspace.apiToolsets.editor.dropFile')}
                 </Text>
-                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)' }}>
                   {t('workspace.apiToolsets.editor.dropFileHint')}
                 </Text>
               </button>
               <Flex align="center" justify="between" gap="2" wrap="wrap">
-                <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)' }}>
                   {t('workspace.apiToolsets.editor.sampleHint')}
                 </Text>
                 <Flex gap="2">
@@ -276,7 +282,7 @@ export function ApiToolsetEditorPanel({ open, editingId, onOpenChange, onSaved }
                   ))}
                 </Flex>
               </Flex>
-              <LabeledTextArea
+              <TextArea
                 aria-label={t('workspace.apiToolsets.editor.spec')}
                 size="2"
                 rows={6}
@@ -325,21 +331,21 @@ export function ApiToolsetEditorPanel({ open, editingId, onOpenChange, onSaved }
           <>
             <PanelSection title={t('workspace.apiToolsets.editor.detailsHeading')}>
               <FormField label={t('workspace.apiToolsets.editor.name')} required>
-                <LabeledTextField size="2" value={form.name} onChange={(e) => update({ name: e.target.value })} />
+                <FormFieldTextField size="2" value={form.name} onChange={(e) => update({ name: e.target.value })} />
               </FormField>
               <FormField
                 label={t('workspace.apiToolsets.editor.description')}
                 optional
                 description={t('workspace.apiToolsets.editor.descriptionHint')}
               >
-                <LabeledTextArea size="2" rows={2} value={form.description} onChange={(e) => update({ description: e.target.value })} />
+                <FormFieldTextArea size="2" rows={2} value={form.description} onChange={(e) => update({ description: e.target.value })} />
               </FormField>
               <FormField
                 label={t('workspace.apiToolsets.editor.baseUrl')}
                 required
                 description={t('workspace.apiToolsets.editor.baseUrlHint')}
               >
-                <LabeledTextField
+                <FormFieldTextField
                   size="2"
                   value={form.baseUrl}
                   placeholder="https://api.example.com"
@@ -426,7 +432,7 @@ export function ApiToolsetEditorPanel({ open, editingId, onOpenChange, onSaved }
                     label={t('workspace.apiToolsets.editor.redirectUrl')}
                     description={t('workspace.apiToolsets.editor.redirectUrlHint')}
                   >
-                    <LabeledTextField
+                    <FormFieldTextField
                       size="2"
                       readOnly
                       value={callbackUrl}
@@ -435,10 +441,10 @@ export function ApiToolsetEditorPanel({ open, editingId, onOpenChange, onSaved }
                     />
                   </FormField>
                   <FormField label={t('workspace.apiToolsets.editor.oauthClientId')} required>
-                    <LabeledTextField size="2" value={form.oauthClientId} onChange={(e) => update({ oauthClientId: e.target.value })} />
+                    <FormFieldTextField size="2" value={form.oauthClientId} onChange={(e) => update({ oauthClientId: e.target.value })} />
                   </FormField>
                   <FormField label={t('workspace.apiToolsets.editor.oauthClientSecret')} optional>
-                    <LabeledSecretTextField
+                    <SecretTextField
                       size="2"
                       value={form.oauthClientSecret}
                       placeholder={config?.hasOauthClientSecret ? t('workspace.apiToolsets.editor.keepSecret') : undefined}
@@ -538,7 +544,7 @@ export function ApiToolsetEditorPanel({ open, editingId, onOpenChange, onSaved }
               />
               <Flex gap="4" wrap="wrap">
                 {(['read', 'write', 'destructive'] as const).map((kind) => (
-                  <Text key={kind} size="1" style={{ color: 'var(--gray-10)' }}>
+                  <Text key={kind} size="1" style={{ color: 'var(--gray-11)' }}>
                     <Text weight="medium" style={{ color: 'var(--gray-11)' }}>
                       {t(`workspace.apiToolsets.kind.${kind}`)}
                     </Text>
@@ -554,7 +560,7 @@ export function ApiToolsetEditorPanel({ open, editingId, onOpenChange, onSaved }
                 label={t('workspace.apiToolsets.editor.timeout')}
                 description={t('workspace.apiToolsets.editor.timeoutHint', { max: MAX_TIMEOUT_SECONDS })}
               >
-                <LabeledTextField
+                <FormFieldTextField
                   size="2"
                   type="number"
                   min={1}

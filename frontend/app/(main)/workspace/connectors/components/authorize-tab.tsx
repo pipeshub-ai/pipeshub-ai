@@ -65,7 +65,7 @@ export function AuthorizeTab({ startOAuthPopup, isAuthenticating }: AuthorizeTab
             <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
               Sign in with your provider
             </Text>
-            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+            <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
               Open your identity provider&apos;s sign-in window and approve access. When sign-in
               succeeds, choose <Text weight="medium">Continue to configuration</Text> in the footer
               to set up sync, filters, and records.
@@ -87,7 +87,7 @@ export function AuthorizeTab({ startOAuthPopup, isAuthenticating }: AuthorizeTab
             <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
               Authorization status
             </Text>
-            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+            <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
               This instance can access your data at the provider. Continue to configure sync and
               indexing, or sign in again if you revoked access or rotated credentials.
             </Text>
@@ -119,7 +119,7 @@ export function AuthorizeTab({ startOAuthPopup, isAuthenticating }: AuthorizeTab
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
               Refresh access
             </Text>
-            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+            <Text size="1" style={{ color: 'var(--gray-11)', lineHeight: 1.55 }}>
               Same as the legacy Reauthenticate action when tokens need to be renewed.
             </Text>
             <LoadingButton

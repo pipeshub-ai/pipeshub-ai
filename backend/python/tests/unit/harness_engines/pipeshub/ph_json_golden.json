@@ -1,0 +1,316 @@
+{
+  "version": {
+    "exit": 0,
+    "stdout": {
+      "ok": true,
+      "command": "version",
+      "data": {
+        "ph": "2.3.0",
+        "contract": 1,
+        "session": 1
+      }
+    }
+  },
+  "tools.list": {
+    "exit": 0,
+    "stdout": {
+      "ok": true,
+      "command": "tools.list",
+      "data": {
+        "tools": [
+          {
+            "name": "knowledgegraph__search",
+            "summary": "Search indexed knowledge by meaning"
+          },
+          {
+            "name": "slack__send_message",
+            "summary": "Send a Slack message"
+          }
+        ]
+      }
+    }
+  },
+  "tools.list trailing --json": {
+    "exit": 0,
+    "stdout": {
+      "ok": true,
+      "command": "tools.list",
+      "data": {
+        "tools": [
+          {
+            "name": "knowledgegraph__search",
+            "summary": "Search indexed knowledge by meaning"
+          },
+          {
+            "name": "slack__send_message",
+            "summary": "Send a Slack message"
+          }
+        ]
+      }
+    }
+  },
+  "tools.search": {
+    "exit": 0,
+    "stdout": {
+      "ok": true,
+      "command": "tools.search",
+      "data": {
+        "tools": [
+          {
+            "name": "slack__send_message",
+            "summary": "Send a Slack message to a channel"
+          }
+        ]
+      }
+    }
+  },
+  "tools.describe": {
+    "exit": 0,
+    "stdout": {
+      "ok": true,
+      "command": "tools.describe",
+      "data": {
+        "name": "search",
+        "description": "Search the knowledge base. Answers cited passages.",
+        "inputSchema": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "tools.call": {
+    "exit": 0,
+    "stdout": {
+      "ok": true,
+      "command": "tools.call",
+      "data": {
+        "tool": "search",
+        "text": "search:{\"q\": \"q3\"}"
+      }
+    }
+  },
+  "tools.call older name": {
+    "exit": 0,
+    "stdout": {
+      "ok": true,
+      "command": "tools.call",
+      "data": {
+        "tool": "search",
+        "text": "search:{\"q\": \"q3\"}"
+      }
+    }
+  },
+  "tools.call bad arguments": {
+    "exit": 64,
+    "stdout": {
+      "ok": false,
+      "command": "tools.call",
+      "error": {
+        "code": "usage",
+        "exit": 64,
+        "message": "ph: --json must be a JSON object of the tool's arguments, like '{\"query\": \"q3\"}'."
+      }
+    }
+  },
+  "tools.describe unknown tool": {
+    "exit": 65,
+    "stdout": {
+      "ok": false,
+      "command": "tools.describe",
+      "error": {
+        "code": "not_found",
+        "exit": 65,
+        "message": "ph: this run has no tool named 'nope'. Find one with: ph tools search <what it should do>"
+      }
+    }
+  },
+  "search": {
+    "exit": 0,
+    "stdout": {
+      "ok": true,
+      "command": "search",
+      "data": {
+        "tool": "knowledgegraph__search",
+        "text": "knowledgegraph__search:{\"query\": \"q3 revenue\"}"
+      }
+    }
+  },
+  "fetch without the tool": {
+    "exit": 65,
+    "stdout": {
+      "ok": false,
+      "command": "fetch",
+      "error": {
+        "code": "not_found",
+        "exit": 65,
+        "message": "ph: this run has no record fetch tool (knowledgegraph__fetch_record). See what it has with: ph tools search <what you need>"
+      }
+    }
+  },
+  "no command": {
+    "exit": 64,
+    "stdout": {
+      "ok": false,
+      "command": null,
+      "error": {
+        "code": "usage",
+        "exit": 64,
+        "message": "ph: name a command. See: ph --help"
+      }
+    }
+  },
+  "unknown command": {
+    "exit": 64,
+    "stdout": {
+      "ok": false,
+      "command": null,
+      "error": {
+        "code": "usage",
+        "exit": 64,
+        "message": "ph: argument COMMAND: invalid choice: 'frobnicate' (choose from search, fetch, tools, describe, call, ask, publish, skill, policy, git, inputs). See: ph --help"
+      }
+    }
+  },
+  "gateway unreachable": {
+    "exit": 69,
+    "stdout": {
+      "ok": false,
+      "command": "tools.search",
+      "error": {
+        "code": "unavailable",
+        "exit": 69,
+        "message": "ph: could not reach the PipesHub tool gateway at http://127.0.0.1:9/k/mcp: Connection refused. Try again; if it keeps failing, the run may have ended."
+      }
+    }
+  },
+  "skill.list without skills": {
+    "exit": 0,
+    "stdout": {
+      "ok": true,
+      "command": "skill.list",
+      "data": {
+        "skills": []
+      }
+    }
+  },
+  "skill.show unknown skill": {
+    "exit": 65,
+    "stdout": {
+      "ok": false,
+      "command": "skill.show",
+      "error": {
+        "code": "not_found",
+        "exit": 65,
+        "message": "ph: this run has no skill named 'nope'. See: ph skill list"
+      }
+    }
+  },
+  "policy.check allowed": {
+    "exit": 0,
+    "stdout": {
+      "ok": true,
+      "command": "policy.check",
+      "data": {
+        "decision": "allow",
+        "reason": "",
+        "code": "shell"
+      }
+    }
+  },
+  "policy.check without a tool": {
+    "exit": 64,
+    "stdout": {
+      "ok": false,
+      "command": "policy.check",
+      "error": {
+        "code": "usage",
+        "exit": 64,
+        "message": "ph: name the tool to check (shell, edit, read, search, web), or pass --hook."
+      }
+    }
+  },
+  "ask without a person": {
+    "exit": 69,
+    "stdout": {
+      "ok": false,
+      "command": "ask",
+      "error": {
+        "code": "unavailable",
+        "exit": 69,
+        "message": "ph: this run cannot ask the person: nobody is in this chat to answer (a scheduled, API or sub-agent run). Decide for yourself and say what you assumed."
+      }
+    }
+  },
+  "publish a name outside the outputs folder": {
+    "exit": 64,
+    "stdout": {
+      "ok": false,
+      "command": "publish",
+      "error": {
+        "code": "usage",
+        "exit": 64,
+        "message": "ph: '../x.md' is not a name in the outputs folder (it is absolute or climbs out with ..); use a plain relative name like report.md or charts/q3.png."
+      }
+    }
+  },
+  "publish outside a run": {
+    "exit": 78,
+    "stdout": {
+      "ok": false,
+      "command": "publish",
+      "error": {
+        "code": "not_in_run",
+        "exit": 78,
+        "message": "ph: this sandbox has no outputs folder (/pipeshub/outputs). ph works inside a PipesHub engine run."
+      }
+    }
+  },
+  "tools.call refused": {
+    "exit": 1,
+    "stdout": {
+      "ok": false,
+      "command": "tools.call",
+      "error": {
+        "code": "tool_error",
+        "exit": 1,
+        "message": "Denied by your organization's policy."
+      }
+    }
+  },
+  "tools.call held for approval": {
+    "exit": 75,
+    "stdout": {
+      "ok": false,
+      "command": "tools.call",
+      "error": {
+        "code": "approval_pending",
+        "exit": 75,
+        "message": "Waiting for a person to approve this call. End this turn."
+      }
+    }
+  },
+  "credentials refused": {
+    "exit": 77,
+    "stdout": {
+      "ok": false,
+      "command": "tools.call",
+      "error": {
+        "code": "not_permitted",
+        "exit": 77,
+        "message": "ph: the tool gateway refused this sandbox's credentials (token_expired). The run may have ended; ph only works during the turn that started it."
+      }
+    }
+  },
+  "outside a run": {
+    "exit": 78,
+    "stdout": {
+      "ok": false,
+      "command": "search",
+      "error": {
+        "code": "not_in_run",
+        "exit": 78,
+        "message": "ph: this sandbox has no PipesHub tool gateway: /pipeshub/session/gateway.json is missing and PIPESHUB_TOOLS_URL is not set. ph works inside a PipesHub engine run."
+      }
+    }
+  }
+}

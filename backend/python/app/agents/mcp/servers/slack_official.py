@@ -6,7 +6,12 @@ user scopes, and enters its client ID and secret on the server. The scopes reque
 are the ones the server publishes in its protected-resource metadata.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -24,6 +29,12 @@ from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
         supports_dcr=False,
         documentation_url="https://docs.slack.dev/ai/slack-mcp-server/",
         tags=["chat", "collaboration"],
+        category=MCPCategory.COMMUNICATION,
+        capabilities=[
+            "Search messages and files",
+            "Read channels and threads",
+            "Post a message",
+        ],
     )
 )
 class SlackOfficialMCPServer:

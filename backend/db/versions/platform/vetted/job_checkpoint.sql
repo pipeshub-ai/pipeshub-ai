@@ -16,7 +16,7 @@ BEGIN
   RETURN FOUND;
 END $fn$;
 REVOKE ALL ON FUNCTION platform.job_checkpoint(bigint, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION platform.job_checkpoint(bigint, text) TO pipeshub_jobs;
+GRANT EXECUTE ON FUNCTION platform.job_checkpoint(bigint, text) TO pipeshub_owner;
 SET LOCAL ROLE pipeshub_owner;
 REVOKE CREATE ON SCHEMA platform FROM pipeshub_vetted_platform;
 REVOKE pipeshub_vetted_platform FROM pipeshub_owner;

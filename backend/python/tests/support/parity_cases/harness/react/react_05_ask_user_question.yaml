@@ -1,0 +1,20 @@
+id: react-05-ask-user-question
+category: react
+chat_mode: react
+task: Send the update to the team.
+script:
+  turns:
+    - reply: {text: "Send an update to the team; which update and which channel are unclear."}
+    - reply:
+        tool_calls:
+          - id: c1
+            name: internaltools__ask_user_question
+            args:
+              user_intent: Send an update, but the content and channel are not given.
+              questions:
+                - question: Which channel should I post to?
+                  options: [{label: "#eng"}, {label: "#general"}]
+                  multiSelect: false
+grader:
+  - status: needs_input
+  - no_effects: true

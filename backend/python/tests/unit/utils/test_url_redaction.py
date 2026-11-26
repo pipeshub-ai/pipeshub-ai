@@ -2,7 +2,6 @@
 
 import itertools
 import re
-import time
 from collections.abc import Iterator
 from urllib.parse import quote, unquote
 
@@ -15,6 +14,7 @@ from app.utils.url_redaction import (
     redact_url,
     redact_urls_in_text,
 )
+from tests.support.cpu_budget import thread_cpu
 
 
 class TestRedactUrl:
@@ -523,8 +523,7 @@ def test_the_secret_is_never_readable_at_any_decoding_depth() -> None:
     assert checked > 20000
 
 
-# Each of these took seconds before (ReDoS); linear code takes a few ms. The
-# bound is loose so a loaded CI runner cannot fail it.
+# Each of these took seconds of CPU before (ReDoS); linear code takes a few ms.
 _BOUND_MS = 200
 _N = 50_000
 _CAP = 8 * 1024
@@ -533,9 +532,9 @@ _FAKE_CODE = "4/0FAKE-auth-code-not-real"
 
 
 def _elapsed_ms(run) -> float:
-    started = time.perf_counter()
-    run()
-    return (time.perf_counter() - started) * 1000
+    with thread_cpu() as cpu:
+        run()
+    return cpu.seconds * 1000
 
 
 # `^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$` in is_sensitive_query_key.

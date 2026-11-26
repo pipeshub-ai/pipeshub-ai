@@ -11,6 +11,7 @@ Order, least lossy first:
     L1  budget_reduction       cap each tool result
     L2  artifact_compaction    old artifacts -> references
     L3  tool_result_clearing   old tool results -> references
+        before_history         (optional) the caller's middleware around L4-L9
     L4  loop_compaction        older runs -> one deterministic summary each
         offload                (optional) large results -> a store
     L6  deterministic_compact  extractive shortening
@@ -91,6 +92,9 @@ class ContextProfile:
     summarizer: Summarizer | None = None
     #: PRE_MODEL middleware that put images on the current request, run first.
     image_injectors: tuple[Middleware[ModelCallContext], ...] = ()
+    #: PRE_MODEL middleware run just before L4, around the layers that cut history
+    #: (one that tells the person how much they took off).
+    before_history: tuple[Middleware[ModelCallContext], ...] = ()
     max_result_chars: int = DEFAULT_MAX_RESULT_CHARS
     #: Per-tool caps that replace ``max_result_chars`` for that tool.
     tool_caps: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
@@ -141,6 +145,7 @@ def build_context_pipeline(profile: ContextProfile) -> list[Middleware[ModelCall
             trigger_ratio=profile.clearing_trigger_ratio,
             protected_tools=protected | profile.clearing_kept_tools,
         ))
+    layers.extend(profile.before_history)
     if "loop_compaction" in on:
         layers.append(shape_loop_compaction(
             keep_recent=profile.loop_compact_keep_recent,

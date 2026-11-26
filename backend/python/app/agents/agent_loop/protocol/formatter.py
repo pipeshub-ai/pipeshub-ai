@@ -122,6 +122,42 @@ class ProtocolFormatter(ABC):
         self, context: "AgentContext", *, tool: str, progress: float, total: float | None, message: str | None,
     ) -> list[dict[str, Any]]: ...
 
+    def provider_wait(self, context: "AgentContext", *, retry_at: str, message: str) -> list[dict[str, Any]]:
+        """The model provider is limiting requests and the call is retried at ``retry_at`` (ERR-UX2)."""
+        ...
+
+    def context_compacted(
+        self, context: "AgentContext", *, before_tokens: int, after_tokens: int, message: str,
+    ) -> list[dict[str, Any]]:
+        """The request's history was reduced to fit the window (QAFIX4: the person is told, as on the durable loop)."""
+        return [{
+            "event": "status",
+            "data": {
+                "status": CONTEXT_COMPACTED_STATUS,
+                "message": message,
+                "beforeTokens": before_tokens,
+                "afterTokens": after_tokens,
+            },
+        }]
+
+
+# The stream status while a rate-limited provider's wait runs, as Node projects it for a durable run (ERR-UX2).
+PROVIDER_WAIT_STATUS = "waiting_provider"
+CONTEXT_COMPACTED_STATUS = "context_compacted"
+
+
+def compacted_view(before_tokens: int, after_tokens: int) -> dict[str, Any]:
+    """Today's loop's reduction as the durable timeline's `context_compacted` view (Node's `ContextCompactedView`):
+    the live frame and the saved part carry the same one. L4 folds older user messages into notes, so not all are
+    kept."""
+    return {
+        "executor": "loop",
+        "outcome": "compacted",
+        "beforeTokens": before_tokens,
+        "afterTokens": after_tokens,
+        "userMessagesKept": False,
+    }
+
 
 class LegacyFormatter(ProtocolFormatter):
     """Byte-identical to today's hand-built dict literals — the default
@@ -161,6 +197,8 @@ class LegacyFormatter(ProtocolFormatter):
     def error(self, context, *, message, code):
         return [{"event": "error", "data": {"message": message, "type": code}}]
 
+    def provider_wait(self, context: "AgentContext", *, retry_at: str, message: str) -> list[dict[str, Any]]:
+        return [{"event": "status", "data": {"status": "retrying", "message": message}}]
     def tool_progress(
         self, context: "AgentContext", *, tool: str, progress: float, total: float | None, message: str | None,
     ) -> list[dict[str, Any]]:
@@ -201,7 +239,12 @@ class AGUIFormatter(ProtocolFormatter):
     def answer_final(self, context, *, completion_data):
         degraded_notice.flag(completion_data)
         return [
-            frame(AGUIEventType.STATE_SNAPSHOT, runId=context.run_id, snapshot={"final": True, **completion_data}),
+            # The browser swaps the snapshot in; the answer's label is Node's to record, never shown (FG2).
+            frame(
+                AGUIEventType.STATE_SNAPSHOT,
+                runId=context.run_id,
+                snapshot={"final": True, **{k: v for k, v in completion_data.items() if k != "label"}},
+            ),
             frame(
                 AGUIEventType.RUN_FINISHED, runId=context.run_id, threadId=context.conversation_id,
                 result=completion_data,
@@ -253,6 +296,24 @@ class AGUIFormatter(ProtocolFormatter):
     def error(self, context, *, message, code):
         return [frame(AGUIEventType.RUN_ERROR, runId=context.run_id, message=message, code=code)]
 
+    def context_compacted(
+        self, context: "AgentContext", *, before_tokens: int, after_tokens: int, message: str,
+    ) -> list[dict[str, Any]]:
+        # The frame Node projects from a durable run's `x.pipeshub.context.compacted`, so the chat's existing row
+        # renders it in the reader's language. L4 folds older user messages into notes: they are not all kept.
+        return [frame(
+            AGUIEventType.CUSTOM, name=CONTEXT_COMPACTED_STATUS, runId=context.run_id,
+            value={**compacted_view(before_tokens, after_tokens), "message": message},
+        )]
+
+    def provider_wait(self, context: "AgentContext", *, retry_at: str, message: str) -> list[dict[str, Any]]:
+        # The durable projection's frame for `run.yielded{llm_backoff}` (contracts/harness/vectors/provider-wait.json):
+        # the web app words the wait from `retry_at`, never from server text.
+        return [frame(
+            AGUIEventType.STATE_SNAPSHOT,
+            runId=context.run_id,
+            snapshot={"status": PROVIDER_WAIT_STATUS, "retry_at": retry_at},
+        )]
     def tool_progress(
         self, context: "AgentContext", *, tool: str, progress: float, total: float | None, message: str | None,
     ) -> list[dict[str, Any]]:
@@ -273,6 +334,7 @@ LEGACY_FORMATTER = LegacyFormatter()
 AGUI_FORMATTER = AGUIFormatter()
 
 __all__ = [
+    "PROVIDER_WAIT_STATUS",
     "ArtifactSSEPayload",
     "ProtocolFormatter",
     "LegacyFormatter",

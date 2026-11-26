@@ -41,9 +41,9 @@ describe('audit(): one fixed-shape line per security event', () => {
   const record = (): Record<string, any> => log.lastCall.args[0]
   const consoleLine = (r: Record<string, unknown>): string => {
     const root = (Logger.getInstance() as any).logger as winston.Logger
-    const shaped = root.format.transform({ ...r }, {}) as Record<string | symbol, unknown>
+    const shaped = root.format.transform({ ...r } as any, {}) as Record<string | symbol, unknown>
     const console = root.transports.find((t) => t instanceof winston.transports.Console)!
-    return String((console.format!.transform(shaped, {}) as Record<symbol, unknown>)[MESSAGE])
+    return String((console.format!.transform(shaped as any, {}) as Record<symbol, unknown>)[MESSAGE])
   }
   const inRequest = (fn: () => void) =>
     runWithRequestContext({ rootId: 'req-1' }, () => {

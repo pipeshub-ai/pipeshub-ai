@@ -1,0 +1,67 @@
+{
+  "_comment": "R30ENG-FU-1: the durable lane's (r31du, opencode) frames for a job whose SaaS call asks first, as journaled before the fix: the ask before the engine's line, with no callId, and the step under the name the job called (create_ticket). `linked` is the same with the line naming its ask, as the worker now writes it.",
+  "lane": [
+    {
+      "tool": "code_task",
+      "taskId": "ebbe43f6-fe75-7386-090c-4e5d9d554249",
+      "kind": "started",
+      "text": "File a ticket TW 72ab32.",
+      "data": {}
+    },
+    {
+      "tool": "code_task",
+      "taskId": "ebbe43f6-fe75-7386-090c-4e5d9d554249",
+      "kind": "approval",
+      "text": "mcp_e2esaas_create_ticket",
+      "data": {
+        "argsJson": "{\"body\": \"From FIX-TOOLWORDS.\", \"title\": \"TW 72ab32\"}",
+        "displayName": "E2Esaas · create_ticket",
+        "interactionId": "ix.approve.kd19a17212e9a0769cea4ac797595643c5136b330",
+        "toolName": "mcp_e2esaas_create_ticket"
+      }
+    },
+    {
+      "tool": "code_task",
+      "taskId": "ebbe43f6-fe75-7386-090c-4e5d9d554249",
+      "kind": "tool",
+      "text": "create_ticket",
+      "data": {
+        "args": "{\"title\": \"TW 72ab32\", \"body\": \"From FIX-TOOLWORDS.\"}",
+        "callId": "call_e2e_5"
+      }
+    }
+  ],
+  "linked": [
+    {
+      "tool": "code_task",
+      "taskId": "ebbe43f6-fe75-7386-090c-4e5d9d554249",
+      "kind": "started",
+      "text": "File a ticket TW 72ab32.",
+      "data": {}
+    },
+    {
+      "tool": "code_task",
+      "taskId": "ebbe43f6-fe75-7386-090c-4e5d9d554249",
+      "kind": "approval",
+      "text": "mcp_e2esaas_create_ticket",
+      "data": {
+        "argsJson": "{\"body\": \"From FIX-TOOLWORDS.\", \"title\": \"TW 72ab32\"}",
+        "displayName": "E2Esaas · create_ticket",
+        "interactionId": "ix.approve.kd19a17212e9a0769cea4ac797595643c5136b330",
+        "toolName": "mcp_e2esaas_create_ticket"
+      }
+    },
+    {
+      "tool": "code_task",
+      "taskId": "ebbe43f6-fe75-7386-090c-4e5d9d554249",
+      "kind": "tool",
+      "text": "create_ticket",
+      "data": {
+        "args": "{\"title\": \"TW 72ab32\", \"body\": \"From FIX-TOOLWORDS.\"}",
+        "callId": "call_e2e_5",
+        "interactionId": "ix.approve.kd19a17212e9a0769cea4ac797595643c5136b330",
+        "displayName": "E2Esaas · create_ticket"
+      }
+    }
+  ]
+}

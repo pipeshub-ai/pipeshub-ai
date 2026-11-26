@@ -14,6 +14,7 @@ from yarl import URL
 
 from app.connectors.core.base.token_service.oauth_service import (
     MalformedTokenError,
+    OAuthStateError,
     OAuthTokenRequestError,
     RefreshConfigError,
     RefreshTokenInvalidError,
@@ -304,6 +305,40 @@ class TestMisconfiguredEndpoint:
         assert CR.refresh_error_class(logged) == "misconfigured"
         assert CR.refresh_error_class(await _attempt(TypeError("our bug"))) is None
         assert CR.refresh_error_class(TokenResponseError("no token")) == "misconfigured"  # tagged: as before
+
+
+class TestTokenEndpointErrorClass:
+    """F26k: a sign-in's code exchange calls the same endpoint as a refresh, so its failure gets the refresh's class (even
+    one no refresh logged), except a refused code, which only a code exchange can get."""
+
+    @pytest.mark.parametrize(("exc", "error_class"), [
+        (_ok_with_error("bad_redirect_uri"), "misconfigured"),  # refresh_error_class says None: no refresh logged it
+        (TokenResponseError("no token"), "misconfigured"),
+        (MalformedTokenError("created_at"), "misconfigured"),
+        (_html_answer(), "misconfigured"),
+        (_ok_with_error("ratelimited"), "rate_limited"),
+        (_ok_with_error("invalid_grant"), "auth_expired"),
+        (_ok_with_error("invalid_client"), "misconfigured"),
+        (_ok_with_error("invalid_code"), "bad_request"),
+        (_ok_with_error("Bad_Verification_Code"), "bad_request"),
+        (_ok_with_error("code_already_used"), "bad_request"),
+        (OAuthStateError("stale"), "bad_request"),
+        (ValueError("ours"), "internal"),
+        (_while_handling(_ok_with_error("invalid_code"), TypeError("our bug")), "internal"),
+    ], ids=["200_other_code", "no_access_token", "malformed_field", "200_html", "200_busy", "200_dead_grant",
+            "200_rejected_client", "200_invalid_code", "200_bad_verification_code_any_case", "200_code_already_used",
+            "state_error", "plain_value_error", "bug_while_handling_a_refused_code"])
+    def test_the_class_of_each_answer(self, exc: BaseException, error_class: str) -> None:
+        assert CR.token_endpoint_error_class(exc) == error_class
+
+    def test_a_tag_reached_through_the_context_wins_as_on_refresh(self) -> None:
+        # _classified reads refresh_reason along __context__ too, and the tag replaces classify_error's answer, so our
+        # bug raised while handling a tagged error is misconfigured: the same class its refresh end line gives it.
+        exc = _while_handling(TokenResponseError("no token"), KeyError("ours"))
+        assert CR.token_endpoint_error_class(exc) == "misconfigured" == CR._classified(exc)[0]
+
+    def test_a_refused_code_is_misconfigured_on_refresh_still(self) -> None:
+        assert CR._classified(_ok_with_error("invalid_code"))[0] == "misconfigured"  # the refresh rule is unchanged
 
 
 class TestRefreshAttempt:

@@ -14,7 +14,11 @@ from app.connectors.core.registry.auth_builder import (
     OAuthScopeConfig,
 )
 from app.connectors.core.registry.connector_builder import CommonFields
-from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.connectors.core.registry.tool_builder import (
+    ToolProvider,
+    ToolsetBuilder,
+    ToolsetCategory,
+)
 from app.sources.client.evernote.evernote import EvernoteClient, EvernoteResponse
 from app.sources.external.evernote.evernote import EvernoteDataSource
 
@@ -58,7 +62,7 @@ def _thrift_types() -> tuple[Any, Any, Any, Any]:
 
 
 # Register Evernote toolset
-@ToolsetBuilder("Evernote")\
+@ToolsetBuilder("Evernote", provider=ToolProvider.CONNECTOR)\
     .in_group("Productivity")\
     .with_description("Evernote integration for note-taking and organization")\
     .with_category(ToolsetCategory.APP)\
@@ -171,7 +175,7 @@ class Evernote:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def create_note(
         self,
@@ -205,7 +209,7 @@ class Evernote:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_note(
         self,
@@ -242,7 +246,7 @@ class Evernote:
             ToolParameter(name="notebook_guid", type=ParameterType.STRING, description="Move the note to this notebook", required=False),
             ToolParameter(name="tag_guids", type=ParameterType.ARRAY, description="Replace the note's tags with these", required=False),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="update")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="update"), Tag(key="effect", value="write")],
     )
     async def update_note(
         self,
@@ -280,7 +284,7 @@ class Evernote:
         parameters=[
             ToolParameter(name="note_guid", type=ParameterType.STRING, description="The GUID of the note to delete (required)"),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="delete")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="delete"), Tag(key="effect", value="write")],
     )
     async def delete_note(self, note_guid: str) -> tuple[bool, str]:
         return await self._run(
@@ -301,7 +305,7 @@ class Evernote:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="create")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="create"), Tag(key="effect", value="write")],
     )
     async def create_notebook(
         self,
@@ -324,7 +328,7 @@ class Evernote:
         parameters=[
             ToolParameter(name="notebook_guid", type=ParameterType.STRING, description="The GUID of the notebook (required)"),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_notebook(self, notebook_guid: str) -> tuple[bool, str]:
         return await self._run(
@@ -348,7 +352,7 @@ class Evernote:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="update")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="update"), Tag(key="effect", value="write")],
     )
     async def update_notebook(
         self,
@@ -377,7 +381,7 @@ class Evernote:
         short_description="Get the default notebook",
         description="Get the Evernote notebook new notes go to by default.",
         parameters=[],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read"), Tag(key="effect", value="read")],
     )
     async def get_default_notebook(self) -> tuple[bool, str]:
         return await self._run(
@@ -411,7 +415,7 @@ class Evernote:
                 required=False,
             ),
         ],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="search")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="search"), Tag(key="effect", value="write")],
     )
     async def search_notes(
         self,
@@ -441,7 +445,7 @@ class Evernote:
         short_description="Get information about the authenticated user",
         description="Get information about the authenticated Evernote user.",
         parameters=[],
-        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="productivity"), Tag(key="type", value="read"), Tag(key="effect", value="write")],
     )
     async def get_user_info(self) -> tuple[bool, str]:
         return await self._run(

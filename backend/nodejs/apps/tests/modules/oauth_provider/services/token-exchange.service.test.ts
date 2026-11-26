@@ -10,6 +10,7 @@ import {
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { OAuthApp } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
 import { SERVICE_TOKEN_PREFIX } from '../../../../src/modules/oauth_provider/constants/constants';
+import { createSnakeCaseLogKeyGuard } from '../../../helpers/mock-logger';
 
 const orgId = new mongoose.Types.ObjectId().toString();
 const serviceAccountId = new mongoose.Types.ObjectId().toString();
@@ -31,6 +32,9 @@ function servicePayload(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// Every logger a test builds, for the snake_case check after it.
+const madeLoggers: Record<'info' | 'debug' | 'warn' | 'error', sinon.SinonStub>[] = [];
+
 function makeService(
   overrides: {
     payload?: Record<string, unknown> | null;
@@ -46,6 +50,7 @@ function makeService(
     warn: sinon.stub(),
     error: sinon.stub(),
   };
+  madeLoggers.push(logger);
   const tokens = {
     verifyAccessToken:
       overrides.payload === null
@@ -100,6 +105,7 @@ function makeService(
       delegations as any,
       true,
     ),
+    logger,
     tokens,
     delegations,
   };
@@ -125,7 +131,12 @@ async function expectRefusal(
 }
 
 describe('TokenExchangeService', () => {
-  afterEach(() => sinon.restore());
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard();
+  after(() => snakeCaseKeys.report());
+  afterEach(function () {
+    snakeCaseKeys.check(this, ...madeLoggers.splice(0));
+    sinon.restore();
+  });
 
   describe('what may be exchanged', () => {
     it('issues a token that speaks as the person, not the service account', async () => {
@@ -432,6 +443,27 @@ describe('TokenExchangeService', () => {
   });
 
   describe('what the delegated token may do', () => {
+    // The person is the token's target, as on the same request's `OAuth tokens generated` line (docs/logging.md).
+    it('logs the issued token with the person as target_user_id', async () => {
+      const { service, logger } = makeService();
+      await service.exchange({
+        subjectToken: 'phsvc_abc',
+        requestedSubject: 'person@example.com',
+      });
+      expect(logger.info.args).to.deep.equal([
+        [
+          'Delegated token issued',
+          {
+            org_id: orgId,
+            service_account_id: serviceAccountId,
+            target_user_id: subjectId,
+            scopes: ['kb:read', 'semantic:write'],
+            expires_in: DELEGATED_TOKEN_LIFETIME_SECONDS,
+          },
+        ],
+      ]);
+    });
+
     it('defaults to the service token’s own scopes', async () => {
       const { service, tokens } = makeService();
       await service.exchange({

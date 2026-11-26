@@ -7,6 +7,9 @@ import { createPortal } from 'react-dom';
 import { Flex, Box, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
+/** The header's back and close buttons: a phone's 44 px touch target around the same small icon. */
+const SHEET_BUTTON: React.CSSProperties = { margin: 0, flexShrink: 0, minWidth: 44, minHeight: 44 };
+
 interface MobileBottomSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -14,6 +17,8 @@ interface MobileBottomSheetProps {
   title: string;
   /** Optional back button — rendered to the left of the title when navigating sub-panels */
   onBack?: () => void;
+  /** How tall the sheet may grow; a panel with its own tabs and scrolling (a job's details) takes nearly the screen. */
+  maxHeight?: string;
   children: React.ReactNode;
 }
 
@@ -31,6 +36,7 @@ export function MobileBottomSheet({
   onOpenChange,
   title,
   onBack,
+  maxHeight = '60dvh',
   children,
 }: MobileBottomSheetProps) {
   const { t } = useTranslation();
@@ -107,15 +113,13 @@ export function MobileBottomSheet({
           zIndex: 9991,
           display: 'flex',
           flexDirection: 'column',
-          // A sheet is a panel: same frost as the side panels
-          backdropFilter: 'var(--frost-filter)',
-          WebkitBackdropFilter: 'var(--frost-filter)',
-          backgroundColor: 'var(--frost-bg)',
+          // Opaque over its dark scrim, as dialogs are: frost there composites to grey (globals.css).
+          backgroundColor: 'var(--color-panel-solid)',
           border: '1px solid var(--olive-3)',
           borderBottom: 'none',
           borderTopLeftRadius: 'var(--radius-1)',
           borderTopRightRadius: 'var(--radius-1)',
-          maxHeight: '60dvh',
+          maxHeight,
           overflow: 'hidden',
           outline: 'none',
           animation: 'mobileSheetSlideUp 0.25s ease-out',
@@ -138,7 +142,7 @@ export function MobileBottomSheet({
                 size="2"
                 onClick={onBack}
                 aria-label={t('common.back')}
-                style={{ margin: 0, flexShrink: 0 }}
+                style={SHEET_BUTTON}
               >
                 <MaterialIcon name="chevron_left" size={20} color="var(--gray-11)" />
               </IconButton>
@@ -163,7 +167,7 @@ export function MobileBottomSheet({
             size="2"
             onClick={() => onOpenChange(false)}
             aria-label={t('common.close')}
-            style={{ margin: 0, flexShrink: 0 }}
+            style={SHEET_BUTTON}
           >
             <MaterialIcon name="close" size={18} color="var(--gray-11)" />
           </IconButton>

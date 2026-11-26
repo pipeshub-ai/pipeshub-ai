@@ -58,11 +58,11 @@ export function SafeMarkdownImage({ src, alt, style, width, height }: SafeMarkdo
         backgroundColor: 'var(--slate-2)',
       }}
     >
-      <MaterialIcon name="image_not_supported" size={24} color="var(--slate-9)" />
+      <MaterialIcon name="image_not_supported" size={24} color="var(--slate-11)" />
       <Text size="1" as="span" style={{ color: 'var(--slate-11)' }}>
         {t('chatStream.remoteImageBlocked')}
       </Text>
-      <Text size="1" as="span" style={{ color: 'var(--slate-10)', wordBreak: 'break-all' }}>
+      <Text size="1" as="span" style={{ color: 'var(--slate-11)', wordBreak: 'break-all' }}>
         {t('chatStream.remoteImageFrom', { host: decision.host })}
       </Text>
       <Button

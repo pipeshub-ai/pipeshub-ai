@@ -13,6 +13,7 @@
  * (there is currently only a Playwright e2e runner configured).
  */
 import { describe, it, expect } from 'vitest';
+import { buildChatArtifact } from '../build-chat-artifact';
 import {
   extractAnswerMarkers,
   stripAnswerMarkers,
@@ -221,5 +222,33 @@ describe('isTrustedApiUrl', () => {
 
   it('returns false for a URL string the WHATWG URL parser cannot resolve at all', () => {
     expect(isTrustedApiUrl('http://')).toBe(false);
+  });
+});
+
+describe('extractAnswerMarkers: files a shared viewer may not open (SS0, AF-1)', () => {
+  it('turns each ::artifact_unavailable into a placeholder that names nothing, in place', () => {
+    const content = [
+      'Here are the files.',
+      '::artifact[open.csv](record:art-open){text/csv|doc|art-open|SPREADSHEET|1}',
+      '::artifact_unavailable',
+      '::artifact_unavailable',
+    ].join('\n\n');
+    const { text, artifacts } = extractAnswerMarkers(content, 'persisted');
+    expect(text).toBe('Here are the files.');
+    expect(artifacts.map((a) => [a.fileName, a.recordId, !!a.unavailable])).toEqual([
+      ['open.csv', 'art-open', false],
+      ['', undefined, true],
+      ['', undefined, true],
+    ]);
+    expect(new Set(artifacts.map((a) => a.id)).size).toBe(3);
+    expect(artifacts[1]).toMatchObject({ downloadUrl: '', artifactType: '', unavailable: true });
+  });
+});
+
+describe('buildChatArtifact: an unavailable live card ignores whatever else it carries', () => {
+  it('returns the placeholder', () => {
+    const artifact = buildChatArtifact({ fileName: 'leak.csv', recordId: 'r1', downloadUrl: '/x', unavailable: true });
+    expect(artifact).toMatchObject({ fileName: '', downloadUrl: '', unavailable: true });
+    expect(artifact.recordId).toBeUndefined();
   });
 });

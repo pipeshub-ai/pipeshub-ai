@@ -11,10 +11,8 @@ vi.mock('@/lib/api', async (importOriginal) => ({
   apiClient: { post: vi.fn(async () => ({ data: [] })) },
 }));
 
-import { mcpConnectionState, usesSharedCredential } from '../connection-state';
-import { McpPersonalServerCard } from '../personal/components/mcp-personal-server-card';
-import { McpInstanceCard } from '../team/components/mcp-instance-card';
-import { McpInstanceRow } from '../team/components/mcp-instance-row';
+import { mcpConnectionState, mcpFixAction, mcpStatusGroup, usesSharedCredential } from '../connection-state';
+import { McpServerList } from '../components/mcp-server-list';
 
 function entry(overrides: Partial<McpMyServerEntry> = {}): McpMyServerEntry {
   return {
@@ -118,16 +116,17 @@ describe('mcpConnectionState', () => {
   });
 });
 
-function renderPersonalCard(instance: McpMyServerEntry) {
-  const handlers = { onAuthenticate: vi.fn(), onReauthenticate: vi.fn(), onRemoveCredentials: vi.fn() };
-  renderInTheme(<McpPersonalServerCard instance={instance} isBusy={false} {...handlers} />);
-  return handlers;
+function renderRow(instance: McpMyServerEntry, { isAdmin = false }: { isAdmin?: boolean } = {}) {
+  const handlers = { onConnect: vi.fn(), onReconnect: vi.fn(), onOpen: vi.fn() };
+  renderInTheme(<McpServerList instances={[instance]} templates={[]} isAdmin={isAdmin} busyInstanceId={null} {...handlers} />);
+  return { ...handlers, onAuthenticate: handlers.onConnect, onReauthenticate: handlers.onReconnect };
 }
+const renderPersonalCard = (instance: McpMyServerEntry) => renderRow(instance);
 
-describe('McpPersonalServerCard status', () => {
+describe('a server row on the personal page', () => {
   it('a working server says Connected', () => {
     renderPersonalCard(entry());
-    expect(screen.getByText('Connected')).toBeTruthy();
+    expect(screen.getAllByText(/^Connected/).some((el) => el.textContent === 'Connected')).toBe(true);
   });
 
   it('an expired sign-in says so and offers Reconnect', () => {
@@ -137,6 +136,7 @@ describe('McpPersonalServerCard status', () => {
 
     expect(screen.getByText('Reconnect needed')).toBeTruthy();
     expect(screen.queryByText('Connected')).toBeNull();
+    expect(screen.getByRole('radio', { name: 'Needs action (1)' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
     expect(handlers.onReauthenticate).toHaveBeenCalledOnce();
     expect(handlers.onAuthenticate).not.toHaveBeenCalled();
@@ -186,14 +186,14 @@ describe('McpPersonalServerCard status', () => {
     const listedAt = Date.UTC(2026, 9, 7, 9, 30);
     renderPersonalCard(entry({ isAuthenticated: true, tools: [tool], toolsCachedAt: listedAt }));
 
-    expect(screen.getByText('1 tool').getAttribute('title')).toBe(`Tools as of ${new Date(listedAt).toLocaleString()}`);
+    expect(screen.getByText(/· 1 tool$/).getAttribute('title')).toBe(`Tools as of ${new Date(listedAt).toLocaleString()}`);
   });
 
   it('tools listed just now carry no date', () => {
     const tool = { name: 'search', namespacedName: 'mcp_jira_search', inputSchema: {} };
     renderPersonalCard(entry({ isAuthenticated: true, tools: [tool] }));
 
-    expect(screen.getByText('1 tool').getAttribute('title')).toBeNull();
+    expect(screen.getByText(/· 1 tool$/).getAttribute('title')).toBeNull();
   });
 
   it('an OAuth server marked shared still lets each person connect', () => {
@@ -211,33 +211,44 @@ describe('McpPersonalServerCard status', () => {
   });
 });
 
-describe('team page status', () => {
-  it('the card tells an administrator the shared credential is missing', () => {
-    renderInTheme(
-      <McpInstanceCard instance={entry({ ...sharedToken, isAuthenticated: false })} onEdit={() => {}} onDelete={() => {}} />,
-    );
+describe('a server row on the team page', () => {
+  it('tells an administrator the shared credential is missing, and offers to add it', () => {
+    const handlers = renderRow(entry({ ...sharedToken, isAuthenticated: false }), { isAdmin: true });
 
     expect(screen.getByText('Shared credential missing')).toBeTruthy();
     expect(screen.queryByText('Connected')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(handlers.onConnect).toHaveBeenCalledOnce();
   });
 
-  it('the row offers Reconnect for an expired sign-in', () => {
-    const onReauthenticate = vi.fn();
-    renderInTheme(
-      <McpInstanceRow
-        instance={entry({ toolsError: 'Sign-in expired', toolsErrorCode: 'auth_expired' })}
-        isBusy={false}
-        onManage={() => {}}
-        onDelete={() => {}}
-        onAuthenticate={() => {}}
-        onReauthenticate={onReauthenticate}
-        onDisconnect={() => {}}
-        onDiscoverTools={() => {}}
-      />,
-    );
+  it('offers Reconnect for an expired sign-in', () => {
+    const handlers = renderRow(entry({ toolsError: 'Sign-in expired', toolsErrorCode: 'auth_expired' }), { isAdmin: true });
 
     expect(screen.getAllByText('Reconnect needed').length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
-    expect(onReauthenticate).toHaveBeenCalledOnce();
+    expect(handlers.onReconnect).toHaveBeenCalledOnce();
+  });
+});
+
+describe('mcpStatusGroup and mcpFixAction', () => {
+  it('sort every state into usable, needs this person, or out of their hands', () => {
+    expect(mcpStatusGroup('ready')).toBe('ready');
+    expect(mcpStatusGroup('slow')).toBe('ready');
+    for (const state of ['needs_connect', 'needs_reconnect', 'shared_credential_missing', 'needs_auth_mode'] as const) {
+      expect(mcpStatusGroup(state)).toBe('action');
+    }
+    for (const state of ['waiting_for_admin', 'blocked', 'unreachable', 'disabled'] as const) {
+      expect(mcpStatusGroup(state)).toBe('unavailable');
+    }
+  });
+
+  it('give each state that needs this person exactly one fix, and the rest none', () => {
+    expect(mcpFixAction('needs_connect')).toBe('connect');
+    expect(mcpFixAction('shared_credential_missing')).toBe('connect');
+    expect(mcpFixAction('needs_reconnect')).toBe('reconnect');
+    expect(mcpFixAction('needs_auth_mode')).toBe('edit');
+    for (const state of ['ready', 'slow', 'waiting_for_admin', 'blocked', 'unreachable', 'disabled'] as const) {
+      expect(mcpFixAction(state)).toBeNull();
+    }
   });
 });

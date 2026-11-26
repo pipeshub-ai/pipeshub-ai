@@ -1,6 +1,5 @@
 import asyncio
 import json
-import ssl
 import time
 from collections import deque
 from logging import Logger
@@ -9,13 +8,13 @@ from typing import TYPE_CHECKING, Any, Optional
 from aiokafka import AIOKafkaConsumer  # type: ignore
 from pydantic import ValidationError
 
-from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, decode_message, open_configured
+from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, Inbox, decode_message, open_configured, record_processed
 from app.core.org_context import spawn_detached
 from app.services.messaging import message_log
 from app.services.messaging.config import MessageHandler, StreamMessage, messaging_env
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
 from app.services.messaging.interface.consumer import IMessagingConsumer
-from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig, kafka_security_kwargs
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -73,8 +72,10 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         logger: Logger,
         kafka_config: KafkaConsumerConfig,
         retry_manager: Optional["RetryManager"] = None,
+        inbox: Inbox | None = None,
     ) -> None:
         self.logger = logger
+        self.inbox = inbox  # skips events this group already finished (see app.services.messaging.inbox)
         self.consumer: AIOKafkaConsumer | None = None
         self.running = False
         self.kafka_config = kafka_config
@@ -112,18 +113,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             'topics': kafka_config.topics  # Include topics in the dictionary
         }
 
-        # Add SSL/SASL configuration
-        if kafka_config.ssl:
-            config["ssl_context"] = ssl.create_default_context()
-            sasl_config = kafka_config.sasl or {}
-            if sasl_config.get("username"):
-                config["security_protocol"] = "SASL_SSL"
-                config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
-                config["sasl_plain_username"] = sasl_config["username"]
-                config["sasl_plain_password"] = sasl_config["password"]
-            else:
-                config["security_protocol"] = "SSL"
-
+        config.update(kafka_security_kwargs(ssl_enabled=kafka_config.ssl, sasl=kafka_config.sasl))
         return config
 
     # implementing abstract methods from IMessagingConsumer
@@ -247,7 +237,9 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             # Carry the producer's trace id into consumer-side logs.
             message_log.bind_envelope(parsed_message)
             try:
-                opened = await open_configured(message.topic, parsed_message)
+                opened = await open_configured(
+                    message.topic, parsed_message, inbox=self.inbox, consumer=self.kafka_config.group_id
+                )
             except DuplicateEnvelope:
                 message_log.note(outcome="skipped", reason="duplicate")
                 return True, None
@@ -263,6 +255,8 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             result = await self.message_handler(stream_message)
             if not result:
                 message_log.note(reason="handler_false")
+            else:
+                await record_processed(self.inbox, self.kafka_config.group_id, opened.ctx)
             return result, None
 
         except Exception as e:

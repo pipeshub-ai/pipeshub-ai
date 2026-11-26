@@ -11,7 +11,7 @@ import { nonObjectIdSample } from '../../../src/scripts/docstore-migrate/preflig
 const rtWith = (rows: unknown[], options: Record<string, unknown> = {}, mongoUri = 'mongodb://localhost:27017/es') => {
   const admin = { aggregate: () => ({ toArray: async () => rows }) }
   return {
-    cfg: { mongoUri },
+    cfg: { mongoUri, appMongoUri: mongoUri },
     mongo: { db: () => admin },
     db: () => ({ client: { options, db: () => admin } }),
   } as never

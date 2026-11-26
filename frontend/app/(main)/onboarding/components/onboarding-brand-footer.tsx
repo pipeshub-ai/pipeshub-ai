@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { useBrand } from '@/lib/branding';
 
 const linkStyle: React.CSSProperties = {
-  color: 'var(--gray-9)',
+  color: 'var(--gray-11)',
   textDecoration: 'none',
 };
 
@@ -22,7 +22,7 @@ export function OnboardingBrandFooter() {
       align="center"
       style={{ padding: '8px 0 24px', flexShrink: 0 }}
     >
-      <Text size="1" style={{ color: 'var(--gray-9)', textAlign: 'center' }}>
+      <Text size="1" style={{ color: 'var(--gray-11)', textAlign: 'center' }}>
         {t('onboarding.footer.copyright')}
         {' '}&nbsp;·&nbsp;{' '}
         <a href={privacyHref} style={linkStyle}>

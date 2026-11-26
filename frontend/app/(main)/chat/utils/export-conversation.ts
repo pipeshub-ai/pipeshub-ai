@@ -6,6 +6,7 @@ import type { CitationMaps } from '../components/message-area/response-tabs/cita
 import type { ConversationMessage } from '../types';
 import { stripAnswerMarkers } from './parse-download-markers';
 import { saveTextFile } from './save-text-file';
+import { safeFileStem } from './file-name';
 
 export interface ExportLabels {
   you: string;
@@ -106,13 +107,7 @@ export function buildConversationMarkdown(
 
 /** A name every operating system accepts: no path or reserved characters, no trailing dot. */
 export function exportFileName(title: string): string {
-  const cleaned = title
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  // Cut by character, not by UTF-16 unit, so an emoji at the limit is not split in half.
-  const base = Array.from(cleaned).slice(0, 80).join('').replace(/[. ]+$/, '');
-  return `${base || 'chat'}.md`;
+  return `${safeFileStem(title, { maxChars: 80, fallback: 'chat' })}.md`;
 }
 
 export async function exportConversation(input: {

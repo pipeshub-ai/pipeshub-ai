@@ -134,6 +134,7 @@ async def test_every_wrapper_reports_429_5xx_529(fleet, monkeypatch, wrapper: st
 HTTPX_WRAPPERS = [w for w in WRAPPERS if w != "langchain-aws"]
 
 
+@pytest.mark.network  # dials an unroutable address on purpose: the connect must time out, not be refused
 async def test_a_blackholed_connect_fails_within_twelve_seconds() -> None:
     """The request hook caps the connect phase at 10 s whatever per-request timeout the SDK computed (the models are built
     with a 120 s float timeout, as the factories do), so an endpoint that never answers fails in about 10 s on every

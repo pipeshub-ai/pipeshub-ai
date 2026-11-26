@@ -40,7 +40,7 @@ def _make_sync_point(
     if data_store_provider is None:
         data_store_provider = MagicMock()
 
-    with patch.dict("os.environ", {"SECRET_KEY": "test-secret-key-12345"}):
+    with patch.dict("os.environ", {"SECRET_KEY": "a15eda32c58cabed8dc05935e8ee139cd6986a170c5bd5e6b33fdc38c0bd04b1"}):
         sp = SyncPoint(
             connector_id=connector_id,
             org_id=org_id,

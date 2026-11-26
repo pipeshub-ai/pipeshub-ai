@@ -8,6 +8,7 @@ from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.modules.pipeline.planner.base import STRUCTURED_PLAN_SLOT, Plan
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.special_route import RouteContext
+from app.utils.error_class import failure_reason
 
 """`replan` — exposes the existing Replanner (modules/pipeline/planner/replanner.py) as a
 tool the agent calls when its todos diverge from reality. The real
@@ -86,7 +87,7 @@ class ReplanTool(Tool):
             if not agent.todos and new_plan.text:
                 ctx.scope.turn.run.set(STRUCTURED_PLAN_SLOT, Plan(goal=goal, text=new_plan.text))
         except Exception as e:
-            tr_content = str(e)
+            tr_content = failure_reason(e)
             tr_is_error = True
 
         await obs.write_state(agent, goal, "running_tool", turn_index=ctx.turn_index, started_at=ctx.started_at, current_tool="replan")

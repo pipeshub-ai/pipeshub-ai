@@ -103,6 +103,9 @@ Source = Literal["mcp", "toolset"]
 TOOLS_BY_PATH = "_mcp_tools_by_path"
 # The toolset tools the gate checks, by path (`ApprovalTarget`s, filled by `tool_loader`).
 TOOLSET_TOOLS_BY_PATH = "_toolset_tools_by_path"
+# MCP paths of stand-ins that never reach a server (an unconnected server's masked tools, WS-09): no rule to read.
+_NO_SERVER_PATHS = "_mcp_paths_never_reaching_a_server"
+MCP_PATH_PREFIX = "/mcp/"
 _RULES_CACHE = "_tool_approval_rules"
 _PENDING_IN_RUN = "_tool_approval_pending_id"
 _STOPPED_CALL = "_tool_approval_stopped_call"
@@ -111,6 +114,9 @@ PENDING_MESSAGE = "_tool_approval_pending_message"
 _APPROVED_CALL = "_tool_approval_running"
 # This request answers a card and continues the turn it stopped (read by the stream bridge).
 RESUMING = "_tool_approval_resuming"
+# A durable run: its kernel asks the person for an Ask call before the call reaches this gate
+# (`app.harness.tool_rules`), so the gate only refuses what is blocked.
+KERNEL_ASKS = "_tool_approval_kernel_asks"
 _RESUME_HISTORY = "_tool_approval_resume_history"
 
 
@@ -418,6 +424,30 @@ async def _keep_outcome(config_service: "ConfigurationService", approval_id: str
 # The gate (PreToolUse)
 # ---------------------------------------------------------------------------
 
+def never_reaches_a_server(context: "AgentContext", path: str) -> None:
+    """Marks an MCP path whose tool answers without calling its server, so the gate has no rule to check."""
+    context.tool_state.setdefault(_NO_SERVER_PATHS, set()).add(path)
+
+
+def unresolved_mcp_call(context: "AgentContext", path: str) -> bool:
+    """A call to an MCP tool whose server and rules the gate cannot find (GATE-FAILOPEN-1). It is refused: run
+    unchecked, a person's Block or a write's starting Ask would be skipped."""
+    return (
+        enabled("mcp")
+        and path.startswith(MCP_PATH_PREFIX)
+        and path not in context.tool_state.get(TOOLS_BY_PATH, {})
+        and path not in context.tool_state.get(_NO_SERVER_PATHS, set())
+    )
+
+
+def unresolved_message(path: str) -> str:
+    tool = path.rsplit("/", 1)[-1]
+    return (
+        f"{tool} couldn't be checked against the tool approval rules, so it wasn't run. "
+        "Tell the user it may need to be connected again."
+    )
+
+
 def _target(context: "AgentContext", path: str) -> Optional[ApprovalTarget]:
     """The tool a call is for, when the gate checks that kind of tool."""
     adapter: Optional[MCPToolAdapter] = context.tool_state.get(TOOLS_BY_PATH, {}).get(path)
@@ -503,6 +533,8 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
     async def _gate(ctx: "ToolCallContext", next_fn: Any) -> None:  # noqa: ANN401
         target = _target(context, ctx.tool_path)
         if target is None:
+            if unresolved_mcp_call(context, ctx.tool_path):
+                ctx.deny(unresolved_message(ctx.tool_path))
             await next_fn()
             return
         target = replace(target, kind=call_kind(target, ctx.tool_path, ctx.tool_input))
@@ -520,7 +552,8 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
             kind=target.kind,
             source=target.defaults or target.source,
             watched=watched(context),
-            approved_call=context.tool_state.get(_APPROVED_CALL) == _identity(target),
+            approved_call=bool(context.tool_state.get(KERNEL_ASKS))
+            or context.tool_state.get(_APPROVED_CALL) == _identity(target),
             enabled_on_project=context.project_tools_selected,
         )
         if verdict.rule == "block":

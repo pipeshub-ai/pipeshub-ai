@@ -21,6 +21,11 @@ export interface MetricDefinition {
   name: string;
   help: string;
   labelNames: string[];
+  /**
+   * Counter series that exist at 0 whenever the registry is read, also after a reset (consent switched off, a 413
+   * from the collector): a counter that first appears at 1 shows no increase, so its first event would not alert.
+   */
+  zeroSeries?: MetricLabels[];
 }
 
 export interface HistogramDefinition extends MetricDefinition {
@@ -43,11 +48,19 @@ export class PrometheusBackend implements MetricsBackend {
   private readonly registry = new promClient.Registry();
 
   createCounter(def: MetricDefinition): CounterHandle {
+    const zeroSeries = def.zeroSeries ?? [];
     const counter = new promClient.Counter({
       name: def.name,
       help: def.help,
       labelNames: def.labelNames,
       registers: [this.registry],
+      ...(zeroSeries.length > 0
+        ? {
+            collect(this: promClient.Counter) {
+              for (const labels of zeroSeries) this.inc(labels, 0);
+            },
+          }
+        : {}),
     });
     return {
       inc: (labels, value) => {

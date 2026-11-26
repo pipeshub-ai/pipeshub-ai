@@ -62,6 +62,8 @@ jobs:
       TEST_OLLAMA_ENDPOINT: http://ollama:11434
       TEST_OLLAMA_LLM_MODEL: ${{ github.event.inputs.llm_model || 'qwen2.5:0.5b' }}
       TEST_OLLAMA_EMBEDDING_MODEL: ${{ github.event.inputs.embedding_model || 'nomic-embed-text' }}
+      # A stack made for this run: specs tagged @disposable run on it (WP-71).
+      E2E_DISPOSABLE_STACK: '1'
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
       SMTP_FROM_EMAIL: no-reply@example.com
@@ -102,18 +104,17 @@ jobs:
         run: docker compose -f docker-compose.integration.neo4j.yml build
 
       - name: Set up Python
-        uses: actions/setup-python@v7.1.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Install test dependencies
         working-directory: integration-tests
         run: |
-          uv venv
-          uv pip install -e .
+          uv sync --locked
 
       - name: Start services
         working-directory: deployment/docker-compose
@@ -194,7 +195,7 @@ jobs:
 
       - name: Upload reports artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reports-ollama
           path: integration-tests/reports/

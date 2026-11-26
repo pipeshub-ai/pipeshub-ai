@@ -1,0 +1,27 @@
+{
+ "scenario": "agent_quick_tool_call",
+ "parts": [
+  {
+   "type": "text",
+   "content": "",
+   "runId": "run-golden"
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-search",
+   "toolName": "goldendocs__search_docs",
+   "args": "{\"query\": \"paid leave\"}",
+   "status": "completed",
+   "runId": "run-golden",
+   "argsSummary": "Search Docs: \"paid leave\"",
+   "resultPreview": "{\"query\": \"paid leave\", \"hits\": [{\"title\": \"Leave policy\", \"excerpt\": \"25 days of paid leave.\"}]}",
+   "resultSummary": "Completed successfully"
+  },
+  {
+   "type": "text",
+   "content": "You get 25 days of paid leave a year.",
+   "runId": "run-golden",
+   "isFinal": true
+  }
+ ]
+}

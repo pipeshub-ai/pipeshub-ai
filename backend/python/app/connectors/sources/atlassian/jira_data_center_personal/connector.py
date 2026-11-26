@@ -235,6 +235,8 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
 
     async def run_sync(self) -> None:
         """Sync projects and issues visible to the configured user; no permission APIs."""
+        self._kept_unread_access = False
+        self._kept_after_refusal = []
         try:
             self.logger.info(
                 "▶️ Jira DC Personal connector %s: run_sync starting (data_source_ready=%s, site_url=%s)",
@@ -356,6 +358,11 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
                 last_sync_time,
             )
             sync_stats = await self._sync_all_project_issues(projects, [], last_sync_time)
+            failed_statuses = sync_stats.get("failed_project_statuses") or {}
+            for key in sync_stats.get("failed_project_keys") or []:
+                # Issues not read would look gone to a full sync's unlink.
+                self._note_unread(failed_statuses.get(key), ("project_issues", key))
+            await self._note_kept_after_refusal(projects)
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
 

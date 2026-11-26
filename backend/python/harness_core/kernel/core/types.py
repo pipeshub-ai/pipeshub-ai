@@ -1,0 +1,247 @@
+# pyright: basic
+from __future__ import annotations
+
+from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic.json_schema import SkipJsonSchema
+
+from harness_core.kernel.core.messages import (
+    AssistantMessage,
+    ImagePart,
+    ImageSource,
+    Message,
+    MessageRole,
+    Part,
+    SystemMessage,
+    TextPart,
+    ThinkingPart,
+    ToolCall,
+    ToolMessage,
+    ToolMessageMeta,
+    UserMessage,
+)
+from harness_core.kernel.core.responses import (
+    ModelResponse,
+    RunUsage,
+    StopReason,
+    StructuredResponse,
+    TokenUsage,
+)
+
+__all__ = [
+    "MessageRole",
+    "ToolCall",
+    "Source",
+    "ToolResult",
+    "TokenUsage",
+    "RunUsage",
+    "ModelResponse",
+    "StopReason",
+    "StructuredResponse",
+    "ImageSource",
+    "TextPart",
+    "ThinkingPart",
+    "ImagePart",
+    "Part",
+    "SystemMessage",
+    "UserMessage",
+    "AssistantMessage",
+    "ToolMessageMeta",
+    "ToolMessage",
+    "Message",
+    "Confidence",
+    "Intent",
+    "Goal",
+    "TodoStatus",
+    "Todo",
+    "AgentTurn",
+    "ArtifactType",
+    "Artifact",
+    "AgentResult",
+]
+
+
+class Source(BaseModel):
+    """Provenance for a claim (Phase 5 citations) — attached to a
+    `ToolResult` by tools that fetch external information (web_search,
+    web_scrape, knowledge_query, ...) so a writer/decision-trace/context-
+    graph can trace an output back to where it came from, instead of only
+    a role prompt convention asking the model to remember to cite. At
+    least one of `url`/`file`/`query` should be set; `title` is a
+    human-readable label for display."""
+
+    url: str | None = None
+    file: str | None = None
+    query: str | None = None
+    title: str | None = None
+
+
+class ToolResult(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    tool_call_id: str
+    name: str
+    content: Any
+    is_error: bool = False
+    sources: list[Source] = Field(default_factory=list)
+    artifact_meta: ToolMessageMeta | None = None
+    # A failure's ``ToolErrorCode`` (ERR-UX): what the person reads instead of ``content``.
+    error_code: str | None = None
+    # A ``rate_limited`` failure's wait; never stored or replayed (``exclude``): it is only true for a while.
+    retry_after_s: float | None = Field(default=None, exclude=True)
+    # For the executor's `tool_call.end` only (as `ToolOutput.cause`/`end_fields`): a special route's
+    # handled failure. Never dumped, never in a schema.
+    cause: SkipJsonSchema[BaseException | None] = Field(default=None, exclude=True, repr=False)
+    end_fields: SkipJsonSchema[dict[str, Any]] = Field(default_factory=dict, exclude=True, repr=False)
+
+
+class Confidence(str, Enum):
+    VERY_HIGH = "very_high"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class Intent(BaseModel):
+    raw_message: str
+    parsed_intent: str
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class Goal(BaseModel):
+    # The task as the agent works it: what planners, critics, sub-agent hand-offs and tool or
+    # skill search read. The intent step's interpretation when one ran, else the request.
+    description: str
+    requirements: list[str] = Field(default_factory=list)
+    success_criteria: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    clarifications: dict[str, str] = Field(default_factory=dict)
+    # The person's own words for this turn, verbatim. None for a goal no person typed (a
+    # sub-agent's task, a library caller): `description` is then the request.
+    user_message: str | None = None
+    # How an intent step read the request, when one ran. Context for the model, never sent as
+    # the person's words.
+    interpretation: str | None = None
+    # What the person attached, rendered as text; follows their words in the current message.
+    attachment_text: str = ""
+
+    def request_text(self) -> str:
+        """The current request as the run adds it to the conversation."""
+        words = self.user_message if self.user_message is not None else self.description
+        return f"{words}\n\n{self.attachment_text}" if self.attachment_text else words
+
+
+class TodoStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+
+
+class Todo(BaseModel):
+    """One item of the in-loop task list the `write_todos` tool maintains
+    (see tools/builtin/planning/todos.py) — the Planner's pre-loop, free-form
+    `Plan.text` replaced by an agent-driven, updatable-mid-run list. Lives on
+    `Agent._todos`, rendered into the "todos" PromptTemplate section every
+    turn, and carried across pause/resume via `AgentCheckpoint.todos`."""
+
+    content: str
+    status: TodoStatus = TodoStatus.PENDING
+
+
+class AgentTurn(BaseModel):
+    messages: list[Message] = Field(default_factory=list)
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    tool_results: list[ToolResult] = Field(default_factory=list)
+
+
+class ArtifactType(str, Enum):
+    TEXT = "text"
+    JSON = "json"
+    FILE = "file"
+    IMAGE = "image"
+
+
+class Artifact(BaseModel):
+    """A named, typed output produced during a run — first-class alongside
+    the free-text `output` field so downstream consumers (a handoff target,
+    an orchestrator, a UI) can consume structured results without parsing
+    prose. Modeled after the A2A protocol's Artifact concept: a run can emit
+    zero or more of these via `task_complete(artifacts=[...])`."""
+
+    name: str
+    type: ArtifactType = ArtifactType.TEXT
+    content: Any = None
+    uri: str | None = None
+    description: str | None = None
+
+
+class AgentResult(BaseModel):
+    goal: Goal
+    output: Any = None
+    artifacts: list[Artifact] = Field(default_factory=list)
+    turns: list[AgentTurn] = Field(default_factory=list)
+    success: bool = True
+    error: str | None = None
+    # Set by `Agent.fail(..., status="cancelled")` — an immutable snapshot
+    # of whether CANCELLATION was this run's own terminal outcome, taken at
+    # the moment the agent loop observed it (PRE_TURN's `RunCancelled` or
+    # `StopReason.CANCELLED` from the transport). Consumers that need to
+    # know if a run was cancelled should read this, not re-check a
+    # `CancellationToken` afterward — the token is a live, mutable flag
+    # that a `cancel()` call arriving after this result was already built
+    # (e.g. a late/duplicate stop request) can flip with no bearing on how
+    # THIS run actually ended. `success=False` alone does not disambiguate
+    # this either: `fail()` sets it for every non-success exit, cancelled
+    # or not.
+    cancelled: bool = False
+    usage: RunUsage = Field(default_factory=RunUsage)
+    # Optional structured contract a sub-agent's `task_complete` call can
+    # populate on top of the always-present free-text `output` — never
+    # required (many models degrade under forced structured output for
+    # open-ended content, same rationale as `Plan.confidence` — see
+    # `modules/pipeline/planner/base.py`), but a caller that DOES get them
+    # can act on them without parsing prose:
+    #   - `confidence`: the sub-agent's own confidence in `output`, distinct
+    #     from a PLAN's confidence (`Plan.confidence`) — this is about the
+    #     RESULT, checked by `verify_result`/a dependent deciding whether to
+    #     trust this result at face value.
+    #   - `record_ids`: machine-readable identifiers referenced in `output`
+    #     (ticket keys, doc IDs, row IDs) — lets a dependent or the caller
+    #     cross-reference without re-parsing prose for IDs.
+    #   - `needs_input`: non-None means the sub-agent could NOT fully
+    #     complete the goal because it is missing information only a HUMAN
+    #     can supply — the structured escalation channel that replaces
+    #     giving every sub-agent its own `ask_user_question` tool (see
+    #     `TAG_UI_ONLY`): a child can never actually reach the user, so it
+    #     reports what it needs here instead, and only the ROOT (which the
+    #     user IS watching) decides whether/how to turn this into a real
+    #     question.
+    confidence: Confidence | None = None
+    record_ids: list[str] = Field(default_factory=list)
+    needs_input: str | None = None
+    # A limit cut the run's work short and `output` is what it had gathered (BUDGETEND): "budget", "turns" or
+    # "time". The answer is still a success; the chat shows a notice naming the limit.
+    truncated_by: str | None = None
+    # The timeline event the run ended with (`agent_complete`, `llm_call_failed`,
+    # `guardrail_blocked`, ...): which exit was taken, for the turn's log line.
+    end_event: str = ""
+    # The error class (`harness_core.log_lines.classify_error`) of the failure that ended the run, if one did.
+    error_class: str | None = None
+    # The provider's or the transport's machine code for that failure (`harness_core.log_lines.provider_code`: a plain
+    # word such as `content_filter` or `tools_unsupported`), for a caller that changes course on it.
+    error_code: str | None = None
+    # Private, not a field: Opik's encoder reads `__dict__`, which `Field(exclude=True)` doesn't keep a value out of.
+    _error_detail: str | None = PrivateAttr(default=None)
+
+    @property
+    def error_detail(self) -> str | None:
+        """The raw text behind `error` (a provider's answer, which can quote the prompt or an email), for a caller's
+        own user-facing classifier. `error` is what every other reader gets: it carries no such text."""
+        return self._error_detail
+
+    def with_error_detail(self, text: str | None) -> AgentResult:
+        self._error_detail = text
+        return self

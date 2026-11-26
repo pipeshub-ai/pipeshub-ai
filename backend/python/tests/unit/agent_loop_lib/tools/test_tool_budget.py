@@ -43,44 +43,33 @@ async def _fetch(registry: ToolRegistry, agent: _FakeAgent, toolset: str):  # no
     return await FetchToolsTool(registry).handle(call, _FakeRouteContext(agent=agent, spec=agent.spec))
 
 
-class TestFetchTools:
-    async def test_a_toolset_that_would_pass_the_limit_isnt_loaded(self) -> None:
+class TestFetchingNeverGrowsTheRequest:
+    """R4 (recs2): fetch_tools and search_tools answer schemas and never add to the list a request carries, so
+    loading both servers whole can no longer push a request past the limit (the live refusal above)."""
+
+    async def test_both_big_toolsets_fetched_leave_the_request_as_it_was(self) -> None:
         registry = _two_big_servers()
         agent = _FakeAgent(_spec(tool_names=[]))
+        spec = AgentSpec(name="a", tool_names=[], tool_disclosure="lazy")
+        before = [s.name for s in tool_schemas_for_turn(agent, spec, SimpleNamespace(tool_registry=registry))]
 
         first = await _fetch(registry, agent, "mcp_linear")
         second = await _fetch(registry, agent, "mcp_clickup")
 
-        assert first.is_error is False and len(agent.visible_tools) == 68
-        assert second.is_error is True
-        assert second.content.startswith("Not loaded: mcp_clickup has 61 tools")
-        assert "search_tools" in second.content
-        assert len(agent.visible_tools) == 68
+        assert (len(first.content["tools"]), len(second.content["tools"])) == (68, 61)
+        after = [s.name for s in tool_schemas_for_turn(agent, spec, SimpleNamespace(tool_registry=registry))]
+        assert after == before == ["zz_task_complete"]
 
-    async def test_one_that_fits_loads(self) -> None:
+    async def test_search_answers_matches_without_loading_them(self) -> None:
         registry = _two_big_servers()
         agent = _FakeAgent(_spec(tool_names=[]))
-        assert (await _fetch(registry, agent, "mcp_clickup")).is_error is False
-        assert len(agent.visible_tools) == 61
-
-
-class TestSearchTools:
-    async def test_it_makes_callable_only_what_fits(self) -> None:
-        registry = _two_big_servers()
-        agent = _FakeAgent(_spec(tool_names=[]))
-        # 3 short of the limit; the best matches (tools 00-03) aren't loaded yet.
-        agent.visible_tools = {f"mcp_linear_tool_{n:02d}" for n in range(68)} | {
-            f"mcp_clickup_tool_{n:02d}" for n in range(4, 61)
-        }
-        assert len(agent.visible_tools) == MAX_TOOLS_PER_REQUEST - 3
         call = ToolCall(id="s1", name="search_tools", arguments={"query": "mcp_clickup task", "limit": 10})
 
         result = await SearchToolsTool(registry).handle(call, _FakeRouteContext(agent=agent, spec=agent.spec))
 
-        assert len(agent.visible_tools) == MAX_TOOLS_PER_REQUEST
-        assert len(result.content["made_visible"]) == 3
-        assert result.content["not_loaded"]["tools"] == ["mcp_clickup_tool_03"]
-        assert not set(result.content["not_loaded"]["tools"]) & agent.visible_tools
+        assert len(result.content["matches"]) == 10
+        assert "made_visible" not in result.content and "not_loaded" not in result.content
+        assert agent.visible_tools is None
 
 
 class TestTheRequestItself:

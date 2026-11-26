@@ -126,6 +126,7 @@ def _refused_within_the_bound(body: str, monkeypatch: pytest.MonkeyPatch) -> Non
     with pytest.raises(ParseError) as refused:
         parser.load_workbook_from_binary(workbook_zip(body))
     assert refused.value.message == user_errors.EXCEL_TOO_LARGE
+    # wall-clock-ok: a backstop many times the limit under test; unbounded the load runs about 80 s
     assert time.monotonic() - started < LOAD_SECONDS + SLACK_SECONDS
 
 

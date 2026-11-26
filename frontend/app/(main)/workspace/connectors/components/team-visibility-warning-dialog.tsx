@@ -41,7 +41,7 @@ export function TeamVisibilityWarningDialog({
         }}
       >
         <Flex align="center" gap="2" style={{ marginBottom: 'var(--space-2)' }}>
-          <MaterialIcon name="warning" size={20} color="var(--amber-9)" />
+          <MaterialIcon name="warning" size={20} color="var(--amber-11)" />
           <Dialog.Title style={{ color: 'var(--slate-12)', margin: 0 }}>
             {t('workspace.connectors.teamVisibilityDialog.title', { name })}
           </Dialog.Title>

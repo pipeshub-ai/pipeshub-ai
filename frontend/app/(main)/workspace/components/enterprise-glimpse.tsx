@@ -65,7 +65,7 @@ function Cell({ cell }: { cell: GlimpseCell }) {
         <Text size="2" weight="medium" truncate style={{ color: 'var(--slate-12)' }}>
           {cell.primary}
         </Text>
-        <Text size="1" truncate style={{ color: 'var(--gray-10)' }}>
+        <Text size="1" truncate style={{ color: 'var(--gray-11)' }}>
           {cell.secondary}
         </Text>
       </Flex>
@@ -138,8 +138,8 @@ export function EnterpriseGlimpse({ glimpse, height }: { glimpse: Glimpse; heigh
               gap="2"
               style={{ ...PANEL, height: 32, width: 260, maxWidth: '60%', padding: '0 var(--space-2)' }}
             >
-              <MaterialIcon name="search" size={16} color="var(--gray-9)" />
-              <Text size="2" truncate style={{ color: 'var(--gray-9)' }}>
+              <MaterialIcon name="search" size={16} color="var(--gray-11)" />
+              <Text size="2" truncate style={{ color: 'var(--gray-11)' }}>
                 {toolbar.search}
               </Text>
             </Flex>
@@ -196,7 +196,7 @@ export function EnterpriseGlimpse({ glimpse, height }: { glimpse: Glimpse; heigh
                 key={placeholder}
                 style={{ ...PANEL, height: 24, width: 120, padding: '0 var(--space-2)', display: 'flex', alignItems: 'center' }}
               >
-                <Text size="1" style={{ color: 'var(--gray-9)' }}>
+                <Text size="1" style={{ color: 'var(--gray-11)' }}>
                   {placeholder}
                 </Text>
               </Box>

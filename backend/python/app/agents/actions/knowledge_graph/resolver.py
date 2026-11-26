@@ -8,6 +8,9 @@ connector needs a special lookup method, one row in the table.
 
 Resolution order for each identifier:
 1. ``resolve_canonical_ref`` → ``RefKind`` + optional connector hint.
+   A bare identifier is first tried as a PipesHub Record ID: it is what every
+   other knowledge tool shows the model, and a Record ID is lexically just an
+   external id (or, UUID-shaped, a Drive file id).
 2. Walk ``STRATEGY_TABLE[kind]`` in order; execute each strategy over the
    catalog-filtered connector set; stop on the first that yields a match the
    user may open and the turn may read (step 5), so a ticket denied or out of
@@ -68,6 +71,7 @@ class LookupStrategy:
     """One step in the resolution chain for a given RefKind.
 
     method:
+        "record_id"   — get_record_by_id(value), held to the catalog's connectors
         "external_id" — get_record_by_external_id(connector_id, value)
         "issue_key"   — get_record_by_issue_key(connector_id, value)
         "weburl"      — get_records_by_weburls([value], org_id), each row read by id
@@ -108,11 +112,13 @@ STRATEGY_TABLE: dict[RefKind, list[LookupStrategy]] = {
         LookupStrategy("weburl", None),
     ],
     RefKind.DRIVE_FILE: [
+        LookupStrategy("record_id", None),
         # Try Drive-type connectors first, then widen to all
         LookupStrategy("external_id", _DRIVE_TYPES),
         LookupStrategy("external_id", None),
     ],
     RefKind.EXTERNAL_ID: [
+        LookupStrategy("record_id", None),
         # Hinted connectors first, then all — handled in _fetch_by_external_id
         LookupStrategy("external_id", None),
     ],
@@ -366,7 +372,12 @@ class RecordResolver:
     async def _fetch_candidates(
         self, raw: str, ref: CanonicalRef
     ) -> tuple[list[LookupMatch], list[str]]:
-        """Walk the strategy table for *ref*; return (admitted matches, searched-type-names)."""
+        """Walk the strategy table for *ref*; return (admitted matches, searched-type-names).
+
+        Each strategy's candidates pass the access gate and the turn's scope before the walk stops, so a record
+        the user may not open, or the turn may not read, neither ends the walk early nor shortens the searched
+        trail: it reads exactly as one that does not exist.
+        """
         is_url = raw.startswith(("http://", "https://"))
         strategies = STRATEGY_TABLE.get(ref.kind, [])
 
@@ -383,8 +394,8 @@ class RecordResolver:
                 continue
 
             type_label = (
-                "/".join(sorted(strategy.connector_types))
-                if strategy.connector_types
+                "record id" if strategy.method == "record_id"
+                else "/".join(sorted(strategy.connector_types)) if strategy.connector_types
                 else "all"
             )
             searched_types.append(type_label)
@@ -392,7 +403,7 @@ class RecordResolver:
             matches = await self._execute_strategy(strategy.method, connectors, ref, raw)
             all_matches.extend(await self._admitted(raw, matches))
             if all_matches:
-                break  # first successful strategy wins
+                break  # first strategy with an accessible match wins
 
         # Universal URL fallback: if input was a URL and nothing found yet
         if is_url and not all_matches and ref.kind != RefKind.WEB_URL:
@@ -447,6 +458,8 @@ class RecordResolver:
         ref: CanonicalRef,
         raw: str,
     ) -> list[LookupMatch]:
+        if method == "record_id":
+            return await self._by_record_id(ref.value, raw)
         if method == "issue_key":
             return await self._by_issue_key(ref.value, connectors, raw)
         if method == "external_id":
@@ -455,16 +468,18 @@ class RecordResolver:
             return await self._by_weburl(ref.value if ref.kind == RefKind.WEB_URL else raw)
         if method == "slack_ts":
             return await self._by_slack_ts(ref, connectors)
-        if method == "record_id":
-            return await self._by_record_id(ref.value, raw)
         return []
 
     async def _by_record_id(self, record_id: str, raw: str) -> list[LookupMatch]:
-        """``get_record_by_id``; the caller's ACL gate still decides access."""
+        """``get_record_by_id``; the connector hint never narrows an exact id, the catalog and the ACL gate still bound it."""
         try:
             rec = await self._graph.get_record_by_id(record_id)
         except Exception as exc:
             logger.debug("_by_record_id(%r): %s", record_id, exc)
+            return []
+        # A provider answers a ``Record``; a dict row (its raw form) is held to the catalog the same way.
+        connector_id = rec.connector_id if isinstance(rec, Record) else rec.get("connectorId") if isinstance(rec, dict) else None
+        if connector_id not in set(self._catalog.connector_ids()):
             return []
         m = _record_to_match(rec, raw, self._frontend_url)
         return [m] if m and m.id else []

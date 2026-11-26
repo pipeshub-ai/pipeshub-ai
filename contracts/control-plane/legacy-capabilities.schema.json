@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/control-plane/v1/legacy-capabilities.schema.json",
+  "title": "LegacyCapabilities",
+  "description": "One org's capability configuration as it is stored before the control plane (02-lld §11.2), read by the Python legacy driver (`GET /api/v1/control-plane/drivers/legacy/capabilities`) for CPD-7's migration and dual-write sync: toolset instances (the org's and its members' personal ones), MCP instances (through SEC5's org-scoped lookup) with their approved manifests, and one page of agents with their toolset, MCP and skill edges. Facts only: Node decides the installations and grants. No secret: instances carry no auth configuration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "orgId", "toolsetInstances", "mcpInstances", "agents", "nextAgent"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "orgId": { "$ref": "common.schema.json#/$defs/OrgId" },
+    "toolsetInstances": {
+      "description": "The org's instances and every member's personal ones (at most TOOLSET_MAX_PERSONAL_INSTANCES each).",
+      "type": "array",
+      "maxItems": 50000,
+      "items": { "$ref": "#/$defs/ToolsetInstance" }
+    },
+    "mcpInstances": { "type": "array", "maxItems": 5000, "items": { "$ref": "#/$defs/McpInstance" } },
+    "agents": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/Agent" } },
+    "nextAgent": {
+      "description": "Where the next page of agents starts (opaque: pass it back as `after`); null on the last page.",
+      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/Key" }]
+    }
+  },
+  "$defs": {
+    "Key": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+    "ToolName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+    "SelectedTools": {
+      "description": "The tool names the agent selected; null when the node selects none (every approved tool).",
+      "anyOf": [{ "type": "null" }, { "type": "array", "maxItems": 2000, "items": { "$ref": "#/$defs/ToolName" } }]
+    },
+    "ToolsetInstance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instanceId", "instanceName", "toolsetType", "authType", "createdBy", "updatedAt"],
+      "properties": {
+        "instanceId": { "$ref": "#/$defs/Key" },
+        "instanceName": { "type": "string", "maxLength": 256 },
+        "toolsetType": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "authType": { "type": "string", "maxLength": 64 },
+        "createdBy": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/Key" }] },
+        "updatedAt": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "ownerId": {
+          "description": "The user a personal instance belongs to: only they see and use it. Null or absent for an org instance.",
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/Key" }]
+        }
+      }
+    },
+    "ApprovedTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "effect"],
+      "properties": {
+        "digest": { "$ref": "common.schema.json#/$defs/Digest" },
+        "effect": {
+          "description": "The approved descriptor's effect; null when it declares none (unclassified).",
+          "anyOf": [{ "type": "null" }, { "enum": ["read", "workspace", "write", "execute"] }]
+        }
+      }
+    },
+    "Manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tools", "approvedBy", "approvedAt"],
+      "properties": {
+        "tools": {
+          "type": "object",
+          "maxProperties": 2000,
+          "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+          "additionalProperties": { "$ref": "#/$defs/ApprovedTool" }
+        },
+        "approvedBy": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/Key" }] },
+        "approvedAt": { "$ref": "common.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "McpInstance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instanceId", "name", "typeId", "authMode", "createdBy", "updatedAt", "manifest"],
+      "properties": {
+        "instanceId": { "$ref": "#/$defs/Key" },
+        "name": { "type": "string", "maxLength": 256 },
+        "typeId": { "anyOf": [{ "type": "null" }, { "type": "string", "maxLength": 128 }] },
+        "authMode": { "type": "string", "maxLength": 64 },
+        "createdBy": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/Key" }] },
+        "updatedAt": { "$ref": "common.schema.json#/$defs/Timestamp" },
+        "manifest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/Manifest" }] }
+      }
+    },
+    "AgentToolset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeKey", "instanceId", "toolsetType", "tools"],
+      "properties": {
+        "nodeKey": { "$ref": "#/$defs/Key" },
+        "instanceId": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/Key" }] },
+        "toolsetType": { "type": "string", "maxLength": 128 },
+        "tools": { "$ref": "#/$defs/SelectedTools" }
+      }
+    },
+    "AgentMcpServer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instanceId", "tools"],
+      "properties": {
+        "instanceId": { "$ref": "#/$defs/Key" },
+        "tools": { "$ref": "#/$defs/SelectedTools" }
+      }
+    },
+    "AgentSkill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "builtin", "createdBy", "bundleDigest"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$" },
+        "version": { "type": "string", "pattern": "^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$" },
+        "builtin": { "type": "boolean" },
+        "createdBy": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/Key" }] },
+        "bundleDigest": { "$ref": "common.schema.json#/$defs/Digest" }
+      }
+    },
+    "Agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentKey", "createdBy", "toolsets", "mcpServers", "skills"],
+      "properties": {
+        "agentKey": { "$ref": "#/$defs/Key" },
+        "createdBy": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/Key" }] },
+        "toolsets": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/AgentToolset" } },
+        "mcpServers": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/AgentMcpServer" } },
+        "skills": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/AgentSkill" } }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "orgId": "o1",
+      "toolsetInstances": [
+        { "instanceId": "6f1c2a7e-0d7b-4c36-9d55-1f0a2b3c4d5e", "instanceName": "Jira", "toolsetType": "jira", "authType": "OAUTH", "createdBy": "u1", "updatedAt": 1760000000000 },
+        { "instanceId": "8a2d3b8f-1e8c-4d47-8e66-2a1b3c4d5e6f", "instanceName": "My Jira", "toolsetType": "jira", "authType": "API_TOKEN", "createdBy": "u2", "updatedAt": 1760000000000, "ownerId": "u2" }
+      ],
+      "mcpInstances": [
+        {
+          "instanceId": "4b0d9a1c-5e6f-4a7b-8c9d-0e1f2a3b4c5d", "name": "Linear", "typeId": "linear", "authMode": "oauth", "createdBy": "u1", "updatedAt": 1760000000000,
+          "manifest": {
+            "tools": { "list_issues": { "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "effect": "read" } },
+            "approvedBy": "u1", "approvedAt": 1760000000000
+          }
+        }
+      ],
+      "agents": [
+        {
+          "agentKey": "a7", "createdBy": "u1",
+          "toolsets": [ { "nodeKey": "n1", "instanceId": "6f1c2a7e-0d7b-4c36-9d55-1f0a2b3c4d5e", "toolsetType": "jira", "tools": ["search_issues"] } ],
+          "mcpServers": [ { "instanceId": "4b0d9a1c-5e6f-4a7b-8c9d-0e1f2a3b4c5d", "tools": null } ],
+          "skills": [ { "name": "data-analysis", "version": "1.0.1", "builtin": true, "createdBy": null, "bundleDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333" } ]
+        }
+      ],
+      "nextAgent": null
+    }
+  ]
+}

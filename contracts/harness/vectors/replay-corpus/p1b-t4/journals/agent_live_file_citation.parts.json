@@ -1,0 +1,27 @@
+{
+ "scenario": "agent_live_file_citation",
+ "parts": [
+  {
+   "type": "text",
+   "content": "",
+   "runId": "run-golden"
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call-read",
+   "toolName": "goldendrive__read_file",
+   "args": "{\"file_id\": \"file-q3\"}",
+   "status": "completed",
+   "runId": "run-golden",
+   "argsSummary": "Read File",
+   "resultPreview": "[{\"type\": \"text\", \"text\": \"<record>\\nRecord ID: live:00000000000000000000000000000001\\nName: Q3 plan.txt\\nConnector: DRIVE\\nType: FILE\\nExternal ID: file-q3\\nCreated At: N/A\\nLast Updated At: N/A\\nCon",
+   "resultSummary": "Completed successfully — 5 items"
+  },
+  {
+   "type": "text",
+   "content": "The Q3 launch moves to May [1](/record/live:00000000000000000000000000000001/preview#blockIndex=0) and the budget is unchanged [2](/record/live:00000000000000000000000000000001/preview#blockIndex=1).",
+   "runId": "run-golden",
+   "isFinal": true
+  }
+ ]
+}

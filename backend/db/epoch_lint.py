@@ -16,8 +16,8 @@ from db.locations import version_locations
 def revision_attrs(f: Path) -> dict:
     vals = {}
     for node in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            for t in (node.targets if isinstance(node, ast.Assign) else [node.target]):
                 if isinstance(t, ast.Name) and t.id in ("revision", "down_revision", "depends_on", "min_code_epoch"):
                     try:
                         vals[t.id] = ast.literal_eval(node.value)

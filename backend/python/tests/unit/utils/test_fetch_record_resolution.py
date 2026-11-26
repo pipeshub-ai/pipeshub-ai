@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import ProgressStatus
-from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.fetch_full_record import (
     NOT_INDEXED_YET,
     STORAGE_ERROR,
@@ -23,27 +22,35 @@ from app.utils.fetch_full_record import (
     _fetch_multiple_records_impl,
 )
 from tests.support.loop_clock import virtual_loop_time
+from tests.support.record_access import InMemoryRecordAccess
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterable, Iterator
 
 MODULE = "app.utils.fetch_full_record"
+
+
+# Every id these cases fetch; with ``access`` the user owns each of them.
+RECORD_IDS = (*(f"rec-{i}" for i in range(40)), "ghost", "fresh", "secret", "denied", "a", "b", "c")
 
 
 def _graph_provider(
     *,
     access: bool | set[str] = True,
     indexing_status: str | None = None,
+    ids: Iterable[str] = RECORD_IDS,
+    users: tuple[str, ...] = ("user-1", "user-9"),
 ) -> MagicMock:
-    """``access``: every id, none, or these ids."""
+    """``access``: every id of ``ids``, none, or these ids, for each of ``users``."""
     provider = MagicMock()
     provider.config_service = MagicMock()
-    provider.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
-    provider.check_access = AsyncMock(
-        side_effect=lambda _user_key, _org_id, node_ids=(), **_: AccessCheck(node_ids=frozenset(
-            i for i in node_ids if access is True or (access and i in access)
-        )),
-    )
+    provider.access = InMemoryRecordAccess()
+    readable = [i for i in ids if access is True or (access and i in access)]
+    for user in users:
+        provider.access.user(user, "org-1")
+        if readable:
+            provider.access.readable(user, "org-1", *readable)
+    provider.access.serve(provider)
     provider.get_document = AsyncMock(return_value={
         "virtualRecordId": "vr-new",
         "indexingStatus": indexing_status or ProgressStatus.COMPLETED.value,
@@ -71,7 +78,9 @@ async def _fetch(record_ids: list[str], **kwargs) -> object:
 
 
 class TestCachedRecords:
-    async def test_a_map_entry_is_checked_in_the_one_batch_not_per_id(self) -> None:
+    async def test_a_record_already_in_the_map_is_checked_and_served_from_the_map(self) -> None:
+        """H1 (P2.13 FW-4): the map is not only retrieval's, and an entry outlives a
+        revocation, so the access check runs; the content still comes from the map."""
         provider = _graph_provider()
         result = await _fetch(
             ["rec-1"],
@@ -81,11 +90,11 @@ class TestCachedRecords:
 
         assert result["ok"] is True
         assert result["records"][0]["virtual_record_id"] == "vr-1"
-        provider.check_access.assert_awaited_once()
+        assert provider.access.asked_about == [("user-1", "org-1", "rec-1")]
+        provider.get_document.assert_not_awaited()
 
     async def test_a_map_entry_the_user_may_not_read_is_not_served(self) -> None:
-        """The map is also filled by attachment and FK enrichment, which do not
-        verify: being in it proves nothing."""
+        """Main #4255: the map is also filled by attachment and FK enrichment, which do not verify."""
         result = await _fetch(
             ["rec-1"],
             virtual_record_id_to_result={"vr-1": _cached_record("rec-1")},
@@ -95,9 +104,9 @@ class TestCachedRecords:
         assert result["ok"] is False
         assert result["unavailable_reasons"]["rec-1"] == UNAVAILABLE
 
-    async def test_a_failed_batch_check_serves_nothing(self) -> None:
+    async def test_a_failed_access_check_serves_nothing(self) -> None:
         provider = _graph_provider()
-        provider.check_access = AsyncMock(side_effect=RuntimeError("graph down"))
+        provider.access.fail_with(RuntimeError("graph down"))
         result = await _fetch(
             ["rec-1"],
             virtual_record_id_to_result={"vr-1": _cached_record("rec-1")},
@@ -121,16 +130,16 @@ class TestConcurrency:
         in_flight = 0
         peak = 0
 
-        async def slow_lookup(*_args, **_kwargs) -> None:
+        async def slow_read(*_args, **_kwargs) -> None:
             nonlocal in_flight, peak
             in_flight += 1
             peak = max(peak, in_flight)
             await asyncio.sleep(0.01)
             in_flight -= 1
-            # not found: keeps the test to the lookup step
+            # Not found: keeps the test to the graph read (the ACL step is one batch, H2).
 
         provider = _graph_provider()
-        provider.get_document = AsyncMock(side_effect=slow_lookup)
+        provider.get_document = AsyncMock(side_effect=slow_read)
 
         await _fetch([f"rec-{i}" for i in range(10)], graph_provider=provider)
 
@@ -141,16 +150,15 @@ class TestConcurrency:
         in_flight = 0
         peak = 0
 
-        async def slow_lookup(*_args, **_kwargs) -> None:
+        async def slow_read(*_args, **_kwargs) -> None:
             nonlocal in_flight, peak
             in_flight += 1
             peak = max(peak, in_flight)
             await asyncio.sleep(0.01)
             in_flight -= 1
-            # not found: keeps the test to the lookup step
 
         provider = _graph_provider()
-        provider.get_document = AsyncMock(side_effect=slow_lookup)
+        provider.get_document = AsyncMock(side_effect=slow_read)
 
         await _fetch([f"rec-{i}" for i in range(40)], graph_provider=provider)
 
@@ -226,6 +234,7 @@ class TestUnavailableReasons:
 
         assert result["ok"] is False
         assert result["unavailable_reasons"]["rec-1"] == UNAVAILABLE
+        assert provider.access.asked_about == []
 
     async def test_empty_record_ids_says_so(self) -> None:
         result = await _fetch([])
@@ -233,7 +242,8 @@ class TestUnavailableReasons:
         assert "No record IDs were provided" in result["error"]
 
     async def test_a_partial_batch_still_returns_what_resolved(self) -> None:
-        provider = _graph_provider(access={"rec-1"})
+        provider = _graph_provider()
+        provider.access.revoke("denied")
         result = await _fetch(
             ["rec-1", "denied"],
             virtual_record_id_to_result={"vr-1": _cached_record("rec-1")},
@@ -259,9 +269,13 @@ class TestToolSurface:
         context = AgentContext(org_id="org-1", user_id="user-1", user_email="u@example.com")
         return _FetchFullRecordTool(CitationCollector(context), context)
 
-    async def test_continuing_several_records_at_once_is_refused(self) -> None:
+    async def test_continuing_several_records_at_once_is_refused(self, monkeypatch) -> None:
         """One offset applied to every id re-reads whichever stopped later and
-        skips the start of the others."""
+        skips the start of the others. How such a call is read instead is an
+        extension point; with no plan it is refused."""
+        from app import edition_services
+
+        monkeypatch.setattr(edition_services, "split_record_continuation", lambda *_: None)
         output = await self._tool().execute(record_ids=["a", "b"], start_block=40)
 
         assert output.success is False
@@ -303,6 +317,7 @@ import logging  # noqa: E402
 
 from app.modules.pipeline.parse_now import ParseNow  # noqa: E402
 from app.utils.fetch_full_record import PREPARING  # noqa: E402
+from harness_core.testing.virtual_time import on_virtual_time, run_on_virtual_time  # noqa: E402
 
 _ORG = "org-1"
 
@@ -338,7 +353,7 @@ class _Docs:
 
 
 def _provider(docs: _Docs, **kwargs) -> MagicMock:
-    provider = _graph_provider(**kwargs)
+    provider = _graph_provider(ids=docs.rows, **kwargs)
 
     async def get(*args, **kw) -> object:
         return await docs(*args, **kw)
@@ -382,6 +397,8 @@ async def _parse_fetch(ids: list[str], docs: _Docs, asker: ParseNow | None, **kw
     return await _fetch(ids, graph_provider=provider, parse_now=asker, **kwargs)
 
 
+# Its waits are budgets on the loop's clock; on a real loop a busy host spends them before a fake answers.
+@on_virtual_time
 class TestParseNow:
     async def test_a_record_that_becomes_ready_is_read_and_asked_for_once(self, stored_content) -> None:  # R1, R10
         docs = _Docs({"rec-1": [_row("QUEUED"), _row("QUEUED"), _row("IN_PROGRESS"), _stored(_row("IN_PROGRESS"))]})
@@ -426,7 +443,7 @@ class TestParseNow:
         result = await _parse_fetch(["rec-1"], docs, asker)
 
         entry = result["not_indexed_records"]["rec-1"]
-        note = not_indexed_note(entry["status"], entry["preparing"])
+        note = not_indexed_note(entry["status"], preparing=entry["preparing"])
         assert "stays unindexed" not in note and "being prepared" in note
 
     @pytest.mark.parametrize("status", [
@@ -693,18 +710,22 @@ class TestParseNow:
         assert result["unavailable_reasons"]["rec-1"] == NOT_INDEXED_YET
         assert docs.polls == 0
 
-    async def test_a_call_asks_for_only_three_and_answers_the_rest_ask_again(self) -> None:  # L5
+    def test_a_call_asks_for_only_three_and_answers_the_rest_ask_again(self) -> None:  # L5
+        # On the loop's clock: on a real one, a busy host spent the 0.05 s wait before the three asks were read.
         ids = [f"rec-{i}" for i in range(500)]
         docs = _Docs({i: [_row("QUEUED")] for i in ids})
         asker, send = _asker(wait=0.05)
 
-        result = await _parse_fetch(ids, docs, asker)
+        async def main() -> None:
+            result = await _parse_fetch(ids, docs, asker)
 
-        assert send.await_count == 3
-        entries = result["not_indexed_records"]
-        assert sorted(e["preparing"] for e in entries.values()).count("waiting") == 3
-        assert sorted(e["preparing"] for e in entries.values()).count("deferred") == 497
-        assert set(result["unavailable_reasons"].values()) == {PREPARING}
+            assert send.await_count == 3
+            entries = result["not_indexed_records"]
+            assert sorted(e["preparing"] for e in entries.values()).count("waiting") == 3
+            assert sorted(e["preparing"] for e in entries.values()).count("deferred") == 497
+            assert set(result["unavailable_reasons"].values()) == {PREPARING}
+
+        run_on_virtual_time(main)
 
     async def test_the_limit_per_call_can_be_set_by_one_variable(self, monkeypatch) -> None:  # L5
         monkeypatch.setenv("PARSE_NOW_MAX_PER_CALL", "5")

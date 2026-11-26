@@ -19,6 +19,7 @@ import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
 import {
   listMcpCatalog,
+  listPopularMcpServers,
   getMcpCatalogTemplate,
   listMcpInstances,
   createMcpInstance,
@@ -50,11 +51,18 @@ import {
   getMyMcpToolRules,
   updateMyMcpToolRules,
 } from '../controller/mcp_servers.controller';
-import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import {
+  bindPathLogFields,
+  guardPathParams,
+} from '../../../libs/middlewares/safe-path-params.middleware';
 
 export function createMcpServersRouter(container: Container): Router {
   const router = Router();
   guardPathParams(router, 'typeId', 'instanceId', 'agentKey');
+  bindPathLogFields(router, {
+    instanceId: 'mcp_server_id',
+    agentKey: 'agent_id',
+  });
   const config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
 
@@ -62,6 +70,12 @@ export function createMcpServersRouter(container: Container): Router {
 
   router.get('/catalog', authMiddleware.authenticate, requireScopes(OAuthScopeNames.MCP_READ), listMcpCatalog(config));
   router.get('/catalog/:typeId', authMiddleware.authenticate, requireScopes(OAuthScopeNames.MCP_READ), getMcpCatalogTemplate(config));
+  router.get(
+    '/popular',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.MCP_READ),
+    listPopularMcpServers(config),
+  );
 
   // ---- Discovery / consumption (before '/instances/:instanceId' so 'my-mcp-servers' never matches as an id) --
 

@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.pipeshub.com/harness/v2/core/envelope.schema.json",
+  "title": "Envelope",
+  "description": "Journal event envelope (REPORT 6.1.2): exactly one of data or payloadRef.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/InlineEnvelope"
+    },
+    {
+      "$ref": "#/$defs/ClaimCheckedEnvelope"
+    }
+  ],
+  "$defs": {
+    "InlineEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "orgId",
+        "sessionId",
+        "streamId",
+        "seq",
+        "type",
+        "schemaVersion",
+        "critical",
+        "ts",
+        "writer",
+        "visibility",
+        "data"
+      ],
+      "properties": {
+        "orgId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "streamId": {
+          "description": "sessionId for the root run, childRunId for a child run.",
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "seq": {
+          "description": "Gap-free per streamId.",
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "runId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "attemptId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "fence": {
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "type": {
+          "description": "Core family.name, or a namespaced extension type x.<ns>.<family>.<name>.",
+          "type": "string",
+          "pattern": "^(?:[a-z]+\\.[a-z_]+|x\\.[a-z][a-z0-9-]*(?:\\.[a-z][a-z_]*)+)$"
+        },
+        "schemaVersion": {
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "critical": {
+          "description": "Unknown critical events make the fold fail closed.",
+          "type": "boolean"
+        },
+        "ts": {
+          "description": "DB time.",
+          "$ref": "common.schema.json#/$defs/Timestamp"
+        },
+        "writer": {
+          "enum": [
+            "node",
+            "worker"
+          ]
+        },
+        "labels": {
+          "$ref": "labels.schema.json"
+        },
+        "visibility": {
+          "enum": [
+            "owner",
+            "shared",
+            "audit"
+          ]
+        },
+        "data": {
+          "description": "Inline payload (up to 256 KB); typed per event type.",
+          "type": "object"
+        }
+      },
+      "description": "Journal event with its payload inline. Typed event schemas extend this."
+    },
+    "ClaimCheckedEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "orgId",
+        "sessionId",
+        "streamId",
+        "seq",
+        "type",
+        "schemaVersion",
+        "critical",
+        "ts",
+        "writer",
+        "visibility",
+        "payloadRef"
+      ],
+      "properties": {
+        "orgId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "sessionId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "streamId": {
+          "description": "sessionId for the root run, childRunId for a child run.",
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "seq": {
+          "description": "Gap-free per streamId.",
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "runId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "attemptId": {
+          "$ref": "common.schema.json#/$defs/Id"
+        },
+        "fence": {
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "type": {
+          "description": "Core family.name, or a namespaced extension type x.<ns>.<family>.<name>.",
+          "type": "string",
+          "pattern": "^(?:[a-z]+\\.[a-z_]+|x\\.[a-z][a-z0-9-]*(?:\\.[a-z][a-z_]*)+)$"
+        },
+        "schemaVersion": {
+          "$ref": "common.schema.json#/$defs/PosInt"
+        },
+        "critical": {
+          "description": "Unknown critical events make the fold fail closed.",
+          "type": "boolean"
+        },
+        "ts": {
+          "description": "DB time.",
+          "$ref": "common.schema.json#/$defs/Timestamp"
+        },
+        "writer": {
+          "enum": [
+            "node",
+            "worker"
+          ]
+        },
+        "labels": {
+          "$ref": "labels.schema.json"
+        },
+        "visibility": {
+          "enum": [
+            "owner",
+            "shared",
+            "audit"
+          ]
+        },
+        "payloadRef": {
+          "$ref": "common.schema.json#/$defs/ContentRef"
+        }
+      },
+      "description": "Journal event whose payload is claim-checked to CAS."
+    }
+  },
+  "examples": [
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "turn.started",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "data": {
+        "turn": 1
+      },
+      "attemptId": "att_1",
+      "fence": 3,
+      "labels": {
+        "integrity": "trusted"
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "model.response",
+      "schemaVersion": 1,
+      "critical": true,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "owner",
+      "attemptId": "att_1",
+      "fence": 3,
+      "payloadRef": {
+        "ref": "cas/ab/cd",
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size": 300000
+      }
+    },
+    {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "runId": "run_1",
+      "type": "x.acme.thing.happened",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-01T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "audit",
+      "data": {
+        "any": "shape"
+      },
+      "attemptId": "att_1",
+      "fence": 3
+    }
+  ]
+}

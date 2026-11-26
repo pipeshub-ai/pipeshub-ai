@@ -1,0 +1,64 @@
+[
+  {
+    "description": "writer allowlist: only node writes session.owner_changed",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "type": "session.owner_changed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-20T12:00:00.123Z",
+      "writer": "worker",
+      "visibility": "audit",
+      "data": {
+        "by": "p_admin1",
+        "from": "p_user2",
+        "to": "p_admin1",
+        "reason": "owner_deleted"
+      }
+    }
+  },
+  {
+    "description": "a reason the contract does not name",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "type": "session.owner_changed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-20T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "by": "p_admin1",
+        "from": "p_user2",
+        "to": "p_admin1",
+        "reason": "because"
+      }
+    }
+  },
+  {
+    "description": "no new owner",
+    "instance": {
+      "orgId": "org_1",
+      "sessionId": "ses_1",
+      "streamId": "ses_1",
+      "seq": 7,
+      "type": "session.owner_changed",
+      "schemaVersion": 1,
+      "critical": false,
+      "ts": "2026-10-20T12:00:00.123Z",
+      "writer": "node",
+      "visibility": "audit",
+      "data": {
+        "by": "p_admin1",
+        "from": "p_user2",
+        "reason": "owner_deleted"
+      }
+    }
+  }
+]

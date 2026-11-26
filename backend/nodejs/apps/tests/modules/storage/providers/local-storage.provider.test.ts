@@ -100,7 +100,7 @@ describe('LocalStorageAdapter', () => {
       expect(result.statusCode).to.equal(200)
       const [file] = await fs.readdir(path.join(mount, 'org/doc/current'))
       expect(Buffer.byteLength(file)).to.be.at.most(255)
-      expect(file.endsWith('.txt')).to.equal(true)
+      expect(file!.endsWith('.txt')).to.equal(true)
       const read = await adapter.getBufferFromStorageService({ local: { localPath: result.data } } as any)
       expect(read.data?.toString()).to.equal('long name')
     })
@@ -621,7 +621,7 @@ describe('LocalStorageAdapter', () => {
       const adapter = createAdapter()
       const result = await adapter.generatePresignedUrlForDirectUpload('test/path.pdf')
       expect(result.statusCode).to.equal(200)
-      expect(result.data.url).to.include('file://')
+      expect(result.data!.url).to.include('file://')
     })
 
     it('should reject directory traversal when generating a direct-upload URL', async () => {
