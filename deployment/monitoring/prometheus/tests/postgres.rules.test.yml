@@ -1,0 +1,213 @@
+# promtool test rules: each key alert fires on a synthetic series and stays quiet on a healthy one
+# (deployment/docker-compose/tests/postgres_alert_rules_test.sh runs it).
+rule_files:
+  - ../postgres.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: server and exporter down
+    interval: 1m
+    input_series:
+      - series: 'pg_up{instance="pe:9187", job="postgres-exporter"}'
+        values: '1 1 0x5'
+      - series: 'up{instance="pe:9187", job="postgres-exporter"}'
+        values: '1 0x9'
+      - series: 'up{instance="pipeshub-ai:3002", job="pipeshub-agent-harness"}'
+        values: '0x9'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PostgresDown
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: "pe:9187", job: postgres-exporter}
+            exp_annotations:
+              summary: "PostgreSQL is unreachable"
+              description: "The exporter on pe:9187 cannot connect to PostgreSQL: the server is down, refusing connections, or the monitoring login (pipeshub_monitor) is missing or has the wrong password."
+      - eval_time: 1m
+        alertname: PostgresDown
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: PostgresExporterDown
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: "pe:9187", job: postgres-exporter}
+            exp_annotations:
+              summary: "A PostgreSQL or PgBouncer exporter cannot be scraped"
+              description: "postgres-exporter on pe:9187 has not answered a scrape for 5 minutes, so no other PostgreSQL alert can fire for it. Check that the exporter container is running."
+      - eval_time: 4m
+        alertname: PostgresExporterDown
+        exp_alerts: []
+
+  - name: connections near max_connections
+    interval: 1m
+    input_series:
+      - series: 'pg_stat_activity_count{instance="a", job="postgres-exporter", backend_type="client backend", datname="pipeshub", state="active"}'
+        values: '50x5 85x10'
+      - series: 'pg_stat_activity_count{instance="a", job="postgres-exporter", backend_type="autovacuum worker", datname="pipeshub", state="active"}'
+        values: '40x15'
+      - series: 'pg_settings_max_connections{instance="a", job="postgres-exporter"}'
+        values: '100x15'
+      - series: 'pg_settings_superuser_reserved_connections{instance="a", job="postgres-exporter"}'
+        values: '3x15'
+      - series: 'pg_settings_reserved_connections{instance="a", job="postgres-exporter"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: PostgresConnectionsNearMax
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: PostgresConnectionsNearMax
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: a, job: postgres-exporter}
+            exp_annotations:
+              summary: "PostgreSQL uses more than 80% of its connections"
+              description: "87.63% of the connections max_connections allows are in use on a. New logins are refused once it is full; look for a client that bypasses PgBouncer."
+      - eval_time: 12m
+        alertname: PostgresConnectionsExhausted
+        exp_alerts: []
+
+  - name: pgbouncer clients wait
+    interval: 1m
+    input_series:
+      - series: 'pgbouncer_pools_client_maxwait_seconds{instance="b", job="pgbouncer-exporter", database="pipeshub", user="pipeshub_query_login"}'
+        values: '0x3 3x6'
+      - series: 'pgbouncer_pools_client_maxwait_seconds{instance="b", job="pgbouncer-exporter", database="pgbouncer", user="pgbouncer"}'
+        values: '30x9'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PgBouncerClientsWaiting
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: PgBouncerClientsWaiting
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: b, job: pgbouncer-exporter, database: pipeshub}
+            exp_annotations:
+              summary: "Clients wait for a PostgreSQL connection in PgBouncer"
+              description: "The oldest client waiting for a server connection to pipeshub has waited 3 s. Past query_wait_timeout PgBouncer drops it and the request fails: a pool is too small or held by slow transactions."
+
+  - name: wal archiving fails
+    interval: 1m
+    input_series:
+      - series: 'pg_stat_archiver_failed_count{instance="a", job="postgres-exporter"}'
+        values: '10x30 10+1x40'
+      - series: 'pg_stat_archiver_last_archive_age{instance="a", job="postgres-exporter"}'
+        values: '30x30 1800+60x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: PostgresWalArchiveFailing
+        exp_alerts: []
+      - eval_time: 55m
+        alertname: PostgresWalArchiveFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: a, job: postgres-exporter}
+            exp_annotations:
+              summary: "PostgreSQL cannot archive WAL"
+              description: "WAL archiving failed 10 times in the last 10 minutes on a and has been failing for 10 minutes. Unarchived WAL stays in pg_wal and point-in-time restore stops at the last archived segment. Read the server log for archive-push errors (repository unreachable or full)."
+      - eval_time: 55m
+        alertname: PostgresWalArchiveStalled
+        exp_alerts: []
+      - eval_time: 65m
+        alertname: PostgresWalArchiveStalled
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: a, job: postgres-exporter}
+            exp_annotations:
+              summary: "No WAL segment was archived for an hour, and archiving is failing"
+              description: "The last successful WAL archive on a was 1h 4m 0s ago. A restore now loses everything after it."
+
+  - name: pg_wal piles up
+    interval: 1m
+    input_series:
+      - series: 'pg_wal_size_bytes{instance="a", job="postgres-exporter"}'
+        values: '1e9x20 3e9x20'
+      - series: 'pg_settings_max_wal_size_bytes{instance="a", job="postgres-exporter"}'
+        values: '1073741824x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PostgresWalPilingUp
+        exp_alerts: []
+      - eval_time: 38m
+        alertname: PostgresWalPilingUp
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: a, job: postgres-exporter}
+            exp_annotations:
+              summary: "pg_wal keeps growing"
+              description: "pg_wal on a holds 2.794GiB, more than twice max_wal_size. It is kept for archiving or a replication slot, and fills the data volume if nothing releases it."
+
+  - name: transaction id wraparound
+    interval: 1m
+    input_series:
+      - series: 'pg_database_wraparound_age_datfrozenxid_seconds{instance="a", job="postgres-exporter", datname="pipeshub"}'
+        values: '1.2e9x30'
+      - series: 'pg_database_wraparound_age_datminmxid_seconds{instance="a", job="postgres-exporter", datname="pipeshub"}'
+        values: '0x30'
+      - series: 'pg_database_wraparound_age_datfrozenxid_seconds{instance="a", job="postgres-exporter", datname="postgres"}'
+        values: '2e8x30'
+      - series: 'pg_database_wraparound_age_datminmxid_seconds{instance="a", job="postgres-exporter", datname="postgres"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PostgresTxidWraparoundNear
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: a, job: postgres-exporter, datname: pipeshub}
+            exp_annotations:
+              summary: "A database is halfway to transaction ID wraparound"
+              description: "pipeshub on a has 1.2G transactions (or multixacts) since its oldest unfrozen one. Find what blocks autovacuum (long transactions, idle-in-transaction sessions, abandoned replication slots) and VACUUM the oldest tables."
+      - eval_time: 20m
+        alertname: PostgresTxidWraparoundImminent
+        exp_alerts: []
+
+  - name: idle in transaction
+    interval: 1m
+    input_series:
+      - series: 'pg_stat_activity_max_tx_duration{instance="a", job="postgres-exporter", datname="pipeshub", usename="pipeshub_migrate", state="idle in transaction", application_name="", backend_type="client backend", wait_event="", wait_event_type=""}'
+        values: '600x5'
+      - series: 'pg_stat_activity_max_tx_duration{instance="a", job="postgres-exporter", datname="pipeshub", usename="pipeshub_jobs", state="active", application_name="", backend_type="client backend", wait_event="", wait_event_type=""}'
+        values: '600x5'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PostgresIdleInTransaction
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: a, job: postgres-exporter, datname: pipeshub, usename: pipeshub_migrate}
+            exp_annotations:
+              summary: "A session sits idle inside a transaction"
+              description: "pipeshub_migrate on pipeshub is idle inside a transaction that has been open for 10m 0s. It keeps its locks and holds back vacuum: a client forgot to commit."
+
+  - name: autovacuum behind
+    interval: 5m
+    input_series:
+      - series: 'pg_stat_user_tables_n_dead_tup{instance="a", job="postgres-exporter", datname="pipeshub", schemaname="public", relname="bloated"}'
+        values: '500000x20'
+      - series: 'pg_stat_user_tables_n_live_tup{instance="a", job="postgres-exporter", datname="pipeshub", schemaname="public", relname="bloated"}'
+        values: '500000x20'
+      - series: 'pg_stat_user_tables_n_dead_tup{instance="a", job="postgres-exporter", datname="pipeshub", schemaname="public", relname="busy"}'
+        values: '500000x20'
+      - series: 'pg_stat_user_tables_n_live_tup{instance="a", job="postgres-exporter", datname="pipeshub", schemaname="public", relname="busy"}'
+        values: '9500000x20'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: PostgresDeadTuplesHigh
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: PostgresDeadTuplesHigh
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: a, job: postgres-exporter, datname: pipeshub, schemaname: public, relname: bloated}
+            exp_annotations:
+              summary: "Autovacuum is not keeping up with a table"
+              description: "public.bloated has 500k dead rows, over 30% of the table, for an hour. Check for long transactions holding them back and the table's last_autovacuum."
+
+  - name: database growth
+    interval: 5m
+    input_series:
+      - series: 'pg_database_size_bytes{instance="a", job="postgres-exporter", datname="pipeshub"}'
+        values: '2e9x300 4e9x30'
+      - series: 'pg_database_size_bytes{instance="a", job="postgres-exporter", datname="postgres"}'
+        values: '8e6x300 4e8x30'
+    alert_rule_test:
+      - eval_time: 23h
+        alertname: PostgresDatabaseGrowingFast
+        exp_alerts: []
+      - eval_time: 26h
+        alertname: PostgresDatabaseGrowingFast
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: a, job: postgres-exporter, datname: pipeshub}
+            exp_annotations:
+              summary: "A database grew by more than half in a day"
+              description: "pipeshub on a is 3.725GiB and grew over 50% in 24 hours. Check the free space of the data volume."
