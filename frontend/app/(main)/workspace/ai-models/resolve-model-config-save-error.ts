@@ -45,9 +45,10 @@ export function resolveConnectionSecretError(err: unknown, t: TFunction, fallbac
   if (!isProcessedError(err)) return t(fallbackKey);
   const body = (err.originalError as { response?: { data?: unknown } } | undefined)?.response?.data;
   if (extractErrorCode(body) === 'credential_reentry_required') {
-    const models = (body as { models?: { name?: unknown }[] }).models ?? [];
+    const { models = [], reference } = body as { models?: { name?: unknown }[]; reference?: { name?: unknown } };
     return t('workspace.aiModels.connectionEndpointsDiffer', {
       models: models.map((model) => String(model.name ?? '')).filter(Boolean).join(', '),
+      reference: String(reference?.name ?? ''),
     });
   }
   return err.message.trim() || t(fallbackKey);

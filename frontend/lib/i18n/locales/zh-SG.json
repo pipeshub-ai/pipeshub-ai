@@ -2724,7 +2724,7 @@
       "rotateCredentialsPlaceholder": "新的 API 密钥",
       "rotateCredentialsSave": "更新密钥",
       "rotateCredentialsFailed": "无法更新密钥",
-      "connectionEndpointsDiffer": "此连接中的部分模型使用了不同的端点：{{models}}。请将它们改回此连接的端点或将其删除，然后重试。",
+      "connectionEndpointsDiffer": "此连接中的以下模型使用的端点与 {{reference}} 不同：{{models}}。请让此连接中的所有模型使用同一个端点，然后重试。",
       "identity": {
         "menuItem": "身份转发",
         "title": "身份转发",

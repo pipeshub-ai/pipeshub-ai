@@ -2567,7 +2567,7 @@
       "rotateCredentialsPlaceholder": "Neuer API-Schlüssel",
       "rotateCredentialsSave": "Schlüssel speichern",
       "rotateCredentialsFailed": "Schlüssel konnte nicht aktualisiert werden",
-      "connectionEndpointsDiffer": "Einige Modelle dieser Verbindung verwenden einen anderen Endpunkt: {{models}}. Setzen Sie sie auf den Endpunkt der Verbindung zurück oder löschen Sie sie, und versuchen Sie es dann erneut.",
+      "connectionEndpointsDiffer": "Diese Modelle der Verbindung verwenden einen anderen Endpunkt als {{reference}}: {{models}}. Stellen Sie alle Modelle der Verbindung auf denselben Endpunkt ein und versuchen Sie es dann erneut.",
       "identity": {
         "menuItem": "Identitätsweiterleitung",
         "title": "Identitätsweiterleitung",

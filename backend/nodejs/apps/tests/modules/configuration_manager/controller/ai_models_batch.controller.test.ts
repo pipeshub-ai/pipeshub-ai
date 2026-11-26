@@ -646,8 +646,38 @@ describe('ai model discover, batch, and rotate', () => {
     expect((res.body as { error_code?: string }).error_code).to.equal(
       'credential_reentry_required',
     );
+    // A new key cannot fix an endpoint mismatch, so the message does not ask for one.
+    expect((res.body as { message?: string }).message).to.not.contain(
+      'credentials again',
+    );
     expect(execute.called).to.equal(false);
     expect(JSON.stringify(store.snapshot())).to.equal(before);
+  });
+
+  it('does not add a model when the connection moved to another endpoint during its check', async () => {
+    const store = memoryStore(seedConfig());
+    execute.callsFake(async () => {
+      // Another save moves every member while the health check runs.
+      const moved = store.snapshot()!;
+      for (const entry of moved.llm ?? []) {
+        entry.configuration = { ...entry.configuration, endpoint: 'https://b.example/v1' };
+      }
+      await store.compareAndSet('', await store.get<string>(), `encrypted:${JSON.stringify(moved)}`);
+      return { statusCode: 200, data: { status: 'healthy' } };
+    });
+
+    const { events } = await runBatch(store, {
+      connectionId: 'conn-1',
+      configuration: { apiKey: 'sk-stored' },
+      models: [{ model: 'gpt-4.1', isMultimodal: false, isReasoning: false }],
+    });
+
+    const llm = store.snapshot()?.llm ?? [];
+    expect(llm.some((entry) => entry.configuration.model === 'gpt-4.1')).to.equal(false);
+    const progress = events.filter((event) => event.event === 'progress').map((event) => event.data as { status: string });
+    expect(progress.map((event) => event.status)).to.deep.equal(['checking', 'failed']);
+    const done = events.find((event) => event.event === 'done');
+    expect((done?.data as { saved?: number }).saved).to.equal(0);
   });
 
   it('joins a connection whose endpoint matches apart from case and a trailing slash', async () => {
@@ -718,6 +748,10 @@ describe('ai model discover, batch, and rotate', () => {
       'llm-2',
     ]);
     expect(body.message).to.contain('gpt-4o-mini');
+    // Storage order does not say which endpoint is intended, so no side is told to move.
+    expect((res.body as { reference?: { modelKey: string } }).reference?.modelKey).to.equal('llm-1');
+    expect(body.message).to.not.match(/move them|delete them/i);
+    expect(execute.called).to.equal(false);
     expect(sent.some((text) => text.includes('sk-rotated'))).to.equal(false);
     expect(JSON.stringify(store.snapshot())).to.equal(before);
   });
