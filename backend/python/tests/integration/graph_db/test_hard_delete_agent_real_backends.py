@@ -170,3 +170,33 @@ async def test_concurrent_deletes_of_two_agents_sharing_a_server_never_fail_and_
                                    (b, C.AGENT_INSTANCES.value)) if await graph.get_document(k, coll) is not None]
     assert failures == [], f"a delete failed in rounds {failures}"
     assert left == [], f"left behind: {left}"
+
+
+@pytest.mark.parametrize("other_keeps_one", [False, True], ids=["both-servers-go", "one-server-kept"])
+async def test_a_tool_two_servers_of_one_agent_share(store: IGraphDBProvider, other_keeps_one: bool) -> None:
+    """Two MCP servers of one agent hold the same tool. Deleting the agent takes both servers and the tool; when another agent
+    still links one of the servers, that server keeps the tool."""
+    graph = store
+    now = get_epoch_timestamp_in_ms()
+    run = uuid.uuid4().hex[:10]
+    agent_key, other_key, s1, s2, tool = (f"{k}-two-{run}" for k in ("agent", "other", "s1", "s2", "tool"))
+    agent = {"description": "d", "startMessage": "s", "systemPrompt": "p", "models": [], "createdBy": "u", "createdAtTimestamp": now,
+             "updatedAtTimestamp": now}
+    assert await graph.batch_upsert_nodes([{"_key": agent_key, "name": "a", **agent}, {"_key": other_key, "name": "b", **agent}], C.AGENT_INSTANCES.value)
+    assert await graph.batch_upsert_nodes([{"_key": s, "name": s, "displayName": s, "instanceId": f"i-{s}", "userId": "u", "createdBy": "u",
+                                            "createdAtTimestamp": now} for s in (s1, s2)], C.AGENT_MCP_SERVERS.value)
+    assert await graph.batch_upsert_nodes([{"_key": tool, "name": "t", "fullName": "x.t", "toolsetName": "x", "createdBy": "u", "createdAtTimestamp": now}],
+                                          C.AGENT_TOOLS.value)
+    links = [(agent_key, s1), (agent_key, s2), *([(other_key, s2)] if other_keeps_one else [])]
+    assert await graph.batch_create_edges([_edge(C.AGENT_INSTANCES.value, a, C.AGENT_MCP_SERVERS.value, s) for a, s in links], C.AGENT_HAS_MCP_SERVER.value)
+    assert await graph.batch_create_edges([_edge(C.AGENT_MCP_SERVERS.value, s, C.AGENT_TOOLS.value, tool) for s in (s1, s2)], C.MCP_SERVER_HAS_TOOL.value)
+    try:
+        result = await graph.hard_delete_agent(agent_key)
+        assert result["agents_deleted"] == 1
+        present = {k for k, coll in ((s1, C.AGENT_MCP_SERVERS.value), (s2, C.AGENT_MCP_SERVERS.value), (tool, C.AGENT_TOOLS.value))
+                   if await graph.get_document(k, coll) is not None}
+        assert present == ({s2, tool} if other_keeps_one else set())
+    finally:
+        for k, coll in ((other_key, C.AGENT_INSTANCES.value), (s1, C.AGENT_MCP_SERVERS.value), (s2, C.AGENT_MCP_SERVERS.value), (tool, C.AGENT_TOOLS.value)):
+            with contextlib.suppress(Exception):
+                await graph.delete_nodes_and_edges([k], coll)

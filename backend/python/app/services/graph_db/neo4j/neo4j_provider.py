@@ -29163,7 +29163,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 mcp_server_ids = result[0].get("sid_list", []) or []
                 edges_deleted += result[0].get("rel_count", 0) or 0
             if mcp_server_ids:
-                # One statement per cleanup, under each server's write lock: of two deletes that both find a server orphaned,
+                # One statement per cleanup, under each server's write lock (a tool is kept only by a server outside the orphaned
+                # set, so two orphaned servers of one agent sharing a tool take it): of two deletes that both find a server orphaned,
                 # the second waits for the first and then finds nothing, instead of deleting the server between the other's
                 # tool and server steps and leaving its tools behind.
                 # A statement run on its own is sent again by the client when it loses to the other's delete (lost_to_a_delete).
@@ -29174,12 +29175,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     SET server.{_MATCH_LOCK} = true
                     REMOVE server.{_MATCH_LOCK}
                     WITH server WHERE NOT EXISTS {{ MATCH (server)<-[:{has_mcp_rel}]-() }}
-                    OPTIONAL MATCH (server)-[r:{mcp_tool_rel}]->(tool:{tool_label})
-                    WITH server, count(r) as rels,
-                         collect(DISTINCT CASE WHEN NOT EXISTS {{ MATCH (tool)<-[:{mcp_tool_rel}]-(other) WHERE other <> server }} THEN tool END) as solo
+                    WITH collect(server.id) as orphan_ids
+                    OPTIONAL MATCH (orphan:{mcp_label})-[r:{mcp_tool_rel}]->(tool:{tool_label})
+                    WHERE orphan.id IN orphan_ids
+                    WITH orphan_ids, count(r) as rels,
+                         collect(DISTINCT CASE WHEN NOT EXISTS {{ MATCH (tool)<-[:{mcp_tool_rel}]-(other) WHERE NOT other.id IN orphan_ids }} THEN tool END) as solo
                     FOREACH (t IN solo | DETACH DELETE t)
+                    WITH orphan_ids, rels, size(solo) as tool_count
+                    MATCH (server:{mcp_label})
+                    WHERE server.id IN orphan_ids
                     DETACH DELETE server
-                    RETURN count(server) as deleted_count, sum(size(solo)) as tool_count, sum(rels) as rel_count
+                    RETURN count(server) as deleted_count, tool_count, rels as rel_count
                     """,
                     parameters={"isolated_ids": mcp_server_ids},
                     txn_id=transaction
